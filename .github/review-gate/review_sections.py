@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import sys
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -196,94 +198,392 @@ def _without_inline_code(text: str) -> str:
 SECURITY_MARKER_COMMENT = re.compile(
     r"(?is)<!--[ \t]*codex-security-review-finding:v1[ \t]*-->"
 )
+HTML_COMMENT_END = re.compile(r"--!?>")
+HTML_CODE_CONTAINER_TAGS = frozenset(
+    {"code", "iframe", "noembed", "noframes", "pre", "script", "style", "textarea", "xmp"}
+)
+RAW_HTML_TEXT_TAGS = frozenset({"iframe", "noembed", "noframes", "script", "style", "textarea", "title", "xmp"})
+HTML_CODE_CONTAINER_CLOSER = re.compile(
+    r"</\s*(?:" + "|".join(sorted(HTML_CODE_CONTAINER_TAGS)) + r")\s*>",
+    re.IGNORECASE,
+)
+REFERENCE_DEFINITION = re.compile(
+    r"""(?m)^[ ]*\[(?:[^\]\r\n]|\r?\n(?![ \t]*(?:\r?\n)))*\]:"""
+    r"""[ \t]*(?:\r?\n(?![ \t]*(?:\r?\n))[ \t]*)?"""
+    r"""(?P<destination>(?:<(?:\\.|[^<>\\\r\n])*>|\\.|[^ \t\r\n])+)"""
+    r"""(?:(?:[ \t]+|\r?\n(?![ \t]*(?:\r?\n))[ \t]*)(?:"""
+    r""""(?:\\.|(?!(?:\r?\n)[ \t]*(?:\r?\n))[^"\\])*"|"""
+    r"""'(?:\\.|(?!(?:\r?\n)[ \t]*(?:\r?\n))[^'\\])*'|"""
+    r"""\((?:\\.|(?!(?:\r?\n)[ \t]*(?:\r?\n))[^)\\])*\)))?"""
+    r"""[ \t]*$"""
+)
+REFERENCE_DEFINITION_START = re.compile(r"(?m)^[ ]*\[")
+BACKSLASH_ESCAPED_CONTAINER_TAG = re.compile(
+    r"\\+(?P<tag></?\s*(?:details|summary)\b[^<>]*>)", re.IGNORECASE
+)
 
 
-def _actual_metadata(text: str) -> str:
-    """Ignore copied examples in fenced code blocks, retaining inline metadata."""
-    masked: list[str] = []
-    fence_char: str | None = None
-    fence_length = 0
-    for line in text.splitlines(keepends=True):
-        match = FENCE_LINE.match(line.rstrip("\r\n"))
-        if match and match.group("char") == "`" and "`" in match.group("info"):
-            match = None
-        if fence_char is None and match:
-            fence_char, fence_length = (
-                match.group("char"),
-                len(match.group("count")) + 1,
-            )
-            masked.append("\n" if line.endswith("\n") else "")
-        elif fence_char is not None:
-            masked.append("\n" if line.endswith("\n") else "")
-            closing = re.fullmatch(
-                r"[ ]{0,3}"
-                + re.escape(fence_char)
-                + "{"
-                + str(fence_length)
-                + r",}[ \t]*",
-                line.rstrip("\r\n"),
-            )
-            if closing:
-                fence_char = None
-                fence_length = 0
+def _column_indent(text: str) -> int:
+    column = 0
+    for character in text:
+        if character == " ":
+            column += 1
+        elif character == "\t":
+            column = (column // 4 + 1) * 4
         else:
-            masked.append(line)
-    return "".join(masked)
+            break
+    return column
 
 
-def _visible_html(text: str, visible_open: bool = True) -> str:
-    """Mask only container spans, preserving visible prefixes and suffixes."""
-    scan = _without_inline_code(text)
-    tags = [
-        match
-        for match in re.finditer(
-            r"<!--|-->|</?details\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", scan, re.I
-        )
-        if not _backslash_escaped(scan, match.start())
-    ]
-    comment = False
-    details: list[bool] = []
-    start: int | None = None
-    spans: list[tuple[int, int]] = []
+def _strip_quote_prefix(line: str, count: int | None = None) -> tuple[str, int]:
+    rest = line
+    found = 0
+    while count is None or found < count:
+        match = re.match(r"[ ]{0,3}>[ ]?", rest)
+        if not match:
+            break
+        rest = rest[match.end() :]
+        found += 1
+    return rest, found
+
+
+def _block_prefix(line: str) -> tuple[str, int, int]:
+    """Remove blockquote/list markers; return text, quote depth and list indent."""
+    rest, quotes = _strip_quote_prefix(line)
+    list_indent = 0
+    while True:
+        match = re.match(r"([ ]{0,3})([-+*]|[0-9]{1,9}[.)])([ \t]+)", rest)
+        if not match:
+            break
+        content_column = list_indent + _column_indent(match.group(1)) + len(match.group(2))
+        for character in match.group(3):
+            content_column = (
+                content_column + 1
+                if character == " "
+                else (content_column // 4 + 1) * 4
+            )
+        list_indent = content_column
+        rest = rest[match.end() :]
+    return rest, quotes, list_indent
+
+
+def _strip_list_indent(line: str, columns: int) -> str:
     index = 0
-    while index < len(tags):
-        match = tags[index]
-        tag = match.group().lower()
-        enclosed = comment or any(details)
-        if tag == "<!--" and not comment:
-            if (
-                not enclosed
-                and index + 1 < len(tags)
-                and tags[index + 1].group() == "-->"
-            ):
-                protocol = scan[match.start() : tags[index + 1].end()]
-                if SECURITY_MARKER_COMMENT.fullmatch(protocol) or re.fullmatch(
-                    r"<!-- review-request:v2 head=[0-9a-f]{40} base=[0-9a-f]{40} -->",
-                    protocol,
-                    re.I,
-                ):
-                    index += 2
-                    continue
-            comment = True
-        elif tag == "-->":
-            comment = False
-        elif not comment:
-            if tag.startswith("</"):
-                if details:
-                    details.pop()
-            else:
-                attributes = re.sub(r"\"[^\"]*\"|'[^']*'", "", tag)
-                expanded = bool(re.search(r"(?i)\sopen(?:\s|=|/?>)", attributes))
-                details.append(not (visible_open and expanded))
-        hidden = comment or any(details)
-        if not enclosed and hidden:
-            start = match.start()
-        elif enclosed and not hidden and start is not None:
-            spans.append((start, match.end()))
-            start = None
+    while (
+        index < len(line)
+        and line[index] in " \t"
+        and _column_indent(line[:index]) < columns
+    ):
         index += 1
-    if start is not None:
-        spans.append((start, len(text)))
+    return line[index:] if _column_indent(line[:index]) >= columns else line
+
+
+def _markdown_link_end(text: str, opening: int) -> int | None:
+    """Return the closing `)` of a valid inline link destination and title."""
+    cursor = opening + 2
+    initial = cursor
+    while cursor < len(text) and text[cursor] in " \t\r\n":
+        cursor += 1
+    had_leading_space = cursor > initial
+    title_after_empty_destination = False
+
+    def title_end(position: int) -> int | None:
+        opener = text[position]
+        if opener in ("\"", "'"):
+            position += 1
+            while position < len(text):
+                if _backslash_escaped(text, position):
+                    position += 1
+                elif text[position] == opener:
+                    return position + 1
+                position += 1
+            return None
+        if opener == "(":
+            depth = 1
+            position += 1
+            while position < len(text):
+                if _backslash_escaped(text, position):
+                    position += 1
+                elif text[position] == "(":
+                    depth += 1
+                elif text[position] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        return position + 1
+                position += 1
+        return None
+
+    # An empty destination can be followed by a title only when whitespace
+    # separates the title from the opening parenthesis.
+    if had_leading_space and cursor < len(text) and text[cursor] in ('"', "'", "("):
+        destination_end = cursor
+        title_after_empty_destination = True
+    elif cursor < len(text) and text[cursor] == "<":
+        destination_start = cursor
+        cursor += 1
+        while cursor < len(text):
+            if _backslash_escaped(text, cursor):
+                cursor += 1
+            elif text[cursor] in "\r\n<":
+                return None
+            elif text[cursor] == ">":
+                cursor += 1
+                break
+            cursor += 1
+        else:
+            return None
+        destination_end = cursor if cursor > destination_start + 1 else None
+        if destination_end is None:
+            return None
+    else:
+        depth = 0
+        destination_start = cursor
+        while cursor < len(text):
+            if _backslash_escaped(text, cursor):
+                cursor += 1
+            elif text[cursor] in " \t\r\n":
+                if depth:
+                    return None
+                break
+            elif text[cursor] == "(":
+                depth += 1
+            elif text[cursor] == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            cursor += 1
+        if depth:
+            return None
+        destination_end = cursor if cursor > destination_start else None
+
+    cursor = destination_end if destination_end is not None else cursor
+    if cursor >= len(text):
+        return None
+    if text[cursor] == ")":
+        return cursor
+
+    if title_after_empty_destination:
+        title_close = title_end(cursor)
+        if title_close is None:
+            return None
+        cursor = title_close
+        while cursor < len(text) and text[cursor] in " \t\r\n":
+            cursor += 1
+        return cursor if cursor < len(text) and text[cursor] == ")" else None
+
+    separator_start = cursor
+    while cursor < len(text) and text[cursor] in " \t\r\n":
+        cursor += 1
+    if cursor == separator_start or cursor >= len(text):
+        return None
+    title_close = title_end(cursor)
+    if title_close is None:
+        return None
+    cursor = title_close
+    while cursor < len(text) and text[cursor] in " \t\r\n":
+        cursor += 1
+    return cursor if cursor < len(text) and text[cursor] == ")" else None
+
+
+def _reference_definition_scan_text(
+    text: str,
+) -> tuple[str, set[int], dict[int, tuple[int, int, int]]]:
+    """Normalize container prefixes and valid reference labels without shifting offsets."""
+    normalized = list(text)
+    candidate_openings: set[int] = set()
+    line_contexts: dict[int, tuple[int, int, int]] = {}
+    valid_openings: set[int] = set()
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        source = line.rstrip("\r\n")
+        content, quotes, list_indent = _block_prefix(source)
+        prefix_length = len(source) - len(content)
+        content_indent = _column_indent(content[: len(content) - len(content.lstrip(" \t"))])
+        line_contexts[offset] = (quotes, list_indent, content_indent)
+        if prefix_length:
+            normalized[offset : offset + prefix_length] = [" "] * prefix_length
+        if re.match(r"[ ]{0,3}\[", content):
+            opening = offset + prefix_length + content.index("[")
+            candidate_openings.add(opening)
+        offset += len(line)
+
+    container_scan = "".join(normalized)
+    for match in REFERENCE_DEFINITION_START.finditer(container_scan):
+        opening = match.end() - 1
+        if opening not in candidate_openings:
+            continue
+        cursor = opening + 1
+        depth = 1
+        while cursor < len(text):
+            character = text[cursor]
+            if character in "\r\n":
+                line_ending = 2 if text[cursor : cursor + 2] == "\r\n" else 1
+                next_line_start = cursor + line_ending
+                next_line_end = next_line_start
+                while next_line_end < len(text) and text[next_line_end] not in "\r\n":
+                    next_line_end += 1
+                if not container_scan[next_line_start:next_line_end].strip(" \t"):
+                    break
+                cursor += line_ending
+                continue
+            if character == "\\" and cursor + 1 < len(text):
+                if text[cursor + 1] in "\r\n":
+                    line_ending = (
+                        2 if text[cursor + 1 : cursor + 3] == "\r\n" else 1
+                    )
+                    cursor += 1 + line_ending
+                    continue
+                cursor += 2
+                continue
+            if character == "[":
+                depth += 1
+            elif character == "]":
+                depth -= 1
+                if depth == 0:
+                    break
+            cursor += 1
+        if depth != 0 or cursor >= len(text) or text[cursor + 1 : cursor + 2] != ":":
+            continue
+        label = re.sub(r"\r?\n", " ", text[opening + 1 : cursor])
+        if len(label) > 999 or not label.strip():
+            continue
+        valid_openings.add(opening)
+        for index in range(opening + 1, cursor):
+            if text[index] not in "\r\n":
+                normalized[index] = "x"
+    return "".join(normalized), valid_openings, line_contexts
+
+
+def _reference_match_has_valid_containers(
+    source: str,
+    start: int,
+    end: int,
+    line_contexts: dict[int, tuple[int, int, int]],
+) -> bool:
+    """Reject a definition span that crosses into a different block container."""
+    line_start = source.rfind("\n", 0, start) + 1
+    initial = line_contexts.get(line_start)
+    if initial is None:
+        return False
+    initial_quotes, initial_list_indent, _ = initial
+    cursor = line_start
+    while cursor < end:
+        line_end = source.find("\n", cursor)
+        if line_end == -1:
+            line_end = len(source)
+        if cursor != line_start:
+            context = line_contexts.get(cursor)
+            if context is None:
+                return False
+            quotes, list_indent, content_indent = context
+            if quotes != initial_quotes or list_indent != 0:
+                return False
+            if initial_list_indent:
+                if content_indent < initial_list_indent:
+                    return False
+            elif content_indent > 3:
+                return False
+        cursor = line_end + 1
+    return True
+
+
+def _valid_reference_destination(destination: str) -> bool:
+    """Reject malformed destinations before masking a reference definition."""
+    def escaped_punctuation(character: str) -> bool:
+        return (
+            character.isascii()
+            and character.isprintable()
+            and not character.isalnum()
+            and not character.isspace()
+        )
+
+    if destination.startswith("<"):
+        if not destination.endswith(">"):
+            return False
+        cursor = 1
+        while cursor < len(destination) - 1:
+            character = destination[cursor]
+            if character == "\\":
+                cursor += 1
+                if cursor >= len(destination) - 1 or not escaped_punctuation(
+                    destination[cursor]
+                ):
+                    return False
+            elif character in "<>\r\n" or character.isspace() or ord(character) < 32:
+                return False
+            cursor += 1
+        return True
+
+    depth = 0
+    cursor = 0
+    while cursor < len(destination):
+        character = destination[cursor]
+        if character == "\\":
+            cursor += 1
+            if cursor >= len(destination) or not escaped_punctuation(destination[cursor]):
+                return False
+        elif character in "<>\r\n" or character.isspace() or ord(character) < 32:
+            return False
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+        cursor += 1
+    return depth == 0
+
+
+def _mask_markdown_link_destinations(text: str) -> str:
+    """Mask inline Markdown destinations/titles before scanning HTML tokens."""
+    spans: list[tuple[int, int]] = []
+    for match in re.finditer(r"\]\(", text):
+        if _backslash_escaped(text, match.start()):
+            continue
+        depth = 0
+        label_open = None
+        for index in range(match.start(), -1, -1):
+            if _backslash_escaped(text, index):
+                continue
+            if text[index] == "]":
+                depth += 1
+            elif text[index] == "[":
+                depth -= 1
+                if depth == 0:
+                    label_open = index
+                    break
+        if label_open is None:
+            continue
+        end = _markdown_link_end(text, match.start())
+        if end is not None:
+            spans.append((match.start(), end + 1))
+
+    chunks: list[str] = []
+    position = 0
+    for start, end in spans:
+        if start < position:
+            continue
+        chunks.append(text[position:start])
+        chunks.append(re.sub(r"[^\r\n]", " ", text[start:end]))
+        position = end
+    chunks.append(text[position:])
+    return "".join(chunks)
+
+
+def _escaped_container_tag_spans(text: str) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for match in re.finditer(r"&lt;[^<>\r\n]*?&gt;", text, re.IGNORECASE):
+        decoded = html.unescape(match.group())
+        if re.fullmatch(
+            r"</?\s*(?:details|summary)\b[^<>]*>", decoded, re.IGNORECASE
+        ):
+            spans.append((match.start(), match.end()))
+    return spans
+
+
+def _mask_escaped_container_tags(text: str) -> str:
+    """Ignore escaped details/summary markup while preserving adjacent text."""
+    spans = _escaped_container_tag_spans(text)
     chunks: list[str] = []
     position = 0
     for start, end in spans:
@@ -294,14 +594,451 @@ def _visible_html(text: str, visible_open: bool = True) -> str:
     return "".join(chunks)
 
 
+def _mask_backslash_escaped_container_tags(text: str) -> str:
+    """Mask only backslash-escaped details/summary tags in structural views."""
+    spans = [
+        (match.start(), match.end())
+        for match in BACKSLASH_ESCAPED_CONTAINER_TAG.finditer(text)
+        if _backslash_escaped(text, match.start("tag"))
+    ]
+    chunks: list[str] = []
+    position = 0
+    for start, end in spans:
+        chunks.append(text[position:start])
+        chunks.append(re.sub(r"[^\r\n]", " ", text[start:end]))
+        position = end
+    chunks.append(text[position:])
+    return "".join(chunks)
+
+
+def _restore_html_code_container_closers(source: str, masked: str) -> str:
+    """Keep raw HTML code-container closers visible to the HTML tokenizer."""
+    chunks: list[str] = []
+    position = 0
+    for match in HTML_CODE_CONTAINER_CLOSER.finditer(source):
+        start, end = match.span()
+        if _backslash_escaped(source, start):
+            continue
+        chunks.append(masked[position:start])
+        chunks.append(source[start:end])
+        position = end
+    chunks.append(masked[position:])
+    return "".join(chunks)
+
+
+def _html_markup_at(text: str, start: int) -> tuple[str, bool, int] | None:
+    """Return a complete tag name, closing flag, and end offset at ``start``."""
+    if start >= len(text) or text[start] != "<":
+        return None
+    if text.startswith("<!", start) or text.startswith("<?", start):
+        quote: str | None = None
+        for index in range(start + 2, len(text)):
+            character = text[index]
+            if quote:
+                if character == quote:
+                    quote = None
+            elif character in "\"'":
+                quote = character
+            elif character == ">":
+                return "", False, index + 1
+        return "", False, len(text)
+
+    match = re.match(r"</?\s*([A-Za-z][A-Za-z0-9:-]*)", text[start:])
+    if not match:
+        return None
+    closing = text[start + 1 : start + 2] == "/"
+    tag = match.group(1).lower()
+    quote: str | None = None
+    for index in range(start + match.end(), len(text)):
+        character = text[index]
+        if quote:
+            if character == quote:
+                quote = None
+        elif character in "\"'":
+            quote = character
+        elif character == ">":
+            return tag, closing, index + 1
+    return tag, closing, len(text)
+
+
+def _unterminated_html_comment_start(text: str) -> int | None:
+    """Find an actual unterminated comment while respecting tags and raw text."""
+    position = 0
+    raw_text_tag: str | None = None
+    while position < len(text):
+        if raw_text_tag is not None:
+            closing = re.search(
+                r"</\s*" + re.escape(raw_text_tag) + r"\s*>",
+                text[position:],
+                re.IGNORECASE,
+            )
+            if closing is None:
+                return None
+            position += closing.end()
+            raw_text_tag = None
+            continue
+
+        if text.startswith("<!--", position):
+            closing = HTML_COMMENT_END.search(text, position + 4)
+            if _backslash_escaped(text, position):
+                if closing is None:
+                    return None
+                position = closing.end()
+                continue
+            if closing is None:
+                return position
+            position = closing.end()
+            continue
+
+        if text[position] == "<":
+            markup = _html_markup_at(text, position)
+            if markup is not None:
+                tag, closing, end = markup
+                if tag in RAW_HTML_TEXT_TAGS and not closing and end > position:
+                    raw_text_tag = tag
+                if end <= position or end == len(text) and text[end - 1 : end] != ">":
+                    return None
+                position = end
+                continue
+        position += 1
+    return None
+
+
+def _actual_metadata(text: str) -> str:
+    """Mask Markdown code blocks while retaining physical line positions."""
+    masked: list[str] = []
+    fence_char: str | None = None
+    fence_length = 0
+    fence_quotes = 0
+    fence_list_indent = 0
+    indented_code = False
+    block_boundary = True
+    active_list_indent: int | None = None
+    list_has_blank = False
+    for line in text.splitlines(keepends=True):
+        content, quotes, list_indent = _block_prefix(line.rstrip("\r\n"))
+        if fence_char is not None:
+            content, found_quotes = _strip_quote_prefix(
+                line.rstrip("\r\n"), fence_quotes
+            )
+            if found_quotes == fence_quotes:
+                content = _strip_list_indent(content, fence_list_indent)
+                closing = re.fullmatch(
+                    r"[ ]{0,3}"
+                    + re.escape(fence_char)
+                    + "{"
+                    + str(fence_length)
+                    + r",}[ \t]*",
+                    content,
+                )
+            else:
+                closing = None
+            masked.append("\n" if line.endswith("\n") else "")
+            if closing:
+                fence_char = None
+                fence_length = 0
+                fence_quotes = 0
+                fence_list_indent = 0
+                block_boundary = True
+            continue
+
+        match = FENCE_LINE.match(content)
+        if match and match.group("char") == "`" and "`" in match.group("info"):
+            match = None
+        if match:
+            fence_char = match.group("char")
+            fence_length = len(match.group("count")) + 1
+            fence_quotes = quotes
+            fence_list_indent = list_indent
+            masked.append("\n" if line.endswith("\n") else "")
+            block_boundary = True
+            indented_code = False
+            continue
+
+        plain, _ = _strip_quote_prefix(line.rstrip("\r\n"))
+        indent = _column_indent(plain)
+        if not plain.strip():
+            masked.append("\n" if line.endswith("\n") else "")
+            if active_list_indent is not None:
+                list_has_blank = True
+            block_boundary = True
+            continue
+
+        if list_indent:
+            active_list_indent = list_indent
+            list_has_blank = False
+        elif active_list_indent is not None:
+            starts_root_block = bool(
+                RESULT_HEADING.match(content)
+                or re.match(r"^[ ]{0,3}(?:#{1,6}[ \t]|>|[-+*][ \t]|[0-9]+[.)][ \t])", content)
+            )
+            if list_has_blank and indent < active_list_indent or starts_root_block:
+                active_list_indent = None
+                list_has_blank = False
+            else:
+                list_has_blank = False
+
+        code_indent = 4 + (list_indent or active_list_indent or 0)
+        if indent >= code_indent and (indented_code or block_boundary):
+            masked.append("\n" if line.endswith("\n") else "")
+            indented_code = True
+            continue
+        indented_code = False
+        masked.append(line)
+        stripped = line.rstrip("\r\n")
+        block_content = content.strip()
+        block_boundary = bool(
+            RESULT_HEADING.match(content)
+            or (quotes and not block_content)
+            or (list_indent and not block_content)
+            or re.match(r"^[ ]{0,3}(?:#{1,6}[ \t]|>)", stripped)
+        )
+    return "".join(masked)
+
+
+def _visible_html(text: str, visible_open: bool = True) -> str:
+    """Mask only container spans, preserving visible prefixes and suffixes."""
+    metadata = _actual_metadata(text)
+    scan = _restore_html_code_container_closers(
+        metadata, _without_inline_code(metadata)
+    )
+    # Markdown destinations and titles are not HTML. Mask them only in the
+    # parser input so their literal tags cannot open containers or shift offsets.
+    scan = re.sub(
+        r"\]\([ \t]*<[^>\r\n]*>(?:[ \t]+(?:\"[^\"]*\"|'[^']*'))?[ \t]*\)",
+        lambda match: re.sub(r"[^\r\n]", " ", match.group()),
+        scan,
+    )
+    escaped_markup_spans = _escaped_container_tag_spans(scan)
+    parser_scan = _mask_markdown_link_destinations(scan)
+    reference_scan, valid_openings, line_contexts = _reference_definition_scan_text(
+        parser_scan
+    )
+    reference_spans: list[tuple[int, int]] = []
+    for match in REFERENCE_DEFINITION.finditer(reference_scan):
+        opening = match.start() + match.group().index("[")
+        if (
+            opening in valid_openings
+            and _valid_reference_destination(match.group("destination"))
+            and _reference_match_has_valid_containers(
+                parser_scan, match.start(), match.end(), line_contexts
+            )
+        ):
+            reference_spans.append((match.start(), match.end()))
+    if reference_spans:
+        chunks: list[str] = []
+        position = 0
+        for start, end in reference_spans:
+            chunks.append(parser_scan[position:start])
+            chunks.append(re.sub(r"[^\r\n]", " ", parser_scan[start:end]))
+            position = end
+        chunks.append(parser_scan[position:])
+        parser_scan = "".join(chunks)
+    parser_scan = _mask_escaped_container_tags(parser_scan)
+    unterminated_comment = _unterminated_html_comment_start(parser_scan)
+    # Python 3.9's HTMLParser does not recognize HTML's --!> comment end tag.
+    # Normalize only its parser input, without changing source offsets.
+    parser_scan = parser_scan.replace("--!>", "--->")
+    line_offsets = [0]
+    line_offsets.extend(match.end() for match in re.finditer("\n", scan))
+    tokens: list[tuple[int, int, str, bool, str]] = []
+    class ContainerParser(HTMLParser):
+        def _offset(self) -> int:
+            line, column = self.getpos()
+            return line_offsets[line - 1] + column
+
+        def handle_comment(self, data: str) -> None:
+            start = self._offset()
+            if _backslash_escaped(scan, start):
+                return
+            close = HTML_COMMENT_END.search(scan, start + 4)
+            if close is None:
+                return
+            end = close.end()
+            protocol = scan[start:end]
+            if SECURITY_MARKER_COMMENT.fullmatch(protocol) or re.fullmatch(
+                r"<!-- review-request:v2 head=[0-9a-f]{40} base=[0-9a-f]{40} -->",
+                protocol,
+                re.I,
+            ):
+                return
+            tokens.append((start, end, "comment", False, ""))
+
+        def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+            normalized_tag = tag.lower()
+            if normalized_tag in HTML_CODE_CONTAINER_TAGS or normalized_tag in {
+                "details",
+                "summary",
+            }:
+                start = self._offset()
+                if _backslash_escaped(scan, start):
+                    return
+                end = start + len(self.get_starttag_text())
+                if normalized_tag in HTML_CODE_CONTAINER_TAGS:
+                    tokens.append((start, end, "code-open", False, normalized_tag))
+                    return
+                if normalized_tag == "summary":
+                    tokens.append((start, end, "summary-open", False, normalized_tag))
+                    return
+                expanded = any(name.lower() == "open" for name, _ in attrs)
+                tokens.append((start, end, "details-open", expanded, normalized_tag))
+
+        def handle_startendtag(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> None:
+            # HTML ignores self-closing flags on these non-void containers.
+            self.handle_starttag(tag, attrs)
+
+        def handle_endtag(self, tag: str) -> None:
+            normalized_tag = tag.lower()
+            if normalized_tag in HTML_CODE_CONTAINER_TAGS or normalized_tag in {
+                "details",
+                "summary",
+            }:
+                start = self._offset()
+                if _backslash_escaped(scan, start):
+                    return
+                close = scan.find(">", start)
+                end = close + 1 if close >= 0 else start + len("</details>")
+                if normalized_tag in HTML_CODE_CONTAINER_TAGS:
+                    kind = "code-close"
+                elif normalized_tag == "summary":
+                    kind = "summary-close"
+                else:
+                    kind = "details-close"
+                tokens.append((start, end, kind, False, normalized_tag))
+
+    parser = ContainerParser(convert_charrefs=False)
+    parser.feed(parser_scan)
+    parser.close()
+    if unterminated_comment is not None:
+        tokens.append((unterminated_comment, len(scan), "comment", False, ""))
+    tokens.sort(key=lambda token: token[0])
+
+    details: list[dict[str, bool]] = []
+    code_tags: list[str] = []
+    start: int | None = None
+    spans: list[tuple[int, int]] = []
+    markup_spans = list(escaped_markup_spans)
+
+    def hidden_state() -> bool:
+        return bool(code_tags) or any(
+            not visible_open
+            or (not item["expanded"] and not item["in_summary"])
+            for item in details
+        )
+
+    for token_start, token_end, kind, expanded, tag in tokens:
+        was_hidden = hidden_state()
+        if kind == "comment":
+            if not was_hidden:
+                spans.append((token_start, token_end))
+            continue
+        if kind == "code-open":
+            code_tags.append(tag)
+        elif kind == "code-close":
+            for index in range(len(code_tags) - 1, -1, -1):
+                if code_tags[index] == tag:
+                    del code_tags[index:]
+                    break
+        elif code_tags:
+            continue
+        elif kind == "details-open":
+            details.append({"expanded": expanded, "in_summary": False})
+        elif kind == "details-close" and details:
+            details.pop()
+        elif kind == "summary-open" and details:
+            if visible_open and not details[-1]["expanded"]:
+                details[-1]["in_summary"] = True
+        elif kind == "summary-close" and details and details[-1]["in_summary"]:
+            details[-1]["in_summary"] = False
+        is_hidden = hidden_state()
+        if not was_hidden and is_hidden:
+            if kind == "details-open":
+                markup_spans.append((token_start, token_end))
+                start = token_end
+            else:
+                start = token_start
+        elif was_hidden and not is_hidden and start is not None:
+            if kind == "summary-open":
+                spans.append((start, token_start))
+                markup_spans.append((token_start, token_end))
+            else:
+                spans.append((start, token_end))
+            start = None
+        elif not was_hidden and not is_hidden and kind in {
+            "details-open",
+            "details-close",
+            "summary-open",
+            "summary-close",
+        }:
+            markup_spans.append((token_start, token_end))
+    if start is not None:
+        spans.append((start, len(text)))
+    replacements = sorted(
+        [(start, end, False) for start, end in spans]
+        + [(start, end, True) for start, end in markup_spans]
+    )
+    chunks: list[str] = []
+    position = 0
+    for start, end, remove_markup in replacements:
+        if start < position:
+            continue
+        chunks.append(text[position:start])
+        replacement = "" if remove_markup else " "
+        chunks.append(re.sub(r"[^\r\n]", replacement, text[start:end]))
+        position = end
+    chunks.append(text[position:])
+    return "".join(chunks)
+
+
 def _commit_metadata(text: str) -> str:
     """Keep commit authority outside expandable, commented and code examples."""
     metadata = _visible_html(_actual_metadata(text), visible_open=False)
     code_lines = _without_inline_code(metadata).splitlines(keepends=True)
     lines: list[str] = []
+    quote_active = False
+    list_content_indent: int | None = None
+    list_after_blank = False
     for index, line in enumerate(metadata.splitlines(keepends=True)):
-        if not code_lines[index].strip() and REVIEWED_COMMIT.fullmatch(
-            line.rstrip("\r\n")
+        source = line.rstrip("\r\n")
+        structural = code_lines[index].rstrip("\r\n")
+        quote_text, quote_depth = _strip_quote_prefix(structural)
+        _, _, list_indent = _block_prefix(structural)
+        indent = _column_indent(quote_text)
+
+        if not structural.strip():
+            if list_content_indent is not None:
+                list_after_blank = True
+            # An unmarked blank line closes a blockquote lazy continuation.
+            if not re.match(r"^[ ]{0,3}>", structural):
+                quote_active = False
+        else:
+            root_block = bool(
+                RESULT_HEADING.match(structural)
+                or re.match(r"^[ ]{0,3}(?:#{1,6}[ \t]|[-+*][ \t]|[0-9]+[.)][ \t])", structural)
+            )
+            if quote_depth:
+                quote_active = True
+            elif root_block:
+                quote_active = False
+
+            if list_indent:
+                list_content_indent = list_indent
+                list_after_blank = False
+            elif list_content_indent is not None:
+                if list_after_blank and indent < list_content_indent or root_block:
+                    list_content_indent = None
+                    list_after_blank = False
+                else:
+                    list_after_blank = False
+
+        in_list = list_content_indent is not None and (
+            not list_after_blank or indent >= list_content_indent
+        )
+        if (
+            REVIEWED_COMMIT.fullmatch(source)
+            and (not code_lines[index].strip() or quote_active or quote_depth or in_list)
         ):
             lines.append(re.sub(r"[^\r\n]", " ", line))
         else:
@@ -340,6 +1077,57 @@ def _valid_coordinator_metadata(metadata: str) -> bool:
     return True
 
 
+def _coordinator_container_prefix(lines: list[str]) -> tuple[list[str], list[bool]]:
+    """Retain visible container wrappers while removing authenticated metadata."""
+    container_tag = re.compile(
+        r"</?\s*(?:details|summary)\b[^<>]*>", re.IGNORECASE
+    )
+    partial_container_tag = re.compile(
+        r"</?\s*(?:details|summary)\b[^>]*", re.IGNORECASE
+    )
+    result: list[str] = []
+    container_lines: list[bool] = []
+    in_multiline_tag = False
+    for line in lines:
+        decoded = html.unescape(line)
+        # Backslash escaping affects Markdown's HTML parsing only when the
+        # number of backslashes is odd. Ignore a run before a wrapper tag for
+        # metadata validation, while retaining the original prefix for parsing.
+        normalized = re.sub(
+            r"\\+(?=</?\s*(?:details|summary)\b)", "", decoded, flags=re.IGNORECASE
+        )
+        stripped = normalized.strip(" \t\r\n")
+        if in_multiline_tag:
+            result.append(line)
+            container_lines.append(True)
+            if ">" in decoded:
+                in_multiline_tag = False
+            continue
+        position = 0
+        found = False
+        while position < len(stripped):
+            while position < len(stripped) and stripped[position].isspace():
+                position += 1
+            match = container_tag.match(stripped, position)
+            if match is None:
+                found = False
+                break
+            found = True
+            position = match.end()
+        if found and not stripped[position:].strip():
+            result.append(line)
+            container_lines.append(True)
+            continue
+        if partial_container_tag.fullmatch(stripped) and ">" not in stripped:
+            result.append(line)
+            container_lines.append(True)
+            in_multiline_tag = True
+            continue
+        result.append(re.sub(r"[^\r\n]", " ", line))
+        container_lines.append(False)
+    return result, container_lines
+
+
 def _coordinator_body(body: str) -> tuple[str, str | None]:
     match = COORDINATOR_PRELUDE.match(body)
     if not match:
@@ -348,10 +1136,14 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
     # Metadata is the prefix before the first recognized result heading. Do not
     # let a malformed request marker supply a fallback commit to a section.
     lines = rest.splitlines()
+    structural_text = _visible_html(_actual_metadata(rest))
+    structural_lines = _without_inline_code(
+        _mask_backslash_escaped_container_tags(structural_text)
+    ).splitlines()
     start = next(
         (
             i
-            for i, line in enumerate(lines)
+            for i, line in enumerate(structural_lines)
             if RESULT_HEADING.match(line)
             or PRIORITY_RESULT.match(line)
             or AVAILABILITY.fullmatch(line)
@@ -360,7 +1152,12 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
         ),
         len(lines),
     )
-    metadata = "\n".join(lines[:start])
+    prefix, container_lines = _coordinator_container_prefix(lines[:start])
+    metadata_lines = structural_lines[:start]
+    for index, is_container in enumerate(container_lines):
+        if is_container:
+            metadata_lines[index] = re.sub(r"[^\r\n]", " ", metadata_lines[index])
+    metadata = "\n".join(metadata_lines)
     valid_metadata = not (
         not _valid_coordinator_metadata(metadata)
         or re.search(r"\bP[0-3]\b", metadata, re.I)
@@ -377,7 +1174,7 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
         )
     )
     if not valid_metadata:
-        marker_prefix = lines[:start]
+        marker_prefix = structural_lines[:start]
         marker_only = all(
             not line.strip()
             or SECURITY_MARKER.fullmatch(line)
@@ -388,11 +1185,11 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
             marker_only
             and any(line.strip() for line in marker_prefix)
             and start < len(lines)
-            and SECURITY_HEADING.match(lines[start])
+            and SECURITY_HEADING.match(structural_lines[start])
         ):
             return body, None
         return "\n".join(lines), match.group("head").lower()
-    return "\n".join(lines[start:]), match.group("head").lower()
+    return "\n".join(prefix + lines[start:]), match.group("head").lower()
 
 
 def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str, str]]:
@@ -407,7 +1204,10 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
         else line
         for index, line in enumerate(original_lines)
     ]
-    lines = _visible_html(body).splitlines()
+    structural_text = _visible_html(_actual_metadata(body))
+    lines = _without_inline_code(
+        _mask_backslash_escaped_container_tags(structural_text)
+    ).splitlines()
     starts: list[int] = []
     kinds: dict[int, str] = {}
     for i, line in enumerate(lines):
@@ -416,10 +1216,13 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
             kinds[i] = "security" if SECURITY_HEADING.match(line) else "regular"
         elif PRIORITY_RESULT.match(line):
             previous_start = starts[-1] if starts else 0
-            previous = "\n".join(lines[previous_start:i])
+            previous = "\n".join(original_lines[previous_start:i])
             marker_start = i
             while marker_start > previous_start and (
-                not lines[marker_start - 1].strip()
+                (
+                    not lines[marker_start - 1].strip()
+                    and not original_lines[marker_start - 1].strip()
+                )
                 or SECURITY_MARKER.fullmatch(lines[marker_start - 1])
                 or (
                     INLINE_SECURITY_MARKER.fullmatch(lines[marker_start - 1])
@@ -494,7 +1297,10 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
         previous_start = starts[index - 1] if index else 0
         marker_start = start
         while marker_start > previous_start and (
-            not lines[marker_start - 1].strip()
+            (
+                not lines[marker_start - 1].strip()
+                and not original_lines[marker_start - 1].strip()
+            )
             or SECURITY_MARKER.fullmatch(lines[marker_start - 1])
             or (
                 INLINE_SECURITY_MARKER.fullmatch(lines[marker_start - 1])
@@ -623,7 +1429,7 @@ def _standalone_security_clean(section: str) -> bool:
 
 def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     raw_section = section
-    section = _visible_html(section)
+    section = _without_inline_code(_actual_metadata(_visible_html(section)))
     marker = bool(INLINE_SECURITY_MARKER.search(section)) or (
         kind in ("security", "unheaded") and bool(SECURITY_MARKER.search(section))
     )
@@ -663,8 +1469,7 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
 
 
 def classify_body(body: str) -> dict[str, Any]:
-    # Mask fenced examples before coordinator parsing and section partitioning.
-    parsed_body, request_head = _coordinator_body(_actual_metadata(body))
+    parsed_body, request_head = _coordinator_body(body)
     raw_sections = _raw_sections(
         parsed_body, coordinator_bound=request_head is not None
     )
@@ -685,14 +1490,17 @@ def classify_body(body: str) -> dict[str, Any]:
             )
         ) and not bool(SECURITY_REPORT_LINK.search(text))
         clean = _standalone_regular_clean(text)
+        ordinary_text = _visible_html(text)
+        ordinary_text = _without_known_review_footer(ordinary_text)
+        ordinary_text = _without_review_metadata(ordinary_text)
+        ordinary_text = _without_heading(kind, ordinary_text)
+        ordinary_text = _without_inline_code(_actual_metadata(ordinary_text))
         ordinary_text = "\n".join(
             line
-            for line in _visible_html(text).splitlines()
+            for line in ordinary_text.splitlines()
             if not INLINE_SECURITY_MARKER.search(line)
             and not SECURITY_MARKER.fullmatch(line)
         )
-        ordinary_text = _without_review_metadata(ordinary_text)
-        ordinary_text = _without_heading(kind, ordinary_text)
         prefix_adverse = kind == "unheaded" and bool(
             EXPLICIT_ADVERSE.search(ordinary_text)
         )

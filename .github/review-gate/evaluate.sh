@@ -778,6 +778,10 @@ regular_evidence() {
               unverified: (.state != "CHANGES_REQUESTED" and $section.regular_adverse == true
                            and $section.target_ref == "__unbound__"
                            and (($record.commit.oid // "") != $head)),
+              unverified_finding: (.state != "CHANGES_REQUESTED"
+                                   and $section.regular_adverse == true
+                                   and $section.target_ref == "__unbound__"
+                                   and (($record.commit.oid // "") != $head)),
               clean: (.state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and ($section.regular_clean == true or ($body | strict_stock_clean_envelope)))}]}'
   )"
   issue_comment_pages="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp)"
@@ -938,6 +942,8 @@ regular_evidence() {
               # for the authenticated, body-bound native creation receipt.
               neutral: false,
               unverified: ((($section.regular_adverse == true or $section.security_finding == true) and $section.target_ref == "__unbound__") or ($clean_envelope and ($clean_proof | not))),
+              unverified_finding: (($section.regular_adverse == true or $section.security_finding == true)
+                                   and $section.target_ref == "__unbound__"),
               clean: ($clean_proof and $clean_envelope)}])'
     )"
   jq -cn --argjson review_data "$review_records" --argjson issue_comments "$issue_comment_records" '
@@ -1326,6 +1332,7 @@ read_gate_snapshot() (
   all_reviews="$(jq -c '.all_reviews // []' <<< "$evidence")"
   review_ids="$(jq -c '[.deliveries[] | select(.source == "review" and (.dismissed != true)) | .id]' <<< "$evidence")"
   thread_summary="$(regular_review_thread_summary "$review_ids")"
+  # Equal timestamps use an authority order: immutable top-level reviews outrank mutable comments.
   verdict_selection="$(
     issue_comment_at="$(latest_regular_issue_comment_at)"
     review_invalidation_at="$(latest_regular_review_invalidation_at)"
@@ -1350,9 +1357,14 @@ read_gate_snapshot() (
           + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end)
           + (if $withdrawal_at == "" then [] else [$withdrawal_at] end))
          | max // "") as $source_latest_finding_at
-      | ($deliveries | sort_by(.at) | last) as $latest_delivery
+      | ($deliveries | sort_by([.at, (if .source == "review" then 1 else 0 end)]) | last) as $latest_delivery
+      | (if $latest_delivery == null then [] else
+           [$latest_delivery.at, (if $latest_delivery.source == "review" then 1 else 0 end)]
+         end) as $latest_delivery_order
       | {verdict:
-           (if any($deliveries[]; .unverified == true) then null
+           (if any($deliveries[]; .unverified == true and
+                   (.unverified_finding == true or
+                    ([.at, (if .source == "review" then 1 else 0 end)] >= $latest_delivery_order))) then null
             elif $latest_delivery != null
                  and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment")
                  and $latest_delivery.clean
