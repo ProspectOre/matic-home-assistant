@@ -29,7 +29,8 @@ RESULT_HEADING = re.compile(
     re.IGNORECASE,
 )
 REVIEWED_COMMIT = re.compile(
-    r"(?im)^[ \t]*\*{0,2}reviewed commit:\*{0,2}[ \t]*`([0-9a-f]{10}|[0-9a-f]{40})`"
+    r"(?im)^[ ]{0,3}\*{0,2}reviewed commit:\*{0,2}[ \t]*"
+    r"`([0-9a-f]{10}|[0-9a-f]{40})`[ \t]*$"
 )
 FENCE_LINE = re.compile(r"^[ \t]{0,3}(?P<char>`|~)(?P<count>(?:`{2,}|~{2,}))[^\r\n]*$")
 AVAILABILITY = re.compile(
