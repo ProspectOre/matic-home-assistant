@@ -123,3 +123,11 @@ without changing configured limits. Both counterfactual receipts remain retained
 Current typed build, desktop budgets, release/privacy contracts, clean archive
 parity and fresh imports pass. The repaired head still needs full CI, clean
 regular review and installed readback; historical review/provenance holds remain.
+
+Current Hassfest rejects the inherited exact NumPy pin because HA ships that
+package. Both manifest and package metadata now declare `numpy>=2.3.2`, retaining
+the tested minimum while allowing HA's own constraints to select its runtime.
+The existing 110 map/delta and release contracts pass with HA 2026.9.3 and
+NumPy 2.3.2. Refreshed wheel/sdist parity, fresh import and privacy pass; exact-head
+CI/Hassfest and regular review remain required. The original validator failure
+is retained, following [HA dependency ownership](https://github.com/home-assistant/core/blob/dev/script/hassfest/requirements.py).
