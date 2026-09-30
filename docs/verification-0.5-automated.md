@@ -116,3 +116,14 @@ selection survives refresh/cancellation. CI now logs case names alongside
 annotations so future skips remain identifiable. These repairs require their
 own exact-head review/CI. The [desktop lab receipt](performance-0.5-refinements.md)
 is bounded to its compiled bundle and journey; runtime/acceptance remain open.
+
+Head `5225068` passed Python/quality/package/HACS/Hassfest. Browser CI passed
+948 cases, skipped Firefox's WebGL-loss case because its required capability
+was absent, and failed one stale-start fixture in three engines. Its service
+mock left B's newly permitted Stop unresolved. The corrected fixture holds B's
+catalog, acknowledges exactly one Stop to B, requires pending settlement, and
+proves A's late success/guard rejection cannot change B's command, notice or
+selection. All 14 affected/neighbor cases pass at configured limits. An
+intermediate misplaced fixture edit was corrected; its failed run remains
+retained. No production bytes changed in this fixture repair. New-head CI/review
+remain required, and a skipped capability is not verified support.

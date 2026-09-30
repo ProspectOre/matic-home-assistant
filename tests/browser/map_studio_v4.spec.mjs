@@ -830,14 +830,16 @@ test.describe("Map Studio v0.4 foundation", () => {
           const store = new WorkspaceStore(initial);
           const calls = [];
           let completeStart;
+          let switched = false;
           const effects = new EffectController(store, {
-            catalog: async () => [initial.resources.entry],
+            catalog: async () => switched ? new Promise(() => {}) : [initial.resources.entry],
             history: async () => initial.resources.history.value,
             scene: async () => { throw new DOMException("Aborted", "AbortError"); },
             pose: async () => { throw new DOMException("Aborted", "AbortError"); },
             plans: async () => initial.resources.plans.value,
             service: (domain, service, data, entity) => {
               calls.push([service, entity]);
+              if (service !== "run_selected_plan") return Promise.resolve();
               return new Promise((resolve, reject) => {
               completeStart = () => rejectLate
                 ? reject(new BackendError("coverage_identity_changed", null, "The cleaning task changed during setup. Check the robot status, then try again."))
@@ -851,24 +853,35 @@ test.describe("Map Studio v0.4 foundation", () => {
           await effects.refreshCatalog(true);
           const start = effects.executeAction("run-plan");
           for (let index = 0; index < 20 && !completeStart; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+          if (!completeStart) throw new Error("The initial managed start was not dispatched");
           if (close) effects.dispose();
           else {
+            switched = true;
             effects.sync({ ...projection, entryKey: "other", vacuumEntityId: "vacuum.other", activity: "cleaning" });
-            // The new robot's projection arrives before its catalog. Never
-            // dispatch using the old robot's workspace and the new target.
+            // Stop uses B's own projected activity and entity before its catalog
+            // arrives. A's late start result must not overwrite that command.
             await effects.executeAction("stop");
-            await effects.refreshCatalog(true);
+            if (store.value.command !== "settling") throw new Error("B's acknowledged Stop was not pending settlement");
           }
-          const command = store.value.command;
+          const current = () => JSON.stringify({
+            command: store.value.command,
+            notice: store.value.notice,
+            selection: store.value.selection,
+          });
+          const before = current();
           completeStart();
           await start;
-          results.push({ calls, preserved: store.value.command === command });
+          results.push({ calls, preserved: current() === before });
           effects.dispose();
         }
       }
       return results;
     });
-    expect(results).toEqual(Array.from({ length: 4 }, () => ({ calls: [["run_selected_plan", "vacuum.synthetic"]], preserved: true })));
+    expect(results).toEqual([false, true].flatMap((close) => Array.from({ length: 2 }, () => ({
+      calls: [["run_selected_plan", "vacuum.synthetic"],
+        ...(!close ? [["stop_intelligent_cleaning", "vacuum.other"]] : [])],
+      preserved: true,
+    }))));
   });
   test("shows allowlisted guard recovery text and keeps generic service errors generic", async ({ page }) => {
     await loadEffectHarness(page);
