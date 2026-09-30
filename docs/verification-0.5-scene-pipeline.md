@@ -68,3 +68,13 @@ Both clean release archives pass file parity and fresh-environment import; all
 regular review, full CI and installed readback remain required. Real-device,
 sustained CPU/heap/GPU, transport
 and owner acceptance remain separate in [the evidence matrix](acceptance-0.5.md).
+
+Head `80e34b5` passes Python CI: 3,691 tests/100%, quality, privacy, clean
+archives and fresh imports; HACS/Hassfest pass. Browser CI passes 992 cases,
+skips the named Firefox WebGL-loss capability case and fails 16 camera cases.
+Those tests dispose immediately after staging a compatible scene, before its
+publication callback. The test-only correction waits for actual revision/full
+point publication, proves no early notification or camera change, and retains
+the exact two-event and camera-fit assertions. All 20 affected/neighbor Chromium
+and WebKit cases pass at unchanged limits. Production bytes are unchanged;
+the fixture revision still requires its own exact-head CI and regular review.

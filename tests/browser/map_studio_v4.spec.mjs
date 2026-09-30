@@ -2774,11 +2774,32 @@ test.describe("Map Studio v0.4 foundation", () => {
         renderer.setState({ ...next, resources: { ...next.resources,
           scene: { ...next.resources.scene, value: { ...next.resources.scene.value, revision: next.resources.scene.value.revision + 1 } },
         } });
+        const expectedRevision = next.resources.scene.value.revision + 1;
+        const expectedPoints = next.resources.scene.value.total;
+        const beforePublication = {
+          notifications, camera: renderer.camera, revision: renderer.diagnostics().sceneRevision,
+        };
+        const publishDeadline = performance.now() + 5000;
+        let publication = renderer.diagnostics();
+        while ((publication.sceneRevision !== expectedRevision
+          || publication.renderedPoints !== expectedPoints)
+          && performance.now() < publishDeadline) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          publication = renderer.diagnostics();
+        }
         const afterRevision = renderer.camera;
         renderer.dispose();
         canvases.forEach(canvas => canvas.remove());
-        return { notifications, outgoing, afterTransition, afterRevision, fitAfterTransition };
+        return {
+          notifications, outgoing, afterTransition, afterRevision, fitAfterTransition,
+          beforePublication, publication, expectedRevision, expectedPoints,
+        };
       }, { transition, destinationFit });
+      expect(result.publication.sceneRevision).toBe(result.expectedRevision);
+      expect(result.publication.renderedPoints).toBe(result.expectedPoints);
+      expect(result.beforePublication.notifications).toBe(1);
+      expect(result.beforePublication.revision).toBe(result.expectedRevision - 1);
+      expect(result.beforePublication.camera).toEqual(result.afterTransition);
       expect(result.notifications).toBe(2); // Final destination, then the same-view revision.
       expect(result.outgoing.zoom).toBeCloseTo(1, 6);
       expect(result.outgoing.targetX).toBe(0);
