@@ -156,6 +156,13 @@ _LEGACY_METADATA = re.compile(
 )
 
 
+def _backslash_escaped(text: str, position: int) -> bool:
+    before = position - 1
+    while before >= 0 and text[before] == "\\":
+        before -= 1
+    return (position - before - 1) % 2 == 1
+
+
 def _without_inline_code(text: str) -> str:
     """Mask code spans with matching backtick runs, retaining line positions."""
     runs = list(re.finditer(r"`+", text))
@@ -170,12 +177,7 @@ def _without_inline_code(text: str) -> str:
     position = 0
     index = 0
     while index < len(runs):
-        backslashes = 0
-        before = runs[index].start() - 1
-        while before >= 0 and text[before] == "\\":
-            backslashes += 1
-            before -= 1
-        if backslashes % 2:
+        if _backslash_escaped(text, runs[index].start()):
             index += 1
             continue
         end_index = closing.get(index)
@@ -229,19 +231,25 @@ def _actual_metadata(text: str) -> str:
     return "".join(masked)
 
 
-def _visible_html(text: str) -> str:
+def _visible_html(text: str, visible_open: bool = True) -> str:
     """Mask only container spans, preserving visible prefixes and suffixes."""
     scan = _without_inline_code(text)
-    tags = list(re.finditer(r"<!--|-->|</?details\b[^>]*>", scan, re.I))
+    tags = [
+        match
+        for match in re.finditer(
+            r"<!--|-->|</?details\b(?:[^>\"']|\"[^\"]*\"|'[^']*')*>", scan, re.I
+        )
+        if not _backslash_escaped(scan, match.start())
+    ]
     comment = False
-    details = 0
+    details: list[bool] = []
     start: int | None = None
     spans: list[tuple[int, int]] = []
     index = 0
     while index < len(tags):
         match = tags[index]
         tag = match.group().lower()
-        enclosed = comment or details > 0
+        enclosed = comment or any(details)
         if tag == "<!--" and not comment:
             if (
                 not enclosed
@@ -260,8 +268,14 @@ def _visible_html(text: str) -> str:
         elif tag == "-->":
             comment = False
         elif not comment:
-            details = max(0, details - 1) if tag.startswith("</") else details + 1
-        hidden = comment or details > 0
+            if tag.startswith("</"):
+                if details:
+                    details.pop()
+            else:
+                attributes = re.sub(r"\"[^\"]*\"|'[^']*'", "", tag)
+                expanded = bool(re.search(r"(?i)\sopen(?:\s|=|/?>)", attributes))
+                details.append(not (visible_open and expanded))
+        hidden = comment or any(details)
         if not enclosed and hidden:
             start = match.start()
         elif enclosed and not hidden and start is not None:
@@ -282,7 +296,7 @@ def _visible_html(text: str) -> str:
 
 def _commit_metadata(text: str) -> str:
     """Keep commit authority outside expandable, commented and code examples."""
-    metadata = _visible_html(_actual_metadata(text))
+    metadata = _visible_html(_actual_metadata(text), visible_open=False)
     code_lines = _without_inline_code(metadata).splitlines(keepends=True)
     lines: list[str] = []
     for index, line in enumerate(metadata.splitlines(keepends=True)):
@@ -383,6 +397,16 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
 
 def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str, str]]:
     original_lines = body.splitlines()
+    authority_lines = _commit_metadata(body).splitlines()
+    # A section beginning inside an expanded container must not lose the
+    # container context and acquire its copied footer as commit authority.
+    original_lines = [
+        re.sub(r"[^\r\n]", " ", line)
+        if REVIEWED_COMMIT.fullmatch(line)
+        and not REVIEWED_COMMIT.fullmatch(authority_lines[index])
+        else line
+        for index, line in enumerate(original_lines)
+    ]
     lines = _visible_html(body).splitlines()
     starts: list[int] = []
     kinds: dict[int, str] = {}
