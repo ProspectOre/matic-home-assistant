@@ -6666,9 +6666,26 @@ test("keyboard drawing paints erases and restores one centered mark", async ({ p
 });
 
 for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "unfocused", "no-canvas"]) {
-  test(`keyboard drawing ignores ${blocked} targets`, async ({ page }) => {
+  test(`keyboard drawing ignores ${blocked} targets @safety`, async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "draw" });
     const map = gallery.locator(".map-root");
+    const renderer = gallery.locator("matic-map-canvas-v4");
+    const waitForPublication = (hidden = false) => expect.poll(() => renderer.evaluate((element, { tag, hidden }) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      const scene = state.resources.scene.value;
+      const diagnostics = element.rendererDiagnostics();
+      const canvas = element.renderRoot.querySelector(".scene-canvas");
+      return {
+        published: Boolean(scene && diagnostics
+          && diagnostics.sceneRevision === scene.revision
+          && diagnostics.sourcePoints === scene.total
+          && diagnostics.renderedPoints === scene.total),
+        cameraEcho: hidden || Boolean(diagnostics && state.draw.zoomPercent === Math.max(100, Math.min(1000,
+          Math.round(diagnostics.fitDistance / diagnostics.cameraDistance * 100)))),
+        sized: !hidden || (canvas.width === 1 && canvas.height === 1),
+      };
+    }, { tag: GALLERY_TAG, hidden })).toEqual({ published: true, cameraEcho: true, sized: true });
+    await waitForPublication();
     await map.focus();
     await map.press("ArrowDown");
     if (blocked === "out-of-bounds") {
@@ -6686,8 +6703,10 @@ for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "u
     }, { tag: GALLERY_TAG, blocked });
     if (blocked === "unfocused") await gallery.getByRole("button", { name: "Paint", exact: true }).focus();
     if (blocked === "no-canvas") await gallery.locator(".scene-canvas").evaluate((canvas) => { canvas.style.display = "none"; });
-    // Render state settles before capturing the unchanged draft contract.
-    await page.waitForTimeout(50);
+    // Initial camera publication is settled; hidden resize need not emit a new camera intent.
+    await waitForPublication(blocked === "no-canvas");
+    if (blocked === "unfocused") await expect(map).not.toBeFocused();
+    else await expect(map).toBeFocused();
     const before = (await snapshot(page)).draw;
     await map.dispatchEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, composed: true });
     expect((await snapshot(page)).draw).toEqual(before);

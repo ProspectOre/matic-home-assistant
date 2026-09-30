@@ -1,8 +1,8 @@
 # Unreleased scene-pipeline qualification
 
 This work restores the worker-decompression and incremental-upload requirements
-in [the authority contract](architecture-0.5.md). It follows head `aa3b2b9` and is
-not installed RC9 evidence. The current production bundle fingerprint is
+in [the authority contract](architecture-0.5.md). It follows `aa3b2b9`; this is not installed RC9 evidence.
+The current production bundle fingerprint is
 `c3a72dc4cdf7d8b07eed22713cd4d269eac4fd1eeb0b862b2dda0fbc30722b86`.
 
 ## Ownership and invariants
@@ -124,10 +124,26 @@ Current typed build, desktop budgets, release/privacy contracts, clean archive
 parity and fresh imports pass. The repaired head still needs full CI, clean
 regular review and installed readback; historical review/provenance holds remain.
 
-Current Hassfest rejects the inherited exact NumPy pin because HA ships that
-package. Both manifest and package metadata now declare `numpy>=2.3.2`, retaining
-the tested minimum while allowing HA's own constraints to select its runtime.
+Current Hassfest rejects the inherited exact NumPy pin. Both manifest and package
+metadata now use `numpy>=2.3.2`, letting HA select its runtime above the tested minimum.
 The existing 110 map/delta and release contracts pass with HA 2026.9.3 and
 NumPy 2.3.2. Refreshed wheel/sdist parity, fresh import and privacy pass; exact-head
 CI/Hassfest and regular review remain required. The original validator failure
 is retained, following [HA dependency ownership](https://github.com/home-assistant/core/blob/dev/script/hassfest/requirements.py).
+
+Head `f16b47d` passes 3,691 Python tests/100%, quality, privacy, archive/import,
+HACS and Hassfest. Full browser CI passes 1,028 cases, skips the named Firefox
+WebGL capability case, and fails the WebKit hidden-canvas keyboard draft check.
+Both attempts show only zoom 100→643: renderer camera publication can occur
+after the test's fixed 50 ms wait; the zero-size canvas guard cannot draw. The
+test now waits for initial scene/camera publication and admitted hidden resize,
+keeps whole-draft equality and focus checks, and includes all six blocked-target
+cases in Firefox safety. Twenty focused cases and 15 hidden-case repetitions pass.
+New-head full CI/regular review remain required. Failed readiness receipts retain
+the rejected assumption that hidden resize always emits a camera intent.
+
+The benchmark warm-up finding is rejected: recording requires a nonzero start,
+so warm-up adds zero actions. The unchanged collector on clean `f16b47d` exits 0
+with six 100-action samples; independent source review confirms the boundary.
+No redundant reset or production change is added. Native review-history holds
+remain separate from public dispositions and resolved conversations.
