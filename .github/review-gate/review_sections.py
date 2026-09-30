@@ -169,7 +169,11 @@ def _actual_metadata(text: str) -> str:
             masked.append("\n" if line.endswith("\n") else "")
         elif fence_char is not None:
             masked.append("\n" if line.endswith("\n") else "")
-            if match and match.group("char") == fence_char and len(match.group("count")) >= fence_length:
+            if (
+                match
+                and match.group("char") == fence_char
+                and len(match.group("count")) >= fence_length
+            ):
                 fence_char = None
                 fence_length = 0
         else:
@@ -182,7 +186,10 @@ def _has_reviewed_commit(text: str) -> bool:
 
 
 def _reviewed_commits(text: str) -> list[str]:
-    return [match.group(1).lower() for match in REVIEWED_COMMIT.finditer(_actual_metadata(text))]
+    return [
+        match.group(1).lower()
+        for match in REVIEWED_COMMIT.finditer(_actual_metadata(text))
+    ]
 
 
 def _valid_coordinator_metadata(metadata: str) -> bool:
@@ -578,7 +585,9 @@ def classify_body(body: str) -> dict[str, Any]:
                     text,
                     (
                         request_head
-                        if raw_kind != "unheaded" or section_index > 0 or len(raw_sections) == 1
+                        if raw_kind != "unheaded"
+                        or section_index > 0
+                        or len(raw_sections) == 1
                         else None
                     )
                     or shared_footer_ref,
