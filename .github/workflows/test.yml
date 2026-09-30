@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, Linux, ARM64, "matic-proof-${{ github.run_id }}", ephemeral]
     timeout-minutes: 20
     strategy:
       fail-fast: false

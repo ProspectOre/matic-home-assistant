@@ -480,12 +480,12 @@ def current_clean_comment_event_matches(
 
 
 @lru_cache(maxsize=4)
-def clean_summary_pattern(path):
+def review_section_module(path):
     """Load the same trusted, hash-verified parser used by the evaluator."""
     spec = importlib.util.spec_from_file_location("receipt_review_sections", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return re.compile(module.CLEAN_SUMMARY, re.I)
+    return module
 
 
 def may_be_clean_review_comment(body):
@@ -493,8 +493,18 @@ def may_be_clean_review_comment(body):
     if not isinstance(body, str):
         return False
     path = os.environ.get("REVIEW_SECTIONS_SCRIPT") or os.path.join(
-        os.path.dirname(__file__), "review_sections.py")
-    return "reviewed commit:" in body.casefold() and bool(clean_summary_pattern(path).search(body))
+        os.path.dirname(__file__), "review_sections.py"
+    )
+    module = review_section_module(path)
+    bound_clean = any(
+        section["regular_clean"] and section["target_ref"] != "__unbound__"
+        for section in module.classify_body(body)["sections"]
+    )
+    # Keep the legacy automated-suggestions envelope eligible for proof too.
+    return bound_clean or (
+        "reviewed commit:" in body.casefold()
+        and bool(re.search(module.CLEAN_SUMMARY, body, re.I))
+    )
 
 
 def authenticated_clean_comment_statuses(

@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Any
 
-
 REGULAR_HEADING = re.compile(
     r"\A[ \t]*(?:@|#{1,6}[ \t]+(?:[^A-Za-z0-9\r\n]+[ \t]+)?)?"
     r"codex[ \t]+review(?:[ \t]*:|[ \t]|$)|"
@@ -25,7 +24,10 @@ SECURITY_HEADING = re.compile(
     re.IGNORECASE,
 )
 PRIORITY_RESULT = re.compile(r"\A[ \t]*\[P[0-3]\](?:[ \t]|$)", re.I)
-RESULT_HEADING = re.compile(r"(?:" + REGULAR_HEADING.pattern + r")|(?:" + SECURITY_HEADING.pattern + r")", re.IGNORECASE)
+RESULT_HEADING = re.compile(
+    r"(?:" + REGULAR_HEADING.pattern + r")|(?:" + SECURITY_HEADING.pattern + r")",
+    re.IGNORECASE,
+)
 REVIEWED_COMMIT = re.compile(
     r"(?im)^[ \t]*\*{0,2}reviewed commit:\*{0,2}[ \t]*`([0-9a-f]{10}|[0-9a-f]{40})`"
 )
@@ -36,7 +38,9 @@ AVAILABILITY = re.compile(
     r"(?: for (?:codex )?(?:code )?reviews?)?[.!]?"
     r"(?:\.[ \t]+you can see your limits in the \[codex usage dashboard\]"
     r"\(https://chatgpt\.com/codex/cloud/settings/usage\)\.)?"
-    r"(?:\r?\nTo continue using code reviews, add credits to your account and enable them for code reviews in your "
+    r"(?:\r?\nTo continue using code reviews, add credits to your account and "
+    r"enable them "
+    r"for code reviews in your "
     r"\[settings\]\(https://chatgpt\.com/codex/cloud/settings/code-review\)\.)?|"
     r"(?:codex[ \t]+)?review(?:[ \t]+result)?(?:[ \t]+is)?[ \t]+"
     r"(?:currently[ \t]+)?(?:unavailable|at[ \t]+capacity|rate[ \t-]*limited)"
@@ -50,19 +54,26 @@ AVAILABILITY = re.compile(
 )
 CLEAN_SUMMARY = (
     r"(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|"
-    r"no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)"
+    r"no blocking issues|didn.t find any (?:major )?issues|"
+    r"did not find any (?:major )?issues)"
 )
 CLEAN_SALUTATION = (
-    r"(?:What shall we delve into next\?|You['’]re on a roll\.|Delightful!|Nice work!|"
+    r"(?:What shall we delve into next\?|You['\u2019]re on a roll\.|Delightful!|"
+    r"Nice work!|"
     r"Already looking forward to the next diff\.|Another round soon, please!|"
     r"More of your lovely PRs please\.|Hooray!|Swish!|Bravo\.|"
-    r"Can['’]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|"
-    r"Chef['’]s kiss[.!]?|:tada:)"
+    r"Can['\u2019]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|"
+    r"Chef['\u2019]s kiss[.!]?|:tada:)"
 )
 CLEAN_REACTION = r"(?::\+1:|👍|:rocket:|:rocket!|🚀)"
 KNOWN_REGULAR_CLEAN_RESULT = re.compile(
-    r"\A[ \t]*(?:" + CLEAN_SUMMARY + r")[.!]?(?:[ \t]+" + CLEAN_SALUTATION
-    + r")?[ \t]*(?:" + CLEAN_REACTION + r")?[ \t]*\Z",
+    r"\A[ \t]*(?:"
+    + CLEAN_SUMMARY
+    + r")[.!]?(?:[ \t]+"
+    + CLEAN_SALUTATION
+    + r")?[ \t]*(?:"
+    + CLEAN_REACTION
+    + r")?[ \t]*\Z",
     re.I,
 )
 KNOWN_SECURITY_CLEAN_RESULT = re.compile(
@@ -72,45 +83,60 @@ KNOWN_SECURITY_CLEAN_RESULT = re.compile(
     re.I,
 )
 KNOWN_REVIEW_FOOTER = re.compile(
-    r"(?is)\A\s*<details>\s*<summary>\s*(?:ℹ️\s*)?about codex in github"
+    r"(?is)\A\s*<details>\s*<summary>\s*(?:\u2139\uFE0F\s*)?about codex in github"
     r"\s*</summary>\s*<br\s*/?>\s*"
     r"\[your team has set up codex to review pull requests in this repo\]"
     r"\(https://chatgpt\.com/codex/cloud/settings/general\)\.\s*"
     r"reviews are triggered when you\s*-\s*open a pull request for review\s*"
     r"-\s*mark a draft as ready\s*-\s*comment \"@codex review\"\.\s*"
-    r"if codex has suggestions, it will comment; otherwise it will react with (?:👍|:\+1:)\.\s*"
+    r"if codex has suggestions, it will comment; otherwise it will react with "
+    r"(?:👍|:\+1:)\.\s*"
     r"codex can also answer questions or update the pr\.\s*"
     r"try commenting \"@codex address that feedback\"\.\s*</details>\s*\Z"
 )
 KNOWN_SECURITY_FOOTER = re.compile(
-    r"(?is)\A\s*_only the user who started this review can view the report in codex\._\s*"
-    r"<details>\s*<summary>\s*(?:ℹ️\s*)?about codex security reviews in github"
+    r"(?is)\A\s*_only the user who started this review can view the report in "
+    r"codex\._\s*"
+    r"<details>\s*<summary>\s*(?:\u2139\uFE0F\s*)?about codex security "
+    r"reviews in github"
     r"\s*</summary>\s*<br\s*/?>\s*"
-    r"this is an experimental codex feature\. (?:security )?reviews are triggered when:\s*"
+    r"this is an experimental codex feature\. (?:security )?reviews are triggered "
+    r"when:\s*"
     r"-\s*you comment \"@codex security review\"\s*"
-    r"-\s*a regular code review gets triggered \(for example, \"@codex review\" or when a pr (?:is|was) opened\),"
-    r" and you(?:’|'|&#39;)re opted in so security review runs alongside code review\s*"
-    r"once complete, codex will leave suggestions, or a comment if no findings (?:were|are) found\.\s*</details>\s*\Z"
+    r"-\s*a regular code review gets triggered \(for example, \"@codex review\" "
+    r"or when a pr (?:is|was) opened\),"
+    r" and you(?:\u2019|'|&#39;)re opted in so security review runs alongside code "
+    r"review\s*"
+    r"once complete, codex will leave suggestions, or a comment if no findings "
+    r"(?:were|are) found\.\s*</details>\s*\Z"
 )
 EXPLICIT_ADVERSE = re.compile(
-    r"\bP[0-3]\b|\bfinding(?:s)?[ \t]+(?:observed|remain(?:s|ing)?|reported|persist(?:s|ing)?|unresolved)\b|"
-    r"\b(?:vulnerab\w*|unsafe|exploitable|defect|bug|regression|security risk|issue remains)[^\r\n]*"
+    r"\bP[0-3]\b|\bfinding(?:s)?[ \t]+"
+    r"(?:observed|remain(?:s|ing)?|reported|persist(?:s|ing)?|unresolved)\b|"
+    r"\b(?:vulnerab\w*|unsafe|exploitable|defect|bug|regression|security risk|"
+    r"issue remains)[^\r\n]*"
     r"\b(?:remain(?:s|ing)?|persist(?:s|ing)?|unresolved|exploitable|exposed)\b|"
     r"codex-security-review-finding:v1",
     re.I,
 )
-SECURITY_MARKER = re.compile(r"(?im)(?:^|\n)[ \t]*<!--[ \t]*codex-security-review-finding:v1[ \t]*-->[ \t]*\r?$")
+SECURITY_MARKER = re.compile(
+    r"(?im)(?:^|\n)[ \t]*<!--[ \t]*codex-security-review-finding:v1[ \t]*-->[ \t]*\r?$"
+)
 INLINE_SECURITY_MARKER = re.compile(
-    r"(?im)(?:^|\n)[ \t]*\[P[0-3]\][^\r\n]*[ \t]+<!--[ \t]*codex-security-review-finding:v1[ \t]*-->[ \t]*\r?$"
+    r"(?im)(?:^|\n)[ \t]*\[P[0-3]\][^\r\n]*[ \t]+"
+    r"<!--[ \t]*codex-security-review-finding:v1[ \t]*-->[ \t]*\r?$"
 )
 SECURITY_SEVERITY = re.compile(r"(?im)(?:^|\n)[ \t]*\[P[0-3]\]")
 SECURITY_REPORT_LINK = re.compile(r"\[view security finding report\]\(", re.I)
 COORDINATOR_PRELUDE = re.compile(
     r"\A[ \t\r\n]*@codex review[ \t]*\r?\n[ \t\r\n]*"
     r"(?:Review current head `(?P<display_head>[0-9a-f]{40})`\."
-    r"(?: Report concrete correctness, security, and regression defects with their triggering conditions\."
-    r" Assess related cases together; omit style-only preferences\.)?[ \t]*\r?\n[ \t\r\n]*)?"
-    r"<!--[ \t]*review-request:v2[ \t]+head=(?P<head>[0-9a-f]{40})[ \t]+base=[0-9a-f]{40}[ \t]*-->[ \t]*(?:\r?\n|$)",
+    r"(?: Report concrete correctness, security, and regression defects with their "
+    r"triggering conditions\."
+    r" Assess related cases together; omit style-only preferences\.)?"
+    r"[ \t]*\r?\n[ \t\r\n]*)?"
+    r"<!--[ \t]*review-request:v2[ \t]+head=(?P<head>[0-9a-f]{40})[ \t]+"
+    r"base=[0-9a-f]{40}[ \t]*-->[ \t]*(?:\r?\n|$)",
     re.I | re.S,
 )
 COORDINATOR_METADATA = re.compile(
@@ -122,7 +148,9 @@ COORDINATOR_METADATA = re.compile(
     re.I,
 )
 SECURITY_MARKER_IN_CODE = re.compile(r"`[^`]*`")
-SECURITY_MARKER_COMMENT = re.compile(r"(?is)<!--[ \t]*codex-security-review-finding:v1[ \t]*-->")
+SECURITY_MARKER_COMMENT = re.compile(
+    r"(?is)<!--[ \t]*codex-security-review-finding:v1[ \t]*-->"
+)
 
 
 def _coordinator_body(body: str) -> tuple[str, str | None]:
@@ -133,9 +161,18 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
     # Metadata is the prefix before the first recognized result heading. Do not
     # let a malformed request marker supply a fallback commit to a section.
     lines = rest.splitlines()
-    start = next((i for i, line in enumerate(lines)
-                  if RESULT_HEADING.match(line) or PRIORITY_RESULT.match(line)
-                  or AVAILABILITY.fullmatch(line)), len(lines))
+    start = next(
+        (
+            i
+            for i, line in enumerate(lines)
+            if RESULT_HEADING.match(line)
+            or PRIORITY_RESULT.match(line)
+            or AVAILABILITY.fullmatch(line)
+            or SECURITY_MARKER.fullmatch(line)
+            or INLINE_SECURITY_MARKER.fullmatch(line)
+        ),
+        len(lines),
+    )
     metadata = "\n".join(lines[:start])
     valid_metadata = not (
         not COORDINATOR_METADATA.fullmatch(metadata)
@@ -155,7 +192,9 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
     if not valid_metadata:
         marker_prefix = lines[:start]
         marker_only = all(
-            not line.strip() or SECURITY_MARKER.fullmatch(line) or INLINE_SECURITY_MARKER.fullmatch(line)
+            not line.strip()
+            or SECURITY_MARKER.fullmatch(line)
+            or INLINE_SECURITY_MARKER.fullmatch(line)
             for line in marker_prefix
         )
         if not (
@@ -171,7 +210,28 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
 
 def _raw_sections(body: str) -> list[tuple[str, str]]:
     lines = body.splitlines()
-    starts = [i for i, line in enumerate(lines) if RESULT_HEADING.match(line)]
+    starts: list[int] = []
+    kinds: dict[int, str] = {}
+    for i, line in enumerate(lines):
+        if RESULT_HEADING.match(line):
+            starts.append(i)
+            kinds[i] = "security" if SECURITY_HEADING.match(line) else "regular"
+        elif PRIORITY_RESULT.match(line):
+            previous = "\n".join(lines[starts[-1] : i]) if starts else ""
+            # A priority list remains inside its heading until that result is
+            # complete. A bound result or standalone clean summary ends it.
+            if (
+                not starts
+                or REVIEWED_COMMIT.search(previous)
+                or _standalone_regular_clean(previous)
+            ):
+                kind = (
+                    "security"
+                    if starts and kinds[starts[-1]] == "security"
+                    else "unheaded"
+                )
+                starts.append(i)
+                kinds[i] = kind
     if not starts:
         return [("unheaded", body)]
 
@@ -179,12 +239,19 @@ def _raw_sections(body: str) -> list[tuple[str, str]]:
     attach_security_marker = (
         bool(marker_prefix)
         and all(
-            not line.strip() or SECURITY_MARKER.fullmatch(line) or INLINE_SECURITY_MARKER.fullmatch(line)
+            not line.strip()
+            or SECURITY_MARKER.fullmatch(line)
+            or INLINE_SECURITY_MARKER.fullmatch(line)
             for line in marker_prefix
         )
         and any(line.strip() for line in marker_prefix)
-        and bool(SECURITY_HEADING.match(lines[starts[0]]))
+        and bool(
+            SECURITY_HEADING.match(lines[starts[0]])
+            or PRIORITY_RESULT.match(lines[starts[0]])
+        )
     )
+    if attach_security_marker:
+        kinds[starts[0]] = "security"
     result: list[tuple[str, str]] = []
     if any(line.strip() for line in marker_prefix) and not attach_security_marker:
         # A result heading cannot erase preceding adverse evidence. Keep the
@@ -193,8 +260,7 @@ def _raw_sections(body: str) -> list[tuple[str, str]]:
     for index, start in enumerate(starts):
         end = starts[index + 1] if index + 1 < len(starts) else len(lines)
         text_start = 0 if index == 0 and attach_security_marker else start
-        heading = lines[start]
-        result.append(("security" if SECURITY_HEADING.match(heading) else "regular", "\n".join(lines[text_start:end])))
+        result.append((kinds[start], "\n".join(lines[text_start:end])))
     return result
 
 
@@ -229,7 +295,8 @@ def _without_known_review_footer(text: str) -> str:
 
 def _without_known_security_footer(text: str) -> str:
     match = re.search(
-        r"(?is)(?:\A|\r?\n)([ \t]*_only the user who started this review.*?</details>[ \t]*)\Z",
+        r"(?is)(?:\A|\r?\n)"
+        r"([ \t]*_only the user who started this review.*?</details>[ \t]*)\Z",
         text,
     )
     if match and KNOWN_SECURITY_FOOTER.fullmatch(match.group(1).strip()):
@@ -277,7 +344,11 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     severity = bool(SECURITY_SEVERITY.search(section))
     report_link = bool(SECURITY_REPORT_LINK.search(section))
     clean_claim = _standalone_security_clean(section) and not severity and not marker
-    finding = marker or (heading and severity) or (heading and report_link and not clean_claim)
+    finding = (
+        marker
+        or (heading and severity)
+        or (heading and report_link and not clean_claim)
+    )
     event = marker or (heading and (report_link or clean_claim))
     return event, finding
 
@@ -290,15 +361,31 @@ def classify_body(body: str) -> dict[str, Any]:
     for kind, text in raw_sections:
         regular_heading = kind == "regular"
         security_heading = kind == "security"
-        availability = bool(AVAILABILITY.fullmatch(
-            _without_review_metadata(_without_known_review_footer(text)))) and not bool(SECURITY_REPORT_LINK.search(text))
+        availability = bool(
+            AVAILABILITY.fullmatch(
+                _without_review_metadata(_without_known_review_footer(text))
+            )
+        ) and not bool(SECURITY_REPORT_LINK.search(text))
         clean = _standalone_regular_clean(text)
         prefix_adverse = kind == "unheaded" and bool(EXPLICIT_ADVERSE.search(text))
-        adverse_regular = prefix_adverse or regular_heading and (
-            bool(EXPLICIT_ADVERSE.search(text)) or (not availability and not clean)
-        )
         security_event, security_finding = _security_facts(kind, text)
-        has_result = regular_heading or security_heading or security_event or security_finding or prefix_adverse
+        adverse_regular = (
+            prefix_adverse
+            or (
+                regular_heading
+                and (
+                    bool(EXPLICIT_ADVERSE.search(text))
+                    or (not availability and not clean)
+                )
+            )
+        ) and not security_event
+        has_result = (
+            regular_heading
+            or security_heading
+            or security_event
+            or security_finding
+            or prefix_adverse
+        )
         sections.append(
             {
                 "kind": kind,
@@ -320,34 +407,51 @@ def classify_event(event: dict[str, Any]) -> dict[str, Any]:
     comment = event.get("comment") or {}
     current = classify_body(comment.get("body") or "")
     if action == "edited":
-        previous_body = ((event.get("changes") or {}).get("body") or {}).get("from") or ""
+        previous_body = ((event.get("changes") or {}).get("body") or {}).get(
+            "from"
+        ) or ""
     elif action == "deleted":
         previous_body = comment.get("body") or ""
     else:
         previous_body = ""
-    previous = classify_body(previous_body) if previous_body else {"request_head": None, "sections": []}
+    previous = (
+        classify_body(previous_body)
+        if previous_body
+        else {"request_head": None, "sections": []}
+    )
     return {"action": action, "current": current, "previous": previous}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("event", nargs="?", type=Path, help="GitHub issue-comment event JSON")
-    parser.add_argument("--records", action="store_true", help="Annotate live API records from stdin")
+    parser.add_argument(
+        "event", nargs="?", type=Path, help="GitHub issue-comment event JSON"
+    )
+    parser.add_argument(
+        "--records", action="store_true", help="Annotate live API records from stdin"
+    )
     args = parser.parse_args()
     try:
         if args.records:
+
             def annotate(value):
                 if isinstance(value, list):
                     return [annotate(item) for item in value]
                 if isinstance(value, dict):
                     result = {key: annotate(item) for key, item in value.items()}
                     if isinstance(value.get("body"), str):
-                        result["review_gate_sections"] = classify_body(value["body"])["sections"]
+                        result["review_gate_sections"] = classify_body(value["body"])[
+                            "sections"
+                        ]
                         result["review_gate_prefix_known"] = all(
-                            section["kind"] != "unheaded" or section["has_result"] or section["availability"]
-                            for section in result["review_gate_sections"])
+                            section["kind"] != "unheaded"
+                            or section["has_result"]
+                            or section["availability"]
+                            for section in result["review_gate_sections"]
+                        )
                     return result
                 return value
+
             data = sys.stdin.read()
             decoder = json.JSONDecoder()
             while data.strip():

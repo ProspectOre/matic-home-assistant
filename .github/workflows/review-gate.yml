@@ -664,8 +664,8 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_SHA256: 'fb81b436baa2c87ba970362be56504be28efe57c473284c066ceabfc6de9ecb8'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '2ee16db3b7eee1745e12733d0a05c99367624092c0f6d45105890beb729bed32'
-          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '71c098e01308ac354dd3a87f82d42ff47e847a358ec4c4449e9cbdaa77237382'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'd0a17223d92c730f2f82a5d8def82066dbc8d56af6ff9b26e986649a19f6974d'
+          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |
           set -euo pipefail
@@ -790,6 +790,7 @@ jobs:
           REVIEW_CAPTURE_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head }}
           REVIEW_CAPTURE_HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head }}
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
+          HISTORICAL_NATIVE_EVENT: ${{ steps.begin-native-event.outputs.historical }}
           RECORD_EVENT_ONLY: ${{ steps.signal-relay-event.outputs.capture_id != '' || steps.begin-native-event.outputs.historical == 'true' }}
           AUDIT_MODE: ${{ inputs.audit == true }}
           REPO: ${{ github.repository }}
@@ -818,6 +819,9 @@ jobs:
           if [[ -n "$REVIEW_CAPTURE_ID" ]]; then
             [[ "$REVIEW_CAPTURE_ID" =~ ^[1-9][0-9]*$ && "$REVIEW_CAPTURE_HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$REVIEW_CAPTURE_HISTORY_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
             # The separate completion consumer writes receipts only after this run succeeds.
+          elif [[ "$HISTORICAL_NATIVE_EVENT" == true ]]; then
+            gh workflow run review-gate.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+              -f pull_request="$EVENT_PR_NUMBER" -F audit=true
           fi
       - name: Remove canonical policy temporary file
         if: always()
