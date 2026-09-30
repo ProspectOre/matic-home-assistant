@@ -764,14 +764,20 @@ regular_evidence() {
            | select(.state == "CHANGES_REQUESTED" or .review_gate_prefix_known != false or $section.regular_adverse)
            | select(.state == "CHANGES_REQUESTED" or $section.kind == "regular" or $section.regular_adverse)
            | select(.state == "CHANGES_REQUESTED" or $section.availability != true)
-           | select(.state == "CHANGES_REQUESTED" or $section.target_ref == $head or $section.target_ref == $prefix or ($section.regular_adverse and $section.target_ref == "__unbound__"))
+           # A top-level PR review is immutable at commit.oid. Historical
+           # reviews cannot be retargeted by a current Reviewed commit footer;
+           # current adverse sections may survive a stale footer.
+           | select(.state == "CHANGES_REQUESTED" or $section.target_ref == $head or $section.target_ref == $prefix
+                   or ($section.regular_adverse and ((.commit.oid // "") == $head or $section.target_ref == "__unbound__")))
            | {at: (.updatedAt // .submittedAt),
               updated_at: (.updatedAt // .submittedAt),
               created_at: .submittedAt,
               id: (.databaseId | tostring),
               source: "review",
               dismissed: (.state == "DISMISSED"),
-              unverified: (.state != "CHANGES_REQUESTED" and $section.regular_adverse == true and $section.target_ref == "__unbound__"),
+              unverified: (.state != "CHANGES_REQUESTED" and $section.regular_adverse == true
+                           and $section.target_ref == "__unbound__"
+                           and (($record.commit.oid // "") != $head)),
               clean: (.state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and ($section.regular_clean == true or ($body | strict_stock_clean_envelope)))}]}'
   )"
   issue_comment_pages="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp)"

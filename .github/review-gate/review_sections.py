@@ -154,7 +154,43 @@ _LEGACY_METADATA = re.compile(
     r"[ \t]*- validation:[^\r\n]*\Z",
     re.I,
 )
-SECURITY_MARKER_IN_CODE = re.compile(r"`[^`]*`")
+
+
+def _without_inline_code(text: str) -> str:
+    """Mask code spans with matching backtick runs, retaining line positions."""
+    runs = list(re.finditer(r"`+", text))
+    next_same: dict[int, int] = {}
+    closing: dict[int, int] = {}
+    for index in range(len(runs) - 1, -1, -1):
+        length = len(runs[index].group())
+        if length in next_same:
+            closing[index] = next_same[length]
+        next_same[length] = index
+    chunks: list[str] = []
+    position = 0
+    index = 0
+    while index < len(runs):
+        backslashes = 0
+        before = runs[index].start() - 1
+        while before >= 0 and text[before] == "\\":
+            backslashes += 1
+            before -= 1
+        if backslashes % 2:
+            index += 1
+            continue
+        end_index = closing.get(index)
+        if end_index is None:
+            index += 1
+            continue
+        start, end = runs[index].start(), runs[end_index].end()
+        chunks.append(text[position:start])
+        chunks.append(re.sub(r"[^\r\n]", " ", text[start:end]))
+        position = end
+        index = end_index + 1
+    chunks.append(text[position:])
+    return "".join(chunks)
+
+
 SECURITY_MARKER_COMMENT = re.compile(
     r"(?is)<!--[ \t]*codex-security-review-finding:v1[ \t]*-->"
 )
@@ -199,10 +235,13 @@ def _commit_metadata(text: str) -> str:
     details = 0
     lines: list[str] = []
     tags = re.compile(r"<!--|-->|</?details\b[^>]*>", re.I)
-    for line in _actual_metadata(text).splitlines(keepends=True):
+    metadata = _actual_metadata(text)
+    tag_lines = _without_inline_code(metadata).splitlines(keepends=True)
+    for line, tag_text in zip(
+        metadata.splitlines(keepends=True), tag_lines, strict=True
+    ):
         enclosed = comment or details > 0
-        # Inline code can discuss HTML tags without opening a container.
-        tag_text = SECURITY_MARKER_IN_CODE.sub("", line)
+        # Code spans can discuss HTML tags without changing container state.
         for match in tags.finditer(tag_text):
             tag = match.group().lower()
             if tag == "<!--":
@@ -211,7 +250,9 @@ def _commit_metadata(text: str) -> str:
                 comment = False
             elif not comment:
                 details = max(0, details - 1) if tag.startswith("</") else details + 1
-        if enclosed and REVIEWED_COMMIT.fullmatch(line.rstrip("\r\n")):
+        if (enclosed or not tag_text.strip()) and REVIEWED_COMMIT.fullmatch(
+            line.rstrip("\r\n")
+        ):
             lines.append(
                 "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
             )
@@ -276,7 +317,7 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
         not _valid_coordinator_metadata(metadata)
         or re.search(r"\bP[0-3]\b", metadata, re.I)
         or (
-            SECURITY_MARKER_COMMENT.search(SECURITY_MARKER_IN_CODE.sub("", metadata))
+            SECURITY_MARKER_COMMENT.search(_without_inline_code(metadata))
             and not re.search(
                 r"(?is)\A[ \t\r\n]*(?:Retry reason:[^\r\n]*\r?\n[ \t]*)*"
                 r"Root-cause diagnosis:[ \t]*\r?\n[ \t]*- rootCause:[^\r\n]*"
@@ -523,9 +564,7 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     coordinator_marker = (
         kind == "regular"
         and "retry reason" in section.casefold()
-        and bool(
-            SECURITY_MARKER_COMMENT.search(SECURITY_MARKER_IN_CODE.sub("", section))
-        )
+        and bool(SECURITY_MARKER_COMMENT.search(_without_inline_code(section)))
     )
     marker = marker or coordinator_marker
     heading = kind == "security"
