@@ -7,9 +7,9 @@ Earlier runs and the unexplained RC9 input outlier remain recorded in
 
 ## Candidate and method
 
-Measured September 30, 2026 at 03:18 PDT. Source checkout: `d66d33d` with
-uncommitted authority refinements. The production bundle fingerprint is
-`5bcd24fe7eff39274c63feb9aef0c244a5028a77e19aaf45c863fec3e036153d`.
+Measured September 30, 2026 at 04:07 PDT. Source checkout: `5a92454` with
+uncommitted Stop/selection review repairs. The production bundle fingerprint is
+`01a8fc3d3f6052d026159da3251179c9a21bd3b0c69b0d12863c1ca9ce91b205`.
 The schema-5 collector fingerprint is
 `882e2814c6f9a6527f640d5cdaa10ff09582d3c5e421ca14320d2e13a3bc747d`.
 
@@ -19,7 +19,8 @@ unthrottled loopback, no tracing, fresh browser context and no-store assets.
 Three paired rounds alternate AB/BA/AB against the unchanged v0.4.5 bundle.
 The identical synthetic scene is hash-checked. Each journey contains 100
 inputs after workflow warm-up: 60 view switches, five plan loops, ten room loops.
-Only one measurement/test job ran; host load was recorded per sample.
+Only one Matic measurement/test job ran; other host work was not controlled.
+Recorded one-minute load was 2.5–2.9; longer averages retained earlier overload.
 
 Event Timing uses its native 16 ms threshold and quantization. Unreported
 interactions are conservatively imputed at 16 ms; all 100 interactions were
@@ -31,16 +32,17 @@ the historical control has panel-only accounting and no host-wide byte total.
 
 | Measure | Candidate | Gate |
 |---|---:|---:|
-| Whole integration startup, gzip estimate | 85,263 bytes / 83.3 KiB | ≤90 KiB |
-| Added lazy workflow, gzip estimate | 11,856 bytes / 11.6 KiB | ≤30 KiB |
+| Whole integration startup, gzip estimate | 85,346 bytes / 83.3 KiB | ≤90 KiB |
+| Added lazy workflow, gzip estimate | 11,857 bytes / 11.6 KiB | ≤30 KiB |
 | Input p95 in each of three runs | 56 / 56 / 56 ms | ≤100 ms |
 | Maximum observed input in each run | 56 / 56 / 56 ms | Reported, no separate gate |
 | Tasks over 50 ms in each run | 0 / 0 / 0 | No routine task over 50 ms |
 
 The control also recorded p95 56/56/56 ms and zero tasks over 50 ms.
 These samples establish no response-time improvement over the control.
-The preceding authority build also passed this journey; its different bundle
-fingerprint is historical and does not identify the current source.
+The 03:18 authority build also passed this journey with bundle fingerprint
+`5bcd24fe7eff39274c63feb9aef0c244a5028a77e19aaf45c863fec3e036153d`;
+that retained receipt is historical and does not identify the current source.
 
 ## Remaining gates
 

@@ -49,6 +49,16 @@ export class MaticMapPanelV4 extends LitElement {
   #effects: EffectController | null = null;
   #layers: LayerHistoryController | null = null;
 
+  #project(
+    hass: HassLike | undefined = this.hass,
+    panel: PanelLike | undefined = this.panel,
+  ): HassProjection {
+    const selection = this.#store.value.selection;
+    return selection.entrySource === "user"
+      ? this.#adapter.project(hass, panel, selection.entryId)
+      : this.#adapter.project(hass, panel);
+  }
+
   protected override shouldUpdate(changed: PropertyValues<this>): boolean {
     if (!changed.has("hass")
       || [...changed.keys()].some((property) => property !== "hass")) return true;
@@ -58,7 +68,7 @@ export class MaticMapPanelV4 extends LitElement {
     // selected language string remains stable.
     if (previousHass?.connection !== this.hass?.connection
       || previousHass?.localize !== this.hass?.localize) return true;
-    return this.#adapter.project(this.hass, this.panel, this.#store.value.selection.entryId) !== this.#projection;
+    return this.#project() !== this.#projection;
   }
 
   override connectedCallback(): void {
@@ -66,7 +76,7 @@ export class MaticMapPanelV4 extends LitElement {
     this.#unsubscribe = this.#store.subscribe((state) => {
       this._workspace = state;
       if (state.selection.entryId !== this.#projection?.entryKey) {
-        const projection = this.#adapter.project(this.hass, this.panel, state.selection.entryId);
+        const projection = this.#project();
         if (projection !== this.#projection) {
           this.#projection = projection;
           this.#effects?.sync(projection);
@@ -89,7 +99,7 @@ export class MaticMapPanelV4 extends LitElement {
     // Recompute from the current values before deciding whether any private
     // request is safe; the last projection may still describe a connected
     // host from before the detach.
-    this.#projection = this.#adapter.project(this.hass, this.panel, this.#store.value.selection.entryId);
+    this.#projection = this.#project();
     this.#backend = new MaticBackend(() => this.hass);
     this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null);
     this.#layers = new LayerHistoryController(this.#store);
@@ -123,7 +133,7 @@ export class MaticMapPanelV4 extends LitElement {
       const previousHass = changed.get("hass") as HassLike | undefined;
       const connectionChanged = changed.has("hass")
         && previousHass?.connection !== this.hass?.connection;
-      const projection = this.#adapter.project(this.hass, this.panel, this.#store.value.selection.entryId);
+      const projection = this.#project();
       const projectionChanged = projection !== this.#projection;
       if (projectionChanged) {
         this.#projection = projection;

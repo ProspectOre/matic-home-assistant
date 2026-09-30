@@ -441,6 +441,7 @@ export class EffectController {
       robotLabel: projection.robotLabel,
       robots: projection.robots,
       locale: projection.language,
+      selection: { ...this.#store.value.selection, entryId: projection.entryKey },
       ...(loadedPreferences ? {
         view: loadedPreferences.view,
         appearance: loadedPreferences.appearance,
@@ -1060,6 +1061,7 @@ export class EffectController {
       selection: {
         ...empty.selection,
         entryId: selectedEntryId,
+        entrySource: state.selection.entrySource,
         floorId: "current",
         historyId: null,
       },

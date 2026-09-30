@@ -10,8 +10,8 @@ Classic, its switch and saved frontend choice; preserve HA-native configuration 
 The household administrator must understand setup, preview and verify work, start/stop safely, and recover without losing configuration or drafts. The map keeps one status
 strip, workflow, and contextual action. Mission, floor, generation, and resource identity are internal; user copy exposes state, consequence, and next action. The v0.4 Map
 Studio contract remains binding: one mounted canvas and gesture stack for map, rooms, plans, Areas, pose, labels, and navigation; Full map is reversible; saved history is
-dated, floor-scoped, read-only, pose-free, and bounded to 12 snapshots/48 MiB compressed. Uncertainty disables dependent map, pose, edit, and motion actions; Locating
-withholds them and retains only the Full map exit control until verification returns.
+dated, floor-scoped, read-only, pose-free, and bounded to 12 snapshots/48 MiB compressed. Uncertainty disables dependent map, pose, edit, and cleaning-start actions; Locating
+withholds them until verification returns. Stop uses the selected, connected HA vacuum identity and remains reachable without catalog or geometry proof.
 
 ## Core principles
 
@@ -69,7 +69,7 @@ failure reasons; a known pre-write rejection neither attempts cleanup STOP nor c
 owns generation, identity, transition/admission; `EffectController` owns abortable reads, subscriptions, and single-fire commands. `RendererController` owns the persistent
 canvas, cameras, buffers, uploads, transferable buffers, quality, and fallback. `GestureController` owns navigation, selection, ordering, and drawing. Brush previews stay in
 rendering; a completed stroke commits once. Brush and outline commits share generation- and baseline-bound admission; permission, context, tool, or draft changes revoke the
-gesture. Components render state and emit typed intents; they do not fetch, call services, infer coherence, or own competing IDs. Store selection owns pending robot changes; configured entry is an initial fallback. A missing requested robot stays selected and commands stay blocked until an explicit available-robot choice. Reentrant commits supersede older subscriber notifications. EffectController observes preference changes;
+gesture. Components render state and emit typed intents; they do not fetch, call services, infer coherence, or own competing IDs. Store selection records host or user authority: follow panel configuration until an explicit user selection, then preserve that choice through refresh and cancellation. Selected identity and HA activity commit together before catalog reads. A missing requested robot stays selected and commands stay blocked until an explicit available-robot choice; cached runner flags apply only to their matching entry. Reentrant commits supersede older subscriber notifications. EffectController observes preference changes;
 PreferenceStore is the sole debounced writer, and account preferences load atomically with their owner. EffectController's PageLifecycle owns visibility/BFCache suspension: revoke spatial admission, stop reads/subscriptions, cancel gesture inertia and rendering through normalized page activity, then require fresh proof on resume. Transmitted motion and mutations retain independent entry/revision ownership; mutation acknowledgements are bounded, and readback must use a freshly admitted catalog. One idempotent disposer owns every request, subscription, worker,
 listener, frame, object URL, and CPU/GPU allocation. Coherence, live/history mode, activity, workflow, and command lifecycle remain orthogonal; one selector derives the
 visible surface and primary action. Full map, Areas, floor transitions, browser Back, Escape, and HA Back preserve the canvas and restore focus. Access loss, no robot, or

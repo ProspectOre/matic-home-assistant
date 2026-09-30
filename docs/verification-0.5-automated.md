@@ -106,7 +106,13 @@ failed at inherited identity/content expectations, and three WebKit navigations
 timed out before app import. Those traces remain at about:blank without network
 events; their driver/server cause is unproven. Matching fixtures and assertions
 now express the authority contract. All 15 affected/adjacent cases pass the
-focused follow-up at unchanged limits; this is not a claim of a green full run.
-The current [desktop lab receipt](performance-0.5-refinements.md) is bounded to
-its compiled bundle and journey. Exact-head regular review/CI, runtime
-installation and acceptance remain open.
+focused follow-up at unchanged limits. Initial PR #193 head `5a92454` then passed
+CI: 3,691 Python/100%, 939 browser passes and one capability skip whose case was
+not identified by that reporter. Regular review found two valid Stop/selection
+defects. Their repairs pass 30 focused Chromium/WebKit/Firefox safety cases:
+selected HA activity enables Stop without a catalog, stale-entry work cannot
+stop another idle robot, host configuration changes apply, and explicit user
+selection survives refresh/cancellation. CI now logs case names alongside
+annotations so future skips remain identifiable. These repairs require their
+own exact-head review/CI. The [desktop lab receipt](performance-0.5-refinements.md)
+is bounded to its compiled bundle and journey; runtime/acceptance remain open.

@@ -180,6 +180,7 @@ export interface AreaDraft {
 
 export interface WorkspaceSelection {
   readonly entryId: string | null;
+  readonly entrySource: "host" | "user";
   readonly floorId: string;
   readonly historyId: string | null;
   readonly roomIds: readonly string[];

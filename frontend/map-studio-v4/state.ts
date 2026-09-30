@@ -129,6 +129,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   manualRoomPreviewRetry: 0,
   selection: {
     entryId: null,
+    entrySource: "host",
     floorId: "current",
     historyId: null,
     roomIds: [],
@@ -503,10 +504,10 @@ export const reduceWorkspace = (
         },
       };
     case "select-entry":
-      return state.selection.entryId === intent.entryId
+      return (state.selection.entryId === intent.entryId && state.selection.entrySource === "user")
         || !state.robots.some((robot) => robot.entryId === intent.entryId)
         ? state
-        : { ...state, selection: { ...state.selection, entryId: intent.entryId } };
+        : { ...state, selection: { ...state.selection, entryId: intent.entryId, entrySource: "user" } };
     case "set-history":
       return {
         ...state,
@@ -820,13 +821,13 @@ const hasStoppableWork = (state: WorkspaceState): boolean =>
   state.command === "starting"
   || state.activity === "cleaning" || state.activity === "paused"
   || state.activity === "returning" || state.activity === "recharging"
-  || state.resources.entry?.runnerLocked === true
-  || state.resources.entry?.activePlan === true
-  || state.resources.entry?.nativeSessionActive === true;
+  || (state.resources.entry?.entryId === state.selection.entryId
+    && (state.resources.entry?.runnerLocked === true
+      || state.resources.entry?.activePlan === true
+      || state.resources.entry?.nativeSessionActive === true));
 
 export const canStopMotion = (state: WorkspaceState): boolean =>
   state.pageActive && state.host.connected && state.host.administrator && state.host.robotConnected
-  && state.resources.entry?.entryId === state.selection.entryId
   && (state.command === "idle" || state.command === "failed" || state.command === "starting")
   && hasStoppableWork(state);
 

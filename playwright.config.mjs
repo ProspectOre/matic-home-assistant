@@ -11,7 +11,8 @@ export default defineConfig({
   // Keep local and CI resource pressure identical; host-wide parallelism can
   // starve WebKit before a page reaches the application.
   workers: 2,
-  reporter: process.env.CI ? "github" : "list",
+  // Keep annotations and case names so capability-based skips are identifiable.
+  reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "retain-on-failure",
