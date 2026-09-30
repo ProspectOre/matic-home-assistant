@@ -664,7 +664,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_SHA256: '74184ccb3357579a5ba71d42e44f8b6d3cb582c4c5eacb77be5ec031d6d9d949'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '6ce6aabc2e112bee41d821b2aea5f20d5f50643cab8ff179f67ae6d8e0c136b9'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '343a7fcd494b8190d2a70b5dde6a7329a98ca1e9944bde7f906e2fe43457b762'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |

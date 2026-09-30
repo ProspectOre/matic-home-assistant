@@ -266,6 +266,9 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
                 INLINE_SECURITY_MARKER.search(candidate)
                 for candidate in lines[previous_start:i]
             )
+            explicit_security_prior = bool(
+                starts and SECURITY_HEADING.match(lines[previous_start])
+            )
             if (
                 (
                     inline_security
@@ -280,7 +283,11 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
                 or _standalone_regular_clean(previous)
                 or (coordinator_bound and _standalone_security_clean(previous))
                 or marker_only
-                or (prior_inline_security and not inline_security)
+                or (
+                    prior_inline_security
+                    and not inline_security
+                    and not explicit_security_prior
+                )
             ):
                 kind = (
                     "security"
@@ -289,6 +296,11 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
                     or (
                         starts
                         and kinds[starts[-1]] == "security"
+                        and not (
+                            prior_inline_security
+                            and not inline_security
+                            and not explicit_security_prior
+                        )
                         and (
                             not coordinator_bound
                             or REVIEWED_COMMIT.search(previous)
