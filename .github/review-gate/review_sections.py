@@ -248,13 +248,21 @@ def _raw_sections(body: str) -> list[tuple[str, str]]:
                 or not starts
                 or REVIEWED_COMMIT.search(previous)
                 or _standalone_regular_clean(previous)
+                or _standalone_security_clean(previous)
                 or marker_only
             ):
                 kind = (
                     "security"
                     if inline_security
                     or marker_only
-                    or (starts and kinds[starts[-1]] == "security")
+                    or (
+                        starts
+                        and kinds[starts[-1]] == "security"
+                        and (
+                            REVIEWED_COMMIT.search(previous)
+                            or not _standalone_security_clean(previous)
+                        )
+                    )
                     else "unheaded"
                 )
                 starts.append(i)
@@ -332,6 +340,7 @@ def _without_known_review_footer(text: str) -> str:
 
 
 def _without_known_security_footer(text: str) -> str:
+    text = text.rstrip()
     match = re.search(
         r"(?is)(?:\A|\r?\n)"
         r"([ \t]*_only the user who started this review.*?</details>[ \t]*)\Z",
@@ -378,16 +387,38 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     marker = bool(INLINE_SECURITY_MARKER.search(section)) or (
         kind in ("security", "unheaded") and bool(SECURITY_MARKER.search(section))
     )
+    coordinator_marker = (
+        kind == "regular"
+        and "retry reason" in section.casefold()
+        and bool(
+            SECURITY_MARKER_COMMENT.search(SECURITY_MARKER_IN_CODE.sub("", section))
+        )
+    )
+    marker = marker or coordinator_marker
     heading = kind == "security"
-    severity = bool(SECURITY_SEVERITY.search(section))
+    severity = bool(
+        SECURITY_SEVERITY.search(section)
+        or (heading and re.search(r"(?i)\bP[0-3]\b", section))
+    )
+    security_text = "\n".join(
+        line for line in section.splitlines() if not SECURITY_MARKER.fullmatch(line)
+    )
+    unheaded_security = (
+        kind in ("unheaded", "regular")
+        and bool(re.search(r"(?i)\bP[0-3]\b", security_text))
+        and bool(
+            re.search(r"(?i)\bsecurity\b|\bvulnerab\w*|\bexploitable\b", security_text)
+        )
+    )
     report_link = bool(SECURITY_REPORT_LINK.search(section))
     clean_claim = _standalone_security_clean(section) and not severity and not marker
     finding = (
         marker
+        or unheaded_security
         or (heading and severity)
         or (heading and report_link and not clean_claim)
     )
-    event = marker or (heading and (report_link or clean_claim))
+    event = marker or unheaded_security or (heading and (report_link or clean_claim))
     return event, finding
 
 
