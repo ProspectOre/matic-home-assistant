@@ -7,6 +7,7 @@ import argparse
 import json
 import re
 import sys
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any
 
@@ -229,21 +230,36 @@ def _actual_metadata(text: str) -> str:
     return "".join(masked)
 
 
+def _html_tags_by_line(text: str) -> list[list[tuple[int, str]]]:
+    """Locate complete container tags across physical lines, outside code spans."""
+    lines = text.splitlines(keepends=True)
+    offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line)
+    result: list[list[tuple[int, str]]] = [[] for _ in lines]
+    for match in re.finditer(
+        r"<!--|-->|</?details\b[^>]*>", _without_inline_code(text), re.I
+    ):
+        index = bisect_right(offsets, match.start()) - 1
+        result[index].append((match.start() - offsets[index], match.group().lower()))
+    return result
+
+
 def _commit_metadata(text: str) -> str:
     """Keep commit authority outside expandable or commented examples."""
     comment = False
     details = 0
     lines: list[str] = []
-    tags = re.compile(r"<!--|-->|</?details\b[^>]*>", re.I)
     metadata = _actual_metadata(text)
     tag_lines = _without_inline_code(metadata).splitlines(keepends=True)
-    for line, tag_text in zip(
-        metadata.splitlines(keepends=True), tag_lines, strict=True
-    ):
+    tags_by_line = _html_tags_by_line(metadata)
+    for index, line in enumerate(metadata.splitlines(keepends=True)):
+        tag_text = tag_lines[index]
         enclosed = comment or details > 0
         # Code spans can discuss HTML tags without changing container state.
-        for match in tags.finditer(tag_text):
-            tag = match.group().lower()
+        for _, tag in tags_by_line[index]:
             if tag == "<!--":
                 comment = True
             elif tag == "-->":
@@ -259,6 +275,46 @@ def _commit_metadata(text: str) -> str:
         else:
             lines.append(line)
     return "".join(lines)
+
+
+def _visible_html(text: str) -> str:
+    """Keep a line-aligned structural view outside hidden HTML examples."""
+    comment = False
+    details = 0
+    masked: list[str] = []
+    tag_lines = _without_inline_code(text).splitlines(keepends=True)
+    tags_by_line = _html_tags_by_line(text)
+    for index, line in enumerate(text.splitlines(keepends=True)):
+        tag_text = tag_lines[index]
+        enclosed = comment or details > 0
+        matches = tags_by_line[index]
+        protocol = (
+            not enclosed
+            and len(matches) == 2
+            and bool(
+                SECURITY_MARKER_COMMENT.search(tag_text)
+                or re.fullmatch(
+                    r"[ \t]*<!-- review-request:v2 head=[0-9a-f]{40} "
+                    r"base=[0-9a-f]{40} -->[ \t\r\n]*",
+                    tag_text,
+                    re.I,
+                )
+            )
+        )
+        for _, tag in matches:
+            if tag == "<!--":
+                comment = True
+            elif tag == "-->":
+                comment = False
+            elif not comment:
+                details = max(0, details - 1) if tag.startswith("</") else details + 1
+        hidden = enclosed or bool(matches)
+        if hidden and not protocol:
+            start = 0 if enclosed else matches[0][0]
+            masked.append(line[:start] + re.sub(r"[^\r\n]", " ", line[start:]))
+        else:
+            masked.append(line)
+    return "".join(masked)
 
 
 def _has_reviewed_commit(text: str) -> bool:
@@ -348,7 +404,8 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
 
 
 def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str, str]]:
-    lines = body.splitlines()
+    original_lines = body.splitlines()
+    lines = _visible_html(body).splitlines()
     starts: list[int] = []
     kinds: dict[int, str] = {}
     for i, line in enumerate(lines):
@@ -461,12 +518,17 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
     if any(line.strip() for line in unconsumed_prefix):
         # A result heading cannot erase preceding adverse evidence. Keep the
         # prefix independently bound; missing metadata remains fail-closed.
-        result.append(("unheaded", "\n".join(unconsumed_prefix)))
+        result.append(
+            (
+                "unheaded",
+                "\n".join(original_lines[: attached_starts.get(starts[0], starts[0])]),
+            )
+        )
     for index, start in enumerate(starts):
         next_start = starts[index + 1] if index + 1 < len(starts) else len(lines)
         end = attached_starts.get(next_start, next_start)
         text_start = attached_starts.get(start, start)
-        result.append((kinds[start], "\n".join(lines[text_start:end])))
+        result.append((kinds[start], "\n".join(original_lines[text_start:end])))
     return result
 
 
@@ -558,6 +620,8 @@ def _standalone_security_clean(section: str) -> bool:
 
 
 def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
+    raw_section = section
+    section = _visible_html(section)
     marker = bool(INLINE_SECURITY_MARKER.search(section)) or (
         kind in ("security", "unheaded") and bool(SECURITY_MARKER.search(section))
     )
@@ -583,7 +647,9 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
         )
     )
     report_link = bool(SECURITY_REPORT_LINK.search(section))
-    clean_claim = _standalone_security_clean(section) and not severity and not marker
+    clean_claim = (
+        _standalone_security_clean(raw_section) and not severity and not marker
+    )
     finding = (
         marker
         or unheaded_security
@@ -619,7 +685,7 @@ def classify_body(body: str) -> dict[str, Any]:
         clean = _standalone_regular_clean(text)
         ordinary_text = "\n".join(
             line
-            for line in text.splitlines()
+            for line in _visible_html(text).splitlines()
             if not INLINE_SECURITY_MARKER.search(line)
             and not SECURITY_MARKER.fullmatch(line)
         )
