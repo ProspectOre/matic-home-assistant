@@ -1,4 +1,5 @@
 import type { AreaCircle, SceneModel, SceneRoom } from "./backend-contracts";
+import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
 import { canShowExactPose, hasCoordinateEditAdmission } from "./state";
 import { rgba, type CanvasPalette } from "./theme-probe";
@@ -145,12 +146,47 @@ const sceneContext = (state: WorkspaceState): string => {
   const entry = state.resources.entry;
   return [
     state.dataMode,
+    state.selection.entryId ?? "none",
     state.selection.floorId,
     entry?.entryId ?? "none",
     entry?.selectedFloorOrdinal ?? "none",
     entry?.mapFloorOrdinal ?? "none",
     entry?.mapSessionKey ?? "none",
   ].join("|");
+};
+
+const GPU_UPLOAD_CHUNK_BYTES = 512 * 1024;
+const GPU_UPLOAD_FAIR_SHARE_BYTES = GPU_UPLOAD_CHUNK_BYTES / 2;
+const GPU_DELTA_BLOCK_BYTES = SCENE_DELTA_DIRTY_BLOCK_BYTES;
+const GPU_DELTA_MAX_BLOCKS = 256;
+
+const sameSceneTransform = (left: SceneModel, right: SceneModel): boolean =>
+  left.metadata.metersPerCell === right.metadata.metersPerCell
+  && left.metadata.origin[0] === right.metadata.origin[0]
+  && left.metadata.origin[1] === right.metadata.origin[1]
+  && left.metadata.span[0] === right.metadata.span[0]
+  && left.metadata.span[1] === right.metadata.span[1];
+
+const samePointLayout = (left: SceneModel, right: SceneModel): boolean =>
+  left.pointOffset === right.pointOffset
+  && left.floorCount === right.floorCount
+  && left.surfaceCount === right.surfaceCount
+  && left.total === right.total
+  && left.source === right.source
+  && sameSceneTransform(left, right);
+
+const validDeltaBlocks = (scene: SceneModel, baseRevision: number): readonly number[] | null => {
+  const hint = scene.deltaHint;
+  if (!hint || hint.baseRevision !== baseRevision || scene.revision <= baseRevision
+    || hint.blockBytes !== GPU_DELTA_BLOCK_BYTES
+    || hint.dirtyBlocks.length > GPU_DELTA_MAX_BLOCKS) return null;
+  const blockCount = Math.ceil(scene.total * 8 / GPU_DELTA_BLOCK_BYTES);
+  let previous = -1;
+  for (const block of hint.dirtyBlocks) {
+    if (!Number.isSafeInteger(block) || block <= previous || block >= blockCount) return null;
+    previous = block;
+  }
+  return hint.dirtyBlocks;
 };
 
 // Matches the literal colours the overlay shipped with, so nothing changes
@@ -167,6 +203,23 @@ const DEFAULT_PALETTE: CanvasPalette = {
 
 const PERSPECTIVE_FIELD_OF_VIEW = Math.PI / 3.15;
 const FIT_PADDING = 1.08;
+
+interface GpuUpload {
+  scene: SceneModel;
+  revision: number;
+  readonly context: string;
+  generation: number;
+  readonly contextGeneration: number;
+  readonly buffer: WebGLBuffer;
+  readonly staging: boolean;
+  seed: "scene" | "copy";
+  readonly previousScene: SceneModel | null;
+  readonly preserveCamera: boolean;
+  readonly preferenceView: MapView | null;
+  frontierBytes: number;
+  readonly dirtyBlocks: Set<number>;
+  readonly transitionBlocks: Set<number>;
+}
 
 const perspectiveFitDistance = (radius: number, aspect: number): number => {
   const halfVertical = PERSPECTIVE_FIELD_OF_VIEW / 2;
@@ -273,6 +326,8 @@ export class RendererController {
   #fallbackCanvas: HTMLCanvasElement | null = null;
   #program: WebGLProgram | null = null;
   #buffer: WebGLBuffer | null = null;
+  #stagingBuffer: WebGLBuffer | null = null;
+  #bufferCapacities = new WeakMap<WebGLBuffer, number>();
   #vertexArray: WebGLVertexArrayObject | null = null;
   #viewProjection: WebGLUniformLocation | null = null;
   #center: WebGLUniformLocation | null = null;
@@ -283,6 +338,9 @@ export class RendererController {
   #circlePreview: { readonly circles: readonly AreaCircle[]; readonly capture: CoordinateEditCapture } | null = null;
   #scene: SceneModel | null = null;
   #sceneContext: string | null = null;
+  #admittedScene: SceneModel | null = null;
+  #admittedContext: string | null = null;
+  #upload: GpuUpload | null = null;
   #frame: number | null = null;
   #fallbackFrame: number | null = null;
   #resizeObserver: ResizeObserver;
@@ -301,6 +359,7 @@ export class RendererController {
   #cursor: MapPoint | null = null;
   #mode: RendererDiagnostics["mode"] = "unavailable";
   #contextGeneration = 0;
+  #initializedPoints = 0;
   #renderedPoints = 0;
   #lastFrameMs = 0;
   #slowFrames = 0;
@@ -402,32 +461,92 @@ export class RendererController {
     if (this.#disposed) return;
     const previous = this.#state;
     const previousScene = this.#scene;
+    const admittedBefore = this.#admittedScene;
+    const admittedContextBefore = this.#admittedContext;
     this.#state = state;
     if (!state.pageActive && this.#frame !== null) {
       window.cancelAnimationFrame(this.#frame);
       this.#frame = null;
     }
     const scene = state.resources.scene.value;
+    const context = scene ? sceneContext(state) : null;
+    this.#admittedScene = scene;
+    this.#admittedContext = context;
     let rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null;
-    if (scene !== this.#scene) {
-      // Delta revisions replace the immutable scene object while retaining the
-      // same map context. Keep a user-adjusted camera for those updates; a
-      // changed floor/session context must still start from a safe fitted view.
-      const sameSceneContext = this.#scene !== null
-        && previous !== null
-        && this.#sceneContext === sceneContext(state);
-      const preserveCamera = sameSceneContext && !this.#fitActive;
-      this.#scene = scene;
-      this.#sceneContext = scene ? sceneContext(state) : null;
-      rebasedPreferences = this.#installScene(
-        scene,
-        preserveCamera,
-        previousScene,
-        sameSceneContext,
-        previous
-          ? previous.workflow === "draw" ? "top" : previous.view
-          : null,
-      );
+    const uploadMatches = Boolean(this.#upload && this.#upload.scene === scene
+      && this.#upload.context === context && this.#upload.generation === state.generation
+      && this.#upload.contextGeneration === this.#contextGeneration);
+    if (!state.pageActive) {
+      this.#cancelGpuUpload(true);
+    } else if (scene !== null) {
+      // Capture the context inside the non-null scene branch. The nullable
+      // outer value also represents the intentionally empty-scene state.
+      const sceneContextKey = sceneContext(state);
+      const targetChanged = scene !== admittedBefore || sceneContextKey !== admittedContextBefore;
+      const currentUpload = this.#upload;
+      const pendingSuccessorBlocks = currentUpload && currentUpload.context === sceneContextKey
+        && currentUpload.contextGeneration === this.#contextGeneration
+        && samePointLayout(currentUpload.scene, scene)
+        ? validDeltaBlocks(scene, currentUpload.revision)
+        : null;
+      const firstSuccessorNeedsBack = Boolean(currentUpload && !currentUpload.staging
+        && currentUpload.seed === "scene" && currentUpload.frontierBytes < currentUpload.scene.total * 8
+        && scene !== currentUpload.scene && pendingSuccessorBlocks !== null);
+      const advanced = Boolean(currentUpload && !firstSuccessorNeedsBack && scene !== currentUpload.scene
+        && pendingSuccessorBlocks !== null
+        && this.#advanceGpuUpload(scene, sceneContextKey, state, pendingSuccessorBlocks));
+      const uploadChanged = Boolean(currentUpload && !uploadMatches);
+      if (!advanced && (uploadChanged || targetChanged
+        || scene !== this.#scene || sceneContextKey !== this.#sceneContext)) {
+        const sameSceneContext = this.#scene !== null && this.#sceneContext === sceneContextKey;
+        const compatible = sameSceneContext && this.#scene && samePointLayout(this.#scene, scene);
+        const publishedFrontComplete = Boolean(this.#scene && this.#initializedPoints >= this.#scene.total);
+        const publishedSuccessorBlocks = !currentUpload && compatible && publishedFrontComplete
+          ? validDeltaBlocks(scene, this.#scene?.revision ?? -1)
+          : null;
+        this.#cancelGpuUpload(false);
+        if (this.#mode === "webgl2") {
+          if (compatible) {
+            if (publishedSuccessorBlocks !== null) {
+              this.#startGpuUpload(
+                scene, sceneContextKey, state, true, this.#scene, true,
+                "copy", publishedSuccessorBlocks,
+              );
+            } else {
+              this.#startGpuUpload(scene, sceneContextKey, state, true, this.#scene, true);
+            }
+          } else {
+            this.#cancelGpuUpload(true);
+            this.#scene = scene;
+            this.#sceneContext = sceneContextKey;
+            rebasedPreferences = this.#installScene(
+              scene,
+              sameSceneContext && !this.#fitActive,
+              previousScene,
+              sameSceneContext,
+              previous ? previous.workflow === "draw" ? "top" : previous.view : null,
+            );
+            this.#startGpuUpload(scene, sceneContextKey, state, false, previousScene, false);
+          }
+        } else {
+          this.#scene = scene;
+          this.#sceneContext = sceneContextKey;
+          rebasedPreferences = this.#installScene(
+            scene,
+            sameSceneContext && !this.#fitActive,
+            previousScene,
+            sameSceneContext,
+            previous ? previous.workflow === "draw" ? "top" : previous.view : null,
+          );
+        }
+      }
+    } else if (this.#scene !== null || this.#upload !== null) {
+      this.#cancelGpuUpload(true);
+      this.#deleteFrontBuffer();
+      this.#scene = null;
+      this.#sceneContext = null;
+      this.#renderedPoints = 0;
+      this.#initializedPoints = 0;
     }
     if (!previous || previous.quality !== state.quality) {
       this.#qualityScale = qualityScale(state.quality);
@@ -577,13 +696,8 @@ export class RendererController {
       this.#buffer = gl.createBuffer();
       this.#vertexArray = gl.createVertexArray();
       gl.bindVertexArray(this.#vertexArray);
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.#buffer);
-      gl.enableVertexAttribArray(0);
-      gl.vertexAttribIPointer(0, 2, gl.UNSIGNED_SHORT, 8, 0);
-      gl.enableVertexAttribArray(1);
-      gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_BYTE, 8, 4);
-      gl.enableVertexAttribArray(2);
-      gl.vertexAttribPointer(2, 3, gl.UNSIGNED_BYTE, true, 8, 5);
+      if (!this.#buffer) throw new Error("buffer-unavailable");
+      this.#bindVertexBuffer(this.#buffer);
       gl.bindVertexArray(null);
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
@@ -591,7 +705,6 @@ export class RendererController {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       this.#mode = "webgl2";
       this.#contextGeneration += 1;
-      if (this.#scene) this.#uploadScene(this.#scene);
     } catch {
       this.#releaseWebGl();
       this.#initFallback();
@@ -608,6 +721,7 @@ export class RendererController {
     this.#cancelFallback();
     if (!scene) {
       this.#renderedPoints = 0;
+      this.#initializedPoints = 0;
       this.requestRender();
       return null;
     }
@@ -643,12 +757,10 @@ export class RendererController {
         targetZ: this.#camera.targetZ,
       };
       this.#callbacks.onCameraPreferences?.(preferences);
-      if (this.#mode === "webgl2") this.#uploadScene(scene);
-      else this.#buildFallback(scene);
+      if (this.#mode !== "webgl2") this.#buildFallback(scene);
       return preferences;
     }
-    if (this.#mode === "webgl2") this.#uploadScene(scene);
-    else this.#buildFallback(scene);
+    if (this.#mode !== "webgl2") this.#buildFallback(scene);
     return null;
   }
 
@@ -665,13 +777,333 @@ export class RendererController {
     this.#homeTop = Math.max(depth / 2, width / (2 * aspect)) * 1.12;
   }
 
-  #uploadScene(scene: SceneModel): void {
+
+
+  #bindVertexBuffer(buffer: WebGLBuffer): void {
     const gl = this.#gl;
-    if (!gl || !this.#buffer) return;
-    const bytes = new Uint8Array(scene.buffer, scene.pointOffset, scene.total * 8);
-    gl.bindBuffer(gl.ARRAY_BUFFER, this.#buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, bytes, gl.STATIC_DRAW);
-    this.#renderedPoints = scene.total;
+    if (!gl || !this.#vertexArray) return;
+    gl.bindVertexArray(this.#vertexArray);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribIPointer(0, 2, gl.UNSIGNED_SHORT, 8, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_BYTE, 8, 4);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribPointer(2, 3, gl.UNSIGNED_BYTE, true, 8, 5);
+    gl.bindVertexArray(null);
+  }
+
+  #deleteFrontBuffer(): void {
+    if (this.#buffer && this.#gl) this.#gl.deleteBuffer(this.#buffer);
+    this.#buffer = null;
+  }
+
+  #cancelGpuUpload(clearPartialFront: boolean): void {
+    const upload = this.#upload;
+    if (!upload) return;
+    this.#upload = null;
+    if (!upload.staging && clearPartialFront && this.#buffer === upload.buffer) {
+      this.#deleteFrontBuffer();
+      this.#scene = null;
+      this.#sceneContext = null;
+      this.#renderedPoints = 0;
+      this.#initializedPoints = 0;
+    }
+  }
+
+  #startGpuUpload(
+    scene: SceneModel,
+    context: string,
+    state: WorkspaceState,
+    staging: boolean,
+    previousScene: SceneModel | null,
+    preserveCamera: boolean,
+    seed: "scene" | "copy" = "scene",
+    dirtyBlocks: readonly number[] = [],
+  ): void {
+    const gl = this.#gl;
+    if (!gl || this.#mode !== "webgl2" || !state.pageActive || this.#disposed) return;
+    let buffer = staging ? this.#stagingBuffer : this.#buffer;
+    if (!buffer && !staging && this.#stagingBuffer) {
+      buffer = this.#stagingBuffer;
+      this.#stagingBuffer = null;
+    }
+    if (!buffer) {
+      try {
+        buffer = gl.createBuffer();
+      } catch {
+        this.#fallbackFromGpuUpload();
+        return;
+      }
+    }
+    if (!buffer) {
+      this.#fallbackFromGpuUpload();
+      return;
+    }
+    if (staging) this.#stagingBuffer = buffer;
+    else this.#buffer = buffer;
+    if (!this.#allocateGpuBuffer(buffer, scene.total * 8, seed === "scene")) {
+      this.#fallbackFromGpuUpload();
+      return;
+    }
+    if (!staging) this.#bindVertexBuffer(buffer);
+    this.#upload = {
+      scene,
+      revision: scene.revision,
+      context,
+      generation: state.generation,
+      contextGeneration: this.#contextGeneration,
+      buffer,
+      staging,
+      seed,
+      previousScene,
+      preserveCamera,
+      preferenceView: state.workflow === "draw" ? "top" : state.view,
+      frontierBytes: 0,
+      dirtyBlocks: new Set(dirtyBlocks),
+      transitionBlocks: new Set(dirtyBlocks),
+    };
+    if (!staging) {
+      this.#initializedPoints = 0;
+      this.#renderedPoints = 0;
+    }
+    this.requestRender();
+  }
+
+  #advanceGpuUpload(
+    scene: SceneModel,
+    context: string,
+    state: WorkspaceState,
+    dirtyBlocks: readonly number[],
+  ): boolean {
+    const upload = this.#upload;
+    if (!upload || upload.context !== context || upload.contextGeneration !== this.#contextGeneration
+      || !samePointLayout(upload.scene, scene)) return false;
+    const combined = new Set(upload.transitionBlocks);
+    for (const block of dirtyBlocks) combined.add(block);
+    if (combined.size > GPU_DELTA_MAX_BLOCKS) return false;
+
+    upload.scene = scene;
+    upload.revision = scene.revision;
+    upload.generation = state.generation;
+    upload.transitionBlocks.clear();
+    for (const block of combined) upload.transitionBlocks.add(block);
+    if (upload.seed === "copy") {
+      for (const block of dirtyBlocks) upload.dirtyBlocks.add(block);
+    } else {
+      const uploadedBlocks = Math.ceil(upload.frontierBytes / GPU_DELTA_BLOCK_BYTES);
+      for (const block of dirtyBlocks) {
+        if (block < uploadedBlocks) upload.dirtyBlocks.add(block);
+      }
+    }
+    this.requestRender();
+    return true;
+  }
+
+  #allocateGpuBuffer(buffer: WebGLBuffer, byteLength: number, reset: boolean): boolean {
+    const gl = this.#gl;
+    if (!gl) return false;
+    const capacity = this.#bufferCapacities.get(buffer) ?? 0;
+    if (!reset && capacity >= byteLength) return true;
+    try {
+      gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+      gl.bufferData(gl.ARRAY_BUFFER, byteLength, gl.DYNAMIC_DRAW);
+      if (this.#hasGlError()) return false;
+      this.#bufferCapacities.set(buffer, byteLength);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  #hasGlError(): boolean {
+    const gl = this.#gl;
+    if (!gl) return true;
+    try {
+      const error = gl.getError();
+      return typeof error === "number" && error !== gl.NO_ERROR;
+    } catch {
+      return true;
+    }
+  }
+
+  #fallbackFromGpuUpload(): void {
+    const scene = this.#admittedScene;
+    const context = this.#admittedContext;
+    const state = this.#state;
+    const previousScene = this.#scene;
+    const previousContext = this.#sceneContext;
+    this.#cancelGpuUpload(false);
+    this.#releaseWebGl();
+    this.#initFallback();
+    if (scene && context && state?.pageActive) {
+      const sameContext = previousScene !== null && previousContext === context;
+      this.#scene = scene;
+      this.#sceneContext = context;
+      this.#installScene(scene, sameContext && !this.#fitActive, previousScene, sameContext,
+        state.workflow === "draw" ? "top" : state.view);
+    }
+    this.requestRender();
+  }
+
+  #uploadFrontier(upload: GpuUpload, maximumBytes: number): number {
+    const gl = this.#gl;
+    const bytesRemaining = upload.scene.total * 8 - upload.frontierBytes;
+    const byteCount = Math.min(bytesRemaining, maximumBytes);
+    if (!gl || byteCount <= 0) return 0;
+    if (upload.seed === "copy") {
+      if (!this.#buffer || this.#buffer === upload.buffer) return -1;
+      gl.bindBuffer(gl.COPY_READ_BUFFER, this.#buffer);
+      gl.bindBuffer(gl.COPY_WRITE_BUFFER, upload.buffer);
+      gl.copyBufferSubData(gl.COPY_READ_BUFFER, gl.COPY_WRITE_BUFFER,
+        upload.frontierBytes, upload.frontierBytes, byteCount);
+    } else {
+      const bytes = new Uint8Array(
+        upload.scene.buffer,
+        upload.scene.pointOffset + upload.frontierBytes,
+        byteCount,
+      );
+      gl.bindBuffer(gl.ARRAY_BUFFER, upload.buffer);
+      gl.bufferSubData(gl.ARRAY_BUFFER, upload.frontierBytes, bytes);
+    }
+    if (this.#hasGlError()) return -1;
+    upload.frontierBytes += byteCount;
+    if (!upload.staging) this.#initializedPoints = upload.frontierBytes / 8;
+    return byteCount;
+  }
+
+  #uploadDirtyBlocks(upload: GpuUpload, maximumBytes: number): number {
+    const gl = this.#gl;
+    if (!gl || maximumBytes <= 0) return 0;
+    const totalBytes = upload.scene.total * 8;
+    const eligible = [...upload.dirtyBlocks].sort((left, right) => left - right);
+    let uploaded = 0;
+    for (const block of eligible) {
+      const start = block * GPU_DELTA_BLOCK_BYTES;
+      const end = Math.min(totalBytes, start + GPU_DELTA_BLOCK_BYTES);
+      const length = end - start;
+      if (end > upload.frontierBytes || uploaded + length > maximumBytes) continue;
+      const bytes = new Uint8Array(upload.scene.buffer, upload.scene.pointOffset + start, length);
+      gl.bindBuffer(gl.ARRAY_BUFFER, upload.buffer);
+      gl.bufferSubData(gl.ARRAY_BUFFER, start, bytes);
+      if (this.#hasGlError()) return -1;
+      upload.dirtyBlocks.delete(block);
+      uploaded += length;
+    }
+    return uploaded;
+  }
+
+  #uploadGpuChunk(): void {
+    const upload = this.#upload;
+    const gl = this.#gl;
+    const state = this.#state;
+    if (!upload || !gl || !state) return;
+    if (this.#disposed || !state.pageActive || upload.scene !== this.#admittedScene
+      || upload.revision !== upload.scene.revision
+      || upload.context !== this.#admittedContext || upload.generation !== state.generation
+      || sceneContext(state) !== upload.context || state.resources.scene.value !== upload.scene
+      || upload.contextGeneration !== this.#contextGeneration
+      || (upload.staging && this.#stagingBuffer !== upload.buffer)
+      || (!upload.staging && this.#buffer !== upload.buffer)) {
+      this.#cancelGpuUpload(true);
+      return;
+    }
+    const byteLength = upload.scene.total * 8;
+    const pendingFrontier = upload.frontierBytes < byteLength;
+    let remainingBudget = GPU_UPLOAD_CHUNK_BYTES;
+    let used = 0;
+    try {
+      const frontierLimit = pendingFrontier && upload.dirtyBlocks.size > 0
+        ? GPU_UPLOAD_FAIR_SHARE_BYTES
+        : GPU_UPLOAD_CHUNK_BYTES;
+      const frontierBytes = this.#uploadFrontier(upload, Math.min(frontierLimit, remainingBudget));
+      if (frontierBytes < 0) throw new Error("gpu-frontier-upload-failed");
+      remainingBudget -= frontierBytes;
+      used += frontierBytes;
+
+      const canPatch = [...upload.dirtyBlocks].some((block) =>
+        Math.min(byteLength, (block + 1) * GPU_DELTA_BLOCK_BYTES) <= upload.frontierBytes);
+      const patchLimit = pendingFrontier && canPatch
+        ? Math.min(GPU_UPLOAD_FAIR_SHARE_BYTES, remainingBudget)
+        : canPatch ? remainingBudget : 0;
+      const patchBytes = this.#uploadDirtyBlocks(upload, patchLimit);
+      if (patchBytes < 0) throw new Error("gpu-dirty-upload-failed");
+      remainingBudget -= patchBytes;
+      used += patchBytes;
+
+      const hasEligiblePatch = [...upload.dirtyBlocks].some((block) =>
+        Math.min(byteLength, (block + 1) * GPU_DELTA_BLOCK_BYTES) <= upload.frontierBytes);
+      if (pendingFrontier && remainingBudget > 0 && !hasEligiblePatch) {
+        const extraFrontier = this.#uploadFrontier(upload, remainingBudget);
+        if (extraFrontier < 0) throw new Error("gpu-frontier-upload-failed");
+        remainingBudget -= extraFrontier;
+        used += extraFrontier;
+      }
+    } catch {
+      this.#fallbackFromGpuUpload();
+      return;
+    }
+
+    if (used > 0 && !this.#uploadIsCurrent(upload)) {
+      this.#cancelGpuUpload(true);
+      return;
+    }
+    if (upload.frontierBytes < byteLength || upload.dirtyBlocks.size > 0) {
+      this.requestRender();
+      return;
+    }
+    if (!this.#uploadIsCurrent(upload)) {
+      this.#cancelGpuUpload(true);
+      return;
+    }
+    if (upload.staging) {
+      const currentState = this.#state;
+      const currentView = currentState
+        ? currentState.workflow === "draw" ? "top" : currentState.view
+        : upload.preferenceView;
+      const previousBuffer = this.#buffer;
+      this.#buffer = upload.buffer;
+      this.#stagingBuffer = previousBuffer;
+      this.#bindVertexBuffer(upload.buffer);
+      this.#scene = upload.scene;
+      this.#sceneContext = upload.context;
+      this.#upload = null;
+      this.#initializedPoints = upload.scene.total;
+      this.#renderedPoints = upload.scene.total;
+      const rebased = this.#installScene(
+        upload.scene,
+        upload.preserveCamera,
+        upload.previousScene,
+        true,
+        currentView,
+      );
+      if (currentState && rebased) {
+        const view = currentState.workflow === "draw" ? "top" : currentState.view;
+        this.#camera = this.#preferredCamera(view, currentState, rebased);
+        this.#fitActive = this.#preferenceIsFit(view, currentState, rebased);
+        this.#notifyCamera();
+      }
+    } else {
+      this.#upload = null;
+      this.#scene = upload.scene;
+      this.#sceneContext = upload.context;
+      this.#initializedPoints = upload.scene.total;
+      this.#renderedPoints = upload.scene.total;
+    }
+  }
+
+  #uploadIsCurrent(upload: GpuUpload): boolean {
+    const state = this.#state;
+    if (!state) return false;
+    return !this.#disposed && state.pageActive
+      && upload.scene === this.#admittedScene
+      && upload.revision === upload.scene.revision
+      && upload.context === this.#admittedContext
+      && upload.generation === state.generation
+      && sceneContext(state) === upload.context
+      && state.resources.scene.value === upload.scene
+      && upload.contextGeneration === this.#contextGeneration
+      && (upload.staging ? this.#stagingBuffer === upload.buffer : this.#buffer === upload.buffer);
   }
 
   #initFallback(): void {
@@ -786,6 +1218,7 @@ export class RendererController {
   #render(): void {
     if (this.#disposed || this.#state?.pageActive === false) return;
     const started = performance.now();
+    this.#uploadGpuChunk();
     this.#resize();
     this.#matrix = this.#cameraMatrix();
     if (this.#mode === "webgl2") this.#renderWebGl();
@@ -821,8 +1254,13 @@ export class RendererController {
     gl.uniform1f(this.#meters, scene.metadata.metersPerCell);
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
     const pointBudget = Math.max(1, Math.floor(scene.total * this.#qualityScale));
-    const floorCount = Math.min(scene.floorCount, pointBudget);
-    const surfaceCount = Math.min(scene.surfaceCount, Math.max(0, pointBudget - floorCount));
+    const initializedPoints = Math.min(scene.total, this.#initializedPoints);
+    const floorCount = Math.min(scene.floorCount, pointBudget, initializedPoints);
+    const surfaceCount = Math.min(
+      scene.surfaceCount,
+      Math.max(0, pointBudget - floorCount),
+      Math.max(0, initializedPoints - scene.floorCount),
+    );
     gl.uniform1f(this.#pointPixels, this.#sceneCanvas.height * 0.038);
     gl.uniform1f(this.#maxPointPixels, 4.5 * ratio);
     gl.drawArrays(gl.POINTS, 0, floorCount);
@@ -1220,19 +1658,51 @@ export class RendererController {
   };
 
   readonly #contextRestored = (): void => {
+    const previousScene = this.#scene;
+    const previousContext = this.#sceneContext;
+    this.#cancelFallback();
     this.#releaseWebGl();
     this.#initWebGl();
+    const scene = this.#admittedScene;
+    const context = this.#admittedContext;
+    const state = this.#state;
+    if (this.#mode === "webgl2" && scene && context && state?.pageActive) {
+      const sameContext = previousScene !== null && previousContext === context;
+      this.#deleteFrontBuffer();
+      this.#scene = scene;
+      this.#sceneContext = context;
+      let rebased: Partial<Record<MapView, CameraPreference>> | null = null;
+      if (scene !== previousScene) {
+        rebased = this.#installScene(
+          scene,
+          sameContext && !this.#fitActive,
+          previousScene,
+          sameContext,
+          state.workflow === "draw" ? "top" : state.view,
+        );
+      }
+      this.#startGpuUpload(scene, context, state, false, previousScene, sameContext && !this.#fitActive);
+      if (rebased) {
+        const view = state.workflow === "draw" ? "top" : state.view;
+        this.#camera = this.#preferredCamera(view, state, rebased);
+        this.#fitActive = this.#preferenceIsFit(view, state, rebased);
+        this.#notifyCamera();
+      }
+    }
     this.requestRender();
   };
 
   #releaseWebGl(): void {
+    this.#cancelGpuUpload(false);
     const gl = this.#gl;
     if (gl) {
       if (this.#buffer) gl.deleteBuffer(this.#buffer);
+      if (this.#stagingBuffer) gl.deleteBuffer(this.#stagingBuffer);
       if (this.#vertexArray) gl.deleteVertexArray(this.#vertexArray);
       if (this.#program) gl.deleteProgram(this.#program);
     }
     this.#buffer = null;
+    this.#stagingBuffer = null;
     this.#vertexArray = null;
     this.#program = null;
     this.#gl = null;
@@ -1254,5 +1724,7 @@ export class RendererController {
     this.#circlePreview = null;
     this.#scene = null;
     this.#state = null;
+    this.#admittedScene = null;
+    this.#admittedContext = null;
   }
 }

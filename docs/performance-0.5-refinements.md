@@ -1,6 +1,7 @@
 # Unreleased authority-refinement performance
 
-This receipt qualifies the compiled bundle below in a synthetic desktop lab.
+This historical receipt qualifies the compiled bundle below in a synthetic desktop lab.
+The [scene-pipeline measurement](performance-0.5-scene-pipeline.md) identifies the newer bytes.
 It does not transfer RC9's installed or physical evidence to these changes.
 Earlier runs and the unexplained RC9 input outlier remain recorded in
 [performance-0.5.md](performance-0.5.md) and its diagnostic card.
@@ -55,3 +56,49 @@ Workspace transport remains default-OFF. Installed fault/fallback parity and
 final numerical latency, resynchronization and request/resource gates are
 required before switchover; 1 s / 3 s / 70% remain proposed targets.
 Raw receipts stay local. The release gate is [acceptance-0.5.md](acceptance-0.5.md).
+
+## Large-scene resource diagnostic
+
+A separate 04:41 PDT run used clean head `aa3b2b9`, the same production bundle
+above, and collector `bce3c79f02d5a14fe45a259d6b3a1431bf4e499dfca270eff3d63b99328641e4`.
+Fresh headed Chromium contexts rendered identical hash-checked 250,000 and
+1,500,000-point scenes. Each sample ran 60 seconds of synthetic camera controls,
+12 five-second checkpoints and three unmount/remount cycles. One AB pair at
+250,000 points and one BA pair at 1,500,000 points are descriptive samples.
+Scene buffers were injected after parsing; parsing/decompression are excluded.
+
+| Scene / build | Admission to ready, ms | Active renderer task / script CPU proxies, s | First / last post-GC JS heap, bytes |
+|---|---:|---:|---:|
+| 250,000 / v0.4.5 | 9.0 | 1.418 / 0.530 | 2,471,756 / 2,691,516 |
+| 250,000 / candidate | 3.8 | 2.353 / 0.836 | 2,553,504 / 2,808,480 |
+| 1,500,000 / candidate | 10.3 | 3.103 / 1.100 | 2,563,340 / 2,805,524 |
+| 1,500,000 / v0.4.5 | 9.7 | 2.472 / 0.912 | 2,469,408 / 2,688,524 |
+
+All samples rendered the full point count through WebGL2 without asset errors.
+Mounted DOM/listener counts remained constant during interaction; all three
+unmounts returned both builds to 391 nodes and 13 listeners, with remounts at
+821–822 nodes and 59 listeners. Both builds retained small post-GC heap increases
+over three cycles. This short run does not prove leak freedom.
+
+The candidate's task/script proxies were higher in both pairs; no CPU improvement
+or resource-gate pass is claimed. GC time was measured separately from active
+segments. Other host work was uncontrolled, and no repeated distribution or
+trace attribution is available. JS heap excludes native buffers and GPU memory;
+these counters do not establish whole-process CPU, presentation FPS, sustained
+memory/VRAM bounds, or a numerical transport gate. Raw receipts and the collector
+are retained privately for independent method review and targeted diagnosis.
+
+A 05:04 PDT diagnostic reused those compiled bytes and identical 250,000-point
+scene, with exactly 300 separately settled camera actions in each of three
+AB/BA/AB pairs. TaskDuration/action was 0.817/0.810, 0.821/0.796 and
+0.816/0.819 ms (control/candidate); script means were 0.165/0.162 ms/action.
+Those small differences establish no improvement or broad per-action regression
+for this synthetic journey. The checkout was dirty, but its compiled fingerprints
+matched the earlier receipt; these measurements do not cover later source edits.
+
+Per-action DevTools snapshots and two-frame settling change the workload; the
+builds also use different gallery harnesses. Two separately profiled 300-action
+samples were about 98% idle, with too few active samples for reliable hotspot
+attribution. The old interval run did not count actual actions, so this follow-up
+cannot reconstruct or explain its CPU difference. It does not close resource,
+GPU, transport, real-device or presentation-frame gates.

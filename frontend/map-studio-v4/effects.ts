@@ -129,6 +129,8 @@ interface ManualPreviewCapture {
 interface SpatialReadRecoveryAttempt {
   generation: number;
   controller: AbortController | null;
+  readonly replacementRead: Promise<void>;
+  finishReplacementRead: (() => void) | null;
 }
 
 interface SpatialReadRecoveryState {
@@ -774,6 +776,10 @@ export class EffectController {
     this.#store.patch({ generation, pageActive, coherence: state.resources.scene.value ? "verifying" : "unavailable",
       floor: { ...state.floor, readOnly: state.floor.readOnly || state.resources.scene.value !== null },
       map: { ...state.map, exactPose: false } });
+    // A pose/session mismatch can revoke the generation while a recovery
+    // attempt is waiting for its replacement delta long-poll. Release that
+    // waiter after advancing the fence and before aborting its request.
+    if (this.#spatialRecovery) this.#signalSpatialRecoveryRead(this.#spatialRecovery.key);
     // Invalidate the generation before aborting requests so no completion from
     // the old floor/scene can become visible while REST revalidates identity.
     this.#abortResources(["catalog", ...preservedResources]);
@@ -865,6 +871,8 @@ export class EffectController {
     const recovery = this.#spatialRecovery;
     this.#spatialRecovery = null;
     if (!recovery) return;
+    recovery.attempt?.finishReplacementRead?.();
+    if (recovery.attempt) recovery.attempt.finishReplacementRead = null;
     if (recovery.retryTimer !== null) window.clearTimeout(recovery.retryTimer);
     const recoveryController = recovery.attempt?.controller;
     const abortingVisibleCatalog = Boolean(recoveryController
@@ -886,7 +894,19 @@ export class EffectController {
     const recovery = this.#spatialRecovery;
     if (recovery?.key !== entryCoherenceIdentity(entry)) return;
     recovery.failedKinds.delete(kind);
+    if (kind === "delta") this.#finishSpatialReplacementRead(entry);
     if (recovery.failedKinds.size === 0) this.#clearSpatialReadRecovery();
+  }
+
+  #finishSpatialReplacementRead(entry: MapEntry): void {
+    this.#signalSpatialRecoveryRead(entryCoherenceIdentity(entry));
+  }
+
+  #signalSpatialRecoveryRead(key: string): void {
+    const recovery = this.#spatialRecovery;
+    if (recovery?.key !== key) return;
+    recovery.attempt?.finishReplacementRead?.();
+    if (recovery.attempt) recovery.attempt.finishReplacementRead = null;
   }
 
   #recordSpatialReadFailure(kind: "pose" | "delta", entry: MapEntry): void {
@@ -898,6 +918,7 @@ export class EffectController {
       this.#spatialRecovery = recovery;
     }
     recovery.failedKinds.add(kind);
+    if (kind === "delta") this.#finishSpatialReplacementRead(entry);
     if (this.#spatialReadNeedsRevalidation(recovery) && this.#coherence.current()) {
       this.#invalidateSpatialFence();
     }
@@ -958,13 +979,30 @@ export class EffectController {
       this.#stopDeltaStream();
       this.#controllers.get("delta")?.abort();
     }
-    const attempt: SpatialReadRecoveryAttempt = { generation: this.#coherence.generation, controller: null };
+    let finishReplacementRead!: () => void;
+    const replacementRead = new Promise<void>((resolve) => { finishReplacementRead = resolve; });
+    const attempt: SpatialReadRecoveryAttempt = {
+      generation: this.#coherence.generation,
+      controller: null,
+      replacementRead,
+      finishReplacementRead,
+    };
     recovery.attempt = attempt;
     const owner: SpatialReadRecoveryOwner = { state: recovery, attempt };
     try {
       await this.refreshCatalog(true, false, !revalidateFrame, owner);
+      // A successful catalog only authorizes the replacement scene read. Keep
+      // this recovery owner until that scene either starts its replacement
+      // delta long-poll and receives a result, or reaches a terminal outcome.
+      // In particular, a normal 204 can take the full server poll interval.
+      if (recovery.failedKinds.has("delta")
+        && this.#spatialRecovery === recovery
+        && recovery.attempt === attempt) {
+        await attempt.replacementRead;
+      }
     } finally {
       if (this.#spatialRecovery !== recovery || recovery.attempt !== attempt) return;
+      attempt.finishReplacementRead = null;
       recovery.attempt = null;
       if (recovery.failedKinds.size > 0) this.#scheduleSpatialReadRetry(recovery);
     }
@@ -1177,7 +1215,10 @@ export class EffectController {
         return;
       }
       if (this.#store.value.selection.floorId !== "current"
-        || this.#store.value.dataMode !== "live") return;
+        || this.#store.value.dataMode !== "live") {
+        if (spatialRecoveryOwner) this.#finishSpatialReplacementRead(selected);
+        return;
+      }
       const identity = entryIdentity(selected);
       const currentStamp = this.#coherence.current();
       const sameVerifiedFrame = Boolean(currentStamp && currentEntry
@@ -1245,6 +1286,7 @@ export class EffectController {
       this.#beginLiveGeneration(selected, currentEntry);
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || this.#disposed) return;
+      if (spatialRecoveryOwner) this.#signalSpatialRecoveryRead(spatialRecoveryOwner.state.key);
       this.#store.patch({
         coherence: this.#store.value.resources.scene.value ? "degraded" : "unavailable",
         resources: {
@@ -1424,6 +1466,7 @@ export class EffectController {
           floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
           notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
         });
+        this.#finishSpatialReplacementRead(entry);
         return;
       }
       if (response.revision < stamp.revision
@@ -1458,9 +1501,11 @@ export class EffectController {
         void this.loadPlans();
       }
       this.#resumeAreaCatalog();
-      if (entry.deltaUrl) {
+      if (entry.deltaUrl && typeof DecompressionStream === "function") {
         const generation = ++this.#deltaGeneration;
         void this.#streamDeltas(settledEntry, settledStamp, response.scene, generation);
+      } else {
+        this.#resolveSpatialReadFailure("delta", settledEntry);
       }
     } catch (error) {
       if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
@@ -1480,6 +1525,7 @@ export class EffectController {
         }, 250);
         return;
       }
+      this.#finishSpatialReplacementRead(entry);
       const state = this.#store.value;
       const pose = state.resources.pose.value;
       const retainsVerifiedPose = state.resources.scene.value !== null

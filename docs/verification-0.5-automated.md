@@ -125,5 +125,19 @@ catalog, acknowledges exactly one Stop to B, requires pending settlement, and
 proves A's late success/guard rejection cannot change B's command, notice or
 selection. All 14 affected/neighbor cases pass at configured limits. An
 intermediate misplaced fixture edit was corrected; its failed run remains
-retained. No production bytes changed in this fixture repair. New-head CI/review
-remain required, and a skipped capability is not verified support.
+retained. No production bytes changed in this fixture repair. Head `aa3b2b9`
+then passed CI: 3,691 Python tests/100% and 951 browser cases, with the same
+identified Firefox WebGL capability skip. Its regular review found a third
+valid defect: recovery could cancel its replacement five-second delta long-poll.
+The frozen repair passes 18 source-level Chromium/WebKit/Firefox safety cases,
+including delayed 204, floor/entry/disposal cancellation, pose invalidation and
+terminal failures. A paired counterfactual reproduces the preceding source's
+repeated full-scene reload/long-poll abort; the repair accepts the delayed response
+without changing scene, pose, revision or command admission. These focused source
+contracts do not replace packaged exact-head CI or installed-runtime proof.
+A separate authority audit found worker decompression and progressive/incremental
+GPU uploads absent despite the inherited contract. Ownership was reviewed before
+coding. The [scene-pipeline receipt](verification-0.5-scene-pipeline.md) records
+the implemented ownership contract, passing source/adjacent checks, retained
+failures and remaining exact-head, performance and runtime qualification.
+A skipped capability is not verified support.
