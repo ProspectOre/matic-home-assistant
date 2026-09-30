@@ -246,7 +246,10 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
             while marker_start > previous_start and (
                 not lines[marker_start - 1].strip()
                 or SECURITY_MARKER.fullmatch(lines[marker_start - 1])
-                or INLINE_SECURITY_MARKER.fullmatch(lines[marker_start - 1])
+                or (
+                    INLINE_SECURITY_MARKER.fullmatch(lines[marker_start - 1])
+                    and not PRIORITY_RESULT.match(lines[marker_start - 1])
+                )
             ):
                 marker_start -= 1
             marker_text = "\n".join(lines[marker_start:i])
@@ -259,6 +262,10 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
             # A priority list remains inside its heading until that result is
             # complete. A bound result or standalone clean summary ends it.
             inline_security = bool(INLINE_SECURITY_MARKER.search(line))
+            prior_inline_security = any(
+                INLINE_SECURITY_MARKER.search(candidate)
+                for candidate in lines[previous_start:i]
+            )
             if (
                 (
                     inline_security
@@ -273,6 +280,7 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
                 or _standalone_regular_clean(previous)
                 or (coordinator_bound and _standalone_security_clean(previous))
                 or marker_only
+                or (prior_inline_security and not inline_security)
             ):
                 kind = (
                     "security"
