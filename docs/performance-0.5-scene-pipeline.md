@@ -1,8 +1,8 @@
 # Unreleased scene-pipeline measurements
 
-September 30, 2026, 06:53–06:55 PDT. Source head `aa3b2b9` with the frozen
-uncommitted pipeline repairs; production fingerprint
-`1b4078ae1db5f1c2c3f702100dec5a7056ba9b55827a16bc3251037d6bd297a9`.
+September 30, 2026, 09:46 PDT. Source head `c6871f9` with the frozen
+uncommitted decoder scheduler; production fingerprint
+`86abb34fe8070510cfa0f081d0df057ce55f909811f253ab6922e70ce8422f24`.
 These local synthetic results do not qualify installed RC9 or real devices.
 
 ## Packaged desktop journey
@@ -13,11 +13,11 @@ The unchanged schema-5 collector is identified in the
 151.0.7922.34, Apple M4/10 logical CPUs, 1280×900/DPR 1, unthrottled loopback,
 fresh contexts, no-store assets, no tracing. Three AB/BA/AB pairs use identical
 scene hashes and 100 interactions each; all interactions were reported.
-One-minute host load during samples was 3.8–4.9; other host work was uncontrolled.
+One-minute host load during samples was 6.0–6.8; other host work was uncontrolled.
 
 | Measure | Current candidate | Gate |
 |---|---:|---:|
-| Actual registered integration startup, gzip estimate | 89,434 bytes / 87.3 KiB | ≤90 KiB |
+| Actual registered integration startup, gzip estimate | 89,705 bytes / 87.6 KiB | ≤90 KiB |
 | Added lazy workflow, gzip estimate | 11,859 bytes / 11.6 KiB | ≤30 KiB |
 | Input p95, three samples | 56 / 56 / 56 ms | ≤100 ms |
 | Tasks over 50 ms, three samples | 0 / 0 / 0 | No routine task over 50 ms |
@@ -28,8 +28,9 @@ values are a lab input proxy. Review-harness bytes are accounted separately.
 
 ## Paired maximum-scene uploader diagnostic
 
-A separate source-bundle ABBA diagnostic compares the preceding `aa3b2b9`
-renderer with the frozen repair. The collector fingerprint is
+A separate 06:55 PDT source-bundle ABBA diagnostic compares the preceding `aa3b2b9`
+renderer with the repair before the decoder scheduler change. Renderer bytes
+remain unchanged by that change. The collector fingerprint is
 `53327ade01c9a3c0faf5f4d008cac0669809e1e6cd4844992c8fdab42560d2f1`;
 the candidate TypeScript-tree fingerprint is
 `84b9e2c2712ad793da07625c7648eab2db6e565f7bc5e211772a21fcdbe6d43d`.

@@ -46,6 +46,22 @@ interface DeltaBase {
   readonly surfaceCount: number;
 }
 
+type CodecMessage =
+  | { readonly kind: "parse"; readonly buffer: ArrayBuffer }
+  | { readonly kind: "delta"; readonly payload: ArrayBuffer };
+
+interface CodecRun {
+  readonly id: number;
+  readonly message: CodecMessage;
+  readonly signal?: AbortSignal;
+  readonly fallback: (signal: AbortSignal) => Promise<WorkerResult>;
+  readonly base?: DeltaBase;
+  readonly settle: (result?: WorkerResult, error?: unknown) => void;
+  readonly abort: () => void;
+  settled: boolean;
+  worker: Worker | null;
+}
+
 const createSceneCodec = (limits: Readonly<{
   deltaHeaderBytes: number;
   deltaMaxBytes: number;
@@ -344,13 +360,9 @@ export class SceneParser {
   #workerBroken = false;
   #disposed = false;
   #requestId = 0;
-  #pending: {
-    readonly id: number;
-    readonly resolve: (result: WorkerResult) => void;
-    readonly reject: (reason: unknown) => void;
-    readonly cleanup: () => void;
-  } | null = null;
-  #fallbackActive = false;
+  #active: CodecRun | null = null;
+  // One waiter bounds retained response buffers while covering concurrent live/history reads.
+  #queued: CodecRun | null = null;
   #fallbackAbort: AbortController | null = null;
 
   constructor() {
@@ -372,7 +384,6 @@ export class SceneParser {
     }
     const result = await this.#run(
       { kind: "parse", buffer },
-      [buffer],
       signal,
       async (operationSignal) => {
         await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
@@ -390,7 +401,6 @@ export class SceneParser {
     signal?: AbortSignal,
   ): Promise<DecodedSceneDelta> {
     this.#ensureAvailable(signal);
-    this.#ensureIdle();
     if (payload.byteLength > DELTA_HEADER_BYTES + DELTA_MAX_BYTES
       || base.buffer.byteLength > DELTA_MAX_BYTES) throw new ContractError("invalid-scene-delta-size");
     const baseInfo: DeltaBase = {
@@ -400,15 +410,10 @@ export class SceneParser {
       floorCount: base.floorCount,
       surfaceCount: base.surfaceCount,
     };
-    if (!this.#worker && !this.#workerBroken) this.#startWorker();
-    const workerBase: DeltaBase = this.#worker
-      ? { ...baseInfo, buffer: base.buffer.slice(0) }
-      : baseInfo;
     let result: WorkerResult;
     try {
       result = await this.#run(
         { kind: "delta", payload },
-        this.#worker ? [payload, workerBase.buffer] : [],
         signal,
         async (operationSignal) => {
           await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 0));
@@ -416,7 +421,7 @@ export class SceneParser {
           return sceneCodec.decodeDeltaTransfer(payload, baseInfo, operationSignal)
             .then((decoded) => ({ id: 0, ok: true, ...decoded }));
         },
-        workerBase,
+        baseInfo,
       );
     } catch (error) {
       if (error instanceof ContractError) throw error;
@@ -442,21 +447,15 @@ export class SceneParser {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
   }
 
-  #ensureIdle(): void {
-    if (this.#pending || this.#fallbackActive) throw new ContractError("scene-parser-busy");
-  }
-
   #startWorker(): void {
     if (!this.#workerUrl || this.#workerBroken || this.#disposed) return;
     try {
       const worker = new Worker(this.#workerUrl);
       worker.onmessage = (event: MessageEvent<WorkerResult>) => {
-        const pending = this.#pending;
-        if (!pending || event.data.id !== pending.id) return;
-        this.#pending = null;
-        pending.cleanup();
-        if (event.data.ok) pending.resolve(event.data);
-        else pending.reject(new ContractError(event.data.problem || "invalid-scene"));
+        const active = this.#active;
+        if (this.#worker !== worker || !active || active.worker !== worker || event.data.id !== active.id) return;
+        if (event.data.ok) this.#finishActive(active, event.data);
+        else this.#finishActive(active, undefined, new ContractError(event.data.problem || "invalid-scene"));
       };
       worker.onerror = () => this.#workerFailed(worker);
       worker.onmessageerror = () => this.#workerFailed(worker);
@@ -468,71 +467,147 @@ export class SceneParser {
   }
 
   async #run(
-    message: { readonly kind: "parse"; readonly buffer: ArrayBuffer }
-      | { readonly kind: "delta"; readonly payload: ArrayBuffer },
-    transfer: Transferable[],
+    message: CodecMessage,
     signal: AbortSignal | undefined,
     fallback: (signal: AbortSignal) => Promise<WorkerResult>,
     base?: DeltaBase,
   ): Promise<WorkerResult> {
     this.#ensureAvailable(signal);
-    this.#ensureIdle();
-    if (!this.#worker && !this.#workerBroken) this.#startWorker();
-    if (!this.#worker) {
-      this.#fallbackActive = true;
-      const fallbackController = new AbortController();
-      this.#fallbackAbort = fallbackController;
-      const abortFallback = (): void => fallbackController.abort();
-      signal?.addEventListener("abort", abortFallback, { once: true });
-      try {
-        return await fallback(fallbackController.signal);
-      } finally {
-        signal?.removeEventListener("abort", abortFallback);
-        this.#fallbackAbort = null;
-        this.#fallbackActive = false;
-      }
-    }
-
-    const id = ++this.#requestId;
-    const worker = this.#worker;
     return new Promise<WorkerResult>((resolve, reject) => {
-      const cleanup = (): void => signal?.removeEventListener("abort", abort);
-      const abort = (): void => {
-        const pending = this.#pending;
-        if (!pending || pending.id !== id) return;
-        this.#pending = null;
+      let request!: CodecRun;
+      const cleanup = (): void => signal?.removeEventListener("abort", request.abort);
+      const settle = (result?: WorkerResult, error?: unknown): void => {
+        if (request.settled) return;
+        request.settled = true;
         cleanup();
-        this.#terminateWorker();
-        reject(new DOMException("Aborted", "AbortError"));
+        if (error !== undefined) reject(error);
+        else if (result) resolve(result);
+        else reject(new ContractError("invalid-scene"));
       };
-      this.#pending = { id, resolve, reject, cleanup };
-      signal?.addEventListener("abort", abort, { once: true });
-      try {
-        if (signal?.aborted) {
-          abort();
-          return;
-        }
-        const data = message.kind === "parse"
-          ? { id, kind: message.kind, buffer: message.buffer }
-          : { id, kind: message.kind, payload: message.payload, base };
-        worker.postMessage(data, transfer);
-      } catch (error) {
-        this.#pending = null;
-        cleanup();
-        this.#workerFailed(worker);
-        reject(error);
+      request = {
+        id: ++this.#requestId,
+        message,
+        ...(signal ? { signal } : {}),
+        fallback,
+        ...(base ? { base } : {}),
+        settle,
+        abort: () => this.#abortRun(request),
+        settled: false,
+        worker: null,
+      };
+      signal?.addEventListener("abort", request.abort, { once: true });
+      if (signal?.aborted || this.#disposed) {
+        settle(undefined, signal?.aborted
+          ? new DOMException("Aborted", "AbortError")
+          : new ContractError("scene-parser-disposed"));
+      } else if (!this.#active) {
+        this.#active = request;
+        this.#dispatch(request);
+      } else if (!this.#queued) {
+        this.#queued = request;
+      } else {
+        settle(undefined, new ContractError("scene-parser-busy"));
       }
     });
   }
 
+  #dispatch(request: CodecRun): void {
+    if (this.#active !== request) return;
+    if (this.#disposed) {
+      this.#finishActive(request, undefined, new ContractError("scene-parser-disposed"));
+      return;
+    }
+    if (request.signal?.aborted) {
+      this.#finishActive(request, undefined, new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    if (!this.#worker && !this.#workerBroken) this.#startWorker();
+    const worker = this.#worker;
+    if (worker) {
+      request.worker = worker;
+      try {
+        let data: unknown;
+        let transfer: Transferable[];
+        if (request.message.kind === "parse") {
+          data = { id: request.id, kind: request.message.kind, buffer: request.message.buffer };
+          transfer = [request.message.buffer];
+        } else {
+          if (!request.base) throw new ContractError("invalid-scene-delta");
+          const workerBase: DeltaBase = { ...request.base, buffer: request.base.buffer.slice(0) };
+          data = { id: request.id, kind: request.message.kind, payload: request.message.payload, base: workerBase };
+          transfer = [request.message.payload, workerBase.buffer];
+        }
+        worker.postMessage(data, transfer);
+      } catch {
+        this.#workerFailed(worker);
+      }
+      return;
+    }
+
+    const fallbackController = new AbortController();
+    this.#fallbackAbort = fallbackController;
+    void Promise.resolve()
+      .then(() => request.fallback(fallbackController.signal))
+      .then(
+        (result) => this.#finishActive(request, result),
+        (error: unknown) => this.#finishActive(request, undefined, error),
+      );
+  }
+
+  #abortRun(request: CodecRun): void {
+    const aborted = new DOMException("Aborted", "AbortError");
+    if (this.#queued === request) {
+      this.#queued = null;
+      request.settle(undefined, aborted);
+      return;
+    }
+    if (this.#active !== request) return;
+    if (request.worker) {
+      this.#terminateWorker();
+      this.#finishActive(request, undefined, aborted);
+    } else {
+      this.#fallbackAbort?.abort();
+    }
+  }
+
+  #finishActive(request: CodecRun, result?: WorkerResult, error?: unknown): void {
+    if (this.#active !== request) {
+      request.settle(undefined, new ContractError("scene-parser-disposed"));
+      return;
+    }
+    const finalError = request.signal?.aborted
+      ? new DOMException("Aborted", "AbortError")
+      : error;
+    request.settle(result, finalError);
+    this.#active = null;
+    this.#fallbackAbort = null;
+    request.worker = null;
+    if (!this.#disposed) this.#pump();
+  }
+
+  #pump(): void {
+    if (this.#disposed || this.#active || !this.#queued) return;
+    const next = this.#queued;
+    this.#queued = null;
+    if (next.signal?.aborted) {
+      next.settle(undefined, new DOMException("Aborted", "AbortError"));
+      this.#pump();
+      return;
+    }
+    this.#active = next;
+    this.#dispatch(next);
+  }
+
   #workerFailed(worker: Worker): void {
     if (this.#worker !== worker) return;
-    const pending = this.#pending;
-    this.#pending = null;
     this.#workerBroken = true;
     this.#terminateWorker();
-    pending?.cleanup();
-    pending?.reject(new ContractError("scene-worker-failed"));
+    const active = this.#active;
+    if (active?.worker === worker) {
+      this.#finishActive(active, undefined, new ContractError("scene-worker-failed"));
+    } else {
+      this.#pump();
+    }
   }
 
   #terminateWorker(): void {
@@ -543,13 +618,18 @@ export class SceneParser {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    const pending = this.#pending;
-    this.#pending = null;
+    const queued = this.#queued;
+    this.#queued = null;
+    queued?.settle(undefined, new ContractError("scene-parser-disposed"));
+    const active = this.#active;
+    this.#terminateWorker();
     this.#fallbackAbort?.abort();
     this.#fallbackAbort = null;
-    pending?.cleanup();
-    pending?.reject(new ContractError("scene-parser-disposed"));
-    this.#terminateWorker();
+    if (active) {
+      active.worker = null;
+      active.settle(undefined, new ContractError("scene-parser-disposed"));
+    }
+    this.#active = null;
     if (this.#workerUrl) URL.revokeObjectURL(this.#workerUrl);
     this.#workerUrl = null;
   }
