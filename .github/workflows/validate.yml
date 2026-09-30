@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   hacs:
-    runs-on: [self-hosted, Linux, ARM64, "matic-proof-${{ github.run_id }}", ephemeral]
+    runs-on: [self-hosted, Linux, X64, "matic-proof-${{ github.run_id }}", ephemeral]
     steps:
       - name: HACS validation
         uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main
@@ -21,7 +21,7 @@ jobs:
           category: integration
 
   hassfest:
-    runs-on: [self-hosted, Linux, ARM64, "matic-proof-${{ github.run_id }}", ephemeral]
+    runs-on: [self-hosted, Linux, X64, "matic-proof-${{ github.run_id }}", ephemeral]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: home-assistant/actions/hassfest@ab22029681aa532bfe7de5774a9972d67bfbd2c0 # master

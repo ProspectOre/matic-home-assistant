@@ -160,11 +160,22 @@ jobs:
               -f description="$description" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
+          dispatch_review_gate() {
+            local audit="${1:-false}"
+            if ! gh api "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+              --silent >/dev/null 2>&1; then
+              echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+              return 0
+            fi
+            gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+              -f pull_request="$PR_NUMBER" -F audit="$audit"
+          }
           # Establish the fail-closed state before any fallible revalidation.
           stamp_pending "$REVIEW_GATE_CONTEXT" \
             "Review state changed; evaluating regular Codex review"
           if ! current_review="$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID" 2>/dev/null)"; then
             echo "Ignoring a stale delivery for missing review $REVIEW_ID."
+            dispatch_review_gate true
             exit 0
           fi
           current_review_state="$(jq -er '[.user.login, (.user.type // ""), (.user.id // 0), .commit_id, .state, ((.body // "") | @base64)] | @tsv' <<< "$current_review")"
@@ -177,6 +188,7 @@ jobs:
             || ( "$EVENT_ACTION" == "dismissed" && "$current_state" != "DISMISSED" ) \
             || ( "$EVENT_ACTION" != "dismissed" && "$current_state" == "DISMISSED" ) ]]; then
             echo "Ignoring a stale review delivery superseded by newer review state."
+            dispatch_review_gate true
             exit 0
           fi
           if [[ "$REVIEW_INVALIDATED" == "true" ]]; then
@@ -202,12 +214,5 @@ jobs:
             stamp_pending "$REVIEW_REVIEW_CONTEXT" \
               "Regular review invalidated at $review_updated_at; PR #$PR_NUMBER; withdrawn review:$REVIEW_ID"
           fi
-          if ! gh api \
-            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
-            --silent >/dev/null 2>&1; then
-            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
-            exit 0
-          fi
-          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
-            -f pull_request="$PR_NUMBER"
+          dispatch_review_gate false
           echo "Dispatched regular-review evaluation for PR #$PR_NUMBER."

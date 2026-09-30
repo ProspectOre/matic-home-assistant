@@ -217,17 +217,44 @@ def _raw_sections(body: str) -> list[tuple[str, str]]:
             starts.append(i)
             kinds[i] = "security" if SECURITY_HEADING.match(line) else "regular"
         elif PRIORITY_RESULT.match(line):
-            previous = "\n".join(lines[starts[-1] : i]) if starts else ""
+            previous_start = starts[-1] if starts else 0
+            previous = "\n".join(lines[previous_start:i])
+            marker_start = i
+            while marker_start > previous_start and (
+                not lines[marker_start - 1].strip()
+                or SECURITY_MARKER.fullmatch(lines[marker_start - 1])
+                or INLINE_SECURITY_MARKER.fullmatch(lines[marker_start - 1])
+            ):
+                marker_start -= 1
+            marker_text = "\n".join(lines[marker_start:i])
+            marker_only = bool(marker_text.strip()) and all(
+                not candidate.strip()
+                or SECURITY_MARKER.fullmatch(candidate)
+                or INLINE_SECURITY_MARKER.fullmatch(candidate)
+                for candidate in lines[marker_start:i]
+            )
             # A priority list remains inside its heading until that result is
             # complete. A bound result or standalone clean summary ends it.
+            inline_security = bool(INLINE_SECURITY_MARKER.search(line))
             if (
-                not starts
+                (
+                    inline_security
+                    and (
+                        not starts
+                        or REVIEWED_COMMIT.search(previous)
+                        or _standalone_regular_clean(previous)
+                    )
+                )
+                or not starts
                 or REVIEWED_COMMIT.search(previous)
                 or _standalone_regular_clean(previous)
+                or marker_only
             ):
                 kind = (
                     "security"
-                    if starts and kinds[starts[-1]] == "security"
+                    if inline_security
+                    or marker_only
+                    or (starts and kinds[starts[-1]] == "security")
                     else "unheaded"
                 )
                 starts.append(i)
@@ -235,31 +262,42 @@ def _raw_sections(body: str) -> list[tuple[str, str]]:
     if not starts:
         return [("unheaded", body)]
 
-    marker_prefix = lines[: starts[0]]
-    attach_security_marker = (
-        bool(marker_prefix)
-        and all(
-            not line.strip()
-            or SECURITY_MARKER.fullmatch(line)
-            or INLINE_SECURITY_MARKER.fullmatch(line)
-            for line in marker_prefix
-        )
-        and any(line.strip() for line in marker_prefix)
-        and bool(
-            SECURITY_HEADING.match(lines[starts[0]])
-            or PRIORITY_RESULT.match(lines[starts[0]])
-        )
-    )
-    if attach_security_marker:
-        kinds[starts[0]] = "security"
+    attached_starts: dict[int, int] = {}
+    for index, start in enumerate(starts):
+        previous_start = starts[index - 1] if index else 0
+        marker_start = start
+        while marker_start > previous_start and (
+            not lines[marker_start - 1].strip()
+            or SECURITY_MARKER.fullmatch(lines[marker_start - 1])
+            or (
+                INLINE_SECURITY_MARKER.fullmatch(lines[marker_start - 1])
+                and not PRIORITY_RESULT.match(lines[marker_start - 1])
+            )
+        ):
+            marker_start -= 1
+        marker_run = lines[marker_start:start]
+        if (
+            any(line.strip() for line in marker_run)
+            and all(
+                not line.strip()
+                or SECURITY_MARKER.fullmatch(line)
+                or INLINE_SECURITY_MARKER.fullmatch(line)
+                for line in marker_run
+            )
+            and (SECURITY_HEADING.match(lines[start]) or kinds[start] == "security")
+        ):
+            attached_starts[start] = marker_start
+            kinds[start] = "security"
+    unconsumed_prefix = lines[: attached_starts.get(starts[0], starts[0])]
     result: list[tuple[str, str]] = []
-    if any(line.strip() for line in marker_prefix) and not attach_security_marker:
+    if any(line.strip() for line in unconsumed_prefix):
         # A result heading cannot erase preceding adverse evidence. Keep the
         # prefix independently bound; missing metadata remains fail-closed.
-        result.append(("unheaded", "\n".join(marker_prefix)))
+        result.append(("unheaded", "\n".join(unconsumed_prefix)))
     for index, start in enumerate(starts):
-        end = starts[index + 1] if index + 1 < len(starts) else len(lines)
-        text_start = 0 if index == 0 and attach_security_marker else start
+        next_start = starts[index + 1] if index + 1 < len(starts) else len(lines)
+        end = attached_starts.get(next_start, next_start)
+        text_start = attached_starts.get(start, start)
         result.append((kinds[start], "\n".join(lines[text_start:end])))
     return result
 
@@ -367,18 +405,29 @@ def classify_body(body: str) -> dict[str, Any]:
             )
         ) and not bool(SECURITY_REPORT_LINK.search(text))
         clean = _standalone_regular_clean(text)
-        prefix_adverse = kind == "unheaded" and bool(EXPLICIT_ADVERSE.search(text))
+        ordinary_text = "\n".join(
+            line
+            for line in text.splitlines()
+            if not INLINE_SECURITY_MARKER.search(line)
+            and not SECURITY_MARKER.fullmatch(line)
+        )
+        ordinary_text = _without_review_metadata(ordinary_text)
+        ordinary_text = _without_heading(kind, ordinary_text)
+        prefix_adverse = kind == "unheaded" and bool(
+            EXPLICIT_ADVERSE.search(ordinary_text)
+        )
         security_event, security_finding = _security_facts(kind, text)
-        adverse_regular = (
+        adverse_regular = bool(
             prefix_adverse
             or (
                 regular_heading
+                and ordinary_text.strip()
                 and (
-                    bool(EXPLICIT_ADVERSE.search(text))
+                    bool(EXPLICIT_ADVERSE.search(ordinary_text))
                     or (not availability and not clean)
                 )
             )
-        ) and not security_event
+        )
         has_result = (
             regular_heading
             or security_heading
@@ -386,6 +435,8 @@ def classify_body(body: str) -> dict[str, Any]:
             or security_finding
             or prefix_adverse
         )
+        if security_event and not adverse_regular and not ordinary_text.strip():
+            kind = "security"
         sections.append(
             {
                 "kind": kind,

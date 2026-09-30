@@ -15,7 +15,16 @@ BODY = "Codex Review: No issues found."
 
 
 class NativeReviewRouterTests(unittest.TestCase):
-    def replay(self, *, invalidated=True, graph_fail=False, changed=None):
+    def replay(
+        self,
+        *,
+        invalidated=True,
+        graph_fail=False,
+        changed=None,
+        rest_fail=False,
+        rest_changed=None,
+        dispatch_fail=False,
+    ):
         workflow = (ROOT / ".github/workflows/review-regular-review.yml").read_text()
         block = workflow.split(
             "      - name: Revoke the regular gate under its per-PR lock", 1
@@ -33,6 +42,8 @@ class NativeReviewRouterTests(unittest.TestCase):
                 "type": "Bot",
             },
         }
+        if rest_changed:
+            rest.update(rest_changed)
         node = {
             "databaseId": 17,
             "updatedAt": AT,
@@ -47,7 +58,10 @@ class NativeReviewRouterTests(unittest.TestCase):
         prelude = """gh() {
           printf '%s\n' "$*" >> "$CALLS"
           case "$*" in
-            *'api repos/acme/repo/pulls/7/reviews/17'*) printf '%s' "$REST" ;;
+            *'api repos/acme/repo/pulls/7/reviews/17'*)
+              [[ "$REST_FAIL" != true ]] || return 1
+              printf '%s' "$REST" ;;
+            *'workflow run'*) [[ "$DISPATCH_FAIL" != true ]] || return 1 ;;
             *'api graphql'*)
               [[ "$GRAPH_FAIL" != true ]] || return 1
               printf '%s' "$GRAPH"
@@ -63,6 +77,8 @@ class NativeReviewRouterTests(unittest.TestCase):
                 REST=json.dumps(rest),
                 GRAPH=json.dumps({"data": {"node": node}}),
                 GRAPH_FAIL=str(graph_fail).lower(),
+                REST_FAIL=str(rest_fail).lower(),
+                DISPATCH_FAIL=str(dispatch_fail).lower(),
                 PR_NUMBER="7",
                 REVIEW_ID="17",
                 EVENT_HEAD_SHA=HEAD,
@@ -122,6 +138,24 @@ class NativeReviewRouterTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn("context=review-gate-regular-review", calls)
                 self.assertNotIn("workflow run", calls)
+
+    def test_stale_review_deliveries_reconcile_after_pending(self):
+        for options in ({"rest_fail": True}, {"rest_changed": {"body": "newer body"}}):
+            with self.subTest(options=options):
+                result, calls = self.replay(**options)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertLess(
+                    calls.index("context=review-gate "), calls.index("workflow run")
+                )
+                self.assertIn("-F audit=true", calls)
+                self.assertNotIn("context=review-gate-regular-review", calls)
+                self.assertNotIn("api graphql", calls)
+
+    def test_stale_reconciliation_failure_remains_pending(self):
+        result, calls = self.replay(rest_fail=True, dispatch_fail=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("context=review-gate ", calls)
+        self.assertNotIn("state=success", calls)
 
     def test_clean_review_does_not_create_invalidation_watermark(self):
         result, calls = self.replay(invalidated=False)

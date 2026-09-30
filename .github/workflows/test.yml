@@ -15,8 +15,9 @@ concurrency:
 
 jobs:
   test:
-    runs-on: [self-hosted, Linux, ARM64, "matic-proof-${{ github.run_id }}", ephemeral]
-    timeout-minutes: 20
+    runs-on: [self-hosted, Linux, X64, "matic-proof-${{ github.run_id }}", ephemeral]
+    # The isolated x86 guest uses QEMU; retain the complete checks with a bounded budget.
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:

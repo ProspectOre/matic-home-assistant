@@ -662,9 +662,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'fb81b436baa2c87ba970362be56504be28efe57c473284c066ceabfc6de9ecb8'
+          EXPECTED_SHA256: 'c1b5473551ec08af0a0070f2e62c09c4593845b0668e4f4d18d73a0e6d6d5412'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'd0a17223d92c730f2f82a5d8def82066dbc8d56af6ff9b26e986649a19f6974d'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '9121bf68027ff5698829e7214aa2ccbaea64e1d0841c07bccce6d0a8580ffbfe'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |
