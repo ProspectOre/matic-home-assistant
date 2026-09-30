@@ -484,6 +484,8 @@ export class RendererController {
       const sceneContextKey = sceneContext(state);
       const targetChanged = scene !== admittedBefore || sceneContextKey !== admittedContextBefore;
       const currentUpload = this.#upload;
+      const frontNeedsMaterialization = this.#mode === "webgl2" && !currentUpload
+        && this.#initializedPoints < scene.total;
       const pendingSuccessorBlocks = currentUpload && currentUpload.context === sceneContextKey
         && currentUpload.contextGeneration === this.#contextGeneration
         && samePointLayout(currentUpload.scene, scene)
@@ -496,7 +498,7 @@ export class RendererController {
         && pendingSuccessorBlocks !== null
         && this.#advanceGpuUpload(scene, sceneContextKey, state, pendingSuccessorBlocks));
       const uploadChanged = Boolean(currentUpload && !uploadMatches);
-      if (!advanced && (uploadChanged || targetChanged
+      if (!advanced && (frontNeedsMaterialization || uploadChanged || targetChanged
         || scene !== this.#scene || sceneContextKey !== this.#sceneContext)) {
         const sameSceneContext = this.#scene !== null && this.#sceneContext === sceneContextKey;
         const compatible = sameSceneContext && this.#scene && samePointLayout(this.#scene, scene);
@@ -832,18 +834,18 @@ export class RendererController {
       try {
         buffer = gl.createBuffer();
       } catch {
-        this.#fallbackFromGpuUpload();
+        this.#transitionToFallback();
         return;
       }
     }
     if (!buffer) {
-      this.#fallbackFromGpuUpload();
+      this.#transitionToFallback();
       return;
     }
     if (staging) this.#stagingBuffer = buffer;
     else this.#buffer = buffer;
     if (!this.#allocateGpuBuffer(buffer, scene.total * 8, seed === "scene")) {
-      this.#fallbackFromGpuUpload();
+      this.#transitionToFallback();
       return;
     }
     if (!staging) this.#bindVertexBuffer(buffer);
@@ -927,7 +929,7 @@ export class RendererController {
     }
   }
 
-  #fallbackFromGpuUpload(): void {
+  #transitionToFallback(): void {
     const scene = this.#admittedScene;
     const context = this.#admittedContext;
     const state = this.#state;
@@ -935,14 +937,20 @@ export class RendererController {
     const previousContext = this.#sceneContext;
     this.#cancelGpuUpload(false);
     this.#releaseWebGl();
-    this.#initFallback();
     if (scene && context && state?.pageActive) {
       const sameContext = previousScene !== null && previousContext === context;
-      this.#scene = scene;
-      this.#sceneContext = context;
-      this.#installScene(scene, sameContext && !this.#fitActive, previousScene, sameContext,
-        state.workflow === "draw" ? "top" : state.view);
+      if (scene !== previousScene || context !== previousContext) {
+        this.#scene = scene;
+        this.#sceneContext = context;
+        this.#installScene(scene, sameContext && !this.#fitActive, previousScene, sameContext,
+          state.workflow === "draw" ? "top" : state.view);
+      }
+    } else if (!scene && previousScene) {
+      this.#scene = null;
+      this.#sceneContext = null;
+      this.#installScene(null);
     }
+    this.#initFallback();
     this.requestRender();
   }
 
@@ -1040,7 +1048,7 @@ export class RendererController {
         used += extraFrontier;
       }
     } catch {
-      this.#fallbackFromGpuUpload();
+      this.#transitionToFallback();
       return;
     }
 
@@ -1652,9 +1660,7 @@ export class RendererController {
 
   readonly #contextLost = (event: Event): void => {
     event.preventDefault();
-    this.#releaseWebGl();
-    this.#initFallback();
-    this.requestRender();
+    this.#transitionToFallback();
   };
 
   readonly #contextRestored = (): void => {
@@ -1706,6 +1712,8 @@ export class RendererController {
     this.#vertexArray = null;
     this.#program = null;
     this.#gl = null;
+    this.#initializedPoints = 0;
+    this.#renderedPoints = 0;
   }
 
   dispose(): void {

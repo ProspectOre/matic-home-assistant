@@ -567,6 +567,208 @@ test("@safety upload owner cancels on floor replacement and suspension, then res
   expect(outcome.writesAfterDispose).toBe(outcome.writesAtDispose);
 });
 
+test("@safety context loss during compatible staging falls back to the latest admitted scene", async ({ page }) => {
+  await loadRenderer(page);
+  const outcome = await page.evaluate(async () => {
+    const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
+    const base = createGalleryState("ready");
+    const total = 100_000;
+    const pointOffset = 64;
+    const makeScene = (revision, previous = null) => {
+      const buffer = previous ? previous.buffer.slice(0) : new ArrayBuffer(pointOffset + total * 8);
+      const points = new DataView(buffer, pointOffset);
+      if (!previous) {
+        for (let index = 0; index < total; index += 1) {
+          const offset = index * 8;
+          points.setUint16(offset, 65_000, true);
+          points.setUint16(offset + 2, 65_000, true);
+          points.setUint8(offset + 5, 255);
+        }
+        points.setUint16(0, 100, true);
+        points.setUint16(2, 100, true);
+      } else {
+        points.setUint16(0, 500, true);
+        points.setUint16(2, 500, true);
+        points.setUint8(5, 0);
+        points.setUint8(6, 255);
+      }
+      return {
+        ...base.resources.scene.value,
+        buffer,
+        pointOffset,
+        floorCount: 90_000,
+        surfaceCount: 10_000,
+        total,
+        revision,
+        metadata: {
+          ...base.resources.scene.value.metadata,
+          metersPerCell: 0.05,
+          origin: [0, 0],
+          span: [1_000, 1_000],
+          sampleStep: previous ? 3 : 1,
+          rooms: previous ? [{
+            id: "new-room", name: "Current scene room",
+            boundary: [[10, 10], [20, 10], [20, 20], [10, 20]], center: [15, 15],
+          }] : [{
+            id: "old-room", name: "Prior scene room",
+            boundary: [[30, 30], [40, 30], [40, 40], [30, 40]], center: [35, 35],
+          }],
+        },
+        source: "live",
+        ...(previous ? { deltaHint: { baseRevision: previous.revision, blockBytes: 65_536, dirtyBlocks: [0] } } : {}),
+      };
+    };
+    const stateFor = (scene) => ({
+      ...base,
+      appearance: "photo",
+      labelsVisible: false,
+      resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null } },
+    });
+    const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
+    canvases.forEach((canvas) => document.body.append(canvas));
+    const created = document.createElement.bind(document);
+    const fallbackCanvases = [];
+    document.createElement = function (name, options) {
+      const element = created(name, options);
+      if (name.toLowerCase() === "canvas") fallbackCanvases.push(element);
+      return element;
+    };
+    const renderer = new RendererController(...canvases);
+    const context = contexts.at(-1);
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const waitFor = async (predicate, attempts = 120) => {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        if (predicate()) return true;
+        await nextFrame();
+      }
+      return predicate();
+    };
+    const previous = makeScene(40);
+    renderer.setState(stateFor(previous));
+    const previousComplete = await waitFor(() => renderer.diagnostics().sceneRevision === 40
+      && renderer.diagnostics().renderedPoints === total);
+    const successor = makeScene(41, previous);
+    renderer.setState(stateFor(successor));
+    const stagingStarted = await waitFor(() => context.calls.some((call) => call.type === "copy"));
+    const publishedBeforeLoss = renderer.diagnostics().sceneRevision;
+    canvases[0].dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    const fallbackComplete = await waitFor(() => renderer.diagnostics().mode === "canvas2d"
+      && renderer.diagnostics().renderedPoints === 50_000);
+    const fallbackCanvas = fallbackCanvases.at(-1);
+    const pixel = fallbackCanvas?.getContext("2d")?.getImageData(512, 512, 1, 1).data;
+    const obsoletePixel = fallbackCanvas?.getContext("2d")?.getImageData(102, 102, 1, 1).data;
+    const diagnostics = renderer.diagnostics();
+    document.createElement = created;
+    renderer.dispose();
+    canvases.forEach((canvas) => canvas.remove());
+    return {
+      previousComplete,
+      stagingStarted,
+      publishedBeforeLoss,
+      fallbackComplete,
+      mode: diagnostics.mode,
+      sceneRevision: diagnostics.sceneRevision,
+      sourcePoints: diagnostics.sourcePoints,
+      renderedPoints: diagnostics.renderedPoints,
+      currentPixel: pixel ? [...pixel] : null,
+      obsoletePixel: obsoletePixel ? [...obsoletePixel] : null,
+    };
+  });
+
+  expect(outcome.previousComplete).toBe(true);
+  expect(outcome.stagingStarted).toBe(true);
+  expect(outcome.publishedBeforeLoss).toBe(40);
+  expect(outcome.fallbackComplete).toBe(true);
+  expect(outcome.mode).toBe("canvas2d");
+  expect(outcome.sceneRevision).toBe(41);
+  expect(outcome.sourcePoints).toBe(100_000);
+  expect(outcome.renderedPoints).toBe(50_000);
+  expect(outcome.currentPixel?.[1]).toBeGreaterThan(240);
+  expect(outcome.currentPixel?.[0]).toBeLessThan(10);
+  expect(outcome.obsoletePixel?.[3]).toBe(0);
+});
+
+test("@safety hidden context restoration stays idle then uploads the same admitted scene on resume", async ({ page }) => {
+  await loadRenderer(page);
+  const outcome = await page.evaluate(async () => {
+    const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
+    const base = createGalleryState("ready");
+    const source = base.resources.scene.value;
+    const total = 4_096;
+    const buffer = new ArrayBuffer(source.pointOffset + total * 8);
+    const pointBytes = new Uint8Array(buffer, source.pointOffset);
+    pointBytes.fill(0x3d);
+    const scene = {
+      ...source,
+      buffer,
+      floorCount: total,
+      surfaceCount: 0,
+      total,
+      revision: 52,
+      source: "live",
+    };
+    const stateFor = (pageActive) => ({
+      ...base,
+      pageActive,
+      resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null } },
+    });
+    const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
+    canvases.forEach((canvas) => document.body.append(canvas));
+    const renderer = new RendererController(...canvases);
+    const waitFor = async (predicate, attempts = 120) => {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        if (predicate()) return true;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      return predicate();
+    };
+    renderer.setState(stateFor(true));
+    const initialContext = contexts.at(-1);
+    const initialComplete = await waitFor(() => renderer.diagnostics().sceneRevision === scene.revision
+      && renderer.diagnostics().renderedPoints === total);
+
+    renderer.setState(stateFor(false));
+    canvases[0].dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    canvases[0].dispatchEvent(new Event("webglcontextrestored"));
+    const restoredContext = contexts.at(-1);
+    const hiddenFrame = renderer.diagnostics();
+    const hiddenUploadCalls = restoredContext.calls.filter((call) => call.type === "chunk" || call.type === "copy").length;
+
+    renderer.setState(stateFor(true));
+    const resumeComplete = await waitFor(() => renderer.diagnostics().sceneRevision === scene.revision
+      && renderer.diagnostics().renderedPoints === total);
+    const front = [...restoredContext.vertexArrayBuffers.values()][0];
+    const actual = restoredContext.buffers.get(front?.id);
+    const expected = new Uint8Array(scene.buffer, scene.pointOffset, scene.total * 8);
+    const exactRestoredBytes = Boolean(actual && actual.length === expected.length
+      && actual.every((value, index) => value === expected[index]));
+    const restoredUploadCalls = restoredContext.calls.filter((call) => call.type === "chunk" || call.type === "copy").length;
+    renderer.dispose();
+    canvases.forEach((canvas) => canvas.remove());
+    return {
+      initialComplete,
+      initialContextCount: initialContext.calls.filter((call) => call.type === "chunk").length,
+      restoredContextCount: contexts.length,
+      hiddenRevision: hiddenFrame.sceneRevision,
+      hiddenRenderedPoints: hiddenFrame.renderedPoints,
+      hiddenUploadCalls,
+      resumeComplete,
+      restoredUploadCalls,
+      exactRestoredBytes,
+    };
+  });
+
+  expect(outcome.initialComplete).toBe(true);
+  expect(outcome.initialContextCount).toBeGreaterThan(0);
+  expect(outcome.restoredContextCount).toBe(2);
+  expect(outcome.hiddenRevision).toBe(52);
+  expect(outcome.hiddenRenderedPoints).toBe(0);
+  expect(outcome.hiddenUploadCalls).toBe(0);
+  expect(outcome.resumeComplete).toBe(true);
+  expect(outcome.restoredUploadCalls).toBeGreaterThan(0);
+  expect(outcome.exactRestoredBytes).toBe(true);
+});
+
 test("@safety WebGL allocation and subdata errors fall back to the latest admitted scene", async ({ page }) => {
   await loadRenderer(page);
   const outcome = await page.evaluate(async () => {
