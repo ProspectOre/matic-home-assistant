@@ -519,7 +519,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         return captured;
       } finally { effects.dispose(); }
     });
-    expect(calls).toEqual([["matic_robot", "reset_room_cadence", { plan: "daily", room_id: "room-a", modes: ["mop"] }, "vacuum.synthetic"]]);
+    expect(calls).toEqual([["matic_robot", "reset_room_cadence", { plan: "daily", room_id: "room-a", modes: ["mop"] }, "vacuum.synthetic", { acknowledgementTimeout: "mutation" }]]);
   });
 
   test("uses the shared room schedule by default and keeps its progress visible during an override", async ({ page }) => {
@@ -1176,6 +1176,24 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate((tag) => document.querySelector(tag).setScenario("unsupported"), GALLERY_TAG);
     await expect(gallery.locator(".action-bar")).toContainText("Map unavailable");
     await expect(gallery.locator(".action-bar")).not.toContainText("Finding the map");
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Map unavailable");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, coherence: "unavailable", map: { ...state.map, available: false } });
+    });
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Map unavailable");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+    await expect(gallery.locator(".status-copy strong")).not.toHaveText("Locating");
+
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, activity: "cleaning", coherence: "unavailable" });
+    });
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Cleaning");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+    await expect(gallery.getByRole("button", { name: "Stop cleaning", exact: true }).first()).toBeEnabled();
   });
   for (const retained of [false, true]) {
     test(`keeps a ${retained ? "retained" : "saved"} map visible during live revalidation`, async ({ page }, testInfo) => {
@@ -1766,7 +1784,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       effects.dispose();
       return result;
     });
-    expect(result.generationAfter).toBeGreaterThan(result.generationBefore);
+    expect(result.generationAfter).toBe(result.generationBefore);
     expect(result.sceneCalls).toBe(2);
   });
 
@@ -5168,6 +5186,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       return { revision: state.resources.scene.value?.revision, exactPose: state.map.exactPose };
     })).toEqual({ revision: 2, exactPose: true });
     expect(fullSceneRequests).toBe(1);
+    const contentGeneration = await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation);
     holdDeltaRecoveryScene = true;
     failNextDelta = true;
     await expect.poll(() => fullSceneRequests).toBe(2);
@@ -5175,6 +5194,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
     })).toEqual({ exactPose: true, position: [10, 12] });
+    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
     releaseDeltaRecoveryScene();
     expect(fullScenePreferCached).toEqual(["1", "1"]);
     await expect.poll(async () => page.evaluate(() =>
@@ -5241,6 +5261,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       sceneRevision: 2,
       sceneStatus: "loading",
     });
+    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
     releaseHeldFullScene();
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(3);
@@ -7186,6 +7207,7 @@ test("plan catalog refresh preserves explicit selection and reconciles a saved n
       service: async () => {
         writes += 1;
         catalog = { ...catalog, selectedPlan: "new", plans: [...catalog.plans, { ...second, id: "new", name: "New routine", enabled: true }] };
+        return { response: { plan: { id: "new" } } };
       },
       dispose() {},
     });

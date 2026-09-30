@@ -481,26 +481,34 @@ for (const change of ["user", "robot"]) {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
       const initial = createGalleryState("ready");
       const store = new WorkspaceStore(initial);
+      const nextEntry = change === "robot"
+        ? { ...initial.resources.entry, entryId: "other", mapSessionKey: "b".repeat(64) }
+        : initial.resources.entry;
       let calls = 0;
       const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
       const effects = new EffectController(store, {
         catalog: (signal) => {
           calls += 1;
           if (calls === 1) return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
-          return Promise.resolve([initial.resources.entry]);
+          return Promise.resolve([nextEntry]);
         }, scene: aborted, pose: aborted, history: aborted, plans: aborted, areas: aborted, dispose() {},
       });
       const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
       effects.sync(projection);
       const first = effects.refreshCatalog(true);
-      effects.sync({ ...projection, userKey: change === "user" ? "two" : "one", entryKey: change === "robot" ? "other" : projection.entryKey });
+      effects.sync({ ...projection, userKey: change === "user" ? "two" : "one",
+        entryKey: nextEntry.entryId,
+        vacuumEntityId: change === "robot" ? "vacuum.other" : projection.vacuumEntityId,
+        robots: change === "robot" ? [{ entryId: "other", label: "Other robot" }] : projection.robots });
       await first;
-      const result = { calls, status: store.value.resources.catalog.status };
+      const result = { calls, status: store.value.resources.catalog.status,
+        entryId: store.value.resources.entry?.entryId };
       effects.dispose();
       return result;
     }, change);
     expect(result.calls).toBeGreaterThanOrEqual(2);
     expect(result.status).toBe("ready");
+    expect(result.entryId).toBe(change === "robot" ? "other" : "synthetic-entry");
   });
 }
 

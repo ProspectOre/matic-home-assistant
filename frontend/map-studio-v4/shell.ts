@@ -50,6 +50,7 @@ import { translate } from "./localize";
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
   initialWorkspaceState,
+  isSelectedRobotUnavailable,
   selectStopSecondaryAction,
   selectPrimaryAction,
 } from "./state";
@@ -75,6 +76,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   if (!state.host.connected) return { title: t("v4_reconnecting", "Reconnecting"), detail: t("v4_ha_offline", "Home Assistant is offline"), icon: iconOffline, notable: true };
   if (!state.host.administrator) return { title: t("v4_access_required", "Access required"), detail: t("v4_admin_only", "Administrator only"), icon: iconOffline, notable: true };
   if (state.host.robotCount === 0) return { title: t("v4_no_robot_short", "No robot"), detail: t("v4_set_up_robot", "Set up a Matic robot"), icon: iconOffline, notable: true };
+  if (isSelectedRobotUnavailable(state)) return { title: t("v4_selected_robot_unavailable", "Selected robot unavailable"), detail: t("v4_choose_another_robot", "Choose another robot to open its map."), icon: iconOffline, notable: true };
   if (!state.host.robotConnected) return { title: t("v4_robot_offline", "Robot offline"), detail: t("v4_last_map_read_only", "Last verified map · read only"), icon: iconOffline, notable: true };
   if (state.activity === "problem") return { title: t("v4_needs_attention", "Needs attention"), detail: t("v4_check_robot", "Check the robot"), icon: iconOffline, notable: true };
   if (state.dataMode === "history") {
@@ -101,7 +103,9 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
     && (state.activity === "idle" || state.activity === "docked")) {
     return {
       title: t("v4_task_in_progress", "Task in progress"),
-      detail: state.activity === "docked"
+      detail: state.coherence === "unavailable" || state.coherence === "blocked"
+        ? t("v4_task_map_unavailable", "The live map is unavailable; the current task remains in progress.")
+        : state.activity === "docked"
         ? t("v4_task_docked", "Robot docked; the cleaning task has not finished.")
         : t("v4_task_waiting", "Waiting for the cleaning task to continue or finish."),
       icon: iconPlan,
@@ -111,16 +115,25 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   if (state.command === "starting" && (state.activity === "idle" || state.activity === "docked")) {
     return { title: t("v4_action_starting", "Starting"), detail: t("v4_action_starting_detail", "Waiting for the robot to begin"), icon: iconRobot, notable: true };
   }
-  if (state.activity === "cleaning") return { title: t("v4_cleaning", "Cleaning"), detail: t("v4_cleaning_progress", "Cleaning in progress"), icon: iconCleaning, notable: true };
+  const mapUnavailable = state.coherence === "unavailable" || state.coherence === "blocked";
+  const mapUnavailableDetail = t("v4_active_map_unavailable", "The live map is unavailable; new cleaning is disabled.");
+  const withMapConsequence = (detail: string): string => mapUnavailable ? `${detail} · ${mapUnavailableDetail}` : detail;
+  if (state.activity === "cleaning") return { title: t("v4_cleaning", "Cleaning"), detail: withMapConsequence(t("v4_cleaning_progress", "Cleaning in progress")), icon: iconCleaning, notable: true };
   if (state.activity === "recharging") {
     const battery = state.batteryPercent === null
       ? t("v4_recharging_detail", "Will resume automatically when ready")
       : t("v4_recharging_battery", "Charging to resume · {percent}% battery", { percent: state.batteryPercent });
-    return { title: t("v4_recharging", "Charging to resume"), detail: battery, icon: iconCharging, notable: true };
+    return { title: t("v4_recharging", "Charging to resume"), detail: withMapConsequence(battery), icon: iconCharging, notable: true };
   }
-  if (state.activity === "paused") return { title: t("v4_paused", "Paused"), detail: t("v4_can_resume", "Cleaning can resume"), icon: iconPaused, notable: true };
-  if (state.activity === "returning") return { title: t("v4_returning", "Returning"), detail: t("v4_going_dock", "Going to the dock"), icon: iconCleaning, notable: true };
-  if (state.activity === "stopping") return { title: t("v4_stopping", "Stopping"), detail: t("v4_waiting_robot", "Waiting for the robot"), icon: iconPaused, notable: true };
+  if (state.activity === "paused") return { title: t("v4_paused", "Paused"), detail: withMapConsequence(t("v4_can_resume", "Cleaning can resume")), icon: iconPaused, notable: true };
+  if (state.activity === "returning") return { title: t("v4_returning", "Returning"), detail: withMapConsequence(t("v4_going_dock", "Going to the dock")), icon: iconCleaning, notable: true };
+  if (state.activity === "stopping") return { title: t("v4_stopping", "Stopping"), detail: withMapConsequence(t("v4_waiting_robot", "Waiting for the robot")), icon: iconPaused, notable: true };
+  if (mapUnavailable) return {
+    title: t("v4_map_unavailable", "Map unavailable"),
+    detail: t("v4_map_unavailable_status", "New cleaning is disabled until the live map is verified."),
+    icon: iconOffline,
+    notable: true,
+  };
   const battery = state.batteryPercent === null
     ? t("v4_ready", "Ready")
     : t("v4_battery", "{percent}% battery", { percent: state.batteryPercent });
@@ -1059,6 +1072,9 @@ export class MaticMapShellV4 extends LitElement {
         html`<a class="ms-btn ms-btn--secondary" href="/config/integrations/integration/matic_robot">${t("v4_open_integration", "Open the Matic integration")}</a>`,
       );
     }
+    if (isSelectedRobotUnavailable(state)) {
+      return this.#hostState(t("v4_selected_robot_unavailable", "Selected robot unavailable"), t("v4_choose_another_robot", "Choose another robot to open its map."));
+    }
     if (!host.robotConnected) {
       return html`
         ${this.#hostState(t("v4_robot_offline_title", "Robot offline"), t("v4_robot_offline_body", "Showing the last verified map. Cleaning is unavailable until the robot reconnects."))}
@@ -1295,6 +1311,7 @@ export class MaticMapShellV4 extends LitElement {
     const state = this.state;
     const narrow = state.narrowHint || this._measuredNarrow;
     const status = statusCopy(state, this.localize);
+    const selectedRobotUnavailable = isSelectedRobotUnavailable(state);
     const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
     const secondary = selectStopSecondaryAction(state);
     const statusAction = !narrow && primary.id === "stop"
@@ -1359,7 +1376,7 @@ export class MaticMapShellV4 extends LitElement {
               >${icon(iconBack)}</button>
             ` : nothing}
             <h1 class="title">${this.#t("map_studio_title", "Matic Map")}</h1>
-            ${state.robots.length > 1 ? html`
+            ${state.robots.length > 1 || selectedRobotUnavailable ? html`
               <select
                 class="ms-select context-switcher robot-switcher"
                 name="matic-robot"
@@ -1369,7 +1386,9 @@ export class MaticMapShellV4 extends LitElement {
                   type: "select-entry",
                   entryId: (event.currentTarget as HTMLSelectElement).value,
                 })}
-              >${state.robots.map((robot) => html`
+              >${selectedRobotUnavailable ? html`
+                <option value=${state.selection.entryId || ""} selected disabled>${this.#t("v4_selected_robot_unavailable", "Selected robot unavailable")}</option>
+              ` : nothing}${state.robots.map((robot) => html`
                 <option value=${robot.entryId} ?selected=${robot.entryId === state.selection.entryId}>${robot.label}</option>
               `)}</select>
             ` : nothing}

@@ -37,8 +37,8 @@ withholds them and retains only the Full map exit control until verification ret
   transport identity, and safe upgrade/rollback. Direct Bluetooth pairing remains supported; proxy pairing is deferred.
 - Keep Home Assistant language, tokens, and supported panel interfaces. Bundle frontend dependencies
   locally; wrap internal Home Assistant components behind capability-tested fallbacks.
-- Every asynchronous spatial result and coordinate gesture belongs to its entry, generation, floor, mission, and
-  revision. Obsolete work commits no cache, renderer, pose, draft, notice, or command state. Advance generation
+- Every asynchronous spatial result belongs to its entry, generation, floor, mission, and relevant resource revision.
+  Coordinate gestures bind to the verified coordinate frame and immutable draft baseline; pixel revisions do not change that frame. Obsolete work commits no cache, renderer, pose, draft, notice, or command state. Advance generation
   before cancelling; reject Area writes if their entry/floor changes during body reading.
 - Central fail-closed selectors own live map, exact pose, coordinate edit, and motion permission; renderer or
   transport failure cannot relax them.
@@ -61,7 +61,7 @@ Preview, dispatch, operational reads, and explanations consume the same policy a
 reconstruct selection or rotation. Cadence normalization alone validates intervals and one-shot flags; editors pass submitted values through without lossy coercion. Existing
 vetted protocol commands remain the command boundary. `managed_executor.py` owns dispatch/recovery; `native_completion.py` owns shared native proof; `cadence_accounting.py`
 applies verified credit inside the manager’s durable transaction. Service adapters retain authorization and request validation. Coverage preflight owns typed, non-sensitive
-failure reasons; a known pre- write rejection neither attempts cleanup STOP nor claims completion. HA adapters and UI project those reasons without exposing raw exceptions.
+failure reasons; a known pre-write rejection neither attempts cleanup STOP nor claims completion. HA adapters and UI project those reasons without exposing raw exceptions.
 
 ## Frontend authority
 
@@ -69,8 +69,8 @@ failure reasons; a known pre- write rejection neither attempts cleanup STOP nor 
 owns generation, identity, transition/admission; `EffectController` owns abortable reads, subscriptions, and single-fire commands. `RendererController` owns the persistent
 canvas, cameras, buffers, uploads, transferable buffers, quality, and fallback. `GestureController` owns navigation, selection, ordering, and drawing. Brush previews stay in
 rendering; a completed stroke commits once. Brush and outline commits share generation- and baseline-bound admission; permission, context, tool, or draft changes revoke the
-gesture. Components render state and emit typed intents; they do not fetch, call services, infer coherence, or own competing IDs. EffectController observes preference changes;
-PreferenceStore is the sole debounced writer, and account preferences load atomically with their owner. One idempotent disposer owns every request, subscription, worker,
+gesture. Components render state and emit typed intents; they do not fetch, call services, infer coherence, or own competing IDs. Store selection owns pending robot changes; configured entry is an initial fallback. A missing requested robot stays selected and commands stay blocked until an explicit available-robot choice. Reentrant commits supersede older subscriber notifications. EffectController observes preference changes;
+PreferenceStore is the sole debounced writer, and account preferences load atomically with their owner. EffectController's PageLifecycle owns visibility/BFCache suspension: revoke spatial admission, stop reads/subscriptions, cancel gesture inertia and rendering through normalized page activity, then require fresh proof on resume. Transmitted motion and mutations retain independent entry/revision ownership; mutation acknowledgements are bounded, and readback must use a freshly admitted catalog. One idempotent disposer owns every request, subscription, worker,
 listener, frame, object URL, and CPU/GPU allocation. Coherence, live/history mode, activity, workflow, and command lifecycle remain orthogonal; one selector derives the
 visible surface and primary action. Full map, Areas, floor transitions, browser Back, Escape, and HA Back preserve the canvas and restore focus. Access loss, no robot, or
 unsupported rendering exits protected map surfaces and hides retained data.
@@ -104,7 +104,7 @@ managed runs by default; existing untracked service calls never change it. Exist
 joining adopts existing shared progress; leaving shared scope starts plan-scoped progress at zero; interval changes preserve count; disable pauses; reset is explicit; new or
 newly private progress starts at zero. Each interval is an integer from 1 through 100. **Do on next clean** requests that rule on the next qualifying run. Due work stays due
 until its modes and settings are verified. Mopping has verified mode evidence; coverage lacks causal per-run setting evidence, so due coverage may be requested again on later
-cleans. Explain shared- schedule joins and fresh private schedules before save; N=3 is due on clean three. Mopping and coverage have separate reset actions. Reserve every
+cleans. Explain shared schedule joins and fresh private schedules before save; N=3 is due on clean three. Mopping and coverage have separate reset actions. Reserve every
 queued room's affected schedule before the first execution await; block its edit or reset through execution or pending native reconciliation, and restore reservations during
 recovery. Unrelated schedules remain available. Bind progress to verified robot/floor/room identity, preserve it across room renames, and never transfer it across an ambiguous
 identity change.
@@ -120,7 +120,7 @@ frozen run. Only a unique, verified managed room completion advances progress. T
 match before comparing goals. Hermes exposes no verified `coverage_plan` generation, so matching goal values are only a consistency guard, not causal proof of the dispatched
 settings. They never clear periodic coverage; due work remains due until a verified per-run settings signal exists. Persisted legacy proof flags are ignored. Partial,
 interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate, or ambiguous floor/name evidence does not. Keep the bounded 64-key completion
-receipt dedupe independent of the Activity journal. Delayed native reconciliation uses the original run identity and exact requested mode/coverage. A due rule stays due until
+receipt dedupe independent of the Activity journal. Dispatch markers freeze the requested mode/coverage; live and startup reconciliation share one recorder. Completion proof is independent of settings-qualified duration estimates; changed or unknown settings invalidate prior samples. A due rule stays due until
 its own evidence passes. A Map Studio one-off room run is ephemeral and never creates a saved plan. It applies existing shared schedules by default; an explicit settings
 override still counts compatible verified work. Existing service behavior remains compatible, with tracked schedule use explicit at that boundary. Explicit room lists and
 saved plans share a 100-room bound; an oversized legacy plan remains readable but blocked, and can be reduced one room at a time. Existing all-floor cleaning actions retain

@@ -403,6 +403,10 @@ export class RendererController {
     const previous = this.#state;
     const previousScene = this.#scene;
     this.#state = state;
+    if (!state.pageActive && this.#frame !== null) {
+      window.cancelAnimationFrame(this.#frame);
+      this.#frame = null;
+    }
     const scene = state.resources.scene.value;
     let rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null;
     if (scene !== this.#scene) {
@@ -772,7 +776,7 @@ export class RendererController {
   }
 
   requestRender(): void {
-    if (this.#frame !== null || this.#disposed) return;
+    if (this.#frame !== null || this.#disposed || this.#state?.pageActive === false) return;
     this.#frame = window.requestAnimationFrame(() => {
       this.#frame = null;
       this.#render();
@@ -780,6 +784,7 @@ export class RendererController {
   }
 
   #render(): void {
+    if (this.#disposed || this.#state?.pageActive === false) return;
     const started = performance.now();
     this.#resize();
     this.#matrix = this.#cameraMatrix();

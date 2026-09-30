@@ -720,6 +720,13 @@ export const parseAreasCatalog = (value: unknown): AreasCatalog => {
   };
 };
 
+export const parseSavedPlanId = (value: unknown): string => {
+  const result = objectValue(value, "invalid-plan-save-response");
+  const response = objectValue(result.response, "invalid-plan-save-response");
+  const plan = objectValue(response.plan, "invalid-plan-save-response");
+  return boundedString(plan.id, 128, "invalid-plan-save-response");
+};
+
 export const parsePlansCatalog = (value: unknown): PlansCatalog => {
   const payload = objectValue(value, "invalid-plans");
   if (!Array.isArray(payload.plans) || payload.plans.length > 256) {

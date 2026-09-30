@@ -26,6 +26,9 @@ const traceDirectory = values["trace-dir"] ? resolve(values["trace-dir"]) : null
 if (traceDirectory) await mkdir(traceDirectory, { recursive: true });
 const git = (...args) => execFileSync("git", args, { cwd: root, maxBuffer: 16 * 1024 * 1024 });
 const baseline = git("rev-parse", "--verify", "--end-of-options", `${positionals[0] || "v0.4.5"}^{commit}`).toString().trim();
+const collectorSha256 = createHash("sha256").update(await readFile(fileURLToPath(import.meta.url))).digest("hex");
+const candidateSource = { commit: git("rev-parse", "HEAD").toString().trim(),
+  trackedWorktreeDirty: Boolean(git("status", "--porcelain", "--untracked-files=no").toString().trim()) };
 const assets = { baseline: new Map(), candidate: new Map() };
 const reviewAssets = new Map();
 for (const path of git("ls-tree", "-r", "--name-only", baseline, "--", bundlePath).toString().trim().split("\n")) {
@@ -88,7 +91,15 @@ await new Promise((resolve, reject) => { server.once("error", reject); server.li
 const origin = `http://127.0.0.1:${server.address().port}`;
 let browser;
 const samples = [];
-const settle = (page) => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+const settle = (page, action = null) => page.evaluate(label => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => {
+  const benchmark = window.__maticBenchmark;
+  if (label && benchmark.start) {
+    const end = performance.now();
+    benchmark.actions.push({ label, start: benchmark.lastActionEnd, end });
+    benchmark.lastActionEnd = end;
+  }
+  resolve();
+}))), action);
 const quantile = (values, probability) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * probability) - 1] ?? null;
 
 try {
@@ -114,14 +125,17 @@ try {
           if (!["event", "longtask"].every(type => PerformanceObserver.supportedEntryTypes.includes(type))) {
             throw new Error("required performance observers unavailable");
           }
-          const events = [], tasks = [];
-          const recordEvents = entries => events.push(...entries.map(entry => ({ start: entry.startTime, duration: entry.duration, id: entry.interactionId })));
+          const events = [], tasks = [], actions = [];
+          const recordEvents = entries => events.push(...entries.map(entry => ({
+            start: entry.startTime, duration: entry.duration, interactionId: entry.interactionId,
+            type: entry.name, processingStart: entry.processingStart, processingEnd: entry.processingEnd,
+          })));
           const recordTasks = entries => tasks.push(...entries.map(entry => ({ start: entry.startTime, duration: entry.duration })));
           const eventObserver = new PerformanceObserver(list => recordEvents(list.getEntries()));
           const taskObserver = new PerformanceObserver(list => recordTasks(list.getEntries()));
           eventObserver.observe({ type: "event", durationThreshold: 16 });
           taskObserver.observe({ type: "longtask" });
-          window.__maticBenchmark = { events, tasks, start: 0,
+          window.__maticBenchmark = { events, tasks, actions, start: 0, lastActionEnd: 0,
             flush: () => { recordEvents(eventObserver.takeRecords()); recordTasks(taskObserver.takeRecords()); } };
         });
         const session = await context.newCDPSession(page);
@@ -142,7 +156,7 @@ try {
         const planJourney = async () => {
           for (const name of [/^Run a plan/, /Daily clean.*Edit plan/, "Back to plans", "Back to all tasks"]) {
             await gallery.getByRole("button", { name, exact: typeof name === "string" }).click();
-            await settle(page);
+            await settle(page, `plan:${String(name)}`);
           }
         };
         await planJourney(); // Warm the lazy workflow before the common journey.
@@ -154,31 +168,44 @@ try {
           tracing = true;
         }
         const hostLoadBefore = loadavg();
-        await page.evaluate(() => { window.__maticBenchmark.start = performance.now(); });
+        await page.evaluate(() => {
+          const benchmark = window.__maticBenchmark;
+          benchmark.start = performance.now();
+          benchmark.lastActionEnd = benchmark.start;
+        });
         for (let index = 0; index < 60; index++) {
           await gallery.getByRole("button", { name: index % 2 ? "2D" : "3D", exact: true }).click();
-          await settle(page);
+          await settle(page, index % 2 ? "view:2D" : "view:3D");
         }
         for (let index = 0; index < 5; index++) await planJourney();
         for (let index = 0; index < 10; index++) {
           await gallery.getByRole("button", { name: /^One-time clean/ }).click();
-          await settle(page);
+          await settle(page, "rooms:open");
           await gallery.getByRole("button", { name: "Back to all tasks", exact: true }).click();
-          await settle(page);
+          await settle(page, "rooms:back");
         }
         const measured = await page.evaluate(() => {
           window.__maticBenchmark.flush();
-          const { events, tasks, start } = window.__maticBenchmark;
+          const { events, tasks, actions, start } = window.__maticBenchmark;
           const interactions = new Map();
-          for (const event of events.filter(event => event.start >= start && event.id)) {
-            interactions.set(event.id, Math.max(interactions.get(event.id) || 0, event.duration));
+          for (const event of events.filter(event => event.start >= start && event.interactionId)) {
+            const previous = interactions.get(event.interactionId);
+            if (!previous || event.duration > previous.duration) interactions.set(event.interactionId, event);
           }
-          return { interactions: [...interactions.values()], longTasks: tasks.filter(task => task.start >= start).map(task => task.duration) };
+          const details = [...interactions.values()];
+          return {
+            interactions: details.map(event => event.duration),
+            slowestInteractions: details.sort((a, b) => b.duration - a.duration).slice(0, 10).map(event => ({
+              ...event, action: actions.find(action => event.start >= action.start && event.start < action.end)?.label ?? null,
+            })),
+            recordedActions: actions.length,
+            longTasks: tasks.filter(task => task.start >= start).map(task => task.duration),
+          };
         });
         const hostLoadAfter = loadavg();
         if (tracing) { await browser.stopTracing(); tracing = false; }
         if (errors.length) throw new Error(JSON.stringify(errors));
-        if (measured.interactions.length > 100) throw new Error("unexpected interaction count");
+        if (measured.interactions.length > 100 || measured.recordedActions !== 100) throw new Error("unexpected interaction/action count");
         const metricValues = (await session.send("Performance.getMetrics")).metrics;
         const gzipBytes = paths => paths.reduce((sum, path) => sum + gzipSync(assets[variant].get(path.slice(productionPrefix.length)), { level: 9 }).length, 0);
         const hostGzipBytes = initialHostScripts.reduce((sum, path) => sum + gzipSync(registeredAssets.get(path), { level: 9 }).length, 0);
@@ -194,7 +221,7 @@ try {
           reviewOnlyInitialScriptEstimatedGzipBytes: initialReviewScripts.reduce((sum, path) => sum + gzipSync(reviewAssets.get(path.slice(variant.length + 2)), { level: 9 }).length, 0),
           workflowAddedScriptEstimatedGzipBytes: gzipBytes(warmedScripts.filter(path => !initialScripts.includes(path))),
           inputs: 100, recordedInteractions: measured.interactions.length, inputP95EstimateMs: quantile(estimated, 0.95),
-          inputMaxEstimateMs: Math.max(...estimated), longTasksOver50Ms: measured.longTasks.length,
+          inputMaxEstimateMs: Math.max(...estimated), slowestInteractions: measured.slowestInteractions, longTasksOver50Ms: measured.longTasks.length,
           longestTaskMs: Math.max(0, ...measured.longTasks),
           jsHeapUsedBytesAfterJourney: metricValues.find(metric => metric.name === "JSHeapUsedSize")?.value ?? null });
       } finally {
@@ -210,7 +237,8 @@ try {
     return [variant, { inputP95EstimateMs: { min: Math.min(...values), median: quantile(values, 0.5), max: Math.max(...values) },
       longTasksOver50MsByRun: runs.map(sample => sample.longTasksOver50Ms) }];
   }));
-  console.log(JSON.stringify({ schema: 4, measuredAt: new Date().toISOString(), baseline,
+  console.log(JSON.stringify({ schema: 5, collectorSha256, candidateSource,
+    measuredAt: new Date().toISOString(), baseline,
     bundles: Object.fromEntries(Object.entries(assets).map(([name, files]) => [name, fingerprint(files)])),
     reviewOnlyBundle: fingerprint(reviewAssets),
     registeredFrontendAssets: fingerprint(registeredAssets),

@@ -3671,47 +3671,31 @@ class CleaningPlanManager:
             await self._async_save_native_history(serial_number, before)
             self._notify_listeners(serial_number)
             return False
-        record = self._room(serial_number, plan_id, room)
         completed_value = (
             completed_at
-            if _latest_timestamp(completed_at) is not None
+            if isinstance(completed_at, str)
+            and _latest_timestamp(completed_at) is not None
             else dt_util.utcnow().isoformat()
         )
-        duration = (
-            duration_seconds
-            if isinstance(duration_seconds, int)
-            and not isinstance(duration_seconds, bool)
-            and duration_seconds > 0
-            else None
-        )
-        record["last_completed"] = completed_value
-        record["last_result"] = "completed"
-        record["completed_runs"] = _stored_count(record, "completed_runs") + 1
-        record["last_native_reconciled"] = dt_util.utcnow().isoformat()
-        if duration is not None:
-            samples = _stored_count(record, "duration_samples") + 1
-            history = _duration_history(record)
-            history.append(duration)
-            history = history[-DURATION_HISTORY_MAX_SAMPLES:]
-            record["last_duration_seconds"] = duration
-            record["duration_history_seconds"] = history
-            record["average_duration_seconds"] = round(median(history))
-            record["duration_samples"] = samples
-        global_room = self._global_room(robot, room)
-        global_room["name"] = room.name
-        global_room["last_completed"] = completed_value
-        if duration is not None:
-            global_room["last_duration_seconds"] = duration
-        global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
-        _remember_native_reconciliation(robot, pending)
-        _apply_verified_cadence(
+        room_settings = _native_completion_settings(pending, room)
+        _record_native_completion(
             robot,
             plan_id,
             room,
-            pending.get("cadence_state"),
-            current_identity=room_identity,
-            validate_current_identity=True,
+            completed_at=completed_value,
+            duration_seconds=duration_seconds,
+            room_settings=room_settings,
         )
+        _remember_native_reconciliation(robot, pending)
+        if room_settings is not None:
+            _apply_verified_cadence(
+                robot,
+                plan_id,
+                room_settings,
+                pending.get("cadence_state"),
+                current_identity=room_identity,
+                validate_current_identity=True,
+            )
         _repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
         await self._async_save_native_history(serial_number, before)
@@ -4180,19 +4164,7 @@ class CleaningPlanManager:
         if not isinstance(record, dict):
             record = {}
             records[room.room_id] = record
-        if any(
-            record.get(key) is not None and record.get(key) != getattr(room, key)
-            for key in ("cleaning_mode", "coverage_setting")
-        ):
-            for key in (
-                "last_duration_seconds",
-                "average_duration_seconds",
-                "duration_samples",
-                "duration_history_seconds",
-                "last_cancelled_duration_seconds",
-                "last_unverified_duration_seconds",
-            ):
-                record.pop(key, None)
+        _admit_room_settings(record, room)
         record.update(asdict(room))
         return cast(dict[str, Any], record)
 
@@ -4434,6 +4406,12 @@ def _validated_native_reconciliation(
     if parsed_expiry is None or parsed_expiry.tzinfo is None:
         return None
     cleaning_mode = value.get("cleaning_mode")
+    if "cleaning_mode" in value and (
+        not isinstance(cleaning_mode, str)
+        or cleaning_mode not in ("vacuum", "mop", "vacuum_and_mop")
+    ):
+        return None
+    coverage_setting = value.get("coverage_setting")
     run_id = value.get("run_id")
     result: dict[str, Any] = {
         "plan_id": plan_id,
@@ -4448,6 +4426,12 @@ def _validated_native_reconciliation(
             else {}
         ),
         **(
+            {"coverage_setting": coverage_setting}
+            if isinstance(coverage_setting, str)
+            and coverage_setting in ("quick", "standard", "heavy_duty")
+            else {}
+        ),
+        **(
             {"run_id": run_id}
             if isinstance(run_id, str) and 0 < len(run_id) <= 64
             else {}
@@ -4457,6 +4441,33 @@ def _validated_native_reconciliation(
     if cadence_state is not None:
         result["cadence_state"] = cadence_state
     return result
+
+
+def _native_completion_settings(
+    pending: Mapping[str, Any], room: Room | CleaningRoom
+) -> CleaningRoom | None:
+    """Return only settings frozen by this marker or its exact run checkpoint."""
+    mode = pending.get("cleaning_mode")
+    coverage = pending.get("coverage_setting")
+    cadence_state = pending.get("cadence_state")
+    if isinstance(cadence_state, Mapping):
+        cadence_mode = cadence_state.get("effective_cleaning_mode")
+        cadence_coverage = cadence_state.get("effective_coverage_setting")
+        if (mode is not None and cadence_mode != mode) or (
+            coverage is not None and cadence_coverage != coverage
+        ):
+            return None
+        mode = cadence_mode
+        coverage = cadence_coverage
+    if (
+        isinstance(mode, str)
+        and mode in ("vacuum", "mop", "vacuum_and_mop")
+        and isinstance(coverage, str)
+        and coverage in ("quick", "standard", "heavy_duty")
+    ):
+        room_id = room.room_id if isinstance(room, CleaningRoom) else room.id
+        return CleaningRoom(room_id, room.name, mode, coverage)
+    return None
 
 
 def _attach_cadence_state(robot: dict[str, Any], pending: dict[str, Any]) -> None:
@@ -4587,22 +4598,18 @@ def _reconcile_pending_native_history(
         if on_reconciled is not None:
             on_reconciled(pending)
         return True
+    room_settings = _native_completion_settings(pending, room)
     _record_native_completion(
         robot,
         pending["plan_id"],
         room,
         completed_at=matches[0].ended_at,
         duration_seconds=matches[0].duration_seconds,
+        room_settings=room_settings,
     )
     _remember_native_reconciliation(robot, pending)
     cadence_state = pending.get("cadence_state")
-    if isinstance(cadence_state, Mapping):
-        cadence_room = CleaningRoom(
-            room.id,
-            room.name,
-            str(cadence_state["effective_cleaning_mode"]),
-            str(cadence_state["effective_coverage_setting"]),
-        )
+    if isinstance(cadence_state, Mapping) and room_settings is not None:
         try:
             current_identity = room_cadence_identity(floor_plan, room.id)
         except ValueError:
@@ -4610,7 +4617,7 @@ def _reconcile_pending_native_history(
         _apply_verified_cadence(
             robot,
             pending["plan_id"],
-            cadence_room,
+            room_settings,
             cadence_state,
             current_identity=current_identity,
             validate_current_identity=True,
@@ -4668,7 +4675,8 @@ def _record_native_completion(
     room: CleaningRoom | Room,
     *,
     completed_at: str,
-    duration_seconds: int,
+    duration_seconds: int | None,
+    room_settings: CleaningRoom | None,
 ) -> None:
     """Commit one verified native completion into plan and global history."""
     rotation = robot["rotations"].setdefault(plan_id, {"rooms": {}})
@@ -4677,25 +4685,55 @@ def _record_native_completion(
     record = room_records.setdefault(room_id, {})
     record["room_id"] = room_id
     record["name"] = room.name
-    if isinstance(room, CleaningRoom):
-        record["cleaning_mode"] = room.cleaning_mode
-        record["coverage_setting"] = room.coverage_setting
+    _admit_room_settings(record, room_settings)
     record["last_completed"] = completed_at
     record["last_result"] = "completed"
     record["completed_runs"] = _stored_count(record, "completed_runs") + 1
     record["last_native_reconciled"] = dt_util.utcnow().isoformat()
-    history = _duration_history(record)
-    history.append(duration_seconds)
-    history = history[-DURATION_HISTORY_MAX_SAMPLES:]
-    record["last_duration_seconds"] = duration_seconds
-    record["duration_history_seconds"] = history
-    record["average_duration_seconds"] = round(median(history))
-    record["duration_samples"] = _stored_count(record, "duration_samples") + 1
+    duration = (
+        duration_seconds
+        if isinstance(duration_seconds, int)
+        and not isinstance(duration_seconds, bool)
+        and duration_seconds > 0
+        else None
+    )
+    if duration is not None:
+        history = _duration_history(record)
+        history.append(duration)
+        history = history[-DURATION_HISTORY_MAX_SAMPLES:]
+        record["last_duration_seconds"] = duration
+        record["duration_history_seconds"] = history
+        record["average_duration_seconds"] = round(median(history))
+        record["duration_samples"] = _stored_count(record, "duration_samples") + 1
     global_room = CleaningPlanManager._global_room(robot, room)
     global_room["name"] = room.name
     global_room["last_completed"] = completed_at
-    global_room["last_duration_seconds"] = duration_seconds
+    if duration is not None:
+        global_room["last_duration_seconds"] = duration
     global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
+
+
+def _admit_room_settings(record: dict[str, Any], room: CleaningRoom | None) -> None:
+    """Keep duration samples only when their exact settings are known to match."""
+    if room is None or any(
+        record.get(key) != getattr(room, key)
+        for key in ("cleaning_mode", "coverage_setting")
+    ):
+        for key in (
+            "last_duration_seconds",
+            "average_duration_seconds",
+            "duration_samples",
+            "duration_history_seconds",
+            "last_cancelled_duration_seconds",
+            "last_unverified_duration_seconds",
+        ):
+            record.pop(key, None)
+    if room is None:
+        record.pop("cleaning_mode", None)
+        record.pop("coverage_setting", None)
+    else:
+        record["cleaning_mode"] = room.cleaning_mode
+        record["coverage_setting"] = room.coverage_setting
 
 
 def _import_native_room_activity(

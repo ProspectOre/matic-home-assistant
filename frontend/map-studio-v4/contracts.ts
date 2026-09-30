@@ -197,6 +197,7 @@ export interface WorkspaceNotice {
 }
 
 export interface WorkspaceState {
+  readonly pageActive: boolean;
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;
   readonly draftFloorOrdinal: number | null;
   readonly draftMapSessionKey: string | null;
@@ -340,6 +341,8 @@ export interface HassLike {
     service: string,
     data?: Readonly<Record<string, unknown>>,
     target?: Readonly<Record<string, unknown>>,
+    notifyOnError?: boolean,
+    returnResponse?: boolean,
   ) => Promise<unknown>;
   readonly localize?: (key: string, placeholders?: Record<string, unknown>) => string;
 }

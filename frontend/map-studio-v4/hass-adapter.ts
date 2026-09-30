@@ -69,10 +69,11 @@ export class HassAdapter {
   ): HassProjection {
     const states = hass?.states ?? {};
     const panelEntry = panel?.config?.entry_id;
-    const requestedEntry = typeof panelEntry === "string" ? panelEntry : null;
+    const configuredEntry = typeof panelEntry === "string" ? panelEntry : null;
+    const requestedEntry = preferredEntry || configuredEntry;
     let selectedVacuum: HassEntityLike | null = null;
     let selectedVacuumEntityId: string | null = null;
-    let selectedEntryKey: string | null = null;
+    let selectedEntryKey: string | null = requestedEntry;
     const robots = new Map<string, { readonly entryId: string; readonly label: string }>();
 
     for (const [entityId, entity] of Object.entries(states)) {
@@ -80,8 +81,7 @@ export class HassAdapter {
       if (!entryKey) continue;
       if (!entityId.startsWith("vacuum.")) continue;
       robots.set(entryKey, { entryId: entryKey, label: safeRobotLabel(entity.attributes?.friendly_name) });
-      const requested = preferredEntry || requestedEntry;
-      if (!selectedVacuum || (requested && entryKey === requested)) {
+      if (requestedEntry ? entryKey === requestedEntry : !selectedVacuum) {
         selectedVacuum = entity;
         selectedVacuumEntityId = entityId;
         selectedEntryKey = entryKey;

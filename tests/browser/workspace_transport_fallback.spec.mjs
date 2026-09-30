@@ -110,7 +110,7 @@ async function setup(page, failureMode) {
       robots: [{ entryId: entry.entryId, label: "Matic" }] };
     const store = new WorkspaceStore();
     const controller = new EffectController(store, backend, connection, true);
-    controller.sync(projection, undefined);
+    controller.sync(projection);
     window.fallbackHarness = { controller, store, projection, stats, intervals, clearedIntervals,
       invokeCatalogPoll: async () => {
         const interval = [...intervals.values()].find(item => item.delay === 5000);
@@ -121,7 +121,7 @@ async function setup(page, failureMode) {
       guards: () => ({ managedLock: store.value.managedLock,
         canEdit: canEditCoordinates(store.value), canStart: canStartMotion(store.value) }),
       loseAdministrator: () => controller.sync({ ...projection,
-        host: { ...projection.host, administrator: false } }, undefined),
+        host: { ...projection.host, administrator: false } }),
       dispose: () => {
         controller.dispose();
         window.setInterval = originalSetInterval;

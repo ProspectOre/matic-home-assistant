@@ -623,7 +623,8 @@ def test_python_package_includes_home_assistant_runtime_files() -> None:
 def test_ci_inspects_finished_release_archives() -> None:
     """Run artifact inspection only after the wheel and sdist are built."""
     workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text()
-    build = "python -m build --sdist --wheel"
+    # The default builds the wheel from the fresh sdist, not stale build/lib.
+    build = "- run: python -m build\n"
     inspect = "python scripts/check_release_artifacts.py dist"
     fresh_install = "python scripts/check_fresh_install.py dist"
 

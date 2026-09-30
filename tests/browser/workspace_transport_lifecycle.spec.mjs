@@ -28,11 +28,11 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
     let catalogCalls = 0;
     const backend = { catalog: async () => { catalogCalls += 1; return []; }, dispose() {} };
     const legacy = new EffectController(new WorkspaceStore(), backend, connection);
-    legacy.sync(projection("entry-a"), undefined);
+    legacy.sync(projection("entry-a"));
     const legacySubscriptions = callbacks.length;
     legacy.dispose();
     const enabled = new EffectController(new WorkspaceStore(), backend, connection, true);
-    enabled.sync(projection("entry-a"), undefined);
+    enabled.sync(projection("entry-a"));
     const waitForSubscription = async (index) => {
       for (let attempt = 0; attempt < 20 && typeof callbacks[index] !== "function"; attempt += 1) {
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -45,18 +45,18 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
     callbacks[0]({ type: "invalidate", ...({ schema: 1, capabilities: {}, epoch: "e", sequence: 1, coherence_generation: 1, revisions: { status: 1 }, resources: ["status"] }) });
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterInvalidation = catalogCalls;
-    enabled.sync(projection("entry-b"), undefined);
+    enabled.sync(projection("entry-b"));
     await waitForSubscription(1);
     const afterEntryChange = { subscriptions: callbacks.length, unsubscribed };
     callbacks[1]({ type: "resync", reason: "entry_removed" });
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterEntryRemoved = unsubscribed;
-    enabled.sync(projection("entry-c"), undefined);
+    enabled.sync(projection("entry-c"));
     await waitForSubscription(2);
     const afterEntryRemovedReplacement = callbacks.length;
-    enabled.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, administrator: false } }, undefined);
+    enabled.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, administrator: false } });
     const afterAuthorizationLoss = unsubscribed;
-    enabled.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, connected: false } }, undefined);
+    enabled.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, connected: false } });
     const afterDisconnect = unsubscribed;
     enabled.dispose(); enabled.dispose();
     window.lifecycleResult = { legacySubscriptions, first, baselineCatalogCalls, afterInvalidation, afterEntryChange, afterEntryRemoved, afterEntryRemovedReplacement, afterAuthorizationLoss, afterDisconnect, unsubscribed };
@@ -176,7 +176,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       run.callbacks = callbacks;
       run.store = new WorkspaceStore();
       run.effects = new EffectController(run.store, backend, connection, enabled);
-      run.effects.sync(makeProjection(), undefined);
+      run.effects.sync(makeProjection());
       return run;
     };
     const flushStartup = async run => {
@@ -403,7 +403,7 @@ test("same-generation snapshot map revisions wait for delta admission; new ident
       entryKey: catalogEntry.entryId, robotLabel: "Matic", robots: base.robots };
     const store = new WorkspaceStore();
     const controller = new EffectController(store, backend, connection, true);
-    controller.sync(projection, undefined);
+    controller.sync(projection);
     window.snapshotHarness = { callbacks, pendingDeltas, counts, store, controller, catalogEntry, snapshotFor,
       setCatalogEntry: value => { catalogEntry = value; },
       measure: () => ({ ...counts, entryRevision: store.value.resources.entry?.mapRevision,

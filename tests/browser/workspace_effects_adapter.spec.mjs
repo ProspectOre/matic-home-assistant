@@ -72,7 +72,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
       robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
     const store = new WorkspaceStore();
     const controller = new EffectController(store, backend, connection, true);
-    controller.sync(projection("synthetic-entry"), undefined);
+    controller.sync(projection("synthetic-entry"));
     window.adapterHarness = { callbacks, counts, store, controller, projection, snapshotFor, backend, invalidation,
       get snapshotCalls() { return snapshotCalls; },
       initialSnapshotPending: () => initialSnapshotResolve !== null,
@@ -366,8 +366,8 @@ test("robot reauthentication immediately resumes an authorization-blocked worksp
   await page.evaluate(() => {
     const h = window.adapterHarness;
     h.controller.sync({ ...h.projection("synthetic-entry"), host: { ...h.projection("synthetic-entry").host,
-      robotConnected: false } }, undefined);
-    h.controller.sync(h.projection("synthetic-entry"), undefined);
+      robotConnected: false } });
+    h.controller.sync(h.projection("synthetic-entry"));
   });
   await expect.poll(() => page.evaluate(() => window.adapterHarness.snapshotCalls)).toBe(initialSnapshots + 1);
 
@@ -424,7 +424,7 @@ test("rejects delayed old-stream events after an entry switch", async ({ page })
     const h = window.adapterHarness;
     const oldCallback = h.callbacks[0];
     h.setCatalogEntry({ ...h.store.value.resources.entry, entryId: "other-entry" });
-    h.controller.sync(h.projection("other-entry"), undefined);
+    h.controller.sync(h.projection("other-entry"));
     await new Promise(resolve => setTimeout(resolve, 0));
     const before = { ...h.counts };
     oldCallback(h.invalidation(1, ["scene"], { scene: 8 }, 2));

@@ -113,6 +113,8 @@ export class MaticBackend {
   readonly #getHass: () => HassLike | undefined;
   readonly #parser = new SceneParser();
   readonly #roomPreviewWireInFlight = new WeakMap<object, Promise<void>>();
+  readonly #serviceWaits = new Set<() => void>();
+  #disposed = false;
 
   constructor(getHass: () => HassLike | undefined) {
     this.#getHass = getHass;
@@ -619,17 +621,42 @@ export class MaticBackend {
     service: string,
     data: Readonly<Record<string, unknown>>,
     entityId: string,
-  ): Promise<void> {
+    options: { returnResponse?: boolean; acknowledgementTimeout?: "mutation" } = {},
+  ): Promise<unknown> {
     const hass = this.#getHass();
-    if (typeof hass?.callService !== "function") throw new BackendError("service-unavailable");
+    if (this.#disposed || typeof hass?.callService !== "function") throw new BackendError("service-unavailable");
+    let timeout: number | null = null;
+    let cancelWait: (() => void) | null = null;
     try {
-      await hass.callService(domain, service, data, { entity_id: entityId });
+      const request = options.returnResponse
+        ? hass.callService(domain, service, data, { entity_id: entityId }, true, true)
+        : hass.callService(domain, service, data, { entity_id: entityId });
+      if (!options.returnResponse && !options.acknowledgementTimeout) return await request;
+      return await Promise.race([
+        request,
+        new Promise<never>((_resolve, reject) => {
+          cancelWait = () => {
+            if (timeout !== null) window.clearTimeout(timeout);
+            timeout = null;
+            reject(new DOMException("Aborted", "AbortError"));
+          };
+          this.#serviceWaits.add(cancelWait);
+          timeout = window.setTimeout(() => reject(new BackendError("mutation-timeout")), REQUEST_TIMEOUTS.mutation);
+        }),
+      ]);
     } catch (error) {
       throw safeCoverageGuardError(error, hass.localize) ?? error;
+    } finally {
+      if (timeout !== null) window.clearTimeout(timeout);
+      if (cancelWait) this.#serviceWaits.delete(cancelWait);
     }
   }
 
   dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    for (const cancelWait of this.#serviceWaits) cancelWait();
+    this.#serviceWaits.clear();
     this.#parser.dispose();
   }
 }

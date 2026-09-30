@@ -304,9 +304,15 @@ export class MaticMapCanvasV4 extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     this.#watchTheme();
+    void this.updateComplete.then(() => this.#startControllers());
   }
 
   protected override firstUpdated(): void {
+    this.#startControllers();
+  }
+
+  #startControllers(): void {
+    if (!this.isConnected || this.#renderer || this.#gestures) return;
     const root = this.renderRoot.querySelector<HTMLElement>(".map-root");
     const scene = this.renderRoot.querySelector<HTMLCanvasElement>(".scene-canvas");
     const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".overlay-canvas");
@@ -359,6 +365,7 @@ export class MaticMapCanvasV4 extends LitElement {
 
   override disconnectedCallback(): void {
     this.#unwatchTheme();
+    this.#cancelScheduledPalette();
     this.#outlineEditor.cancel();
     this.#gestures?.dispose();
     this.#gestures = null;

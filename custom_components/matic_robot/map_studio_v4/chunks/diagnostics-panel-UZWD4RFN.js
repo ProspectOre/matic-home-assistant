@@ -1,4 +1,4 @@
-import{G as l,H as a,N as d,O as p,P as u,Q as m,l as c,na as h,wa as f,xa as v}from"./chunk-EOKDEAMO.js";var y="matic-map-diagnostics-v4",n=class extends d{constructor(){super(...arguments);this.state=c();this.disabled=!1;this._copyStatus="idle"}static{this.properties={state:{attribute:!1},localize:{attribute:!1},disabled:{type:Boolean},_copyStatus:{state:!0}}}static{this.styles=[p,u,m,l`
+import{H as l,I as a,O as d,P as p,Q as u,R as m,l as c,oa as h,xa as f,ya as v}from"./chunk-HR52VBSJ.js";var y="matic-map-diagnostics-v4",n=class extends d{constructor(){super(...arguments);this.state=c();this.disabled=!1;this._copyStatus="idle"}static{this.properties={state:{attribute:!1},localize:{attribute:!1},disabled:{type:Boolean},_copyStatus:{state:!0}}}static{this.styles=[p,u,m,l`
 :host { display: block; min-inline-size: 0; }
 .stack { display: grid; gap: var(--ms-space-3); }
 .subtle { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }

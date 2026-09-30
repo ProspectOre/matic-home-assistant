@@ -36,6 +36,8 @@ export async function installPanelFixture(page, {
   sceneDeltaPayload = null,
   posePosition = [1, 1],
   scenePoint = null,
+  initialCatalogEntries = null,
+  initialRobotStates = null,
 } = {}) {
   const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
   const bundle = moduleSource === "typescript" ? await build({
@@ -92,7 +94,7 @@ export async function installPanelFixture(page, {
     }));
   }
   await page.goto("/");
-  await page.evaluate(async ({ module, scenes, plans, sceneDeltaPayload, posePosition }) => {
+  await page.evaluate(async ({ module, scenes, plans, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -127,15 +129,24 @@ export async function installPanelFixture(page, {
       native_reconciliation_pending: false,
       native_session_active: false,
     }] };
+    let catalogEntries = initialCatalogEntries || catalog.entries;
+    let robotStates = initialRobotStates || { "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry" } } };
+    let catalogReads = 0;
+    let deferredCatalogs = 0;
+    const pendingCatalogs = [];
     const history = { entry_id: "synthetic-entry", live_available: true, floors: [
       { id: "current", active: true, read_only: false, live_available: true, label: "Home", ordinal: null, snapshots: [] },
       { id: "saved-1", active: false, read_only: true, live_available: false, label: "Loft", ordinal: 2,
         snapshots: [{ id: "saved-shot", created_at: "2026-09-25T12:00:00Z", revision: 6, point_count: 1,
           scene_url: "/api/matic_robot/slam_scene/history" }] },
     ] };
-    const pose = { position: posePosition, source: "latest_pose", revision: 7, pose_revision: 1,
-      map_floor_coherent: true, map_session_key: "a".repeat(64), pose_freshness: "live" };
-    const areas = { scene_url: catalog.entries[0].scene_url, rooms: [], areas: [] };
+    const entryBHistory = { ...history, entry_id: "synthetic-entry-b", floors: history.floors.map((floor) => ({
+      ...floor,
+      snapshots: floor.snapshots.map((snapshot) => ({
+        ...snapshot,
+        scene_url: snapshot.scene_url.replace("/history", "/history-b"),
+      })),
+    })) };
     const pendingHistoryScenes = [];
     const serviceCalls = [];
     let planReads = 0;
@@ -172,15 +183,36 @@ export async function installPanelFixture(page, {
       if (data.select) planCatalog.selected_plan = plan.id;
     };
     const fetchWithAuth = async (path) => {
-      if (path.endsWith("slam_entries")) return json(catalog);
-      if (path.endsWith("slam_history/synthetic")) return json(history);
-      if (path.endsWith("slam_pose/synthetic")) return json(pose);
-      if (path.endsWith("areas/synthetic")) return json(areas);
-      if (path.endsWith("plans/synthetic")) {
+      const entryB = path.endsWith("-b");
+      if (path.endsWith("slam_entries")) {
+        catalogReads += 1;
+        const result = json({ entries: structuredClone(catalogEntries) });
+        if (deferredCatalogs > 0) {
+          deferredCatalogs -= 1;
+          return new Promise((resolve) => pendingCatalogs.push(() => resolve(result)));
+        }
+        return result;
+      }
+      if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
+      if (/slam_pose\/synthetic(?:-b)?$/.test(path)) return json({
+        position: posePosition,
+        source: "latest_pose",
+        revision: 7,
+        pose_revision: 1,
+        map_floor_coherent: true,
+        map_session_key: entryB ? "b".repeat(64) : "a".repeat(64),
+        pose_freshness: "live",
+      });
+      if (/areas\/synthetic(?:-b)?$/.test(path)) return json({
+        scene_url: `/api/matic_robot/slam_scene/${entryB ? "synthetic-b" : "synthetic"}`,
+        rooms: [],
+        areas: [],
+      });
+      if (/plans\/synthetic(?:-b)?$/.test(path)) {
         planReads += 1;
         return json(structuredClone(planCatalog));
       }
-      if (path.endsWith("slam_scene/history")) {
+      if (/slam_scene\/history(?:-b)?$/.test(path)) {
         return new Promise((resolve) => pendingHistoryScenes.push(() => resolve(new Response(new Uint8Array(scenes), {
           headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "6" },
         }))));
@@ -201,7 +233,7 @@ export async function installPanelFixture(page, {
           },
         });
       }
-      if (path.endsWith("slam_scene/synthetic")) return new Response(new Uint8Array(scenes), {
+      if (/slam_scene\/synthetic(?:-b)?$/.test(path)) return new Response(new Uint8Array(scenes), {
         headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "7" },
       });
       throw new Error(`unexpected synthetic request: ${path}`);
@@ -212,7 +244,7 @@ export async function installPanelFixture(page, {
       panel.hass = {
         connected: true,
         user: { id: "synthetic-admin", is_admin: true },
-        states: { "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry" } } },
+        states: robotStates,
         fetchWithAuth,
         callService: async (domain, service, data, target) => {
           serviceCalls.push({ domain, service, data: structuredClone(data), target: structuredClone(target) });
@@ -226,6 +258,15 @@ export async function installPanelFixture(page, {
     window.__panelFixture = {
       panelTag: MATIC_MAP_PANEL_TAG,
       createPanel: makePanel,
+      setCatalogEntries: (entries) => { catalogEntries = structuredClone(entries); },
+      deferNextCatalog: () => { deferredCatalogs += 1; },
+      releaseCatalog: (index = 0) => {
+        const release = pendingCatalogs.splice(index, 1)[0];
+        if (!release) throw new Error("no deferred catalog request");
+        release();
+      },
+      pendingCatalogCount: () => pendingCatalogs.length,
+      get catalogReads() { return catalogReads; },
       serviceCalls,
       pendingHistoryScenes,
       get planReads() { return planReads; },
@@ -238,7 +279,15 @@ export async function installPanelFixture(page, {
         serviceCalls: serviceCalls.length,
       }),
     };
-  }, { module: modulePath, scenes: sceneBytes(scenePoint), plans: initialPlanCatalog, sceneDeltaPayload, posePosition });
+  }, {
+    module: modulePath,
+    scenes: sceneBytes(scenePoint),
+    plans: initialPlanCatalog,
+    sceneDeltaPayload,
+    posePosition,
+    initialCatalogEntries,
+    initialRobotStates,
+  });
   return {
     panelTag: await page.evaluate(() => window.__panelFixture.panelTag),
     modulePath,

@@ -33,7 +33,6 @@ export class MaticMapPanelV4 extends LitElement {
     route: { attribute: false },
     panel: { attribute: false },
     _workspace: { state: true },
-    entryOverride: { state: true },
   };
 
   hass?: HassLike;
@@ -41,7 +40,6 @@ export class MaticMapPanelV4 extends LitElement {
   route?: RouteLike;
   panel?: PanelLike;
   protected _workspace: WorkspaceState = initialWorkspaceState();
-  entryOverride: string | null = null;
 
   readonly #adapter = new HassAdapter();
   readonly #store = new WorkspaceStore(this._workspace);
@@ -60,13 +58,20 @@ export class MaticMapPanelV4 extends LitElement {
     // selected language string remains stable.
     if (previousHass?.connection !== this.hass?.connection
       || previousHass?.localize !== this.hass?.localize) return true;
-    return this.#adapter.project(this.hass, this.panel, this.entryOverride) !== this.#projection;
+    return this.#adapter.project(this.hass, this.panel, this.#store.value.selection.entryId) !== this.#projection;
   }
 
   override connectedCallback(): void {
     super.connectedCallback();
     this.#unsubscribe = this.#store.subscribe((state) => {
       this._workspace = state;
+      if (state.selection.entryId !== this.#projection?.entryKey) {
+        const projection = this.#adapter.project(this.hass, this.panel, state.selection.entryId);
+        if (projection !== this.#projection) {
+          this.#projection = projection;
+          this.#effects?.sync(projection);
+        }
+      }
     });
     this.#startControllers();
   }
@@ -84,13 +89,13 @@ export class MaticMapPanelV4 extends LitElement {
     // Recompute from the current values before deciding whether any private
     // request is safe; the last projection may still describe a connected
     // host from before the detach.
-    this.#projection = this.#adapter.project(this.hass, this.panel, this.entryOverride);
+    this.#projection = this.#adapter.project(this.hass, this.panel, this.#store.value.selection.entryId);
     this.#backend = new MaticBackend(() => this.hass);
     this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null);
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
     if (this.#projection) {
-      this.#effects.sync(this.#projection, this.panel);
+      this.#effects.sync(this.#projection);
       // A detached panel keeps its last verified workspace state, but its
       // controllers and authenticated requests are intentionally disposed.
       // Revalidate the catalog on reattach so a reused DOM node cannot present
@@ -114,11 +119,11 @@ export class MaticMapPanelV4 extends LitElement {
   }
 
   protected override willUpdate(changed: PropertyValues<this>): void {
-    if (changed.has("hass") || changed.has("panel") || changed.has("entryOverride")) {
+    if (changed.has("hass") || changed.has("panel")) {
       const previousHass = changed.get("hass") as HassLike | undefined;
       const connectionChanged = changed.has("hass")
         && previousHass?.connection !== this.hass?.connection;
-      const projection = this.#adapter.project(this.hass, this.panel, this.entryOverride);
+      const projection = this.#adapter.project(this.hass, this.panel, this.#store.value.selection.entryId);
       const projectionChanged = projection !== this.#projection;
       if (projectionChanged) {
         this.#projection = projection;
@@ -126,8 +131,8 @@ export class MaticMapPanelV4 extends LitElement {
       if (connectionChanged) {
         this.#stopControllers();
         this.#startControllers();
-      } else if (projectionChanged || changed.has("panel") || changed.has("entryOverride")) {
-        this.#effects?.sync(projection, this.panel);
+      } else if (projectionChanged || changed.has("panel")) {
+        this.#effects?.sync(projection);
       }
     }
     if (changed.has("narrow") && this.#store.value.narrowHint !== this.narrow) {
@@ -153,7 +158,8 @@ export class MaticMapPanelV4 extends LitElement {
     }
     if (intent.type === "select-entry") {
       if (!this._workspace.robots.some((robot) => robot.entryId === intent.entryId)) return;
-      this.entryOverride = intent.entryId;
+      if (this.#adapter.project(this.hass, this.panel, intent.entryId).entryKey !== intent.entryId) return;
+      this.#store.dispatch(intent);
       return;
     }
     if (intent.type === "set-history") {

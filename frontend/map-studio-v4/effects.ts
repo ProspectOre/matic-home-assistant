@@ -1,16 +1,19 @@
 import type {
   HassProjection,
-  PanelLike,
   ResourceStamp,
+  ResourceState,
   ResetCadenceAction,
   WorkspaceState,
   Workflow,
 } from "./contracts";
 import {
+  parseSavedPlanId,
   type HistoryFloor,
   type HistorySnapshot,
   type MapEntry,
   type ManualRoomSequencePreview,
+  type AreasCatalog,
+  type PlansCatalog,
   type PlanRoom,
   type SavedArea,
 } from "./backend-contracts";
@@ -30,6 +33,7 @@ import {
 } from "./state";
 import { PreferenceStore, type MapPreferences } from "./preferences";
 import { WorkspaceTransport, type WorkspaceConnection } from "./workspace-transport";
+import { PageLifecycle } from "./page-lifecycle";
 
 // Transport switchover remains disabled until snapshot parity and performance
 // evidence are recorded. The lifecycle is wired so enabling it is one policy
@@ -41,6 +45,9 @@ const resource = <T>(
   value: T | null,
   problem: string | null = null,
 ) => ({ status, value, problem } as const);
+
+const cancelLoading = <T>(value: ResourceState<T>): ResourceState<T> =>
+  value.status === "loading" ? resource("idle", value.value) : value;
 
 const isAbort = (error: unknown): boolean =>
   error instanceof DOMException && error.name === "AbortError";
@@ -103,7 +110,9 @@ const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map i
 const SAVED_MAP_NOTICE_PREFIX = "Saved map from ";
 const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.";
 const POSE_POLL_INTERVAL_MS = 1_000;
+const SPATIAL_READ_RECOVERY_INTERVAL_MS = 5_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "draw", "areaReview"];
+const MUTATION_RESOURCES = ["plan-mutation", "area-mutation"] as const;
 
 interface ManualPreviewCapture {
   readonly key: string;
@@ -115,6 +124,23 @@ interface ManualPreviewCapture {
   readonly entityId: string;
   readonly rooms: readonly { readonly room: string; readonly cleaning_mode: PlanRoom["cleaningMode"]; readonly coverage_setting: PlanRoom["coverageSetting"] }[];
   readonly overrideRoomSchedule: boolean;
+}
+
+interface SpatialReadRecoveryAttempt {
+  generation: number;
+  controller: AbortController | null;
+}
+
+interface SpatialReadRecoveryState {
+  key: string;
+  failedKinds: Set<"pose" | "delta">;
+  retryTimer: number | null;
+  attempt: SpatialReadRecoveryAttempt | null;
+}
+
+interface SpatialReadRecoveryOwner {
+  state: SpatialReadRecoveryState;
+  attempt: SpatialReadRecoveryAttempt;
 }
 
 const manualPreviewValue = (preview: ManualRoomSequencePreview): string => JSON.stringify({
@@ -132,11 +158,11 @@ export class EffectController {
   readonly #store: WorkspaceStore;
   readonly #coherence: CoherenceMachine;
   readonly #backend: MaticBackend;
+  readonly #pageLifecycle: PageLifecycle;
   readonly #preferences = new PreferenceStore();
   #preferenceSnapshot: MapPreferences | null = null;
   readonly #controllers = new Map<string, AbortController>();
   #projection: HassProjection | null = null;
-  #panel: PanelLike | undefined;
   #catalogTimer: number | null = null;
   #poseTimer: number | null = null;
   #settleTimer: number | null = null;
@@ -145,10 +171,12 @@ export class EffectController {
   #catalogForceInFlight = false;
   #catalogRefreshQueued = false;
   #catalogRefreshQueuedPreserveGeneration = false;
+  #catalogRefreshQueuedSpatialRecoveryOwner: SpatialReadRecoveryOwner | null = null;
   #catalogSettled: Promise<void> = Promise.resolve();
   #poseLoading = false;
   #poseQueued = false;
   #entryIdentity = "";
+  #spatialRecovery: SpatialReadRecoveryState | null = null;
   #deltaGeneration = 0;
   #activeDeltaOwner: { generation: number; stamp: ResourceStamp; entryId: string; coherenceIdentity: string; deltaUrl: string } | null = null;
   #preferenceUser = "";
@@ -171,10 +199,83 @@ export class EffectController {
     this.#backend = backend;
     this.#workspaceConnection = workspaceConnection;
     this.#workspaceTransportEnabled = workspaceTransportEnabled;
+    this.#pageLifecycle = new PageLifecycle({
+      onSuspend: () => this.#suspendPage(),
+      onResume: () => { void this.#resumePage(); },
+    });
+    this.#store.patch({ pageActive: this.#pageLifecycle.active });
     this.#storeUnsubscribe = store.subscribe((state) => {
       this.#observePreferences(state);
       this.#reconcileManualRoomPreview();
     });
+    this.#pageLifecycle.start();
+  }
+
+  #suspendPage(): void {
+    // Revoke admission before cancellation, including transports that ignore
+    // abort. Retained geometry and drafts stay available as read-only context.
+    this.#invalidateSpatialFence(false, MUTATION_RESOURCES);
+    this.#stopPolling();
+    // A transmitted write cannot be undone by aborting its acknowledgement.
+    // Keep its independent owner until it settles or the entry/frame changes.
+    this.#abortResources(MUTATION_RESOURCES);
+    this.#catalogRefreshQueued = false;
+    this.#catalogRefreshQueuedPreserveGeneration = false;
+    this.#catalogRefreshQueuedSpatialRecoveryOwner = null;
+    this.#poseQueued = false;
+    this.#disposeWorkspaceTransport();
+    const state = this.#store.value;
+    this.#store.patch({
+      resources: {
+        ...state.resources,
+        catalog: cancelLoading(state.resources.catalog),
+        scene: cancelLoading(state.resources.scene),
+        history: cancelLoading(state.resources.history),
+        plans: cancelLoading(state.resources.plans),
+        areas: cancelLoading(state.resources.areas),
+        pose: resource("idle", null),
+      },
+    });
+  }
+
+  async #resumePage(): Promise<void> {
+    if (this.#disposed || !this.#pageLifecycle.active) return;
+    this.#store.patch({ pageActive: true });
+    const projection = this.#projection;
+    if (this.#disposed || !this.#pageLifecycle.active || !projection?.host.connected || !projection.host.administrator
+      || !projection.host.robotConnected || projection.host.robotCount === 0) return;
+    const suspended = this.#store.value;
+    this.#startPolling();
+    this.#syncWorkspaceTransport(projection);
+    await this.refreshCatalog(true, true);
+    const state = this.#store.value;
+    const entry = state.resources.entry;
+    if (this.#disposed || !this.#pageLifecycle.active || suspended.dataMode !== "history"
+      || state.generation !== suspended.generation || state.dataMode !== "history"
+      || state.selection.entryId !== suspended.selection.entryId
+      || state.selection.floorId !== suspended.selection.floorId
+      || state.selection.historyId !== suspended.selection.historyId
+      || state.resources.catalog.status !== "ready" || !entry
+      || entry.entryId !== state.selection.entryId) return;
+    const floor = state.resources.history.value?.floors.find((candidate) => candidate.id === state.selection.floorId);
+    const snapshot = floor?.snapshots.find((candidate) => candidate.id === state.selection.historyId);
+    if (!floor) return;
+    let stamp = this.#coherence.begin(entry.entryId, floor.id, snapshot?.id ?? floor.id, snapshot?.revision ?? 0);
+    this.#store.patch({ generation: stamp.generation });
+    await this.#loadHistory(entry, stamp);
+    if (!this.#coherence.accepts(stamp) || !this.#pageLifecycle.active
+      || this.#store.value.resources.history.status !== "ready") return;
+    const refreshed = this.#store.value;
+    const refreshedFloor = refreshed.resources.history.value?.floors.find((candidate) => candidate.id === floor.id);
+    const refreshedSnapshot = refreshedFloor?.snapshots.find((candidate) => candidate.id === snapshot?.id);
+    if (!refreshedFloor || (snapshot && !refreshedSnapshot)) return;
+    if (refreshedSnapshot && refreshedSnapshot.revision !== stamp.revision) {
+      stamp = this.#coherence.begin(entry.entryId, floor.id, refreshedSnapshot.id, refreshedSnapshot.revision);
+    }
+    this.#store.patch({ generation: stamp.generation, coherence: "current" });
+    if (refreshedSnapshot && (!refreshed.resources.scene.value || refreshedSnapshot.revision !== snapshot?.revision)) {
+      await this.#loadHistoryScene(refreshedSnapshot, stamp);
+    }
   }
 
   #observePreferences(state: WorkspaceState): void {
@@ -295,25 +396,28 @@ export class EffectController {
     }
   }
 
-  sync(projection: HassProjection, panel: PanelLike | undefined): void {
+  sync(projection: HassProjection): void {
     if (this.#disposed) return;
     const workspaceTransportBeforeSync = this.#workspaceTransport;
     const robotWasConnected = this.#projection?.host.robotConnected ?? null;
+    const authorizationRestored = this.#projection?.host.administrator === false
+      && projection.host.administrator;
     const robotReconnected = this.#projection !== null
       && !this.#projection.host.robotConnected && projection.host.robotConnected;
     const owner = this.#store.value.owner;
-    if (owner && (owner.entryKey !== projection.entryKey
-      || owner.userKey !== projection.userKey)) {
-      this.#clearPrivate("context-changed");
+    const contextChanged = owner !== null && (owner.entryKey !== projection.entryKey
+      || owner.userKey !== projection.userKey);
+    if (contextChanged) {
+      this.#clearPrivate("context-changed", projection.entryKey);
       if (this.#catalogLoading) {
         this.#catalogRefreshQueued = true;
         this.#catalogRefreshQueuedPreserveGeneration = false;
+        this.#catalogRefreshQueuedSpatialRecoveryOwner = null;
       }
     }
     const wasConnected = this.#hostConnected;
     this.#hostConnected = projection.host.connected;
     this.#projection = projection;
-    this.#panel = panel;
     this.#syncWorkspaceTransport(projection);
     // Robot credentials can be renewed while HA and the workspace stream stay
     // connected. An authorization-blocked transport would otherwise wait for
@@ -347,7 +451,7 @@ export class EffectController {
     });
     if (!projection.host.administrator) {
       this.#stopPolling();
-      this.#clearPrivate("access-required");
+      this.#clearPrivate("access-required", projection.entryKey);
       return;
     }
     if (!projection.host.connected) {
@@ -361,6 +465,7 @@ export class EffectController {
       this.#stopPolling();
       this.#catalogRefreshQueued = false;
       this.#catalogRefreshQueuedPreserveGeneration = false;
+      this.#catalogRefreshQueuedSpatialRecoveryOwner = null;
       this.#poseQueued = false;
       this.#abortResources();
       const state = this.#store.value;
@@ -391,7 +496,12 @@ export class EffectController {
     }
     if (projection.host.robotCount === 0) {
       this.#stopPolling();
-      this.#clearPrivate("map-unavailable");
+      this.#clearPrivate("map-unavailable", projection.entryKey);
+      return;
+    }
+    if (projection.entryKey && !projection.vacuumEntityId) {
+      this.#stopPolling();
+      this.#clearPrivate("no-loaded-robot", projection.entryKey);
       return;
     }
     if (!projection.host.robotConnected) {
@@ -403,6 +513,7 @@ export class EffectController {
         this.#abortResources();
         this.#catalogRefreshQueued = false;
         this.#catalogRefreshQueuedPreserveGeneration = false;
+        this.#catalogRefreshQueuedSpatialRecoveryOwner = null;
         this.#poseQueued = false;
       }
       this.#stopPolling();
@@ -422,18 +533,20 @@ export class EffectController {
       });
       return;
     }
+    if (!this.#pageLifecycle.active) return;
     this.#startPolling();
-    if (!wasConnected || robotReconnected) {
+    if (!wasConnected || robotReconnected || authorizationRestored) {
       // Host or robot reconnection only restores access after a new catalog
-      // proof. Clear the host-offline notice regardless of which transition
-      // happened first, then use one shared recovery read.
+      // proof. Authorization recovery also needs a fresh read when the same
+      // selected entry remains in place. Clear the host-offline notice and use
+      // one shared recovery read.
       if (this.#store.value.notice?.text === RECONNECT_NOTICE) {
         this.#store.patch({ notice: null });
       }
       void this.refreshCatalog(true, true);
       return;
     }
-    if (this.#store.value.resources.catalog.status === "idle"
+    if (contextChanged || this.#store.value.resources.catalog.status === "idle"
       || (projection.entryKey && projection.entryKey !== this.#store.value.selection.entryId)) {
       void this.refreshCatalog(true);
     }
@@ -442,11 +555,8 @@ export class EffectController {
   #syncWorkspaceTransport(projection: HassProjection): void {
     const entryId = projection.entryKey;
     if (!this.#workspaceTransportEnabled || !this.#workspaceConnection || !projection.host.administrator
-      || !projection.host.connected || !entryId) {
-      this.#workspaceTransport?.dispose();
-      this.#workspaceTransport = null;
-      this.#workspaceTransportEntry = null;
-      this.#workspaceFence = null;
+      || !projection.host.connected || !projection.vacuumEntityId || !entryId || !this.#pageLifecycle.active) {
+      this.#disposeWorkspaceTransport();
       return;
     }
     if (this.#workspaceTransport && this.#workspaceTransportEntry === entryId) return;
@@ -457,7 +567,7 @@ export class EffectController {
       onEvent: (event) => {
         // A disposed subscription can still have a queued callback. Its entry
         // scope must match both the active projection and current transport.
-        if (this.#disposed || this.#workspaceTransport !== transport
+        if (this.#disposed || !this.#pageLifecycle.active || this.#workspaceTransport !== transport
           || this.#workspaceTransportEntry !== entryId
           || this.#projection?.entryKey !== entryId) return;
         if (event.type === "resync" && event.reason === "entry_removed") {
@@ -622,20 +732,27 @@ export class EffectController {
       entry.entryId === admittedEntry.entryId ? admittedEntry : entry);
     const coherent = admittedEntry.mapFloorCoherent && admittedEntry.mapSessionVerified;
     const degraded = admittedEntry.health === "problem" || admittedEntry.health === "limited";
+    const recovery = this.#spatialRecovery;
+    const spatialRecoveryBlocked = recovery?.key === entryCoherenceIdentity(admittedEntry)
+      && this.#spatialReadNeedsRevalidation(recovery)
+      && (recovery.attempt !== null || recovery.retryTimer !== null);
     this.#store.patch({
       managedLock: entryManagedLock(admittedEntry),
-      coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
+      coherence: spatialRecoveryBlocked
+        ? "verifying"
+        : coherent ? (degraded ? "degraded" : "current") : "verifying",
       map: {
         ...state.map,
         available: state.resources.scene.value !== null,
         complete: admittedEntry.mapComplete && !admittedEntry.mapTruncated,
         floorCoherent: admittedEntry.mapFloorCoherent,
         sessionVerified: admittedEntry.mapSessionVerified,
-        exactPose: coherent ? state.map.exactPose : false,
+        exactPose: coherent && !spatialRecoveryBlocked ? state.map.exactPose : false,
       },
       floor: {
         ...state.floor,
         classifiedCount: Math.max(1, admittedEntry.historyFloorCount),
+        ...(spatialRecoveryBlocked && state.resources.scene.value ? { readOnly: true } : {}),
       },
       resources: {
         ...state.resources,
@@ -646,19 +763,24 @@ export class EffectController {
     return true;
   }
 
-  #invalidateSpatialFence(): void {
+  #invalidateSpatialFence(
+    pageActive = this.#store.value.pageActive,
+    preservedResources: readonly string[] = [],
+  ): void {
     const generation = this.#coherence.invalidate();
     this.#stopDeltaStream();
     const state = this.#store.value;
-    this.#store.patch({ generation, coherence: state.resources.scene.value ? "verifying" : "unavailable",
+    this.#store.patch({ generation, pageActive, coherence: state.resources.scene.value ? "verifying" : "unavailable",
+      floor: { ...state.floor, readOnly: state.floor.readOnly || state.resources.scene.value !== null },
       map: { ...state.map, exactPose: false } });
     // Invalidate the generation before aborting requests so no completion from
     // the old floor/scene can become visible while REST revalidates identity.
-    this.#abortResources(["catalog"]);
+    this.#abortResources(["catalog", ...preservedResources]);
     this.#entryIdentity = "";
   }
 
   #refreshSpatialBoundary(entryId: string, invalidated: readonly string[] = []): void {
+    this.#clearSpatialReadRecovery();
     this.#invalidateSpatialFence();
     void this.refreshCatalog(true, true).then(() => {
       if (this.#disposed || this.#projection?.entryKey !== entryId
@@ -717,14 +839,15 @@ export class EffectController {
   }
 
   #startPolling(): void {
+    if (!this.#pageLifecycle.active) return;
     if (this.#catalogTimer === null) {
       this.#catalogTimer = window.setInterval(() => {
-        if (document.visibilityState === "visible") void this.refreshCatalog();
+        void this.refreshCatalog();
       }, 5_000);
     }
     if (this.#poseTimer === null) {
       this.#poseTimer = window.setInterval(() => {
-        if (document.visibilityState === "visible") void this.refreshPose();
+        void this.refreshPose();
       }, POSE_POLL_INTERVAL_MS);
     }
   }
@@ -734,6 +857,131 @@ export class EffectController {
     if (this.#poseTimer !== null) window.clearInterval(this.#poseTimer);
     this.#catalogTimer = null;
     this.#poseTimer = null;
+    this.#clearSpatialReadRecovery();
+  }
+
+  #clearSpatialReadRecovery(): void {
+    const recovery = this.#spatialRecovery;
+    this.#spatialRecovery = null;
+    if (!recovery) return;
+    if (recovery.retryTimer !== null) window.clearTimeout(recovery.retryTimer);
+    const recoveryController = recovery.attempt?.controller;
+    const abortingVisibleCatalog = Boolean(recoveryController
+      && recoveryController === this.#controllers.get("catalog")
+      && this.#store.value.resources.catalog.status === "loading");
+    recoveryController?.abort();
+    if (abortingVisibleCatalog) {
+      const resources = this.#store.value.resources;
+      this.#store.patch({ resources: { ...resources, catalog: resource("idle", resources.catalog.value) } });
+    }
+    if (this.#catalogRefreshQueuedSpatialRecoveryOwner?.state === recovery) {
+      this.#catalogRefreshQueued = false;
+      this.#catalogRefreshQueuedPreserveGeneration = false;
+      this.#catalogRefreshQueuedSpatialRecoveryOwner = null;
+    }
+  }
+
+  #resolveSpatialReadFailure(kind: "pose" | "delta", entry: MapEntry): void {
+    const recovery = this.#spatialRecovery;
+    if (recovery?.key !== entryCoherenceIdentity(entry)) return;
+    recovery.failedKinds.delete(kind);
+    if (recovery.failedKinds.size === 0) this.#clearSpatialReadRecovery();
+  }
+
+  #recordSpatialReadFailure(kind: "pose" | "delta", entry: MapEntry): void {
+    const key = entryCoherenceIdentity(entry);
+    let recovery = this.#spatialRecovery;
+    if (recovery?.key !== key) {
+      this.#clearSpatialReadRecovery();
+      recovery = { key, failedKinds: new Set(), retryTimer: null, attempt: null };
+      this.#spatialRecovery = recovery;
+    }
+    recovery.failedKinds.add(kind);
+    if (this.#spatialReadNeedsRevalidation(recovery) && this.#coherence.current()) {
+      this.#invalidateSpatialFence();
+    }
+    if (!recovery.attempt && recovery.retryTimer === null) {
+      if (recovery.failedKinds.size === 1 && recovery.failedKinds.has(kind)) {
+        void this.#runSpatialReadRecovery(recovery);
+      } else {
+        this.#scheduleSpatialReadRetry(recovery);
+      }
+    }
+  }
+
+  #spatialReadNeedsRevalidation(recovery: SpatialReadRecoveryState): boolean {
+    const state = this.#store.value;
+    return recovery.failedKinds.has("pose") || state.floor.readOnly
+      || !state.map.floorCoherent || !state.map.sessionVerified;
+  }
+
+  #scheduleSpatialReadRetry(recovery: SpatialReadRecoveryState): void {
+    if (recovery.retryTimer !== null || recovery.failedKinds.size === 0) return;
+    recovery.retryTimer = window.setTimeout(() => {
+      recovery.retryTimer = null;
+      const entry = this.#store.value.resources.entry;
+      const host = this.#projection?.host;
+      if (this.#spatialRecovery !== recovery || this.#disposed || !entry
+        || entryCoherenceIdentity(entry) !== recovery.key || this.#store.value.dataMode !== "live"
+        || this.#store.value.selection.floorId !== "current"
+        || !host?.connected || !host.administrator || !host.robotConnected || host.robotCount === 0) {
+        if (this.#spatialRecovery === recovery) this.#clearSpatialReadRecovery();
+        return;
+      }
+      void this.#runSpatialReadRecovery(recovery);
+    }, SPATIAL_READ_RECOVERY_INTERVAL_MS);
+  }
+
+  async #runSpatialReadRecovery(recovery: SpatialReadRecoveryState): Promise<void> {
+    if (this.#disposed || this.#spatialRecovery !== recovery || recovery.attempt) return;
+    const entry = this.#store.value.resources.entry;
+    const host = this.#projection?.host;
+    if (!entry || entryCoherenceIdentity(entry) !== recovery.key
+      || this.#store.value.dataMode !== "live" || this.#store.value.selection.floorId !== "current"
+      || !host?.connected || !host.administrator || !host.robotConnected || host.robotCount === 0) {
+      if (this.#spatialRecovery === recovery) this.#clearSpatialReadRecovery();
+      return;
+    }
+    if (this.#controllers.has("scene")) {
+      // The admitted scene owner already bounds this download. A retry must
+      // not repeatedly abort a slow replacement before it can finish.
+      this.#scheduleSpatialReadRetry(recovery);
+      return;
+    }
+    const revalidateFrame = this.#spatialReadNeedsRevalidation(recovery);
+    if (revalidateFrame) {
+      if (this.#coherence.current()) this.#invalidateSpatialFence();
+    } else {
+      // A failed content download does not revoke a verified robot/floor/session.
+      // Replace its delta owner while retaining the admitted view and pose.
+      this.#stopDeltaStream();
+      this.#controllers.get("delta")?.abort();
+    }
+    const attempt: SpatialReadRecoveryAttempt = { generation: this.#coherence.generation, controller: null };
+    recovery.attempt = attempt;
+    const owner: SpatialReadRecoveryOwner = { state: recovery, attempt };
+    try {
+      await this.refreshCatalog(true, false, !revalidateFrame, owner);
+    } finally {
+      if (this.#spatialRecovery !== recovery || recovery.attempt !== attempt) return;
+      recovery.attempt = null;
+      if (recovery.failedKinds.size > 0) this.#scheduleSpatialReadRetry(recovery);
+    }
+  }
+
+  #spatialRecoveryOwnerIsCurrent(owner: SpatialReadRecoveryOwner): boolean {
+    const state = this.#store.value;
+    const host = this.#projection?.host;
+    return !this.#disposed && this.#pageLifecycle.active
+      && this.#spatialRecovery === owner.state
+      && owner.state.attempt === owner.attempt
+      && owner.attempt.generation === this.#coherence.generation
+      && state.generation === this.#coherence.generation
+      && state.dataMode === "live"
+      && state.selection.floorId === "current"
+      && state.resources.entry !== null
+      && entryCoherenceIdentity(state.resources.entry) === owner.state.key
+      && Boolean(host?.connected && host.administrator && host.robotConnected && host.robotCount > 0);
   }
 
   #controller(name: string): AbortController {
@@ -751,7 +999,7 @@ export class EffectController {
     let mutationCancelled = false;
     for (const [name, controller] of this.#controllers) {
       if (except.includes(name)) continue;
-      mutationCancelled ||= name === "plan-mutation" || name === "area-mutation";
+      mutationCancelled ||= name === "plan-mutation" || name === "area-mutation" || name === "plan-preflight";
       controller.abort();
       this.#controllers.delete(name);
     }
@@ -766,7 +1014,8 @@ export class EffectController {
     this.#settleTimer = null;
   }
 
-  #clearPrivate(problem: string): void {
+  #clearPrivate(problem: string, selectedEntryId: string | null = null): void {
+    this.#clearSpatialReadRecovery();
     this.#invalidateMotion();
     this.#coherence.invalidate();
     this.#stopDeltaStream();
@@ -810,7 +1059,7 @@ export class EffectController {
       },
       selection: {
         ...empty.selection,
-        entryId: null,
+        entryId: selectedEntryId,
         floorId: "current",
         historyId: null,
       },
@@ -821,11 +1070,14 @@ export class EffectController {
     force = false,
     queueForcedFollowup = false,
     preserveGeneration = false,
+    spatialRecoveryOwner: SpatialReadRecoveryOwner | null = null,
   ): Promise<void> {
-    if (this.#disposed
+    if (this.#disposed || !this.#pageLifecycle.active
       || !this.#projection?.host.administrator
       || !this.#projection.host.connected
-      || this.#projection.host.robotCount === 0) return;
+      || this.#projection.host.robotCount === 0
+      || (spatialRecoveryOwner && (!this.#projection.host.robotConnected
+        || !this.#spatialRecoveryOwnerIsCurrent(spatialRecoveryOwner)))) return;
     if (this.#catalogLoading) {
       if (force) {
         // Coalesce any number of stream invalidations into exactly one
@@ -847,6 +1099,11 @@ export class EffectController {
           }
           this.#catalogRefreshQueued = true;
         }
+        if (spatialRecoveryOwner) {
+          this.#catalogRefreshQueuedSpatialRecoveryOwner = spatialRecoveryOwner;
+          this.#catalogRefreshQueuedPreserveGeneration = false;
+          this.#catalogRefreshQueued = true;
+        }
       }
       return this.#catalogSettled;
     }
@@ -855,6 +1112,7 @@ export class EffectController {
     let settleCatalog!: () => void;
     this.#catalogSettled = new Promise<void>((resolve) => { settleCatalog = resolve; });
     const controller = this.#controller("catalog");
+    if (spatialRecoveryOwner) spatialRecoveryOwner.attempt.controller = controller;
     const previous = this.#store.value.resources.catalog.value;
     this.#store.patch({
       resources: {
@@ -865,13 +1123,28 @@ export class EffectController {
     try {
       const entries = await this.#backend.catalog(controller.signal);
       if (controller.signal.aborted || this.#disposed) return;
-      const requested = this.#panel?.config?.entry_id;
-      const requestedEntry = typeof requested === "string" ? requested : null;
-      let selected = entries.find((entry) => entry.entryId === this.#projection?.entryKey)
-        || entries.find((entry) => entry.entryId === requestedEntry)
-        || entries[0]
-        || null;
+      if (spatialRecoveryOwner && !this.#spatialRecoveryOwnerIsCurrent(spatialRecoveryOwner)) return;
+      const requestedEntryId = this.#projection?.entryKey;
+      let selected = requestedEntryId
+        ? entries.find((entry) => entry.entryId === requestedEntryId) ?? null
+        : entries[0] ?? null;
       const currentEntry = this.#store.value.resources.entry;
+      if (selected
+        && this.#spatialRecovery?.key === entryCoherenceIdentity(selected)
+        && (this.#spatialRecovery.attempt !== null || this.#spatialRecovery.retryTimer !== null)
+        && (!spatialRecoveryOwner || !this.#spatialRecoveryOwnerIsCurrent(spatialRecoveryOwner))) {
+        // A fresh catalog may refresh the runner lock and entry list while a
+        // spatial read is cooling down, but it cannot restart the same frame.
+        this.#store.patch({
+          managedLock: entryManagedLock(selected),
+          resources: {
+            ...this.#store.value.resources,
+            catalog: resource(entries.length ? "ready" : "empty", entries),
+            entry: currentEntry,
+          },
+        });
+        return;
+      }
       const deltaOwnsContent = Boolean(selected && currentEntry
         && entryCoherenceIdentity(selected) === entryCoherenceIdentity(currentEntry)
         && this.#ownsLiveDelta(currentEntry));
@@ -898,12 +1171,18 @@ export class EffectController {
         },
       });
       if (!selected) {
-        this.#clearPrivate("no-loaded-robot");
+        this.#clearPrivate("no-loaded-robot", this.#projection?.entryKey ?? null);
         return;
       }
-      if (this.#store.value.selection.floorId !== "current" && !force) return;
+      if (this.#store.value.selection.floorId !== "current"
+        || this.#store.value.dataMode !== "live") return;
       const identity = entryIdentity(selected);
-      if ((!force || preserveGeneration) && identity === this.#entryIdentity) {
+      const currentStamp = this.#coherence.current();
+      const sameVerifiedFrame = Boolean(currentStamp && currentEntry
+        && entryCoherenceIdentity(selected) === entryCoherenceIdentity(currentEntry)
+        && selected.mapFloorCoherent && selected.mapSessionVerified);
+      if ((!force || preserveGeneration) && (identity === this.#entryIdentity
+        || sameVerifiedFrame)) {
         const state = this.#store.value;
         const coherent = selected.mapFloorCoherent && selected.mapSessionVerified;
         const degraded = selected.health === "problem" || selected.health === "limited";
@@ -933,7 +1212,20 @@ export class EffectController {
         // Transient scene failures do not necessarily advance map identity.
         // Retry on the next verified catalog poll, without interrupting a
         // request that is still building the scene.
-        const stamp = this.#coherence.current();
+        let stamp = currentStamp;
+        if (stamp && sameVerifiedFrame && (selected.mapRevision > stamp.revision
+          || spatialRecoveryOwner !== null)) {
+          if (selected.mapRevision > stamp.revision) {
+            stamp = this.#coherence.advance(stamp, selected.mapRevision);
+          }
+          if (stamp) {
+            this.#entryIdentity = identity;
+            this.#stopDeltaStream();
+            const resources = this.#store.value.resources;
+            this.#store.patch({ resources: { ...resources, scene: resource("loading", resources.scene.value) } });
+            void this.#loadLiveScene(selected, stamp);
+          }
+        }
         if (stamp && !state.resources.scene.value
           && !this.#controllers.has("history")) {
           // Saved scene reads can fail independently of a healthy catalog.
@@ -960,15 +1252,18 @@ export class EffectController {
       });
     } finally {
       this.#release("catalog", controller);
+      if (spatialRecoveryOwner?.attempt.controller === controller) spatialRecoveryOwner.attempt.controller = null;
       this.#catalogLoading = false;
       const forceQueued = this.#catalogRefreshQueued;
       const preserveQueuedGeneration = this.#catalogRefreshQueuedPreserveGeneration;
+      const queuedSpatialRecoveryOwner = this.#catalogRefreshQueuedSpatialRecoveryOwner;
       this.#catalogForceInFlight = false;
       try {
         if (forceQueued && !this.#disposed) {
           this.#catalogRefreshQueued = false;
           this.#catalogRefreshQueuedPreserveGeneration = false;
-          await this.refreshCatalog(true, false, preserveQueuedGeneration);
+          this.#catalogRefreshQueuedSpatialRecoveryOwner = null;
+          await this.refreshCatalog(true, false, preserveQueuedGeneration, queuedSpatialRecoveryOwner);
         }
       } finally {
         settleCatalog();
@@ -977,6 +1272,10 @@ export class EffectController {
   }
 
   #beginLiveGeneration(entry: MapEntry, previousEntry: MapEntry | null): void {
+    if (this.#spatialRecovery !== null
+      && this.#spatialRecovery.key !== entryCoherenceIdentity(entry)) {
+      this.#clearSpatialReadRecovery();
+    }
     const previousState = this.#store.value;
     const sameResourceBoundary = Boolean(previousEntry
       && entryBoundaryKey(previousEntry) === entryBoundaryKey(entry));
@@ -1008,6 +1307,10 @@ export class EffectController {
       entryMissionKey(entry),
       entry.mapRevision,
     );
+    if (this.#spatialRecovery?.key === entryCoherenceIdentity(entry)
+      && this.#spatialRecovery.attempt) {
+      this.#spatialRecovery.attempt.generation = stamp.generation;
+    }
     this.#stopDeltaStream();
     this.#abortResources(preserve);
     const retainedScene = previousEntry?.entryId === entry.entryId
@@ -1044,7 +1347,7 @@ export class EffectController {
       draftMapSessionKey: verifiedSession ?? previousDraftSession,
       managedLock: entryManagedLock(entry),
       generation: stamp.generation,
-      coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
+      coherence: coherent ? (degraded ? "degraded" : retainedReadOnly ? "verifying" : "current") : "verifying",
       dataMode: "live",
       ...(!coherent && retainedScene ? { notice: { tone: "warning" as const, text: LIVE_MAP_RECHECK_NOTICE } } : {}),
       resources: {
@@ -1093,6 +1396,7 @@ export class EffectController {
   }
 
   async #loadLiveScene(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
+    if (!this.#pageLifecycle.active) return;
     const controller = this.#controller("scene");
     try {
       const response = await this.#backend.scene(
@@ -1132,6 +1436,7 @@ export class EffectController {
       const settledEntry = { ...state.resources.entry ?? entry, mapRevision: response.revision };
       this.#entryIdentity = entryIdentity(settledEntry);
       this.#store.patch({
+        coherence: settledEntry.health === "problem" || settledEntry.health === "limited" ? "degraded" : "current",
         resources: {
           ...state.resources,
           entry: settledEntry,
@@ -1222,6 +1527,7 @@ export class EffectController {
     let scene = initialScene;
     try {
       while (!this.#disposed
+        && this.#pageLifecycle.active
         && generation === this.#deltaGeneration
         && this.#coherence.accepts(stamp)
         && this.#store.value.selection.floorId === "current") {
@@ -1255,11 +1561,11 @@ export class EffectController {
               },
               notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
             });
-            this.#entryIdentity = "";
-            void this.refreshCatalog(true);
+            this.#recordSpatialReadFailure("delta", entry);
             return;
           }
           if (response.notModified || !response.scene) {
+            this.#resolveSpatialReadFailure("delta", entry);
             await new Promise<void>((resolve) => window.setTimeout(resolve, 100));
             continue;
           }
@@ -1269,6 +1575,7 @@ export class EffectController {
           owner.stamp = advanced;
           scene = response.scene;
           entry = { ...entry, mapRevision: response.revision };
+          this.#resolveSpatialReadFailure("delta", entry);
           this.#entryIdentity = entryIdentity(entry);
           const state = this.#store.value;
           this.#store.patch({
@@ -1294,20 +1601,19 @@ export class EffectController {
         || generation !== this.#deltaGeneration
         || !this.#coherence.accepts(stamp)) return;
       this.#store.patch({
-        coherence: "degraded",
         notice: {
           tone: "warning",
           text: LIVE_MAP_RECHECK_NOTICE,
         },
       });
-      this.#entryIdentity = "";
-      void this.refreshCatalog(true);
+      this.#recordSpatialReadFailure("delta", entry);
     } finally {
       if (this.#activeDeltaOwner === owner) this.#activeDeltaOwner = null;
     }
   }
 
   async #loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
+    if (!this.#pageLifecycle.active) return;
     const controller = this.#controller("history");
     try {
       const history = await this.#backend.history(entry.historyUrl, controller.signal);
@@ -1390,7 +1696,7 @@ export class EffectController {
   }
 
   async #loadPose(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
-    if (this.#disposed || !this.#hostConnected || !this.#projection?.host.connected) return;
+    if (this.#disposed || !this.#pageLifecycle.active || !this.#hostConnected || !this.#projection?.host.connected) return;
     if (this.#poseLoading) {
       this.#poseQueued = true;
       return;
@@ -1404,18 +1710,17 @@ export class EffectController {
       if (!current
         || !sameCoherenceGeneration(stamp, current)
         || !currentEntry
-        || !this.#store.value.map.floorCoherent
-        || !pose.floorCoherent) return;
-      if (pose.mapSessionKey === null
+        || !this.#store.value.map.floorCoherent) return;
+      if (!pose.floorCoherent || pose.mapSessionKey === null
         || pose.mapSessionKey !== currentEntry.mapSessionKey) {
         this.#store.patch({
           resources: { ...this.#store.value.resources, pose: resource("idle", null) },
           map: { ...this.#store.value.map, exactPose: false },
         });
-        this.#entryIdentity = "";
-        void this.refreshCatalog(true);
+        this.#recordSpatialReadFailure("pose", currentEntry);
         return;
       }
+      this.#resolveSpatialReadFailure("pose", currentEntry);
       const state = this.#store.value;
       const previousPose = state.resources.pose.value;
       const canRetainVerifiedPose = Boolean(state.map.exactPose
@@ -1498,6 +1803,7 @@ export class EffectController {
       || (currentState.workflow === "areaReview"
         && (currentState.draw.dirty || currentState.areaDraft.dirty))) return;
     if (!floor || floor.active) {
+      this.#clearSpatialReadRecovery();
       this.#entryIdentity = "";
       const state = this.#store.value;
       this.#store.patch({
@@ -1521,6 +1827,7 @@ export class EffectController {
       await this.refreshCatalog(true);
       return;
     }
+    this.#clearSpatialReadRecovery();
     const snapshot = floor.snapshots.at(-1);
     const stamp = this.#coherence.begin(
       entry.entryId,
@@ -1575,6 +1882,7 @@ export class EffectController {
       candidate.snapshots.some((snapshot) => snapshot.id === snapshotId));
     const snapshot = floor?.snapshots.find((candidate) => candidate.id === snapshotId);
     if (!floor || !snapshot) return;
+    this.#clearSpatialReadRecovery();
     const stamp = this.#coherence.begin(entry.entryId, floor.id, snapshot.id, snapshot.revision);
     this.#abortResources(["catalog"]);
     this.#store.patch({
@@ -1601,6 +1909,7 @@ export class EffectController {
   }
 
   async #loadHistoryScene(snapshot: HistorySnapshot, stamp: ResourceStamp): Promise<void> {
+    if (!this.#pageLifecycle.active) return;
     const controller = this.#controller("history-scene");
     try {
       const response = await this.#backend.scene(
@@ -1652,10 +1961,16 @@ export class EffectController {
     if (workflow === "draw" || workflow === "areaReview") await this.loadAreas();
   }
 
-  async loadPlans(): Promise<void> {
+  async loadPlans({ force = false }: { force?: boolean } = {}): Promise<PlansCatalog | null> {
+    if (!this.#pageLifecycle.active) {
+      this.#controllers.get("plans")?.abort();
+      const resources = this.#store.value.resources;
+      this.#store.patch({ resources: { ...resources, plans: resource("idle", resources.plans.value) } });
+      return null;
+    }
     const entry = this.#store.value.resources.entry;
-    if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return;
-    if (this.#store.value.resources.plans.status === "loading") return;
+    if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return null;
+    if (!force && this.#store.value.resources.plans.status === "loading") return null;
     const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("plans");
     this.#store.patch({
@@ -1664,12 +1979,18 @@ export class EffectController {
     try {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
-      if (controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
-      if (this.#store.value.planDraft.dirty || this.#store.value.workflow === "plan") {
+      if (controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return null;
+      const state = this.#store.value;
+      // A fresh read can update an unchanged saved editor. Pending writes and
+      // preflight retain their draft identity; unsaved and dirty drafts remain
+      // private until their own save acknowledgement.
+      if (state.planDraft.dirty || (state.workflow === "plan"
+        && (!state.planDraft.id || state.command === "pending"))) {
         this.#store.patch({ resources: { ...this.#store.value.resources, plans: resource("ready", plans) } });
-        return;
+        return plans;
       }
-      const planId = plans.selectedPlan || plans.plans[0]?.id || null;
+      const planId = state.workflow === "plan"
+        ? state.selection.planId : plans.selectedPlan || plans.plans[0]?.id || null;
       const plan = plans.plans.find((candidate) => candidate.id === planId);
       this.#store.patch({
         resources: { ...this.#store.value.resources, plans: resource("ready", plans) },
@@ -1685,9 +2006,10 @@ export class EffectController {
           dirty: false,
         },
       });
+      return plans;
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
-      if (isAbort(error) || controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      if (isAbort(error) || controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return null;
       // The backend labels only floor revalidation conflicts as recoverable.
       // Other conflicts (for example, a valid floor with no rooms) remain
       // actionable errors and must not trigger an unbounded retry loop.
@@ -1700,6 +2022,7 @@ export class EffectController {
           plans: resource("error", null, problem),
         },
       });
+      return null;
     } finally {
       this.#release("plans", controller);
     }
@@ -1725,9 +2048,15 @@ export class EffectController {
     }
   }
 
-  async loadAreas({ reconcileDraft = true }: { reconcileDraft?: boolean } = {}): Promise<void> {
+  async loadAreas({ reconcileDraft = true }: { reconcileDraft?: boolean } = {}): Promise<AreasCatalog | null> {
+    if (!this.#pageLifecycle.active) {
+      this.#controllers.get("areas")?.abort();
+      const resources = this.#store.value.resources;
+      this.#store.patch({ resources: { ...resources, areas: resource("idle", resources.areas.value) } });
+      return null;
+    }
     const entry = this.#store.value.resources.entry;
-    if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return;
+    if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return null;
     const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("areas");
     this.#store.patch({
@@ -1737,7 +2066,7 @@ export class EffectController {
       const areas = await this.#backend.areas(entry.areasUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
       if (controller.signal.aborted || this.#disposed || !currentEntry
-        || entryBoundaryKey(currentEntry) !== boundary) return;
+        || entryBoundaryKey(currentEntry) !== boundary) return null;
       if (areas.sceneUrl !== currentEntry.sceneUrl) throw new BackendError("areas-unavailable");
       this.#store.patch({
         resources: { ...this.#store.value.resources, areas: resource("ready", areas) },
@@ -1753,15 +2082,17 @@ export class EffectController {
         || (selectedId !== null && !selectedExists))) {
         this.selectArea(selectedExists ? selectedId : null);
       }
+      return areas;
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
-      if (isAbort(error) || controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      if (isAbort(error) || controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return null;
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
           areas: resource("error", null, problemCode(error, "areas-unavailable")),
         },
       });
+      return null;
     } finally {
       this.#release("areas", controller);
     }
@@ -1844,13 +2175,14 @@ export class EffectController {
           draw: { ...latest.draw, dirty: false, strokeCount: 0, undo: [], redo: [], outlineUndo: [], outlineRedo: [] },
         } : {}),
       });
-      await this.loadAreas({ reconcileDraft: false });
+      const areas = await this.loadAreas({ reconcileDraft: false });
       const refreshed = this.#store.value;
       if (current() && savedDraft && refreshed.areaDraft === savedDraft
         && !refreshed.draw.dirty
         && (refreshed.workflow === "draw" || refreshed.workflow === "areaReview")
         && refreshed.selection.entryId === state.selection.entryId
-        && refreshed.resources.areas.value?.areas.some((area) => area.id === id)) this.selectArea(id);
+        && areas && refreshed.resources.areas.value === areas
+        && areas.areas.some((area) => area.id === id)) this.selectArea(id);
     } catch (error) {
       if (isAbort(error) || !current()) return;
       this.#store.patch({ command: "failed", notice: { tone: "error", text: "Area could not be saved" } });
@@ -1884,6 +2216,7 @@ export class EffectController {
     const plans = state.resources.plans.value;
     if (!plans || !draft.name.trim() || !draft.rooms.length || !canEditCoordinates(state)) return;
     const rooms: readonly PlanRoom[] = draft.rooms;
+    let savedId = draft.id;
     const saved = await this.#serviceMutation("save_plan", {
       ...(draft.id ? { plan_id: draft.id } : {}),
       name: draft.name.trim(),
@@ -1908,20 +2241,26 @@ export class EffectController {
       finish_current_room: draft.finishCurrentRoom,
       finish_current_room_threshold: draft.finishCurrentRoomThreshold,
       select: !draft.id || plans.selectedPlan === draft.id,
-    }, "Plan saved", "Plan could not be saved");
+    }, "Plan saved", "Plan save could not be confirmed. Check saved plans before trying again.", (response) => {
+      const acknowledgedId = response === undefined && draft.id ? draft.id : parseSavedPlanId(response);
+      if (draft.id && acknowledgedId !== draft.id) throw new BackendError("invalid-plan-save-response");
+      savedId = acknowledgedId;
+    });
     if (saved) {
       // A save may finish after Back/discard or after another editor opens.
       // Refresh the catalog in every case, but reconcile only the same draft.
       const savedDraft = this.#store.value.workflow === "plan"
-        && this.#store.value.planDraft === draft ? { ...draft, dirty: false } : null;
-      if (savedDraft) this.#store.patch({ planDraft: savedDraft });
-      await this.loadPlans();
+        && this.#store.value.planDraft === draft ? { ...draft, id: savedId, dirty: false } : null;
+      if (savedDraft) this.#store.patch({
+        planDraft: savedDraft,
+        selection: { ...this.#store.value.selection, planId: savedId },
+      });
+      const catalog = await this.loadPlans({ force: true });
       if (savedDraft && this.#store.value.workflow === "plan"
         && this.#store.value.planDraft === savedDraft
-        && this.#store.value.selection.entryId === state.selection.entryId) {
-        const catalog = this.#store.value.resources.plans.value;
-        const savedId = draft.id || catalog?.selectedPlan;
-        if (savedId && catalog?.plans.some((plan) => plan.id === savedId)) this.selectPlan(savedId, true);
+        && this.#store.value.selection.entryId === state.selection.entryId
+        && catalog && this.#store.value.resources.plans.value === catalog) {
+        if (savedId && catalog.plans.some((plan) => plan.id === savedId)) this.selectPlan(savedId, true);
       }
     }
   }
@@ -1940,7 +2279,7 @@ export class EffectController {
         });
         if (current.workflow === "plan") this.#store.patch({ workflow: "plans", precisionOpen: false });
       }
-      await this.loadPlans();
+      await this.loadPlans({ force: true });
     }
   }
 
@@ -1984,7 +2323,14 @@ export class EffectController {
           return;
         }
         this.#store.patch({ command: "pending", notice: null });
-        await this.loadPlans();
+        // This read owns a pending preflight, not a transmitted command.
+        // Page/floor invalidation cancels it without abandoning a running job.
+        const preflight = this.#controller("plan-preflight");
+        try {
+          await this.loadPlans();
+        } finally {
+          this.#release("plan-preflight", preflight);
+        }
         const refreshed = this.#store.value;
         const releasePreflight = (): void => {
           const current = this.#store.value;
@@ -1993,7 +2339,7 @@ export class EffectController {
             this.#store.patch({ command: "idle" });
           }
         };
-        if (this.#disposed || refreshed.selection.entryId !== entryId
+        if (preflight.signal.aborted || this.#disposed || refreshed.selection.entryId !== entryId
           || refreshed.generation !== generation || refreshed.workflow !== "plan"
           || refreshed.selection.planId !== selectedPlanId
           || (refreshed.selection.planId || refreshed.resources.plans.value?.selectedPlan) !== plan
@@ -2069,10 +2415,11 @@ export class EffectController {
           idOrAction.mode === "mop" ? "Mopping progress could not be reset" : "Coverage progress could not be reset",
         );
         if (!reset) return;
-        await this.loadPlans();
+        const catalog = await this.loadPlans({ force: true });
         const latest = this.#store.value;
         if (!this.#disposed && latest.selection.entryId === state.selection.entryId
-          && latest.selection.planId === idOrAction.planId && !latest.planDraft.dirty) {
+          && latest.selection.planId === idOrAction.planId && !latest.planDraft.dirty
+          && catalog && latest.resources.plans.value === catalog) {
           this.selectPlan(idOrAction.planId, true);
         }
         return;
@@ -2153,6 +2500,7 @@ export class EffectController {
     data: Readonly<Record<string, unknown>>,
     success: string,
     failure: string,
+    onAcknowledged?: (response: unknown) => void,
   ): Promise<boolean> {
     const entityId = this.#projection?.vacuumEntityId;
     if (!entityId || !canEditCoordinates(this.#store.value) || this.#store.value.command === "pending") return false;
@@ -2163,8 +2511,12 @@ export class EffectController {
       && entryKey === this.#projection?.entryKey && userKey === this.#projection?.userKey;
     this.#store.patch({ command: "pending", notice: { tone: "info", text: "Saving…" } });
     try {
-      await this.#backend.service("matic_robot", service, data, entityId);
+      const response = await this.#backend.service("matic_robot", service, data, entityId, {
+        acknowledgementTimeout: "mutation",
+        ...(onAcknowledged ? { returnResponse: true } : {}),
+      });
       if (!current()) return false;
+      onAcknowledged?.(response);
       this.#store.patch({ command: "idle", notice: { tone: "success", text: success } });
       return true;
     } catch {
@@ -2221,10 +2573,11 @@ export class EffectController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#pageLifecycle.dispose();
     // The store survives a detached panel. Revoke its public action admission
     // before aborting requests so neither stale controls nor late results can
     // reuse the prior controller's proof during the remount gap.
-    this.#invalidateSpatialFence();
+    this.#invalidateSpatialFence(false);
     this.#storeUnsubscribe?.();
     this.#storeUnsubscribe = null;
     this.#store.patch({ manualRoomPreview: resource("idle", null) });
@@ -2233,9 +2586,14 @@ export class EffectController {
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
     this.#settleTimer = null;
     this.#preferences.dispose();
+    this.#disposeWorkspaceTransport();
+    this.#backend.dispose();
+  }
+
+  #disposeWorkspaceTransport(): void {
     this.#workspaceTransport?.dispose();
     this.#workspaceTransport = null;
     this.#workspaceTransportEntry = null;
-    this.#backend.dispose();
+    this.#workspaceFence = null;
   }
 }
