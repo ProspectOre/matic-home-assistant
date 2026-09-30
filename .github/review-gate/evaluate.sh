@@ -1813,7 +1813,11 @@ if [[ "$native_event_head_bound" == true ]] && jq -e \
   fi
 fi
   if [[ "$event_name" == issue_comment && -f "$event_path" ]] &&
-   jq -e --arg head "$head_sha" --arg prefix "$head_prefix" --arg native_head_bound "$native_event_head_bound" --arg native_regular_candidate "$native_regular_candidate" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
+   jq -e --arg head "$head_sha" --arg prefix "$head_prefix" --arg native_head_bound "$native_event_head_bound" --arg native_regular_candidate "$native_regular_candidate" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" \
+      --argjson section_security_candidate "$(jq -c --arg head "$head_sha" --arg prefix "$head_prefix" '
+        any([.current.sections[], .previous.sections[]][];
+          .security_finding == true and (.target_ref == $head or .target_ref == $prefix))
+      ' <<< "$issue_comment_facts")" '
      def contains_security_heading:
        split("\n") | any(.[]; test($security_heading_pattern));
 def clean_security_footer($summary; $findings_sentence):
@@ -1870,12 +1874,12 @@ def clean_security_envelope:
          (($result | contains_security_heading) and ($result | has_security_report_link));
      (.action == "deleted" or .action == "edited" or
       ($native_head_bound == "true" and .action == "created" and
-       (.comment.body // "" | (native_security_candidate or $native_regular_candidate == "true")))) and
+       (.comment.body // "" | (native_security_candidate or $native_regular_candidate == "true" or $section_security_candidate)))) and
      ([.comment.body // "", .changes.body.from // ""] | all(test("(?is)^[[:space:]]*<!--[[:space:]]*codex-pull-request-review-summary[[:space:]]*-->") | not)) and
      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
      .comment.user.login == "chatgpt-codex-connector[bot]" and
      ([.comment.body // "", .changes.body.from // ""] | any(
-       (($native_head_bound == "true") and (native_security_candidate or $native_regular_candidate == "true")) or
+       $section_security_candidate or (($native_head_bound == "true") and (native_security_candidate or $native_regular_candidate == "true")) or
        (coordinator_result_for_head) or
        ((contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
         ((contains_security_heading and has_security_report_link) or test("(?im)(?:\\A|\\n)[[:blank:]]*(?:\\[P[0-3]\\][^\\r\\n]*[[:blank:]]+)?<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$") or

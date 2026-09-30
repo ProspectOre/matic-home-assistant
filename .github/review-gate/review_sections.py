@@ -139,18 +139,41 @@ COORDINATOR_PRELUDE = re.compile(
     r"base=[0-9a-f]{40}[ \t]*-->[ \t]*(?:\r?\n|$)",
     re.I | re.S,
 )
-COORDINATOR_METADATA = re.compile(
-    r"\A[ \t\r\n]*(?:(?:Retry reason:[^\r\n]*|"
-    r"Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|"
-    r"Root-cause diagnosis:[ \t]*\r?\n[ \t]*- rootCause:[^\r\n]*\r?\n"
-    r"[ \t]*- changes:[^\r\n]*\r?\n[ \t]*- validation:[^\r\n]*)"
-    r"[ \t\r\n]*)*\Z",
+_PRIVATE_EVIDENCE = re.compile(
+    r"\ARoot-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}\Z", re.I
+)
+_RETRY_REASON = re.compile(r"\ARetry reason:[^\r\n]*\Z", re.I)
+_LEGACY_METADATA = re.compile(
+    r"\ARoot-cause diagnosis:[ \t]*\r?\n"
+    r"[ \t]*- rootCause:[^\r\n]*\r?\n"
+    r"[ \t]*- changes:[^\r\n]*\r?\n"
+    r"[ \t]*- validation:[^\r\n]*\Z",
     re.I,
 )
 SECURITY_MARKER_IN_CODE = re.compile(r"`[^`]*`")
 SECURITY_MARKER_COMMENT = re.compile(
     r"(?is)<!--[ \t]*codex-security-review-finding:v1[ \t]*-->"
 )
+
+
+def _valid_coordinator_metadata(metadata: str) -> bool:
+    lines = metadata.split("\n")
+    index = 0
+    while index < len(lines):
+        if not lines[index].strip(" \t\r"):
+            index += 1
+            continue
+        line = lines[index].strip(" \t\r")
+        if _RETRY_REASON.fullmatch(line) or _PRIVATE_EVIDENCE.fullmatch(line):
+            index += 1
+            continue
+        if _LEGACY_METADATA.fullmatch(
+            "\n".join(lines[index : index + 4]).strip(" \t\r\n")
+        ):
+            index += 4
+            continue
+        return False
+    return True
 
 
 def _coordinator_body(body: str) -> tuple[str, str | None]:
@@ -175,7 +198,7 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
     )
     metadata = "\n".join(lines[:start])
     valid_metadata = not (
-        not COORDINATOR_METADATA.fullmatch(metadata)
+        not _valid_coordinator_metadata(metadata)
         or re.search(r"\bP[0-3]\b", metadata, re.I)
         or (
             SECURITY_MARKER_COMMENT.search(SECURITY_MARKER_IN_CODE.sub("", metadata))
@@ -404,7 +427,7 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
         line for line in section.splitlines() if not SECURITY_MARKER.fullmatch(line)
     )
     unheaded_security = (
-        kind in ("unheaded", "regular")
+        bool(COORDINATOR_PRELUDE.match(section))
         and bool(re.search(r"(?i)\bP[0-3]\b", security_text))
         and bool(
             re.search(r"(?i)\bsecurity\b|\bvulnerab\w*|\bexploitable\b", security_text)
@@ -418,7 +441,7 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
         or (heading and severity)
         or (heading and report_link and not clean_claim)
     )
-    event = marker or unheaded_security or (heading and (report_link or clean_claim))
+    event = finding or (heading and (report_link or clean_claim))
     return event, finding
 
 
