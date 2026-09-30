@@ -68,6 +68,76 @@ jobs:
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     environment: review-event-relay
     steps:
+      - id: review-sections
+        if: github.event_name == 'issue_comment'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_PR: ${{ github.event.issue.number }}
+          POLICY_REF: ${{ github.workflow_sha }}
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'f7f3b9808fa279059ade9705ff3df199bc3e55cf0378efde7e8be87b10993c04'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          # Human @codex review comments are an authorized request for a new
+          # run. They must remain mutation-free, including when the canonical
+          # parser cannot be loaded.
+          if ! jq -e '
+            .comment.user.id == 199175422 and .comment.user.login == "chatgpt-codex-connector[bot]"
+            and .comment.user.type == "Bot"
+          ' "$GITHUB_EVENT_PATH" >/dev/null 2>&1; then
+            echo "Manual review request; canonical parser not needed."
+            exit 0
+          fi
+          [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]
+          [[ "$EVENT_PR" =~ ^[1-9][0-9]*$ ]]
+          [[ "$POLICY_REF" =~ ^[0-9a-f]{40}$ ]]
+          write_pending_gate_status() {
+            local target_head="$1" description="$2" attempt
+            for attempt in 1 2 3; do
+              if gh api "repos/$REPO/statuses/$target_head" --silent \
+                -f state=pending -f context=review-gate \
+                -f description="$description" \
+                -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; then
+                return 0
+              fi
+              if [[ "$attempt" -lt 3 ]]; then sleep "$attempt"; fi
+            done
+            echo "Unable to publish pending review-gate status on $target_head after three attempts." >&2
+            return 1
+          }
+          live_head=""
+          for attempt in 1 2 3; do
+            if live_head="$(gh api "repos/$REPO/pulls/$EVENT_PR" --jq '.head.sha')" \
+                && [[ "$live_head" =~ ^[0-9a-f]{40}$ ]]; then break; fi
+            [[ "$attempt" != 3 ]] || exit 1
+            sleep "$attempt"
+          done
+          # Revoke a prior green result before fallible parser or association
+          # reads. Neutral deliveries can be reconciled by the evaluator.
+          write_pending_gate_status "$live_head" \
+            "Recording connector review delivery for PR #$EVENT_PR" || exit 1
+          fail_closed_load() {
+            local reason="$1"
+            write_pending_gate_status "$live_head" \
+              "Canonical review-section classifier $reason for PR #$EVENT_PR" || exit 1
+            echo "Canonical review-section classifier $reason; gate held on live PR head $live_head." >&2
+            exit 1
+          }
+          if ! sections_path="$(mktemp "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/review-sections.XXXXXX")"; then
+            fail_closed_load "temporary file creation failed"
+          fi
+          if ! gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/$REPO/contents/.github/review-gate/review_sections.py?ref=$POLICY_REF" > "$sections_path"; then
+            fail_closed_load "download failed"
+          fi
+          if ! actual="$(shasum -a 256 "$sections_path")" ||
+             [[ "${actual%% *}" != "$EXPECTED_REVIEW_SECTIONS_SHA256" ]]; then
+            fail_closed_load "hash verification failed"
+          fi
+          chmod 400 "$sections_path"
+          echo "path=$sections_path" >> "$GITHUB_OUTPUT"
       - id: begin-native-event
         if: github.event_name == 'issue_comment'
         env:
@@ -76,6 +146,7 @@ jobs:
           EVENT_ACTION: ${{ github.event.action }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          REVIEW_SECTIONS_SCRIPT: ${{ steps.review-sections.outputs.path }}
         shell: bash
         run: |
           set -euo pipefail
@@ -96,26 +167,24 @@ jobs:
             .comment.user.id == 199175422 and .comment.user.login == "chatgpt-codex-connector[bot]"
             and .comment.user.type == "Bot"
           ' "$GITHUB_EVENT_PATH" >/dev/null 2>&1; then
-            event_body_refs="$(jq -c '
-              def coordinator_prelude:
-                test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-              def body_refs:
-                . as $body
-                | ([scan("(?i)(?:^|\\n)[ \\t]*\\*{0,2}reviewed commit:\\*{0,2}[ \\t]*`([0-9a-f]{40}|[0-9a-f]{10})`(?:(?:\\r?\\n[ \\t]*)+\\[view security finding report\\]\\([^\\r\\n)]+\\)(?:[ \\t]*(?:\\r?\\n[ \\t]*)+_only the user who started this review can view the report in codex\\._)?(?:[ \\t]*(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?about codex security reviews in github</summary>[\\s\\S]*?</details>)?|(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?About Codex(?: reviews)? in GitHub</summary>[\\s\\S]*?</details>)?[ \\t]*(?:\\r?\\n[ \\t]*)*$") | .[0] | ascii_downcase]
-                   + [if ($body | coordinator_prelude) then
-                        ($body | capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head)
-                      else empty end]
-                   | unique);
-              (.comment.body // "" | body_refs) as $current_refs
-              | (if .action == "edited" then (.changes.body.from // "" | body_refs) else [] end) as $prior_refs
-              | {current: $current_refs, prior: $prior_refs}
-            ' "$GITHUB_EVENT_PATH")"
-            current_review_refs="$(jq -r '.current[]?' <<< "$event_body_refs")"
-            prior_review_refs="$(jq -r '.prior[]?' <<< "$event_body_refs")"
-            # Keep this expression in step with evaluate.sh's canonical
-            # clean-report classifier.  A clean Codex report is neutral even
-            # though it contains the report link used by finding results.
-            security_clean_report_pattern='(?is)\A[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:[^[:alnum:]\r\n]+[[:space:]]+)?(?:codex[[:space:]-]+)?security[[:space:]-]+review(?:[ \t]+·[ \t]+_automatically triggered_|:)?[ \t]*\r?\n(?:[ \t]*\r?\n)*(?:[ \t]*security review completed[.!]?[ \t]*(?:\r?\n[ \t]*)?)?(?:no (?:security )?issues (?:were )?found(?: in this pull request)?|didn.t find any (?:major )?issues(?: in this pull request)?)[.!]?[ \t]*\r?\n(?:[ \t]*\r?\n)*(?:\*\*reviewed commit:\*\*[ \t]*\x60[0-9a-f]{7,40}\x60[ \t]*\r?\n(?:[ \t]*\r?\n)*)?\[view security finding report\]\([^\r\n)]+\)'
+            issue_comment_facts="$(python3 "$REVIEW_SECTIONS_SCRIPT" "$GITHUB_EVENT_PATH")" || {
+              echo "The canonical review-section classifier could not classify this event." >&2
+              exit 1
+            }
+            current_review_refs="$(jq -r '
+              ([.current.sections[]? | select(.has_result and .target_ref != "__unbound__")
+                | .target_ref]
+               + (if .current.request_head then [.current.request_head] else [] end))
+              | unique[]' <<< "$issue_comment_facts")"
+            prior_review_refs="$(jq -r '
+              ([.previous.sections[]? | select(.has_result and .target_ref != "__unbound__")
+                | .target_ref]
+               + (if .previous.request_head then [.previous.request_head] else [] end))
+              | unique[]' <<< "$issue_comment_facts")"
+            current_unbound_regular="$(jq -r '
+              any(.current.sections[]?; .regular_adverse and .target_ref == "__unbound__")' <<< "$issue_comment_facts")"
+            prior_unbound_regular="$(jq -r '
+              any(.previous.sections[]?; .regular_adverse and .target_ref == "__unbound__")' <<< "$issue_comment_facts")"
             write_pending_gate_status() {
               local target_head="$1" description="$2" attempt
               for attempt in 1 2 3; do
@@ -156,106 +225,34 @@ jobs:
               echo "Potentially adverse regular review event has no authenticated reviewed commit." >&2
               exit 1
             }
-            # A result-shaped regular comment with no bound reviewed commit
-            # cannot be treated as neutral; keep the live gate pending.
-            if jq -e \
-              --argjson current_refs "$(jq -c '.current' <<<"$event_body_refs")" \
-              --argjson prior_refs "$(jq -c '.prior' <<<"$event_body_refs")" '
-              def regular_heading:
-                ascii_downcase | (test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)")
-                  or test("(?is)\\A[[:space:]]*\\*{0,2}(?:<sub>)*!\\[P[0-3][[:space:]]+Badge\\]\\([^)]*\\)(?:</sub>)*"));
-              def explicit_finding:
-                test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\](?:[[:space:]]|$)") or
-                test("(?im)(?:\\A|\\n)[^\\r\\n]*<sub>!\\[P[0-3][[:space:]]+Badge\\]\\([^)]*\\)</sub>");
-              def availability_notice:
-                test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review(?:[[:space:]]+result)?)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached (?:your )?(?:codex )?usage limits(?: for (?:codex )?(?:code )?reviews?)?[.!]?(?:[[:space:]]+you can see your limits in the \\[codex usage dashboard\\]\\(https://chatgpt\\.com/codex/cloud/settings/usage\\)\\.)?(?:\\r?\\nTo continue using code reviews, add credits to your account and enable them for code reviews in your \\[settings\\]\\(https://chatgpt\\.com/codex/cloud/settings/code-review\\)\\.)?|(?:codex[[:space:]]+)?review(?:[[:space:]]+result)?(?:[[:space:]]+is)?[[:space:]]+(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)(?: due(?: to)? usage quota)?[.!]?|(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)(?: due(?: to)? usage quota)?[.!]?|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review[.!]?|try again later[.!]?)[[:space:]]*\\z");
-              def known_clean:
-                test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review(?:[[:space:]]+result)?)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?(?:[[:space:]]+(?:what shall we delve into next\\?|you(?:\\x27|\\x{2019})re on a roll\\.|delightful!|nice work!|already looking forward to the next diff\\.|another round soon, please!|more of your lovely prs please\\.|hooray!|swish!|bravo\\.|can(?:\\x27|\\x{2019})t wait for the next one!|keep it up!|keep them coming!|breezy!|chef.s kiss[.!]?|:tada:))?[[:space:]]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[[:space:]]*\\z");
-              def adverse_regular_result:
-                explicit_finding or
-                (regular_heading and ((availability_notice | not) and (known_clean | not)));
-              [
-                {body: (.comment.body // ""), refs: $current_refs},
-                (if .action == "edited" then
-                  {body: (.changes.body.from // ""), refs: $prior_refs}
-                 else empty end)
-              ]
-              | any(.[]; (.refs | length) == 0 and (.body | adverse_regular_result))
-            ' "$GITHUB_EVENT_PATH" >/dev/null; then
+            # The canonical parser classifies each current and prior result
+            # section independently.  Any adverse section without a unique
+            # target remains an uncertainty barrier; neutral quota and summary
+            # sections remain eligible for the no-receipt path below.
+            if [[ "$current_unbound_regular" == true || "$prior_unbound_regular" == true ]]; then
               pending_regular_uncertainty
             fi
-            # A security-shaped comment without a bound reviewed commit is
-            # ambiguous when the PR has advanced. Keep the observed live head
-            # pending as an uncertainty barrier, but never authenticate the
-            # comment to that head or emit a clean receipt.
-            security_event_flags="$(jq -c \
-              --arg current_refs "$current_review_refs" \
-              --arg prior_refs "$prior_review_refs" \
-              --arg clean_security_report_pattern "$security_clean_report_pattern" '
-              def security_result_heading:
-                test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?(?:codex[[:space:]-]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]*[^[:alnum:][:space:]][^\\r\\n]*|[[:space:]]*$)");
-              def regular_result_heading:
-                test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)");
-              def contains_security_heading:
-                split("\n") | any(.[]; security_result_heading);
-              def contains_security_marker:
-                test("(?im)(?:\\A|\\n)[[:blank:]]*\\[P[0-3]\\][^\\r\\n]*[[:blank:]]+<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$") or
-                test("(?is)\\A[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*(?:\\r?\\n|\\z)") or
-                (contains_security_heading and test("(?im)(?:\\A|\\n)[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$"));
-              def clean_security_footer($summary; $findings_sentence):
-              "\n\n" + ([
-              "_only the user who started this review can view the report in codex._",
-              "",
-              "<details> <summary>" + $summary + "</summary>",
-              "<br/>",
-              "",
-              "this is an experimental codex feature. reviews are triggered when:",
-              "- you comment \"@codex security review\"",
-              "- a regular code review gets triggered (for example, \"@codex review\" or when a pr is opened), and you\u2019re opted in so security review runs alongside code review",
-              "",
-              $findings_sentence,
-              "",
-              "",
-              "</details>"
-              ] | join("\n"));
-              def clean_security_envelope:
-              if test($clean_security_report_pattern) then
-              (sub($clean_security_report_pattern; "")
-              | gsub("this is an experimental codex feature\\. security reviews are triggered when:"; "this is an experimental codex feature. reviews are triggered when:")
-              | gsub("\r"; "")
-              | gsub("^[[:space:]]+|[[:space:]]+$"; "")) as $tail
-              | ($tail == ""
-              or $tail == (clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-              or $tail == (clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-              or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-              or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; "")))
-              else false end;
-              def security_result_sections:
-                split("\n") as $lines
-                | [range(0; $lines | length) as $start
-                   | select($lines[$start] | security_result_heading)
-                   | ([range($start + 1; $lines | length)
-                      | select($lines[.] | security_result_heading or regular_result_heading)]
-                     | .[0] // ($lines | length)) as $end
-                   | $lines[$start:$end] | join("\n")];
-              def has_security_report_link:
-              (ascii_downcase) as $lower
-              | any($lower | security_result_sections[];
-                  contains("[view security finding report](")
-                  and ((clean_security_envelope | not)
-                       or test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
-              def potentially_adverse:
-                contains_security_marker or (contains_security_heading and has_security_report_link);
-              [
-                {body: (.comment.body // ""), refs: $current_refs},
-                {body: (if .action == "edited" then (.changes.body.from // "") else "" end), refs: $prior_refs}
-              ]
-              | {current_adverse: (.[0].body | type == "string" and potentially_adverse), prior_adverse: (.[1].body | type == "string" and potentially_adverse)}
-            ' "$GITHUB_EVENT_PATH")"
-            if jq -e --arg current_refs "$current_review_refs" --arg prior_refs "$prior_review_refs" '
-              (.current_adverse and ($current_refs | length == 0)) or
-              (.prior_adverse and ($prior_refs | length == 0))
-            ' <<< "$security_event_flags" >/dev/null; then
+            security_event_flags="$(jq -c '
+              {
+                current_adverse: any(.current.sections[]?; .security_finding),
+                prior_adverse: any(.previous.sections[]?; .security_finding),
+                current_unbound: any(.current.sections[]?; .security_finding and .target_ref == "__unbound__"),
+                prior_unbound: any(.previous.sections[]?; .security_finding and .target_ref == "__unbound__")
+              }
+            ' <<< "$issue_comment_facts")"
+            if jq -e '.current_unbound or .prior_unbound' <<< "$security_event_flags" >/dev/null; then
+              pending_security_uncertainty
+            fi
+            security_report_suffix_pattern='(?is)\[view security finding report\]\([^\r\n)]+\)(?:[ \t]*(?:\r?\n[ \t]*)+_only the user who started this review can view the report in codex\._)?(?:[ \t]*(?:\r?\n[ \t]*)+<details>[ \t]*<summary>(?:ℹ️ )?about codex security reviews in github</summary>[\s\S]*?</details>)?[ \t]*$'
+            malformed_security_report="$(jq -r --arg pattern "$security_report_suffix_pattern" '
+              any(.current.sections[]?;
+                  .security_event and (.body | test("(?i)\\[view security finding report\\]\\("))
+                  and ((.body | test($pattern)) | not))
+              or any(.previous.sections[]?;
+                  .security_event and (.body | test("(?i)\\[view security finding report\\]\\("))
+                  and ((.body | test($pattern)) | not))
+            ' <<< "$issue_comment_facts")"
+            if [[ "$malformed_security_report" == true ]]; then
               pending_security_uncertainty
             fi
             # Quota, summary, and other nonfinding comments without a bound
@@ -300,12 +297,8 @@ jobs:
               printf '%s' "$unique_refs"
             }
             coordinator_receipt_owner() {
-              jq -nr --arg body "$1" '
-                def coordinator_prelude:
-                test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-                $body | if coordinator_prelude then
-                  capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head
-                else "" end'
+              local scope="${2:-current}"
+              jq -r --arg scope "$scope" '.[$scope].request_head // empty' <<< "$1"
             }
             current_event_head=""
             prior_event_head=""
@@ -318,7 +311,7 @@ jobs:
                 echo "Review event references do not resolve to associated PR commits." >&2
                 exit 1
               }
-              current_event_head="$(coordinator_receipt_owner "$(jq -r '.comment.body // ""' "$GITHUB_EVENT_PATH")")"
+              current_event_head="$(coordinator_receipt_owner "$issue_comment_facts" current)"
               if [[ -n "$current_event_head" ]] && ! grep -Fqx "$current_event_head" <<< "$current_resolved_refs"; then
                 write_pending_gate_status "$live_head" \
                   "Coordinator head is not an authenticated reviewed commit; gate held for PR #$EVENT_PR" || exit 1
@@ -333,7 +326,7 @@ jobs:
                 echo "Prior review event references do not resolve to associated PR commits." >&2
                 exit 1
               }
-              prior_event_head="$(coordinator_receipt_owner "$(jq -r '.changes.body.from // ""' "$GITHUB_EVENT_PATH")")"
+              prior_event_head="$(coordinator_receipt_owner "$issue_comment_facts" previous)"
               if [[ -n "$prior_event_head" ]] && ! grep -Fqx "$prior_event_head" <<< "$prior_resolved_refs"; then
                 write_pending_gate_status "$live_head" \
                   "Prior coordinator head is not an authenticated reviewed commit; gate held for PR #$EVENT_PR" || exit 1
@@ -346,10 +339,8 @@ jobs:
               # Revoke a retargeted current head before processing the prior
               # body, then let that prior head own the event receipt/history.
               if [[ -n "$current_event_head" ]]; then
-                gh api "repos/$REPO/statuses/$current_event_head" --silent \
-                  -f state=pending -f context=review-gate \
-                  -f description="Edited review event also references current commit for PR #$EVENT_PR" \
-                  -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+                write_pending_gate_status "$current_event_head" \
+                  "Edited review event also references current commit for PR #$EVENT_PR" || exit 1
               fi
               review_head="$prior_event_head"
             elif [[ -z "$review_head" ]]; then
@@ -367,104 +358,10 @@ jobs:
             cross_head_comment_id="$(jq -r '.comment.id // empty' "$GITHUB_EVENT_PATH")"
             if [[ "$current_event_head" =~ ^[0-9a-f]{40}$ && "$review_head" =~ ^[0-9a-f]{40}$ && "$current_event_head" != "$review_head" && "$cross_head_comment_id" =~ ^[1-9][0-9]*$ ]] && jq -e \
               --arg head "$current_event_head" --arg prefix "${current_event_head:0:10}" '
-                            def regular_heading:
-              ascii_downcase
-              | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
-              def explicit_finding:
-              test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\](?:[[:space:]]|$)");
-              # Only the coordinator exact generated prelude may be removed.
-              # In particular, an authenticated-looking result may quote a request
-              # marker; that quoted marker must remain part of the evidence unless
-              # the prelude and removable metadata are both exact.
-              def coordinator_prelude:
-              test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-              def coordinator_request: coordinator_prelude;
-              def coordinator_metadata:
-              test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z")) and ((gsub("`[^`]*`"; "") | test("(?is)<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->")) | not);
-              def raw_security_heading:
-              ascii_downcase
-              | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]-]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
-              def raw_availability_notice:
-              ascii_downcase
-              | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
-              def result_section:
-              if coordinator_request then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | (regular_heading or raw_security_heading or raw_availability_notice))) | .[0].key) as $start | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) and (($lines[$start] | raw_security_heading) or (($lines[:$start] | join("\n") | gsub("`[^`]*`"; "") | test("(?is)<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->")) | not)) then $lines[$start:] | join("\n") else $lines | join("\n") end else . end;
-              def first_result_section:
-              split("\n") as $lines
-              | ([range(0; $lines | length) | select($lines[.] | regular_heading)] | .[0]) as $start
-              | if $start == null then . else
-              ([range($start + 1; $lines | length) | select($lines[.] | regular_heading or raw_security_heading)] | .[0] // ($lines | length)) as $end
-              | if ((($lines[:$start] | join("\n") | coordinator_metadata)
-              and (($lines[:$start] | join("\n") | gsub("`[^`]*`"; "") | test("(?is)<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->")) | not))
-              or (($lines[:$start] | map(select(test("[^[:space:]]"))) | .[0] // "") | raw_security_heading))
-              then $lines[$start:$end] | join("\n")
-              else . end
-              end;
-              def security_heading:
-              split("\n") | .[0] | raw_security_heading;
-              def availability_notice:
-              result_section as $result
-              | ($result | first_result_section) as $first_result
-              | ($first_result | raw_availability_notice)
-              and (($first_result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
-              # Keep security evidence independent from regular-review quota
-              # classification; a second regular section remains adverse.
-              and (($result | split("\n") | map(select(regular_heading)) | length) < 2);
-              def exact_head:
-              (result_section | first_result_section) as $result
-              | ([$result | scan("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60([0-9a-f]{40}|[0-9a-f]{10})\\x60") | .[0] | ascii_downcase]) as $refs
-              | if ($refs | length) > 0 then
-              any($refs[]; . == ($head | ascii_downcase) or . == ($prefix | ascii_downcase))
-              else coordinator_prelude and
-              (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
-              end;
-              def multiple_result_sections:
-              (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
-              def known_codex_footer:
-              test("(?is)\\A<details>[[:space:]]*<summary>[[:space:]]*(?:ℹ️[[:space:]]*)?about[[:space:]]+codex[[:space:]]+in[[:space:]]+github[[:space:]]*</summary>[[:space:]]*<br[[:space:]]*/?>[[:space:]]*\\[your team has set up codex to review pull requests in this repo\\]\\(https://chatgpt\\.com/codex/cloud/settings/general\\)\\.[[:space:]]*reviews are triggered when you[[:space:]]*-[[:space:]]*open a pull request for review[[:space:]]*-[[:space:]]*mark a draft as ready[[:space:]]*-[[:space:]]*comment \\\"@codex review\\\"\\.[[:space:]]*if codex has suggestions, it will comment; otherwise it will react with (?:👍|:\\+1:)\\.[[:space:]]*codex can also answer questions or update the pr\\.[[:space:]]*try commenting \\\"@codex address that feedback\\\"\\.[[:space:]]*</details>[[:space:]]*$");
-              def stock_clean_issue_comment_body:
-              test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
-              or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
-              def stock_clean_issue_comment_envelope:
-              if coordinator_request then
-              (capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
-              and (result_section | first_result_section | stock_clean_issue_comment_body)
-              else stock_clean_issue_comment_body end;
-              def strict_stock_clean_issue_comment_envelope:
-              stock_clean_issue_comment_envelope
-              and (result_section | first_result_section | if test("(?is)<details>") then
-              capture("(?is)\\A.*?(?<footer><details>.*)$").footer | known_codex_footer
-              else true end);
-              def native_result_sections:
-                result_section as $result
-                | ($result | split("\n")) as $lines
-                | [range(0; $lines | length)
-                   | select($lines[.] | regular_heading or raw_security_heading)] as $starts
-                | if ($starts | length) == 0 then [$result] else
-                    [$starts | to_entries[] | .value as $start
-                     | ($starts[.key + 1] // ($lines | length)) as $end
-                     | $lines[$start:$end] | join("\n")]
-                  end;
-              def coordinator_head:
-                if coordinator_prelude then
-                  capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head | ascii_downcase
-                else "" end;
-              def section_review_head:
-                [scan("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*`([0-9a-f]{40}|[0-9a-f]{10})`") | .[0] | ascii_downcase]
-                | .[-1] // "";
-              def section_bound_to_current_head($body):
-                ($body | native_result_sections) as $sections
-                | ($body | coordinator_head) as $request_head
-                | any($sections[]; . as $section
-                    | ($section | regular_heading or explicit_finding)
-                      and (($section | section_review_head) as $section_head
-                           | if $section_head == "" then $request_head == $head
-                             else $section_head == $head or $section_head == $prefix end)
-                      and (($section | availability_notice) | not)
-                      and (($section | strict_stock_clean_issue_comment_envelope) | not));
-              (.comment.body // "") as $body
-              | $body | section_bound_to_current_head($body)
-            ' "$GITHUB_EVENT_PATH" >/dev/null; then
+              any(.current.sections[]?;
+                  .regular_adverse
+                  and (.target_ref == $head or .target_ref == $prefix))
+            ' <<< "$issue_comment_facts" >/dev/null; then
               gh api "repos/$REPO/statuses/$current_event_head" --silent \
                 -f state=pending -f context=review-finding-history \
                 -f description="Regular findings observed for PR #$EVENT_PR on head $current_event_head; issue-comment:$cross_head_comment_id; event:captured" \
@@ -480,10 +377,8 @@ jobs:
                     "Native review event receipt failed for PR #$EVENT_PR" || exit 1
                 exit 1
               fi
-              gh api "repos/$REPO/statuses/$review_head" --silent \
-                -f state=pending -f context=review-gate \
-                -f description="Recording a native review event for PR #$EVENT_PR" \
-                -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+              write_pending_gate_status "$review_head" \
+                "Recording a native review event for PR #$EVENT_PR" || exit 1
             fi
           fi
           [[ "$event_head" =~ ^[0-9a-f]{40}$ ]] || exit 0
@@ -492,7 +387,8 @@ jobs:
           if [[ "$event_head" != "$live_head" ]]; then echo "historical=true" >> "$GITHUB_OUTPUT"; fi
           [[ "$EVENT_PR" =~ ^[1-9][0-9]*$ && "$event_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
           EVENT_HEAD="$event_head"
-          receipt_head="${current_event_head:-$EVENT_HEAD}"
+          receipt_heads="$current_resolved_refs"
+          [[ -n "$receipt_heads" ]] || receipt_heads="$EVENT_HEAD"
           if [[ "$EVENT_ACTION" == created || "$EVENT_ACTION" == edited ]] && jq -e '
             .comment.user.id == 199175422 and .comment.user.login == "chatgpt-codex-connector[bot]"
             and .comment.user.type == "Bot" and (.comment.id | type == "number" and . > 0)
@@ -511,20 +407,21 @@ jobs:
               "Native review event receipt failed for PR #$EVENT_PR" || exit 1
             exit 1
           fi
-          gh api "repos/$REPO/statuses/$EVENT_HEAD" --silent \
-            -f state=pending -f context=review-gate \
-            -f description="Recording a native review event for PR #$EVENT_PR" \
-            -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          write_pending_gate_status "$EVENT_HEAD" \
+            "Recording a native review event for PR #$EVENT_PR" || exit 1
           if [[ -n "${comment_id:-}" ]]; then
-            if ! gh api "repos/$REPO/statuses/$receipt_head" --silent \
-              -f state=success -f context="review-clean-comment/$comment_id/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" \
-              -f description="body-sha256:$body_sha; updated-at:$comment_updated_at; action:$EVENT_ACTION" \
-              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; then
-              write_pending_gate_status "$EVENT_HEAD" \
-                "Clean review comment receipt failed for PR #$EVENT_PR" || exit 1
-              exit 1
-            fi
-            echo "Review comment receipt $comment_id recorded for PR #$EVENT_PR: body-sha256:$body_sha; updated-at:$comment_updated_at; action:$EVENT_ACTION; head:$receipt_head"
+            while IFS= read -r receipt_head; do
+              [[ -n "$receipt_head" ]] || continue
+              if ! gh api "repos/$REPO/statuses/$receipt_head" --silent \
+                -f state=success -f context="review-clean-comment/$comment_id/$GITHUB_RUN_ID/$GITHUB_RUN_ATTEMPT" \
+                -f description="body-sha256:$body_sha; updated-at:$comment_updated_at; action:$EVENT_ACTION" \
+                -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; then
+                write_pending_gate_status "$EVENT_HEAD" \
+                  "Clean review comment receipt failed for PR #$EVENT_PR" || exit 1
+                exit 1
+              fi
+              echo "Review comment receipt $comment_id recorded for PR #$EVENT_PR: body-sha256:$body_sha; updated-at:$comment_updated_at; action:$EVENT_ACTION; head:$receipt_head"
+            done <<< "$receipt_heads"
           fi
           echo "id=$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
           echo "head=$EVENT_HEAD" >> "$GITHUB_OUTPUT"
@@ -605,10 +502,19 @@ jobs:
           PY
           event_head="$(jq -er '.pull_request.head.sha' <<< "$FORWARDED_EVENT")"
           history_head="$(jq -er 'if .review? != null then .review.commit_id else .comment.original_commit_id end' <<< "$FORWARDED_EVENT")"
-          gh api "repos/$EXPECTED_REPO/statuses/$event_head" --silent \
-            -f state=pending -f context=review-gate \
-            -f description="Authenticated review event pending trusted reconciliation" \
-            -f target_url="$GITHUB_SERVER_URL/$EXPECTED_REPO/actions/runs/$GITHUB_RUN_ID"
+          for attempt in 1 2 3; do
+            if gh api "repos/$EXPECTED_REPO/statuses/$event_head" --silent \
+              -f state=pending -f context=review-gate \
+              -f description="Authenticated review event pending trusted reconciliation" \
+              -f target_url="$GITHUB_SERVER_URL/$EXPECTED_REPO/actions/runs/$GITHUB_RUN_ID"; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "Unable to publish pending review-gate status on authenticated event head." >&2
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           pr_snapshot="$(gh api "repos/$EXPECTED_REPO/pulls/$TARGET_PR")"
           live_head="$(jq -er '.head.sha' <<< "$pr_snapshot")"
           [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
@@ -675,9 +581,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '6f02a507a917990c127c10babb21138d93450088c0586d29d5d000b1c74a72b5'
+          EXPECTED_SHA256: '1e248ec708bd74ee7a352df8aff92de9f93e90457455d51545c8b09becdde869'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '9c8555010e988301c1199df62eee35fe3083a58def391748b6950b19934a14c7'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'f7f3b9808fa279059ade9705ff3df199bc3e55cf0378efde7e8be87b10993c04'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |
@@ -685,14 +591,24 @@ jobs:
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           [[ "$GITHUB_WORKFLOW_REF" == "$REPO/.github/workflows/"*"@refs/heads/$DEFAULT_BRANCH" ]] || exit 1
           [[ "$POLICY_REF" =~ ^[0-9a-f]{40}$ && "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+          write_pending_status() {
+            local target_head="$1" description="$2" attempt
+            for attempt in 1 2 3; do
+              if gh api "repos/$REPO/statuses/$target_head" --silent -f state=pending \
+                -f context=review-gate -f description="$description" \
+                -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; then
+                return 0
+              fi
+              if [[ "$attempt" == 3 ]]; then return 1; fi
+              sleep "$attempt"
+            done
+          }
           # Revoke the authenticated event head before the first fallible PR
           # lookup. The event payload (or signed relay output) binds this SHA
           # to PR_NUMBER; membership is checked after the safety barrier.
           if [[ "${AUDIT_MODE:-false}" != true && "${EVENT_PR_NUMBER:-}" == "$PR_NUMBER" \
                 && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
-            gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent -f state=pending \
-              -f context=review-gate -f description='Loading canonical review policy' \
-              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+            write_pending_status "$EVENT_HEAD_SHA" 'Loading canonical review policy'
           fi
           pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
           pr_head="$(jq -er '.head.sha' <<< "$pr")"
@@ -700,9 +616,7 @@ jobs:
           # Revoke the live PR head before any secondary membership reads.
           if [[ "${AUDIT_MODE:-false}" != true && "$(jq -r '.state' <<< "$pr")" == open \
                 && ( "${EVENT_PR_NUMBER:-}" != "$PR_NUMBER" || "$pr_head" != "${EVENT_HEAD_SHA:-}" ) ]]; then
-            gh api "repos/$REPO/statuses/$pr_head" --silent -f state=pending \
-              -f context=review-gate -f description='Loading canonical review policy' \
-              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+            write_pending_status "$pr_head" 'Loading canonical review policy'
           fi
           commit_associated_with_pr() {
             local target_sha="$1" associated

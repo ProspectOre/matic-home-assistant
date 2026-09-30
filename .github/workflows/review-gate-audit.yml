@@ -71,9 +71,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '6f02a507a917990c127c10babb21138d93450088c0586d29d5d000b1c74a72b5'
+          EXPECTED_SHA256: '1e248ec708bd74ee7a352df8aff92de9f93e90457455d51545c8b09becdde869'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '9c8555010e988301c1199df62eee35fe3083a58def391748b6950b19934a14c7'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'f7f3b9808fa279059ade9705ff3df199bc3e55cf0378efde7e8be87b10993c04'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |
@@ -81,14 +81,24 @@ jobs:
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           [[ "$GITHUB_WORKFLOW_REF" == "$REPO/.github/workflows/"*"@refs/heads/$DEFAULT_BRANCH" ]] || exit 1
           [[ "$POLICY_REF" =~ ^[0-9a-f]{40}$ && "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
+          write_pending_status() {
+            local target_head="$1" description="$2" attempt
+            for attempt in 1 2 3; do
+              if gh api "repos/$REPO/statuses/$target_head" --silent -f state=pending \
+                -f context=review-gate -f description="$description" \
+                -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"; then
+                return 0
+              fi
+              if [[ "$attempt" == 3 ]]; then return 1; fi
+              sleep "$attempt"
+            done
+          }
           # Revoke the authenticated event head before the first fallible PR
           # lookup. The event payload (or signed relay output) binds this SHA
           # to PR_NUMBER; membership is checked after the safety barrier.
           if [[ "${AUDIT_MODE:-false}" != true && "${EVENT_PR_NUMBER:-}" == "$PR_NUMBER" \
                 && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
-            gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent -f state=pending \
-              -f context=review-gate -f description='Loading canonical review policy' \
-              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+            write_pending_status "$EVENT_HEAD_SHA" 'Loading canonical review policy'
           fi
           pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
           pr_head="$(jq -er '.head.sha' <<< "$pr")"
@@ -96,9 +106,7 @@ jobs:
           # Revoke the live PR head before any secondary membership reads.
           if [[ "${AUDIT_MODE:-false}" != true && "$(jq -r '.state' <<< "$pr")" == open \
                 && ( "${EVENT_PR_NUMBER:-}" != "$PR_NUMBER" || "$pr_head" != "${EVENT_HEAD_SHA:-}" ) ]]; then
-            gh api "repos/$REPO/statuses/$pr_head" --silent -f state=pending \
-              -f context=review-gate -f description='Loading canonical review policy' \
-              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+            write_pending_status "$pr_head" 'Loading canonical review policy'
           fi
           commit_associated_with_pr() {
             local target_sha="$1" associated

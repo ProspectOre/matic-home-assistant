@@ -70,10 +70,18 @@ jobs:
           receipt_heads=("$event_head")
           if [[ "$history_head" != "$event_head" ]]; then receipt_heads+=("$history_head"); fi
           for receipt_head in "${receipt_heads[@]}"; do
-            gh api "repos/$REPO/statuses/$receipt_head" --silent \
-              -f state=success -f context="review-event-capture/$capture_id" \
-              -f description="Review event capture consumed for PR #$pr_number" \
-              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$SOURCE_RUN_ID"
+            for attempt in 1 2 3; do
+              if gh api "repos/$REPO/statuses/$receipt_head" --silent \
+                -f state=success -f context="review-event-capture/$capture_id" \
+                -f description="Review event capture consumed for PR #$pr_number" \
+                -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$SOURCE_RUN_ID"; then break; fi
+              [[ "$attempt" == 3 ]] && exit 1
+              sleep "$attempt"
+            done
           done
-          gh workflow run review-gate.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
-            -f pull_request="$pr_number" -F audit=true
+          for attempt in 1 2 3; do
+            if gh workflow run review-gate.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+              -f pull_request="$pr_number" -F audit=true; then break; fi
+            [[ "$attempt" == 3 ]] && exit 1
+            sleep "$attempt"
+          done

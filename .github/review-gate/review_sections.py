@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import Any
 
 REGULAR_HEADING = re.compile(
-    r"\A[ \t]*(?:@|#{1,6}[ \t]+(?:[^A-Za-z0-9\r\n]+[ \t]+)?)?"
+    r"\A[ ]{0,3}(?:@|#{1,6}[ \t]+(?:[^A-Za-z0-9\r\n]+[ \t]+)?)?"
     r"codex[ \t]+review(?:[ \t]*:|[ \t]|$)|"
-    r"\A[ \t]*(?:#{1,6}[ \t]+)?review result(?:[ \t]*:|[ \t]|$)|"
-    r"\A[ \t]*\*{0,2}(?:<sub>)*!\[P[0-3][ \t]+badge\]\([^)\r\n]+\)(?:</sub>)*",
+    r"\A[ ]{0,3}(?:#{1,6}[ \t]+)?review result(?:[ \t]*:|[ \t]|$)|"
+    r"\A[ ]{0,3}\*{0,2}(?:<sub>)*!\[P[0-3][ \t]+badge\]\([^)\r\n]+\)(?:</sub>)*",
     re.IGNORECASE,
 )
 SECURITY_HEADING = re.compile(
-    r"\A[ \t]*(?:#{1,6}[ \t]+(?:[^A-Za-z0-9\r\n]+[ \t]+)?)?"
+    r"\A[ ]{0,3}(?:#{1,6}[ \t]+(?:[^A-Za-z0-9\r\n]+[ \t]+)?)?"
     r"(?:codex[ \t-]+)?security(?:[ \t-]+)review"
     r"(?:[ \t]*:|[ \t]*[^A-Za-z0-9\s][^\r\n]*|[ \t]*$)",
     re.IGNORECASE,
@@ -32,7 +32,9 @@ REVIEWED_COMMIT = re.compile(
     r"(?im)^[ ]{0,3}\*{0,2}reviewed commit:\*{0,2}[ \t]*"
     r"`([0-9a-f]{10}|[0-9a-f]{40})`[ \t]*$"
 )
-FENCE_LINE = re.compile(r"^[ \t]{0,3}(?P<char>`|~)(?P<count>(?:`{2,}|~{2,}))[^\r\n]*$")
+FENCE_LINE = re.compile(
+    r"^[ ]{0,3}(?P<char>`|~)(?P<count>(?P=char){2,})(?P<info>[^\r\n]*)$"
+)
 AVAILABILITY = re.compile(
     r"\A[ \t\r\n]*(?:@|#{1,6}[ \t]+(?:[^A-Za-z0-9\r\n]+[ \t]+)?)?"
     r"(?:codex[ \t]+review|review(?:[ \t]+result)?)(?:[ \t]*:|[ \t]|\r?\n|$)[ \t\r\n]*"
@@ -165,6 +167,8 @@ def _actual_metadata(text: str) -> str:
     fence_length = 0
     for line in text.splitlines(keepends=True):
         match = FENCE_LINE.match(line.rstrip("\r\n"))
+        if match and match.group("char") == "`" and "`" in match.group("info"):
+            match = None
         if fence_char is None and match:
             fence_char, fence_length = (
                 match.group("char"),
