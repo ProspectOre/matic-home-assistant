@@ -7,7 +7,6 @@ import argparse
 import json
 import re
 import sys
-from bisect import bisect_right
 from pathlib import Path
 from typing import Any
 
@@ -230,91 +229,70 @@ def _actual_metadata(text: str) -> str:
     return "".join(masked)
 
 
-def _html_tags_by_line(text: str) -> list[list[tuple[int, str]]]:
-    """Locate complete container tags across physical lines, outside code spans."""
-    lines = text.splitlines(keepends=True)
-    offsets: list[int] = []
-    offset = 0
-    for line in lines:
-        offsets.append(offset)
-        offset += len(line)
-    result: list[list[tuple[int, str]]] = [[] for _ in lines]
-    for match in re.finditer(
-        r"<!--|-->|</?details\b[^>]*>", _without_inline_code(text), re.I
-    ):
-        index = bisect_right(offsets, match.start()) - 1
-        result[index].append((match.start() - offsets[index], match.group().lower()))
-    return result
+def _visible_html(text: str) -> str:
+    """Mask only container spans, preserving visible prefixes and suffixes."""
+    scan = _without_inline_code(text)
+    tags = list(re.finditer(r"<!--|-->|</?details\b[^>]*>", scan, re.I))
+    comment = False
+    details = 0
+    start: int | None = None
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(tags):
+        match = tags[index]
+        tag = match.group().lower()
+        enclosed = comment or details > 0
+        if tag == "<!--" and not comment:
+            if (
+                not enclosed
+                and index + 1 < len(tags)
+                and tags[index + 1].group() == "-->"
+            ):
+                protocol = scan[match.start() : tags[index + 1].end()]
+                if SECURITY_MARKER_COMMENT.fullmatch(protocol) or re.fullmatch(
+                    r"<!-- review-request:v2 head=[0-9a-f]{40} base=[0-9a-f]{40} -->",
+                    protocol,
+                    re.I,
+                ):
+                    index += 2
+                    continue
+            comment = True
+        elif tag == "-->":
+            comment = False
+        elif not comment:
+            details = max(0, details - 1) if tag.startswith("</") else details + 1
+        hidden = comment or details > 0
+        if not enclosed and hidden:
+            start = match.start()
+        elif enclosed and not hidden and start is not None:
+            spans.append((start, match.end()))
+            start = None
+        index += 1
+    if start is not None:
+        spans.append((start, len(text)))
+    chunks: list[str] = []
+    position = 0
+    for start, end in spans:
+        chunks.append(text[position:start])
+        chunks.append(re.sub(r"[^\r\n]", " ", text[start:end]))
+        position = end
+    chunks.append(text[position:])
+    return "".join(chunks)
 
 
 def _commit_metadata(text: str) -> str:
-    """Keep commit authority outside expandable or commented examples."""
-    comment = False
-    details = 0
+    """Keep commit authority outside expandable, commented and code examples."""
+    metadata = _visible_html(_actual_metadata(text))
+    code_lines = _without_inline_code(metadata).splitlines(keepends=True)
     lines: list[str] = []
-    metadata = _actual_metadata(text)
-    tag_lines = _without_inline_code(metadata).splitlines(keepends=True)
-    tags_by_line = _html_tags_by_line(metadata)
     for index, line in enumerate(metadata.splitlines(keepends=True)):
-        tag_text = tag_lines[index]
-        enclosed = comment or details > 0
-        # Code spans can discuss HTML tags without changing container state.
-        for _, tag in tags_by_line[index]:
-            if tag == "<!--":
-                comment = True
-            elif tag == "-->":
-                comment = False
-            elif not comment:
-                details = max(0, details - 1) if tag.startswith("</") else details + 1
-        if (enclosed or not tag_text.strip()) and REVIEWED_COMMIT.fullmatch(
+        if not code_lines[index].strip() and REVIEWED_COMMIT.fullmatch(
             line.rstrip("\r\n")
         ):
-            lines.append(
-                "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
-            )
+            lines.append(re.sub(r"[^\r\n]", " ", line))
         else:
             lines.append(line)
     return "".join(lines)
-
-
-def _visible_html(text: str) -> str:
-    """Keep a line-aligned structural view outside hidden HTML examples."""
-    comment = False
-    details = 0
-    masked: list[str] = []
-    tag_lines = _without_inline_code(text).splitlines(keepends=True)
-    tags_by_line = _html_tags_by_line(text)
-    for index, line in enumerate(text.splitlines(keepends=True)):
-        tag_text = tag_lines[index]
-        enclosed = comment or details > 0
-        matches = tags_by_line[index]
-        protocol = (
-            not enclosed
-            and len(matches) == 2
-            and bool(
-                SECURITY_MARKER_COMMENT.search(tag_text)
-                or re.fullmatch(
-                    r"[ \t]*<!-- review-request:v2 head=[0-9a-f]{40} "
-                    r"base=[0-9a-f]{40} -->[ \t\r\n]*",
-                    tag_text,
-                    re.I,
-                )
-            )
-        )
-        for _, tag in matches:
-            if tag == "<!--":
-                comment = True
-            elif tag == "-->":
-                comment = False
-            elif not comment:
-                details = max(0, details - 1) if tag.startswith("</") else details + 1
-        hidden = enclosed or bool(matches)
-        if hidden and not protocol:
-            start = 0 if enclosed else matches[0][0]
-            masked.append(line[:start] + re.sub(r"[^\r\n]", " ", line[start:]))
-        else:
-            masked.append(line)
-    return "".join(masked)
 
 
 def _has_reviewed_commit(text: str) -> bool:
