@@ -264,13 +264,21 @@ def test_unscoped_history_does_not_infer_requested_modes_from_native_summaries(
 
 
 @pytest.mark.parametrize(
-    "mode", ["vacuum", "mop", "vacuum_and_mop", None, "unknown", 5]
+    "mode", ["vacuum", "mop", "vacuum_and_mop", "absent", None, "unknown", 5]
 )
-async def test_restart_reconciliation_retains_only_known_vacuum_dispatch(hass, mode):
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("admission", ["write", "load"])
+async def test_restart_reconciliation_preserves_mode_admission(
+    hass, mode, legacy, admission
+):
     import json
     from types import SimpleNamespace
 
-    from custom_components.matic_robot.client.models import FloorPlan, Room
+    from custom_components.matic_robot.client.models import (
+        CleaningSession,
+        FloorPlan,
+        Room,
+    )
     from custom_components.matic_robot.managed_executor import (
         _build_native_reconciliation,
         _native_reconciliation_data,
@@ -283,7 +291,8 @@ async def test_restart_reconciliation_retains_only_known_vacuum_dispatch(hass, m
         _build_native_reconciliation("synthetic-plan", room, dispatched, True)
     )
     assert marker["cleaning_mode"] == "vacuum"
-    if mode is None:
+    assert marker["coverage_setting"] == "standard"
+    if mode == "absent":
         marker.pop("cleaning_mode")
     else:
         marker["cleaning_mode"] = mode
@@ -298,12 +307,30 @@ async def test_restart_reconciliation_retains_only_known_vacuum_dispatch(hass, m
         native_reconciliation=marker,
     )
     stored = json.loads(json.dumps(manager._data))
+    if admission == "load":
+        # Malformed data can also arrive from a persisted pre-fix marker.
+        stored["robots"]["synthetic-serial"]["pending_native_reconciliation"] = {
+            **marker,
+            "expires_at": (dt_util.utcnow() + timedelta(seconds=60)).isoformat(),
+        }
     restarted = CleaningPlanManager(hass)
     restarted._store = SimpleNamespace(
         async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
     )
     await restarted.async_load()
-    session = _decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
+    session = (
+        CleaningSession(
+            started_at=(dt_util.utcnow() - timedelta(seconds=60)).isoformat(),
+            ended_at=(dt_util.utcnow() - timedelta(seconds=5)).isoformat(),
+            duration_seconds=55,
+            rooms=("Study",),
+            completed_rooms=("Study",),
+            room_durations=(("Study", 55),),
+            completed=True,
+        )
+        if legacy
+        else _decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
+    )
     record = CleaningSessionRecord(b"synthetic-new", session)
     floor = FloorPlan(
         1,
@@ -322,12 +349,17 @@ async def test_restart_reconciliation_retains_only_known_vacuum_dispatch(hass, m
     await restarted.async_import_native_history("synthetic-serial", floor, [record])
     state = restarted.snapshot("synthetic-serial")
     result = state["plan_history"]["synthetic-plan"]["rooms"]["study"]
-    assert result["last_result"] == ("completed" if mode == "vacuum" else "failed")
-    assert state["native_reconciliation_pending"] is (mode != "vacuum")
+    valid_marker = mode in ("vacuum", "mop", "vacuum_and_mop", "absent")
+    completed = valid_marker and (legacy or mode == "vacuum")
+    assert result["last_result"] == ("completed" if completed else "failed")
+    if completed and mode != "absent":
+        assert result["cleaning_mode"] == mode
+        assert result["coverage_setting"] == "standard"
+    assert state["native_reconciliation_pending"] is (valid_marker and not completed)
     await restarted.async_import_native_history("synthetic-serial", floor, [record])
     assert restarted.snapshot("synthetic-serial")["plan_history"]["synthetic-plan"][
         "rooms"
-    ]["study"].get("completed_runs", 0) == (1 if mode == "vacuum" else 0)
+    ]["study"].get("completed_runs", 0) == (1 if completed else 0)
 
 
 async def test_seven_room_partial_session_credits_only_completed_requested_modes(hass):

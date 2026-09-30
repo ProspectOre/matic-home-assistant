@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -3759,6 +3760,8 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
             "room_id": second.room_id,
             "room": second.name,
             "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+            "cleaning_mode": second.cleaning_mode,
+            "coverage_setting": second.coverage_setting,
             "run_id": "run-1",
         },
     )
@@ -3776,7 +3779,11 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
         completed_at=now.isoformat(),
         duration_seconds=12,
     )
-    last_run = manager.snapshot("serial")["last_run"]
+    snapshot = manager.snapshot("serial")
+    last_run = snapshot["last_run"]
+    reconciled_room = snapshot["plan_history"]["away"]["rooms"][second.room_id]
+    assert reconciled_room["cleaning_mode"] == second.cleaning_mode
+    assert reconciled_room["coverage_setting"] == second.coverage_setting
     assert last_run["completed_room_count"] == 2
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
@@ -4039,6 +4046,332 @@ async def test_native_reconciliation_import_rejects_ambiguous_and_invalid_record
         room,
         completed_at=now.isoformat(),
         duration_seconds=1,
+        room_settings=room,
+    )
+
+
+def test_native_history_reconciliation_preserves_frozen_duration_settings() -> None:
+    """Startup recovery retains settings needed by later duration estimates."""
+    now = dt_util.utcnow()
+    room_id = "room-kitchen"
+    dispatched_at = now - timedelta(seconds=30)
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                room_id,
+                "Kitchen",
+                "protocol-kitchen",
+                b"kitchen",
+                ((0, 0), (1, 0), (1, 1), (0, 1)),
+            ),
+        ),
+    )
+    robot: dict[str, Any] = {
+        "rotations": {},
+        "rooms": {},
+        "pending_native_reconciliation": {
+            "plan_id": "away",
+            "room_id": room_id,
+            "room": "Kitchen",
+            "dispatched_at": dispatched_at.isoformat(),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            "cleaning_mode": "vacuum",
+            "cadence_state": {
+                "scope": "plan",
+                "effective_cleaning_mode": "vacuum",
+                "effective_coverage_setting": "quick",
+            },
+        },
+    }
+    native_record = CleaningSessionRecord(
+        b"synthetic-native-session",
+        CleaningSession(
+            (dispatched_at - timedelta(seconds=1)).isoformat(),
+            (now - timedelta(seconds=1)).isoformat(),
+            30,
+            ("Kitchen",),
+            (("Kitchen", 30),),
+            True,
+            ("Kitchen",),
+        ),
+    )
+
+    assert _reconcile_pending_native_history(robot, floor_plan, [native_record])
+
+    completed = robot["rotations"]["away"]["rooms"][room_id]
+    assert completed["cleaning_mode"] == "vacuum"
+    assert completed["coverage_setting"] == "quick"
+    assert _compatible_duration_history(
+        robot,
+        room_id,
+        {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+    ) == [30]
+
+    # Conflicting frozen metadata cannot qualify a duration under either mode;
+    # the original mode evidence still owns completion admission.
+    for marker_coverage, cadence_mode, cadence_coverage in (
+        (None, "mop", "quick"),
+        ("standard", "mop", "quick"),
+        ("standard", "vacuum", "heavy_duty"),
+    ):
+        conflicting_marker = {
+            "plan_id": "away",
+            "room_id": room_id,
+            "room": "Kitchen",
+            "dispatched_at": dispatched_at.isoformat(),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            "cleaning_mode": "vacuum",
+            "cadence_state": {
+                "scope": "plan",
+                "schedule_active": True,
+                "mop_every_n": 3,
+                "effective_cleaning_mode": cadence_mode,
+                "effective_coverage_setting": cadence_coverage,
+            },
+        }
+        if marker_coverage is not None:
+            conflicting_marker["coverage_setting"] = marker_coverage
+        cadence_records = {"away": {room_id: {"progress": {"mop": 1, "coverage": 0}}}}
+        conflicting_robot: dict[str, Any] = {
+            "rotations": {},
+            "rooms": {},
+            "plans": {},
+            "plan_room_cadence": deepcopy(cadence_records),
+            "pending_native_reconciliation": conflicting_marker,
+        }
+        assert _reconcile_pending_native_history(
+            conflicting_robot, floor_plan, [native_record]
+        )
+        conflicting_completed = conflicting_robot["rotations"]["away"]["rooms"][room_id]
+        assert conflicting_completed["completed_runs"] == 1
+        assert "cleaning_mode" not in conflicting_completed
+        assert "coverage_setting" not in conflicting_completed
+        assert conflicting_robot["plan_room_cadence"] == cadence_records
+        for mode in ("vacuum", "mop"):
+            for coverage in ("quick", "standard", "heavy_duty"):
+                assert (
+                    _compatible_duration_history(
+                        conflicting_robot,
+                        room_id,
+                        {"cleaning_mode": mode, "coverage_setting": coverage},
+                    )
+                    == []
+                )
+
+    # A frozen cadence snapshot can recover settings from an older marker.
+    legacy_marker = {
+        "plan_id": "away",
+        "room_id": room_id,
+        "room": "Kitchen",
+        "dispatched_at": dispatched_at.isoformat(),
+        "expires_at": (now + timedelta(minutes=5)).isoformat(),
+        "cadence_state": {
+            "scope": "plan",
+            "effective_cleaning_mode": "vacuum",
+            "effective_coverage_setting": "quick",
+        },
+    }
+    legacy_robot: dict[str, Any] = {
+        "rotations": {},
+        "rooms": {},
+        "pending_native_reconciliation": legacy_marker,
+    }
+    assert _reconcile_pending_native_history(legacy_robot, floor_plan, [native_record])
+    legacy_completed = legacy_robot["rotations"]["away"]["rooms"][room_id]
+    assert legacy_completed["cleaning_mode"] == "vacuum"
+    assert legacy_completed["coverage_setting"] == "quick"
+    assert _compatible_duration_history(
+        legacy_robot,
+        room_id,
+        {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+    ) == [30]
+
+    unknown_robot: dict[str, Any] = {
+        "rotations": {},
+        "rooms": {},
+        "pending_native_reconciliation": {
+            key: value for key, value in legacy_marker.items() if key != "cadence_state"
+        },
+    }
+    assert _reconcile_pending_native_history(unknown_robot, floor_plan, [native_record])
+    unknown_completed = unknown_robot["rotations"]["away"]["rooms"][room_id]
+    assert "cleaning_mode" not in unknown_completed
+    assert "coverage_setting" not in unknown_completed
+    assert unknown_completed["duration_history_seconds"] == [30]
+    assert (
+        _compatible_duration_history(
+            unknown_robot,
+            room_id,
+            {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("previous_mode", "previous_coverage"),
+    [("vacuum", "quick"), ("mop", "heavy_duty")],
+    ids=["mode-changed", "coverage-changed"],
+)
+@pytest.mark.parametrize(
+    "duration_seconds", [None, 30], ids=["no-duration", "duration"]
+)
+def test_native_completion_resets_duration_samples_when_settings_change(
+    previous_mode: str, previous_coverage: str, duration_seconds: int | None
+) -> None:
+    room_id = "room-kitchen"
+    robot: dict[str, Any] = {
+        "rotations": {
+            "away": {
+                "rooms": {
+                    room_id: {
+                        "cleaning_mode": previous_mode,
+                        "coverage_setting": previous_coverage,
+                        "last_duration_seconds": 90,
+                        "average_duration_seconds": 90,
+                        "duration_samples": 1,
+                        "duration_history_seconds": [90],
+                        "last_cancelled_duration_seconds": 45,
+                        "last_unverified_duration_seconds": 60,
+                    }
+                }
+            }
+        },
+        "rooms": {},
+    }
+    room = CleaningRoom(room_id, "Kitchen", "mop", "quick")
+
+    _record_native_completion(
+        robot,
+        "away",
+        room,
+        completed_at=dt_util.utcnow().isoformat(),
+        duration_seconds=duration_seconds,
+        room_settings=room,
+    )
+
+    completed = robot["rotations"]["away"]["rooms"][room_id]
+    assert completed["cleaning_mode"] == "mop"
+    assert completed["coverage_setting"] == "quick"
+    assert "last_cancelled_duration_seconds" not in completed
+    assert "last_unverified_duration_seconds" not in completed
+    assert (
+        _compatible_duration_history(
+            robot,
+            room_id,
+            {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+        )
+        == []
+    )
+    assert (
+        _compatible_duration_history(
+            robot,
+            room_id,
+            {
+                "cleaning_mode": previous_mode,
+                "coverage_setting": previous_coverage,
+            },
+        )
+        == []
+    )
+    assert _compatible_duration_history(
+        robot,
+        room_id,
+        {"cleaning_mode": "mop", "coverage_setting": "quick"},
+    ) == ([duration_seconds] if duration_seconds is not None else [])
+    if duration_seconds is None:
+        assert "last_duration_seconds" not in completed
+        assert "average_duration_seconds" not in completed
+        assert "duration_samples" not in completed
+        assert "duration_history_seconds" not in completed
+    else:
+        assert completed["duration_history_seconds"] == [duration_seconds]
+        assert completed["duration_samples"] == 1
+
+
+def test_native_completion_does_not_qualify_legacy_unscoped_duration_samples() -> None:
+    room_id = "room-kitchen"
+    robot: dict[str, Any] = {
+        "rotations": {
+            "away": {
+                "rooms": {
+                    room_id: {
+                        "last_duration_seconds": 90,
+                        "average_duration_seconds": 90,
+                        "duration_samples": 1,
+                        "duration_history_seconds": [90],
+                    }
+                }
+            }
+        },
+        "rooms": {},
+    }
+
+    _record_native_completion(
+        robot,
+        "away",
+        CleaningRoom(room_id, "Kitchen", "mop", "quick"),
+        completed_at=dt_util.utcnow().isoformat(),
+        duration_seconds=None,
+        room_settings=None,
+    )
+
+    completed = robot["rotations"]["away"]["rooms"][room_id]
+    assert "cleaning_mode" not in completed
+    assert "coverage_setting" not in completed
+    assert "duration_history_seconds" not in completed
+    assert (
+        _compatible_duration_history(
+            robot,
+            room_id,
+            {"cleaning_mode": "mop", "coverage_setting": "quick"},
+        )
+        == []
+    )
+
+
+def test_native_completion_without_frozen_settings_discards_qualified_history() -> None:
+    room_id = "room-kitchen"
+    robot: dict[str, Any] = {
+        "rotations": {
+            "away": {
+                "rooms": {
+                    room_id: {
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "quick",
+                        "duration_samples": 1,
+                        "duration_history_seconds": [90],
+                    }
+                }
+            }
+        },
+        "rooms": {},
+    }
+    floor_room = Room(room_id, "Kitchen", "protocol-kitchen", b"kitchen", ())
+
+    _record_native_completion(
+        robot,
+        "away",
+        floor_room,
+        completed_at=dt_util.utcnow().isoformat(),
+        duration_seconds=30,
+        room_settings=None,
+    )
+
+    completed = robot["rotations"]["away"]["rooms"][room_id]
+    assert "cleaning_mode" not in completed
+    assert "coverage_setting" not in completed
+    assert completed["duration_history_seconds"] == [30]
+    assert (
+        _compatible_duration_history(
+            robot,
+            room_id,
+            {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+        )
+        == []
     )
 
 

@@ -213,7 +213,13 @@ async def test_stop_threshold_is_independent_of_cleaning_configuration(
         },
     )
     manager._robot("serial")["rotations"]["matrix"] = {
-        "rooms": {room.room_id: {"duration_history_seconds": [100, 100, 100]}}
+        "rooms": {
+            room.room_id: {
+                "cleaning_mode": room.cleaning_mode,
+                "coverage_setting": room.coverage_setting,
+                "duration_history_seconds": [100, 100, 100],
+            }
+        }
     }
     async with manager.lock("serial"):
         manager.prepare_run("serial")
@@ -222,6 +228,36 @@ async def test_stop_threshold_is_independent_of_cleaning_configuration(
         active["active_elapsed_seconds"] = progress
         active["active_segment_started"] = None
         assert manager.request_stop("serial").behavior == expected
+        manager.cancel("serial")
+
+
+async def test_stop_threshold_does_not_estimate_from_unscoped_duration_history(
+    hass,
+):
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = CleaningRoom("room", "Room", "vacuum", "quick")
+    await manager.async_save_plan(
+        "serial",
+        "matrix",
+        {
+            "finish_current_room": True,
+            "finish_current_room_threshold": 50,
+            "rooms": [],
+        },
+    )
+    manager._robot("serial")["rotations"]["matrix"] = {
+        "rooms": {room.room_id: {"duration_history_seconds": [100, 100, 100]}}
+    }
+    async with manager.lock("serial"):
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "matrix", room)
+        active = manager._data["robots"]["serial"]["active_plan"]
+        active["active_elapsed_seconds"] = 49
+        active["active_segment_started"] = None
+        decision = manager.request_stop("serial")
+        assert decision.behavior == "after_room"
+        assert decision.estimated_progress is None
         manager.cancel("serial")
 
 

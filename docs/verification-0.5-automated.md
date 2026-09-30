@@ -59,3 +59,85 @@ needed. This follow-up is qualified for merge only by its own exact-head review 
 
 Artificial context loss and malformed bytes do not establish sustained GPU
 pressure, seeded large-scene rendering, real-device recovery or resource bounds.
+
+## Unreleased authority refinements
+
+These source changes follow RC9 and PR #192; they are not installed RC evidence.
+Independent bounded reviews cover the completion transaction and frontend
+selection/notification ownership. The inherited-source cross-walk found no
+additional P0/P1 contract omission in its slice; it does not close the full
+product/device/owner review gate.
+
+- Dispatch freezes mode and coverage into durable reconciliation markers.
+  Live and startup completion share one recorder and rollback/deduplication
+  contract. Unknown, changed, or conflicting settings cannot qualify duration
+  estimates; malformed present modes cannot become absent legacy modes.
+  The final backend run passes 3,691 Python tests at 100% coverage.
+- Packaged selection tests pass 18 cases across Chromium, WebKit and Firefox
+  safety: pending robot selection, stale switchback, layer-history cleanup,
+  administrator recovery with polling paused, pending entry removal, and an
+  unavailable selected robot recovered only by an explicit remaining-robot choice.
+  The pending-selection case failed against the preceding RC9 bundle at its
+  intended assertion. An intermediate fixture used inconsistent per-entry
+  response identities and is corrected; failed runs remain retained locally.
+- A focused Chromium adapter/lifecycle run passes 49 cases, including the
+  unrelated-HA-update contract and unavailable-map status consequences.
+- Page suspension contracts pass in Chromium, WebKit and Firefox safety:
+  generation revocation before cancellation, five seconds without hidden reads,
+  stale response rejection, held-catalog resume, history/draft/camera retention,
+  saved-plan preflight cancellation, listener disposal, and cancelled rendering
+  and gesture inertia. Synthetic page events do not prove native BFCache.
+- Transmitted plan/Area mutations survive mere page suspension and reconcile
+  from fresh readback rather than retained catalogs. Response IDs identify new
+  plans; 20-second acknowledgement bounds do not retry writes or bound a managed
+  cleaning run. All 29 focused mutation contracts pass, including late ACK and
+  disposer cancellation. A hidden cadence reset cannot restore stale one-shot flags.
+- Persistent pose/delta recovery passes three combined engine cases: mismatched
+  pose revokes the frame, a slow owned replacement is not repeatedly cancelled,
+  and delta-only failure preserves verified position and command admission.
+  Three content-revision cases separately preserve the coordinate-frame
+  generation, camera and draft, reject obsolete scenes, and fence real frame changes.
+- A dirty local staging build exposed retired UI files in its wheel. The build
+  now creates the wheel from the fresh source archive; both clean archives pass
+  exact-file parity and fresh-environment import. All 55 release contracts pass.
+
+The final broad local sweep ran all 940 configured cases: 933 passed, four
+failed at inherited identity/content expectations, and three WebKit navigations
+timed out before app import. Those traces remain at about:blank without network
+events; their driver/server cause is unproven. Matching fixtures and assertions
+now express the authority contract. All 15 affected/adjacent cases pass the
+focused follow-up at unchanged limits. Initial PR #193 head `5a92454` then passed
+CI: 3,691 Python/100%, 939 browser passes and one capability skip whose case was
+not identified by that reporter. Regular review found two valid Stop/selection
+defects. Their repairs pass 30 focused Chromium/WebKit/Firefox safety cases:
+selected HA activity enables Stop without a catalog, stale-entry work cannot
+stop another idle robot, host configuration changes apply, and explicit user
+selection survives refresh/cancellation. CI now logs case names alongside
+annotations so future skips remain identifiable. These repairs require their
+own exact-head review/CI. The [desktop lab receipt](performance-0.5-refinements.md)
+is bounded to its compiled bundle and journey; runtime/acceptance remain open.
+
+Head `5225068` passed Python/quality/package/HACS/Hassfest. Browser CI passed
+948 cases, skipped Firefox's WebGL-loss case because its required capability
+was absent, and failed one stale-start fixture in three engines. Its service
+mock left B's newly permitted Stop unresolved. The corrected fixture holds B's
+catalog, acknowledges exactly one Stop to B, requires pending settlement, and
+proves A's late success/guard rejection cannot change B's command, notice or
+selection. All 14 affected/neighbor cases pass at configured limits. An
+intermediate misplaced fixture edit was corrected; its failed run remains
+retained. No production bytes changed in this fixture repair. Head `aa3b2b9`
+then passed CI: 3,691 Python tests/100% and 951 browser cases, with the same
+identified Firefox WebGL capability skip. Its regular review found a third
+valid defect: recovery could cancel its replacement five-second delta long-poll.
+The frozen repair passes 18 source-level Chromium/WebKit/Firefox safety cases,
+including delayed 204, floor/entry/disposal cancellation, pose invalidation and
+terminal failures. A paired counterfactual reproduces the preceding source's
+repeated full-scene reload/long-poll abort; the repair accepts the delayed response
+without changing scene, pose, revision or command admission. These focused source
+contracts do not replace packaged exact-head CI or installed-runtime proof.
+A separate authority audit found worker decompression and progressive/incremental
+GPU uploads absent despite the inherited contract. Ownership was reviewed before
+coding. The [scene-pipeline receipt](verification-0.5-scene-pipeline.md) records
+the implemented ownership contract, passing source/adjacent checks, retained
+failures and remaining exact-head, performance and runtime qualification.
+A skipped capability is not verified support.

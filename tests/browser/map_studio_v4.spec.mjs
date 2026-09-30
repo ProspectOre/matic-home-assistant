@@ -519,7 +519,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         return captured;
       } finally { effects.dispose(); }
     });
-    expect(calls).toEqual([["matic_robot", "reset_room_cadence", { plan: "daily", room_id: "room-a", modes: ["mop"] }, "vacuum.synthetic"]]);
+    expect(calls).toEqual([["matic_robot", "reset_room_cadence", { plan: "daily", room_id: "room-a", modes: ["mop"] }, "vacuum.synthetic", { acknowledgementTimeout: "mutation" }]]);
   });
 
   test("uses the shared room schedule by default and keeps its progress visible during an override", async ({ page }) => {
@@ -830,14 +830,16 @@ test.describe("Map Studio v0.4 foundation", () => {
           const store = new WorkspaceStore(initial);
           const calls = [];
           let completeStart;
+          let switched = false;
           const effects = new EffectController(store, {
-            catalog: async () => [initial.resources.entry],
+            catalog: async () => switched ? new Promise(() => {}) : [initial.resources.entry],
             history: async () => initial.resources.history.value,
             scene: async () => { throw new DOMException("Aborted", "AbortError"); },
             pose: async () => { throw new DOMException("Aborted", "AbortError"); },
             plans: async () => initial.resources.plans.value,
             service: (domain, service, data, entity) => {
               calls.push([service, entity]);
+              if (service !== "run_selected_plan") return Promise.resolve();
               return new Promise((resolve, reject) => {
               completeStart = () => rejectLate
                 ? reject(new BackendError("coverage_identity_changed", null, "The cleaning task changed during setup. Check the robot status, then try again."))
@@ -851,24 +853,35 @@ test.describe("Map Studio v0.4 foundation", () => {
           await effects.refreshCatalog(true);
           const start = effects.executeAction("run-plan");
           for (let index = 0; index < 20 && !completeStart; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+          if (!completeStart) throw new Error("The initial managed start was not dispatched");
           if (close) effects.dispose();
           else {
+            switched = true;
             effects.sync({ ...projection, entryKey: "other", vacuumEntityId: "vacuum.other", activity: "cleaning" });
-            // The new robot's projection arrives before its catalog. Never
-            // dispatch using the old robot's workspace and the new target.
+            // Stop uses B's own projected activity and entity before its catalog
+            // arrives. A's late start result must not overwrite that command.
             await effects.executeAction("stop");
-            await effects.refreshCatalog(true);
+            if (store.value.command !== "settling") throw new Error("B's acknowledged Stop was not pending settlement");
           }
-          const command = store.value.command;
+          const current = () => JSON.stringify({
+            command: store.value.command,
+            notice: store.value.notice,
+            selection: store.value.selection,
+          });
+          const before = current();
           completeStart();
           await start;
-          results.push({ calls, preserved: store.value.command === command });
+          results.push({ calls, preserved: current() === before });
           effects.dispose();
         }
       }
       return results;
     });
-    expect(results).toEqual(Array.from({ length: 4 }, () => ({ calls: [["run_selected_plan", "vacuum.synthetic"]], preserved: true })));
+    expect(results).toEqual([false, true].flatMap((close) => Array.from({ length: 2 }, () => ({
+      calls: [["run_selected_plan", "vacuum.synthetic"],
+        ...(!close ? [["stop_intelligent_cleaning", "vacuum.other"]] : [])],
+      preserved: true,
+    }))));
   });
   test("shows allowlisted guard recovery text and keeps generic service errors generic", async ({ page }) => {
     await loadEffectHarness(page);
@@ -1176,6 +1189,24 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate((tag) => document.querySelector(tag).setScenario("unsupported"), GALLERY_TAG);
     await expect(gallery.locator(".action-bar")).toContainText("Map unavailable");
     await expect(gallery.locator(".action-bar")).not.toContainText("Finding the map");
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Map unavailable");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, coherence: "unavailable", map: { ...state.map, available: false } });
+    });
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Map unavailable");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+    await expect(gallery.locator(".status-copy strong")).not.toHaveText("Locating");
+
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, activity: "cleaning", coherence: "unavailable" });
+    });
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Cleaning");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+    await expect(gallery.getByRole("button", { name: "Stop cleaning", exact: true }).first()).toBeEnabled();
   });
   for (const retained of [false, true]) {
     test(`keeps a ${retained ? "retained" : "saved"} map visible during live revalidation`, async ({ page }, testInfo) => {
@@ -1766,7 +1797,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       effects.dispose();
       return result;
     });
-    expect(result.generationAfter).toBeGreaterThan(result.generationBefore);
+    expect(result.generationAfter).toBe(result.generationBefore);
     expect(result.sceneCalls).toBe(2);
   });
 
@@ -2743,11 +2774,32 @@ test.describe("Map Studio v0.4 foundation", () => {
         renderer.setState({ ...next, resources: { ...next.resources,
           scene: { ...next.resources.scene, value: { ...next.resources.scene.value, revision: next.resources.scene.value.revision + 1 } },
         } });
+        const expectedRevision = next.resources.scene.value.revision + 1;
+        const expectedPoints = next.resources.scene.value.total;
+        const beforePublication = {
+          notifications, camera: renderer.camera, revision: renderer.diagnostics().sceneRevision,
+        };
+        const publishDeadline = performance.now() + 5000;
+        let publication = renderer.diagnostics();
+        while ((publication.sceneRevision !== expectedRevision
+          || publication.renderedPoints !== expectedPoints)
+          && performance.now() < publishDeadline) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          publication = renderer.diagnostics();
+        }
         const afterRevision = renderer.camera;
         renderer.dispose();
         canvases.forEach(canvas => canvas.remove());
-        return { notifications, outgoing, afterTransition, afterRevision, fitAfterTransition };
+        return {
+          notifications, outgoing, afterTransition, afterRevision, fitAfterTransition,
+          beforePublication, publication, expectedRevision, expectedPoints,
+        };
       }, { transition, destinationFit });
+      expect(result.publication.sceneRevision).toBe(result.expectedRevision);
+      expect(result.publication.renderedPoints).toBe(result.expectedPoints);
+      expect(result.beforePublication.notifications).toBe(1);
+      expect(result.beforePublication.revision).toBe(result.expectedRevision - 1);
+      expect(result.beforePublication.camera).toEqual(result.afterTransition);
       expect(result.notifications).toBe(2); // Final destination, then the same-view revision.
       expect(result.outgoing.zoom).toBeCloseTo(1, 6);
       expect(result.outgoing.targetX).toBe(0);
@@ -5168,6 +5220,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       return { revision: state.resources.scene.value?.revision, exactPose: state.map.exactPose };
     })).toEqual({ revision: 2, exactPose: true });
     expect(fullSceneRequests).toBe(1);
+    const contentGeneration = await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation);
     holdDeltaRecoveryScene = true;
     failNextDelta = true;
     await expect.poll(() => fullSceneRequests).toBe(2);
@@ -5175,6 +5228,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
     })).toEqual({ exactPose: true, position: [10, 12] });
+    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
     releaseDeltaRecoveryScene();
     expect(fullScenePreferCached).toEqual(["1", "1"]);
     await expect.poll(async () => page.evaluate(() =>
@@ -5241,6 +5295,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       sceneRevision: 2,
       sceneStatus: "loading",
     });
+    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
     releaseHeldFullScene();
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(3);
@@ -6611,9 +6666,26 @@ test("keyboard drawing paints erases and restores one centered mark", async ({ p
 });
 
 for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "unfocused", "no-canvas"]) {
-  test(`keyboard drawing ignores ${blocked} targets`, async ({ page }) => {
+  test(`keyboard drawing ignores ${blocked} targets @safety`, async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "draw" });
     const map = gallery.locator(".map-root");
+    const renderer = gallery.locator("matic-map-canvas-v4");
+    const waitForPublication = (hidden = false) => expect.poll(() => renderer.evaluate((element, { tag, hidden }) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      const scene = state.resources.scene.value;
+      const diagnostics = element.rendererDiagnostics();
+      const canvas = element.renderRoot.querySelector(".scene-canvas");
+      return {
+        published: Boolean(scene && diagnostics
+          && diagnostics.sceneRevision === scene.revision
+          && diagnostics.sourcePoints === scene.total
+          && diagnostics.renderedPoints === scene.total),
+        cameraEcho: hidden || Boolean(diagnostics && state.draw.zoomPercent === Math.max(100, Math.min(1000,
+          Math.round(diagnostics.fitDistance / diagnostics.cameraDistance * 100)))),
+        sized: !hidden || (canvas.width === 1 && canvas.height === 1),
+      };
+    }, { tag: GALLERY_TAG, hidden })).toEqual({ published: true, cameraEcho: true, sized: true });
+    await waitForPublication();
     await map.focus();
     await map.press("ArrowDown");
     if (blocked === "out-of-bounds") {
@@ -6631,8 +6703,10 @@ for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "u
     }, { tag: GALLERY_TAG, blocked });
     if (blocked === "unfocused") await gallery.getByRole("button", { name: "Paint", exact: true }).focus();
     if (blocked === "no-canvas") await gallery.locator(".scene-canvas").evaluate((canvas) => { canvas.style.display = "none"; });
-    // Render state settles before capturing the unchanged draft contract.
-    await page.waitForTimeout(50);
+    // Initial camera publication is settled; hidden resize need not emit a new camera intent.
+    await waitForPublication(blocked === "no-canvas");
+    if (blocked === "unfocused") await expect(map).not.toBeFocused();
+    else await expect(map).toBeFocused();
     const before = (await snapshot(page)).draw;
     await map.dispatchEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, composed: true });
     expect((await snapshot(page)).draw).toEqual(before);
@@ -7186,6 +7260,7 @@ test("plan catalog refresh preserves explicit selection and reconciles a saved n
       service: async () => {
         writes += 1;
         catalog = { ...catalog, selectedPlan: "new", plans: [...catalog.plans, { ...second, id: "new", name: "New routine", enabled: true }] };
+        return { response: { plan: { id: "new" } } };
       },
       dispose() {},
     });

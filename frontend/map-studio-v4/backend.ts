@@ -3,7 +3,9 @@ import { MAX_ROOM_SEQUENCE_SIZE, type HassLike } from "./contracts";
 import {
   CATALOG_URL,
   ContractError,
-  SCENE_HEADER_BYTES,
+  DELTA_HEADER_BYTES,
+  DELTA_MAX_BYTES,
+  SCENE_MAX_BYTES,
   isPrivatePath,
   parseAreasCatalog,
   parseCatalog,
@@ -84,15 +86,6 @@ interface SceneResponse {
   readonly notModified: boolean;
 }
 
-const DELTA_HEADER_BYTES = 36;
-const DELTA_MAX_BYTES = 16 * 1024 * 1024;
-
-const safeRevision = (value: bigint, code: string): number => {
-  const revision = Number(value);
-  if (!Number.isSafeInteger(revision) || revision < 0) throw new ContractError(code);
-  return revision;
-};
-
 const responseRevision = (response: Response, fallback: number): number => {
   const raw = response.headers.get("X-Matic-Revision");
   if (raw === null) return fallback;
@@ -113,12 +106,19 @@ export class MaticBackend {
   readonly #getHass: () => HassLike | undefined;
   readonly #parser = new SceneParser();
   readonly #roomPreviewWireInFlight = new WeakMap<object, Promise<void>>();
+  readonly #serviceWaits = new Set<() => void>();
+  #disposed = false;
 
   constructor(getHass: () => HassLike | undefined) {
     this.#getHass = getHass;
   }
 
-  async #readBody(response: Response, signal: AbortSignal): Promise<ArrayBuffer> {
+  async #readBody(
+    response: Response,
+    signal: AbortSignal,
+    maxBytes = Number.POSITIVE_INFINITY,
+    sizeError = "invalid-response-size",
+  ): Promise<ArrayBuffer> {
     const reader = response.body?.getReader();
     if (!reader) return new ArrayBuffer(0);
     const cancel = (): void => { void reader.cancel().catch(() => {}); };
@@ -134,6 +134,10 @@ export class MaticBackend {
         const chunk = await reader.read();
         if (signal.aborted) throw new DOMException("Aborted", "AbortError");
         if (chunk.done) break;
+        if (length + chunk.value.byteLength > maxBytes) {
+          void reader.cancel().catch(() => {});
+          throw new ContractError(sizeError);
+        }
         chunks.push(chunk.value);
         length += chunk.value.byteLength;
       }
@@ -272,7 +276,10 @@ export class MaticBackend {
       if (contentType !== "application/vnd.matic.slam-scene") {
         throw new ContractError("invalid-scene-content-type");
       }
-      const parsed = await this.#parser.parse(await this.#readBody(response, operationSignal), operationSignal);
+      const parsed = await this.#parser.parse(
+        await this.#readBody(response, operationSignal, SCENE_MAX_BYTES, "invalid-scene-size"),
+        operationSignal,
+      );
       return {
         scene: {
           ...parsed,
@@ -285,98 +292,6 @@ export class MaticBackend {
         notModified: false,
       };
     });
-  }
-
-  async #inflateDelta(
-    compressed: Uint8Array<ArrayBuffer>,
-    expectedLength: number,
-    signal?: AbortSignal,
-  ): Promise<Uint8Array<ArrayBuffer>> {
-    if (!Number.isSafeInteger(expectedLength)
-      || expectedLength < 1
-      || expectedLength > DELTA_MAX_BYTES
-      || typeof DecompressionStream !== "function") {
-      throw new ContractError("invalid-scene-delta");
-    }
-    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream("deflate"));
-    const reader = stream.getReader();
-    const difference = new Uint8Array(expectedLength);
-    let offset = 0;
-    const abort = (): void => { void reader.cancel(); };
-    signal?.addEventListener("abort", abort, { once: true });
-    try {
-      while (true) {
-        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-        const { done, value } = await reader.read();
-        if (done) break;
-        if (!(value instanceof Uint8Array) || offset + value.byteLength > expectedLength) {
-          throw new ContractError("invalid-scene-delta");
-        }
-        difference.set(value, offset);
-        offset += value.byteLength;
-      }
-    } finally {
-      signal?.removeEventListener("abort", abort);
-      reader.releaseLock();
-    }
-    if (offset !== expectedLength) throw new ContractError("invalid-scene-delta");
-    return difference;
-  }
-
-  async #applySceneDelta(
-    payload: ArrayBuffer,
-    base: SceneModel,
-    signal?: AbortSignal,
-  ): Promise<{ readonly parsed: SceneModel; readonly revision: number }> {
-    if (payload.byteLength < DELTA_HEADER_BYTES
-      || payload.byteLength > DELTA_HEADER_BYTES + DELTA_MAX_BYTES
-      || base.buffer.byteLength > DELTA_MAX_BYTES) {
-      throw new ContractError("invalid-scene-delta");
-    }
-    const view = new DataView(payload);
-    const magic = new TextDecoder().decode(new Uint8Array(payload, 0, 8));
-    const version = view.getUint16(8, true);
-    const flags = view.getUint16(10, true);
-    const baseRevision = safeRevision(view.getBigUint64(12, true), "invalid-scene-delta");
-    const revision = safeRevision(view.getBigUint64(20, true), "invalid-scene-delta");
-    const sceneLength = view.getUint32(28, true);
-    const compressedLength = view.getUint32(32, true);
-    if (magic !== "MATICDLT"
-      || version !== 1
-      || flags !== 1
-      || baseRevision !== base.revision
-      || revision <= base.revision
-      || sceneLength < SCENE_HEADER_BYTES
-      || sceneLength > DELTA_MAX_BYTES
-      || compressedLength > DELTA_MAX_BYTES
-      || compressedLength + DELTA_HEADER_BYTES !== payload.byteLength) {
-      throw new ContractError("invalid-scene-delta");
-    }
-    const compressed = new Uint8Array(payload, DELTA_HEADER_BYTES, compressedLength);
-    const baseBytes = new Uint8Array(base.buffer);
-    const difference = await this.#inflateDelta(
-      compressed,
-      Math.max(baseBytes.byteLength, sceneLength),
-      signal,
-    );
-    const result = difference.slice();
-    const chunkBytes = 1024 * 1024;
-    for (let start = 0; start < baseBytes.byteLength; start += chunkBytes) {
-      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
-      const end = Math.min(baseBytes.byteLength, start + chunkBytes);
-      for (let index = start; index < end; index += 1) {
-        result[index] = (result[index] ?? 0) ^ (baseBytes[index] ?? 0);
-      }
-      if (end < baseBytes.byteLength) {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-      }
-    }
-    const sceneBuffer = result.slice(0, sceneLength).buffer;
-    const parsed = await this.#parser.parse(sceneBuffer, signal);
-    return {
-      parsed: { ...parsed, revision, etag: null, source: "live" },
-      revision,
-    };
   }
 
   async sceneDelta(
@@ -400,28 +315,42 @@ export class MaticBackend {
         }
         if (!response.ok) throw new BackendError("delta-request-failed", response.status);
         if (revision <= base.revision) throw new ContractError("invalid-scene-delta-revision");
-        const declaredLength = Number(response.headers.get("Content-Length"));
-        if (Number.isFinite(declaredLength) && declaredLength > DELTA_HEADER_BYTES + DELTA_MAX_BYTES) {
-          throw new ContractError("invalid-scene-delta-size");
-        }
         const contentType = response.headers.get("Content-Type")?.split(";", 1)[0];
-        const payload = await this.#readBody(response, operationSignal);
-        if (contentType === "application/vnd.matic.slam-delta") {
+        if (contentType !== "application/vnd.matic.slam-delta"
+          && contentType !== "application/vnd.matic.slam-scene") {
+          throw new ContractError("invalid-scene-delta-content-type");
+        }
+        const deltaPayload = contentType === "application/vnd.matic.slam-delta";
+        const maxResponseBytes = deltaPayload ? DELTA_HEADER_BYTES + DELTA_MAX_BYTES : SCENE_MAX_BYTES;
+        const declaredLength = Number(response.headers.get("Content-Length"));
+        if (Number.isFinite(declaredLength) && declaredLength > maxResponseBytes) {
+          throw new ContractError(deltaPayload ? "invalid-scene-delta-size" : "invalid-scene-size");
+        }
+        const payload = await this.#readBody(
+          response,
+          operationSignal,
+          maxResponseBytes,
+          deltaPayload ? "invalid-scene-delta-size" : "invalid-scene-size",
+        );
+        if (deltaPayload) {
           const baseHeader = Number(response.headers.get("X-Matic-Base-Revision"));
           if (!Number.isSafeInteger(baseHeader) || baseHeader !== base.revision) {
             throw new ContractError("invalid-scene-delta-base");
           }
-          const decoded = await this.#applySceneDelta(payload, base, operationSignal);
+          const decoded = await this.#parser.decodeDelta(payload, base, operationSignal);
           if (decoded.revision !== revision) throw new ContractError("invalid-scene-delta-revision");
           return {
-            scene: { ...decoded.parsed, etag: response.headers.get("ETag") },
+            scene: {
+              ...decoded.parsed,
+              revision,
+              etag: response.headers.get("ETag"),
+              source: "live",
+              ...(decoded.deltaHint ? { deltaHint: decoded.deltaHint } : {}),
+            },
             floorCoherent,
             revision,
             notModified: false,
           };
-        }
-        if (contentType !== "application/vnd.matic.slam-scene") {
-          throw new ContractError("invalid-scene-delta-content-type");
         }
         const parsed = await this.#parser.parse(payload, operationSignal);
         return {
@@ -619,17 +548,42 @@ export class MaticBackend {
     service: string,
     data: Readonly<Record<string, unknown>>,
     entityId: string,
-  ): Promise<void> {
+    options: { returnResponse?: boolean; acknowledgementTimeout?: "mutation" } = {},
+  ): Promise<unknown> {
     const hass = this.#getHass();
-    if (typeof hass?.callService !== "function") throw new BackendError("service-unavailable");
+    if (this.#disposed || typeof hass?.callService !== "function") throw new BackendError("service-unavailable");
+    let timeout: number | null = null;
+    let cancelWait: (() => void) | null = null;
     try {
-      await hass.callService(domain, service, data, { entity_id: entityId });
+      const request = options.returnResponse
+        ? hass.callService(domain, service, data, { entity_id: entityId }, true, true)
+        : hass.callService(domain, service, data, { entity_id: entityId });
+      if (!options.returnResponse && !options.acknowledgementTimeout) return await request;
+      return await Promise.race([
+        request,
+        new Promise<never>((_resolve, reject) => {
+          cancelWait = () => {
+            if (timeout !== null) window.clearTimeout(timeout);
+            timeout = null;
+            reject(new DOMException("Aborted", "AbortError"));
+          };
+          this.#serviceWaits.add(cancelWait);
+          timeout = window.setTimeout(() => reject(new BackendError("mutation-timeout")), REQUEST_TIMEOUTS.mutation);
+        }),
+      ]);
     } catch (error) {
       throw safeCoverageGuardError(error, hass.localize) ?? error;
+    } finally {
+      if (timeout !== null) window.clearTimeout(timeout);
+      if (cancelWait) this.#serviceWaits.delete(cancelWait);
     }
   }
 
   dispose(): void {
+    if (this.#disposed) return;
+    this.#disposed = true;
+    for (const cancelWait of this.#serviceWaits) cancelWait();
+    this.#serviceWaits.clear();
     this.#parser.dispose();
   }
 }

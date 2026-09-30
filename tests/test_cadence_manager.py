@@ -1184,6 +1184,7 @@ async def test_startup_reconciliation_does_not_duplicate_committed_cadence(
         completed_room,
         completed_at=(now - timedelta(seconds=1)).isoformat(),
         duration_seconds=29,
+        room_settings=completed_room,
     )
     completed_mode = completed_room.cleaning_mode
     pending = {
@@ -1244,6 +1245,7 @@ async def test_older_room_completion_does_not_dedupe_a_new_dispatch(hass):
         room,
         completed_at=(now - timedelta(minutes=2)).isoformat(),
         duration_seconds=60,
+        room_settings=room,
     )
     robot["pending_native_reconciliation"] = {
         "plan_id": "home",

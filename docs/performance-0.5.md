@@ -1,7 +1,8 @@
 # Matic 0.5 performance evidence
 
-This is paired source and compiled-asset evidence for the current Matic 0.5
-candidate, not RC runtime, field, mobile, transport, or physical acceptance.
+This is paired source and compiled-asset evidence for RC9. The [unreleased refinements](performance-0.5-refinements.md)
+have a separate current lab receipt; these RC9 results do not qualify them or establish runtime,
+field, mobile, transport, or physical acceptance.
 The release ledger is [acceptance-0.5.md](acceptance-0.5.md).
 
 The authority baseline is stable v0.4.6; the paired control remains v0.4.5.
@@ -21,7 +22,12 @@ Add `--headed` to measure a visible Chromium window. Launch and reported mode
 share the same option; never relabel a headless measurement as headed.
 `--trace-dir <private-directory>` records diagnostic traces with extra overhead;
 trace-enabled timings do not qualify the untraced performance gate. The script
-also records per-sample host load averages and logical CPU count.
+also records per-sample host load averages and logical CPU count. Schema 5 adds
+the collector hash, source commit and tracked-change flag, plus bounded event
+details and static action labels for the ten slowest interactions. The source
+flag excludes untracked files; actual loaded bundle hashes identify the bytes.
+Both builds use the same observers and action bookkeeping. No collector-overhead
+calibration or attribution of the earlier 552 ms sample is claimed.
 The script serves the tag and current compiled assets on loopback, blocks
 external requests, and requires identical synthetic scene SHA-256 hashes.
 It opens fresh contexts in AB, BA, AB order. Each journey warms the plan

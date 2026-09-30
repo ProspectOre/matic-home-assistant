@@ -64,6 +64,7 @@ export const normalizeBrush = (value: number): number =>
   ) / 100;
 
 export const initialWorkspaceState = (): WorkspaceState => ({
+  pageActive: true,
   owner: null,
   draftFloorOrdinal: null,
   draftMapSessionKey: null,
@@ -128,6 +129,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   manualRoomPreviewRetry: 0,
   selection: {
     entryId: null,
+    entrySource: "host",
     floorId: "current",
     historyId: null,
     roomIds: [],
@@ -502,7 +504,10 @@ export const reduceWorkspace = (
         },
       };
     case "select-entry":
-      return state;
+      return (state.selection.entryId === intent.entryId && state.selection.entrySource === "user")
+        || !state.robots.some((robot) => robot.entryId === intent.entryId)
+        ? state
+        : { ...state, selection: { ...state.selection, entryId: intent.entryId, entrySource: "user" } };
     case "set-history":
       return {
         ...state,
@@ -591,14 +596,25 @@ export class WorkspaceStore {
     const next = reduceWorkspace(this.#state, intent);
     if (next === this.#state) return next;
     this.#state = next;
-    for (const listener of this.#listeners) listener(next);
+    this.#publish();
     return next;
   }
 
   replace(next: WorkspaceState): void {
     if (next === this.#state) return;
     this.#state = next;
-    for (const listener of this.#listeners) listener(next);
+    this.#publish();
+  }
+
+  #publish(): void {
+    const state = this.#state;
+    for (const listener of this.#listeners) {
+      listener(state);
+      // A listener may commit a new state reentrantly. Its nested publication
+      // already reached every subscriber, so do not deliver this stale snapshot
+      // to the remaining subscribers.
+      if (state !== this.#state) return;
+    }
   }
 
   patch(patch: Partial<WorkspaceState>): WorkspaceState {
@@ -682,6 +698,10 @@ export const canShowLiveMap = (state: WorkspaceState): boolean =>
   && (state.coherence === "current" || state.coherence === "degraded" || state.coherence === "verifying")
   && state.host.administrator;
 
+export const isSelectedRobotUnavailable = (state: WorkspaceState): boolean =>
+  state.selection.entryId !== null && state.robots.length > 0
+  && !state.robots.some((robot) => robot.entryId === state.selection.entryId);
+
 export const canShowExactPose = (state: WorkspaceState): boolean =>
   canShowLiveMap(state)
   && !state.floor.readOnly
@@ -697,7 +717,7 @@ export const canShowExactPose = (state: WorkspaceState): boolean =>
   && state.host.robotConnected;
 
 export const canEditCoordinates = (state: WorkspaceState): boolean =>
-  canShowLiveMap(state)
+  state.pageActive && canShowLiveMap(state)
   && state.coherence === "current"
   && state.map.complete
   && state.map.floorCoherent
@@ -740,7 +760,7 @@ export const hasCoordinateEditAdmission = (
  * motion, which continue to require canEditCoordinates/canStartMotion.
  */
 export const canReadFloorResources = (state: WorkspaceState): boolean =>
-  canShowLiveMap(state)
+  state.pageActive && canShowLiveMap(state)
   && state.coherence === "current"
   && state.map.floorCoherent
   && state.map.sessionVerified
@@ -801,12 +821,13 @@ const hasStoppableWork = (state: WorkspaceState): boolean =>
   state.command === "starting"
   || state.activity === "cleaning" || state.activity === "paused"
   || state.activity === "returning" || state.activity === "recharging"
-  || state.resources.entry?.runnerLocked === true
-  || state.resources.entry?.activePlan === true
-  || state.resources.entry?.nativeSessionActive === true;
+  || (state.resources.entry?.entryId === state.selection.entryId
+    && (state.resources.entry?.runnerLocked === true
+      || state.resources.entry?.activePlan === true
+      || state.resources.entry?.nativeSessionActive === true));
 
 export const canStopMotion = (state: WorkspaceState): boolean =>
-  state.host.connected && state.host.administrator && state.host.robotConnected
+  state.pageActive && state.host.connected && state.host.administrator && state.host.robotConnected
   && (state.command === "idle" || state.command === "failed" || state.command === "starting")
   && hasStoppableWork(state);
 
@@ -899,6 +920,9 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   }
   if (state.host.robotCount === 0) {
     return disabledAction("setup", "Set up a Matic robot", "Add the Matic integration to get started.", "v4_set_up_robot", "v4_setup_reason");
+  }
+  if (isSelectedRobotUnavailable(state)) {
+    return disabledAction("choose-robot", "Selected robot unavailable", "Choose another robot to open its map.", "v4_selected_robot_unavailable", "v4_choose_another_robot");
   }
   if (state.activity === "problem") {
     return disabledAction("problem", "Check the robot", "Resolve the robot's problem before starting another task.", "v4_check_robot", "v4_problem_reason");

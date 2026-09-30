@@ -9,6 +9,9 @@ export const SCENE_HEADER_BYTES = 24;
 export const SCENE_POINT_STRIDE = 8;
 export const SCENE_MAX_POINTS = 1_500_000;
 export const SCENE_MAX_BYTES = 16 * 1024 * 1024;
+export const DELTA_HEADER_BYTES = 36;
+export const DELTA_MAX_BYTES = 16 * 1024 * 1024;
+export const SCENE_DELTA_DIRTY_BLOCK_BYTES = 65_536 as const;
 
 export type LoadStatus = "idle" | "loading" | "ready" | "empty" | "error";
 export type MapHealth = "ready" | "building" | "limited" | "problem" | "unknown";
@@ -76,6 +79,14 @@ export interface SceneModel {
   readonly etag: string | null;
   readonly metadata: SceneMetadata;
   readonly source: "live" | "history";
+  readonly deltaHint?: SceneDeltaHint;
+}
+
+export interface SceneDeltaHint {
+  readonly baseRevision: number;
+  readonly blockBytes: 65_536;
+  /** Point-data blocks relative to `pointOffset`, changed by this revision. */
+  readonly dirtyBlocks: readonly number[];
 }
 
 export interface PoseModel {
@@ -718,6 +729,13 @@ export const parseAreasCatalog = (value: unknown): AreasCatalog => {
       } satisfies SavedArea;
     }),
   };
+};
+
+export const parseSavedPlanId = (value: unknown): string => {
+  const result = objectValue(value, "invalid-plan-save-response");
+  const response = objectValue(result.response, "invalid-plan-save-response");
+  const plan = objectValue(response.plan, "invalid-plan-save-response");
+  return boundedString(plan.id, 128, "invalid-plan-save-response");
 };
 
 export const parsePlansCatalog = (value: unknown): PlansCatalog => {

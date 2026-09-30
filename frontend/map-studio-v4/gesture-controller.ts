@@ -119,9 +119,15 @@ export class GestureController {
   }
 
   readonly #pointerDown = (event: PointerEvent): void => {
-    if (this.#disposed || !event.isPrimary && event.pointerType === "mouse") return;
+    if (this.#disposed) return;
+    const currentState = this.#callbacks.state();
+    if (!currentState.pageActive) {
+      this.observeState(currentState);
+      return;
+    }
+    if (!event.isPrimary && event.pointerType === "mouse") return;
     if (isInteractiveControl(event)) return;
-    this.observeState(this.#callbacks.state());
+    this.observeState(currentState);
     this.#host.focus({ preventScroll: true });
     this.#cancelMotion();
     if (event.pointerType === "touch" && !event.isPrimary && this.#pointers.size === 0
@@ -203,6 +209,29 @@ export class GestureController {
   /** Drop coordinate work as soon as its verified map generation or edit
    * admission changes. Navigation gestures remain owned by the renderer. */
   observeState(state: WorkspaceState): void {
+    if (!state.pageActive) {
+      this.#cancelMotion();
+      this.#cancelTouchArm();
+      this.#callbacks.onCirclePreview(null);
+      this.#renderer.setCursor(null);
+      this.#coordinateCapture = null;
+      this.#draft = [];
+      this.#lastMapPoint = null;
+      this.#pinchCenter = null;
+      this.#pinchCamera = null;
+      this.#dragCamera = null;
+      this.#gestureCamera = null;
+      this.#gestureRotation = 0;
+      this.#spacePressed = false;
+      this.#navigationUntilRelease = false;
+      this.#mode = "idle";
+      this.#host.classList.remove("navigating");
+      for (const id of this.#pointers.keys()) {
+        if (this.#host.hasPointerCapture?.(id)) this.#host.releasePointerCapture?.(id);
+      }
+      this.#pointers.clear();
+      return;
+    }
     if (this.#coordinateCapture && !hasCoordinateEditAdmission(state, this.#coordinateCapture)) {
       this.#cancelCoordinateGesture();
     }
@@ -224,6 +253,11 @@ export class GestureController {
   }
 
   readonly #pointerMove = (event: PointerEvent): void => {
+    const currentState = this.#callbacks.state();
+    if (!currentState.pageActive) {
+      this.observeState(currentState);
+      return;
+    }
     if (this.#coordinateCapture
       && !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
       this.#cancelCoordinateGesture();
@@ -294,6 +328,11 @@ export class GestureController {
   };
 
   readonly #pointerUp = (event: PointerEvent): void => {
+    const currentState = this.#callbacks.state();
+    if (!currentState.pageActive) {
+      this.observeState(currentState);
+      return;
+    }
     if (this.#coordinateCapture
       && !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
       this.#cancelCoordinateGesture();
@@ -393,7 +432,7 @@ export class GestureController {
   }
 
   readonly #wheel = (event: WheelEvent): void => {
-    if (isInteractiveControl(event)) return;
+    if (this.#disposed || !this.#callbacks.state().pageActive || isInteractiveControl(event)) return;
     event.preventDefault();
     this.#host.focus({ preventScroll: true });
     this.#cancelMotion();
@@ -430,7 +469,7 @@ export class GestureController {
   };
 
   readonly #gestureStart = (event: SafariGestureEvent): void => {
-    if (this.#disposed || isInteractiveControl(event)) return;
+    if (this.#disposed || !this.#callbacks.state().pageActive || isInteractiveControl(event)) return;
     this.#host.focus({ preventScroll: true });
     this.#cancelMotion();
     this.#host.classList.add("navigating");
@@ -440,7 +479,7 @@ export class GestureController {
   };
 
   readonly #gestureChange = (event: SafariGestureEvent): void => {
-    if (this.#disposed || isInteractiveControl(event)) return;
+    if (this.#disposed || !this.#callbacks.state().pageActive || isInteractiveControl(event)) return;
     const start = this.#gestureCamera;
     if (!start || this.#pointers.size >= 2) return;
     const scale = Number.isFinite(event.scale) && event.scale > 0 ? Math.max(0.1, event.scale) : 1;
@@ -454,6 +493,10 @@ export class GestureController {
   };
 
   readonly #gestureEnd = (event: SafariGestureEvent): void => {
+    if (!this.#callbacks.state().pageActive) {
+      this.observeState(this.#callbacks.state());
+      return;
+    }
     const owned = this.#gestureCamera !== null;
     this.#gestureCamera = null;
     this.#gestureRotation = 0;
@@ -495,7 +538,7 @@ export class GestureController {
   }
 
   readonly #keyDown = (event: KeyboardEvent): void => {
-    if (isInteractiveControl(event)) return;
+    if (this.#disposed || !this.#callbacks.state().pageActive || isInteractiveControl(event)) return;
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === "Enter") {
       this.#keyboardBrush(event);
@@ -554,7 +597,7 @@ export class GestureController {
   };
 
   readonly #doubleClick = (event: MouseEvent): void => {
-    if (isInteractiveControl(event)) return;
+    if (this.#disposed || !this.#callbacks.state().pageActive || isInteractiveControl(event)) return;
     this.#cancelMotion();
     this.#renderer.zoomAt(event.shiftKey ? 1 / 1.6 : 1.6, event.clientX, event.clientY);
     event.preventDefault();

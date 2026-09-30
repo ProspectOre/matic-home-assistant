@@ -171,6 +171,7 @@ class _NativeReconciliation:
     dispatched_at: datetime
     cleaning_mode: str | None = None
     run_id: str | None = None
+    coverage_setting: str | None = None
 
 
 async def _async_managed_user_command(
@@ -2149,7 +2150,13 @@ def _build_native_reconciliation(
     if not room_started or dispatched_at is None:
         return None
     return _NativeReconciliation(
-        plan_id, room.room_id, room.name, dispatched_at, room.cleaning_mode, run_id
+        plan_id,
+        room.room_id,
+        room.name,
+        dispatched_at,
+        room.cleaning_mode,
+        run_id,
+        room.coverage_setting,
     )
 
 
@@ -2166,6 +2173,11 @@ def _native_reconciliation_data(
         "dispatched_at": value.dispatched_at.isoformat(),
         **({"cleaning_mode": value.cleaning_mode} if value.cleaning_mode else {}),
         **({"run_id": value.run_id} if value.run_id else {}),
+        **(
+            {"coverage_setting": value.coverage_setting}
+            if value.coverage_setting
+            else {}
+        ),
     }
 
 

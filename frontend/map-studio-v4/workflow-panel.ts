@@ -682,7 +682,7 @@ line-height: var(--ms-lh-snug);
         ${atRoomLimit ? html`<p class="subtle" role="status">${this.#t("v4_room_limit_reached", "Up to {limit} rooms can be included. Remove one before adding another.", { limit: MAX_ROOM_SEQUENCE_SIZE })}</p>` : nothing}
         <section class="stack" aria-labelledby="next-run-preview-heading">
           <h3 class="group-heading" id="next-run-preview-heading">${this.#t("v4_next_run_preview", "Next-run preview")}</h3>
-          <p class="subtle">${this.#t("v4_next_run_preview_hint", "This is the next saved-plan run, separate from any current run. The backend refreshes it before dispatch.")}</p>
+          <p class="subtle">${this.#t("v4_next_run_preview_hint", "Preview for the next run. An active run keeps its original settings; this preview is checked again before cleaning starts.")}</p>
           ${!draft.id ? html`<p class="subtle">${this.#t("v4_next_run_preview_save_first", "Save this plan to calculate its exact room order and effective settings.")}</p>`
             : !nextRunPreview ? html`<p class="problem" role="status">${this.#t("v4_next_run_preview_unavailable", "A verified next-run preview is unavailable. Refresh the saved plan before starting it.")}</p>`
               : nextRunPreview.blocker ? html`<p class="problem" role="alert">${this.#previewBlocker(nextRunPreview.blocker)}</p>`
