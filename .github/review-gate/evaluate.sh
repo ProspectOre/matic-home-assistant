@@ -614,8 +614,10 @@ active_security_findings() {
     | jq -c --arg bot "$SECURITY_REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
       [.[] | select(.author.login == $bot and .author.id == "BOT_kgDOC98s_g")
        | select(.state != "DISMISSED" and .commit.oid == $head)
-       | select(any(.review_gate_sections[]?; .security_finding == true
-           and (.target_ref == $head or .target_ref == $prefix or .target_ref == "__unbound__")))
+       # A top-level PR review has an immutable commit.oid. That authenticated
+       # owner wins over a stale or foreign Reviewed commit footer in the body;
+       # section target refs remain authoritative for mutable issue comments.
+       | select(any(.review_gate_sections[]?; .security_finding == true))
        | {source:"review", id:(.databaseId // 0 | tostring)}]')"
   # Inline findings are authenticated by immutable original commit and parent
   # review identity. Textual references cannot retarget a historical section.

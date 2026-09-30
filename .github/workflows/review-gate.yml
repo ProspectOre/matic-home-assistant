@@ -75,7 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.issue.number }}
           POLICY_REF: ${{ github.workflow_sha }}
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'f7f3b9808fa279059ade9705ff3df199bc3e55cf0378efde7e8be87b10993c04'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'daf8b44a82b01c7888178fb2c9c1e43b94355679160951f0c6f6b99d252604e6'
         shell: bash
         run: |
           set -euo pipefail
@@ -569,7 +569,6 @@ jobs:
           printf 'pr=%s\nevent_path=%s\ncapture_id=%s\nhead=%s\nhistory_head=%s\n' \
             "$TARGET_PR" "$event_path" "$REVIEW_CAPTURE_ID" "$event_head" "$history_head" >> "$GITHUB_OUTPUT"
       - id: canonical
-        if: steps.begin-native-event.outputs.neutral != 'true'
         name: Load pinned canonical review policy
         env:
           AUDIT_MODE: ${{ github.event_name == 'schedule' || inputs.audit == true }}
@@ -581,9 +580,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '1e248ec708bd74ee7a352df8aff92de9f93e90457455d51545c8b09becdde869'
+          EXPECTED_SHA256: 'a9007c31702578de843b9148746d2f04757d7beadc410f1f808026ef59179b1f'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'f7f3b9808fa279059ade9705ff3df199bc3e55cf0378efde7e8be87b10993c04'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'daf8b44a82b01c7888178fb2c9c1e43b94355679160951f0c6f6b99d252604e6'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |
@@ -705,7 +704,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           trap - EXIT
       - name: Evaluate exact-head regular review
-        if: steps.begin-native-event.outputs.neutral != 'true'
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}

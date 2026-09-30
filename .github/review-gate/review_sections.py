@@ -193,14 +193,41 @@ def _actual_metadata(text: str) -> str:
     return "".join(masked)
 
 
+def _commit_metadata(text: str) -> str:
+    """Keep commit authority outside expandable or commented examples."""
+    comment = False
+    details = 0
+    lines: list[str] = []
+    tags = re.compile(r"<!--|-->|</?details\b[^>]*>", re.I)
+    for line in _actual_metadata(text).splitlines(keepends=True):
+        enclosed = comment or details > 0
+        # Inline code can discuss HTML tags without opening a container.
+        tag_text = SECURITY_MARKER_IN_CODE.sub("", line)
+        for match in tags.finditer(tag_text):
+            tag = match.group().lower()
+            if tag == "<!--":
+                comment = True
+            elif tag == "-->":
+                comment = False
+            elif not comment:
+                details = max(0, details - 1) if tag.startswith("</") else details + 1
+        if enclosed and REVIEWED_COMMIT.fullmatch(line.rstrip("\r\n")):
+            lines.append(
+                "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+            )
+        else:
+            lines.append(line)
+    return "".join(lines)
+
+
 def _has_reviewed_commit(text: str) -> bool:
-    return REVIEWED_COMMIT.search(_actual_metadata(text)) is not None
+    return REVIEWED_COMMIT.search(_commit_metadata(text)) is not None
 
 
 def _reviewed_commits(text: str) -> list[str]:
     return [
         match.group(1).lower()
-        for match in REVIEWED_COMMIT.finditer(_actual_metadata(text))
+        for match in REVIEWED_COMMIT.finditer(_commit_metadata(text))
     ]
 
 
