@@ -1814,9 +1814,10 @@ if [[ "$native_event_head_bound" == true ]] && jq -e \
 fi
   if [[ "$event_name" == issue_comment && -f "$event_path" ]] &&
    jq -e --arg head "$head_sha" --arg prefix "$head_prefix" --arg native_head_bound "$native_event_head_bound" --arg native_regular_candidate "$native_regular_candidate" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" \
-      --argjson section_security_candidate "$(jq -c --arg head "$head_sha" --arg prefix "$head_prefix" '
+      --argjson section_security_candidate "$(jq -c '
         any([.current.sections[], .previous.sections[]][];
-          .security_finding == true and (.target_ref == $head or .target_ref == $prefix))
+          .security_finding == true and
+          ((.target_ref // "") | test("(?i)^[0-9a-f]{10}([0-9a-f]{30})?$")))
       ' <<< "$issue_comment_facts")" '
      def contains_security_heading:
        split("\n") | any(.[]; test($security_heading_pattern));

@@ -166,15 +166,22 @@ def _actual_metadata(text: str) -> str:
     for line in text.splitlines(keepends=True):
         match = FENCE_LINE.match(line.rstrip("\r\n"))
         if fence_char is None and match:
-            fence_char, fence_length = match.group("char"), len(match.group("count"))
+            fence_char, fence_length = (
+                match.group("char"),
+                len(match.group("count")) + 1,
+            )
             masked.append("\n" if line.endswith("\n") else "")
         elif fence_char is not None:
             masked.append("\n" if line.endswith("\n") else "")
-            if (
-                match
-                and match.group("char") == fence_char
-                and len(match.group("count")) >= fence_length
-            ):
+            closing = re.fullmatch(
+                r"[ ]{0,3}"
+                + re.escape(fence_char)
+                + "{"
+                + str(fence_length)
+                + r",}[ \t]*",
+                line.rstrip("\r\n"),
+            )
+            if closing:
                 fence_char = None
                 fence_length = 0
         else:
@@ -589,6 +596,7 @@ def classify_body(body: str) -> dict[str, Any]:
                         if raw_kind != "unheaded"
                         or section_index > 0
                         or len(raw_sections) == 1
+                        or (section_index == 0 and PRIORITY_RESULT.match(text))
                         else None
                     )
                     or shared_footer_ref,

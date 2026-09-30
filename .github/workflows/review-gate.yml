@@ -612,6 +612,19 @@ jobs:
           pr_snapshot="$(gh api "repos/$EXPECTED_REPO/pulls/$TARGET_PR")"
           live_head="$(jq -er '.head.sha' <<< "$pr_snapshot")"
           [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          for attempt in 1 2 3; do
+            if gh api "repos/$EXPECTED_REPO/statuses/$live_head" --silent \
+              -f state=pending -f context=review-gate \
+              -f description="Live PR head discovered; trusted reconciliation pending" \
+              -f target_url="$GITHUB_SERVER_URL/$EXPECTED_REPO/actions/runs/$GITHUB_RUN_ID"; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              echo "Unable to publish pending review-gate status on discovered live head." >&2
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           commit_associated_with_pr() {
             local target_sha="$1" associated
             [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
@@ -662,9 +675,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '74184ccb3357579a5ba71d42e44f8b6d3cb582c4c5eacb77be5ec031d6d9d949'
+          EXPECTED_SHA256: '6f02a507a917990c127c10babb21138d93450088c0586d29d5d000b1c74a72b5'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'e83b533111ef118f0b9be832e6d914ecd7e67050e2a074ff95653104cbe9cf5d'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '9c8555010e988301c1199df62eee35fe3083a58def391748b6950b19934a14c7'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |
