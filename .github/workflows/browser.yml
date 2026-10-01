@@ -54,3 +54,6 @@ jobs:
             exit "$status"
           fi
       - run: npm run test:browser
+        env:
+          # Firefox requires a Home directory owned by the container user.
+          HOME: /root
