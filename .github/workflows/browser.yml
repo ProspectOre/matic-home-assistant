@@ -37,8 +37,20 @@ jobs:
       - run: npm run build:map-studio-v4
       - name: Committed bundle matches the frontend source
         run: |
-          if ! git diff --exit-code -- custom_components/matic_robot/map_studio_v4/ custom_components/matic_robot/matic_icons.js; then
-            echo "::error::The committed Map Studio bundle is stale. Run 'npm run build:map-studio-v4' and commit the result." >&2
+          workspace_root="$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse --show-toplevel)"
+          if [ "$workspace_root" != "$GITHUB_WORKSPACE" ]; then
+            echo "::error::Bundle verification is outside the checked-out workspace." >&2
             exit 1
+          fi
+          if git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code -- custom_components/matic_robot/map_studio_v4/ custom_components/matic_robot/matic_icons.js; then
+            exit 0
+          else
+            status=$?
+            if [ "$status" -eq 1 ]; then
+              echo "::error::The committed Map Studio bundle is stale. Run 'npm run build:map-studio-v4' and commit the result." >&2
+            else
+              echo "::error::Git could not verify the committed Map Studio bundle." >&2
+            fi
+            exit "$status"
           fi
       - run: npm run test:browser
