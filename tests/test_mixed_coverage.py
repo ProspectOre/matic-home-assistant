@@ -82,12 +82,12 @@ def _settled_operational_state():
     )
 
 
-def _active_operational_state():
+def _active_operational_state(*, error_codes=()):
     """Return a verified cleaning snapshot for new-session ownership tests."""
     return RobotOperationalState(
         battery_percentage=None,
         state_codes=(119,),
-        error_codes=(),
+        error_codes=error_codes,
         charging_idle=False,
         charging=False,
         low_charge=False,
@@ -294,7 +294,8 @@ def _session_identity(session_id: UUID) -> bytes:
     return b(coverage(command), 6)
 
 
-async def test_normal_coverage_readback_requires_exact_retained_goals():
+@pytest.mark.parametrize("error_codes", [(), (900,)])
+async def test_normal_coverage_readback_requires_exact_retained_goals(error_codes):
     client = MaticHermesClient("robot.invalid", 16320)
     floor, payload = _normal_coverage_fixture()
     session_id = UUID("33333333-3333-4333-8333-333333333333")
@@ -302,7 +303,9 @@ async def test_normal_coverage_readback_requires_exact_retained_goals():
     client.async_get_cleaning_session_identity = AsyncMock(
         side_effect=[identity, identity, identity]
     )
-    client.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
+    client.async_get_state = AsyncMock(
+        return_value=_active_operational_state(error_codes=error_codes)
+    )
     client.async_get_property = AsyncMock(
         return_value=coverage_plan_from_command(payload)
     )
@@ -316,7 +319,7 @@ async def test_normal_coverage_readback_requires_exact_retained_goals():
     )
 
     assert client.async_get_cleaning_session_identity.await_count == 3
-    assert client.async_get_active_cleaning_session_state.await_count == 3
+    assert client.async_get_state.await_count == 3
     client.async_get_floor_plan.assert_awaited_once()
 
 

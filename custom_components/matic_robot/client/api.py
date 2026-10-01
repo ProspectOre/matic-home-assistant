@@ -739,8 +739,6 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         codes. Unknown activity without a settled or active state fails closed.
         """
         state = await self.async_get_state()
-        if state.error_codes:
-            return None
         # A low-charge task waiting at the dock still owns the native session,
         # even though the public activity projection correctly reports charging.
         if state.recharge_and_resume:
