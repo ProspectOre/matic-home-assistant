@@ -570,6 +570,30 @@ def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:
             )
 
 
+def test_browser_ci_image_matches_the_locked_playwright_runtime() -> None:
+    """Use immutable preinstalled browsers compatible with the full test suite."""
+    workflow = load_yaml(ROOT / ".github" / "workflows" / "browser.yml")
+    browser = workflow["jobs"]["browser"]
+    package = json.loads((ROOT / "package.json").read_text())
+    lock = json.loads((ROOT / "package-lock.json").read_text())
+    version = package["devDependencies"]["@playwright/test"]
+    image = re.fullmatch(
+        r"mcr\.microsoft\.com/playwright:v(?P<version>\d+\.\d+\.\d+)"
+        r"-noble@sha256:[0-9a-f]{64}",
+        browser["container"]["image"],
+    )
+
+    assert image is not None, "Browser CI requires an immutable official image"
+    assert image["version"] == version
+    for dependency in ("@playwright/test", "playwright", "playwright-core"):
+        assert lock["packages"][f"node_modules/{dependency}"]["version"] == version
+
+    commands = [step["run"] for step in browser["steps"] if "run" in step]
+    assert "npm run test:browser" in commands
+    assert package["scripts"]["test:browser"] == "playwright test"
+    assert not any("playwright install" in command for command in commands)
+
+
 def test_source_and_runtime_translations_stay_in_sync() -> None:
     """Ship runtime translations while retaining canonical Hassfest source."""
     strings = json.loads((INTEGRATION / "strings.json").read_text())
