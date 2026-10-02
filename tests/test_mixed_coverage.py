@@ -926,9 +926,7 @@ def mixed_client(monkeypatch):
 
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_state = AsyncMock(
-        return_value=SimpleNamespace(
-            activity=SimpleNamespace(value="cleaning"), current_area="the First"
-        )
+        return_value=replace(_active_operational_state(), current_area="the First")
     )
     client.async_get_active_cleaning_session_state = AsyncMock(return_value=False)
     client.async_get_floor_plan = AsyncMock(return_value=floor)
@@ -1080,11 +1078,7 @@ async def test_mixed_dispatch_rejects_cleaning_under_retained_completed_identity
         return_value=b"completed-session"
     )
     client.async_get_state = AsyncMock(
-        return_value=SimpleNamespace(
-            activity=SimpleNamespace(value="cleaning"),
-            cleaning=True,
-            current_area="the First",
-        )
+        return_value=replace(_active_operational_state(), current_area="the First")
     )
 
     with pytest.raises(MaticError, match="mission changed before coverage update"):
@@ -1324,8 +1318,8 @@ async def test_mixed_start_checkpoint_failure_prevents_initial_write(mixed_clien
 async def test_mixed_wait_normalizes_room_spacing(mixed_client):
     client, _, args = mixed_client
     args["first_room_name"] = " Living   Room "
-    client.async_get_state.return_value = SimpleNamespace(
-        activity=SimpleNamespace(value="cleaning"), current_area="The Living Room"
+    client.async_get_state.return_value = replace(
+        _active_operational_state(), current_area="The Living Room"
     )
 
     await client.async_start_mixed_coverage(**args)
@@ -1348,12 +1342,8 @@ async def test_room_transition_before_update_stops_without_updating(mixed_client
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_state = AsyncMock(
         side_effect=[
-            SimpleNamespace(
-                activity=SimpleNamespace(value="cleaning"), current_area="First"
-            ),
-            SimpleNamespace(
-                activity=SimpleNamespace(value="cleaning"), current_area="Second"
-            ),
+            replace(_active_operational_state(), current_area="First"),
+            replace(_active_operational_state(), current_area="Second"),
         ]
     )
 
@@ -1386,9 +1376,7 @@ async def test_replaced_mission_during_state_read_is_not_updated_or_stopped(
         # the later pre-update read, after the preceding identity check passed.
         if identity_reads >= 4:
             current["identity"] = replacement
-        return SimpleNamespace(
-            activity=SimpleNamespace(value="cleaning"), current_area="First"
-        )
+        return replace(_active_operational_state(), current_area="First")
 
     async def send(payload, *, command_name):
         if command_name == "START_COVERAGE":
