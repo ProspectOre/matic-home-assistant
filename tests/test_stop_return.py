@@ -74,6 +74,48 @@ async def test_docks_once_the_stopped_task_reports_inactive(hass) -> None:
     refresh.assert_awaited_once()
 
 
+async def test_unknown_native_status_with_cleared_identity_docks_and_confirms(
+    hass,
+) -> None:
+    """Stable task-ended evidence lets STOP settle without decoding status IDs."""
+    hass.states.async_set(ENTITY, "idle", {})
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_mark_stop_pending("serial")
+    token = manager.stop_fence_token("serial")
+    assert token is not None
+
+    client = MaticHermesClient("192.0.2.1", 16320)
+    client.async_get_property = AsyncMock(side_effect=[b"", b"", b"", b""])
+    unknown_state = replace(
+        _state(idle=True).operational,
+        state_codes=(108, 109, 110),
+    )
+    client.async_get_state = AsyncMock(
+        side_effect=[unknown_state, unknown_state, unknown_state, unknown_state]
+    )
+    client.async_send_user_command = AsyncMock()
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "docked", {})
+
+    sent = await async_dock_when_stop_settles(
+        hass,
+        client=client,
+        refresh=refresh,
+        manager=manager,
+        serial_number="serial",
+        entity_id=ENTITY,
+        stop_fence_token=token,
+    )
+
+    assert sent
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    assert client.async_get_state.await_count == 4
+    assert client.async_get_property.await_count == 4
+    assert manager.stop_fence_token("serial") is None
+
+
 @pytest.mark.parametrize(
     ("changes", "expected_dock"),
     [

@@ -727,19 +727,27 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         has ended. Keep that identity for ownership checks, and use the
         independently decoded ``kabuki_state`` task signals to decide whether
         it is active. Public charging/docked activity is not ownership proof.
-        With opaque errors, a settled snapshot needs an explicitly cleared
-        task identity; integer error codes are never classified here.
+        Unclassified state codes require a stable snapshot and explicitly
+        cleared identity before and after it. Integer state and error codes
+        are never assigned guessed meanings here.
         """
         state = await self.async_get_state()
         active = state.native_session_activity()
-        if active is None and state.is_charging and state.error_codes:
-            if await self.async_get_cleaning_session_identity() != b"":
-                return None
-            # Recheck task signals after the identity await. Managed dispatch
-            # also fences identity changes around this entire observation.
-            state = await self.async_get_state()
-            return state.native_session_activity(identity_cleared=True)
-        return active
+        if active is not None or state.returning:
+            return active
+        if await self.async_get_cleaning_session_identity() != b"":
+            return None
+        confirmed = await self.async_get_state()
+        if confirmed.native_session_activity() is True:
+            return True
+        if (
+            confirmed.state_codes != state.state_codes
+            or confirmed.error_codes != state.error_codes
+        ):
+            return None
+        if await self.async_get_cleaning_session_identity() != b"":
+            return None
+        return confirmed.native_session_activity(identity_cleared=True)
 
     async def async_get_cleaning_session_records(
         self,

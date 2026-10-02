@@ -1026,8 +1026,11 @@ async def test_mixed_dispatch_allows_warning_after_native_identity_clears(mixed_
     client.async_get_active_cleaning_session_state = (
         MaticHermesClient.async_get_active_cleaning_session_state.__get__(client)
     )
+    # The native identity appears after START, independent of preflight reads.
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", b"", b"", identity, identity, identity, identity]
+        side_effect=lambda: (
+            identity if client._async_send_user_payload.await_count else b""
+        )
     )
     settled = replace(_settled_operational_state(), error_codes=(326,))
     active = replace(

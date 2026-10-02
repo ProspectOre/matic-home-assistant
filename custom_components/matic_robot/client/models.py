@@ -141,7 +141,7 @@ class RobotOperationalState:
             return True
         if self.is_charging:
             return False if not self.error_codes or identity_cleared else None
-        if not self.state_codes and not self.error_codes:
+        if not self.error_codes and (not self.state_codes or identity_cleared):
             return False
         return None
 
