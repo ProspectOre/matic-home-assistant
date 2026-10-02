@@ -325,6 +325,10 @@ async def test_room_commands_prefer_stable_ids_and_reject_ambiguous_names() -> N
         {"cleaning": False, "returning": True},
         {"cleaning": False, "error_codes": (327,)},
         {"cleaning": False, "charging": True, "low_charge": True},
+        {"cleaning": True, "charging": True, "low_charge": False},
+        {"cleaning": True, "charging_idle": True, "low_charge": False},
+        {"cleaning": False, "paused": True, "charging": True},
+        {"cleaning": False, "paused": True, "charging": True, "error_codes": (999,)},
     ],
 )
 async def test_return_to_base_stops_resumable_firmware_task(
@@ -417,7 +421,7 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
     entity.entity_id = "vacuum.test"
     entity.hass = hass
     native_active = AsyncMock(return_value=False)
-    entry.runtime_data.coordinator.client.async_has_active_cleaning_session = (
+    entry.runtime_data.coordinator.client.async_get_active_cleaning_session_state = (
         native_active
     )
 

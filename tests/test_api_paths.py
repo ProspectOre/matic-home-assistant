@@ -1866,6 +1866,9 @@ async def test_managed_warning_requires_cleared_native_task(
         client._async_send_user_payload.assert_awaited_once()
         client._async_wait_for_coverage_readback.assert_awaited_once()
         assert client.async_get_state.await_count == 2
+        # Unknown charging warnings need a bounded identity recheck around
+        # the refreshed operational snapshot before clearance is accepted.
+        assert client.async_get_cleaning_session_identity.await_count == 4
 
 
 @pytest.mark.parametrize(
@@ -1883,7 +1886,9 @@ async def test_managed_warning_rechecks_state_and_identity_after_clearance(
 ):
     client = MaticHermesClient("robot.invalid", 16320)
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", b"", latest_identity]
+        # Baseline, first in-method identity, final in-method identity, then
+        # the outer managed-dispatch identity comparison.
+        side_effect=[b"", b"", b"", latest_identity]
     )
     client.async_get_state = AsyncMock(
         side_effect=[
@@ -1902,6 +1907,69 @@ async def test_managed_warning_rechecks_state_and_identity_after_clearance(
         )
     assert caught.value.reason is reason
     client._async_send_user_payload.assert_not_awaited()
+
+
+@pytest.mark.parametrize("codes", [(108, 109, 110), (999,)])
+async def test_unknown_kabuki_codes_need_stable_cleared_identity(codes):
+    """Opaque status codes do not acquire meaning from an empty task key."""
+    client = MaticHermesClient("robot.invalid", 16320)
+    state = _operational_state_for_codes(*codes)
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", b""])
+    client.async_get_state = AsyncMock(side_effect=[state, state])
+
+    assert await client.async_get_active_cleaning_session_state() is False
+
+    assert client.async_get_state.await_count == 2
+    assert client.async_get_cleaning_session_identity.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("latest_codes", "expected"),
+    [
+        ((119,), True),
+        ((120,), True),
+        ((104,), None),
+        ((998,), None),
+    ],
+)
+async def test_unknown_kabuki_clearance_rechecks_fresh_state(latest_codes, expected):
+    """A changed fresh snapshot keeps the known activity or unknown result."""
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", b""])
+    client.async_get_state = AsyncMock(
+        side_effect=[
+            _operational_state_for_codes(999),
+            _operational_state_for_codes(*latest_codes),
+        ]
+    )
+
+    assert await client.async_get_active_cleaning_session_state() is expected
+
+
+@pytest.mark.parametrize(
+    "identities",
+    [
+        [b"replacement-session"],
+        [b"", b"replacement-session"],
+        [None],
+    ],
+)
+async def test_unknown_kabuki_clearance_rejects_unstable_identity(identities):
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=identities)
+    client.async_get_state = AsyncMock(return_value=_operational_state_for_codes(999))
+
+    assert await client.async_get_active_cleaning_session_state() is None
+
+
+async def test_unknown_noncharging_fault_keeps_activity_unavailable():
+    """An empty identity does not erase ownership uncertainty from faults."""
+    client = MaticHermesClient("robot.invalid", 16320)
+    state = _operational_state_for_codes(999, error_codes=(900,))
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", b""])
+    client.async_get_state = AsyncMock(side_effect=[state, state])
+
+    assert await client.async_get_active_cleaning_session_state() is None
 
 
 async def test_native_vacuum_keeps_robot_warning_checks():

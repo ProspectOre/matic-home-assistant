@@ -56,7 +56,6 @@ def _client() -> AsyncMock:
     client.async_get_floor_plan.return_value = None
     client.async_get_pose.return_value = None
     client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
-    client.async_has_active_cleaning_session.return_value = None
     return client
 
 
@@ -1047,7 +1046,7 @@ async def test_optional_telemetry_failure_does_not_hide_core_state(hass) -> None
     state = await _coordinator(hass, client)._async_update_data()
 
     assert state.info.name == "Test"
-    assert state.telemetry == RobotTelemetry()
+    assert state.telemetry == RobotTelemetry(active_cleaning_session=False)
 
 
 async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> None:
@@ -1111,9 +1110,13 @@ async def test_session_state_refreshes_while_settings_remain_cached(
 ) -> None:
     client = _client()
     client.async_get_telemetry.return_value = RobotTelemetry(
-        software_version="test", active_cleaning_session=initial
+        software_version="test", active_cleaning_session=not initial
     )
-    client.async_has_active_cleaning_session.return_value = current
+    snapshot = client.async_get_state.return_value
+    client.async_get_state.side_effect = [
+        replace(snapshot, cleaning=initial),
+        replace(snapshot, cleaning=current),
+    ]
     coordinator = _coordinator(hass, client)
 
     first = await coordinator._async_update_data()
@@ -1123,11 +1126,12 @@ async def test_session_state_refreshes_while_settings_remain_cached(
     assert second.telemetry.active_cleaning_session is current
     assert second.telemetry.software_version == "test"
     assert client.async_get_telemetry.await_count == 1
-    client.async_has_active_cleaning_session.assert_awaited_once()
+    assert client.async_get_state.await_count == 2
+    client.async_get_active_cleaning_session_state.assert_not_awaited()
 
 
 @pytest.mark.parametrize("slow_failure", [False, True])
-async def test_failed_live_session_read_does_not_reuse_cached_state(
+async def test_unknown_native_task_state_does_not_reuse_cached_state(
     hass, slow_failure
 ) -> None:
     client = _client()
@@ -1136,15 +1140,22 @@ async def test_failed_live_session_read_does_not_reuse_cached_state(
     )
     coordinator = _coordinator(hass, client)
     await coordinator._async_update_data()
-    client.async_has_active_cleaning_session.side_effect = MaticError("offline")
+    client.async_get_state.return_value = replace(
+        client.async_get_state.return_value, charging=True, error_codes=(999,)
+    )
     if slow_failure:
         coordinator._force_full_refresh = True
         client.async_get_telemetry.side_effect = MaticError("settings unavailable")
 
     state = await coordinator._async_update_data()
 
+    # First-poll error suppression is presentation only; task evidence stays
+    # unknown from the raw snapshot, not false from the normalized charging state.
+    assert state.operational.error_codes == ()
     assert state.telemetry.active_cleaning_session is None
     assert state.info.name == "Test"
+    assert client.async_get_state.await_count == 2
+    client.async_get_active_cleaning_session_state.assert_not_awaited()
 
 
 async def test_coordinator_refreshes_floor_plan_without_invalidating_telemetry(

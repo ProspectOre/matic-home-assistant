@@ -174,7 +174,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             return
         if self.entity_id is not None and await async_clear_ownerless_stop_if_settled(
             self.hass,
-            native_active=self.coordinator.client.async_has_active_cleaning_session,
+            native_active=self.coordinator.client.async_get_active_cleaning_session_state,
             manager=self._plans,
             serial_number=serial_number,
             entity_id=self.entity_id,
@@ -382,16 +382,15 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         active_run_id = getattr(self._plans, "active_run_id", None)
         run_id = active_run_id(serial_number) if callable(active_run_id) else None
         operational = self.coordinator.data.operational
-        stop_before_dock = self._plans.has_managed_task(
-            serial_number
-        ) or self.activity in {
-            VacuumActivity.CLEANING,
-            VacuumActivity.ERROR,
-            VacuumActivity.PAUSED,
-            VacuumActivity.RETURNING,
-        }
-        stop_before_dock = stop_before_dock or (
-            operational.low_charge and operational.is_charging
+        # Display activity gives charging precedence; native task flags still
+        # require STOP so DOCK cannot resume retained cleaning or paused work.
+        stop_before_dock = (
+            self._plans.has_managed_task(serial_number)
+            or operational.cleaning
+            or operational.paused
+            or operational.returning
+            or (bool(operational.error_codes) and not operational.is_charging)
+            or (operational.low_charge and operational.is_charging)
         )
         async with self._plans.external_motion(serial_number):
             if stop_before_dock:

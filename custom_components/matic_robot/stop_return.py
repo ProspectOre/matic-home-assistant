@@ -49,7 +49,7 @@ _LOGGER = logging.getLogger(__name__)
 class StopReturnClient(Protocol):
     """The small part of the robot client this watcher needs."""
 
-    async def async_has_active_cleaning_session(self) -> bool | None:
+    async def async_get_active_cleaning_session_state(self) -> bool | None:
         """Return whether the robot still owns an active cleaning task."""
 
     async def async_send_user_command(self, command: UserCommand) -> None:
@@ -148,7 +148,7 @@ async def async_dock_when_stop_settles(
         async def settle_confirmed_stop() -> bool:
             """Require native inactivity and current docking before settling STOP."""
             if not await async_native_stop_is_settled(
-                hass, client.async_has_active_cleaning_session, entity_id
+                hass, client.async_get_active_cleaning_session_state, entity_id
             ):
                 return False
             if on_docked is not None:
@@ -206,7 +206,9 @@ async def async_dock_when_stop_settles(
                         if latest_state is None or latest_state.state != SETTLED_STATE:
                             return False
                         try:
-                            active = await client.async_has_active_cleaning_session()
+                            active = (
+                                await client.async_get_active_cleaning_session_state()
+                            )
                         except MaticError as err:
                             _LOGGER.debug(
                                 "Native Matic stop settlement unreadable (%s)",

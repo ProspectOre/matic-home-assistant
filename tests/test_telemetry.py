@@ -86,22 +86,6 @@ def test_decode_optional_telemetry_handles_defaults_and_unknowns() -> None:
     assert _decode_wifi_status(b"\x08\x63")[0] == "unknown"
 
 
-async def test_active_cleaning_session_reads_only_presence() -> None:
-    client = MaticHermesClient("192.0.2.1", 16320)
-    client.async_get_property = AsyncMock(
-        side_effect=(b"\x0a\x00", b"tombstone-value!", b"\x0a\xff")
-    )
-
-    assert await client.async_has_active_cleaning_session() is True
-    assert await client.async_has_active_cleaning_session() is False
-    assert await client.async_has_active_cleaning_session() is None
-    assert client.async_get_property.await_args_list == [
-        call("active_session_key"),
-        call("active_session_key"),
-        call("active_session_key"),
-    ]
-
-
 async def test_active_session_identity_distinguishes_tasks_end_and_unknown() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
     first, second = b"\x0a\x05first", b"\x0a\x06second"

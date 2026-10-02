@@ -164,7 +164,6 @@ _TELEMETRY_PROPERTIES = (
     "wifi_status",
     "user_tunnel_ssh_permission",
     "uploader_config_state",
-    "active_session_key",
     "coverage_time",
 )
 
@@ -709,12 +708,6 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     "Hermes returned a malformed approximate trajectory"
                 ) from err
 
-    async def async_has_active_cleaning_session(self) -> bool | None:
-        """Read whether the vetted active-session property is present."""
-        return _decode_presence_state(
-            await self.async_get_property("active_session_key")
-        )
-
     async def async_get_cleaning_session_identity(self) -> bytes | None:
         """Keep the vetted session property opaque and in memory for ownership.
 
@@ -734,19 +727,27 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         has ended. Keep that identity for ownership checks, and use the
         independently decoded ``kabuki_state`` task signals to decide whether
         it is active. Public charging/docked activity is not ownership proof.
-        With opaque errors, a settled snapshot needs an explicitly cleared
-        task identity; integer error codes are never classified here.
+        Unclassified state codes require a stable snapshot and explicitly
+        cleared identity before and after it. Integer state and error codes
+        are never assigned guessed meanings here.
         """
         state = await self.async_get_state()
         active = state.native_session_activity()
-        if active is None and state.is_charging and state.error_codes:
-            if await self.async_get_cleaning_session_identity() != b"":
-                return None
-            # Recheck task signals after the identity await. Managed dispatch
-            # also fences identity changes around this entire observation.
-            state = await self.async_get_state()
-            return state.native_session_activity(identity_cleared=True)
-        return active
+        if active is not None or state.returning:
+            return active
+        if await self.async_get_cleaning_session_identity() != b"":
+            return None
+        confirmed = await self.async_get_state()
+        if confirmed.native_session_activity() is True:
+            return True
+        if (
+            confirmed.state_codes != state.state_codes
+            or confirmed.error_codes != state.error_codes
+        ):
+            return None
+        if await self.async_get_cleaning_session_identity() != b"":
+            return None
+        return confirmed.native_session_activity(identity_cleared=True)
 
     async def async_get_cleaning_session_records(
         self,
@@ -875,9 +876,6 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 values["user_tunnel_ssh_permission"]
             ),
             uploader_opt_in=_decode_uploader_state(values["uploader_config_state"]),
-            active_cleaning_session=_decode_presence_state(
-                values["active_session_key"]
-            ),
             dock_detections=(
                 dock_detections if isinstance(dock_detections, int) else None
             ),

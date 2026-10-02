@@ -95,7 +95,7 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
         if value is UserCommand.STOP:
             manager.mark_managed_stop("serial")
             hass.states.async_set(checkpoint["entity_id"], "idle")
-            client.async_has_active_cleaning_session.return_value = native_active
+            client.async_get_active_cleaning_session_state.return_value = native_active
         elif value is UserCommand.DOCK:
             hass.states.async_set(checkpoint["entity_id"], "docked")
 

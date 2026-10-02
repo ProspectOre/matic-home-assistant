@@ -360,6 +360,12 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._async_optional_pose(),
                 self._async_optional_telemetry(),
             )
+            # Task evidence belongs to this raw snapshot, before presentation
+            # confirms/suppresses transient problem codes.
+            telemetry = replace(
+                telemetry,
+                active_cleaning_session=operational.native_session_activity(),
+            )
             operational = self._async_resolve_bag_capability(operational)
             operational = self._async_confirm_robot_errors(operational)
             self._async_track_bag_state(operational)
@@ -720,7 +726,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             and self._cached_telemetry is not None
             and now < self._slow_refresh_due
         ):
-            return await self._async_live_session_telemetry(self._cached_telemetry)
+            return self._cached_telemetry
         try:
             telemetry = await self.client.async_get_telemetry()
             self._cached_telemetry = telemetry
@@ -729,20 +735,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         except MaticError as err:
             _LOGGER.debug("Optional Hermes telemetry unavailable: %s", err)
             self._slow_refresh_due = now + UPDATE_INTERVAL_SECONDS
-            return await self._async_live_session_telemetry(
-                self._cached_telemetry or RobotTelemetry()
-            )
-
-    async def _async_live_session_telemetry(
-        self, telemetry: RobotTelemetry
-    ) -> RobotTelemetry:
-        """Refresh lifecycle state independently of slow settings telemetry."""
-        try:
-            active = await self.client.async_has_active_cleaning_session()
-        except MaticError as err:
-            _LOGGER.debug("Active Hermes session unavailable: %s", err)
-            active = None
-        return replace(telemetry, active_cleaning_session=active)
+            return self._cached_telemetry or RobotTelemetry()
 
     async def async_request_full_refresh(self) -> None:
         """Refresh slow settings immediately after a local write."""

@@ -415,7 +415,7 @@ async def test_clean_action_checks_oem_stop_fence() -> None:
             coordinator=SimpleNamespace(
                 data=SimpleNamespace(info=SimpleNamespace(serial_number="serial"))
             ),
-            client=SimpleNamespace(async_has_active_cleaning_session=AsyncMock()),
+            client=SimpleNamespace(async_get_active_cleaning_session_state=AsyncMock()),
         )
     )
     with (
@@ -453,7 +453,7 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
     services = await _registered_services(hass, manager)
     client = SimpleNamespace(
         async_start_custom_coverage=AsyncMock(),
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
@@ -510,7 +510,7 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
     room = floor_plan.rooms[0]
     client = SimpleNamespace(
         async_start_custom_coverage=AsyncMock(),
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
@@ -658,7 +658,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
         runtime_data=SimpleNamespace(
             client=SimpleNamespace(
                 async_start_custom_coverage=AsyncMock(),
-                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_active_cleaning_session_state=AsyncMock(return_value=False),
             ),
             coordinator=coordinator,
         )
@@ -745,7 +745,7 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
     services = await _registered_services(hass, manager)
     client = SimpleNamespace(
         async_start_custom_coverage=AsyncMock(),
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=live_floor_plan),
@@ -803,7 +803,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     services = await _registered_services(hass, manager)
     client = SimpleNamespace(
         async_start_custom_coverage=AsyncMock(),
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
@@ -931,7 +931,7 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
     services = await _registered_services(hass, manager)
     client = SimpleNamespace(
         async_start_custom_coverage=AsyncMock(),
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
@@ -990,7 +990,7 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
         },
     )
     client = SimpleNamespace(
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_start_custom_coverage=AsyncMock(
             side_effect=MaticError("synthetic protocol detail")
         ),
@@ -1051,7 +1051,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
         runtime_data=SimpleNamespace(
             coordinator=coordinator,
             client=SimpleNamespace(
-                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
@@ -1200,7 +1200,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
                 async_confirm_room_completed=MagicMock(),
             ),
             client=SimpleNamespace(
-                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
                 async_send_user_command=AsyncMock(),
@@ -1579,7 +1579,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
         runtime_data=SimpleNamespace(
             coordinator=coordinator,
             client=SimpleNamespace(
-                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
                 async_send_user_command=AsyncMock(),
@@ -1914,7 +1914,7 @@ async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None
                 async_confirm_room_completed=MagicMock(),
             ),
             client=SimpleNamespace(
-                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
@@ -2342,7 +2342,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
                 async_confirm_room_completed=MagicMock(),
             ),
             client=SimpleNamespace(
-                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_active_cleaning_session_state=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
                 async_get_cleaning_session_identity=AsyncMock(
                     return_value=b"native-task"
@@ -2448,7 +2448,7 @@ async def test_legacy_saved_run_revalidates_after_stop_settlement(
         async_confirm_room_completed=MagicMock(),
     )
     client = SimpleNamespace(
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
         async_send_user_command=AsyncMock(),
@@ -2564,7 +2564,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         async_confirm_room_completed=MagicMock(),
     )
     client = SimpleNamespace(
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
         async_send_user_command=AsyncMock(),
@@ -5163,7 +5163,7 @@ async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> No
     services = await _registered_services(hass, manager)
     client = SimpleNamespace(
         async_start_custom_coverage=AsyncMock(),
-        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(

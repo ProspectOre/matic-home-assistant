@@ -3674,7 +3674,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
       const cadence = gallery.getByLabel("Plan rooms").locator("details").first();
       await cadence.locator("summary").click();
-      await expect(cadence.getByText("When periodic coverage is due, it remains due until Matic confirms this clean used the selected setting. It may be requested again on later cleans.")).toBeVisible();
+      await expect(cadence.getByText("This integration cannot currently verify the coverage used for each clean. Once due, the selected coverage is requested on later cleans. Disable the rule to pause it. Resetting progress delays the next request only when the interval is greater than 1.")).toBeVisible();
       const scope = cadence.getByLabel("Schedule scope for Kitchen");
       const mopInterval = cadence.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100");
       const coverageInterval = cadence.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100");
