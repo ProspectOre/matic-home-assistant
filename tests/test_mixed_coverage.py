@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from base64 import b64decode
 from collections import Counter
+from dataclasses import replace
 from itertools import product
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -994,6 +995,57 @@ async def test_mixed_dispatch_accepts_retained_identity_when_native_task_is_idle
     ] == ["START_COVERAGE", "UPDATE_COVERAGE"]
     assert client.async_get_active_cleaning_session_state.await_count == 1
     client._async_wait_for_mixed_coverage_readback.assert_awaited_once()
+
+
+@pytest.mark.parametrize("error_codes", [(326,), (900,), (326, 900)])
+async def test_mixed_dispatch_preserves_faulted_task_ownership(
+    mixed_client, error_codes
+):
+    client, _, args = mixed_client
+    client.async_get_active_cleaning_session_state = (
+        MaticHermesClient.async_get_active_cleaning_session_state.__get__(client)
+    )
+    client.async_get_cleaning_session_identity = AsyncMock(
+        return_value=b"retained-native-session"
+    )
+    client.async_get_state = AsyncMock(
+        return_value=replace(_settled_operational_state(), error_codes=error_codes)
+    )
+
+    with pytest.raises(CoverageGuardError) as caught:
+        await client.async_start_mixed_coverage(**args)
+
+    assert caught.value.reason is CoverageGuardReason.ACTIVITY_UNAVAILABLE
+    client._async_send_user_payload.assert_not_awaited()
+    client.async_send_user_command.assert_not_awaited()
+    args["checkpoint_initial_session"].assert_not_awaited()
+    args["prepare_stop"].assert_not_awaited()
+    args["rollback_stop"].assert_not_awaited()
+
+
+async def test_mixed_dispatch_allows_warning_after_native_identity_clears(mixed_client):
+    client, identity, args = mixed_client
+    client.async_get_active_cleaning_session_state = (
+        MaticHermesClient.async_get_active_cleaning_session_state.__get__(client)
+    )
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"", b"", b"", identity, identity, identity, identity]
+    )
+    settled = replace(_settled_operational_state(), error_codes=(326,))
+    active = replace(
+        _active_operational_state(error_codes=(326,)), current_area="First"
+    )
+    client.async_get_state = AsyncMock(side_effect=[settled, settled, active, active])
+    client._async_wait_for_mixed_coverage_readback = AsyncMock()
+
+    await client.async_start_mixed_coverage(**args)
+
+    assert [
+        call.kwargs["command_name"]
+        for call in client._async_send_user_payload.await_args_list
+    ] == ["START_COVERAGE", "UPDATE_COVERAGE"]
+    client._async_wait_for_mixed_coverage_readback.assert_awaited_once()
+    client.async_send_user_command.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

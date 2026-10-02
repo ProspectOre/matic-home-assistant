@@ -128,6 +128,23 @@ class RobotOperationalState:
         """Return whether a low-charge cleaning task is suspended at the dock."""
         return self.low_charge and self.cleaning and self.is_charging
 
+    def native_session_activity(self, *, identity_cleared: bool = False) -> bool | None:
+        """Separate native task evidence from the public physical activity.
+
+        An opaque error cannot prove a retained task ended. ``identity_cleared``
+        requires the vetted active-session property to explicitly be empty;
+        it does not classify the error or override the robot's command checks.
+        """
+        if self.returning:
+            return None
+        if self.cleaning or self.paused:
+            return True
+        if self.is_charging:
+            return False if not self.error_codes or identity_cleared else None
+        if not self.state_codes and not self.error_codes:
+            return False
+        return None
+
     @property
     def is_charging(self) -> bool:
         """Return whether the robot is docked and charging or charge-idle."""

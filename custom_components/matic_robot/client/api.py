@@ -73,7 +73,6 @@ from .models import (
     CuesVoiceStatus,
     FloorPlan,
     HermesCollectionEntry,
-    RobotActivity,
     RobotInfo,
     RobotOperationalState,
     RobotPose,
@@ -733,25 +732,21 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
         The opaque active-session key can remain visible after its native task
         has ended. Keep that identity for ownership checks, and use the
-        independently decoded ``kabuki_state`` snapshot to decide whether a
-        task is still active. The typed activity model owns status precedence;
-        a verified dock/charge state can coexist with supplemental status
-        codes. Unknown activity without a settled or active state fails closed.
+        independently decoded ``kabuki_state`` task signals to decide whether
+        it is active. Public charging/docked activity is not ownership proof.
+        With opaque errors, a settled snapshot needs an explicitly cleared
+        task identity; integer error codes are never classified here.
         """
         state = await self.async_get_state()
-        # A low-charge task waiting at the dock still owns the native session,
-        # even though the public activity projection correctly reports charging.
-        if state.recharge_and_resume:
-            return True
-        activity = state.activity
-        if activity in (RobotActivity.CLEANING, RobotActivity.PAUSED):
-            return True
-        if activity in (
-            RobotActivity.DOCKED,
-            RobotActivity.CHARGING,
-        ) or (activity is RobotActivity.READY and not state.state_codes):
-            return False
-        return None
+        active = state.native_session_activity()
+        if active is None and state.is_charging and state.error_codes:
+            if await self.async_get_cleaning_session_identity() != b"":
+                return None
+            # Recheck task signals after the identity await. Managed dispatch
+            # also fences identity changes around this entire observation.
+            state = await self.async_get_state()
+            return state.native_session_activity(identity_cleared=True)
+        return active
 
     async def async_get_cleaning_session_records(
         self,

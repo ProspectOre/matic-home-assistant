@@ -1787,10 +1787,9 @@ def _operational_state_for_codes(*codes, error_codes=()):
 @pytest.mark.parametrize(
     ("codes", "error_codes"),
     [
+        ((), ()),
         ((106,), ()),
         ((107,), ()),
-        ((106,), (900,)),
-        ((107,), (900,)),
     ],
 )
 async def test_tracked_coverage_allows_retained_identity_when_settled(
@@ -1832,6 +1831,98 @@ async def test_tracked_coverage_allows_retained_identity_when_settled(
     assert client._async_wait_for_coverage_readback.await_args.kwargs[
         "expected_session_id"
     ] == str(session_id)
+
+
+@pytest.mark.parametrize("charging_code", [106, 107])
+@pytest.mark.parametrize("error_codes", [(326,), (900,), (326, 900)])
+@pytest.mark.parametrize("identity", [b"", b"retained-native-session"])
+async def test_managed_warning_requires_cleared_native_task(
+    charging_code, error_codes, identity
+):
+    """Opaque codes never decide safety; explicit task identity does."""
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=identity)
+    client.async_get_state = AsyncMock(
+        return_value=_operational_state_for_codes(
+            charging_code, error_codes=error_codes
+        )
+    )
+    client._async_send_user_payload = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+    context = pytest.raises(CoverageGuardError) if identity else nullcontext()
+    with context as caught:
+        await client.async_start_coverage(
+            FloorPlan(1, "00000000-0000-0000-0000-000000000001", b"partition", ()),
+            ["00000000-0000-0000-0000-000000000002"],
+            cleaning_mode=CleaningMode.VACUUM,
+            coverage_setting=CoverageSetting.STANDARD,
+            require_settings_readback=True,
+        )
+    if identity:
+        assert caught.value.reason is CoverageGuardReason.ACTIVITY_UNAVAILABLE
+        client._async_send_user_payload.assert_not_awaited()
+        client._async_wait_for_coverage_readback.assert_not_awaited()
+    else:
+        client._async_send_user_payload.assert_awaited_once()
+        client._async_wait_for_coverage_readback.assert_awaited_once()
+        assert client.async_get_state.await_count == 2
+
+
+@pytest.mark.parametrize(
+    ("latest_codes", "latest_identity", "reason"),
+    [
+        ((107,), b"replacement-native-session", CoverageGuardReason.IDENTITY_CHANGED),
+        ((107, 119), b"", CoverageGuardReason.NATIVE_SESSION_ACTIVE),
+        ((107, 120), b"", CoverageGuardReason.NATIVE_SESSION_ACTIVE),
+        ((107, 104), b"", CoverageGuardReason.ACTIVITY_UNAVAILABLE),
+        ((999,), b"", CoverageGuardReason.ACTIVITY_UNAVAILABLE),
+    ],
+)
+async def test_managed_warning_rechecks_state_and_identity_after_clearance(
+    latest_codes, latest_identity, reason
+):
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"", b"", latest_identity]
+    )
+    client.async_get_state = AsyncMock(
+        side_effect=[
+            _operational_state_for_codes(107, error_codes=(326,)),
+            _operational_state_for_codes(*latest_codes, error_codes=(326,)),
+        ]
+    )
+    client._async_send_user_payload = AsyncMock()
+    with pytest.raises(CoverageGuardError) as caught:
+        await client.async_start_coverage(
+            FloorPlan(1, "00000000-0000-0000-0000-000000000001", b"partition", ()),
+            ["00000000-0000-0000-0000-000000000002"],
+            cleaning_mode=CleaningMode.VACUUM,
+            coverage_setting=CoverageSetting.STANDARD,
+            require_settings_readback=True,
+        )
+    assert caught.value.reason is reason
+    client._async_send_user_payload.assert_not_awaited()
+
+
+async def test_native_vacuum_keeps_robot_warning_checks():
+    """The explicit native route does not acquire managed task ownership."""
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_state = AsyncMock(
+        return_value=_operational_state_for_codes(106, error_codes=(326,))
+    )
+    client.async_get_cleaning_session_identity = AsyncMock(
+        return_value=b"retained-native-session"
+    )
+    client._async_send_user_payload = AsyncMock()
+    await client.async_start_coverage(
+        FloorPlan(1, "00000000-0000-0000-0000-000000000001", b"partition", ()),
+        ["00000000-0000-0000-0000-000000000002"],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.STANDARD,
+    )
+    client._async_send_user_payload.assert_awaited_once()
+    client.async_get_state.assert_not_awaited()
+    client.async_get_cleaning_session_identity.assert_not_awaited()
 
 
 async def test_untracked_coverage_rejects_a_managed_session_id():
@@ -1887,7 +1978,15 @@ async def test_untracked_coverage_rejects_a_managed_session_id():
         ),
         (
             _operational_state_for_codes(120, error_codes=(900,)),
-            CoverageGuardReason.ACTIVITY_UNAVAILABLE,
+            CoverageGuardReason.NATIVE_SESSION_ACTIVE,
+        ),
+        (
+            _operational_state_for_codes(107, 119, error_codes=(326,)),
+            CoverageGuardReason.NATIVE_SESSION_ACTIVE,
+        ),
+        (
+            _operational_state_for_codes(106, 120, error_codes=(900,)),
+            CoverageGuardReason.NATIVE_SESSION_ACTIVE,
         ),
     ],
 )
