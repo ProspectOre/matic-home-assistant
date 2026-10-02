@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from base64 import b64decode
 from collections import Counter
+from dataclasses import replace
 from itertools import product
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -82,12 +83,12 @@ def _settled_operational_state():
     )
 
 
-def _active_operational_state():
+def _active_operational_state(*, error_codes=()):
     """Return a verified cleaning snapshot for new-session ownership tests."""
     return RobotOperationalState(
         battery_percentage=None,
         state_codes=(119,),
-        error_codes=(),
+        error_codes=error_codes,
         charging_idle=False,
         charging=False,
         low_charge=False,
@@ -294,7 +295,8 @@ def _session_identity(session_id: UUID) -> bytes:
     return b(coverage(command), 6)
 
 
-async def test_normal_coverage_readback_requires_exact_retained_goals():
+@pytest.mark.parametrize("error_codes", [(), (900,)])
+async def test_normal_coverage_readback_requires_exact_retained_goals(error_codes):
     client = MaticHermesClient("robot.invalid", 16320)
     floor, payload = _normal_coverage_fixture()
     session_id = UUID("33333333-3333-4333-8333-333333333333")
@@ -302,7 +304,9 @@ async def test_normal_coverage_readback_requires_exact_retained_goals():
     client.async_get_cleaning_session_identity = AsyncMock(
         side_effect=[identity, identity, identity]
     )
-    client.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
+    client.async_get_state = AsyncMock(
+        return_value=_active_operational_state(error_codes=error_codes)
+    )
     client.async_get_property = AsyncMock(
         return_value=coverage_plan_from_command(payload)
     )
@@ -316,7 +320,7 @@ async def test_normal_coverage_readback_requires_exact_retained_goals():
     )
 
     assert client.async_get_cleaning_session_identity.await_count == 3
-    assert client.async_get_active_cleaning_session_state.await_count == 3
+    assert client.async_get_state.await_count == 3
     client.async_get_floor_plan.assert_awaited_once()
 
 
@@ -922,9 +926,7 @@ def mixed_client(monkeypatch):
 
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_state = AsyncMock(
-        return_value=SimpleNamespace(
-            activity=SimpleNamespace(value="cleaning"), current_area="the First"
-        )
+        return_value=replace(_active_operational_state(), current_area="the First")
     )
     client.async_get_active_cleaning_session_state = AsyncMock(return_value=False)
     client.async_get_floor_plan = AsyncMock(return_value=floor)
@@ -993,6 +995,57 @@ async def test_mixed_dispatch_accepts_retained_identity_when_native_task_is_idle
     client._async_wait_for_mixed_coverage_readback.assert_awaited_once()
 
 
+@pytest.mark.parametrize("error_codes", [(326,), (900,), (326, 900)])
+async def test_mixed_dispatch_preserves_faulted_task_ownership(
+    mixed_client, error_codes
+):
+    client, _, args = mixed_client
+    client.async_get_active_cleaning_session_state = (
+        MaticHermesClient.async_get_active_cleaning_session_state.__get__(client)
+    )
+    client.async_get_cleaning_session_identity = AsyncMock(
+        return_value=b"retained-native-session"
+    )
+    client.async_get_state = AsyncMock(
+        return_value=replace(_settled_operational_state(), error_codes=error_codes)
+    )
+
+    with pytest.raises(CoverageGuardError) as caught:
+        await client.async_start_mixed_coverage(**args)
+
+    assert caught.value.reason is CoverageGuardReason.ACTIVITY_UNAVAILABLE
+    client._async_send_user_payload.assert_not_awaited()
+    client.async_send_user_command.assert_not_awaited()
+    args["checkpoint_initial_session"].assert_not_awaited()
+    args["prepare_stop"].assert_not_awaited()
+    args["rollback_stop"].assert_not_awaited()
+
+
+async def test_mixed_dispatch_allows_warning_after_native_identity_clears(mixed_client):
+    client, identity, args = mixed_client
+    client.async_get_active_cleaning_session_state = (
+        MaticHermesClient.async_get_active_cleaning_session_state.__get__(client)
+    )
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"", b"", b"", identity, identity, identity, identity]
+    )
+    settled = replace(_settled_operational_state(), error_codes=(326,))
+    active = replace(
+        _active_operational_state(error_codes=(326,)), current_area="First"
+    )
+    client.async_get_state = AsyncMock(side_effect=[settled, settled, active, active])
+    client._async_wait_for_mixed_coverage_readback = AsyncMock()
+
+    await client.async_start_mixed_coverage(**args)
+
+    assert [
+        call.kwargs["command_name"]
+        for call in client._async_send_user_payload.await_args_list
+    ] == ["START_COVERAGE", "UPDATE_COVERAGE"]
+    client._async_wait_for_mixed_coverage_readback.assert_awaited_once()
+    client.async_send_user_command.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "failure", ["unknown_identity", "unknown_activity", "changed_identity"]
 )
@@ -1025,11 +1078,7 @@ async def test_mixed_dispatch_rejects_cleaning_under_retained_completed_identity
         return_value=b"completed-session"
     )
     client.async_get_state = AsyncMock(
-        return_value=SimpleNamespace(
-            activity=SimpleNamespace(value="cleaning"),
-            cleaning=True,
-            current_area="the First",
-        )
+        return_value=replace(_active_operational_state(), current_area="the First")
     )
 
     with pytest.raises(MaticError, match="mission changed before coverage update"):
@@ -1269,8 +1318,8 @@ async def test_mixed_start_checkpoint_failure_prevents_initial_write(mixed_clien
 async def test_mixed_wait_normalizes_room_spacing(mixed_client):
     client, _, args = mixed_client
     args["first_room_name"] = " Living   Room "
-    client.async_get_state.return_value = SimpleNamespace(
-        activity=SimpleNamespace(value="cleaning"), current_area="The Living Room"
+    client.async_get_state.return_value = replace(
+        _active_operational_state(), current_area="The Living Room"
     )
 
     await client.async_start_mixed_coverage(**args)
@@ -1293,12 +1342,8 @@ async def test_room_transition_before_update_stops_without_updating(mixed_client
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_state = AsyncMock(
         side_effect=[
-            SimpleNamespace(
-                activity=SimpleNamespace(value="cleaning"), current_area="First"
-            ),
-            SimpleNamespace(
-                activity=SimpleNamespace(value="cleaning"), current_area="Second"
-            ),
+            replace(_active_operational_state(), current_area="First"),
+            replace(_active_operational_state(), current_area="Second"),
         ]
     )
 
@@ -1331,9 +1376,7 @@ async def test_replaced_mission_during_state_read_is_not_updated_or_stopped(
         # the later pre-update read, after the preceding identity check passed.
         if identity_reads >= 4:
             current["identity"] = replacement
-        return SimpleNamespace(
-            activity=SimpleNamespace(value="cleaning"), current_area="First"
-        )
+        return replace(_active_operational_state(), current_area="First")
 
     async def send(payload, *, command_name):
         if command_name == "START_COVERAGE":
