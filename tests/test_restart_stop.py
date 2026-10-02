@@ -46,7 +46,7 @@ async def test_restored_stop_fence_keeps_run_and_native_guards(
     manager = await reload_manager(hass, entry, manager)
     client = entry.runtime_data.client
     hass.states.async_set(checkpoint["entity_id"], "idle")
-    client.async_has_active_cleaning_session.return_value = native_active
+    client.async_get_active_cleaning_session_state.return_value = native_active
 
     async def dock(command):
         assert command is UserCommand.DOCK
@@ -110,13 +110,17 @@ async def test_second_shutdown_retains_settlement_owner(hass, recovery_state):
     await manager.async_mark_stop_pending("serial", run_id="run")
     manager = await reload_manager(hass, entry, manager)
     hass.states.async_set(checkpoint["entity_id"], "idle")
-    entry.runtime_data.client.async_has_active_cleaning_session.return_value = True
+    entry.runtime_data.client.async_get_active_cleaning_session_state.return_value = (
+        True
+    )
     await async_recover_managed_run(hass, entry, "serial")
     assert manager.dock_reconciliation_active("serial")
     await manager.async_cancel_and_wait("serial", preserve_run=True)
     assert manager.pending_stop_run_id("serial") == "run"
     manager = await reload_manager(hass, entry, manager)
-    entry.runtime_data.client.async_has_active_cleaning_session.return_value = False
+    entry.runtime_data.client.async_get_active_cleaning_session_state.return_value = (
+        False
+    )
 
     async def dock(command):
         hass.states.async_set(checkpoint["entity_id"], "docked")

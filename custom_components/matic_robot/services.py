@@ -370,7 +370,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     manager,
                     entry.runtime_data.coordinator.data.info.serial_number,
                     entity_id,
-                    entry.runtime_data.client.async_has_active_cleaning_session,
+                    entry.runtime_data.client.async_get_active_cleaning_session_state,
                 )
         rooms = call.data.get("rooms")
         params: dict[str, Any] = {"ordered": call.data["ordered"]}
@@ -422,7 +422,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             manager,
             serial_number,
             entity_id,
-            entry.runtime_data.client.async_has_active_cleaning_session,
+            entry.runtime_data.client.async_get_active_cleaning_session_state,
         )
         try:
             area = manager.area(serial_number, call.data["area"])
@@ -446,7 +446,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 manager,
                 serial_number,
                 entity_id,
-                entry.runtime_data.client.async_has_active_cleaning_session,
+                entry.runtime_data.client.async_get_active_cleaning_session_state,
             )
             try:
                 current_area = manager.area(serial_number, call.data["area"])
@@ -602,7 +602,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             cadence_by_room=cadence_by_room,
             refresh=entry.runtime_data.coordinator.async_request_refresh,
             active_session=(
-                entry.runtime_data.client.async_has_active_cleaning_session
+                entry.runtime_data.client.async_get_active_cleaning_session_state
             ),
             session_history=partial(
                 entry.runtime_data.client.async_get_cleaning_session_records,
@@ -744,7 +744,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 cadence_by_room=cadence_by_room,
                 refresh=entry.runtime_data.coordinator.async_request_refresh,
                 active_session=(
-                    entry.runtime_data.client.async_has_active_cleaning_session
+                    entry.runtime_data.client.async_get_active_cleaning_session_state
                 ),
                 session_history=partial(
                     entry.runtime_data.client.async_get_cleaning_session_records,

@@ -164,7 +164,6 @@ _TELEMETRY_PROPERTIES = (
     "wifi_status",
     "user_tunnel_ssh_permission",
     "uploader_config_state",
-    "active_session_key",
     "coverage_time",
 )
 
@@ -709,12 +708,6 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     "Hermes returned a malformed approximate trajectory"
                 ) from err
 
-    async def async_has_active_cleaning_session(self) -> bool | None:
-        """Read whether the vetted active-session property is present."""
-        return _decode_presence_state(
-            await self.async_get_property("active_session_key")
-        )
-
     async def async_get_cleaning_session_identity(self) -> bytes | None:
         """Keep the vetted session property opaque and in memory for ownership.
 
@@ -875,9 +868,6 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 values["user_tunnel_ssh_permission"]
             ),
             uploader_opt_in=_decode_uploader_state(values["uploader_config_state"]),
-            active_cleaning_session=_decode_presence_state(
-                values["active_session_key"]
-            ),
             dock_detections=(
                 dock_detections if isinstance(dock_detections, int) else None
             ),

@@ -82,7 +82,7 @@ async def recovery_state(hass):
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=identity),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
-        async_has_active_cleaning_session=AsyncMock(return_value=True),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=True),
         async_send_user_command=AsyncMock(),
         activity_journal=SimpleNamespace(
             set_run_id=MagicMock(), current_run_id=MagicMock()

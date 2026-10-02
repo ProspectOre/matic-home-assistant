@@ -410,7 +410,7 @@ async def async_recover_managed_run(
                 entity_id,
                 cancel,
                 refresh=runtime.coordinator.async_request_refresh,
-                active_session=runtime.client.async_has_active_cleaning_session,
+                active_session=runtime.client.async_get_active_cleaning_session_state,
                 identity_reader=runtime.client.async_get_cleaning_session_identity,
                 expected_identity=identity if identity else None,
                 reject_new_identity=not identity,
@@ -437,7 +437,7 @@ async def async_recover_managed_run(
                 serial_number,
                 rooms,
                 refresh=runtime.coordinator.async_request_refresh,
-                active_session=runtime.client.async_has_active_cleaning_session,
+                active_session=runtime.client.async_get_active_cleaning_session_state,
                 session_history=partial(
                     runtime.client.async_get_cleaning_session_records, strict=True
                 ),
@@ -571,7 +571,7 @@ async def async_recover_managed_run(
             serial_number,
             rooms,
             refresh=runtime.coordinator.async_request_refresh,
-            active_session=runtime.client.async_has_active_cleaning_session,
+            active_session=runtime.client.async_get_active_cleaning_session_state,
             session_history=partial(
                 runtime.client.async_get_cleaning_session_records, strict=True
             ),
