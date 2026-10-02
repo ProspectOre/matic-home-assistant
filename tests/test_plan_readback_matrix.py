@@ -2,7 +2,6 @@
 
 from collections import Counter
 from itertools import product
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
@@ -25,7 +24,7 @@ from custom_components.matic_robot.client.coverage_goals import (
     coverage_readback_matches,
 )
 from custom_components.matic_robot.client.exceptions import MaticError
-from custom_components.matic_robot.client.models import FloorPlan, RobotActivity
+from custom_components.matic_robot.client.models import FloorPlan, RobotOperationalState
 from custom_components.matic_robot.client.wire import bytes_fields, first_bytes
 from tests.wire_builders import _field
 
@@ -187,12 +186,16 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
     client._async_send_user_payload = AsyncMock(side_effect=send)
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=lambda: identity)
     client.async_get_state = AsyncMock(
-        side_effect=lambda: SimpleNamespace(
-            activity=RobotActivity.CLEANING if identity else RobotActivity.READY,
-            cleaning=bool(identity),
-            recharge_and_resume=False,
+        side_effect=lambda: RobotOperationalState(
+            battery_percentage=None,
+            state_codes=(119,) if identity else (),
             error_codes=(),
-            state_codes=(),
+            charging_idle=False,
+            charging=False,
+            low_charge=False,
+            paused=False,
+            cleaning=bool(identity),
+            returning=False,
             current_area="First" if identity else None,
         )
     )

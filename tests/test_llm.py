@@ -27,6 +27,7 @@ from custom_components.matic_robot.client.observations import (
     MAX_OBSERVATIONS,
     ActivityJournal,
 )
+from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.llm import (
     LLM_API_ID,
     MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
@@ -329,6 +330,11 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "MaticGetRecentEvents",
         "MaticGetActivity",
     ]
+    assert all(tool.integration == DOMAIN for tool in instance.tools)
+    assert all(
+        isinstance(tool.parameters, type(llm.Tool.parameters))
+        for tool in instance.tools
+    )
 
     with patch("custom_components.matic_robot.llm.llm.async_register_api") as register:
         registered = async_register_matic_llm_api(hass)

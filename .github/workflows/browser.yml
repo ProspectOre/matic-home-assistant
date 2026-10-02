@@ -17,6 +17,13 @@ jobs:
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # Match the npm lockfile; browsers and OS dependencies are already installed.
+    container:
+      image: mcr.microsoft.com/playwright:v1.62.0-noble@sha256:baed2032d533817f3dbe6425de795788430ba345e819a1201337009ba17c9d07
+      options: --init --shm-size=1g
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -30,9 +37,23 @@ jobs:
       - run: npm run build:map-studio-v4
       - name: Committed bundle matches the frontend source
         run: |
-          if ! git diff --exit-code -- custom_components/matic_robot/map_studio_v4/ custom_components/matic_robot/matic_icons.js; then
-            echo "::error::The committed Map Studio bundle is stale. Run 'npm run build:map-studio-v4' and commit the result." >&2
+          workspace_root="$(git -c safe.directory="$GITHUB_WORKSPACE" rev-parse --show-toplevel)"
+          if [ "$workspace_root" != "$GITHUB_WORKSPACE" ]; then
+            echo "::error::Bundle verification is outside the checked-out workspace." >&2
             exit 1
           fi
-      - run: npx playwright install --with-deps chromium webkit firefox
+          if git -c safe.directory="$GITHUB_WORKSPACE" diff --exit-code -- custom_components/matic_robot/map_studio_v4/ custom_components/matic_robot/matic_icons.js; then
+            exit 0
+          else
+            status=$?
+            if [ "$status" -eq 1 ]; then
+              echo "::error::The committed Map Studio bundle is stale. Run 'npm run build:map-studio-v4' and commit the result." >&2
+            else
+              echo "::error::Git could not verify the committed Map Studio bundle." >&2
+            fi
+            exit "$status"
+          fi
       - run: npm run test:browser
+        env:
+          # Firefox requires a Home directory owned by the container user.
+          HOME: /root

@@ -240,6 +240,8 @@ class MaticOperationsAPI(llm.API):
 class _MaticTool(llm.Tool):
     """Base class for tools bound to one Matic operations API."""
 
+    integration = DOMAIN
+
     def __init__(self, api: MaticOperationsAPI) -> None:
         self.api = api
 
@@ -278,7 +280,7 @@ class MaticGetPlanTool(_MaticTool):
         "Inspect a selected or named saved plan and show its exact next-run "
         "execution order, native mission legs, and settings boundaries."
     )
-    parameters = vol.Schema(
+    parameters = llm.Tool.parameters.extend(
         {
             vol.Optional("robot"): vol.All(cv.string, vol.Length(min=1, max=128)),
             vol.Optional("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
@@ -445,7 +447,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
         "including per-mode room results and durations. Supply cleaning_mode to "
         "evaluate a vacuum-only, mop-only, or combined run correctly."
     )
-    parameters = vol.Schema(
+    parameters = llm.Tool.parameters.extend(
         {
             vol.Optional("robot"): vol.All(cv.string, vol.Length(min=1, max=128)),
             vol.Optional("limit", default=5): vol.All(
@@ -596,7 +598,7 @@ class MaticGetRecentEventsTool(_MaticTool):
         "observations are excluded by default so high-frequency polling cannot hide "
         "operational events; use include_activity or MaticGetActivity for raw activity."
     )
-    parameters = vol.Schema(
+    parameters = llm.Tool.parameters.extend(
         {
             vol.Optional("limit", default=20): vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=MAX_RECENT_EVENTS)
@@ -649,7 +651,7 @@ class MaticGetActivityTool(_MaticTool):
         "is sent. Use this to investigate who requested a stop or docking; external "
         "app, physical, and internal robot actions have no command provenance here."
     )
-    parameters = vol.Schema(
+    parameters = llm.Tool.parameters.extend(
         {
             vol.Optional("robot"): vol.All(cv.string, vol.Length(min=1, max=128)),
             vol.Optional("kind", default="commands"): vol.In(
