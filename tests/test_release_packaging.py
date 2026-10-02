@@ -49,7 +49,7 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
     assert "hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main" in workflow
     assert (
         "home-assistant/actions/hassfest@"
-        "ab22029681aa532bfe7de5774a9972d67bfbd2c0 # master" in workflow
+        "06749dd8c0b54f350bc69c8752456cee498808a3 # master" in workflow
     )
 
 
