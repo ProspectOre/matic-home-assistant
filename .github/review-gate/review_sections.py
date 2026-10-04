@@ -4845,6 +4845,10 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
         _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
     )
     priority_lines = _markdown_lines(_priority_projection(rest))
+    linked_container_starts = {
+        row for row, (label, _units) in _markdown_document(rest)[3]
+        if re.match(r"(?i)\A[ \t]*P[0-3]\b", label)
+    }
     structural_lines.extend([""] * (len(lines) - len(structural_lines)))
     priority_lines.extend([""] * (len(lines) - len(priority_lines)))
     for first, _last, label, _kind in _markdown_document(rest)[4]:
@@ -4856,6 +4860,7 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
             if RESULT_HEADING.match(line)
             or PRIORITY_RESULT.match(line)
             or PRIORITY_RESULT.match(priority_lines[i])
+            or i in linked_container_starts
             or AVAILABILITY.fullmatch(line)
             or SECURITY_MARKER.fullmatch(line)
             or INLINE_SECURITY_MARKER.fullmatch(line)
@@ -4933,6 +4938,10 @@ def _section_spans(body: str, coordinator_bound: bool = False):
         and units
         and all(marked and not unknown for _row, _label, marked, unknown in units)
     }
+    linked_container_starts = {
+        start for start, (label, _units) in container_boundaries
+        if re.match(r"(?i)\A[ \t]*P[0-3]\b", label)
+    }
     starts: list[int] = []
     kinds: dict[int, str] = {}
     reviewed_counts = [0]
@@ -4941,6 +4950,7 @@ def _section_spans(body: str, coordinator_bound: bool = False):
     priority_matches = [
         bool(
             PRIORITY_RESULT.match(line) or PRIORITY_RESULT.match(priority_lines[index])
+            or index in linked_container_starts
         )
         for index, line in enumerate(lines)
     ]
@@ -4982,13 +4992,35 @@ def _section_spans(body: str, coordinator_bound: bool = False):
         and not report_link_rows
         and all(not line.strip() for line in original_lines[footer_rows[0] + 1:])
     )
+    marker_boundary_checks = set()
+    standalone_marker_starts = set()
     for i, line in enumerate(lines):
         if RESULT_HEADING.match(line):
+            if (SECURITY_HEADING.match(line) and starts
+                    and starts[-1] in standalone_marker_starts
+                    and all(not row.strip() or SECURITY_MARKER.fullmatch(row)
+                            for row in lines[starts[-1]:i])):
+                # Let the existing attachment pass attach a standalone marker
+                # run to its explicit following security heading exactly once.
+                starts.pop()
             starts.append(i)
             kinds[i] = "security" if SECURITY_HEADING.match(line) else "regular"
         elif i in marker_container_starts:
             starts.append(i)
             kinds[i] = "security"
+        elif (SECURITY_MARKER.fullmatch(line) and starts
+              and kinds[starts[-1]] == "regular"):
+            previous_start = starts[-1]
+            # Check each regular owner once: after one marker its growing
+            # prefix can no longer be a standalone clean result.
+            if previous_start not in marker_boundary_checks:
+                marker_boundary_checks.add(previous_start)
+                if _standalone_regular_clean(
+                    "\n".join(original_lines[previous_start:i])
+                ):
+                    starts.append(i)
+                    standalone_marker_starts.add(i)
+                    kinds[i] = "security"
         elif priority_matches[i]:
             previous_start = starts[-1] if starts else 0
             previous_bound = reviewed_counts[i] > reviewed_counts[previous_start]
@@ -5063,6 +5095,11 @@ def _section_spans(body: str, coordinator_bound: bool = False):
                     )
                     else "unheaded"
                 )
+                if (kind == "security" and marker_only and starts
+                        and starts[-1] in standalone_marker_starts):
+                    # Attach the marker to this result instead of retaining
+                    # a zero-length security section before the priority.
+                    starts.pop()
                 starts.append(i)
                 kinds[i] = kind
     if not starts:
@@ -5452,6 +5489,41 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
     return "".join(visible)
 
 
+def _leading_link_priority(tokens, label, offset=0):
+    """Qualify visible leading severity characters owned by real link text."""
+    match = re.match(r"(?i)\A[ \t]*(P[0-3])\b", label[offset:])
+    if match is None:
+        return False
+    first, last = (value + offset for value in match.span(1))
+    pending = [(token, False) for token in reversed(tokens)]
+    position = visited = 0
+    linked = False
+    while pending:
+        token, in_link = pending.pop()
+        visited += 1
+        if visited > 65536:
+            raise MarkdownBoundaryError("Markdown link-label budget exceeded")
+        kind = token.get("type")
+        if kind == "link" and not token.get("_review_url"):
+            pending.extend(
+                (child, True) for child in reversed(token.get("children", ()))
+            )
+        elif (
+            kind in {
+                "text", "codespan", "image", "inline_html", "softbreak", "linebreak"
+            }
+            or token.get("_review_url")
+        ):
+            end = position + len(_markdown_text([token]))
+            linked |= in_link and position < last and end > first
+            position = end
+        else:
+            pending.extend(
+                (child, in_link) for child in reversed(token.get("children", ()))
+            )
+    return linked
+
+
 def _empty_comment_priority_source(source):
     for fragment in re.finditer(
         r"\[(?:[P0-3]|" + _DEFAULT_IGNORABLE_CLASS + r"|<!--[ \t]*-->)+\]",
@@ -5704,10 +5776,8 @@ def _parse_markdown_document(text, mistune):
                 cells = table._split_table_cells(row_text)
                 if all(re.fullmatch(r"\s*:?-+:?\s*", cell) for cell in cells):
                     continue
-                labels = [
-                    _markdown_text(md.inline(cell.strip(), _state.env))
-                    for cell in cells
-                ]
+                inline_units = [md.inline(cell.strip(), _state.env) for cell in cells]
+                labels = [_markdown_text(unit) for unit in inline_units]
                 original_row = original_rows[first + offset]
                 original_strip = (
                     table._strip_pipe_table_row
@@ -5730,7 +5800,8 @@ def _parse_markdown_document(text, mistune):
                 match = re.fullmatch(pattern, line)
                 if match is None:
                     return None
-                visible = _markdown_text(md.inline(match.group(1), _state.env))
+                inline_units = [md.inline(match.group(1), _state.env)]
+                visible = _markdown_text(inline_units[0])
                 original_match = re.fullmatch(pattern, original_rows[first + offset])
                 if original_match is None:
                     return None
@@ -5739,7 +5810,9 @@ def _parse_markdown_document(text, mistune):
                 flattened.append(visible)
             finding_units = []
             diagnostic_labels = []
-            for raw_unit, label in zip(source_units, labels):  # noqa: B905
+            for raw_unit, label, inline_tokens in zip(  # noqa: B905
+                source_units, labels, inline_units
+            ):
                 # Marker ownership follows the actual cell/row source. Rendered
                 # labels cannot authenticate code, title or escaped examples.
                 actual_marker = False
@@ -5796,7 +5869,16 @@ def _parse_markdown_document(text, mistune):
                         return None
                     if source_task and rendered_task:
                         priority_label = label[rendered_task.end() :]
-                if PRIORITY_RESULT.match(priority_label):
+                if _leading_link_priority(
+                    inline_tokens, label, len(label) - len(priority_label)
+                ):
+                    # Preserve rendered bare severities as diagnostics only.
+                    # Keep their label unchanged so they cannot manufacture
+                    # a bracketed ordinary result or marker ownership.
+                    if actual_marker:
+                        return None
+                    finding_units.append((first + offset, priority_label, False, False))
+                elif PRIORITY_RESULT.match(priority_label):
                     count_priorities = len(
                         re.findall(r"\[P[0-3]\]", priority_label, re.I)
                     )
@@ -5918,7 +6000,7 @@ def _parse_markdown_document(text, mistune):
                 block_markers=token.get("type") in ("list", "block_quote", "table"),
             )
             if (
-                re.search(r"(?i)\bP[0-3]\b", visible)
+                re.search(r"(?i)P[0-3]\b", visible)
                 or _unicode_priority_uncertain(visible)
                 or SECURITY_MARKER_COMMENT.search(visible)
             ):
@@ -5935,6 +6017,7 @@ def _parse_markdown_document(text, mistune):
                             for _row, _visible, units in mapped
                             for _source_row, label, _marked, _unknown in units
                             if PRIORITY_RESULT.match(label)
+                            or re.match(r"(?i)\A[ \t]*P[0-3]\b", label)
                         ),
                         None,
                     )
@@ -6356,16 +6439,20 @@ def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool
     heading = kind == "security"
     bare_severity = False
     if heading and re.search(r"(?i)\bP[0-3]\b", severity_text):
-        # Consumed Markdown link delimiters cannot turn a bare P2 label into
-        # a protocol severity. Actual rendered brackets retain their signal;
-        # raw HTML literal link syntax remains visible under its own context.
-        without_links = _outside_html_blocks(
-            raw_section,
-            lambda piece: _without_inline_code_in_markdown(piece, links=True),
-        )
-        bare_severity = bool(re.search(
-            r"(?i)\bP[0-3]\b", _priority_projection(without_links)
-        ))
+        # Raw HTML renders link-like syntax literally. Preserve that existing
+        # visible evidence without granting incidental Markdown prose severity.
+        if raw_blocks:
+            raw_only = []
+            position = 0
+            for first, last in raw_blocks:
+                raw_only.append(re.sub(r"[^\r\n]", " ", source[position:first]))
+                raw_only.append(source[first:last])
+                position = last
+            raw_only.append(re.sub(r"[^\r\n]", " ", source[position:]))
+            bare_severity = bool(re.search(
+                r"(?i)\[\\?P[0-3]\]|\[[^\[\]\r\n]*\]\([^()\r\n]*\bP[0-3]\b",
+                _priority_projection("".join(raw_only))
+            ))
         # A rendered line-leading severity is a result label even when its
         # visible characters span links. Explanatory inline link labels stay
         # neutral; destinations and code remain absent from the projection.
@@ -6608,6 +6695,10 @@ def _classify_body(body: str) -> dict[str, Any]:
             if first_row <= start < last_row
             for unit in units
         ]
+        projection = "\n".join([projection, *[
+            label for _row, label, _marked, _unknown in mapped_units
+            if re.match(r"(?i)\A[ \t]*P[0-3]\b", label)
+        ]])
         mapped_security = any(
             marked or unknown for _row, _label, marked, unknown in mapped_units
         )
