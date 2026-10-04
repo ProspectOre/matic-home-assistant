@@ -51,7 +51,7 @@ jobs:
           else
             .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$RUNNER_TEMP/matic-before/custom_components" --expect-safe-area-error
           fi
-      - name: Verify the merged fix
+      - name: Verify the combined candidate
         run: |
-          git diff --exit-code a194ee6b7f428946977bbce2dcbc12cad8c457ba -- custom_components
+          git diff --exit-code 6d620948b204ff556ae8662d746f0cb932bd9a82 -- custom_components
           .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$GITHUB_WORKSPACE/custom_components"
