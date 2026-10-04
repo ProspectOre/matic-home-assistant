@@ -307,19 +307,55 @@ stamp_status_for_sha() {
 }
 
 # Historical commits require positive PR association. Current PR head comes
-# from the live snapshot; old commits are accepted only when GitHub still
-# associates the immutable SHA with this PR.
+# from the live snapshot; old commits require commit association or complete
+# exact-PR force-push history after an empty association response.
 commit_is_associated_with_pr() {
-  local target_sha="$1" associated
+  local target_sha="$1" associated history
   [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
   [[ "$target_sha" == "${pr_current_head_sha:-}" ]] && return 0
   associated="$(gh api "repos/$REPO/commits/$target_sha/pulls?per_page=100" --paginate --slurp \
-    | jq -ce --arg repo "$REPO" --argjson pr "$pr_number" '
+    | jq -er --arg repo "$REPO" --argjson pr "$pr_number" '
         if type != "array" or any(.[]; type != "array") then
           error("Invalid commit-associated PR pages")
-        else any(.[][]; .number == $pr and .base.repo.full_name == $repo)
-        end')" || return 1
-  [[ "$associated" == true ]]
+        elif any(.[][]; .number == $pr and .base.repo.full_name == $repo) then "associated"
+        elif ([.[][]] | length) == 0 then "empty"
+        else "foreign" end')" || return 1
+  [[ "$associated" != associated ]] || return 0
+  [[ "$associated" == empty || "$associated" == foreign ]] || return 1
+  # Immutable force-push refs can outlive the commit-to-PR association.
+  # GraphQL variables are evaluated by the server.
+  # shellcheck disable=SC2016
+  history="$(gh api graphql --paginate --slurp \
+    -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F pr="$pr_number" \
+    -f query='query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
+      repository(owner:$owner,name:$name) { nameWithOwner pullRequest(number:$pr) {
+        number timelineItems(first:100,after:$endCursor,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT]) {
+          nodes { __typename ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } }
+          pageInfo { hasNextPage endCursor }
+        }
+      } }
+    }')" || return 1
+  jq -e --arg repo "$REPO" --argjson pr "$pr_number" --arg sha "$target_sha" '
+    if type != "array" or length == 0 then error("Missing force-push history") else
+      if any(.[]; ((.errors // []) | length) != 0
+          or .data.repository.nameWithOwner != $repo
+          or .data.repository.pullRequest.number != $pr) then error("Foreign force-push history") else
+        [.[] | .data.repository.pullRequest.timelineItems] as $pages
+        | if any($pages[]; (.nodes | type) != "array"
+            or (.pageInfo.hasNextPage | type) != "boolean"
+            or (.pageInfo.hasNextPage and ((.pageInfo.endCursor | type) != "string"))
+            or any(.nodes[]; .__typename != "HeadRefForcePushedEvent"
+              or ((.beforeCommit.oid | type) != "string") or ((.afterCommit.oid | type) != "string")
+              or ((.beforeCommit.oid | test("^[0-9a-f]{40}$")) | not)
+              or ((.afterCommit.oid | test("^[0-9a-f]{40}$")) | not)))
+          or $pages[-1].pageInfo.hasNextPage != false
+          or any($pages[:-1][]; .pageInfo.hasNextPage != true)
+          or (([$pages[] | select(.pageInfo.hasNextPage) | .pageInfo.endCursor] | unique | length)
+            != ([$pages[] | select(.pageInfo.hasNextPage)] | length))
+          then error("Incomplete or invalid force-push history")
+          else any($pages[].nodes[]; .beforeCommit.oid == $sha or .afterCommit.oid == $sha) end
+      end
+    end' <<< "$history" >/dev/null
 }
 
 # PR-state event payloads carry the exact head. Revoke its prior

@@ -2200,6 +2200,7 @@ HTML_CODE_CONTAINER_TAGS = frozenset(
         "xmp",
     }
 )
+HTML_INLINE_FORMATTING_TAGS = frozenset("span a b strong em i u s sub sup".split())
 RAW_HTML_TEXT_TAGS = frozenset(
     {"iframe", "noembed", "noframes", "script", "style", "textarea", "title", "xmp"}
 )
@@ -3184,6 +3185,8 @@ def _mask_markdown_link_destinations(text: str) -> str:
 
 def _mask_markdown_link_destinations_in_markdown(text: str) -> str:
     """Mask inline Markdown destinations/titles before scanning HTML tokens."""
+    if "[" not in text:
+        return text
     spans: list[tuple[int, int]] = []
     links = _MarkdownLinkIndex(text)
     label_openings: list[int] = []
@@ -3224,6 +3227,8 @@ def _mask_markdown_link_metadata(text: str) -> str:
 
 
 def _mask_markdown_link_metadata_in_markdown(text: str) -> str:
+    if "[" not in text:
+        return text
     text = _mask_markdown_link_destinations_in_markdown(text)
     spans = _reference_definition_spans(*_reference_definition_scan_text(text))
     chunks: list[str] = []
@@ -3434,6 +3439,21 @@ def _mask_code_line(line: str) -> str:
 
 
 def _actual_metadata(
+    text: str,
+    html_scan: str | None = None,
+    raw_html_blocks: list[tuple[int, int]] | None = None,
+) -> str:
+    if html_scan is None and raw_html_blocks is None:
+        return _cached_actual_metadata(text)
+    return _scan_actual_metadata(text, html_scan, raw_html_blocks)
+
+
+@lru_cache(maxsize=8)
+def _cached_actual_metadata(text: str) -> str:
+    return _scan_actual_metadata(text)
+
+
+def _scan_actual_metadata(
     text: str,
     html_scan: str | None = None,
     raw_html_blocks: list[tuple[int, int]] | None = None,
@@ -3650,6 +3670,8 @@ def _visible_html(
     mask_raw_html_text: bool = False,
     preserve_markup_lines: bool = False,
     preserve_markdown_comments: bool = False,
+    preserve_inline_code: bool = False,
+    preserve_inline_markup: bool = False,
 ) -> str:
     """Mask only container spans, preserving visible prefixes and suffixes."""
     metadata = text if markdown_preprocessed else _actual_metadata(text)
@@ -4034,7 +4056,11 @@ def _visible_html(
                     if normalized_tag in HTML_BLOCK_TAGS or normalized_tag == "br"
                     else inline_markup_spans
                 )
-                destination.append((start, end))
+                if not (
+                    preserve_inline_markup
+                    and normalized_tag in HTML_INLINE_FORMATTING_TAGS
+                ):
+                    destination.append((start, end))
             if namespace == "html" and (
                 normalized_tag in HTML_CODE_CONTAINER_TAGS
                 or normalized_tag in {"details", "summary"}
@@ -4200,7 +4226,11 @@ def _visible_html(
                     destination = (
                         block_markup_spans if separates else inline_markup_spans
                     )
-                    destination.append((start, markup[2]))
+                    if not (
+                        preserve_inline_markup
+                        and normalized_tag in HTML_INLINE_FORMATTING_TAGS
+                    ):
+                        destination.append((start, markup[2]))
             if matching_index is not None:
                 markup = _html_markup_at(scan, start)
                 self._pop_elements(
@@ -4222,9 +4252,39 @@ def _visible_html(
     markup_spans = list(escaped_markup_spans) + inline_markup_spans
     spans.extend(attribute_spans)
     spans.extend(block_markup_spans)
+    inline_code_tokens = set()
+    if preserve_inline_code:
+        line_breaks = [match.start() for match in re.finditer(r"[\r\n]", text)]
+        unsupported_counts = [0]
+        for token in tokens:
+            unsupported_counts.append(
+                unsupported_counts[-1]
+                + (
+                    token[2] not in {"comment", "code-open", "code-close"}
+                    or (token[2] != "comment" and token[4] != "code")
+                )
+            )
+        pending_codes = []
+        for index, token in enumerate(tokens):
+            begin, end, kind, _expanded, tag = token
+            if kind == "code-open":
+                pending_codes.append((index, begin, tag))
+            elif kind == "code-close":
+                for position in range(len(pending_codes) - 1, -1, -1):
+                    opening, source_start, opened_tag = pending_codes[position]
+                    if opened_tag == tag:
+                        if tag == "code" and (
+                            bisect_left(line_breaks, end)
+                            == bisect_left(line_breaks, source_start)
+                            and unsupported_counts[index]
+                            == unsupported_counts[opening + 1]
+                        ):
+                            inline_code_tokens.update((source_start, begin))
+                        del pending_codes[position:]
+                        break
 
     def hidden_state() -> bool:
-        return bool(code_tags) or any(
+        return any(tag != "inline-code" for tag in code_tags) or any(
             not visible_open or (not item["expanded"] and not item["in_summary"])
             for item in details
         )
@@ -4237,13 +4297,16 @@ def _visible_html(
                 destination.append((token_start, token_end))
             continue
         if kind == "code-open":
-            code_tags.append(tag)
+            code_tags.append(
+                "inline-code" if token_start in inline_code_tokens else tag
+            )
         elif kind == "code-close":
+            closing_tag = "inline-code" if token_start in inline_code_tokens else tag
             for index in range(len(code_tags) - 1, -1, -1):
-                if code_tags[index] == tag:
+                if code_tags[index] == closing_tag:
                     del code_tags[index:]
                     break
-        elif code_tags:
+        elif any(tag != "inline-code" for tag in code_tags):
             continue
         elif kind == "details-open":
             details.append(
@@ -4601,6 +4664,9 @@ def _section_spans(body: str, coordinator_bound: bool = False):
         _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
     )
     priority_lines = _markdown_lines(_priority_projection(body))
+    diagnostic_rows, _unknown, _containers, container_boundaries = _markdown_document(
+        body
+    )
     starts: list[int] = []
     kinds: dict[int, str] = {}
     reviewed_counts = [0]
@@ -4617,11 +4683,19 @@ def _section_spans(body: str, coordinator_bound: bool = False):
             INLINE_SECURITY_MARKER.search(line)
             or (
                 SECURITY_MARKER_COMMENT.search(line)
-                and INLINE_SECURITY_MARKER.search(priority_lines[index])
+                and INLINE_SECURITY_MARKER.search(diagnostic_rows[index])
             )
         )
         for index, line in enumerate(lines)
     ]
+    # Container boundaries carry only source-row references. Security authority
+    # comes from the existing authenticated marker scan on each priority row.
+    for start, (_label, priority_rows) in container_boundaries:
+        if priority_rows and all(
+            0 <= row < len(lines) and inline_security_matches[row]
+            for row in priority_rows
+        ):
+            inline_security_matches[start] = True
     for index, _line in enumerate(lines):
         reviewed_counts.append(
             reviewed_counts[-1]
@@ -4975,6 +5049,8 @@ class _BudgetText(str):
 def _markdown_text(tokens):
     chunks = []
     code_chunks = {}
+    html_code_depth = 0
+    html_code_group = None
     stack = [(token, False) for token in reversed(tokens)]
     visited = 0
     while stack:
@@ -4996,15 +5072,28 @@ def _markdown_text(tokens):
                     return ref
                 return html.unescape(ref).translate(EVIDENCE_LINE_SEPARATORS)
 
+            if html_code_depth:
+                code_chunks[len(chunks)] = (in_link, html_code_group)
             chunks.append(VISIBLE_CHARACTER_REFERENCE.sub(decode, raw))
         elif kind == "codespan":
-            code_chunks[len(chunks)] = in_link
+            code_chunks[len(chunks)] = (
+                in_link,
+                html_code_group if html_code_depth else len(chunks),
+            )
             chunks.append(token.get("raw", ""))
         elif kind in ("softbreak", "linebreak"):
             chunks.append("\n")
         elif kind == "inline_html":
             raw = token.get("raw", "")
-            if SECURITY_MARKER_COMMENT.fullmatch(raw):
+            code_tag = re.fullmatch(r"<(/?)code(?:\s[^>]*)?>", raw, re.I)
+            if code_tag:
+                if code_tag.group(1):
+                    html_code_depth = max(0, html_code_depth - 1)
+                else:
+                    if not html_code_depth:
+                        html_code_group = len(chunks)
+                    html_code_depth += 1
+            elif not html_code_depth and SECURITY_MARKER_COMMENT.fullmatch(raw):
                 chunks.append(raw)
         elif kind not in (
             "codespan",
@@ -5025,19 +5114,32 @@ def _markdown_text(tokens):
     ]
     priority_starts = [start for start, _end in priorities]
     priority_ends = [end for _start, end in priorities]
+    code_ranges = {}
+    position = 0
+    for index, chunk in enumerate(chunks):
+        end = position + len(chunk)
+        if index in code_chunks:
+            group = code_chunks[index][1]
+            code_ranges[group] = (code_ranges.get(group, (position, end))[0], end)
+        position = end
     position = 0
     visible = []
     for index, chunk in enumerate(chunks):
         end = position + len(chunk)
         first = bisect_right(priority_ends, position)
         last = bisect_left(priority_starts, end) - 1
-        composed = first <= last and (
-            priorities[first][0] < position
-            or priorities[first][1] > end
-            or priorities[last][0] < position
-            or priorities[last][1] > end
+        group_start, group_end = (
+            code_ranges[code_chunks[index][1]]
+            if index in code_chunks
+            else (position, end)
         )
-        if index not in code_chunks or code_chunks[index] or composed:
+        composed = first <= last and (
+            priorities[first][0] < group_start
+            or priorities[first][1] > group_end
+            or priorities[last][0] < group_start
+            or priorities[last][1] > group_end
+        )
+        if index not in code_chunks or code_chunks[index][0] or composed:
             visible.append(chunk)
         position = end
     return "".join(visible)
@@ -5071,6 +5173,8 @@ def _parse_markdown_document(text, mistune):
         mask_raw_html_text=True,
         preserve_markup_lines=True,
         preserve_markdown_comments=True,
+        preserve_inline_code=True,
+        preserve_inline_markup=True,
     )
     source = source.replace("\r\n", "\n").replace("\r", "\n")
     count = len(_markdown_lines(text))
@@ -5239,7 +5343,14 @@ def _parse_markdown_document(text, mistune):
                     if priority is not None:
                         # A qualified container starts at its original source
                         # row, including a table header preceding the finding.
-                        container_boundaries[first] = priority
+                        container_boundaries[first] = (
+                            priority,
+                            tuple(
+                                row
+                                for row, label in mapped
+                                if PRIORITY_RESULT.match(label)
+                            ),
+                        )
                     for row, label in mapped:
                         if row < count:
                             rows[row] = label
@@ -5279,7 +5390,7 @@ def _priority_projection(text):
         line if index not in uncertain | container_rows else ""
         for index, line in enumerate(rows)
     ]
-    for row, label in container_boundaries:
+    for row, (label, _priority_rows) in container_boundaries:
         if row not in uncertain:
             lines[row] = label
     return "\n".join(lines) + (" " if lines and not lines[-1] else "")

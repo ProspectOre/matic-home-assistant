@@ -75,7 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.issue.number }}
           POLICY_REF: ${{ github.workflow_sha }}
-          EXPECTED_REVIEW_SECTIONS_SHA256: '740081c884198ba31f7d12c804113d07e83ee54dfe24851e4a45cdba85754f22'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '45bb257705fe9cab0445ef0ca862d0f39eccc1dcb3c98681d08855e32750f71c'
         shell: bash
         run: |
           set -euo pipefail
@@ -292,7 +292,7 @@ jobs:
                     elif ([.[][]] | length) == 0 then "empty"
                     else "foreign" end')" || return 1
               [[ "$associated" != associated ]] || return 0
-              [[ "$associated" == empty ]] || return 1
+              [[ "$associated" == empty || "$associated" == foreign ]] || return 1
               # Immutable force-push refs can outlive the commit-to-PR association.
               # GraphQL variables are evaluated by the server.
               # shellcheck disable=SC2016
@@ -594,16 +594,52 @@ jobs:
             sleep "$attempt"
           done
           commit_associated_with_pr() {
-            local target_sha="$1" associated
+            local target_sha="$1" associated history
             [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
             [[ "$target_sha" == "$live_head" ]] && return 0
             associated="$(gh api "repos/$EXPECTED_REPO/commits/$target_sha/pulls?per_page=100" --paginate --slurp \
-              | jq -ce --arg repo "$EXPECTED_REPO" --argjson pr "$TARGET_PR" '
+              | jq -er --arg repo "$EXPECTED_REPO" --argjson pr "$TARGET_PR" '
                   if type != "array" or any(.[]; type != "array") then
                     error("Invalid commit-associated PR pages")
-                  else any(.[][]; .number == $pr and .base.repo.full_name == $repo)
-                  end')" || return 1
-            [[ "$associated" == true ]]
+                  elif any(.[][]; .number == $pr and .base.repo.full_name == $repo) then "associated"
+                  elif ([.[][]] | length) == 0 then "empty"
+                  else "foreign" end')" || return 1
+            [[ "$associated" != associated ]] || return 0
+            [[ "$associated" == empty || "$associated" == foreign ]] || return 1
+            # Immutable force-push refs can outlive the commit-to-PR association.
+            # GraphQL variables are evaluated by the server.
+            # shellcheck disable=SC2016
+            history="$(gh api graphql --paginate --slurp \
+              -f owner="${EXPECTED_REPO%%/*}" -f name="${EXPECTED_REPO#*/}" -F pr="$TARGET_PR" \
+              -f query='query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
+                repository(owner:$owner,name:$name) { nameWithOwner pullRequest(number:$pr) {
+                  number timelineItems(first:100,after:$endCursor,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT]) {
+                    nodes { __typename ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                } }
+              }')" || return 1
+            jq -e --arg repo "$EXPECTED_REPO" --argjson pr "$TARGET_PR" --arg sha "$target_sha" '
+              if type != "array" or length == 0 then error("Missing force-push history") else
+                if any(.[]; ((.errors // []) | length) != 0
+                    or .data.repository.nameWithOwner != $repo
+                    or .data.repository.pullRequest.number != $pr) then error("Foreign force-push history") else
+                  [.[] | .data.repository.pullRequest.timelineItems] as $pages
+                  | if any($pages[]; (.nodes | type) != "array"
+                      or (.pageInfo.hasNextPage | type) != "boolean"
+                      or (.pageInfo.hasNextPage and ((.pageInfo.endCursor | type) != "string"))
+                      or any(.nodes[]; .__typename != "HeadRefForcePushedEvent"
+                        or ((.beforeCommit.oid | type) != "string") or ((.afterCommit.oid | type) != "string")
+                        or ((.beforeCommit.oid | test("^[0-9a-f]{40}$")) | not)
+                        or ((.afterCommit.oid | test("^[0-9a-f]{40}$")) | not)))
+                    or $pages[-1].pageInfo.hasNextPage != false
+                    or any($pages[:-1][]; .pageInfo.hasNextPage != true)
+                    or (([$pages[] | select(.pageInfo.hasNextPage) | .pageInfo.endCursor] | unique | length)
+                      != ([$pages[] | select(.pageInfo.hasNextPage)] | length))
+                    then error("Incomplete or invalid force-push history")
+                    else any($pages[].nodes[]; .beforeCommit.oid == $sha or .afterCommit.oid == $sha) end
+                end
+              end' <<< "$history" >/dev/null
           }
           commit_associated_with_pr "$event_head" || {
             echo "Signed relay event head is not associated with PR #$TARGET_PR." >&2
@@ -642,9 +678,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '3373831b06f257f447d8fa6aec9afd4b1983ea86ada834f9fadc8eb927df729e'
+          EXPECTED_SHA256: '0fbb0bef99bbee6182af8a35a56633cffcdf13bfdc15da156a5256791f336d81'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '740081c884198ba31f7d12c804113d07e83ee54dfe24851e4a45cdba85754f22'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '45bb257705fe9cab0445ef0ca862d0f39eccc1dcb3c98681d08855e32750f71c'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '4c29f1f8f88813f736c348c24f3315b1f53add80982f33642b1f7b0ba52bc1be'
         shell: bash
         run: |
@@ -692,16 +728,52 @@ jobs:
             write_pending_status "$pr_head" 'Loading canonical review policy'
           fi
           commit_associated_with_pr() {
-            local target_sha="$1" associated
+            local target_sha="$1" associated history
             [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
             [[ "$target_sha" == "$pr_head" ]] && return 0
             associated="$(gh api "repos/$REPO/commits/$target_sha/pulls?per_page=100" --paginate --slurp \
-              | jq -ce --arg repo "$REPO" --argjson pr "$PR_NUMBER" '
+              | jq -er --arg repo "$REPO" --argjson pr "$PR_NUMBER" '
                   if type != "array" or any(.[]; type != "array") then
                     error("Invalid commit-associated PR pages")
-                  else any(.[][]; .number == $pr and .base.repo.full_name == $repo)
-                  end')" || return 1
-            [[ "$associated" == true ]]
+                  elif any(.[][]; .number == $pr and .base.repo.full_name == $repo) then "associated"
+                  elif ([.[][]] | length) == 0 then "empty"
+                  else "foreign" end')" || return 1
+            [[ "$associated" != associated ]] || return 0
+            [[ "$associated" == empty || "$associated" == foreign ]] || return 1
+            # Immutable force-push refs can outlive the commit-to-PR association.
+            # GraphQL variables are evaluated by the server.
+            # shellcheck disable=SC2016
+            history="$(gh api graphql --paginate --slurp \
+              -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F pr="$PR_NUMBER" \
+              -f query='query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
+                repository(owner:$owner,name:$name) { nameWithOwner pullRequest(number:$pr) {
+                  number timelineItems(first:100,after:$endCursor,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT]) {
+                    nodes { __typename ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } }
+                    pageInfo { hasNextPage endCursor }
+                  }
+                } }
+              }')" || return 1
+            jq -e --arg repo "$REPO" --argjson pr "$PR_NUMBER" --arg sha "$target_sha" '
+              if type != "array" or length == 0 then error("Missing force-push history") else
+                if any(.[]; ((.errors // []) | length) != 0
+                    or .data.repository.nameWithOwner != $repo
+                    or .data.repository.pullRequest.number != $pr) then error("Foreign force-push history") else
+                  [.[] | .data.repository.pullRequest.timelineItems] as $pages
+                  | if any($pages[]; (.nodes | type) != "array"
+                      or (.pageInfo.hasNextPage | type) != "boolean"
+                      or (.pageInfo.hasNextPage and ((.pageInfo.endCursor | type) != "string"))
+                      or any(.nodes[]; .__typename != "HeadRefForcePushedEvent"
+                        or ((.beforeCommit.oid | type) != "string") or ((.afterCommit.oid | type) != "string")
+                        or ((.beforeCommit.oid | test("^[0-9a-f]{40}$")) | not)
+                        or ((.afterCommit.oid | test("^[0-9a-f]{40}$")) | not)))
+                    or $pages[-1].pageInfo.hasNextPage != false
+                    or any($pages[:-1][]; .pageInfo.hasNextPage != true)
+                    or (([$pages[] | select(.pageInfo.hasNextPage) | .pageInfo.endCursor] | unique | length)
+                      != ([$pages[] | select(.pageInfo.hasNextPage)] | length))
+                    then error("Incomplete or invalid force-push history")
+                    else any($pages[].nodes[]; .beforeCommit.oid == $sha or .afterCommit.oid == $sha) end
+                end
+              end' <<< "$history" >/dev/null
           }
           if [[ "${AUDIT_MODE:-false}" != true && "${EVENT_PR_NUMBER:-}" == "$PR_NUMBER" \
                 && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
