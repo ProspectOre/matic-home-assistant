@@ -4652,6 +4652,8 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
         _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
     )
     priority_lines = _markdown_lines(_priority_projection(rest))
+    structural_lines.extend([""] * (len(lines) - len(structural_lines)))
+    priority_lines.extend([""] * (len(lines) - len(priority_lines)))
     for first, _last, label, _kind in _markdown_document(rest)[4]:
         structural_lines[first] = label
     start = next(
@@ -4710,6 +4712,7 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
 def _section_spans(body: str, coordinator_bound: bool = False):
     original_lines = _markdown_lines(body)
     authority_lines = _markdown_lines(_commit_metadata(body))
+    authority_lines.extend([""] * (len(original_lines) - len(authority_lines)))
     # A section beginning inside an expanded container must not lose the
     # container context and acquire its copied footer as commit authority.
     original_lines = [
@@ -4723,7 +4726,9 @@ def _section_spans(body: str, coordinator_bound: bool = False):
     lines = _markdown_lines(
         _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
     )
+    lines.extend([""] * (len(original_lines) - len(lines)))
     priority_lines = _markdown_lines(_priority_projection(body))
+    priority_lines.extend([""] * (len(original_lines) - len(priority_lines)))
     diagnostic_rows, _unknown, _containers, container_boundaries, headings = (
         _markdown_document(body)
     )
@@ -5556,6 +5561,20 @@ def _parse_markdown_document(text, mistune):
             label = _markdown_text(token.get("children", ())).replace("\n", " ")
             end = token.get("_review_end", position)
             last = bisect_left(starts, end)
+            pending = list(token.get("children", ()))
+            code_heading = False
+            while pending:
+                child = pending.pop()
+                if child.get("type") == "codespan" or (
+                    child.get("type") == "inline_html"
+                    and re.match(r"<code(?:[ \t/>]|$)", child.get("raw", ""), re.I)
+                ):
+                    code_heading = True
+                pending.extend(child.get("children", ()))
+            if code_heading and last > first:
+                # Code text must never be erased to synthesize a protocol
+                # category. Blank only the diagnostic heading projection.
+                heading_nodes.append((first, last, "", "inert"))
             diagnostic_label = _DEFAULT_IGNORABLE.sub("", label)
             uncertain_heading = bool(
                 diagnostic_label != label
@@ -5563,7 +5582,8 @@ def _parse_markdown_document(text, mistune):
                 and not RESULT_HEADING.match(label)
             )
             if (
-                (RESULT_HEADING.match(label) or uncertain_heading)
+                not code_heading
+                and (RESULT_HEADING.match(label) or uncertain_heading)
                 and last > first
                 and not _html_visibility_ambiguous("\n".join(original_rows[first:last]))
             ):
@@ -5689,6 +5709,76 @@ def _priority_projection(text):
         if row not in uncertain:
             lines[row] = label
     return "\n".join(lines) + (" " if lines and not lines[-1] else "")
+
+
+@lru_cache(maxsize=8)
+def _security_details_priority_uncertain(text):
+    """Retain uncertainty when visible HTML defeats ordinary row ownership."""
+    source = _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(text)))
+    opening = re.search(r"<details(?:[ \t\r\n>])", source, re.I)
+    if opening is None or not _standalone_security_clean(source[: opening.start()]):
+        return False
+    if _html_visibility_ambiguous(source):
+        return False  # The caller already retains global HTML uncertainty.
+    if "![" in source:
+        # Inspect original Markdown with its reference definitions before
+        # destination masking can turn inert image syntax into a candidate.
+        rendered_rows = _markdown_document(text)[0]
+        if not any(
+            _PRIORITY_CANDIDATE.search(row) or _unicode_priority_uncertain(row)
+            for row in rendered_rows
+        ):
+            return False
+    fragment = source[opening.start() :]
+    summaries = []
+    _visible_html(fragment, mask_attributes=True, visible_summary_ranges=summaries)
+
+    def unowned_priority(raw, visible):
+        candidates = [
+            row
+            for row in _markdown_lines(visible)
+            if _PRIORITY_CANDIDATE.search(row) or _unicode_priority_uncertain(row)
+        ]
+        if not candidates:
+            return False
+        marker = SECURITY_MARKER_COMMENT.search(raw)
+        colocated = bool(
+            len(candidates) == 1
+            and len(re.findall(r"\[P[0-3]\]", visible, re.I)) == 1
+            and INLINE_SECURITY_MARKER.fullmatch(visible.strip())
+            and marker is not None
+            and not _backslash_escaped(raw, marker.start())
+        )
+        return not colocated
+
+    body_parts = []
+    position = 0
+    for start, end in sorted(summaries):
+        raw = fragment[start:end]
+        visible = _visible_html(
+            raw, mask_attributes=True, decode_entities=True, strip_inline_markup=True
+        )
+        if unowned_priority(raw, visible):
+            return True
+        body_parts.append(fragment[position:start])
+        body_parts.append(re.sub(r"[^\r\n]", " ", raw))
+        position = end
+    body_parts.append(fragment[position:])
+    body = "".join(body_parts)
+    visible_body = _visible_html(
+        body, mask_attributes=True, decode_entities=True, strip_inline_markup=True
+    )
+    # Body marker ownership is supported only for a direct physical row;
+    # nested elements cannot transfer a marker to another rendered unit.
+    direct_body = re.sub(r"\A<details\b[^>]*>", "", body, flags=re.I)
+    direct_body = re.sub(r"</details>[ \t\r\n]*\Z", "", direct_body, flags=re.I)
+    direct_body = re.sub(
+        r"<summary\b[^>]*>[ \t\r\n]*</summary>", "", direct_body, flags=re.I
+    )
+    raw_body = (
+        direct_body if INLINE_SECURITY_MARKER.fullmatch(direct_body.strip()) else ""
+    )
+    return unowned_priority(raw_body, visible_body)
 
 
 def _security_priority_uncertain(kind: str, text: str, finding: bool, projection=None):
@@ -6034,6 +6124,8 @@ def _classify_body(body: str) -> dict[str, Any]:
         priority_uncertain = _security_priority_uncertain(
             kind, text, security_finding, projection
         )
+        if kind == "security" and request_head is not None and not mapped_ordinary:
+            priority_uncertain |= _security_details_priority_uncertain(text)
         structured_unknown = mapped_unknown or any(
             first_row <= row < last_row for row in markdown_unknown
         )
