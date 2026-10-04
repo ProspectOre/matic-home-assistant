@@ -1670,6 +1670,8 @@ def _visible_html(
     decode_entities: bool = False,
     raw_html_blocks: list[tuple[int, int]] | None = None,
     strip_inline_markup: bool = False,
+    mask_raw_html_text: bool = False,
+    preserve_markup_lines: bool = False,
 ) -> str:
     """Mask only container spans, preserving visible prefixes and suffixes."""
     metadata = text if markdown_preprocessed else _actual_metadata(text)
@@ -2332,7 +2334,7 @@ def _visible_html(
     )
     raw_context = bytearray(len(text))
     escaped = bytearray()
-    if decode_entities:
+    if decode_entities or mask_raw_html_text:
         for raw_start, raw_end in (
             _html_block_spans(text) if raw_html_blocks is None else raw_html_blocks
         ):
@@ -2341,6 +2343,13 @@ def _visible_html(
 
     def visible_text(start: int, end: int) -> str:
         chunk = text[start:end]
+        if mask_raw_html_text:
+            chunk = "".join(
+                " "
+                if raw_context[start + index] and character not in "\r\n"
+                else character
+                for index, character in enumerate(chunk)
+            )
         if not decode_entities:
             return chunk
 
@@ -2375,7 +2384,7 @@ def _visible_html(
         if start < position:
             continue
         chunks.append(visible_text(position, start))
-        replacement = "" if remove_markup else " "
+        replacement = "" if remove_markup and not preserve_markup_lines else " "
         chunks.append(re.sub(r"[^\r\n]", replacement, text[start:end]))
         position = end
     chunks.append(visible_text(position, len(text)))
@@ -2528,12 +2537,14 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
     structural_lines = _markdown_lines(
         _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
     )
+    priority_lines = _markdown_lines(_priority_projection(rest))
     start = next(
         (
             i
             for i, line in enumerate(structural_lines)
             if RESULT_HEADING.match(line)
             or PRIORITY_RESULT.match(line)
+            or PRIORITY_RESULT.match(priority_lines[i])
             or AVAILABILITY.fullmatch(line)
             or SECURITY_MARKER.fullmatch(line)
             or INLINE_SECURITY_MARKER.fullmatch(line)
@@ -2596,14 +2607,7 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
     lines = _markdown_lines(
         _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
     )
-    priority_lines = _markdown_lines(
-        _visible_html(
-            _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(body))),
-            mask_attributes=True,
-            markdown_preprocessed=True,
-            decode_entities=True,
-        )
-    )
+    priority_lines = _markdown_lines(_priority_projection(body))
     starts: list[int] = []
     kinds: dict[int, str] = {}
     reviewed_counts = [0]
@@ -2868,6 +2872,47 @@ def _markdown_priority_text(text: str) -> str:
     return text
 
 
+def _priority_projection(text: str) -> str:
+    source = _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(text)))
+    source = _outside_html_blocks(source, _markdown_priority_text)
+    projection = _visible_html(
+        source,
+        mask_attributes=True,
+        markdown_preprocessed=True,
+        decode_entities=True,
+        strip_inline_markup=True,
+        mask_raw_html_text=True,
+        preserve_markup_lines=True,
+    )
+    # Removing the final inline tag must not remove its physical line. The
+    # section splitter indexes this view against the original Markdown rows.
+    if (
+        text
+        and not text.endswith(("\r", "\n"))
+        and (not projection or projection.endswith(("\r", "\n")))
+    ):
+        projection += " "
+    return projection
+
+
+def _security_priority_uncertain(kind: str, text: str, finding: bool) -> bool:
+    source = _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(text)))
+    if kind != "security" and not SECURITY_MARKER_COMMENT.search(source):
+        return False
+    projection = _priority_projection(text)
+    for match in re.finditer(
+        r"\[[ \t*_~]*P[ \t*_~\[]*[0-3](?:[ \t*_~]*\])?",
+        projection,
+        re.IGNORECASE,
+    ):
+        token = match.group()
+        if not finding or (
+            _markdown_priority_text(token) == token and not PRIORITY_RESULT.match(token)
+        ):
+            return True
+    return False
+
+
 def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     raw_section = section
     source = _without_inline_code(_actual_metadata(raw_section))
@@ -3104,23 +3149,6 @@ def classify_body(body: str) -> dict[str, Any]:
     raw_sections = _raw_sections(
         parsed_body, coordinator_bound=request_head is not None
     )
-    if SECURITY_MARKER_COMMENT.search(metadata) or any(
-        kind == "security" for kind, _ in raw_sections
-    ):
-        raw_blocks = _html_block_spans(metadata)
-        raw_ends = [end for _, end in raw_blocks]
-        for match in re.finditer(
-            r"\[[*_~]{0,6}P(?=[^\]\r\n]{0,24}[*_~])"
-            r"(?=[^\]\r\n]{0,24}[0-3])[^\]\r\n]{1,24}\]",
-            metadata,
-            re.IGNORECASE,
-        ):
-            block = bisect_right(raw_ends, match.start())
-            if block < len(raw_blocks) and raw_blocks[block][0] <= match.start():
-                continue
-            if _markdown_priority_text(match.group()) == match.group():
-                ambiguous = True
-                break
     # Coordinator request metadata already supplies an authenticated fallback;
     # a trailing footer is shared only for ordinary comments split by markers.
     shared_footer_ref = (
@@ -3162,6 +3190,7 @@ def classify_body(body: str) -> dict[str, Any]:
             EXPLICIT_ADVERSE.search(ordinary_text)
         )
         security_event, security_finding = _security_facts(kind, text)
+        priority_uncertain = _security_priority_uncertain(kind, text, security_finding)
         adverse_regular = bool(
             prefix_adverse
             or (
@@ -3187,7 +3216,9 @@ def classify_body(body: str) -> dict[str, Any]:
                 "kind": kind,
                 "body": text,
                 "has_result": has_result,
-                "regular_clean": regular_heading and clean and not ambiguous,
+                "regular_clean": regular_heading
+                and clean
+                and not (ambiguous or priority_uncertain),
                 "availability": availability,
                 "regular_adverse": adverse_regular,
                 "security_event": security_event,
@@ -3206,6 +3237,9 @@ def classify_body(body: str) -> dict[str, Any]:
                 ),
             }
         )
+        if priority_uncertain:
+            sections[-1]["parser_ambiguous"] = True
+            sections[-1]["security_uncertain"] = True
     if ambiguous:
         # Visibility repair can hide the protocol marker or category from the
         # rendered section classifier. Retain only uncertainty, never a finding
@@ -3215,7 +3249,9 @@ def classify_body(body: str) -> dict[str, Any]:
         )
         for section in sections:
             section["parser_ambiguous"] = True
-            section["security_uncertain"] = security_origin
+            section["security_uncertain"] = security_origin or section.get(
+                "security_uncertain", False
+            )
     return {"request_head": request_head, "sections": sections}
 
 
