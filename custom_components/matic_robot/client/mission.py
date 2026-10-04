@@ -33,7 +33,7 @@ def decode_mission_client_state(payload: bytes) -> MissionClientState:
     Current firmware publishes the active labeled mission under root field 5,
     variant 4, and the complete canonical labeled-mission set under root field
     6. The decoder intentionally accepts only that observed active variant and
-    exact labeled-mission shape; another variant leaves the active floor
+    unambiguous labeled-mission fields; another variant leaves the active floor
     unknown so callers fail closed instead of guessing.
     """
     if len(payload) > MAX_MISSION_CLIENT_STATE_BYTES:
@@ -47,8 +47,13 @@ def decode_mission_client_state(payload: bytes) -> MissionClientState:
     canonical_entries = _bytes_values(_decode_bounded_fields(canonical_values[0]), 1)
     if not canonical_entries or len(canonical_entries) > MAX_MAPPED_FLOORS:
         raise DecodeError("mission client state has an invalid floor count")
-    mapped_floors = tuple(_decode_labeled_mission(value) for value in canonical_entries)
-    by_id = {floor.mission_id: floor for floor in mapped_floors}
+    labeled_floors = tuple(
+        _decode_labeled_mission(value) for value in canonical_entries
+    )
+    mapped_floors = tuple(floor for floor, _label_type in labeled_floors)
+    by_id = {
+        floor.mission_id: (floor, label_type) for floor, label_type in labeled_floors
+    }
     if len(by_id) != len(mapped_floors):
         raise DecodeError("mission client state repeats a floor identity")
 
@@ -62,17 +67,17 @@ def decode_mission_client_state(payload: bytes) -> MissionClientState:
             and isinstance(active_fields[0].value, bytes)
         ):
             decoded_active = _decode_labeled_mission(active_fields[0].value)
-            canonical = by_id.get(decoded_active.mission_id)
-            if canonical != decoded_active:
+            canonical = by_id.get(decoded_active[0].mission_id)
+            if canonical is None or canonical != decoded_active:
                 raise DecodeError(
                     "active mission does not match the canonical floor list"
                 )
-            active_floor = canonical
+            active_floor = canonical[0]
 
     return MissionClientState(active_floor, mapped_floors)
 
 
-def _decode_labeled_mission(payload: bytes) -> MappedFloor:
+def _decode_labeled_mission(payload: bytes) -> tuple[MappedFloor, int | None]:
     try:
         fields = _decode_bounded_fields(payload)
     except DecodeError as err:
@@ -81,7 +86,8 @@ def _decode_labeled_mission(payload: bytes) -> MappedFloor:
         raise DecodeError("labeled mission has an invalid shape") from err
     mission_values = _bytes_values(fields, 1)
     label_values = _bytes_values(fields, 2)
-    if len(fields) != 2 or len(mission_values) != 1 or len(label_values) != 1:
+    known_fields = tuple(field for field in fields if field.number in (1, 2))
+    if len(known_fields) != 2 or len(mission_values) != 1 or len(label_values) != 1:
         raise DecodeError("labeled mission has an invalid shape")
     mission = mission_values[0]
     if len(mission) > MAX_MISSION_IDENTITY_BYTES:
@@ -89,14 +95,24 @@ def _decode_labeled_mission(payload: bytes) -> MappedFloor:
     mission_id = decode_slam_mission_id(mission)
     if mission_id is None:
         raise DecodeError("labeled mission has an invalid identity")
-    label = _decode_floor_label(label_values[0])
-    return MappedFloor(mission_id, label, hashlib.sha256(mission).hexdigest())
+    label, label_type = _decode_floor_label(label_values[0])
+    return MappedFloor(
+        mission_id, label, hashlib.sha256(mission).hexdigest()
+    ), label_type
 
 
-def _decode_floor_label(payload: bytes) -> str:
+def _decode_floor_label(payload: bytes) -> tuple[str, int | None]:
     fields = _decode_bounded_fields(payload)
+    known_fields = tuple(field for field in fields if field.number in (1, 2))
+    if len(known_fields) != 1:
+        raise DecodeError("floor label has an invalid shape")
+    field = known_fields[0]
+    if field.number == 1 and field.wire_type == 0 and isinstance(field.value, int):
+        # The numeric label's meaning is unknown. Preserve its discriminator for
+        # active/canonical agreement, but never use it as a floor identity.
+        return "Floor", field.value
     values = _bytes_values(fields, 2)
-    if len(fields) != 1 or len(values) != 1:
+    if len(values) != 1:
         raise DecodeError("floor label has an invalid shape")
     encoded = values[0]
     if not encoded or len(encoded) > MAX_FLOOR_LABEL_BYTES:
@@ -111,7 +127,7 @@ def _decode_floor_label(payload: bytes) -> str:
         or any(not character.isprintable() for character in label)
     ):
         raise DecodeError("floor label is not safe to display")
-    return label
+    return label, None
 
 
 def _bytes_values(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]:
