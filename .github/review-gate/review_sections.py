@@ -310,10 +310,16 @@ HTML_SPECIAL_TAGS = frozenset(
 HTML_ITEM_START_BOUNDARY_TAGS = HTML_SPECIAL_TAGS - {"address", "div", "p"}
 HTML_SCOPE_BOUNDARY_TAGS = HTML_BUTTON_SCOPE_BOUNDARY_TAGS - {"button"}
 HTML_IN_BODY_IGNORED_START_TAGS = frozenset(
-    "caption col colgroup frame head tbody td tfoot th thead tr".split()
+    ("body caption col colgroup frame frameset head html "
+     "tbody td tfoot th thead tr").split()
 )
 HTML_TABLE_CONTEXT_TAGS = frozenset(
     "caption colgroup table tbody td tfoot th thead tr".split()
+)
+HTML_FOREIGN_BREAKOUT_TAGS = frozenset(
+    ("b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 "
+     "head hr i img li listing menu meta nobr ol p pre ruby s small span strong "
+     "strike sub sup table tt u ul var").split()
 )
 HTML_ITEM_TAGS = frozenset({"li", "dt", "dd"})
 HTML_IMPLIED_END_TAGS = frozenset(
@@ -349,6 +355,9 @@ HTML_BLOCK_RAW_END = re.compile(r"</(?:pre|script|style|textarea)>", re.I)
 HTML_ATTRIBUTE_NAME = re.compile(r"[A-Za-z_:][A-Za-z0-9_.:-]*")
 VISIBLE_CHARACTER_REFERENCE = re.compile(
     r"&(?:#[xX][0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);?"
+)
+NON_MARKDOWN_LINE_SEPARATORS = str.maketrans(
+    "\v\f\x1c\x1d\x1e\x85\u2028\u2029", " " * 8
 )
 EVIDENCE_LINE_SEPARATORS = str.maketrans(
     "\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029", " " * 10
@@ -1691,6 +1700,9 @@ def _visible_html(
             super().__init__(convert_charrefs=False)
             self.open_elements: list[tuple[str, str, bool]] = []
             self.body_contexts: list[bool] = []
+            self.table_modes: list[bool] = []
+            self.active_form_index: int | None = None
+            self.active_form_on_stack = False
             self.template_depth = 0
             self.direct_summaries: set[int] = set()
 
@@ -1723,8 +1735,12 @@ def _visible_html(
             self.direct_summaries.difference_update(
                 range(index, len(self.open_elements))
             )
+            if self.active_form_index is not None and self.active_form_index >= index:
+                # Implicit closure removes the node, but not the HTML form pointer.
+                self.active_form_on_stack = False
             del self.open_elements[index:]
             del self.body_contexts[index:]
+            del self.table_modes[index:]
 
         def _summary_parent_is_details(self) -> bool:
             if not self.open_elements:
@@ -1758,7 +1774,30 @@ def _visible_html(
                 not self.body_contexts or self.body_contexts[-1]
             )
 
-        def _start_tag_namespace(self, tag: str) -> str:
+        def _table_insertion_index(self) -> int | None:
+            if not self.table_modes or not self.table_modes[-1]:
+                return None
+            return next(
+                (index for index in range(len(self.open_elements) - 1, -1, -1)
+                 if self.open_elements[index][:2] == ("table", "html")),
+                None,
+            )
+
+        def _ignore_start_markup(self, start: int) -> None:
+            if strip_inline_markup:
+                inline_markup_spans.append(
+                    (start, start + len(self.get_starttag_text()))
+                )
+
+        def _ignore_end_markup(self, start: int) -> None:
+            if strip_inline_markup:
+                markup = _html_markup_at(scan, start)
+                if markup is not None:
+                    inline_markup_spans.append((start, markup[2]))
+
+        def _start_tag_namespace(
+            self, tag: str, attrs: list[tuple[str, str | None]]
+        ) -> str:
             if not self.open_elements:
                 parent_tag, parent_namespace, parent_html_integration = (
                     "",
@@ -1779,6 +1818,25 @@ def _visible_html(
                     and tag not in {"mglyph", "malignmark"}
                 )
 
+            if not process_as_html and (
+                tag in HTML_FOREIGN_BREAKOUT_TAGS
+                or (tag == "font" and any(
+                    name in {"color", "face", "size"} for name, _ in attrs
+                ))
+            ):
+                index = len(self.open_elements) - 1
+                while index >= 0:
+                    element, namespace, integration = self.open_elements[index]
+                    if (namespace == "html"
+                            or (namespace == "svg"
+                                and element in SVG_HTML_INTEGRATION_POINT_TAGS)
+                            or (namespace == "math" and (
+                                integration
+                                or element in MATHML_TEXT_INTEGRATION_POINT_TAGS))):
+                        break
+                    index -= 1
+                self._pop_elements(index + 1, self._offset(), self._offset())
+                return self._start_tag_namespace(tag, attrs)
             if not process_as_html:
                 return parent_namespace
             if tag == "svg":
@@ -1873,17 +1931,27 @@ def _visible_html(
                     attribute_end = start + len(tag_text) - 1
                     if attribute_start < attribute_end:
                         attribute_spans.append((attribute_start, attribute_end))
-            namespace = self._start_tag_namespace(normalized_tag)
+            namespace = self._start_tag_namespace(normalized_tag, attrs)
             if (namespace == "html"
                     and normalized_tag in HTML_IN_BODY_IGNORED_START_TAGS
-                    and (normalized_tag in {"frame", "head"}
+                    and (normalized_tag in {"body", "frame", "frameset", "head", "html"}
                          or self._in_body_insertion_context())):
-                # Ignored tags create neither a parent nor a rendered separator.
-                if strip_inline_markup:
-                    inline_markup_spans.append(
-                        (start, start + len(self.get_starttag_text()))
-                    )
+                # Review bodies are fragments: document wrappers cannot create
+                # children or enable frameset insertion in the existing body.
+                self._ignore_start_markup(start)
                 return
+            table_mode = bool(self.table_modes and self.table_modes[-1])
+            if namespace == "html" and normalized_tag == "form":
+                if self.template_depth == 0 and self.active_form_index is not None:
+                    self._ignore_start_markup(start)
+                    return
+            if (namespace == "html" and normalized_tag == "table"
+                    and self.template_depth == 0):
+                table_index = self._table_insertion_index()
+                if table_index is not None:
+                    # In-table insertion closes the current table and then
+                    # reprocesses the start in its parent's insertion context.
+                    self._pop_elements(table_index, start, start)
             if (
                 namespace == "html"
                 and normalized_tag == "summary"
@@ -1978,10 +2046,25 @@ def _visible_html(
                     in_body = False
                 elif normalized_tag == "template":
                     self.template_depth += 1
+                in_table = bool(self.table_modes and self.table_modes[-1])
+                if (namespace != "html"
+                        or normalized_tag in {"caption", "td", "th", "template"}):
+                    in_table = False
+                elif normalized_tag == "table":
+                    in_table = True
                 self.open_elements.append(
                     (normalized_tag, namespace, mathml_html_integration)
                 )
                 self.body_contexts.append(in_body)
+                self.table_modes.append(in_table)
+                if namespace == "html" and normalized_tag == "form":
+                    if self.template_depth == 0:
+                        self.active_form_index = len(self.open_elements) - 1
+                        self.active_form_on_stack = True
+                    if table_mode:
+                        # In-table forms immediately leave the stack, including
+                        # in templates; only ordinary parsing sets the pointer.
+                        self._pop_elements(len(self.open_elements) - 1, start, start)
 
         def handle_startendtag(
             self, tag: str, attrs: list[tuple[str, str | None]]
@@ -2015,11 +2098,42 @@ def _visible_html(
                 if matching_index is not None
                 else "html"
             )
+            if matching_namespace == "html" and normalized_tag == "form":
+                if self.template_depth == 0:
+                    form_index = self.active_form_index
+                    on_stack = self.active_form_on_stack
+                    self.active_form_index = None
+                    self.active_form_on_stack = False
+                    if (form_index is None or not on_stack
+                            or self._element_in_scope("form") != form_index):
+                        self._ignore_end_markup(start)
+                        return
+                    self._generate_implied_end_tags()
+                    # HTML removes only the active form node. Descendants stay
+                    # open and keep their existing summary visibility identity.
+                    del self.open_elements[form_index]
+                    del self.body_contexts[form_index]
+                    del self.table_modes[form_index]
+                    self.direct_summaries = {
+                        index - 1 if index > form_index else index
+                        for index in self.direct_summaries
+                    }
+                    if strip_inline_markup:
+                        markup = _html_markup_at(scan, start)
+                        if markup is not None:
+                            block_markup_spans.append((start, markup[2]))
+                    return
+                matching_index = self._element_in_scope("form")
+                if matching_index is None:
+                    self._ignore_end_markup(start)
+                    return
+                self._generate_implied_end_tags()
             if matching_namespace == "html" and (
                 normalized_tag in HTML_ITEM_TAGS or normalized_tag == "button"
             ):
                 matching_index = self._element_in_scope(normalized_tag)
                 if matching_index is None:
+                    self._ignore_end_markup(start)
                     return
             if (
                 strip_inline_markup
@@ -2204,6 +2318,7 @@ def _visible_html(
 
 def _commit_metadata(text: str) -> str:
     """Keep commit authority outside expandable, commented and code examples."""
+    text = text.translate(NON_MARKDOWN_LINE_SEPARATORS)
     metadata = _visible_html(
         _actual_metadata(text), visible_open=False, mask_attributes=True
     )
@@ -2776,6 +2891,9 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
 
 
 def classify_body(body: str) -> dict[str, Any]:
+    # CommonMark line endings are CR/LF. Other splitlines() separators are
+    # inline whitespace, consistently with decoded HTML character references.
+    body = body.translate(NON_MARKDOWN_LINE_SEPARATORS)
     parsed_body, request_head = _coordinator_body(body)
     raw_sections = _raw_sections(
         parsed_body, coordinator_bound=request_head is not None

@@ -534,10 +534,56 @@ head_prefix_resolves() {
 }
 
 base_change_marker_exists() {
-  local statuses
+  # A new authenticated review can recover a known invalidation on this head
+  # only when it covers the unchanged current comparison strictly afterward.
+  local verdict="$1" statuses markers marker metadata marker_base embedded_at
+  local marker_at created_at updated_at verdict_at target_url prefix run_id run relationship
   statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)" || exit 1
-  printf '%s\n' "$statuses" | jq -e --arg context "$REVIEW_BASE_CONTEXT" --arg pr "$pr_number" '
-    any(.[][]; .context == $context and .state == "pending" and ((.description // "") | (startswith("Base changed for PR #" + $pr + " (") or startswith("Base changed for PR #" + $pr + " at base "))))' >/dev/null
+  markers="$(printf '%s\n' "$statuses" | jq -c --arg context "$REVIEW_BASE_CONTEXT" --arg pr "$pr_number" '
+    [.[][] | select(.context == $context and .state == "pending")
+      | select((.description // "") | (startswith("Base changed for PR #" + $pr + " (") or startswith("Base changed for PR #" + $pr + " at base ")))]')" || exit 1
+  [[ "$markers" != '[]' ]] || return 1
+  [[ "$verdict" != null ]] || return 0
+  verdict_at="$(normalize_timestamp "$(jq -r '.at // empty' <<< "$verdict")")" || return 0
+  [[ -n "$verdict_at" ]] || return 0
+  relationship="$(gh api "repos/$REPO/compare/$base_sha...$head_sha" --jq '.status')" || exit 1
+  [[ "$relationship" == ahead || "$relationship" == identical ]] || return 0
+  prefix="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/"
+  while IFS= read -r marker; do
+    jq -e '.creator.login == "github-actions[bot]" and .creator.type == "Bot"
+      and .creator.id == 41898282' <<< "$marker" >/dev/null || return 0
+    metadata="$(jq -r --arg pr "$pr_number" '
+      .description | capture("^Base changed for PR #" + $pr +
+        "(?: [(](?<modern>[0-9a-f]{40})[)]| at base (?<legacy>[0-9a-f]{40})(?: at (?<at>[^;]+))?); push a new head (?:for fresh review|before @codex review)[.]?$")
+      | [(.modern // .legacy), (.at // "")] | @tsv' <<< "$marker")" || return 0
+    [[ -n "$metadata" ]] || return 0
+    IFS=$'\t' read -r marker_base embedded_at <<< "$metadata"
+    [[ "$marker_base" == "$base_sha" ]] || return 0
+    created_at="$(normalize_timestamp "$(jq -r '.created_at // empty' <<< "$marker")")" || return 0
+    updated_at="$(normalize_timestamp "$(jq -r '.updated_at // empty' <<< "$marker")")" || return 0
+    [[ -n "$created_at" && -n "$updated_at" ]] || return 0
+    marker_at="$created_at"
+    if [[ "$updated_at" > "$marker_at" ]]; then marker_at="$updated_at"; fi
+    if [[ -n "$embedded_at" ]]; then
+      embedded_at="$(normalize_timestamp "$embedded_at")" || return 0
+      if [[ "$embedded_at" > "$marker_at" ]]; then marker_at="$embedded_at"; fi
+    fi
+    [[ "$verdict_at" > "$marker_at" ]] || return 0
+    target_url="$(jq -r '.target_url // empty' <<< "$marker")" || return 0
+    [[ "$target_url" == "$prefix"* ]] || return 0
+    run_id="${target_url#"$prefix"}"
+    [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || return 0
+    run="$(gh api "repos/$REPO/actions/runs/$run_id")" || exit 1
+    jq -e --arg id "$run_id" --arg repo "$REPO" --arg branch "$DEFAULT_BRANCH" --arg base "$base_sha" '
+      .id == ($id | tonumber) and .repository.full_name == $repo
+      and .head_branch == $branch and .head_sha == $base
+      and .status == "completed" and .conclusion == "success"
+      and ((.path == ".github/workflows/review-base-advance.yml" and .event == "push")
+        or (.path == ".github/workflows/review-base-change.yml" and .event == "pull_request_target")
+        or (.path == ".github/workflows/review-gate.yml"
+          and (.event == "pull_request_target" or .event == "workflow_dispatch" or .event == "issue_comment")))' <<< "$run" >/dev/null || return 0
+  done < <(jq -c '.[]' <<< "$markers")
+  return 1
 }
 
 latest_regular_issue_comment_at() {
@@ -1583,9 +1629,9 @@ require_clean_regular_snapshot() {
     stamp_status "$REVIEW_REVIEW_CONTEXT" pending \
       "Regular review invalidated at $latest_finding_at; PR #$pr_number; regular evidence changed; require a newer clean normal verdict"
   fi
-  if base_change_marker_exists; then
-    stamp_review_gate pending "Base changed; push a new head for a fresh regular review"
-    echo "The base-change marker requires a new PR head and regular review."
+  if base_change_marker_exists "$verdict"; then
+    stamp_review_gate pending "Waiting for fresh regular review of the current base"
+    echo "The base-change marker is not covered by authenticated post-invalidation review."
     gate_pending
   fi
 
