@@ -24,17 +24,28 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
+      - name: Install native Home Assistant media libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg libturbojpeg0
       - name: Install the actual Home Assistant release and runtime dependencies
         run: |
           python -m venv .compat-venv
           .compat-venv/bin/python - <<'PY'
           import os
+          import json
           import subprocess
           import sys
           import tomllib
           from pathlib import Path
           dependencies = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
           subprocess.run([sys.executable, "-m", "pip", "install", f"homeassistant=={os.environ['HA_VERSION']}", *dependencies], check=True)
+          # HA 2026.7's USB dependency imports serialx's ESPHome transport before
+          # ESPHome is loaded; install the version required by this HA release.
+          import homeassistant
+          esphome = Path(homeassistant.__file__).parent / "components/esphome/manifest.json"
+          requirement = next(item for item in json.loads(esphome.read_text())["requirements"] if item.startswith("aioesphomeapi=="))
+          subprocess.run([sys.executable, "-m", "pip", "install", requirement], check=True)
           PY
       - name: Verify the source before the fix
         run: |

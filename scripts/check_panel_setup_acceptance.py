@@ -16,6 +16,7 @@ import aiohttp
 from homeassistant import bootstrap, loader
 from homeassistant.components import frontend
 from homeassistant.core import HomeAssistant
+from homeassistant.setup import async_setup_component
 
 
 class SetupErrors(logging.Handler):
@@ -50,12 +51,13 @@ async def check(config_dir: Path, expect_safe_area_error: bool) -> None:
                 },
                 "http": {"server_host": "127.0.0.1", "server_port": 8123},
                 "frontend": {},
-                "matic_robot": {},
             },
             hass,
         )
         assert configured is hass, "Home Assistant bootstrap failed"
         assert "frontend" in hass.config.components, "Frontend did not load"
+        # Config-entry integrations are loaded by HA's component loader, not YAML.
+        await async_setup_component(hass, "matic_robot", {})
         loaded = "matic_robot" in hass.config.components
         safe_area_errors = [
             error
@@ -97,6 +99,7 @@ async def check(config_dir: Path, expect_safe_area_error: bool) -> None:
             assert len(services) == 20
             assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
             await hass.async_start()
+            await hass.async_block_till_done()
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     "http://127.0.0.1:8123" + matic_frontend.MATIC_MAP_STUDIO_V4_PATH
