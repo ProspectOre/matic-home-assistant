@@ -2178,7 +2178,7 @@ COORDINATOR_PRELUDE = re.compile(
     r" Assess related cases together; omit style-only preferences\.)?"
     r"[ \t]*\r?\n[ \t\r\n]*)?"
     r"<!--[ \t]*review-request:v2[ \t]+head=(?P<head>[0-9a-f]{40})[ \t]+"
-    r"base=[0-9a-f]{40}[ \t]*-->[ \t]*(?:\r?\n|$)",
+    r"base=(?P<base>[0-9a-f]{40})[ \t]*-->[ \t]*(?:\r?\n|$)",
     re.I | re.S,
 )
 _PRIVATE_EVIDENCE = re.compile(
@@ -6366,6 +6366,13 @@ def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool
         bare_severity = bool(re.search(
             r"(?i)\bP[0-3]\b", _priority_projection(without_links)
         ))
+        # A rendered line-leading severity is a result label even when its
+        # visible characters span links. Explanatory inline link labels stay
+        # neutral; destinations and code remain absent from the projection.
+        bare_severity = bare_severity or bool(re.search(
+            r"(?im)^[ \t]*(?:[-+*][ \t]+|[0-9]+[.)][ \t]+)?P[0-3]\b",
+            severity_text,
+        ))
     severity = bool(
         SECURITY_SEVERITY.search(severity_text)
         or (heading and re.search(r"(?i)\[P[0-3]\]", severity_text))
@@ -6719,6 +6726,38 @@ def classify_event(event: dict[str, Any]) -> dict[str, Any]:
         return _classify_event(event)
 
 
+def classify_native_event(
+    event: dict[str, Any], head: str, base: str,
+) -> dict[str, Any]:
+    """Project authenticated immutable native targets under the shared budget."""
+    if not all(re.fullmatch(r"[0-9a-f]{40}", value) for value in (head, base)):
+        raise ValueError("Native event head and base must be exact commit IDs")
+    _markdown_packages()
+    with _MarkdownDeadline():
+        def bind(body):
+            prelude = COORDINATOR_PRELUDE.match(body)
+            if (prelude is not None
+                    and prelude.group("head").lower() == head
+                    and prelude.group("base").lower() == base
+                    and _coordinator_body(body)[1] == head):
+                return body
+            return (
+                "@codex review\n<!-- review-request:v2 head=" + head
+                + " base=" + base + " -->\n\n" + body
+            )
+
+        projected = {
+            "action": event.get("action", ""),
+            "comment": {"body": bind((event.get("comment") or {}).get("body") or "")},
+            "changes": {"body": {"from": bind(
+                ((event.get("changes") or {}).get("body") or {}).get("from") or ""
+            )}},
+        }
+        result = _classify_event(projected)
+        result["native_input"] = projected
+        return result
+
+
 def _classify_event(event: dict[str, Any]) -> dict[str, Any]:
     action = event.get("action", "")
     comment = event.get("comment") or {}
@@ -6747,7 +6786,14 @@ def main() -> int:
     parser.add_argument(
         "--records", action="store_true", help="Annotate live API records from stdin"
     )
+    parser.add_argument(
+        "--native-head", help="Authenticated immutable native event head"
+    )
+    parser.add_argument("--native-base", help="Authenticated native event base")
     args = parser.parse_args()
+    if (bool(args.native_head) != bool(args.native_base)
+            or (args.records and args.native_head)):
+        parser.error("Native head/base require an event and must be supplied together")
     try:
         if args.records:
 
@@ -6780,7 +6826,9 @@ def main() -> int:
         if args.event is None:
             parser.error("an event path or --records is required")
         event = json.loads(args.event.read_text(encoding="utf-8"))
-        print(json.dumps(classify_event(event), separators=(",", ":")))
+        result = (classify_native_event(event, args.native_head, args.native_base)
+                  if args.native_head else classify_event(event))
+        print(json.dumps(result, separators=(",", ":")))
     except (OSError, ValueError, TypeError, ImportError) as exc:
         print(f"Could not classify review event sections: {exc}", file=sys.stderr)
         return 1

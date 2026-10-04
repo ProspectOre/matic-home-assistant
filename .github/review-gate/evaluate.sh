@@ -472,18 +472,16 @@ if [[ -f "$event_path" ]] && [[ "$event_name" == issue_comment ||
     # event payload rather than an issue-comment coordinator marker. Give the
     # canonical classifier that authenticated target as its fallback owner,
     # while preserving any explicit current/prior section refs independently.
-    review_sections_input="$(jq -c --arg head "$event_head_sha" --arg base "$base_sha" '
-      def bind($body):
-        if ($body | startswith("@codex review")) then $body
-        else "@codex review\n<!-- review-request:v2 head=" + $head + " base=" + $base + " -->\n\n" + $body
-        end;
+    review_sections_input="$(jq -c '
       {
         action: (if ((.changes.body.from // "") | length) > 0 then "edited" else "created" end),
-        comment: {body: bind(.review.body // .comment.body // "")},
-        changes: {body: {from: bind(.changes.body.from // "")}}
+        comment: {body: (.review.body // .comment.body // "")},
+        changes: {body: {from: (.changes.body.from // "")}}
       }
     ' "$event_path")"
-    review_sections_facts="$(python3 "$section_classifier" /dev/stdin <<< "$review_sections_input")" || exit 1
+    review_sections_facts="$(python3 "$section_classifier" --native-head "$event_head_sha" \
+      --native-base "$base_sha" /dev/stdin <<< "$review_sections_input")" || exit 1
+    review_sections_input="$(jq -c '.native_input' <<< "$review_sections_facts")"
   fi
 fi
 if native_issue_comment_event_bound; then
