@@ -3,12 +3,12 @@
   "path": "scripts/review-gate/evaluate.sh",
   "sha256": "3373831b06f257f447d8fa6aec9afd4b1983ea86ada834f9fadc8eb927df729e",
   "dependencyClassifierSha256": "3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455",
-  "reviewSectionsSha256": "7c7568de395154e7b96d0741321da11f503b6e0874da4a1e0c2e2ed316018cf6",
+  "reviewSectionsSha256": "d5ea2ef14b58d3bd4e42c1938ec8bfccb22c2360c4b51461e791d1e36c3c4a2a",
   "reviewEventConsumer": {
     "version": 1,
     "workflow": "review-gate.yml",
     "ref": "refs/heads/main",
-    "sha256": "468c9cf7f72fc3bbd20ed073931bbf182bb4134aeb9f9170466822edc262a826",
+    "sha256": "b7aaa1d2926d252b6e7f197d3ff2d09a37a5fdaeb8cf894fc82d71a2077f9bdb",
     "completionWorkflow": "review-gate-capture-completion.yml",
     "completionSha256": "a9adf9493c07e3fb3e56fb76222e69b383a8b047d5af29c8c2b2490ca8f7249d"
   },

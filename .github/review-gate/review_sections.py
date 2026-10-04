@@ -1883,7 +1883,9 @@ def _visible_html(
 
         def _close_implied_item(self, tag: str) -> None:
             targets = {"li"} if tag == "li" else {"dt", "dd"}
-            if not any(self.html_open_element_counts.get(target, 0) for target in targets):
+            if not any(
+                self.html_open_element_counts.get(target, 0) for target in targets
+            ):
                 return
             for index in range(len(self.open_elements) - 1, -1, -1):
                 element, namespace, _ = self.open_elements[index]
@@ -2017,8 +2019,11 @@ def _visible_html(
                     "html",
                 ):
                     self._pop_elements(len(self.open_elements) - 1, start, start)
-            if (namespace == "html" and normalized_tag in HTML_P_CLOSING_START_TAGS
-                    and self.html_open_element_counts.get("p", 0)):
+            if (
+                namespace == "html"
+                and normalized_tag in HTML_P_CLOSING_START_TAGS
+                and self.html_open_element_counts.get("p", 0)
+            ):
                 paragraph_index = None
                 for index in range(len(self.open_elements) - 1, -1, -1):
                     element, element_namespace, _ = self.open_elements[index]
@@ -2098,9 +2103,13 @@ def _visible_html(
                 self.open_elements.append(
                     (normalized_tag, namespace, mathml_html_integration)
                 )
-                self.open_element_counts[normalized_tag] = self.open_element_counts.get(normalized_tag, 0) + 1
+                self.open_element_counts[normalized_tag] = (
+                    self.open_element_counts.get(normalized_tag, 0) + 1
+                )
                 if namespace == "html":
-                    self.html_open_element_counts[normalized_tag] = self.html_open_element_counts.get(normalized_tag, 0) + 1
+                    self.html_open_element_counts[normalized_tag] = (
+                        self.html_open_element_counts.get(normalized_tag, 0) + 1
+                    )
                 self.body_contexts.append(in_body)
                 self.table_modes.append(in_table)
                 if namespace == "html" and normalized_tag == "form":
@@ -2131,14 +2140,18 @@ def _visible_html(
                     attribute_end = markup[2] - 1
                     if attribute_start < attribute_end:
                         attribute_spans.append((attribute_start, attribute_end))
-            matching_index = (next(
-                (
-                    index
-                    for index in range(len(self.open_elements) - 1, -1, -1)
-                    if self.open_elements[index][0] == normalized_tag
-                ),
-                None,
-            ) if self.open_element_counts.get(normalized_tag, 0) else None)
+            matching_index = (
+                next(
+                    (
+                        index
+                        for index in range(len(self.open_elements) - 1, -1, -1)
+                        if self.open_elements[index][0] == normalized_tag
+                    ),
+                    None,
+                )
+                if self.open_element_counts.get(normalized_tag, 0)
+                else None
+            )
             matching_namespace = (
                 self.open_elements[matching_index][1]
                 if matching_index is not None
@@ -2161,7 +2174,9 @@ def _visible_html(
                     # HTML removes only the active form node. Descendants stay
                     # open and keep their existing summary visibility identity.
                     self.open_element_counts[self.open_elements[form_index][0]] -= 1
-                    self.html_open_element_counts[self.open_elements[form_index][0]] -= 1
+                    self.html_open_element_counts[
+                        self.open_elements[form_index][0]
+                    ] -= 1
                     del self.open_elements[form_index]
                     del self.body_contexts[form_index]
                     del self.table_modes[form_index]
@@ -3060,17 +3075,30 @@ def classify_body(body: str) -> dict[str, Any]:
     # Connector activity summaries are display metadata, never verdicts. Match
     # the anchored protocol marker, not a quoted marker in review prose.
     if re.match(r"\A\s*<!--\s*codex-pull-request-review-summary\s*-->", body, re.I):
-        return {"request_head": None, "sections": [{
-            "kind": "unheaded", "body": body, "has_result": False,
-            "regular_clean": False, "availability": False,
-            "regular_adverse": False, "security_event": False,
-            "security_finding": False, "target_ref": "__unbound__",
-        }]}
+        return {
+            "request_head": None,
+            "sections": [
+                {
+                    "kind": "unheaded",
+                    "body": body,
+                    "has_result": False,
+                    "regular_clean": False,
+                    "availability": False,
+                    "regular_adverse": False,
+                    "security_event": False,
+                    "security_finding": False,
+                    "target_ref": "__unbound__",
+                }
+            ],
+        }
     ambiguous = _html_visibility_ambiguous(body)
     metadata = _without_inline_code(_actual_metadata(body))
     if SECURITY_MARKER_COMMENT.search(metadata) and any(
         _markdown_priority_text(match.group()) == match.group()
-        for match in re.finditer(r"\[P(?=[^\]\r\n]{0,24}[*_~])(?=[^\]\r\n]{0,24}[0-3])[^\]\r\n]{1,24}\]", metadata)
+        for match in re.finditer(
+            r"\[P(?=[^\]\r\n]{0,24}[*_~])(?=[^\]\r\n]{0,24}[0-3])[^\]\r\n]{1,24}\]",
+            metadata,
+        )
     ):
         ambiguous = True
     parsed_body, request_head = _coordinator_body(body)
