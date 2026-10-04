@@ -5183,6 +5183,12 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
                     html_code_depth += 1
             elif not html_code_depth and SECURITY_MARKER_COMMENT.fullmatch(raw):
                 chunks.append(raw)
+        elif token.get("_review_url"):
+            # A visible URL cannot join text on either side into a protocol.
+            # Keep a non-authoritative word barrier without scanning URL labels.
+            chunks.append("AUTOLINK")
+        elif kind == "image":
+            chunks.append("IMAGE")
         elif kind not in (
             "codespan",
             "image",
@@ -5588,12 +5594,15 @@ def _parse_markdown_document(text, mistune):
                         RESULT_HEADING.match(prefix)
                         or RESULT_HEADING.match(_DEFAULT_IGNORABLE.sub("", prefix))
                     )
+                    and (
+                        RESULT_HEADING.match(label)
+                        or RESULT_HEADING.match(_DEFAULT_IGNORABLE.sub("", label))
+                    )
                     and prefix
                     and not prefix[-1].isalnum()
                 ):
                     # Ancillary code cannot erase an already established
                     # visible category with its own source boundary.
-                    label = prefix
                     code_heading = False
             if code_heading and last > first:
                 # Code text must never be erased to synthesize a protocol
@@ -5744,9 +5753,9 @@ def _security_details_priority_uncertain(text):
         return False
     if _html_visibility_ambiguous(source):
         return False  # The caller already retains global HTML uncertainty.
-    if "![" in source:
+    if "[" in source:
         # Inspect original Markdown with its reference definitions before
-        # destination masking can turn inert image syntax into a candidate.
+        # metadata masking can turn image or link syntax into a candidate.
         rendered_rows = _markdown_document(text)[0]
         if not any(
             _PRIORITY_CANDIDATE.search(row) or _unicode_priority_uncertain(row)
@@ -5758,6 +5767,7 @@ def _security_details_priority_uncertain(text):
     _visible_html(fragment, mask_attributes=True, visible_summary_ranges=summaries)
 
     def unowned_priority(raw, visible):
+        visible = _without_inline_code(visible)
         candidates = [
             row
             for row in _markdown_lines(visible)
@@ -5816,6 +5826,14 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
         projection = _priority_projection(text)
     for row in _markdown_lines(projection):
         if _unicode_priority_uncertain(row):
+            return True
+        composed = re.sub(r"<!--[ \t\r\n]*-->", "", row)
+        if composed != row and (
+            _PRIORITY_CANDIDATE.search(composed)
+            or _unicode_priority_uncertain(composed)
+        ):
+            # Browser-invisible empty comments are diagnostic only. They
+            # cannot normalize source into definitive priority authority.
             return True
         if kind != "security" and not standalone:
             marker = SECURITY_MARKER_COMMENT.search(row)
@@ -5963,6 +5981,10 @@ def _html_visibility_ambiguous(body: str) -> bool:
         lambda match: _mask_code_line(match.group()),
         scan,
     )
+    if _unterminated_html_comment_start(scan) is not None:
+        # Older HTMLParser releases can consume an unfinished comment without
+        # retaining rawdata; use the existing source scanner before parsing.
+        return True
     safe = frozenset(
         "div span details summary pre code a b strong em i u s sub sup br hr".split()
     )
