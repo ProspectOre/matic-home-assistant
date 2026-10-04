@@ -8,6 +8,7 @@ on:
       - .github/workflows/review-gate.yml
       - .github/workflows/review-regular-review.yml
       - .github/workflows/review-fork-regular-review.yml
+      - .github/workflows/review-fork-quarantine.yml
       - .github/workflows/review-regular-comment.yml
       - .github/workflows/review-base-change.yml
       - .github/workflows/review-base-advance.yml

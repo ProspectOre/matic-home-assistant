@@ -2003,7 +2003,7 @@ SECURITY_HEADING = re.compile(
     r"(?:[ \t]*:|[ \t]*[^A-Za-z0-9\s][^\r\n]*|[ \t]*$)",
     re.IGNORECASE,
 )
-PRIORITY_RESULT = re.compile(r"\A[ \t]*\[P[0-3]\](?:[ \t]|$)", re.I)
+PRIORITY_RESULT = re.compile(r"\A[^\S\r\n]*\[P[0-3]\](?:[^\S\r\n]|$)", re.I)
 
 # Unicode 17.0.0 DerivedCoreProperties.txt: Default_Ignorable_Code_Point.
 # https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
@@ -2026,10 +2026,36 @@ _PRIORITY_CANDIDATE = re.compile(
     re.I,
 )
 
+# Unicode 17.0.0 PropList.txt: Bidi_Control, uncertainty only.
+# https://www.unicode.org/Public/17.0.0/ucd/PropList.txt
+_BIDI_CONTROL = re.compile(r"[\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069]")
+_BIDI_PRIORITY_CANDIDATE = re.compile(
+    r"[\[\]]"
+    + _DEFAULT_IGNORABLE_CLASS
+    + r"*(?:P"
+    + _DEFAULT_IGNORABLE_CLASS
+    + r"*[0-3]|[0-3]"
+    + _DEFAULT_IGNORABLE_CLASS
+    + r"*P)"
+    + _DEFAULT_IGNORABLE_CLASS
+    + r"*[\[\]]",
+    re.I,
+)
+
 
 def _unicode_priority_uncertain(row):
     if not _DEFAULT_IGNORABLE.search(row):
         return False
+    # Logical order cannot establish rendered order in a bidi-controlled row.
+    # Retain only uncertainty from a priority-like signature, never a finding.
+    if (
+        _BIDI_CONTROL.search(row)
+        and "[" in row
+        and "]" in row
+        and re.search(r"P", row, re.I)
+        and re.search(r"[0-3]", row)
+    ):
+        return True
     if any(
         _DEFAULT_IGNORABLE.search(match.group())
         for match in _PRIORITY_CANDIDATE.finditer(row)
@@ -4709,6 +4735,13 @@ def _section_spans(body: str, coordinator_bound: bool = False):
     )
     for first, _last, label, _kind in headings:
         lines[first] = label
+    marker_container_starts = {
+        start
+        for start, (label, units) in container_boundaries
+        if SECURITY_MARKER.fullmatch(label.strip())
+        and units
+        and all(marked and not unknown for _row, _label, marked, unknown in units)
+    }
     starts: list[int] = []
     kinds: dict[int, str] = {}
     reviewed_counts = [0]
@@ -4750,6 +4783,9 @@ def _section_spans(body: str, coordinator_bound: bool = False):
         if RESULT_HEADING.match(line):
             starts.append(i)
             kinds[i] = "security" if SECURITY_HEADING.match(line) else "regular"
+        elif i in marker_container_starts:
+            starts.append(i)
+            kinds[i] = "security"
         elif priority_matches[i]:
             previous_start = starts[-1] if starts else 0
             previous_bound = reviewed_counts[i] > reviewed_counts[previous_start]
@@ -5091,7 +5127,7 @@ class _BudgetText(str):
         return found
 
 
-def _markdown_text(tokens):
+def _markdown_text(tokens, *, block_markers=False):
     chunks = []
     code_chunks = {}
     html_code_depth = 0
@@ -5119,6 +5155,12 @@ def _markdown_text(tokens):
             if html_code_depth:
                 code_chunks[len(chunks)] = in_link
             chunks.append(VISIBLE_CHARACTER_REFERENCE.sub(decode, raw))
+        elif (
+            block_markers
+            and kind == "block_html"
+            and SECURITY_MARKER_COMMENT.fullmatch(token.get("raw", "").strip())
+        ):
+            chunks.append(token["raw"].strip())
         elif kind == "codespan":
             code_chunks[len(chunks)] = in_link
             chunks.append(token.get("raw", ""))
@@ -5150,6 +5192,12 @@ def _markdown_text(tokens):
     priorities = [
         (match.start(), match.end()) for match in _PRIORITY_CANDIDATE.finditer(rendered)
     ]
+    if _BIDI_CONTROL.search(rendered):
+        priorities.extend(
+            (match.start(), match.end())
+            for match in _BIDI_PRIORITY_CANDIDATE.finditer(rendered)
+        )
+        priorities.sort()
     # Adjacent code elements may jointly cover an entire priority. Only a
     # priority with an actual rendered character outside the code union can
     # restore otherwise inert fragments; group boundaries are not evidence.
@@ -5216,6 +5264,26 @@ def _parse_markdown_document(text, mistune):
     )
     source = source.replace("\r\n", "\n").replace("\r", "\n")
     original_rows = _markdown_lines(original)
+    html_rows = _markdown_lines(html_view)
+    source_rows = _markdown_lines(source)
+    marker_visibility_safe = None
+    for index, line in enumerate(original_rows):
+        # Raw-block masking also covers a pure comment inside a simple list or
+        # quote. Restore only a globally visible authenticated marker row so the
+        # official AST can validate its physical wrapper and cell ownership.
+        wrapper = re.fullmatch(r" {0,3}(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|> ?)(.*)", line)
+        if (
+            wrapper
+            and SECURITY_MARKER.fullmatch(wrapper.group(1).strip())
+            and index < len(html_rows)
+            and SECURITY_MARKER_COMMENT.search(html_rows[index])
+            and not _html_visibility_ambiguous(line)
+        ):
+            if marker_visibility_safe is None:
+                marker_visibility_safe = not _html_visibility_ambiguous(original)
+            if marker_visibility_safe:
+                source_rows[index] = line
+    source = "\n".join(source_rows)
     count = len(_markdown_lines(text))
     rows = [""] * count
     uncertain = set()
@@ -5415,9 +5483,9 @@ def _parse_markdown_document(text, mistune):
                     finding_units.append((first + offset, label, True, False))
             visible = " ".join(diagnostic_labels)
             mapped.append((first + offset, visible, tuple(finding_units)))
-        if "".join(flattened).replace("\n", "") != _markdown_text([token]).replace(
-            "\n", ""
-        ):
+        if "".join(flattened).replace("\n", "") != _markdown_text(
+            [token], block_markers=True
+        ).replace("\n", ""):
             return None
         return mapped
 
@@ -5425,7 +5493,9 @@ def _parse_markdown_document(text, mistune):
         position = token.get("_review_start", 0)
         first = bisect_right(starts, position) - 1
         if token.get("type") == "heading":
-            label = _markdown_text(token.get("children", ()))
+            # Heading soft breaks collapse to spaces in the browser. This
+            # category projection never replaces raw source/footer authority.
+            label = _markdown_text(token.get("children", ())).replace("\n", " ")
             end = token.get("_review_end", position)
             last = bisect_left(starts, end)
             if (
@@ -5442,9 +5512,14 @@ def _parse_markdown_document(text, mistune):
                     )
                 )
         if "_review_source" not in token:
-            visible = _markdown_text([token])
-            if re.search(r"(?i)\bP[0-3]\b", visible) or _unicode_priority_uncertain(
-                visible
+            visible = _markdown_text(
+                [token],
+                block_markers=token.get("type") in ("list", "block_quote", "table"),
+            )
+            if (
+                re.search(r"(?i)\bP[0-3]\b", visible)
+                or _unicode_priority_uncertain(visible)
+                or SECURITY_MARKER_COMMENT.search(visible)
             ):
                 next_start = (
                     tokens[token_index + 1].get("_review_start", len(source))
@@ -5462,6 +5537,16 @@ def _parse_markdown_document(text, mistune):
                         ),
                         None,
                     )
+                    if priority is None:
+                        priority = next(
+                            (
+                                label
+                                for _row, _visible, units in mapped
+                                for _source_row, label, marked, _unknown in units
+                                if marked
+                            ),
+                            None,
+                        )
                     if priority is not None:
                         # A qualified container starts at its original source
                         # row, including a table header preceding the finding.
@@ -5822,7 +5907,9 @@ def _classify_body(body: str) -> dict[str, Any]:
             )
         ) and not bool(SECURITY_REPORT_LINK.search(text))
         clean = _standalone_regular_clean(text)
-        ordinary_source = _without_review_metadata(_without_known_review_footer(text))
+        ordinary_source = _without_heading(
+            kind, _without_review_metadata(_without_known_review_footer(text))
+        )
         ordinary_source = _mask_markdown_link_metadata(
             _without_inline_code(_actual_metadata(ordinary_source))
         )
@@ -5835,7 +5922,6 @@ def _classify_body(body: str) -> dict[str, Any]:
         )
         ordinary_text = _without_known_review_footer(ordinary_text)
         ordinary_text = _without_review_metadata(ordinary_text)
-        ordinary_text = _without_heading(kind, ordinary_text)
         ordinary_text = "\n".join(
             line
             for line in _markdown_lines(ordinary_text)
