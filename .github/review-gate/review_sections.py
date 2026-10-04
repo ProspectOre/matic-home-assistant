@@ -106,6 +106,7 @@ def _load_markdown_packages():
             "bisect",
             "urllib.parse",
             "__future__",
+            "signal",
         ):
             cached = sys.modules.get(name)
             if cached is not None and not trusted_origin(
@@ -4229,7 +4230,8 @@ def _visible_html(
         was_hidden = hidden_state()
         if kind == "comment":
             if not was_hidden:
-                spans.append((token_start, token_end))
+                destination = markup_spans if strip_inline_markup else spans
+                destination.append((token_start, token_end))
             continue
         if kind == "code-open":
             code_tags.append(tag)
@@ -4858,12 +4860,100 @@ class MarkdownBoundaryError(ValueError):
     """The pinned structured parser could not establish a bounded view."""
 
 
+_MARKDOWN_PARSE_SECONDS = 3.0
+
+
+class _MarkdownDeadline:
+    """Bound regex engine work as well as observable Python helper scans."""
+
+    def __enter__(self):
+        self.signal = sys.modules.get("signal")
+        if self.signal is None:
+            raise MarkdownBoundaryError("Missing verified Markdown signal module")
+        if not hasattr(self.signal, "setitimer"):
+            raise MarkdownBoundaryError("Markdown requires the Unix policy runtime")
+        if any(self.signal.getitimer(self.signal.ITIMER_REAL)):
+            raise MarkdownBoundaryError("Conflicting Markdown parse timer")
+        self.previous = self.signal.getsignal(self.signal.SIGALRM)
+        if self.previous not in (self.signal.SIG_DFL, self.signal.SIG_IGN):
+            raise MarkdownBoundaryError("Conflicting Markdown signal handler")
+        try:
+            self.signal.signal(self.signal.SIGALRM, self.expired)
+        except ValueError as exc:
+            raise MarkdownBoundaryError(
+                "Markdown parsing requires the main thread"
+            ) from exc
+        try:
+            self.signal.setitimer(self.signal.ITIMER_REAL, _MARKDOWN_PARSE_SECONDS)
+        except (OSError, ValueError) as exc:
+            try:
+                self.signal.setitimer(self.signal.ITIMER_REAL, 0)
+            finally:
+                self.signal.signal(self.signal.SIGALRM, self.previous)
+            raise MarkdownBoundaryError("Cannot arm Markdown parse timer") from exc
+        return self
+
+    @staticmethod
+    def expired(signum, frame):
+        raise MarkdownBoundaryError("Markdown parse runtime budget exceeded")
+
+    def __exit__(self, kind, value, traceback):
+        try:
+            self.signal.setitimer(self.signal.ITIMER_REAL, 0)
+        finally:
+            self.signal.signal(self.signal.SIGALRM, self.previous)
+
+
+class _MarkdownWork:
+    def __init__(self):
+        self.remaining = 2_000_000
+
+    def spend(self, amount):
+        self.remaining -= amount
+        if self.remaining < 0:
+            raise MarkdownBoundaryError("Markdown scanning work budget exceeded")
+
+
+class _BudgetText(str):
+    """Count character scans/copies used by the maintained parser's helpers."""
+
+    def __new__(cls, value, work):
+        instance = super().__new__(cls, value)
+        instance.work = work
+        return instance
+
+    def __getitem__(self, key):
+        size = len(range(*key.indices(len(self)))) if isinstance(key, slice) else 1
+        self.work.spend(size)
+        value = super().__getitem__(key)
+        return _BudgetText(value, self.work) if isinstance(key, slice) else value
+
+    def __iter__(self):
+        for char in super().__iter__():
+            self.work.spend(1)
+            yield char
+
+    def find(self, sub, start=0, end=None):
+        end = len(self) if end is None else end
+        first, last, _ = slice(start, end).indices(len(self))
+        found = super().find(sub, start, end)
+        self.work.spend(max(0, (found + len(sub) if found >= 0 else last) - first))
+        return found
+
+    def rfind(self, sub, start=0, end=None):
+        end = len(self) if end is None else end
+        first, last, _ = slice(start, end).indices(len(self))
+        found = super().rfind(sub, start, end)
+        self.work.spend(max(0, last - (found if found >= 0 else first)))
+        return found
+
+
 def _markdown_text(tokens):
     chunks = []
-    stack = list(reversed(tokens))
+    stack = [(token, False) for token in reversed(tokens)]
     visited = 0
     while stack:
-        token = stack.pop()
+        token, in_link = stack.pop()
         visited += 1
         if visited > 65536:
             raise MarkdownBoundaryError("Markdown node budget exceeded")
@@ -4882,6 +4972,8 @@ def _markdown_text(tokens):
                 return html.unescape(ref).translate(EVIDENCE_LINE_SEPARATORS)
 
             chunks.append(VISIBLE_CHARACTER_REFERENCE.sub(decode, raw))
+        elif kind == "codespan" and in_link:
+            chunks.append(token.get("raw", ""))
         elif kind in ("softbreak", "linebreak"):
             chunks.append("\n")
         elif kind == "inline_html":
@@ -4894,7 +4986,10 @@ def _markdown_text(tokens):
             "block_code",
             "block_html",
         ) and not token.get("_review_url"):
-            stack.extend(reversed(token.get("children", ())))
+            stack.extend(
+                (child, in_link or kind == "link")
+                for child in reversed(token.get("children", ()))
+            )
     return "".join(chunks)
 
 
@@ -4903,6 +4998,11 @@ def _markdown_document(text):
     if len(text) > 262144:
         raise MarkdownBoundaryError("Markdown input budget exceeded")
     mistune = _markdown_packages()
+    with _MarkdownDeadline():
+        return _parse_markdown_document(text, mistune)
+
+
+def _parse_markdown_document(text, mistune):
     original = _actual_metadata(text)
     raw_blocks = _html_block_spans(original)
     # HTML visibility and source authority remain separate from Markdown.
@@ -4937,7 +5037,12 @@ def _markdown_document(text):
         for index in range(first, min(last, count)):
             rows[index] = html_rows[index] if index < len(html_rows) else ""
 
+    work = _MarkdownWork()
+
     class SourceState(mistune.BlockState):
+        def process(self, src):
+            super().process(_BudgetText(src, work))
+
         def append_token(self, token):
             token["_review_start"] = self.cursor
             super().append_token(token)
@@ -4951,10 +5056,20 @@ def _markdown_document(text):
             start, index = state.cursor, len(state.tokens)
             result = super().parse_method(match, state)
             for token in state.tokens[index:]:
-                token["_review_start"] = start
+                if token.get("type") in ("list", "block_quote", "table"):
+                    token["_review_start"] = start
+                else:
+                    token.setdefault("_review_start", start)
+                token.setdefault(
+                    "_review_end", result if isinstance(result, int) else state.cursor
+                )
             return result
 
     class LabelInlineParser(mistune.InlineParser):
+        def render(self, state):
+            state.src = _BudgetText(state.src, work)
+            return super().render(state)
+
         def _add_auto_link(self, url, text, state):
             super()._add_auto_link(url, text, state)
             state.tokens[-1]["_review_url"] = True
@@ -4989,12 +5104,75 @@ def _markdown_document(text):
         tokens, _state = md.parse(source)
     except (RecursionError, RuntimeError, IndexError) as exc:
         raise MarkdownBoundaryError("Structured Markdown parsing failed") from exc
-    for token in tokens:
+    container_rows = set()
+
+    def mapped_container(token, next_start):
+        """Verify simple physical container rows against the complete AST."""
+        kind = token.get("type")
+        if kind not in ("list", "block_quote", "table"):
+            return None
+        begin, end = token.get("_review_start", 0), token.get("_review_end", 0)
+        end = min(end, next_start)
+        if end <= begin:
+            return None
+        first = bisect_right(starts, begin) - 1
+        physical = _markdown_lines(source[begin:end])
+        mapped = []
+        flattened = []
+        for offset, line in enumerate(physical):
+            if not line.strip():
+                continue
+            if kind == "table":
+                # Escaped pipes and code-delimited pipes require a cell source
+                # map; do not infer it from a reconstructed visible string.
+                if "\\" in line or "`" in line or "|" not in line:
+                    return None
+                cells = line.strip().strip("|").split("|")
+                if all(re.fullmatch(r"\s*:?-+:?\s*", cell) for cell in cells):
+                    continue
+                labels = [
+                    _markdown_text(md.inline(cell.strip(), _state.env))
+                    for cell in cells
+                ]
+                priorities = [label for label in labels if PRIORITY_RESULT.match(label)]
+                visible = " ".join(priorities or labels)
+                flattened.extend(labels)
+            else:
+                pattern = (
+                    r" {0,3}(?:[-+*]|\d{1,9}[.)])[ \t]+([^ \t].*)"
+                    if kind == "list"
+                    else r" {0,3}> ?(.*)"
+                )
+                match = re.fullmatch(pattern, line)
+                if match is None:
+                    return None
+                visible = _markdown_text(md.inline(match.group(1), _state.env))
+                flattened.append(visible)
+            mapped.append((first + offset, visible))
+        if "".join(flattened).replace("\n", "") != _markdown_text([token]).replace(
+            "\n", ""
+        ):
+            return None
+        return mapped
+
+    for token_index, token in enumerate(tokens):
         position = token.get("_review_start", 0)
         first = bisect_right(starts, position) - 1
         if "_review_source" not in token:
             visible = _markdown_text([token])
             if re.search(r"(?i)\bP[0-3]\b", visible):
+                next_start = (
+                    tokens[token_index + 1].get("_review_start", len(source))
+                    if token_index + 1 < len(tokens)
+                    else len(source)
+                )
+                mapped = mapped_container(token, next_start)
+                if mapped is not None:
+                    for row, label in mapped:
+                        if row < count:
+                            rows[row] = label
+                            container_rows.add(row)
+                    continue
                 uncertain.add(first)
                 if first < count:
                     rows[first] = visible.replace("\n", " ")
@@ -5013,14 +5191,17 @@ def _markdown_document(text):
         for offset, line in zip(offsets, visible_lines):  # noqa: B905
             if first + offset < count:
                 rows[first + offset] = line
-    return tuple(rows), frozenset(uncertain)
+    return tuple(rows), frozenset(uncertain), frozenset(container_rows)
 
 
 def _priority_projection(text):
-    rows, uncertain = _markdown_document(text)
+    rows, uncertain, container_rows = _markdown_document(text)
     # Unmapped containers retain diagnostics but cannot start a new physical
     # result section at their synthetic row.
-    lines = [line if index not in uncertain else "" for index, line in enumerate(rows)]
+    lines = [
+        line if index not in uncertain | container_rows else ""
+        for index, line in enumerate(rows)
+    ]
     return "\n".join(lines) + (" " if lines and not lines[-1] else "")
 
 
@@ -5292,7 +5473,7 @@ def classify_body(body: str) -> dict[str, Any]:
     parsed_body, request_head = _coordinator_body(body)
     spans = _section_spans(parsed_body, coordinator_bound=request_head is not None)
     raw_sections = [(kind, text) for kind, text, _, _ in spans]
-    markdown_rows, markdown_unknown = _markdown_document(parsed_body)
+    markdown_rows, markdown_unknown, _container_rows = _markdown_document(parsed_body)
     # Coordinator request metadata already supplies an authenticated fallback;
     # a trailing footer is shared only for ordinary comments split by markers.
     shared_footer_ref = (
