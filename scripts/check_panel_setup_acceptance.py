@@ -9,7 +9,7 @@ import json
 import logging
 import shutil
 import tempfile
-from importlib.metadata import version
+from importlib.metadata import PackageNotFoundError, distribution, version
 from pathlib import Path
 
 import aiohttp
@@ -31,13 +31,39 @@ class SetupErrors(logging.Handler):
             self.errors.append(record.exc_info[1])
 
 
-async def check(config_dir: Path, expect_safe_area_error: bool) -> None:
+def numpy_installation() -> tuple[str, int, str] | None:
+    """Fingerprint the installed NumPy metadata without importing the package."""
+    try:
+        installed = distribution("numpy")
+    except PackageNotFoundError:
+        return None
+    record = next(
+        path
+        for path in installed.files or ()
+        if str(path).endswith(".dist-info/RECORD")
+    )
+    path = Path(record.locate())
+    return (
+        installed.version,
+        path.stat().st_mtime_ns,
+        hashlib.sha256(path.read_bytes()).hexdigest(),
+    )
+
+
+async def check(
+    config_dir: Path, expect_safe_area_error: bool, expect_numpy_before: str
+) -> None:
     """Boot native HA and check the integration, panel, services, and HTTP module."""
     hass = HomeAssistant(str(config_dir))
     loader.async_setup(hass)
     captured = SetupErrors()
     logging.getLogger("homeassistant.setup").addHandler(captured)
     try:
+        numpy_before = numpy_installation()
+        if expect_numpy_before == "absent":
+            assert numpy_before is None, "Fresh-install precondition failed"
+        else:
+            assert numpy_before is not None and numpy_before[0] == expect_numpy_before
         configured = await bootstrap.async_from_config_dict(
             {
                 "homeassistant": {
@@ -58,6 +84,12 @@ async def check(config_dir: Path, expect_safe_area_error: bool) -> None:
         assert "frontend" in hass.config.components, "Frontend did not load"
         # Config-entry integrations are loaded by HA's component loader, not YAML.
         await async_setup_component(hass, "matic_robot", {})
+        numpy_after = numpy_installation()
+        assert numpy_after is not None and numpy_after[0] == "2.3.2"
+        if numpy_before is not None:
+            assert numpy_after == numpy_before, (
+                "Existing NumPy installation was modified"
+            )
         loaded = "matic_robot" in hass.config.components
         safe_area_errors = [
             error
@@ -72,6 +104,9 @@ async def check(config_dir: Path, expect_safe_area_error: bool) -> None:
             )["version"],
             "integration_loaded": loaded,
             "safe_area_type_errors": len(safe_area_errors),
+            "numpy_before": numpy_before[0] if numpy_before else None,
+            "numpy_after": numpy_after[0],
+            "numpy_installation_retained": numpy_after == numpy_before,
             "frontend_sha256": hashlib.sha256(
                 (config_dir / "custom_components/matic_robot/frontend.py").read_bytes()
             ).hexdigest(),
@@ -130,13 +165,25 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--components", type=Path, required=True)
     parser.add_argument("--expect-safe-area-error", action="store_true")
+    parser.add_argument(
+        "--expect-numpy-before", choices=("absent", "2.3.2"), default="2.3.2"
+    )
+    parser.add_argument("--config-dir", type=Path)
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
     with tempfile.TemporaryDirectory(prefix="matic-panel-acceptance-") as directory:
-        config_dir = Path(directory)
-        shutil.copytree(args.components, config_dir / "custom_components")
+        config_dir = args.config_dir or Path(directory)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(
+            args.components, config_dir / "custom_components", dirs_exist_ok=True
+        )
         asyncio.run(
-            asyncio.wait_for(check(config_dir, args.expect_safe_area_error), 240)
+            asyncio.wait_for(
+                check(
+                    config_dir, args.expect_safe_area_error, args.expect_numpy_before
+                ),
+                240,
+            )
         )
 
 

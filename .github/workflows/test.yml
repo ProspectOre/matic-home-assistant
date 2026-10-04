@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - name: Install the actual Home Assistant release and runtime dependencies
+      - name: Install native HA and leave NumPy for HA's requirement installer
         run: |
           python -m venv .compat-venv
           .compat-venv/bin/python - <<'PY'
@@ -34,24 +34,39 @@ jobs:
           import sys
           import tomllib
           from pathlib import Path
+          from importlib.metadata import PackageNotFoundError, version
+          subprocess.run([sys.executable, "-m", "pip", "install", f"homeassistant=={os.environ['HA_VERSION']}"], check=True)
+          import homeassistant
+          from packaging.requirements import Requirement
+          constraints = str(Path(homeassistant.__file__).parent / "package_constraints.txt")
           dependencies = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
-          subprocess.run([sys.executable, "-m", "pip", "install", f"homeassistant=={os.environ['HA_VERSION']}", *dependencies], check=True)
+          dependencies = [requirement for requirement in dependencies if Requirement(requirement).name != "numpy"]
+          subprocess.run([sys.executable, "-m", "pip", "install", "--constraint", constraints, *dependencies], check=True)
           # HA 2026.7's USB dependency imports serialx's ESPHome transport before
           # ESPHome is loaded; install the version required by this HA release.
-          import homeassistant
           esphome = Path(homeassistant.__file__).parent / "components/esphome/manifest.json"
           requirement = next(item for item in json.loads(esphome.read_text())["requirements"] if item.startswith("aioesphomeapi=="))
-          subprocess.run([sys.executable, "-m", "pip", "install", requirement], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "install", "--constraint", constraints, requirement], check=True)
+          subprocess.run([sys.executable, "-m", "pip", "uninstall", "--yes", "numpy"], check=True)
+          try:
+              version("numpy")
+          except PackageNotFoundError:
+              print("NumPy absent before native fresh setup", flush=True)
+          else:
+              raise AssertionError("NumPy was unexpectedly preinstalled")
           PY
+      - name: Verify the candidate's fresh native dependency installation
+        run: |
+          git diff --exit-code 653c079148562e37cf825b5ca7e0faff92bf5cf0 -- custom_components pyproject.toml
+          .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$GITHUB_WORKSPACE/custom_components" --expect-numpy-before absent
       - name: Verify the source before the fix
         run: |
           git worktree add --detach "$RUNNER_TEMP/matic-before" 52166dfceff0bd2e47329d58da749e34d2059687
           if [ "$HA_VERSION" = "2026.9.3" ]; then
-            .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$RUNNER_TEMP/matic-before/custom_components"
+            .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$RUNNER_TEMP/matic-before/custom_components" --config-dir "$RUNNER_TEMP/matic-upgrade-config" --expect-numpy-before 2.3.2
           else
-            .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$RUNNER_TEMP/matic-before/custom_components" --expect-safe-area-error
+            .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$RUNNER_TEMP/matic-before/custom_components" --config-dir "$RUNNER_TEMP/matic-upgrade-config" --expect-numpy-before 2.3.2 --expect-safe-area-error
           fi
-      - name: Verify the stable hotfix candidate
+      - name: Verify the candidate's file upgrade and retained NumPy baseline
         run: |
-          git diff --exit-code c51da9576c186ad9f574e77f6d2372b782f0dc2a -- custom_components
-          .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$GITHUB_WORKSPACE/custom_components"
+          .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$GITHUB_WORKSPACE/custom_components" --config-dir "$RUNNER_TEMP/matic-upgrade-config" --expect-numpy-before 2.3.2
