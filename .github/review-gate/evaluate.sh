@@ -1891,7 +1891,7 @@ if [[ ("$event_name" == pull_request_review || "$event_name" == pull_request_rev
       security_withdrawal_unresolved=true
     fi
   fi
-  if [[ "$event_name" == pull_request_review && "$(jq -r '.action' "$event_path")" != dismissed ]]; then
+  if [[ "$event_name" == pull_request_review ]]; then
     relayed_review_id="$(jq -r '.review.id' "$event_path")"
     relayed_review_at="$(jq -r '.review.submitted_at' "$event_path")"
     while IFS= read -r encoded_body; do
@@ -1902,7 +1902,10 @@ if [[ ("$event_name" == pull_request_review || "$event_name" == pull_request_rev
           "Regular findings observed for PR #$pr_number on head $head_sha; review:$relayed_review_id; event:captured" >/dev/null
         edited_finding=true
       fi
-    done < <(jq -c '[.review.body // "", .changes.body.from // ""] | unique[] | select(length > 0)' "$event_path")
+    # Reuse the same immutable-native-target projection used for section facts.
+    # Reclassifying raw bodies here could lose ordinary ownership after a
+    # completed security-clean verdict and omit durable finding history.
+    done < <(jq -c '[.comment.body // "", .changes.body.from // ""] | unique[] | select(length > 0)' <<< "$review_sections_input")
   fi
 fi
 

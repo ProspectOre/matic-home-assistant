@@ -2212,9 +2212,9 @@ def _without_inline_code(text: str) -> str:
 
 
 @lru_cache(maxsize=8)
-def _without_inline_code_in_markdown(text: str, *, objects=False) -> str:
+def _without_inline_code_in_markdown(text: str, *, objects=False, links=False) -> str:
     """Mask only parser-confirmed code spans within their Markdown block."""
-    if "`" not in text and not (objects and ("[" in text or "<" in text)):
+    if "`" not in text and not ((objects or links) and ("[" in text or "<" in text)):
         return text
     mistune = _markdown_packages()
     # Details enables Markdown in its visible ranges. Preserve offsets while
@@ -2238,6 +2238,10 @@ def _without_inline_code_in_markdown(text: str, *, objects=False) -> str:
                 state.tokens[-1]["_object_span"] = (match.start(), end)
                 state.tokens[-1]["_code_source"] = state.src
                 state.tokens[-1]["_object_barrier"] = "IMAGE"
+            elif end and links and state.tokens[-1].get("type") == "link":
+                state.tokens[-1]["_object_span"] = (match.start(), end)
+                state.tokens[-1]["_code_source"] = state.src
+                state.tokens[-1]["_object_barrier"] = "LINK"
             return end
 
         def _add_auto_link(self, url, value, state):
@@ -2313,6 +2317,13 @@ def _without_inline_code_in_markdown(text: str, *, objects=False) -> str:
             super().add_paragraph(value)
             self.tokens[-1].setdefault("_code_start", self.cursor)
             self.tokens[-1]["_code_state"] = self
+            self.tokens[-1]["_code_end"] = self.cursor + len(value)
+
+        def append_paragraph(self):
+            end = super().append_paragraph()
+            if end is not None:
+                self.tokens[-1]["_code_end"] = end
+            return end
 
     class CodeBlock(mistune.BlockParser):
         def parse_method(self, match, state):
@@ -2324,6 +2335,7 @@ def _without_inline_code_in_markdown(text: str, *, objects=False) -> str:
             for token in state.tokens[index:]:
                 token.setdefault("_code_start", start)
                 token.setdefault("_code_state", state)
+                token.setdefault("_code_end", end if end is not None else state.cursor)
             return end
 
     block = CodeBlock(max_nested_level=16)
@@ -2357,12 +2369,44 @@ def _without_inline_code_in_markdown(text: str, *, objects=False) -> str:
         pending.extend(reversed(token.get("children", ())))
         value = token.get("text")
         context = token.get("_code_state")
-        if not value or context is None or not ("`" in value or objects):
+        if not value or context is None or not ("`" in value or objects or links):
             continue
         fragment = value.rstrip("\n")
         begin = context.src.find(fragment, token.get("_code_start", 0))
+        token_origins = None
         if begin < 0:
-            raise MarkdownBoundaryError("Unmapped Markdown code block")
+            # Lazy quote/list transitions can append physical lines to an
+            # existing paragraph while omitting an intervening container.
+            # Align complete literal lines, never a substring from that quote.
+            token_origins = []
+            position = token.get("_code_start", 0)
+            limit = token.get("_code_end")
+            if not isinstance(limit, int) or not position <= limit <= len(context.src):
+                raise MarkdownSourceMapError("Unbounded normalized Markdown token")
+            for line in _markdown_lines(value, keepends=True):
+                payload = line.lstrip(" \t").rstrip("\r\n")
+                mapped = [None] * len(line)
+                while position < limit:
+                    end = context.src.find("\n", position, limit)
+                    end = limit if end < 0 else end + 1
+                    original = context.src[position:end]
+                    content = original.rstrip("\r\n")
+                    if content.lstrip(" \t") == payload:
+                        suffix = position + len(content) - len(payload)
+                        prefix = len(line) - len(line.lstrip(" \t"))
+                        for offset in range(len(payload)):
+                            mapped[prefix + offset] = context.origins[suffix + offset]
+                        tail = len(line) - len(line.rstrip("\r\n"))
+                        for offset in range(1, tail + 1):
+                            if (offset <= len(original)
+                                    and original[-offset] == line[-offset]):
+                                mapped[-offset] = context.origins[end - offset]
+                        position = end
+                        break
+                    position = end
+                token_origins.extend(mapped)
+            begin = 0
+        origins = context.origins if token_origins is None else token_origins
         nodes = list(inline(value, state.env))
         while nodes:
             node = nodes.pop()
@@ -2371,12 +2415,13 @@ def _without_inline_code_in_markdown(text: str, *, objects=False) -> str:
                 continue
             first, last = node.get("_code_span", node.get("_object_span"))
             barrier = iter(node.get("_object_barrier", ""))
-            if not 0 <= begin + first <= begin + last <= len(context.origins):
-                raise MarkdownBoundaryError("Markdown code source map exceeded input")
+            if not 0 <= begin + first <= begin + last <= len(origins):
+                raise MarkdownSourceMapError("Markdown code source map exceeded input")
             for offset in range(begin + first, begin + last):
-                origin = context.origins[offset]
-                if origin is None and not context.src[offset].isspace():
-                    raise MarkdownBoundaryError("Unmapped Markdown code character")
+                origin = origins[offset]
+                mapped_source = context.src if token_origins is None else value
+                if origin is None and not mapped_source[offset].isspace():
+                    raise MarkdownSourceMapError("Unmapped Markdown code character")
                 if (origin is not None and origin < len(text)
                         and text[origin] not in "\r\n"):
                     masked[origin] = 1
@@ -4878,7 +4923,7 @@ def _section_spans(body: str, coordinator_bound: bool = False):
     priority_lines = _markdown_lines(_priority_projection(body))
     priority_lines.extend([""] * (len(original_lines) - len(priority_lines)))
     (diagnostic_rows, _unknown, _containers, container_boundaries,
-     headings, _reports, _literal) = _markdown_document(body)
+     headings, report_link_rows, _literal) = _markdown_document(body)
     for first, _last, label, _kind in headings:
         lines[first] = label
     marker_container_starts = {
@@ -4925,6 +4970,18 @@ def _section_spans(body: str, coordinator_bound: bool = False):
             inline_security_counts[-1] + inline_security_matches[index]
         )
         priority_counts.append(priority_counts[-1] + priority_matches[index])
+    # A single original trailing footer also binds an ordinary result following
+    # a completed security-clean summary. Copied container footers and actual
+    # security reports cannot supply this ownership boundary.
+    footer_rows = [
+        index for index, line in enumerate(authority_lines)
+        if REVIEWED_COMMIT.fullmatch(line)
+    ]
+    security_boundary_bound = coordinator_bound or (
+        len(footer_rows) == 1
+        and not report_link_rows
+        and all(not line.strip() for line in original_lines[footer_rows[0] + 1:])
+    )
     for i, line in enumerate(lines):
         if RESULT_HEADING.match(line):
             starts.append(i)
@@ -4943,7 +5000,7 @@ def _section_spans(body: str, coordinator_bound: bool = False):
                 # impossible. Inspect each result's pre-list text only once.
                 previous = "\n".join(original_lines[previous_start:i])
                 regular_clean = _standalone_regular_clean(previous)
-                if coordinator_bound:
+                if security_boundary_bound:
                     security_clean = _standalone_security_clean(previous)
             marker_start = i
             while marker_start > previous_start and (
@@ -4999,7 +5056,7 @@ def _section_spans(body: str, coordinator_bound: bool = False):
                             and not explicit_security_prior
                         )
                         and (
-                            not coordinator_bound
+                            not security_boundary_bound
                             or previous_bound
                             or not security_clean
                         )
@@ -5162,6 +5219,10 @@ def _standalone_security_clean(section: str) -> bool:
 
 class MarkdownBoundaryError(ValueError):
     """The pinned structured parser could not establish a bounded view."""
+
+
+class MarkdownSourceMapError(MarkdownBoundaryError):
+    """A record has uncertain source origins, rather than a runtime failure."""
 
 
 _MARKDOWN_PARSE_SECONDS = 10.0
@@ -6066,16 +6127,22 @@ def _details_code_masked_source(text):
             )
             tokens = md.inline(original_visible, env)
             visible = _markdown_text(tokens)
+            visible_priorities = Counter(_PRIORITY_CANDIDATE.findall(visible))
+            if _rendered_report_link(tokens):
+                unknown.add(bisect_right(starts, first) - 1)
+                return piece
+            # The comparisons below can only subtract from this counter.
+            # Image-only and plain regions need no two extra full AST passes.
+            if not visible_priorities:
+                return piece
             code_free = _without_inline_code_in_markdown(original_visible)
             without_code = _markdown_text(md.inline(code_free, env))
-            visible_priorities = Counter(_PRIORITY_CANDIDATE.findall(visible))
             code_free_priorities = Counter(_PRIORITY_CANDIDATE.findall(without_code))
             source_priorities = Counter(_PRIORITY_CANDIDATE.findall(
                 _without_inline_code_in_markdown(original_visible, objects=True)
             ))
             if (visible_priorities - code_free_priorities
-                    or visible_priorities - source_priorities
-                    or _rendered_report_link(tokens)):
+                    or visible_priorities - source_priorities):
                 unknown.add(bisect_right(starts, first) - 1)
             return piece
         if "[" in raw or "`" in raw:
@@ -6287,9 +6354,22 @@ def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool
     )
     marker = marker or coordinator_marker
     heading = kind == "security"
+    bare_severity = False
+    if heading and re.search(r"(?i)\bP[0-3]\b", severity_text):
+        # Consumed Markdown link delimiters cannot turn a bare P2 label into
+        # a protocol severity. Actual rendered brackets retain their signal;
+        # raw HTML literal link syntax remains visible under its own context.
+        without_links = _outside_html_blocks(
+            raw_section,
+            lambda piece: _without_inline_code_in_markdown(piece, links=True),
+        )
+        bare_severity = bool(re.search(
+            r"(?i)\bP[0-3]\b", _priority_projection(without_links)
+        ))
     severity = bool(
         SECURITY_SEVERITY.search(severity_text)
-        or (heading and re.search(r"(?i)\bP[0-3]\b", severity_text))
+        or (heading and re.search(r"(?i)\[P[0-3]\]", severity_text))
+        or bare_severity
     )
     security_text = "\n".join(
         line
@@ -6428,7 +6508,18 @@ def classify_body(body: str) -> dict[str, Any]:
         raise MarkdownBoundaryError("Markdown input budget exceeded")
     _markdown_packages()
     with _MarkdownDeadline():
-        return _classify_body(body)
+        try:
+            return _classify_body(body)
+        except MarkdownSourceMapError:
+            # Keep this record unknown without aborting later API records or
+            # manufacturing commit, category or finding authority from it.
+            return {"request_head": None, "sections": [{
+                "kind": "unheaded", "body": body, "has_result": False,
+                "regular_clean": False, "availability": False,
+                "regular_adverse": False, "security_event": False,
+                "security_finding": False, "target_ref": "__unbound__",
+                "parser_ambiguous": True, "security_uncertain": True,
+            }]}
 
 
 def _classify_body(body: str) -> dict[str, Any]:
