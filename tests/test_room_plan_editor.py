@@ -27,10 +27,21 @@ from custom_components.matic_robot.room_plan_selector import MaticRoomPlanSelect
 
 _EDITOR_PATH = Path(frontend.__file__).with_name("room_plan_editor.js")
 _JS = _EDITOR_PATH.read_text(encoding="utf-8")
-_STUDIO_PATH = Path(frontend.__file__).with_name("matic_map_studio.js")
-_STUDIO_JS = _STUDIO_PATH.read_text(encoding="utf-8")
+_EDITOR_LOADER_PATH = Path(frontend.__file__).with_name("room_plan_editor_loader.js")
+_EDITOR_LOADER_JS = _EDITOR_LOADER_PATH.read_text(encoding="utf-8")
 _STUDIO_V4_DIRECTORY = Path(frontend.__file__).with_name("map_studio_v4")
 _STUDIO_V4_PATH = _STUDIO_V4_DIRECTORY / "index.js"
+_STUDIO_V4_CHUNK_DIRECTORY = _STUDIO_V4_DIRECTORY / "chunks"
+_STUDIO_V4_SHARED_CHUNK_PATHS = tuple(
+    sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("chunk-*.js"))
+)
+_STUDIO_V4_WORKFLOW_CHUNK_PATHS = tuple(
+    sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("workflow-panel-*.js"))
+)
+_STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS = tuple(
+    sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("diagnostics-panel-*.js"))
+)
+_STUDIO_V4_EAGER_PATHS = (_STUDIO_V4_PATH, *_STUDIO_V4_SHARED_CHUNK_PATHS)
 _STUDIO_V4_JS = "\n".join(
     path.read_text(encoding="utf-8")
     for path in sorted(_STUDIO_V4_DIRECTORY.rglob("*.js"))
@@ -50,17 +61,19 @@ def _studio_v4_tree_hash() -> str:
 
 
 def test_registers_ha_selector_for_python_selector_type() -> None:
-    """The element name must be the one HA derives from the selector type."""
-    match = re.search(r'customElements\.define\(\s*"([^"]+)"', _JS)
+    """The lazy loader registers the names HA derives from Python selectors."""
+    match = re.search(r'customElements\.define\(\s*"([^"]+)"', _EDITOR_LOADER_JS)
     assert match is not None
     expected = f"ha-selector-{MaticRoomPlanSelector.selector_type}"
     assert match.group(1) == expected
     # The guard that avoids redefining the element must use the same name.
-    assert f'customElements.get("{expected}")' in _JS
+    assert f'customElements.get("{expected}")' in _EDITOR_LOADER_JS
 
     area_element = f"ha-selector-{MaticAreaSelector.selector_type}"
-    assert f'customElements.define("{area_element}"' in _JS
-    assert f'customElements.get("{area_element}")' in _JS
+    assert f'customElements.define("{area_element}"' in _EDITOR_LOADER_JS
+    assert f'customElements.get("{area_element}")' in _EDITOR_LOADER_JS
+    assert 'customElements.define("matic-room-plan-editor-impl"' in _JS
+    assert 'customElements.define("matic-area-editor-impl"' in _JS
 
 
 def test_editor_reads_the_selector_config_rooms_shape() -> None:
@@ -129,8 +142,6 @@ def test_static_path_serves_the_editor_file() -> None:
     """The registered static path must point at this exact module file."""
     assert frontend.ROOM_PLAN_EDITOR_PATH.endswith(".js")
     assert Path(frontend.__file__).with_name("room_plan_editor.js") == _EDITOR_PATH
-    assert frontend.MATIC_MAP_STUDIO_PATH.endswith(".js")
-    assert Path(frontend.__file__).with_name("matic_map_studio.js") == _STUDIO_PATH
     assert frontend.MATIC_MAP_STUDIO_V4_PATH.endswith(".js")
     assert frontend.MATIC_MAP_STUDIO_V4_DIRECTORY == _STUDIO_V4_DIRECTORY
     assert _STUDIO_V4_PATH.exists()
@@ -287,132 +298,6 @@ def test_area_editor_matches_the_map_navigation_model() -> None:
     assert 'class="area-zoom-slider"' in area
 
 
-def test_map_panel_has_private_live_navigation_controls() -> None:
-    """The studio renders true bounded 3D geometry with native-style gestures."""
-    panel = _STUDIO_JS[_STUDIO_JS.index("class MaticMapStudio") :]
-    assert "Full local SLAM · private inside Home Assistant" in panel
-    assert 'canvas.getContext("webgl2"' in panel
-    assert "gl_PointCoord" in panel
-    assert "vertexAttribIPointer" in panel
-    assert "MATIC_SCENE_MAX_POINTS" in _STUDIO_JS
-    assert 'data-view="three"' in panel
-    assert 'data-view="top"' in panel
-    assert "maticOrthographic" in _STUDIO_JS
-    assert "maticPerspective" in _STUDIO_JS
-    assert 'class="refresh"' in panel
-    assert 'class="zoom-slider"' in panel
-    assert 'class="resolution-value"' in panel
-    assert 'viewport.addEventListener("keydown"' in panel
-    assert 'viewport.addEventListener("dblclick"' in panel
-    assert 'viewport.addEventListener("gesturestart"' in panel
-    assert 'viewport.addEventListener("gesturechange"' in panel
-    assert "event.rotation" in panel
-    assert "centerY - this._pinch.centerY" in panel
-    assert "maticAngleDelta(angle - this._pinch.angle)" in panel
-    assert "_startInertia" in panel
-    assert "_isMouseWheel" in panel
-    assert "maticClamp(deltaX, -80, 80)" in panel
-    assert 'drag.pointerType !== "mouse"' in panel
-    assert "[0, 1, 2].includes(event.button)" in panel
-    assert "viewport.focus({ preventScroll: true })" in panel
-    assert "Math.PI / 2 - 0.018" in panel
-    assert "MATIC_SCENE_REQUEST_TIMEOUT_MS" in _STUDIO_JS
-    assert "this._sceneAbortController?.abort()" in panel
-    assert "_showRetainedScene" in panel
-    assert 'headers["If-None-Match"]' in panel
-    assert "response.arrayBuffer()" in panel
-    assert "response.status === 304" in panel
-    assert "Authorization: `Bearer ${token}`" in panel
-    assert 'typeof this._hass?.fetchWithAuth === "function"' in panel
-    assert "this._hass.fetchWithAuth(path, init)" in panel
-    assert "viewport.clientWidth * pixelRatio" in panel
-    assert "viewport.clientHeight * pixelRatio" in panel
-    assert "this._fallbackLoadingVersion" in panel
-    assert "const loader = new Image();" in panel
-    assert "new ResizeObserver" in panel
-    assert "viewport.releasePointerCapture" in panel
-    assert 'class="room-labels"' in panel
-    assert 'class="robot-marker"' in panel
-    assert 'class="floor-select"' in panel
-    assert '"Saved map {number} · read only"' in panel
-    assert "label.textContent = room.name" in panel
-
-
-def test_map_panel_localizes_every_visible_string_with_english_fallback() -> None:
-    """The panel follows Home Assistant's translation namespace."""
-    strings = json.loads(
-        Path(frontend.__file__).with_name("strings.json").read_text(encoding="utf-8")
-    )
-    translations = json.loads(
-        Path(frontend.__file__)
-        .with_name("translations")
-        .joinpath("en.json")
-        .read_text(encoding="utf-8")
-    )
-    referenced = set(re.findall(r'this\._localize\(\s*"([a-z_]+)"', _STUDIO_JS))
-    referenced.update(re.findall(r'text\(\s*"([a-z_]+)"', _STUDIO_JS))
-    assert referenced
-    assert not referenced - set(strings["common"])
-    assert strings["common"] == translations["common"]
-    assert "component.matic_robot.common.${key}" in _STUDIO_JS
-
-
-def test_map_panel_persists_only_bounded_view_preferences() -> None:
-    """Per-user storage remembers UX state without storing private map data."""
-    panel = _STUDIO_JS[_STUDIO_JS.index("class MaticMapStudio") :]
-    assert "matic-map-studio:v${MATIC_MAP_PREFERENCES_VERSION}:${identity}" in panel
-    assert "this._hass?.user?.id" in panel
-    assert "window.localStorage.getItem(identity)" in panel
-    assert "window.localStorage.setItem(" in panel
-    assert "view: this._view" in panel
-    assert "labels: this._labelsVisible" in panel
-    assert "quality: this._quality" in panel
-    assert "cameras," in panel
-    assert "zoom: maticClamp(\n          home / camera.distance" in panel
-    assert "_zoomPercentageBounds(home)" in panel
-    assert "maximum: Math.max(1, Math.round(home / distance.minimum * 100))" in panel
-    storage_block = panel[
-        panel.index("\n  _savePreferences() {") : panel.index(
-            "\n  _schedulePreferencesSave()"
-        )
-    ]
-    assert "this._scene" not in storage_block
-    assert "scene_url" not in storage_block
-
-
-def test_map_panel_has_accessible_reduced_motion_and_health_status() -> None:
-    """Loading, stream health, and motion preferences stay accessible."""
-    panel = _STUDIO_JS[_STUDIO_JS.index("class MaticMapStudio") :]
-    assert 'matchMedia?.(\n      "(prefers-reduced-motion: reduce)"' in panel
-    assert "if (!animate || this._reducedMotion)" in panel
-    assert "if (this._reducedMotion) return;" in panel
-    assert "@media (prefers-reduced-motion: reduce)" in panel
-    assert 'role="status"' in panel
-    assert 'aria-live="polite"' in panel
-    assert 'aria-atomic="true"' in panel
-    assert '"aria-busy"' in panel
-    assert "map_truncated" in panel
-    assert "stream_failures" in panel
-    assert "stream_state" in panel
-    assert "MATIC_WORKFLOW_REQUEST_TIMEOUT_MS" in _STUDIO_JS
-    assert "area editor module timed out" in panel
-    assert "Custom areas took too long to load. Close and try again." in panel
-
-
-def test_map_panel_uses_private_catalog_and_bounded_quality_sampling() -> None:
-    """The panel works without an enabled photo camera and can lower GPU load."""
-    panel = _STUDIO_JS[_STUDIO_JS.index("class MaticMapStudio") :]
-    assert '"/api/matic_robot/slam_entries"' in _STUDIO_JS
-    assert "await this._fetchCatalog();" in panel
-    assert "this._catalogState() || entities.photo?.[1]" in panel
-    assert 'cache: "no-store"' in panel
-    assert "MATIC_MAP_QUALITY_BUDGETS" in _STUDIO_JS
-    assert 'class="quality"' in panel
-    assert "_samplePoints(" in panel
-    assert "this._renderFloorCount ?? this._scene.floorCount" in panel
-    assert "this._renderSurfaceCount ?? this._scene.surfaceCount" in panel
-
-
 def test_hass_refresh_does_not_rebuild_an_open_editor() -> None:
     """Routine HA state refreshes must not destroy an open dropdown's DOM."""
     setter = _JS[_JS.index("set hass(value)") : _JS.index("set selector(value)")]
@@ -433,32 +318,55 @@ def test_room_list_does_not_clip_dropdown_menus() -> None:
 
 def test_editor_cache_buster_tracks_javascript_content() -> None:
     """A frontend-only fix must load even before the next version bump."""
-    expected = sha256(_EDITOR_PATH.read_bytes()).hexdigest()[:12]
-    assert frontend.ROOM_PLAN_EDITOR_VERSION == expected
-    assert expected in frontend.ROOM_PLAN_EDITOR_PATH
-
-    studio_expected = sha256(_STUDIO_PATH.read_bytes()).hexdigest()[:12]
-    assert frontend.MATIC_MAP_STUDIO_VERSION == studio_expected
-    assert studio_expected in frontend.MATIC_MAP_STUDIO_PATH
-    assert 'customElements.get("matic-map-panel-v0-3-0")' in _STUDIO_JS
-    assert 'customElements.get("matic-map-panel-v0-3-1")' in _STUDIO_JS
+    expected_pair = sha256(
+        _EDITOR_LOADER_PATH.read_bytes() + b"\0" + _EDITOR_PATH.read_bytes()
+    ).hexdigest()[:12]
+    assert frontend.ROOM_PLAN_EDITOR_BUNDLE_VERSION == expected_pair
+    assert expected_pair in frontend.ROOM_PLAN_EDITOR_PATH
+    assert frontend.ROOM_PLAN_EDITOR_LOADER_PATH.endswith("/room-plan-editor-loader.js")
+    assert 'new URL("./room-plan-editor.js", import.meta.url)' in _EDITOR_LOADER_JS
 
     studio_v4_expected = _studio_v4_tree_hash()
     assert frontend.MATIC_MAP_STUDIO_V4_VERSION == studio_v4_expected
     assert studio_v4_expected in frontend.MATIC_MAP_STUDIO_V4_PATH
     assert "import.meta.url.match" in _STUDIO_V4_JS
     assert "matic-map-panel-v0-4-0" in _STUDIO_V4_JS
-    assert 'customElements.get("matic-map-studio-gallery-v0-4-0")' in _STUDIO_V4_JS
+    assert "matic-map-studio-gallery-v0-4-0" not in _STUDIO_V4_JS
 
 
 def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
-    """Keep the v0.4 initial route safe and within its private bundle budget."""
-    initial_bytes = _STUDIO_V4_PATH.read_bytes()
-    assert len(gzip.compress(initial_bytes, mtime=0)) <= 90 * 1024
+    """Keep eager assets and lazy workflow code within their private budgets."""
+    assert all(path.is_file() for path in _STUDIO_V4_EAGER_PATHS)
+    assert _STUDIO_V4_SHARED_CHUNK_PATHS
+    assert len(_STUDIO_V4_WORKFLOW_CHUNK_PATHS) == 1
+    assert len(_STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS) == 1
+    eager_bytes = [path.read_bytes() for path in _STUDIO_V4_EAGER_PATHS]
+    workflow_bytes = _STUDIO_V4_WORKFLOW_CHUNK_PATHS[0].read_bytes()
+    diagnostics_bytes = _STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS[0].read_bytes()
+    eager_gzip_bytes = sum(
+        len(gzip.compress(contents, mtime=0)) for contents in eager_bytes
+    )
+    assert eager_gzip_bytes <= 90 * 1024
+    assert len(gzip.compress(workflow_bytes, mtime=0)) <= 30 * 1024
+    assert len(gzip.compress(diagnostics_bytes, mtime=0)) <= 30 * 1024
+
+    # The custom element implementation and registration stay in the lazy
+    # workflow module. The shared tag constant may be needed by shell selectors,
+    # but the workflow class itself must not leak into eagerly loaded assets.
+    assert b"MaticMapWorkflowV4" in workflow_bytes
+    assert b"MaticMapDiagnosticsV4" in diagnostics_bytes
+    assert all(
+        b"MaticMapDiagnosticsV4" not in contents
+        for contents in [*eager_bytes, workflow_bytes]
+    )
+    assert all(b"MaticMapWorkflowV4" not in contents for contents in eager_bytes)
+    assert re.search(
+        rb"customElements\.get\((\w+)\)\|\|customElements\.define\(\1,",
+        workflow_bytes,
+    )
     assert "SPDX-License-Identifier: BSD-3-Clause" in _STUDIO_V4_JS
     assert 'from"lit"' not in _STUDIO_V4_JS
     assert "https://" not in _STUDIO_V4_JS
-    assert b"matic-map-workflow-v4" in initial_bytes
     assert frontend.MATIC_MAP_PANEL_ELEMENT == (
         f"matic-map-panel-v0-4-0-{frontend.MATIC_MAP_STUDIO_V4_VERSION}"
     )
@@ -475,7 +383,7 @@ def test_node_syntax_check() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not available on PATH")
-    for path in (_EDITOR_PATH, _STUDIO_PATH, *_STUDIO_V4_DIRECTORY.rglob("*.js")):
+    for path in (_EDITOR_PATH, *_STUDIO_V4_DIRECTORY.rglob("*.js")):
         result = subprocess.run(
             [node, "--check", str(path)],
             capture_output=True,

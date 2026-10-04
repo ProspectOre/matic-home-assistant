@@ -813,7 +813,7 @@ async def test_restart_recovery_expires_marker_after_transport_error(hass) -> No
         "expires_at": (now + timedelta(seconds=1)).isoformat(),
     }
     robot[STOP_FENCE_EXPIRES_AT] = (now + timedelta(seconds=1)).isoformat()
-    manager._stop_fences["synthetic-serial"] = 0
+    manager._arm_stop_pending("synthetic-serial", -1)
     pending = manager.pending_native_reconciliation("synthetic-serial")
     assert pending is not None
     client = SimpleNamespace(
@@ -898,7 +898,9 @@ async def test_setup_registers_services_without_media_view() -> None:
     hass = SimpleNamespace(
         http=SimpleNamespace(register_view=MagicMock()),
         bus=SimpleNamespace(
-            async_listen=MagicMock(return_value=MagicMock()), async_fire=MagicMock()
+            async_listen=MagicMock(return_value=MagicMock()),
+            async_listen_once=MagicMock(return_value=MagicMock()),
+            async_fire=MagicMock(),
         ),
         services=SimpleNamespace(async_register=MagicMock()),
         data={},
@@ -922,7 +924,7 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 18
+    assert hass.services.async_register.call_count == 20
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
@@ -936,6 +938,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         bus=SimpleNamespace(
             async_fire=MagicMock(),
             async_listen=MagicMock(return_value=MagicMock()),
+            async_listen_once=MagicMock(return_value=MagicMock()),
         ),
         services=SimpleNamespace(async_register=MagicMock()),
         data={frontend.DATA_EXTRA_MODULE_URL: set()},
@@ -963,8 +966,10 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         MATIC_MAP_PANEL_ELEMENT,
         MATIC_MAP_STUDIO_V4_PATH,
         MATIC_MAP_STUDIO_V4_ROOT_PATH,
+        ROOM_PLAN_EDITOR_BUNDLE_VERSION,
+        ROOM_PLAN_EDITOR_LOADER_PATH,
         ROOM_PLAN_EDITOR_PATH,
-        ROOM_PLAN_EDITOR_VERSION,
+        ROOM_PLAN_EDITOR_ROOT_PATH,
     )
 
     assert MANIFEST_VERSION in ROOM_PLAN_EDITOR_PATH
@@ -974,7 +979,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     assert hass.data[DATA_SLAM_POSE_VIEW] in {
         call.args[0] for call in hass.http.register_view.call_args_list
     }
-    assert ROOM_PLAN_EDITOR_VERSION in ROOM_PLAN_EDITOR_PATH
+    assert ROOM_PLAN_EDITOR_BUNDLE_VERSION in ROOM_PLAN_EDITOR_PATH
     registered_paths = {
         config.url_path
         for config in hass.http.async_register_static_paths.await_args.args[0]
@@ -982,13 +987,18 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     assert MATIC_MAP_STUDIO_V4_ROOT_PATH in registered_paths
     assert MATIC_ICONS_PATH in registered_paths
     assert MATIC_ICONS_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
-    assert ROOM_PLAN_EDITOR_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
+    assert ROOM_PLAN_EDITOR_PATH in registered_paths
+    assert ROOM_PLAN_EDITOR_LOADER_PATH in registered_paths
+    assert ROOM_PLAN_EDITOR_LOADER_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
+    assert ROOM_PLAN_EDITOR_PATH not in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
     assert panel.require_admin is True
     assert panel.sidebar_icon == "matic:robot"
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
+    assert "classic_module_url" not in panel.config
+    assert ROOM_PLAN_EDITOR_ROOT_PATH in ROOM_PLAN_EDITOR_PATH
 
 
 @pytest.mark.parametrize("native_history_error", [False, True])
@@ -1016,6 +1026,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         )
     )
     plans.async_import_native_history = AsyncMock(return_value=False)
+    track_workspace_entry = MagicMock()
     scheduled_state_flushes = []
 
     def capture_state_flush(delay, callback):
@@ -1034,6 +1045,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
             DOMAIN: {
                 DATA_PLAN_MANAGER: plans,
                 DATA_FIRMWARE_TRACKER: MagicMock(),
+                "workspace_socket": SimpleNamespace(track_entry=track_workspace_entry),
             }
         },
     )
@@ -1050,6 +1062,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
         async_watch_floor_plan=AsyncMock(),
+        displayed_floor_mission_id=None,
         data=SimpleNamespace(
             floor_plan=FloorPlan(
                 42,
@@ -1134,6 +1147,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
+        track_workspace_entry.assert_called_once_with(entry)
         observe = client_factory.call_args.kwargs["observation_callback"]
         observe({"kind": "started"})
         with patch(
@@ -1241,6 +1255,13 @@ async def test_setup_refreshes_before_forwarding_platforms(
     coordinator.async_add_listener.assert_called_once()
     sync_callback = coordinator.async_add_listener.call_args.args[0]
     plans.async_add_listener.assert_called_once_with("synthetic-serial", sync_callback)
+    # A displayed-mission transition can revoke the floor before its
+    # replacement fetch completes; keep the map admission bound to that
+    # observed mission instead of clearing it back to an older floor.
+    coordinator.displayed_floor_mission_id = 84
+    coordinator.data.floor_plan = None
+    sync_callback()
+    assert slam_map.set_expected_mission_id.call_args_list[-1].args == (84,)
     assert entry.async_on_unload.call_args_list[-2:] == [
         ((coordinator_unsubscribe,), {}),
         ((plan_unsubscribe,), {}),

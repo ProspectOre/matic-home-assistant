@@ -8,8 +8,11 @@ export default defineConfig({
   forbidOnly: Boolean(process.env.CI),
   failOnFlakyTests: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
-  workers: process.env.CI ? 2 : undefined,
-  reporter: process.env.CI ? "github" : "list",
+  // Keep local and CI resource pressure identical; host-wide parallelism can
+  // starve WebKit before a page reaches the application.
+  workers: 2,
+  // Keep annotations and case names so capability-based skips are identifiable.
+  reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: {
     baseURL: "http://127.0.0.1:4173",
     trace: "retain-on-failure",
@@ -23,12 +26,18 @@ export default defineConfig({
     {
       // Map Studio relies on Safari-specific native gesture events as well as
       // standard pointer input. Keep its complete (non-@mobile) suite on
-      // Desktop Safari; the @mobile-tagged tests below cover emulated device
+      // Desktop Safari, including HA Configure selectors; the @mobile-tagged tests cover emulated device
       // viewports and touch input on both engines, not physical-device acceptance.
       name: "webkit",
-      testMatch: "tests/browser/map_studio_v4*.spec.mjs",
+      testMatch: ["tests/browser/map_studio_v4*.spec.mjs", "tests/browser/ui.spec.mjs"],
       grepInvert: /@mobile/,
       use: { ...devices["Desktop Safari"] },
+    },
+    {
+      name: "firefox-safety",
+      testMatch: "tests/browser/map_studio_v4*.spec.mjs",
+      grep: /@safety/,
+      use: { ...devices["Desktop Firefox"] },
     },
     {
       name: "mobile-webkit",

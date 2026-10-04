@@ -7,6 +7,7 @@ import { isWorkspaceIntent } from "./contracts";
 import type {
   Localize,
   PrimaryAction,
+  ResetCadenceAction,
   WorkspaceIntent,
   WorkspaceState,
   Workflow,
@@ -45,11 +46,11 @@ import {
 } from "./map-canvas";
 import "./map-canvas";
 import "./precision-controls";
-import "./workflow-panel";
 import { translate } from "./localize";
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
   initialWorkspaceState,
+  isSelectedRobotUnavailable,
   selectStopSecondaryAction,
   selectPrimaryAction,
 } from "./state";
@@ -75,6 +76,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   if (!state.host.connected) return { title: t("v4_reconnecting", "Reconnecting"), detail: t("v4_ha_offline", "Home Assistant is offline"), icon: iconOffline, notable: true };
   if (!state.host.administrator) return { title: t("v4_access_required", "Access required"), detail: t("v4_admin_only", "Administrator only"), icon: iconOffline, notable: true };
   if (state.host.robotCount === 0) return { title: t("v4_no_robot_short", "No robot"), detail: t("v4_set_up_robot", "Set up a Matic robot"), icon: iconOffline, notable: true };
+  if (isSelectedRobotUnavailable(state)) return { title: t("v4_selected_robot_unavailable", "Selected robot unavailable"), detail: t("v4_choose_another_robot", "Choose another robot to open its map."), icon: iconOffline, notable: true };
   if (!state.host.robotConnected) return { title: t("v4_robot_offline", "Robot offline"), detail: t("v4_last_map_read_only", "Last verified map · read only"), icon: iconOffline, notable: true };
   if (state.activity === "problem") return { title: t("v4_needs_attention", "Needs attention"), detail: t("v4_check_robot", "Check the robot"), icon: iconOffline, notable: true };
   if (state.dataMode === "history") {
@@ -101,7 +103,9 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
     && (state.activity === "idle" || state.activity === "docked")) {
     return {
       title: t("v4_task_in_progress", "Task in progress"),
-      detail: state.activity === "docked"
+      detail: state.coherence === "unavailable" || state.coherence === "blocked"
+        ? t("v4_task_map_unavailable", "The live map is unavailable; the current task remains in progress.")
+        : state.activity === "docked"
         ? t("v4_task_docked", "Robot docked; the cleaning task has not finished.")
         : t("v4_task_waiting", "Waiting for the cleaning task to continue or finish."),
       icon: iconPlan,
@@ -111,16 +115,25 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   if (state.command === "starting" && (state.activity === "idle" || state.activity === "docked")) {
     return { title: t("v4_action_starting", "Starting"), detail: t("v4_action_starting_detail", "Waiting for the robot to begin"), icon: iconRobot, notable: true };
   }
-  if (state.activity === "cleaning") return { title: t("v4_cleaning", "Cleaning"), detail: t("v4_cleaning_progress", "Cleaning in progress"), icon: iconCleaning, notable: true };
+  const mapUnavailable = state.coherence === "unavailable" || state.coherence === "blocked";
+  const mapUnavailableDetail = t("v4_active_map_unavailable", "The live map is unavailable; new cleaning is disabled.");
+  const withMapConsequence = (detail: string): string => mapUnavailable ? `${detail} · ${mapUnavailableDetail}` : detail;
+  if (state.activity === "cleaning") return { title: t("v4_cleaning", "Cleaning"), detail: withMapConsequence(t("v4_cleaning_progress", "Cleaning in progress")), icon: iconCleaning, notable: true };
   if (state.activity === "recharging") {
     const battery = state.batteryPercent === null
       ? t("v4_recharging_detail", "Will resume automatically when ready")
       : t("v4_recharging_battery", "Charging to resume · {percent}% battery", { percent: state.batteryPercent });
-    return { title: t("v4_recharging", "Charging to resume"), detail: battery, icon: iconCharging, notable: true };
+    return { title: t("v4_recharging", "Charging to resume"), detail: withMapConsequence(battery), icon: iconCharging, notable: true };
   }
-  if (state.activity === "paused") return { title: t("v4_paused", "Paused"), detail: t("v4_can_resume", "Cleaning can resume"), icon: iconPaused, notable: true };
-  if (state.activity === "returning") return { title: t("v4_returning", "Returning"), detail: t("v4_going_dock", "Going to the dock"), icon: iconCleaning, notable: true };
-  if (state.activity === "stopping") return { title: t("v4_stopping", "Stopping"), detail: t("v4_waiting_robot", "Waiting for the robot"), icon: iconPaused, notable: true };
+  if (state.activity === "paused") return { title: t("v4_paused", "Paused"), detail: withMapConsequence(t("v4_can_resume", "Cleaning can resume")), icon: iconPaused, notable: true };
+  if (state.activity === "returning") return { title: t("v4_returning", "Returning"), detail: withMapConsequence(t("v4_going_dock", "Going to the dock")), icon: iconCleaning, notable: true };
+  if (state.activity === "stopping") return { title: t("v4_stopping", "Stopping"), detail: withMapConsequence(t("v4_waiting_robot", "Waiting for the robot")), icon: iconPaused, notable: true };
+  if (mapUnavailable) return {
+    title: t("v4_map_unavailable", "Map unavailable"),
+    detail: t("v4_map_unavailable_status", "New cleaning is disabled until the live map is verified."),
+    icon: iconOffline,
+    notable: true,
+  };
   const battery = state.batteryPercent === null
     ? t("v4_ready", "Ready")
     : t("v4_battery", "{percent}% battery", { percent: state.batteryPercent });
@@ -193,6 +206,25 @@ const FLICK_VELOCITY = 0.5;
 const FLICK_WINDOW_MS = 100;
 const TAP_SLOP = 6;
 const BODY_SWIPE_DISTANCE = 48;
+const INTERACTIVE_SHEET_SELECTOR = [
+  "a[href]",
+  "button",
+  "input",
+  "label",
+  "select",
+  "textarea",
+  "summary",
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="slider"]',
+  '[role="checkbox"]',
+  '[role="radio"]',
+  '[role="switch"]',
+  '[role="tab"]',
+  '[role="menuitem"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
 interface SheetDrag {
   readonly pointerId: number;
@@ -224,11 +256,19 @@ interface DialogPresentation {
   readonly detail: string;
   readonly cancelLabel: string;
   readonly confirmLabel: string;
-  readonly action: "discard" | "delete-plan" | "delete-area" | "stop" | null;
+  readonly action: "discard" | "delete-plan" | "delete-area" | "reset-room-cadence" | "stop" | null;
 }
 
-const dialogCopy = (dialog: WorkspaceState["dialog"], localize?: Localize, plan = false): DialogPresentation | null => {
-  const t = (key: string, fallback: string): string => translate(localize, key, fallback);
+const dialogCopy = (
+  dialog: WorkspaceState["dialog"],
+  localize?: Localize,
+  plan = false,
+  resetRoomName = "room",
+  sharedCadence = false,
+  resetMode: "mop" | "coverage" = "mop",
+): DialogPresentation | null => {
+  const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
+    translate(localize, key, fallback, placeholders);
   switch (dialog) {
     case "discardDraft":
       return {
@@ -253,6 +293,24 @@ const dialogCopy = (dialog: WorkspaceState["dialog"], localize?: Localize, plan 
         cancelLabel: t("v4_cancel", "Cancel"),
         confirmLabel: t("area_delete", "Delete area"),
         action: "delete-area",
+      };
+    case "confirmResetCadence":
+      return {
+        title: resetMode === "mop"
+          ? t("v4_reset_mop_cadence_title", "Reset mopping progress for {room}?", { room: resetRoomName })
+          : t("v4_reset_coverage_cadence_title", "Reset coverage progress for {room}?", { room: resetRoomName }),
+        detail: sharedCadence
+          ? resetMode === "mop"
+            ? t("v4_reset_shared_mop_cadence_detail", "This clears shared mopping progress for {room} across plans that use its shared schedule. Coverage progress and saved cleaning history stay unchanged.", { room: resetRoomName })
+            : t("v4_reset_shared_coverage_cadence_detail", "This clears shared coverage progress for {room} across plans that use its shared schedule. Mopping progress and saved cleaning history stay unchanged.", { room: resetRoomName })
+          : resetMode === "mop"
+            ? t("v4_reset_private_mop_cadence_detail", "This clears mopping progress for {room} in this plan. Coverage progress and saved cleaning history stay unchanged.", { room: resetRoomName })
+            : t("v4_reset_private_coverage_cadence_detail", "This clears coverage progress for {room} in this plan. Mopping progress and saved cleaning history stay unchanged.", { room: resetRoomName }),
+        cancelLabel: t("v4_cancel", "Cancel"),
+        confirmLabel: resetMode === "mop"
+          ? t("v4_reset_mop_cadence_confirm", "Reset mopping progress")
+          : t("v4_reset_coverage_cadence_confirm", "Reset coverage progress"),
+        action: "reset-room-cadence",
       };
     case "confirmStop":
       return {
@@ -297,6 +355,7 @@ export class MaticMapShellV4 extends LitElement {
     _browserFullscreen: { state: true },
     _sheetDetent: { state: true },
     _announcement: { state: true },
+    _workflowLoadFailed: { state: true },
   };
 
   static override styles = shellStyles;
@@ -322,6 +381,7 @@ export class MaticMapShellV4 extends LitElement {
   protected _browserFullscreen = false;
   protected _sheetDetent: SheetDetent = "half";
   protected _announcement = "";
+  protected _workflowLoadFailed = false;
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
   #observedSheet: Element | null = null;
@@ -329,12 +389,35 @@ export class MaticMapShellV4 extends LitElement {
   #workspaceLauncher: HTMLElement | null = null;
   #helpLauncher: HTMLElement | null = null;
   #pendingNavigation: WorkspaceIntent | null = null;
+  #workflowPanelLoad: Promise<void> | null = null;
   #drag: SheetDrag | null = null;
   #bodySwipe: BodySwipe | null = null;
 
+  #fullscreenElement(): Element | null {
+    const root = this.renderRoot;
+    return root instanceof ShadowRoot
+      ? root.fullscreenElement ?? document.fullscreenElement
+      : document.fullscreenElement;
+  }
+
   readonly #fullscreenChange = (): void => {
-    this._browserFullscreen = document.fullscreenElement === this.renderRoot.querySelector(".app");
+    this._browserFullscreen = this.#isAppFullscreen();
   };
+
+  #isAppFullscreen(): boolean {
+    const root = this.renderRoot;
+    const app = root.querySelector(".app");
+    const scopedFullscreenElement = root instanceof ShadowRoot ? root.fullscreenElement : null;
+    if (scopedFullscreenElement) return scopedFullscreenElement === app;
+
+    const documentFullscreenElement = document.fullscreenElement;
+    for (let current: Node | null = this; current;) {
+      if (current === documentFullscreenElement) return true;
+      const tree = current.getRootNode();
+      current = tree instanceof ShadowRoot ? tree.host : null;
+    }
+    return false;
+  }
 
   readonly #outsidePointer = (event: PointerEvent): void => {
     if (!this._overflowOpen) return;
@@ -413,6 +496,18 @@ export class MaticMapShellV4 extends LitElement {
           requestAnimationFrame(() => {
             const target = this.renderRoot.querySelector<HTMLElement>(".workspace-toggle")
               ?? this.renderRoot.querySelector<HTMLElement>(".nav--menu")
+              ?? (launcher?.isConnected ? launcher : null);
+            target?.focus({ preventScroll: true });
+          });
+        });
+      }
+      if (previous && !previous.fullMap && this.state.fullMap) {
+        // Pointer activation does not focus buttons in Safari. Keep keyboard
+        // dismissal inside this shell after the layout changes to full map.
+        void this.updateComplete.then(() => {
+          const launcher = this.#workspaceLauncher;
+          requestAnimationFrame(() => {
+            const target = this.renderRoot.querySelector<HTMLElement>(".workspace-toggle")
               ?? (launcher?.isConnected ? launcher : null);
             target?.focus({ preventScroll: true });
           });
@@ -549,9 +644,9 @@ export class MaticMapShellV4 extends LitElement {
     if (launcher) requestAnimationFrame(() => launcher.focus({ preventScroll: true }));
   }
 
-  #dispatchAction(id: string): void {
+  #dispatchAction(action: string | ResetCadenceAction): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
-      detail: { id },
+      detail: typeof action === "string" ? { id: action } : action,
       bubbles: true,
       composed: true,
     }));
@@ -569,6 +664,17 @@ export class MaticMapShellV4 extends LitElement {
     }
     if (presentation.action === "delete-plan" || presentation.action === "delete-area") {
       this.#confirmDelete(presentation.action);
+      return;
+    }
+    if (presentation.action === "reset-room-cadence") {
+      const resetRequest = this.state.cadenceResetRequest;
+      this.#intent({ type: "dismiss-top-layer" });
+      if (resetRequest) this.#dispatchAction({
+        id: "reset-room-cadence",
+        planId: resetRequest.planId,
+        roomId: resetRequest.roomId,
+        mode: resetRequest.mode,
+      });
       return;
     }
     this.#intent({ type: "dismiss-top-layer" });
@@ -608,9 +714,18 @@ export class MaticMapShellV4 extends LitElement {
     return this.renderRoot.querySelector<HTMLElement>(".mobile-sheet");
   }
 
+  #startsOnInteractiveSheetDescendant(event: PointerEvent): boolean {
+    const currentTarget = event.currentTarget;
+    for (const target of event.composedPath()) {
+      if (target === currentTarget) return false;
+      if (target instanceof Element && target.matches(INTERACTIVE_SHEET_SELECTOR)) return true;
+    }
+    return false;
+  }
+
   #gripDown(event: PointerEvent): void {
     if (event.pointerType === "mouse" && event.button !== 0) return;
-    if ((event.target as HTMLElement | null)?.closest("button, select, input, a")) return;
+    if (this.#startsOnInteractiveSheetDescendant(event)) return;
     const sheet = this.#sheet();
     if (!sheet || this.#drag) return;
     this.#drag = {
@@ -683,6 +798,7 @@ export class MaticMapShellV4 extends LitElement {
 
   #bodyDown(event: PointerEvent): void {
     if (event.pointerType === "mouse") return;
+    if (this.#startsOnInteractiveSheetDescendant(event)) return;
     const body = event.currentTarget as HTMLElement;
     this.#bodySwipe = {
       pointerId: event.pointerId,
@@ -732,23 +848,15 @@ export class MaticMapShellV4 extends LitElement {
     }
   }
 
-  #overflowAction(id: "support" | "classic" | "fullscreen"): void {
+  #overflowAction(id: "support" | "fullscreen"): void {
     this.#closeOverflow(id === "fullscreen");
     if (id === "support") {
       this.#workflow("support");
       return;
     }
-    if (id === "fullscreen") {
-      const app = this.renderRoot.querySelector<HTMLElement>(".app");
-      if (document.fullscreenElement) void document.exitFullscreen();
-      else void app?.requestFullscreen();
-      return;
-    }
-    this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
-      detail: { id: "use-classic" },
-      bubbles: true,
-      composed: true,
-    }));
+    const app = this.renderRoot.querySelector<HTMLElement>(".app");
+    if (this.#fullscreenElement()) void document.exitFullscreen();
+    else void app?.requestFullscreen();
   }
 
   #openBrush(): void {
@@ -964,6 +1072,9 @@ export class MaticMapShellV4 extends LitElement {
         html`<a class="ms-btn ms-btn--secondary" href="/config/integrations/integration/matic_robot">${t("v4_open_integration", "Open the Matic integration")}</a>`,
       );
     }
+    if (isSelectedRobotUnavailable(state)) {
+      return this.#hostState(t("v4_selected_robot_unavailable", "Selected robot unavailable"), t("v4_choose_another_robot", "Choose another robot to open its map."));
+    }
     if (!host.robotConnected) {
       return html`
         ${this.#hostState(t("v4_robot_offline_title", "Robot offline"), t("v4_robot_offline_body", "Showing the last verified map. Cleaning is unavailable until the robot reconnects."))}
@@ -973,17 +1084,10 @@ export class MaticMapShellV4 extends LitElement {
     }
     if (isReadOnlyWorkspace(state)) {
       return html`
-        ${this.#hostState(
-          t("v4_saved_map_read_only_notice", "Cleaning is unavailable on a saved map"),
-          state.dataMode === "live"
-            ? t("v4_map_recovery_automatic", "Cleaning controls return automatically when the live map is verified.")
-            : t("v4_saved_map_read_only_notice_detail", "Saved maps are view only. Return to the live map below to choose rooms, run a plan, or draw a custom area."),
-        )}
         <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
         <div class="shelf">
           ${historyRow}
           ${diagnosticsRow}
-
         </div>
       `;
     }
@@ -1096,12 +1200,45 @@ export class MaticMapShellV4 extends LitElement {
 
   #workflowBody(state: WorkspaceState, narrow: boolean) {
     if (state.workflow === "none") return this.#entry(state, narrow);
+    if (!customElements.get(WORKFLOW_TAG)) {
+      this.#loadWorkflowPanel();
+      if (this._workflowLoadFailed) {
+        return html`<div class="workflow-loading" role="alert">
+          <p>${this.#t("v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p>
+          <button class="ms-btn ms-btn--secondary" @click=${this.#retryWorkflowPanel}>
+            ${this.#t("v4_retry", "Try again")}
+          </button>
+        </div>`;
+      }
+      return html`<div class="workflow-loading" role="status" aria-live="polite">
+        ${this.#t("v4_workflow_loading", "Loading workspace tools…")}
+      </div>`;
+    }
     return html`<${workflowTag}
       .state=${state}
       .localize=${this.localize}
       @matic-workspace-intent=${this.#captureDialogLauncher}
     ></${workflowTag}>`;
   }
+
+  #loadWorkflowPanel(): void {
+    if (this.#workflowPanelLoad || customElements.get(WORKFLOW_TAG)) return;
+    this._workflowLoadFailed = false;
+    this.#workflowPanelLoad = import("./workflow-panel")
+      .then(() => {
+        this.#workflowPanelLoad = null;
+        this.requestUpdate();
+      })
+      .catch(() => {
+        this.#workflowPanelLoad = null;
+        this._workflowLoadFailed = true;
+      });
+  }
+
+  #retryWorkflowPanel = (): void => {
+    this._workflowLoadFailed = false;
+    this.#loadWorkflowPanel();
+  };
 
   #panel(state: WorkspaceState, narrow: boolean) {
     const workflow = workflowCopy(state, this.localize);
@@ -1174,6 +1311,7 @@ export class MaticMapShellV4 extends LitElement {
     const state = this.state;
     const narrow = state.narrowHint || this._measuredNarrow;
     const status = statusCopy(state, this.localize);
+    const selectedRobotUnavailable = isSelectedRobotUnavailable(state);
     const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
     const secondary = selectStopSecondaryAction(state);
     const statusAction = !narrow && primary.id === "stop"
@@ -1195,7 +1333,21 @@ export class MaticMapShellV4 extends LitElement {
     const canToggleWorkspace = state.fullMap || (
       state.host.administrator && state.host.robotCount > 0 && state.map.available
     );
-    const dialog = dialogCopy(state.dialog, this.localize, state.workflow === "plan");
+    const resetRoom = state.cadenceResetRequest
+      ? state.resources.plans.value?.rooms.find((room) => room.roomId === state.cadenceResetRequest?.roomId)
+      : undefined;
+    const resetPlanRoom = state.cadenceResetRequest
+      ? state.resources.plans.value?.plans.find((plan) => plan.id === state.cadenceResetRequest?.planId)
+        ?.rooms.find((room) => room.roomId === state.cadenceResetRequest?.roomId)
+      : undefined;
+    const dialog = dialogCopy(
+      state.dialog,
+      this.localize,
+      state.workflow === "plan",
+      resetRoom?.name || state.cadenceResetRequest?.roomId || "room",
+      resetPlanRoom?.cadence?.scope === "shared",
+      state.cadenceResetRequest?.mode,
+    );
     const sheetOffset = narrow && !state.fullMap ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";
     const precisionOpen = state.precisionOpen && state.workflow === "draw";
@@ -1224,7 +1376,7 @@ export class MaticMapShellV4 extends LitElement {
               >${icon(iconBack)}</button>
             ` : nothing}
             <h1 class="title">${this.#t("map_studio_title", "Matic Map")}</h1>
-            ${state.robots.length > 1 ? html`
+            ${state.robots.length > 1 || selectedRobotUnavailable ? html`
               <select
                 class="ms-select context-switcher robot-switcher"
                 name="matic-robot"
@@ -1234,7 +1386,9 @@ export class MaticMapShellV4 extends LitElement {
                   type: "select-entry",
                   entryId: (event.currentTarget as HTMLSelectElement).value,
                 })}
-              >${state.robots.map((robot) => html`
+              >${selectedRobotUnavailable ? html`
+                <option value=${state.selection.entryId || ""} selected disabled>${this.#t("v4_selected_robot_unavailable", "Selected robot unavailable")}</option>
+              ` : nothing}${state.robots.map((robot) => html`
                 <option value=${robot.entryId} ?selected=${robot.entryId === state.selection.entryId}>${robot.label}</option>
               `)}</select>
             ` : nothing}
@@ -1282,7 +1436,6 @@ export class MaticMapShellV4 extends LitElement {
                     </select>
                   </label>
                   <button class="ms-row ms-row--menu" type="button" @click=${() => this.#overflowAction("support")}>${this.#t("v4_map_diagnostics", "Map diagnostics")}</button>
-                  <button class="ms-row ms-row--menu" type="button" @click=${() => this.#overflowAction("classic")}>${this.#t("v4_switch_classic", "Open classic map view")}</button>
                   <button class="ms-row ms-row--menu" type="button" @click=${() => this.#overflowAction("fullscreen")}>${this._browserFullscreen ? this.#t("v4_leave_full_screen", "Leave full screen") : this.#t("v4_full_screen", "Full screen")}</button>
                 </div>
               ` : nothing}

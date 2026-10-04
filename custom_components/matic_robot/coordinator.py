@@ -34,6 +34,7 @@ from .client.models import (
     CleaningSession,
     CuesVoiceStatus,
     FloorPlan,
+    MappedFloor,
     RobotInfo,
     RobotOperationalState,
     RobotPose,
@@ -67,6 +68,25 @@ ERROR_CONFIRMATION_POLLS = 2
 # Limit robot-driven Cues fan-out while retaining the newest state received during
 # each interval. This bounds coordinator, event-bus, automation, and Recorder work.
 CUES_UPDATE_INTERVAL_SECONDS = 1.0
+
+
+def _floor_plan_matches_displayed(
+    floor_plan: FloorPlan | None,
+    mission_id: int | None,
+    signature: tuple[MappedFloor, ...] | None,
+) -> bool:
+    """Check displayed identity while honoring the single-plan wire shape."""
+    if (
+        floor_plan is None
+        or mission_id is None
+        or signature is None
+        or floor_plan.mission_id != mission_id
+    ):
+        return False
+    # The protocol client deliberately skips the mission catalog for a single
+    # coverage plan. That payload has no mapped-floor signature to compare, so
+    # its exact mission ID is the strongest available identity evidence.
+    return not floor_plan.mapped_floors or floor_plan.mapped_floors == signature
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +126,14 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self.firmware_tracker = firmware_tracker
         self._cached_info: RobotInfo | None = None
         self._cached_floor_plan: FloorPlan | None = None
+        # The displayed-mission stream is the first authority that can revoke
+        # the current floor. Keep it separately from the map refresh hint so
+        # a failed read cannot make an older cached plan current again.
+        self._displayed_floor_mission_id: int | None = None
+        self._displayed_floor_signature: tuple[MappedFloor, ...] | None = None
         self._verified_floor_mission_id: int | None = None
+        self._floor_read_generation = 0
+        self._floor_reads_in_flight = 0
         self._cached_telemetry: RobotTelemetry | None = None
         self._map_refresh_due = 0.0
         self._slow_refresh_due = 0.0
@@ -222,18 +249,50 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     states_received += 1
                     if states_received > 1:
                         retry_delay = 1
+                    displayed_signature = mission_state.mapped_floors
+                    identity_changed = (
+                        self._displayed_floor_mission_id != active_floor.mission_id
+                        or self._displayed_floor_signature != displayed_signature
+                    )
+                    verified_conflict = (
+                        self._verified_floor_mission_id is not None
+                        and self._verified_floor_mission_id != active_floor.mission_id
+                    )
                     floor_plan = self.data.floor_plan if self.data is not None else None
-                    if (
-                        floor_plan is not None
-                        and floor_plan.mission_id == active_floor.mission_id
-                        and floor_plan.mapped_floors == mission_state.mapped_floors
-                    ):
+                    published_map_matches = _floor_plan_matches_displayed(
+                        floor_plan, active_floor.mission_id, displayed_signature
+                    )
+                    verified_invalidated = (
+                        self._verified_floor_mission_id is not None
+                        and (verified_conflict or not published_map_matches)
+                    )
+                    invalidates_read = identity_changed or verified_invalidated
+                    invalidated_read = (
+                        invalidates_read and self._floor_reads_in_flight > 0
+                    )
+                    if invalidates_read:
+                        self._floor_read_generation += 1
+                    if verified_invalidated:
+                        # The displayed mission and floor signature are the
+                        # immediate localization authority for later reads.
+                        self._verified_floor_mission_id = None
+                    self._displayed_floor_mission_id = active_floor.mission_id
+                    self._displayed_floor_signature = displayed_signature
+                    if published_map_matches:
+                        if invalidated_read:
+                            # The matching published map remains valid, but a
+                            # read admitted under the prior identity was
+                            # revoked. Schedule its replacement immediately.
+                            self._map_refresh_due = 0.0
+                            await self.async_request_refresh()
                         continue
                     # This stream is the robot's immediate localization signal.
                     # A previously verified map identity may only be a replayed
                     # scene at the dock, so it cannot override this newer state.
-                    self._verified_floor_mission_id = None
                     self._map_refresh_due = 0.0
+                    # Revoke the old floor before awaiting the replacement read.
+                    if self.data is not None and self.data.floor_plan is not None:
+                        self.async_set_updated_data(replace(self.data, floor_plan=None))
                     await self.async_request_refresh()
             except asyncio.CancelledError:
                 raise
@@ -300,6 +359,12 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._async_optional_floor_plan(),
                 self._async_optional_pose(),
                 self._async_optional_telemetry(),
+            )
+            # Task evidence belongs to this raw snapshot, before presentation
+            # confirms/suppresses transient problem codes.
+            telemetry = replace(
+                telemetry,
+                active_cleaning_session=operational.native_session_activity(),
             )
             operational = self._async_resolve_bag_capability(operational)
             operational = self._async_confirm_robot_errors(operational)
@@ -553,23 +618,97 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     async def _async_optional_floor_plan(self) -> FloorPlan | None:
         """Read map geometry without hiding core state if unavailable."""
         now = monotonic()
+        expected_mission_id = self.expected_floor_mission_id
+        read_generation = self._floor_read_generation
         if (
             not self._force_full_refresh
             and self._cached_floor_plan is not None
             and now < self._map_refresh_due
+            and (
+                expected_mission_id is None
+                or self._cached_floor_plan.mission_id == expected_mission_id
+            )
         ):
             return self._cached_floor_plan
+        floor_plan: FloorPlan | None
         try:
-            floor_plan = await self.client.async_get_floor_plan(
-                expected_mission_id=self._verified_floor_mission_id
-            )
-            self._cached_floor_plan = floor_plan
-            self._map_refresh_due = now + MAP_UPDATE_INTERVAL_SECONDS
-            return floor_plan
+            self._floor_reads_in_flight += 1
+            try:
+                floor_plan = await self.client.async_get_floor_plan(
+                    expected_mission_id=expected_mission_id
+                )
+            finally:
+                self._floor_reads_in_flight -= 1
+            refresh_due = now + MAP_UPDATE_INTERVAL_SECONDS
         except MaticError as err:
             _LOGGER.debug("Optional Hermes floor plan unavailable: %s", err)
-            self._map_refresh_due = now + UPDATE_INTERVAL_SECONDS
-            return self._cached_floor_plan
+            floor_plan = self._cached_floor_plan
+            refresh_due = now + UPDATE_INTERVAL_SECONDS
+
+        # Apply post-await identity admission to successful reads and cached
+        # fallbacks. A stale read can retain a published map only when its
+        # mission and mapped-floor signature still match the current display.
+        current_expected_mission_id = self.expected_floor_mission_id
+        displayed_signature_conflict = (
+            current_expected_mission_id == self._displayed_floor_mission_id
+            and self._displayed_floor_signature is not None
+            and not _floor_plan_matches_displayed(
+                floor_plan,
+                self._displayed_floor_mission_id,
+                self._displayed_floor_signature,
+            )
+        )
+        if (
+            self._floor_read_generation != read_generation
+            or current_expected_mission_id != expected_mission_id
+            or displayed_signature_conflict
+            or (
+                current_expected_mission_id is not None
+                and (
+                    floor_plan is None
+                    or floor_plan.mission_id != current_expected_mission_id
+                )
+            )
+        ):
+            self._map_refresh_due = 0.0
+            published_floor_plan = (
+                self.data.floor_plan if self.data is not None else None
+            )
+            if _floor_plan_matches_displayed(
+                published_floor_plan,
+                self._displayed_floor_mission_id,
+                self._displayed_floor_signature,
+            ) and (
+                current_expected_mission_id is None
+                or (
+                    published_floor_plan is not None
+                    and published_floor_plan.mission_id == current_expected_mission_id
+                )
+            ):
+                # A concurrent identity event can revoke this read while
+                # confirming that the already-published map is still exact.
+                # Keep that verified map visible while the replacement read
+                # is queued; a changed floor signature still fails closed.
+                self._cached_floor_plan = published_floor_plan
+                return published_floor_plan
+            return None
+        self._map_refresh_due = refresh_due
+        self._cached_floor_plan = floor_plan
+        return floor_plan
+
+    @property
+    def expected_floor_mission_id(self) -> int | None:
+        """Return the current floor identity admitted by live evidence."""
+        return (
+            self._verified_floor_mission_id
+            if self._verified_floor_mission_id is not None
+            else self._displayed_floor_mission_id
+        )
+
+    @property
+    def displayed_floor_mission_id(self) -> int | None:
+        """Return the latest mission selected by the robot's display state."""
+        return self._displayed_floor_mission_id
 
     async def _async_optional_pose(self) -> RobotPose | None:
         """Read map pose without hiding core state if unavailable."""
@@ -587,7 +726,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             and self._cached_telemetry is not None
             and now < self._slow_refresh_due
         ):
-            return await self._async_live_session_telemetry(self._cached_telemetry)
+            return self._cached_telemetry
         try:
             telemetry = await self.client.async_get_telemetry()
             self._cached_telemetry = telemetry
@@ -596,20 +735,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         except MaticError as err:
             _LOGGER.debug("Optional Hermes telemetry unavailable: %s", err)
             self._slow_refresh_due = now + UPDATE_INTERVAL_SECONDS
-            return await self._async_live_session_telemetry(
-                self._cached_telemetry or RobotTelemetry()
-            )
-
-    async def _async_live_session_telemetry(
-        self, telemetry: RobotTelemetry
-    ) -> RobotTelemetry:
-        """Refresh lifecycle state independently of slow settings telemetry."""
-        try:
-            active = await self.client.async_has_active_cleaning_session()
-        except MaticError as err:
-            _LOGGER.debug("Active Hermes session unavailable: %s", err)
-            active = None
-        return replace(telemetry, active_cleaning_session=active)
+            return self._cached_telemetry or RobotTelemetry()
 
     async def async_request_full_refresh(self) -> None:
         """Refresh slow settings immediately after a local write."""
@@ -627,7 +753,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         look like an unresolved transition.
         """
         if expected_mission_id is not None:
-            self._verified_floor_mission_id = expected_mission_id
+            if self._verified_floor_mission_id != expected_mission_id:
+                self._verified_floor_mission_id = expected_mission_id
+                self._floor_read_generation += 1
         self._map_refresh_due = 0.0
         await self.async_request_refresh()
 

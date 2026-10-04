@@ -49,11 +49,56 @@ _LOGGER = logging.getLogger(__name__)
 class StopReturnClient(Protocol):
     """The small part of the robot client this watcher needs."""
 
-    async def async_has_active_cleaning_session(self) -> bool | None:
+    async def async_get_active_cleaning_session_state(self) -> bool | None:
         """Return whether the robot still owns an active cleaning task."""
 
     async def async_send_user_command(self, command: UserCommand) -> None:
         """Send one vetted user command to the robot."""
+
+
+async def async_native_stop_is_settled(
+    hass: HomeAssistant,
+    native_active: Callable[[], Awaitable[bool | None]],
+    entity_id: str,
+    *,
+    allowed_states: frozenset[str] = DOCKED_STATES,
+) -> bool:
+    """Require native inactivity followed by a fresh docked-state read."""
+    try:
+        active = await native_active()
+    except MaticError as err:
+        _LOGGER.debug(
+            "Native Matic stop settlement unreadable (%s)", type(err).__name__
+        )
+        return False
+    if active is not False:
+        return False
+    confirmed = hass.states.get(entity_id)
+    return confirmed is not None and confirmed.state in allowed_states
+
+
+async def async_clear_ownerless_stop_if_settled(
+    hass: HomeAssistant,
+    *,
+    native_active: Callable[[], Awaitable[bool | None]],
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str,
+) -> bool:
+    """Clear only the captured ownerless fence after native dock settlement."""
+    stop_fence_token = manager.stop_fence_token(serial_number)
+    if stop_fence_token is None:
+        return False
+    if not await async_native_stop_is_settled(
+        hass,
+        native_active,
+        entity_id,
+        allowed_states=frozenset({"docked", "charging", "idle"}),
+    ):
+        return False
+    return await manager.async_clear_stop_pending_if_token(
+        serial_number, stop_fence_token, run_id=None
+    )
 
 
 @asynccontextmanager
@@ -86,7 +131,8 @@ async def async_dock_when_stop_settles(
     run_id: str | None = None,
     set_run_id: Callable[[str | None], None] | None = None,
     get_run_id: Callable[[], str | None] | None = None,
-    on_docked: Callable[[], Awaitable[None]] | None = None,
+    on_docked: Callable[[], Awaitable[bool | None]] | None = None,
+    stop_fence_token: int | None = None,
 ) -> bool:
     """Dock once the stopped task ends and report whether DOCK was sent."""
     started = monotonic()
@@ -95,6 +141,25 @@ async def async_dock_when_stop_settles(
         deadline, started + DOCK_SETTLE_TRANSITION_GRACE_SECONDS
     )
     settled_state_observed = False
+    settlement_callback = on_docked
+    clear_stop_fence = getattr(manager, "async_clear_stop_pending_if_token", None)
+    if stop_fence_token is not None:
+
+        async def settle_confirmed_stop() -> bool:
+            """Require native inactivity and current docking before settling STOP."""
+            if not await async_native_stop_is_settled(
+                hass, client.async_get_active_cleaning_session_state, entity_id
+            ):
+                return False
+            if on_docked is not None:
+                return (await on_docked()) is not False
+            elif run_id is None and callable(clear_stop_fence):
+                return bool(
+                    await clear_stop_fence(serial_number, stop_fence_token, run_id=None)
+                )
+            return False
+
+        settlement_callback = settle_confirmed_stop
 
     def clear_run_scope() -> None:
         """Release this watcher without clearing a newer managed run."""
@@ -110,12 +175,12 @@ async def async_dock_when_stop_settles(
             state = hass.states.get(entity_id)
             if state is not None:
                 if state.state in HOMEWARD_STATES:
-                    if on_docked is not None:
+                    if settlement_callback is not None:
                         return await async_confirm_docked(
                             hass,
                             refresh=refresh,
                             entity_id=entity_id,
-                            on_docked=on_docked,
+                            on_docked=settlement_callback,
                             run_id=run_id,
                             set_run_id=set_run_id,
                             get_run_id=get_run_id,
@@ -141,7 +206,9 @@ async def async_dock_when_stop_settles(
                         if latest_state is None or latest_state.state != SETTLED_STATE:
                             return False
                         try:
-                            active = await client.async_has_active_cleaning_session()
+                            active = (
+                                await client.async_get_active_cleaning_session_state()
+                            )
                         except MaticError as err:
                             _LOGGER.debug(
                                 "Native Matic stop settlement unreadable (%s)",
@@ -168,7 +235,7 @@ async def async_dock_when_stop_settles(
                                 )
                                 return False
                             await refresh()
-                            if on_docked is not None:
+                            if settlement_callback is not None:
                                 confirm_deadline = (
                                     monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
                                 )
@@ -180,8 +247,8 @@ async def async_dock_when_stop_settles(
                                         confirmed is not None
                                         and confirmed.state in DOCKED_STATES
                                     ):
-                                        await on_docked()
-                                        break
+                                        if await settlement_callback() is not False:
+                                            break
                                     if (
                                         confirmed is not None
                                         and confirmed.state in REPLACEMENT_STATES
@@ -228,12 +295,18 @@ def schedule_dock_after_stop(
     run_id: str | None = None,
     set_run_id: Callable[[str | None], None] | None = None,
     get_run_id: Callable[[], str | None] | None = None,
-    on_docked: Callable[[], Awaitable[None]] | None = None,
+    on_docked: Callable[[], Awaitable[bool | None]] | None = None,
 ) -> None:
     """Start a lifecycle-bound watcher that docks a settled stop."""
     create_background_task = getattr(hass, "async_create_background_task", None)
     if not callable(create_background_task):
         return
+    stop_fence_token_reader = getattr(manager, "stop_fence_token", None)
+    stop_fence_token = (
+        stop_fence_token_reader(serial_number)
+        if callable(stop_fence_token_reader)
+        else None
+    )
     task = create_background_task(
         async_dock_when_stop_settles(
             hass,
@@ -246,6 +319,7 @@ def schedule_dock_after_stop(
             set_run_id=set_run_id,
             get_run_id=get_run_id,
             on_docked=on_docked,
+            stop_fence_token=stop_fence_token,
         ),
         f"{DOMAIN} dock after stop",
     )
@@ -259,7 +333,7 @@ async def async_confirm_docked(
     *,
     refresh: Callable[[], Awaitable[None]],
     entity_id: str,
-    on_docked: Callable[[], Awaitable[None]],
+    on_docked: Callable[[], Awaitable[bool | None]],
     run_id: str | None = None,
     set_run_id: Callable[[str | None], None] | None = None,
     get_run_id: Callable[[], str | None] | None = None,
@@ -283,8 +357,8 @@ async def async_confirm_docked(
             state = hass.states.get(entity_id)
             now = monotonic()
             if state is not None and state.state in DOCKED_STATES:
-                await on_docked()
-                return True
+                if await on_docked() is not False:
+                    return True
             if state is not None and state.state in REPLACEMENT_STATES:
                 if replacement_deadline is None:
                     replacement_deadline = now + DOCK_CONFIRM_TRANSITION_GRACE_SECONDS
@@ -316,7 +390,7 @@ def schedule_dock_confirmation(
     serial_number: str,
     entity_id: str,
     run_id: str,
-    on_docked: Callable[[], Awaitable[None]],
+    on_docked: Callable[[], Awaitable[bool | None]],
     set_run_id: Callable[[str | None], None] | None = None,
     get_run_id: Callable[[], str | None] | None = None,
 ) -> bool:

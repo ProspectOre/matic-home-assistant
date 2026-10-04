@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
+from uuid import UUID
 
 from homeassistant.components.vacuum import Segment, StateVacuumEntity
 from homeassistant.components.vacuum.const import VacuumActivity, VacuumEntityFeature
@@ -17,17 +18,21 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
-from .client.exceptions import MaticError
+from .client.exceptions import CoverageGuardError, MaticError
 from .client.models import FloorPlan, RobotActivity, Room
-from .const import DOMAIN
+from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .entity import MaticEntity
 from .plans import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
+    PLAN_SESSION_ID,
     plan_floor_token,
     resolve_room_reference,
 )
-from .stop_return import schedule_dock_after_stop
+from .stop_return import (
+    async_clear_ownerless_stop_if_settled,
+    schedule_dock_after_stop,
+)
 
 PARALLEL_UPDATES = 1
 
@@ -167,8 +172,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         pending = getattr(self._plans, "stop_pending", None)
         if not callable(pending) or not pending(serial_number):
             return
-        if self.activity in {VacuumActivity.DOCKED, VacuumActivity.IDLE}:
-            await self._plans.async_clear_stop_pending(serial_number)
+        if self.entity_id is not None and await async_clear_ownerless_stop_if_settled(
+            self.hass,
+            native_active=self.coordinator.client.async_get_active_cleaning_session_state,
+            manager=self._plans,
+            serial_number=serial_number,
+            entity_id=self.entity_id,
+        ):
             return
         raise ServiceValidationError(
             "Matic is completing its OEM stop countdown; wait until it docks",
@@ -207,6 +217,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         ordered: bool = False,
         motion_token: int | None = None,
         expected_floor_token: str | None = None,
+        managed_session_id: UUID | None = None,
         room_coverage: list[CoverageSetting] | None = None,
         room_modes: list[CleaningMode] | None = None,
     ) -> None:
@@ -299,6 +310,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         room_coverage,
                         room_modes,
                         first_room_name=rooms[0].name,
+                        session_id=managed_session_id,
                         require_current=require_current,
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
@@ -308,19 +320,38 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                             checkpoint_initial_session if run_id is not None else None
                         ),
                     )
+                except CoverageGuardError as err:
+                    raise ServiceValidationError(
+                        err.safe_message,
+                        translation_domain=DOMAIN,
+                        translation_key=err.reason_code,
+                    ) from err
                 except (MaticError, TimeoutError) as err:
                     raise HomeAssistantError(
                         "Mixed coverage dispatch could not be verified"
                     ) from err
             else:
-                await self.coordinator.client.async_start_coverage(
-                    floor_plan,
-                    [room.protocol_id for room in rooms],
-                    cleaning_mode=cleaning_mode or self.coordinator.cleaning_mode,
-                    coverage_setting=coverage_setting
-                    or self.coordinator.coverage_setting,
-                    ordered=ordered,
-                )
+                command_rooms = [room.protocol_id for room in rooms]
+                mode = cleaning_mode or self.coordinator.cleaning_mode
+                setting = coverage_setting or self.coordinator.coverage_setting
+                if motion_token is not None:
+                    await self.coordinator.client.async_start_coverage(
+                        floor_plan,
+                        command_rooms,
+                        cleaning_mode=mode,
+                        coverage_setting=setting,
+                        ordered=ordered,
+                        require_settings_readback=True,
+                        session_id=managed_session_id,
+                    )
+                else:
+                    await self.coordinator.client.async_start_coverage(
+                        floor_plan,
+                        command_rooms,
+                        cleaning_mode=mode,
+                        coverage_setting=setting,
+                        ordered=ordered,
+                    )
             await self.coordinator.async_request_refresh()
 
     async def async_start(self, **kwargs: object) -> None:
@@ -351,16 +382,15 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         active_run_id = getattr(self._plans, "active_run_id", None)
         run_id = active_run_id(serial_number) if callable(active_run_id) else None
         operational = self.coordinator.data.operational
-        stop_before_dock = self._plans.has_managed_task(
-            serial_number
-        ) or self.activity in {
-            VacuumActivity.CLEANING,
-            VacuumActivity.ERROR,
-            VacuumActivity.PAUSED,
-            VacuumActivity.RETURNING,
-        }
-        stop_before_dock = stop_before_dock or (
-            operational.low_charge and operational.is_charging
+        # Display activity gives charging precedence; native task flags still
+        # require STOP so DOCK cannot resume retained cleaning or paused work.
+        stop_before_dock = (
+            self._plans.has_managed_task(serial_number)
+            or operational.cleaning
+            or operational.paused
+            or operational.returning
+            or (bool(operational.error_codes) and not operational.is_charging)
+            or (operational.low_charge and operational.is_charging)
         )
         async with self._plans.external_motion(serial_number):
             if stop_before_dock:
@@ -387,14 +417,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         """Dock the robot as soon as its accepted stop settles."""
         if self.entity_id is None:
             return
-        on_docked: Callable[[], Awaitable[None]] | None = None
+        on_docked: Callable[[], Awaitable[bool | None]] | None = None
         if run_id is not None:
+            stop_fence_token_reader = getattr(self._plans, "stop_fence_token", None)
+            stop_fence_token = (
+                stop_fence_token_reader(serial_number)
+                if callable(stop_fence_token_reader)
+                else None
+            )
 
-            async def mark_docked() -> None:
-                await self._plans.async_mark_run_docked(
+            async def mark_docked() -> bool:
+                return await self._plans.async_mark_run_docked(
                     serial_number,
                     run_id,
                     entity_id=self.entity_id,
+                    stop_fence_token=stop_fence_token,
                 )
 
             on_docked = mark_docked
@@ -619,6 +656,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             await self._async_command(simple_commands[normalized])
             return
         if normalized in {"clean_all", "start"}:
+            if self._managed_session_id(params) is not None:
+                raise _validation_error(
+                    "A managed session ID requires a managed room command",
+                    "invalid_plan_command",
+                )
             options = self._clean_options(params)
             options["motion_token"] = self._motion_token(params)
             options["expected_floor_token"] = self._floor_token(params)
@@ -639,8 +681,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     translation_key="rooms_must_be_list",
                 )
             options = self._clean_options(params)
-            options["motion_token"] = self._motion_token(params)
+            motion_token = self._motion_token(params)
+            managed_session_id = self._managed_session_id(params)
+            if managed_session_id is not None and motion_token is None:
+                raise _validation_error(
+                    "The managed session ID is invalid for this room command",
+                    "invalid_plan_command",
+                )
+            if motion_token is not None and managed_session_id is None:
+                raise _validation_error(
+                    "The managed room command has no session ID",
+                    "invalid_plan_command",
+                )
+            options["motion_token"] = motion_token
             options["expected_floor_token"] = self._floor_token(params)
+            options["managed_session_id"] = managed_session_id
             await self._async_clean_rooms(self._resolve_rooms(identifiers), **options)
             return
         raise _validation_error(
@@ -652,6 +707,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     def _resolve_rooms(self, identifiers: list[str]) -> list[Room]:
         if not identifiers:
             raise _validation_error("Select at least one Matic room", "no_rooms")
+        if len(identifiers) > MAX_ROOM_SEQUENCE_SIZE:
+            raise _validation_error(
+                f"Select at most {MAX_ROOM_SEQUENCE_SIZE} rooms at a time",
+                "room_sequence_limit",
+                {"limit": str(MAX_ROOM_SEQUENCE_SIZE)},
+            )
         rooms = self._floor_plan().rooms
         room_map = {room.id: room.name for room in rooms}
         rooms_by_id = {room.id: room for room in rooms}
@@ -746,6 +807,28 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "The managed plan floor token is invalid", "invalid_plan_command"
             )
         return token
+
+    @staticmethod
+    def _managed_session_id(params: dict[str, Any] | list[Any] | None) -> UUID | None:
+        """Read the command correlation UUID supplied only by the managed runner."""
+        if not isinstance(params, dict) or PLAN_SESSION_ID not in params:
+            return None
+        token = params[PLAN_SESSION_ID]
+        if not isinstance(token, str):
+            raise _validation_error(
+                "The managed session ID is invalid", "invalid_plan_command"
+            )
+        try:
+            parsed = UUID(token)
+        except ValueError as err:
+            raise _validation_error(
+                "The managed session ID is invalid", "invalid_plan_command"
+            ) from err
+        if str(parsed) != token:
+            raise _validation_error(
+                "The managed session ID is invalid", "invalid_plan_command"
+            )
+        return parsed
 
 
 def _enum_option[CleaningOptionT: (CleaningMode, CoverageSetting)](

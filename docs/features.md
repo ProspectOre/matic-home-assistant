@@ -9,6 +9,7 @@ These are the integration's main additions:
 | --- | --- |
 | Intelligent rotation | Give rooms that have waited longest the first cleaning opportunity on your next run. |
 | Per-room plans | Save a room order with individual vacuum/mop modes and coverage settings; preview the next run. |
+| Room schedules (0.5 development) | Configure private/shared periodic mopping and coverage plus tracked one-time room cleans. Coverage stays due until applied settings can be verified causally. [Guide](room-schedules.md). |
 | Finish-current-room stopping | Stop immediately or finish the active room when its estimated progress reaches your chosen threshold. |
 | Home-driven cleaning | Combine presence, schedules, pet devices, and other Home Assistant triggers with plans or named areas. |
 | Completion events | React to verified room completion and plan outcomes in automations. |
@@ -37,13 +38,12 @@ child lock, pet-waste avoidance, and Matic Cues.
 
 [Map and area guide](cleaning.md) · [Entity reference](entities.md)
 
-## How this fits with the Matic app
+## Saved areas and Home Assistant routines
 
-The native app already supports room cleaning, schedules, and custom-area
-schedules ([Matic FAQ](https://support.maticrobots.com/frequently-asked-questions)).
-Matic also provides a [Matter connection to Home Assistant](https://support.maticrobots.com/how-to-connect-matic-to-home-assistant).
-This community integration connects directly over the LAN and adds the plan
-logic, events, statistics, map workspace, and inspection tools listed here.
+This integration saves named custom areas for reuse and lets Home Assistant
+schedules and automations run them. Room plans store room order and per-room
+cleaning settings, while intelligent rotation gives waiting rooms an earlier
+turn. The other Home Assistant features are listed above.
 
 Use the Matic app to enable pairing during setup. After pairing, the integration
 uses its own local credential. Robot firmware updates remain managed by Matic.

@@ -6,7 +6,7 @@ import asyncio
 import hashlib
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from typing import Any, cast
+from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
@@ -79,7 +79,7 @@ class FirmwareTracker:
         if version is None:
             return False
         async with self._lock:
-            robot = self._robot(robot_id)
+            robot = self._data.get("robots", {}).get(robot_id, {})
             previous = robot.get("observed_version")
             previous_protocol = robot.get("observed_protocol")
             if previous == version and previous_protocol == protocol:
@@ -95,10 +95,13 @@ class FirmwareTracker:
                 and previous_protocol is None
                 and protocol is not None
             )
+            candidate = deepcopy(self._data)
+            robot = candidate.setdefault("robots", {}).setdefault(robot_id, {})
             robot["observed_version"] = version
             robot["observed_protocol"] = protocol
             robot["compatibility_status"] = "pending"
-            await self._store.async_save(self._data)
+            await self._store.async_save(candidate)
+            self._data = candidate
         self._notify(robot_id)
         if previous is None or metadata_completed:
             return False
@@ -119,9 +122,12 @@ class FirmwareTracker:
     async def async_remove_robot(self, robot_id: str) -> None:
         """Forget a removed entry's snapshots and withdraw its repair."""
         async with self._lock:
-            if self._data.get("robots", {}).pop(robot_id, None) is None:
+            if robot_id not in self._data.get("robots", {}):
                 return
-            await self._store.async_save(self._data)
+            candidate = deepcopy(self._data)
+            del candidate["robots"][robot_id]
+            await self._store.async_save(candidate)
+            self._data = candidate
         ir.async_delete_issue(self.hass, DOMAIN, self.issue_id(robot_id))
 
     async def async_record_snapshot(
@@ -129,7 +135,8 @@ class FirmwareTracker:
     ) -> dict[str, Any]:
         """Persist one safe snapshot and return its comparison with the prior one."""
         async with self._lock:
-            robot = self._robot(robot_id)
+            candidate = deepcopy(self._data)
+            robot = candidate.setdefault("robots", {}).setdefault(robot_id, {})
             previous = robot.get("snapshot")
             current = deepcopy(dict(snapshot))
             comparison = _compare_snapshots(previous, current)
@@ -171,7 +178,8 @@ class FirmwareTracker:
             }
             history.append(current)
             del history[:-MAX_HISTORY]
-            await self._store.async_save(self._data)
+            await self._store.async_save(candidate)
+            self._data = candidate
         self._notify(robot_id)
         previous_version = previous.get("firmware_version") if previous else None
         previous_protocol = previous.get("protocol_version") if previous else None
@@ -295,12 +303,6 @@ class FirmwareTracker:
         """Return a stable non-identifying repair key."""
         digest = hashlib.sha256(robot_id.encode()).hexdigest()[:12]
         return f"firmware_changed_{digest}"
-
-    def _robot(self, robot_id: str) -> dict[str, Any]:
-        return cast(
-            dict[str, Any],
-            self._data.setdefault("robots", {}).setdefault(robot_id, {}),
-        )
 
     @callback
     def _notify(self, robot_id: str) -> None:

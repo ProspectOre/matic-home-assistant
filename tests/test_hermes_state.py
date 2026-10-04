@@ -218,6 +218,8 @@ def test_live_and_future_error_codes_remain_truthful_and_automation_safe() -> No
         "error_code_304",
         "error_code_999",
     )
+    assert state.activity is RobotActivity.ERROR
+    assert state.native_session_activity() is None
 
 
 def _varint(value: int) -> bytes:

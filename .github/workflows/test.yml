@@ -16,8 +16,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    # The isolated x86 guest uses QEMU; retain the complete checks with a bounded budget.
-    timeout-minutes: 40
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -35,6 +34,6 @@ jobs:
       - run: ruff format --check .
       - run: mypy custom_components/matic_robot
       - run: python scripts/check_public_tree.py
-      - run: python -m build --sdist --wheel
+      - run: python -m build
       - run: python scripts/check_release_artifacts.py dist
       - run: python scripts/check_fresh_install.py dist

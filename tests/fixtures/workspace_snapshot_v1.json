@@ -1,0 +1,68 @@
+{
+  "schema": 1,
+  "capabilities": {
+    "snapshot": 1,
+    "subscription": 1,
+    "rest_catalog": 1,
+    "catalog_projection": 1
+  },
+  "epoch": "synthetic-epoch-v1",
+  "sequence": 0,
+  "coherence_generation": 1,
+  "entry_id": "synthetic-entry",
+  "identity": {
+    "entry_id": "synthetic-entry",
+    "floor_mission_id": 42,
+    "floor_verified": true
+  },
+  "status": {
+    "state": "ready",
+    "reason": null,
+    "retryable": false
+  },
+  "revisions": {
+    "workspace": 0,
+    "status": 0,
+    "robot_state": 0,
+    "activity": 0,
+    "plans": 0,
+    "areas": 0,
+    "plan_state": 0,
+    "history": 0,
+    "scene": 7
+  },
+  "payload": {
+    "available": true,
+    "entry": {
+      "entry_id": "synthetic-entry",
+      "scene_url": "/api/matic_robot/slam_scene/synthetic-entry",
+      "delta_url": "/api/matic_robot/slam_delta/synthetic-entry",
+      "pose_url": "/api/matic_robot/slam_pose/synthetic-entry",
+      "history_url": "/api/matic_robot/slam_history/synthetic-entry",
+      "areas_url": "/api/matic_robot/areas/synthetic-entry",
+      "plans_url": "/api/matic_robot/plans/synthetic-entry",
+      "history_count": 0,
+      "history_floor_count": 0,
+      "map_revision": 7,
+      "map_floor_coherent": true,
+      "selected_floor_ordinal": 1,
+      "map_floor_ordinal": 1,
+      "map_session_verified": true,
+      "map_session_key": "45a72b74293517b688bdc37326e5fed522fdaf097072b3eb6bec130ff726322e",
+      "map_block_reason": null,
+      "runner_locked": false,
+      "stop_settle_pending": false,
+      "active_plan": false,
+      "native_reconciliation_pending": false,
+      "native_session_active": false,
+      "map_health": "ready",
+      "map_complete": true,
+      "map_truncated": false,
+      "stream_failures": 0,
+      "bootstrap_state": "complete",
+      "bootstrap_photo_seen": true,
+      "bootstrap_structure_seen": true,
+      "bootstrap_failures": 0
+    }
+  }
+}

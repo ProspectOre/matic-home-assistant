@@ -35,6 +35,34 @@ clean_room_sequence:
       default: true
       selector:
         boolean:
+    use_room_schedule:
+      default: false
+      selector:
+        boolean:
+    override_room_schedule:
+      default: false
+      selector:
+        boolean:
+
+preview_room_sequence:
+  target: *vacuum_target
+  fields:
+    rooms:
+      required: true
+      selector:
+        object:
+    return_to_base:
+      default: true
+      selector:
+        boolean:
+    use_room_schedule:
+      default: false
+      selector:
+        boolean:
+    override_room_schedule:
+      default: false
+      selector:
+        boolean:
 
 clean_area:
   target: *vacuum_target
@@ -68,7 +96,13 @@ clean_entire_plan:
 
 run_selected_plan:
   target: *vacuum_target
-  fields: *optional_plan
+  fields:
+    plan:
+      selector:
+        text:
+    preview_token:
+      selector:
+        text:
 
 preview_plan:
   target: *vacuum_target
@@ -92,6 +126,24 @@ reset_plan_history:
       default: false
       selector:
         boolean:
+
+reset_room_cadence:
+  target: *vacuum_target
+  fields:
+    plan:
+      required: true
+      selector:
+        text:
+    room_id:
+      selector:
+        text:
+    modes:
+      selector:
+        select:
+          multiple: true
+          options:
+            - mop
+            - coverage
 
 list_plans:
   target: *vacuum_target

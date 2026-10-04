@@ -144,6 +144,30 @@ async def test_history_round_trips_replaces_recent_and_removes(hass) -> None:
     assert empty.catalog() == ()
 
 
+async def test_history_listener_only_notifies_catalog_mutations(hass) -> None:
+    store = SlamHistoryStore(hass, "listener-entry")
+    await store.async_load()
+    listener = MagicMock()
+    remove_listener = store.async_add_listener(listener)
+    started = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+
+    assert await store.async_add(_scene(), 1, created_at=started)
+    listener.assert_called_once_with()
+    assert await store.async_add(_scene(), 1, created_at=started) is False
+    listener.assert_called_once_with()
+    assert await store.async_add(
+        _scene(page_x=1), 2, created_at=started + timedelta(seconds=30)
+    )
+    assert listener.call_count == 2
+
+    await store.async_remove()
+    assert listener.call_count == 3
+    remove_listener()
+    remove_listener()
+    await store.async_shutdown()
+    assert listener.call_count == 3
+
+
 async def test_history_rejects_add_after_shutdown_and_invalid_revision(hass) -> None:
     store = SlamHistoryStore(hass, "closed-entry")
     await store.async_load()

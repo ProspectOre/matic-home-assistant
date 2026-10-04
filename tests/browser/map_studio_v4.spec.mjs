@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { deflateSync } from "node:zlib";
 import { build } from "esbuild";
 
+import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 import { pointer, touchDrag, twoFingerPinch } from "./touch.mjs";
 
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
@@ -53,8 +54,10 @@ function syntheticDelta(base, scene, baseRevision, revision) {
 }
 
 async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
-  await page.goto("/");
-  await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.evaluate(async () => {
+    window.__galleryModule = await import("/map_studio_v4-review/review.js");
+  });
   await page.evaluate(async ({ tag, selectedScenario, selectedNarrow }) => {
     await customElements.whenDefined(tag);
     const gallery = document.createElement(tag);
@@ -70,7 +73,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { BackendError } from "./frontend/map-studio-v4/backend"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -78,7 +81,7 @@ async function loadEffectHarness(page) {
   await page.route("**/plan-recovery-test.js", (route) => route.fulfill({
     contentType: "text/javascript", body: bundle.outputFiles[0].text,
   }));
-  await page.goto("/");
+  await page.goto("/", { waitUntil: "domcontentloaded" });
 }
 
 async function snapshot(page) {
@@ -128,6 +131,428 @@ function slowDrag(dy, x = 160, y = 20) {
 }
 
 test.describe("Map Studio v0.4 foundation", () => {
+  test("loads workflow tools on first open and diagnostics only when requested", async ({ page }) => {
+    const workflowRequests = [];
+    const diagnosticsRequests = [];
+    await page.route("**/chunks/workflow-panel-*.js", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.continue();
+    });
+    page.on("request", (request) => {
+      if (request.url().includes("/chunks/workflow-panel-")) workflowRequests.push(request.url());
+      if (request.url().includes("/chunks/diagnostics-panel-")) diagnosticsRequests.push(request.url());
+    });
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await expect(gallery.locator(".panel-heading")).toBeVisible();
+    expect(workflowRequests).toHaveLength(0);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "history" });
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("status")).toContainText("Loading workspace tools");
+    await expect(gallery.locator("matic-map-workflow-v4")).toBeVisible();
+    expect(workflowRequests).toHaveLength(1);
+    expect(diagnosticsRequests).toHaveLength(0);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "none" });
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "history" });
+    }, GALLERY_TAG);
+    await expect(gallery.locator("matic-map-workflow-v4")).toBeVisible();
+    expect(workflowRequests).toHaveLength(1);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "none" });
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "support" });
+    }, GALLERY_TAG);
+    await expect(gallery.locator("matic-map-diagnostics-v4")).toBeVisible();
+    expect(diagnosticsRequests).toHaveLength(1);
+  });
+
+  test("confirms a named room schedule reset and sends its exact saved identities", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const cadence = {
+        scope: "shared",
+        mopEveryN: 3,
+        coverageEveryN: 2,
+        periodicCoverageSetting: "quick",
+        doMopNext: false,
+        doCoverageNext: false,
+      };
+      const plan = plans.plans[0];
+      const rooms = plan.rooms.map((room) => room.roomId === "room-a"
+        ? { ...room, cadence, cadenceProgress: { mopProgress: 1, coverageProgress: 1, mopDue: false, coverageDue: false, nextMopIn: 2, nextCoverageIn: 1, reasons: [] } }
+        : room);
+      element.replaceWorkspaceState({
+        ...state,
+        resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...plans, plans: [{ ...plan, rooms }] } } },
+      });
+    }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+    const inspector = gallery.locator(".inspector");
+    const schedule = inspector.locator("details").first();
+    await schedule.locator("summary").click();
+    await expect(inspector.getByRole("button", { name: "Reset coverage progress for Kitchen" })).toBeVisible();
+    const reset = inspector.getByRole("button", { name: "Reset mopping progress for Kitchen" });
+    await reset.click();
+    const dialog = gallery.getByRole("dialog", { name: "Reset mopping progress for Kitchen?" });
+    await expect(dialog).toContainText("across plans that use its shared schedule");
+    await expect(dialog).toContainText("Coverage progress and saved cleaning history stay unchanged");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+    await reset.click();
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.__resetAction = null;
+      element.addEventListener("matic-workspace-action", (event) => {
+        element.__resetAction = event.detail;
+      }, { once: true });
+    }, GALLERY_TAG);
+    await dialog.getByRole("button", { name: "Reset mopping progress" }).click();
+    await expect(dialog).toHaveCount(0);
+    const action = await page.evaluate((tag) => document.querySelector(tag).__resetAction, GALLERY_TAG);
+    expect(action).toEqual({ id: "reset-room-cadence", planId: "daily", roomId: "room-a", mode: "mop" });
+  });
+
+  test("explains unverified schedule progress and keeps each reset available", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const plan = plans.plans[0];
+      const rooms = plan.rooms.map((room) => room.roomId === "room-a"
+        ? {
+          ...room,
+          cadence: {
+            scope: "plan",
+            mopEveryN: 3,
+            coverageEveryN: 4,
+            periodicCoverageSetting: "heavy_duty",
+            doMopNext: false,
+            doCoverageNext: false,
+          },
+          cadenceProgress: undefined,
+          cadenceReasons: ["mop_progress_unverified", "coverage_progress_unverified"],
+        }
+        : room);
+      element.replaceWorkspaceState({
+        ...state,
+        resources: {
+          ...state.resources,
+          plans: { ...state.resources.plans, value: { ...plans, plans: [{ ...plan, rooms }] } },
+        },
+      });
+    }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+    const inspector = gallery.locator(".inspector");
+    await inspector.locator("details").first().locator("summary").click();
+    await expect(inspector).toContainText("Mopping progress must be reset before this schedule can run.");
+    await expect(inspector).toContainText("Coverage progress must be reset before this schedule can run.");
+    await expect(inspector.getByRole("button", { name: "Reset mopping progress for Kitchen" })).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "Reset coverage progress for Kitchen" })).toBeVisible();
+  });
+
+  test("previews next-run order, effective settings, cadence reasons, and mission boundaries", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const current = plans.plans[0];
+      const nextRunPreview = {
+        previewToken: "a".repeat(64),
+        rooms: [
+          { roomId: "room-b", name: "Living room", cleaningMode: "vacuum_and_mop", coverageSetting: "heavy_duty", cadenceReasons: ["mop_due"] },
+          { roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: ["coverage_due"] },
+        ],
+        missionBoundaries: [1],
+        blocker: null,
+      };
+      element.replaceWorkspaceState({
+        ...state,
+        resources: {
+          ...state.resources,
+          plans: { ...state.resources.plans, value: { ...plans, plans: [{ ...current, nextRunPreview }] } },
+        },
+      });
+    }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+    const preview = gallery.locator("section[aria-labelledby='next-run-preview-heading']");
+    await expect(preview.getByRole("list", { name: "Next-run room order and effective settings" })).toHaveText(/1\. Living room.*Vacuum \+ mop · Heavy Duty.*Vacuum and mop are due.*Mission 2.*2\. Kitchen.*Vacuum · Quick.*Periodic coverage is due/s);
+    await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toBeEnabled();
+  });
+
+  test("keeps manual room choice within the service limit and explains the disabled choices", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const catalog = state.resources.plans.value;
+      const template = catalog.rooms[0];
+      const rooms = Array.from({ length: 101 }, (_, index) => ({
+        ...template,
+        roomId: `room-limit-${index + 1}`,
+        name: `Room ${index + 1}`,
+      }));
+      const selected = rooms.slice(0, 99);
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "rooms",
+        resources: {
+          ...state.resources,
+          plans: { ...state.resources.plans, value: { ...catalog, rooms } },
+        },
+        selection: {
+          ...state.selection,
+          roomIds: selected.map((room) => room.roomId),
+          roomSettings: selected.map((room) => ({ roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "standard" })),
+        },
+      });
+    }, GALLERY_TAG);
+    const rooms = gallery.getByRole("group", { name: "Rooms to clean" });
+    const choices = rooms.locator('input[type="checkbox"]');
+    await expect(choices).toHaveCount(101);
+    await choices.nth(99).check();
+    await expect(choices.nth(99)).toBeChecked();
+    await expect(choices.nth(100)).toBeDisabled();
+    await expect(gallery.getByRole("status").filter({ hasText: "Up to 100 rooms can be included" })).toBeVisible();
+    await expect(rooms.locator('input[type="checkbox"]:checked')).toHaveCount(100);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const catalogRooms = state.resources.plans.value.rooms;
+      const selected = catalogRooms.slice(0, 99).map((room) => ({
+        roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "standard",
+      }));
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "plan",
+        planDraft: { ...state.planDraft, id: null, name: "Capacity check", rooms: selected, dirty: false },
+      });
+    }, GALLERY_TAG);
+    const planRooms = gallery.getByRole("group", { name: "Plan rooms" });
+    const planChoices = planRooms.locator(".plan-room-label input[type=checkbox]");
+    await expect(planChoices).toHaveCount(101);
+    await planChoices.nth(99).check();
+    await expect(planChoices.nth(99)).toBeChecked();
+    await expect(planChoices.nth(100)).toBeDisabled();
+    await expect(gallery.getByRole("status").filter({ hasText: "Up to 100 rooms can be included" })).toBeVisible();
+  });
+
+  test("blocks an oversized legacy plan with a clear recovery action", async ({ page }) => {
+    const roomCatalog = Array.from({ length: 102 }, (_, index) => ({
+      room_id: `legacy-room-${index + 1}`,
+      name: `Legacy room ${index + 1}`,
+      boundary: [[0, 0], [6, 0], [6, 5], [0, 5]],
+    }));
+    const planRooms = roomCatalog.map((room) => ({
+      room_id: room.room_id,
+      cleaning_mode: "vacuum",
+      coverage_setting: "standard",
+    }));
+    const fixture = await installPanelFixture(page, {
+      moduleSource: "packaged",
+      initialPlanCatalog: {
+        rooms: roomCatalog,
+        selected_plan: "legacy-plan",
+        plans: [{
+          id: "legacy-plan",
+          name: "Legacy plan",
+          enabled: true,
+          run_behavior: "ordered",
+          rooms: planRooms,
+          room_order: planRooms.map((room) => room.room_id),
+          return_to_base: true,
+          finish_current_room: false,
+          finish_current_room_threshold: 50,
+        }],
+      },
+    });
+    await page.evaluate(() => {
+      document.body.append(window.__panelFixture.createPanel());
+    });
+    const gallery = page.locator(fixture.panelTag);
+    await expect.poll(() => page.evaluate(() => {
+      const panel = document.querySelector(window.__panelFixture.panelTag);
+      const plans = panel?.getWorkspaceSnapshot().resources.plans;
+      return { status: plans?.status, count: plans?.value?.plans[0]?.rooms.length };
+    })).toEqual({ status: "ready", count: 102 });
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Legacy plan.*Edit plan/ }).click();
+
+    await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toBeDisabled();
+    const rooms = gallery.getByRole("group", { name: "Plan rooms" });
+    const draftRoomCount = () => page.evaluate(
+      (tag) => document.querySelector(tag).getWorkspaceSnapshot().planDraft.rooms.length,
+      fixture.panelTag,
+    );
+    await rooms.locator(".plan-room-label input[type=checkbox]").first().uncheck();
+    expect(await draftRoomCount()).toBe(101);
+    await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
+
+    const initialPlanReads = await page.evaluate(() => window.__panelFixture.planReads);
+    await gallery.getByRole("button", { name: "Save plan", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__panelFixture.serviceCalls.length)).toBe(1);
+    await expect.poll(() => page.evaluate((tag) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      return {
+        draftDirty: state.planDraft.dirty,
+        draftCount: state.planDraft.rooms.length,
+        savedCount: state.resources.plans.value?.plans[0]?.rooms.length,
+      };
+    }, fixture.panelTag)).toEqual({ draftDirty: false, draftCount: 101, savedCount: 101 });
+    await expect.poll(() => page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThan(initialPlanReads);
+
+    const firstSavedCall = await page.evaluate(() => window.__panelFixture.serviceCalls[0]);
+    expect(firstSavedCall.data.rooms.map((room) => room.room)).toEqual(
+      Array.from({ length: 101 }, (_, index) => `legacy-room-${index + 2}`),
+    );
+
+    await gallery.getByRole("checkbox", { name: /Legacy room 2$/ }).uncheck();
+    expect(await draftRoomCount()).toBe(100);
+    await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
+    await gallery.getByRole("button", { name: "Save plan", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__panelFixture.serviceCalls.length)).toBe(2);
+    await expect.poll(() => page.evaluate((tag) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      return {
+        draftDirty: state.planDraft.dirty,
+        draftCount: state.planDraft.rooms.length,
+        savedCount: state.resources.plans.value?.plans[0]?.rooms.length,
+      };
+    }, fixture.panelTag)).toEqual({ draftDirty: false, draftCount: 100, savedCount: 100 });
+
+    const savedCall = await page.evaluate(() => window.__panelFixture.serviceCalls[1]);
+    expect(savedCall).toMatchObject({ domain: "matic_robot", service: "save_plan", target: { entity_id: "vacuum.synthetic" } });
+    expect(savedCall.data.rooms.map((room) => room.room)).toEqual(
+      Array.from({ length: 100 }, (_, index) => `legacy-room-${index + 3}`),
+    );
+
+    await gallery.getByRole("button", { name: "Back to plans", exact: true }).click();
+    await gallery.getByRole("button", { name: /Legacy plan.*Edit plan/ }).click();
+    await expect(gallery.getByRole("group", { name: "Plan rooms" })
+      .locator(".plan-room-label input[type=checkbox]:checked")).toHaveCount(100);
+    await expect.poll(() => page.evaluate((tag) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      return state.planDraft.rooms.length;
+    }, fixture.panelTag)).toBe(100);
+  });
+
+  test("requires review when a saved-plan preview changes before dispatch", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = { ...createGalleryState("ready"), workflow: "plan" };
+      const store = new WorkspaceStore(initial);
+      const oldCatalog = initial.resources.plans.value;
+      const firstPlan = oldCatalog.plans[0];
+      const updatedCatalog = {
+        ...oldCatalog,
+        plans: [{
+          ...firstPlan,
+          nextRunPreview: {
+            ...firstPlan.nextRunPreview,
+            rooms: [...firstPlan.nextRunPreview.rooms].reverse(),
+          },
+        }],
+      };
+      let useUpdatedPreview = false;
+      const calls = [];
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry],
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => useUpdatedPreview ? updatedCatalog : oldCatalog,
+        service: async (...args) => { calls.push(args); },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      try {
+        await effects.refreshCatalog(true);
+        useUpdatedPreview = true;
+        await effects.executeAction("run-plan");
+        return { calls, notice: store.value.notice?.text, refreshedOrder: store.value.resources.plans.value?.plans[0]?.nextRunPreview?.rooms.map((room) => room.roomId) };
+      } finally { effects.dispose(); }
+    });
+    expect(result.calls).toEqual([]);
+    expect(result.notice).toContain("preview changed");
+    expect(result.refreshedOrder).toEqual(["room-c", "room-b", "room-a"]);
+  });
+
+  test("routes a typed room cadence reset to the exact saved plan and room", async ({ page }) => {
+    await loadEffectHarness(page);
+    const calls = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState, withGalleryRoomPreview } = await import("/plan-recovery-test.js");
+      const base = createGalleryState("ready");
+      const initial = withGalleryRoomPreview({ ...base, workflow: "rooms", selection: {
+        ...base.selection, roomIds: ["room-a"],
+        roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "quick" }],
+      } });
+      const store = new WorkspaceStore(initial);
+      const captured = [];
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry],
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        service: async (...args) => { captured.push(args); },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      try {
+        await effects.refreshCatalog(true);
+        await effects.executeAction({ id: "reset-room-cadence", planId: "daily", roomId: "room-a", mode: "mop" });
+        return captured;
+      } finally { effects.dispose(); }
+    });
+    expect(calls).toEqual([["matic_robot", "reset_room_cadence", { plan: "daily", room_id: "room-a", modes: ["mop"] }, "vacuum.synthetic", { acknowledgementTimeout: "mutation" }]]);
+  });
+
+  test("uses the shared room schedule by default and keeps its progress visible during an override", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const rooms = plans.rooms.map((room) => room.roomId === "room-a" ? {
+        ...room,
+        sharedCadence: { scope: "shared", mopEveryN: 3, coverageEveryN: null,
+          periodicCoverageSetting: null, doMopNext: false, doCoverageNext: false },
+        sharedCadenceProgress: { mopProgress: 3, coverageProgress: 0,
+          mopDue: true, coverageDue: false, nextMopIn: 0, nextCoverageIn: null, reasons: ["mop_due"] },
+        sharedCadenceReasons: ["mop_due"],
+      } : room);
+      element.replaceWorkspaceState({ ...state,
+        resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...plans, rooms } } } });
+    }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: /^One-time clean/ }).click();
+    const roomList = gallery.getByRole("group", { name: "Rooms to clean" });
+    await roomList.getByRole("checkbox").first().check();
+    const useSchedule = gallery.getByRole("checkbox", { name: "Override shared schedule settings" });
+    await expect(useSchedule).not.toBeChecked();
+    expect((await snapshot(page)).selection.useRoomSchedule).toBe(true);
+    const sharedStatus = gallery.getByLabel("Shared room schedule status");
+    await expect(sharedStatus).toContainText("Vacuum and mop is due on this clean.");
+    await useSchedule.check();
+    await expect(useSchedule).toBeChecked();
+    expect((await snapshot(page)).selection.useRoomSchedule).toBe(false);
+    await expect(sharedStatus).toContainText("Vacuum and mop is due on this clean.");
+  });
+
   test("registers the sidebar robot before opening the map without replacing other icon sets", async ({ page }) => {
     await page.goto("/");
     await page.evaluate(() => {
@@ -168,7 +593,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
-  test("never offers a hidden stale plan while its catalog is loading or unavailable", async ({ page }) => {
+  test("never offers a hidden stale plan while its catalog is loading or unavailable @safety", async ({ page }) => {
     const gallery = await loadGallery(page);
     for (const workflow of ["plan", "rooms"]) {
       for (const status of ["loading", "error", "empty"]) {
@@ -185,8 +610,12 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("recovers an uncertain action only after a successful status read without replaying it", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
-      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const initial = createGalleryState("ready");
+      const { EffectController, WorkspaceStore, createGalleryState, withGalleryRoomPreview } = await import("/plan-recovery-test.js");
+      const base = createGalleryState("ready");
+      const initial = withGalleryRoomPreview({ ...base, workflow: "rooms", selection: {
+        ...base.selection, roomIds: ["room-a"],
+        roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "quick" }],
+      } });
       const store = new WorkspaceStore({ ...initial, command: "failed" });
       let writes = 0;
       let reject = true;
@@ -262,7 +691,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }
   }
-  test("keeps Stop enabled after failed and accepted starts in every active state and layout", async ({ page }) => {
+  test("keeps Stop enabled after failed and accepted starts in every active state and layout @safety", async ({ page }) => {
     const gallery = await loadGallery(page);
     for (const command of ["failed", "starting"]) {
       for (const activity of ["cleaning", "returning", "recharging", "paused"]) {
@@ -308,7 +737,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         await loadEffectHarness(page);
         const result = await page.evaluate(async ({ startRejects, stopRejects }) => {
           const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-          const initial = createGalleryState("ready");
+          const initial = { ...createGalleryState("ready"), workflow: "plan" };
           const store = new WorkspaceStore(initial);
           const calls = [];
           let completeStart;
@@ -331,6 +760,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           try {
             await effects.refreshCatalog(true);
             const start = effects.executeAction("run-plan");
+            for (let index = 0; index < 20 && !completeStart; index++) await new Promise((resolve) => setTimeout(resolve, 0));
             const whileStarting = store.value.command;
             await effects.executeAction("run-plan");
             await effects.executeAction("stop");
@@ -389,27 +819,31 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }
   }
-  test("ignores an old start response after changing robots or closing the panel", async ({ page }) => {
+  test("ignores an old start response, including a late coverage guard, after changing robots or closing the panel @safety", async ({ page }) => {
     await loadEffectHarness(page);
     const results = await page.evaluate(async () => {
-      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const { EffectController, BackendError, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
       const results = [];
       for (const close of [false, true]) {
         for (const rejectLate of [false, true]) {
-          const initial = createGalleryState("ready");
+          const initial = { ...createGalleryState("ready"), workflow: "plan" };
           const store = new WorkspaceStore(initial);
           const calls = [];
           let completeStart;
+          let switched = false;
           const effects = new EffectController(store, {
-            catalog: async () => [initial.resources.entry],
+            catalog: async () => switched ? new Promise(() => {}) : [initial.resources.entry],
             history: async () => initial.resources.history.value,
             scene: async () => { throw new DOMException("Aborted", "AbortError"); },
             pose: async () => { throw new DOMException("Aborted", "AbortError"); },
             plans: async () => initial.resources.plans.value,
             service: (domain, service, data, entity) => {
               calls.push([service, entity]);
+              if (service !== "run_selected_plan") return Promise.resolve();
               return new Promise((resolve, reject) => {
-                completeStart = () => rejectLate ? reject(new Error("Old response")) : resolve();
+              completeStart = () => rejectLate
+                ? reject(new BackendError("coverage_identity_changed", null, "The cleaning task changed during setup. Check the robot status, then try again."))
+                : resolve();
               });
             },
             dispose() {},
@@ -418,39 +852,104 @@ test.describe("Map Studio v0.4 foundation", () => {
           effects.sync(projection);
           await effects.refreshCatalog(true);
           const start = effects.executeAction("run-plan");
+          for (let index = 0; index < 20 && !completeStart; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+          if (!completeStart) throw new Error("The initial managed start was not dispatched");
           if (close) effects.dispose();
           else {
+            switched = true;
             effects.sync({ ...projection, entryKey: "other", vacuumEntityId: "vacuum.other", activity: "cleaning" });
-            // The new robot's projection arrives before its catalog. Never
-            // dispatch using the old robot's workspace and the new target.
+            // Stop uses B's own projected activity and entity before its catalog
+            // arrives. A's late start result must not overwrite that command.
             await effects.executeAction("stop");
-            await effects.refreshCatalog(true);
+            if (store.value.command !== "settling") throw new Error("B's acknowledged Stop was not pending settlement");
           }
-          const command = store.value.command;
+          const current = () => JSON.stringify({
+            command: store.value.command,
+            notice: store.value.notice,
+            selection: store.value.selection,
+          });
+          const before = current();
           completeStart();
           await start;
-          results.push({ calls, preserved: store.value.command === command });
+          results.push({ calls, preserved: current() === before });
           effects.dispose();
         }
       }
       return results;
     });
-    expect(results).toEqual(Array.from({ length: 4 }, () => ({ calls: [["run_selected_plan", "vacuum.synthetic"]], preserved: true })));
+    expect(results).toEqual([false, true].flatMap((close) => Array.from({ length: 2 }, () => ({
+      calls: [["run_selected_plan", "vacuum.synthetic"],
+        ...(!close ? [["stop_intelligent_cleaning", "vacuum.other"]] : [])],
+      preserved: true,
+    }))));
+  });
+  test("shows allowlisted guard recovery text and keeps generic service errors generic", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, BackendError, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const messages = {
+        coverage_identity_unavailable: "Could not verify the current cleaning task. Check the robot status, then try again.",
+        coverage_activity_unavailable: "Could not verify whether the robot is cleaning. Check the robot status, then try again.",
+        coverage_native_session_active: "The robot already has a cleaning task. Wait for it to finish before starting another cleaning task.",
+        coverage_identity_changed: "The cleaning task changed during setup. Check the robot status, then try again.",
+      };
+      const notices = [];
+      for (const [code, message] of Object.entries(messages)) {
+        const initial = { ...createGalleryState("ready"), workflow: "plan" };
+        const store = new WorkspaceStore(initial);
+        const backend = {
+          plans: async () => initial.resources.plans.value,
+          service: async () => { throw new BackendError(code, null, message); },
+          dispose() {},
+        };
+        const effects = new EffectController(store, backend);
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        await effects.executeAction("run-plan");
+        notices.push(store.value.notice?.text);
+        effects.dispose();
+      }
+      const initial = { ...createGalleryState("ready"), workflow: "plan" };
+      const store = new WorkspaceStore(initial);
+      const backend = {
+        plans: async () => initial.resources.plans.value,
+        service: async () => { throw new Error("secret untrusted service text"); },
+        dispose() {},
+      };
+      const effects = new EffectController(store, backend);
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      await effects.executeAction("run-plan");
+      const untrustedNotice = store.value.notice?.text;
+      effects.dispose();
+      return { notices, untrustedNotice };
+    });
+    expect(result.notices).toEqual([
+      "Could not verify the current cleaning task. Check the robot status, then try again.",
+      "Could not verify whether the robot is cleaning. Check the robot status, then try again.",
+      "The robot already has a cleaning task. Wait for it to finish before starting another cleaning task.",
+      "The cleaning task changed during setup. Check the robot status, then try again.",
+    ]);
+    expect(result.untrustedNotice).toBe("The action could not be confirmed. Check the robot status before trying again.");
   });
   test("ends Starting when a managed service returns at the end of its run", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const initial = createGalleryState("ready");
+      const initial = { ...createGalleryState("ready"), workflow: "plan" };
       const store = new WorkspaceStore(initial);
       const calls = [];
       let finish;
       const effects = new EffectController(store, {
-        catalog: async () => [initial.resources.entry],
+        catalog: async () => new Promise(() => {}),
         history: async () => initial.resources.history.value,
         scene: async () => { throw new DOMException("Aborted", "AbortError"); },
         pose: async () => { throw new DOMException("Aborted", "AbortError"); },
         plans: async () => initial.resources.plans.value,
+        previewRoomSequence: async (_entityId, rooms) => ({
+          entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
+          rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
+            cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
+          missionBoundaries: [], blocker: null,
+        }),
         service: async (domain, service) => {
           calls.push(service);
           await new Promise((resolve) => { finish = resolve; });
@@ -461,10 +960,20 @@ test.describe("Map Studio v0.4 foundation", () => {
       const phases = [];
       try {
         for (const action of ["run-plan", "clean-rooms"]) {
-          await effects.refreshCatalog(true);
+          finish = undefined;
           const room = initial.resources.plans.value.rooms[0];
-          store.patch({ selection: { ...store.value.selection, roomSettings: [{ roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "quick" }] } });
+          store.patch({ workflow: action === "run-plan" ? "plan" : "rooms", selection: {
+            ...store.value.selection,
+            roomIds: action === "clean-rooms" ? [room.roomId] : store.value.selection.roomIds,
+            roomSettings: [{ roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "quick" }],
+          } });
+          for (let index = 0; action === "clean-rooms" && index < 20 && store.value.manualRoomPreview.status !== "ready"; index++) await new Promise((resolve) => setTimeout(resolve, 0));
           const run = effects.executeAction(action);
+          if (action === "run-plan") {
+            for (let index = 0; index < 20 && !finish; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+          } else {
+            for (let index = 0; index < 20 && !finish; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+          }
           phases.push(store.value.command);
           finish();
           await run;
@@ -474,6 +983,52 @@ test.describe("Map Studio v0.4 foundation", () => {
       } finally { effects.dispose(); }
     });
     expect(result).toEqual({ calls: ["run_selected_plan", "clean_room_sequence"], phases: ["starting", "idle", "starting", "idle"] });
+  });
+  test("sends default shared scheduling and explicit settings overrides with room-sequence requests", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState, withGalleryRoomPreview } = await import("/plan-recovery-test.js");
+      const base = createGalleryState("ready");
+      const initial = withGalleryRoomPreview({ ...base, workflow: "rooms", selection: {
+        ...base.selection, roomIds: ["room-a"],
+        roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "quick" }],
+      } });
+      const store = new WorkspaceStore(initial);
+      const calls = [];
+      const effects = new EffectController(store, {
+        catalog: async () => new Promise(() => {}),
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        previewRoomSequence: async (_entityId, rooms) => ({
+          entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
+          rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
+            cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
+          missionBoundaries: [], blocker: null,
+        }),
+        service: async (...args) => { calls.push(args); },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      try {
+        for (let i = 0; i < 20 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        await effects.executeAction("clean-rooms");
+        store.patch({ selection: { ...store.value.selection, useRoomSchedule: false } });
+        for (let i = 0; i < 20 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        await effects.executeAction("clean-rooms");
+        return calls;
+      } finally { effects.dispose(); }
+    });
+    expect(result).toHaveLength(2);
+    for (const [domain, service, data] of result) {
+      expect(domain).toBe("matic_robot");
+      expect(service).toBe("clean_room_sequence");
+      expect(data.rooms).toEqual([{ room: "room-a", cleaning_mode: "vacuum", coverage_setting: "quick" }]);
+      expect(data.use_room_schedule).toBe(true);
+    }
+    expect(result[0][2].override_room_schedule).toBe(false);
+    expect(result[1][2].override_room_schedule).toBe(true);
   });
   test("resumes a paused managed task with the resume-only command", async ({ page }) => {
     await loadEffectHarness(page);
@@ -634,6 +1189,24 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate((tag) => document.querySelector(tag).setScenario("unsupported"), GALLERY_TAG);
     await expect(gallery.locator(".action-bar")).toContainText("Map unavailable");
     await expect(gallery.locator(".action-bar")).not.toContainText("Finding the map");
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Map unavailable");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, coherence: "unavailable", map: { ...state.map, available: false } });
+    });
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Map unavailable");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+    await expect(gallery.locator(".status-copy strong")).not.toHaveText("Locating");
+
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, activity: "cleaning", coherence: "unavailable" });
+    });
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Cleaning");
+    await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
+    await expect(gallery.getByRole("button", { name: "Stop cleaning", exact: true }).first()).toBeEnabled();
   });
   for (const retained of [false, true]) {
     test(`keeps a ${retained ? "retained" : "saved"} map visible during live revalidation`, async ({ page }, testInfo) => {
@@ -641,7 +1214,12 @@ test.describe("Map Studio v0.4 foundation", () => {
       const result = await page.evaluate(async (retained) => {
         const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
         const initial = createGalleryState("ready");
-        const store = new WorkspaceStore({ ...initial, selection: { ...initial.selection, areaId: "synthetic-area", roomSettings: [{ roomId: "room-1", cleaningMode: "vacuum", coverageSetting: "standard" }] } });
+        const store = new WorkspaceStore({ ...initial, workflow: "rooms", selection: {
+          ...initial.selection,
+          areaId: "entryway",
+          roomIds: ["room-a"],
+          roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "standard" }],
+        } });
         if (!retained) store.patch({ resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
         let entry = { ...initial.resources.entry, mapFloorCoherent: false, mapSessionVerified: false, mapSessionKey: null, deltaUrl: null };
         let commands = 0;
@@ -652,6 +1230,20 @@ test.describe("Map Studio v0.4 foundation", () => {
           pose: async () => { throw new DOMException("Aborted", "AbortError"); },
           plans: async () => initial.resources.plans.value,
           areas: async () => initial.resources.areas.value,
+          previewRoomSequence: async (_entityId, rooms) => ({
+            entryId: initial.selection.entryId,
+            floorToken: "f".repeat(64),
+            previewToken: "b".repeat(64),
+            rooms: rooms.map((room) => ({
+              roomId: room.room,
+              name: room.room === "room-a" ? "Kitchen" : room.room,
+              cleaningMode: room.cleaning_mode,
+              coverageSetting: room.coverage_setting,
+              cadenceReasons: [],
+            })),
+            missionBoundaries: [],
+            blocker: null,
+          }),
           service: async () => { commands++; },
           dispose() {},
         });
@@ -666,6 +1258,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           entry = { ...initial.resources.entry, deltaUrl: null };
           await effects.refreshCatalog();
           for (let i = 0; i < 20 && store.value.resources.scene.value?.marker !== "live"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+          for (let i = 0; i < 100 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
           await effects.executeAction("clean-rooms");
           return { paused, commands, recovered: { available: store.value.map.available, readOnly: store.value.floor.readOnly, marker: store.value.resources.scene.value?.marker } };
         } finally { effects.dispose(); }
@@ -674,7 +1267,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       expect(result.paused.notice).toContain(retained ? "rechecked" : "Saved map from");
       expect(result.commands).toBe(1);
       expect(result.recovered).toEqual({ available: true, readOnly: false, marker: "live" });
-      await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+      await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
       await page.evaluate(async (tag) => {
         await customElements.whenDefined(tag);
         const gallery = document.createElement(tag);
@@ -727,7 +1320,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       } finally { effects.dispose(); }
     });
     expect(result).toEqual({ retained: true, available: true, readOnly: true, exactPose: false, catalog: "error", commands: 0 });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async tag => {
       await customElements.whenDefined(tag);
       const gallery = document.createElement(tag);
@@ -826,6 +1419,388 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
+  for (const outcome of ["success", "error"]) {
+    test(`@safety disconnect fences an in-flight pose ${outcome} before cancellation`, async ({ page }) => {
+      await loadEffectHarness(page);
+      const result = await page.evaluate(async (outcome) => {
+        const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+        const initial = createGalleryState("ready");
+        const store = new WorkspaceStore(initial);
+        let finish;
+        let hold = false;
+        let abortedGeneration;
+        const effects = new EffectController(store, {
+          catalog: async () => [{ ...initial.resources.entry, deltaUrl: null }],
+          history: async () => initial.resources.history.value,
+          scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+          pose: async (_url, signal) => {
+            if (!hold) return initial.resources.pose.value;
+            signal.addEventListener("abort", () => { abortedGeneration = store.value.generation; }, { once: true });
+            // A transport can settle after abort; admission must still reject it.
+            return new Promise((resolve, reject) => {
+              finish = () => outcome === "success"
+                ? resolve(initial.resources.pose.value) : reject(new Error("Late transport failure"));
+            });
+          },
+          dispose() {},
+        });
+        const projection = {
+          host: initial.host, activity: initial.activity, batteryPercent: 92,
+          robotLabel: "Synthetic", robots: initial.robots, language: "en",
+          userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+        };
+        try {
+          effects.sync(projection);
+          await effects.refreshCatalog(true);
+          await effects.refreshPose();
+          const connectedGeneration = store.value.generation;
+          const retainedScene = store.value.resources.scene.value;
+          hold = true;
+          const pending = effects.refreshPose();
+          effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+          const disconnectedGeneration = store.value.generation;
+          finish();
+          await pending;
+          const disconnected = {
+            pose: store.value.resources.pose, exactPose: store.value.map.exactPose,
+            coherence: store.value.coherence, retainedScene: store.value.resources.scene.value === retainedScene,
+          };
+          effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+          const repeatedDisconnectGeneration = store.value.generation;
+          hold = false;
+          effects.sync(projection);
+          await effects.refreshCatalog(true);
+          await effects.refreshPose();
+          return {
+            connectedGeneration, disconnectedGeneration, abortedGeneration, repeatedDisconnectGeneration,
+            disconnected, recovered: store.value.map.exactPose && store.value.coherence === "current",
+          };
+        } finally { effects.dispose(); }
+      }, outcome);
+      expect(result.disconnectedGeneration).toBeGreaterThan(result.connectedGeneration);
+      expect(result.abortedGeneration).toBe(result.disconnectedGeneration);
+      expect(result.repeatedDisconnectGeneration).toBe(result.disconnectedGeneration);
+      expect(result.disconnected).toEqual({
+        pose: { status: "idle", value: null, problem: null }, exactPose: false,
+        coherence: "degraded", retainedScene: true,
+      });
+      expect(result.recovered).toBe(true);
+    });
+  }
+
+  for (const force of [false, true]) {
+    for (const outcome of ["success", "error"]) {
+      test(`@safety reconnect supersedes a ${force ? "forced" : "polling"} catalog ${outcome} without waiting for polling`, async ({ page }) => {
+        await loadEffectHarness(page);
+        const result = await page.evaluate(async ({ force, outcome }) => {
+          const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+          const initial = createGalleryState("ready");
+          const store = new WorkspaceStore(initial);
+          const entry = { ...initial.resources.entry, deltaUrl: null };
+          let reads = 0;
+          let finish;
+          const problems = [];
+          const unsubscribe = store.subscribe((state) => {
+            if (state.resources.catalog.problem) problems.push(state.resources.catalog.problem);
+          });
+          const effects = new EffectController(store, {
+            catalog: async () => {
+              if (++reads !== 2) return [entry];
+              return new Promise((resolve, reject) => {
+                finish = () => outcome === "success"
+                  ? resolve([entry]) : reject(new Error("Obsolete connection failed"));
+              });
+            },
+            history: async () => initial.resources.history.value,
+            scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+            pose: async () => initial.resources.pose.value,
+            dispose() {},
+          });
+          const projection = {
+            host: initial.host, activity: initial.activity, batteryPercent: 92,
+            robotLabel: "Synthetic", robots: initial.robots, language: "en",
+            userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+          };
+          try {
+            effects.sync(projection);
+            await effects.refreshCatalog(true);
+            const pending = effects.refreshCatalog(force);
+            effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+            effects.sync(projection);
+            finish();
+            await pending;
+            return { reads, problems, status: store.value.resources.catalog.status, coherence: store.value.coherence };
+          } finally { unsubscribe(); effects.dispose(); }
+        }, { force, outcome });
+        expect(result).toEqual({ reads: 3, problems: [], status: "ready", coherence: "current" });
+      });
+    }
+  }
+
+  test("robot reconnect rejects pending catalog proof until a fresh read completes", async ({ page }) => {
+    await loadEffectHarness(page);
+    await page.evaluate(async () => {
+      const m = await import("/plan-recovery-test.js");
+      const initial = m.createGalleryState("ready");
+      const entry = { ...initial.resources.entry, deltaUrl: null };
+      const store = new m.WorkspaceStore(initial);
+      const pending = [];
+      const recovery = window.__robotReconnectProof = { store, reads: 0, pending: null, releaseStale: null, releaseFresh: null, module: m };
+      const effects = recovery.effects = new m.EffectController(store, {
+        catalog: async (signal) => {
+          recovery.reads += 1;
+          if (recovery.reads === 1) return [entry];
+          return new Promise((resolve) => {
+            const release = () => resolve([entry]);
+            pending.push({ signal, release });
+            if (recovery.reads === 2) recovery.releaseStale = release;
+            if (recovery.reads === 3) recovery.releaseFresh = release;
+          });
+        },
+        history: async () => initial.resources.history.value,
+        scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+        pose: async () => initial.resources.pose.value,
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      const projection = {
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      };
+      recovery.projection = projection;
+      effects.sync(projection);
+      await effects.refreshCatalog(true);
+      recovery.pending = effects.refreshCatalog(true);
+      effects.sync({ ...projection, host: { ...projection.host, robotConnected: false } });
+      recovery.disconnected = {
+        generation: store.value.generation,
+        coherence: store.value.coherence,
+        canEdit: m.canEditCoordinates(store.value),
+        canRead: m.canReadFloorResources(store.value),
+        staleAborted: pending[0].signal.aborted,
+      };
+      effects.sync(projection);
+      recovery.reconnectedBeforeProof = {
+        generation: store.value.generation,
+        coherence: store.value.coherence,
+        canEdit: m.canEditCoordinates(store.value),
+        canRead: m.canReadFloorResources(store.value),
+      };
+      recovery.releaseStale();
+    });
+    await expect.poll(() => page.evaluate(() => window.__robotReconnectProof.reads)).toBe(3);
+    const beforeFreshProof = await page.evaluate(() => {
+      const r = window.__robotReconnectProof;
+      return {
+        state: r.reconnectedBeforeProof,
+        reads: r.reads,
+        staleAborted: r.disconnected.staleAborted,
+        freshPending: typeof r.releaseFresh === "function",
+        coherence: r.store.value.coherence,
+        canEdit: r.module.canEditCoordinates(r.store.value),
+      };
+    });
+    expect(beforeFreshProof).toMatchObject({
+      state: { coherence: "degraded", canEdit: false, canRead: false },
+      reads: 3, staleAborted: true, freshPending: true,
+      coherence: "degraded", canEdit: false,
+    });
+    await page.evaluate(() => window.__robotReconnectProof.releaseFresh());
+    await expect.poll(() => page.evaluate(() => {
+      const r = window.__robotReconnectProof;
+      return { coherence: r.store.value.coherence, canEdit: r.store.value.coherence === "current" };
+    })).toEqual({ coherence: "current", canEdit: true });
+    await page.evaluate(async () => {
+      const r = window.__robotReconnectProof;
+      await r.pending;
+      r.effects.dispose();
+    });
+  });
+
+  test("combined HA and robot reconnect clears the offline notice while re-proving", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const m = await import("/plan-recovery-test.js");
+      const initial = m.createGalleryState("ready");
+      const entry = { ...initial.resources.entry, deltaUrl: null };
+      const store = new m.WorkspaceStore(initial);
+      let reads = 0;
+      const effects = new m.EffectController(store, {
+        catalog: async () => { reads += 1; return [entry]; },
+        history: async () => initial.resources.history.value,
+        scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+        pose: async () => initial.resources.pose.value,
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      const projection = {
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      };
+      effects.sync(projection);
+      await effects.refreshCatalog(true);
+      effects.sync({ ...projection, host: { ...projection.host, connected: false, robotConnected: false } });
+      effects.sync(projection);
+      const pending = { notice: store.value.notice?.text ?? null, reads };
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const recovered = { notice: store.value.notice?.text ?? null, reads, coherence: store.value.coherence };
+      effects.dispose();
+      return { pending, recovered };
+    });
+    expect(result.pending.notice).toBeNull();
+    expect(result.recovered).toMatchObject({ notice: null, coherence: "current" });
+    expect(result.recovered.reads).toBeGreaterThanOrEqual(2);
+  });
+
+  test("active delta loop owns pixel admission across 204 gaps and catalog revisions", async ({ page }) => {
+    await loadEffectHarness(page);
+    await page.evaluate(async () => {
+      const m = await import("/plan-recovery-test.js");
+      const initial = m.createGalleryState("ready");
+      const state = window.__deltaCatalogRace = {
+        entry: { ...initial.resources.entry, deltaUrl: "/delta" },
+        sceneCalls: 0,
+        deltaCalls: 0,
+        release204: null,
+        releaseDelta: null,
+      };
+      const store = state.store = new m.WorkspaceStore(initial);
+      const effects = state.effects = new m.EffectController(store, {
+        catalog: async () => [state.entry],
+        history: async () => initial.resources.history.value,
+        scene: async (_url, revision) => {
+          state.sceneCalls += 1;
+          return { scene: initial.resources.scene.value, revision, floorCoherent: true };
+        },
+        sceneDelta: async (_url, _scene, _floorCoherent, signal) => {
+          const call = ++state.deltaCalls;
+          if (call === 1) return new Promise((resolve) => {
+            state.release204 = () => resolve({ revision: state.entry.mapRevision, floorCoherent: true, scene: null, notModified: true });
+          });
+          if (call === 2) return new Promise((resolve) => {
+            state.releaseDelta = () => resolve({ revision: state.entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value });
+          });
+          return new Promise((_resolve, reject) => {
+            const abort = () => reject(new DOMException("Aborted", "AbortError"));
+            if (signal.aborted) abort();
+            else signal.addEventListener("abort", abort, { once: true });
+          });
+        },
+        pose: async () => initial.resources.pose.value,
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      const projection = {
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      };
+      effects.sync(projection);
+      await effects.refreshCatalog(true);
+    });
+    await expect.poll(() => page.evaluate(() => window.__deltaCatalogRace.deltaCalls)).toBe(1);
+    await page.evaluate(() => window.__deltaCatalogRace.release204());
+    await expect.poll(() => page.evaluate(() => window.__deltaCatalogRace.deltaCalls)).toBe(2);
+
+    const catalogDuringDelta = await page.evaluate(async () => {
+      const s = window.__deltaCatalogRace;
+      const revision = s.store.value.resources.entry.mapRevision;
+      const generation = s.store.value.generation;
+      s.entry = { ...s.entry, mapRevision: revision + 1 };
+      await s.effects.refreshCatalog();
+      return {
+        generationBefore: generation,
+        generationAfter: s.store.value.generation,
+        revisionBefore: revision,
+        revisionAfterCatalog: s.store.value.resources.entry.mapRevision,
+        sceneCalls: s.sceneCalls,
+      };
+    });
+    expect(catalogDuringDelta.generationAfter).toBe(catalogDuringDelta.generationBefore);
+    expect(catalogDuringDelta.revisionAfterCatalog).toBe(catalogDuringDelta.revisionBefore);
+    expect(catalogDuringDelta.sceneCalls).toBe(1);
+
+    const advanced = await page.evaluate(async () => {
+      const s = window.__deltaCatalogRace;
+      s.releaseDelta();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const revision = s.store.value.resources.entry.mapRevision;
+      const generation = s.store.value.generation;
+      s.entry = { ...s.entry, mapRevision: revision + 1 };
+      await s.effects.refreshCatalog();
+      const ownerPreserved = {
+        generationBefore: generation,
+        generationAfter: s.store.value.generation,
+        revisionBefore: revision,
+        revisionAfterCatalog: s.store.value.resources.entry.mapRevision,
+        sceneCalls: s.sceneCalls,
+        deltaCalls: s.deltaCalls,
+      };
+      const boundaryGeneration = s.store.value.generation;
+      s.entry = { ...s.entry, selectedFloorOrdinal: 2, mapFloorOrdinal: 2 };
+      await s.effects.refreshCatalog(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const proofBoundary = {
+        generationBefore: boundaryGeneration,
+        generationAfter: s.store.value.generation,
+        sceneCalls: s.sceneCalls,
+      };
+      s.effects.dispose();
+      return { ownerPreserved, proofBoundary };
+    });
+    expect(advanced.ownerPreserved.generationAfter).toBe(advanced.ownerPreserved.generationBefore);
+    expect(advanced.ownerPreserved.revisionAfterCatalog).toBe(advanced.ownerPreserved.revisionBefore);
+    expect(advanced.ownerPreserved.sceneCalls).toBe(1);
+    expect(advanced.ownerPreserved.deltaCalls).toBeGreaterThanOrEqual(3);
+    expect(advanced.proofBoundary.generationAfter).toBeGreaterThan(advanced.proofBoundary.generationBefore);
+    expect(advanced.proofBoundary.sceneCalls).toBe(2);
+  });
+
+  test("catalog pixel revision falls back to a new scene when no delta owner exists", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const m = await import("/plan-recovery-test.js");
+      const initial = m.createGalleryState("ready");
+      const state = { entry: { ...initial.resources.entry, deltaUrl: null }, sceneCalls: 0 };
+      const store = new m.WorkspaceStore(initial);
+      const effects = new m.EffectController(store, {
+        catalog: async () => [state.entry],
+        history: async () => initial.resources.history.value,
+        scene: async (_url, revision) => {
+          state.sceneCalls += 1;
+          return { scene: initial.resources.scene.value, revision, floorCoherent: true };
+        },
+        pose: async () => initial.resources.pose.value,
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      const projection = {
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      };
+      effects.sync(projection);
+      await effects.refreshCatalog(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const generation = store.value.generation;
+      state.entry = { ...state.entry, mapRevision: state.entry.mapRevision + 1 };
+      await effects.refreshCatalog();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const result = {
+        generationBefore: generation,
+        generationAfter: store.value.generation,
+        revision: store.value.resources.entry.mapRevision,
+        sceneCalls: state.sceneCalls,
+      };
+      effects.dispose();
+      return result;
+    });
+    expect(result.generationAfter).toBe(result.generationBefore);
+    expect(result.sceneCalls).toBe(2);
+  });
+
   test("retries history reads and retains the selected saved floor label", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
@@ -888,10 +1863,10 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("preserves dirty drafts on browser-layer dismissal and freezes forms during a save", async ({ page }) => {
     const gallery = await loadGallery(page);
-    await page.evaluate(async (tag) => {
+    await page.evaluate((tag) => {
       const element = document.querySelector(tag);
       const state = element.getWorkspaceSnapshot();
-      const { reduceWorkspace } = await import("/map_studio_v4/index.js");
+      const { reduceWorkspace } = window.__galleryModule;
       element.replaceWorkspaceState(reduceWorkspace({ ...state, workflow: "plan", planDraft: { ...state.planDraft, dirty: true } }, { type: "dismiss-top-layer" }));
     }, GALLERY_TAG);
     await expect(gallery.getByRole("dialog", { name: "Discard plan changes?" })).toBeVisible();
@@ -961,9 +1936,28 @@ test.describe("Map Studio v0.4 foundation", () => {
     await saved.press("Enter");
     expect((await snapshot(page)).selection.floorId).toBe("saved-1");
   });
+  test("production entry excludes the gallery and review reuses its compiled constructors", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      await import("/map_studio_v4/index.js");
+      const panel = customElements.get("matic-map-panel-v0-4-0");
+      const shell = customElements.get("matic-map-shell-v4");
+      const galleryBeforeReview = Boolean(customElements.get("matic-map-studio-gallery-v0-4-0"));
+      await import("/map_studio_v4-review/review.js");
+      return {
+        productionPanel: Boolean(panel), galleryBeforeReview,
+        galleryAfterReview: Boolean(customElements.get("matic-map-studio-gallery-v0-4-0")),
+        samePanel: panel === customElements.get("matic-map-panel-v0-4-0"),
+        sameShell: shell === customElements.get("matic-map-shell-v4"),
+      };
+    });
+    expect(result).toEqual({ productionPanel: true, galleryBeforeReview: false,
+      galleryAfterReview: true, samePanel: true, sameShell: true });
+  });
+
   test("registers the v0.4 panel and gallery without replacing v0.3 tags", async ({ page }) => {
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
 
     expect(await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
@@ -1128,7 +2122,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }));
 
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -1239,6 +2233,231 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.waitForTimeout(1_200);
     expect({ catalogRequests, sceneRequests, poseRequests }).toEqual(beforeOfflineReattach);
     await page.evaluate(() => window.__lifecyclePanel.remove());
+  });
+
+  test("does not revoke a verified map for same-entry HA telemetry updates", async ({ page }) => {
+    await installPanelFixture(page);
+    await page.evaluate(async () => {
+      window.__galleryModule = await import("/map_studio_v4-review/review.js");
+      await customElements.whenDefined("matic-map-panel-v0-4-0");
+      const panel = window.__panelFixture.createPanel();
+      document.body.append(panel);
+      window.__telemetryPanel = panel;
+    });
+    await expect.poll(() => page.evaluate(() => {
+      const module = window.__galleryModule;
+      const panel = window.__telemetryPanel;
+      const state = panel.getWorkspaceSnapshot();
+      return {
+        coherence: state.coherence,
+        canEdit: module.canEditCoordinates(state),
+        canReadFloorResources: module.canReadFloorResources(state),
+      };
+    })).toEqual({ coherence: "current", canEdit: true, canReadFloorResources: true });
+
+    const updates = await page.evaluate(async () => {
+      const panel = window.__telemetryPanel;
+      const module = window.__galleryModule;
+      const originalFetchWithAuth = panel.hass.fetchWithAuth;
+      window.__telemetryCatalogRequests = 0;
+      panel.hass = {
+        ...panel.hass,
+        fetchWithAuth: async (path, ...args) => {
+          if (String(path).endsWith("slam_entries")) window.__telemetryCatalogRequests += 1;
+          return originalFetchWithAuth(path, ...args);
+        },
+      };
+      await panel.updateComplete;
+      const generation = panel.getWorkspaceSnapshot().generation;
+      const update = async (patch) => {
+        const vacuum = panel.hass.states["vacuum.synthetic"];
+        panel.hass = {
+          ...panel.hass,
+          states: { ...panel.hass.states, "vacuum.synthetic": { ...vacuum, ...patch } },
+        };
+        await panel.updateComplete;
+        const state = panel.getWorkspaceSnapshot();
+        return {
+          coherence: state.coherence,
+          canEdit: module.canEditCoordinates(state),
+          canReadFloorResources: module.canReadFloorResources(state),
+          generation: state.generation,
+          catalogRequests: window.__telemetryCatalogRequests,
+        };
+      };
+      const battery = await update({ attributes: { ...panel.hass.states["vacuum.synthetic"].attributes, battery_level: 90 } });
+      const activity = await update({ state: "cleaning" });
+      return { battery, activity, generation };
+    });
+
+    for (const update of [updates.battery, updates.activity]) {
+      expect(update).toMatchObject({
+        coherence: "current", canEdit: true, canReadFloorResources: true,
+        generation: updates.generation, catalogRequests: 0,
+      });
+    }
+
+    const offline = await page.evaluate(async () => {
+      const panel = window.__telemetryPanel;
+      const module = window.__galleryModule;
+      panel.hass = { ...panel.hass, connected: false };
+      await panel.updateComplete;
+      const disconnected = panel.getWorkspaceSnapshot();
+      const vacuum = panel.hass.states["vacuum.synthetic"];
+      panel.hass = {
+        ...panel.hass,
+        states: {
+          ...panel.hass.states,
+          "vacuum.synthetic": {
+            ...vacuum,
+            attributes: { ...vacuum.attributes, battery_level: 89 },
+          },
+        },
+      };
+      await panel.updateComplete;
+      const afterTelemetry = panel.getWorkspaceSnapshot();
+      return [disconnected, afterTelemetry].map((state) => ({
+        connected: state.host.connected,
+        coherence: state.coherence,
+        canEdit: module.canEditCoordinates(state),
+        canReadFloorResources: module.canReadFloorResources(state),
+      }));
+    });
+    expect(offline).toEqual([
+      { connected: false, coherence: "degraded", canEdit: false, canReadFloorResources: false },
+      { connected: false, coherence: "degraded", canEdit: false, canReadFloorResources: false },
+    ]);
+    await page.evaluate(() => window.__telemetryPanel.remove());
+  });
+
+  test("revokes action authority across detach until fresh catalog proof completes", async ({ page }) => {
+    await page.clock.install();
+    await installPanelFixture(page);
+    await page.evaluate(async () => {
+      window.__remountModule = await import("/map_studio_v4-review/review.js");
+      const panel = window.__panelFixture.createPanel();
+      document.body.append(panel);
+      window.__remountPanel = panel;
+    });
+    await expect.poll(() => page.evaluate(() => {
+      const module = window.__remountModule;
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      return {
+        coherence: state.coherence,
+        scene: state.resources.scene.status,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    })).toEqual({ coherence: "current", scene: "ready", canEdit: true, canStart: true });
+
+    await page.evaluate(() => {
+      const panel = window.__remountPanel;
+      const original = panel.hass.fetchWithAuth;
+      const gates = [{ release: null, signal: null }, { release: null, signal: null }];
+      const harness = window.__remountGap = { panel, calls: 0, gates };
+      panel.hass = {
+        ...panel.hass,
+        fetchWithAuth: (path, init) => {
+          if (String(path).endsWith("slam_entries")) {
+            const gate = gates[harness.calls++];
+            if (gate) {
+              gate.signal = init?.signal ?? null;
+              return new Promise((resolve, reject) => {
+                gate.release = () => { void original(path, init).then(resolve, reject); };
+              });
+            }
+          }
+          return original(path, init);
+        },
+      };
+    });
+    // The live controller's five-second catalog poll is held across detach.
+    await page.clock.fastForward(5_000);
+    await expect.poll(() => page.evaluate(() => window.__remountGap.calls)).toBe(1);
+    const beforeDetach = await page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        generation: state.generation,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    });
+    expect(beforeDetach).toMatchObject({ canEdit: true, canStart: true });
+
+    await page.evaluate(() => window.__remountPanel.remove());
+    const detached = await page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        generation: state.generation,
+        coherence: state.coherence,
+        exactPose: state.map.exactPose,
+        retainedScene: state.resources.scene.value !== null,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+        staleRequestAborted: window.__remountGap.gates[0].signal?.aborted ?? false,
+      };
+    });
+    expect(detached).toEqual({
+      generation: beforeDetach.generation + 1,
+      coherence: "verifying",
+      exactPose: false,
+      retainedScene: true,
+      canEdit: false,
+      canStart: false,
+      staleRequestAborted: true,
+    });
+
+    await page.evaluate(() => document.body.append(window.__remountPanel));
+    await expect.poll(() => page.evaluate(() => window.__remountGap.calls)).toBe(2);
+    const reattachedPending = await page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        generation: state.generation,
+        coherence: state.coherence,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    });
+    expect(reattachedPending).toEqual({
+      generation: detached.generation,
+      coherence: "verifying",
+      canEdit: false,
+      canStart: false,
+    });
+
+    // Resolve the disposed controller's response while the new controller's
+    // authoritative catalog is still held; the old result must not re-admit it.
+    await page.evaluate(() => window.__remountGap.gates[0].release());
+    await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 0)));
+    const afterStaleResult = await page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        generation: state.generation,
+        coherence: state.coherence,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    });
+    expect(afterStaleResult).toEqual(reattachedPending);
+
+    await page.evaluate(() => window.__remountGap.gates[1].release());
+    await expect.poll(() => page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        coherence: state.coherence,
+        scene: state.resources.scene.status,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    })).toEqual({ coherence: "current", scene: "ready", canEdit: true, canStart: true });
+    expect(await page.evaluate(() => window.__remountPanel.getWorkspaceSnapshot().generation))
+      .toBeGreaterThan(detached.generation);
+    await page.evaluate(() => window.__remountPanel.remove());
   });
 
   test("projects the meter-space robot pose onto the scene center", async ({ page }) => {
@@ -1555,11 +2774,32 @@ test.describe("Map Studio v0.4 foundation", () => {
         renderer.setState({ ...next, resources: { ...next.resources,
           scene: { ...next.resources.scene, value: { ...next.resources.scene.value, revision: next.resources.scene.value.revision + 1 } },
         } });
+        const expectedRevision = next.resources.scene.value.revision + 1;
+        const expectedPoints = next.resources.scene.value.total;
+        const beforePublication = {
+          notifications, camera: renderer.camera, revision: renderer.diagnostics().sceneRevision,
+        };
+        const publishDeadline = performance.now() + 5000;
+        let publication = renderer.diagnostics();
+        while ((publication.sceneRevision !== expectedRevision
+          || publication.renderedPoints !== expectedPoints)
+          && performance.now() < publishDeadline) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+          publication = renderer.diagnostics();
+        }
         const afterRevision = renderer.camera;
         renderer.dispose();
         canvases.forEach(canvas => canvas.remove());
-        return { notifications, outgoing, afterTransition, afterRevision, fitAfterTransition };
+        return {
+          notifications, outgoing, afterTransition, afterRevision, fitAfterTransition,
+          beforePublication, publication, expectedRevision, expectedPoints,
+        };
       }, { transition, destinationFit });
+      expect(result.publication.sceneRevision).toBe(result.expectedRevision);
+      expect(result.publication.renderedPoints).toBe(result.expectedPoints);
+      expect(result.beforePublication.notifications).toBe(1);
+      expect(result.beforePublication.revision).toBe(result.expectedRevision - 1);
+      expect(result.beforePublication.camera).toEqual(result.afterTransition);
       expect(result.notifications).toBe(2); // Final destination, then the same-view revision.
       expect(result.outgoing.zoom).toBeCloseTo(1, 6);
       expect(result.outgoing.targetX).toBe(0);
@@ -1741,16 +2981,16 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => {
       document.body.innerHTML = "<matic-map-shell-v4></matic-map-shell-v4>";
     });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
 
     await expect(page.locator("matic-map-shell-v4")).toContainText("Matic Map");
     expect(errors).toEqual([]);
   });
 
-  test("rejects stale coherence generations and fails closed", async ({ page }) => {
+  test("rejects stale coherence generations and fails closed @safety", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const machine = new module.CoherenceMachine();
       const first = machine.begin("entry", "floor-a", "mission-a", 1);
       const second = machine.begin("entry", "floor-b", "mission-b", 2);
@@ -1793,10 +3033,117 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   });
 
+  test("explains pending stop recovery in room and plan actions without mislabeling the map", async ({ page }) => {
+    const sourceBundle = await build({
+      entryPoints: ["frontend/map-studio-v4/review.ts"],
+      bundle: true,
+      format: "esm",
+      target: "es2022",
+      write: false,
+    });
+    await page.route("**/map_studio_v4-review/review.js", (route) => route.fulfill({
+      contentType: "text/javascript",
+      body: sourceBundle.outputFiles[0].text,
+    }));
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    const result = await page.evaluate((tag) => {
+      const module = window.__galleryModule;
+      const buildState = (workflow, { stopPending = true, mapVerified = true, otherLock = false } = {}) => {
+        const base = module.createGalleryState(workflow === "rooms" ? "rooms" : "ready");
+        const roomId = base.resources.plans.value.rooms[0].roomId;
+        const state = {
+          ...base,
+          workflow,
+          managedLock: stopPending || otherLock,
+          resources: {
+            ...base.resources,
+            entry: { ...base.resources.entry, stopSettlePending: stopPending },
+          },
+          map: mapVerified ? base.map : { ...base.map, complete: false },
+          selection: {
+            ...base.selection,
+            roomIds: workflow === "rooms" ? [roomId] : base.selection.roomIds,
+            roomSettings: workflow === "rooms"
+              ? [{ roomId, cleaningMode: "vacuum", coverageSetting: "standard" }]
+              : base.selection.roomSettings,
+          },
+        };
+        return workflow === "rooms" ? module.withGalleryRoomPreview(state) : state;
+      };
+      const inspect = (state) => {
+        const action = module.selectPrimaryAction(state);
+        return {
+          action: action.id,
+          enabled: action.enabled,
+          reason: action.reason,
+          reasonKey: action.reasonKey,
+          stopOffered: module.selectStopSecondaryAction(state) !== null,
+        };
+      };
+      const roomState = buildState("rooms");
+      const planState = buildState("plan");
+      const lockedState = buildState("rooms", { stopPending: false, otherLock: true });
+      const mapBlockedState = buildState("rooms", { mapVerified: false });
+      document.querySelector(tag).replaceWorkspaceState(roomState);
+      return {
+        rooms: inspect(roomState),
+        plan: inspect(planState),
+        otherManagedLock: inspect(lockedState),
+        mapBlocked: inspect(mapBlockedState),
+      };
+    }, GALLERY_TAG);
+
+    const stopReason = "The previous stop is still being confirmed. Cleaning will be available when it finishes.";
+    expect(result.rooms).toEqual({
+      action: "clean-rooms", enabled: false, reason: stopReason,
+      reasonKey: "v4_reason_stop_settle_pending", stopOffered: false,
+    });
+    expect(result.plan).toEqual({
+      action: "run-plan", enabled: false, reason: stopReason,
+      reasonKey: "v4_reason_stop_settle_pending", stopOffered: false,
+    });
+    expect(result.otherManagedLock).toMatchObject({
+      action: "clean-rooms", enabled: false,
+      reason: "Waiting for the current robot operation to finish.",
+      reasonKey: "v4_reason_robot_operation_waiting", stopOffered: false,
+    });
+    expect(result.mapBlocked).toMatchObject({
+      action: "clean-rooms", enabled: false,
+      reason: "Waiting for the current map to be verified.",
+      reasonKey: "v4_reason_clean_rooms_verification", stopOffered: false,
+    });
+
+    const cleanButton = gallery.getByRole("button", { name: "Clean 1 room" });
+    await expect(cleanButton).toHaveAttribute("aria-disabled", "true");
+    await expect(gallery.locator(".map-message")).toHaveCount(0);
+    const reasonId = await cleanButton.getAttribute("aria-describedby");
+    expect(reasonId).toBeTruthy();
+    await expect(gallery.locator("#" + reasonId)).toHaveText(stopReason);
+
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
+      const base = module.createGalleryState("ready");
+      document.querySelector(tag).replaceWorkspaceState({
+        ...base,
+        workflow: "plan",
+        managedLock: true,
+        resources: {
+          ...base.resources,
+          entry: { ...base.resources.entry, stopSettlePending: true },
+        },
+      });
+    }, GALLERY_TAG);
+    const runButton = gallery.getByRole("button", { name: "Run this plan" });
+    await expect(runButton).toHaveAttribute("aria-disabled", "true");
+    const runReasonId = await runButton.getAttribute("aria-describedby");
+    expect(runReasonId).toBeTruthy();
+    await expect(gallery.locator("#" + runReasonId)).toHaveText(stopReason);
+  });
+
   test("dismisses dialog, precision, expanded map, and workflow one layer at a time", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       let state = {
         ...module.createGalleryState("draw"),
         fullMap: true,
@@ -1827,7 +3174,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("opens History without hiding the live map and preserves a chosen saved map", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const live = module.createGalleryState("ready");
       const opened = module.reduceWorkspace(live, { type: "open-workflow", workflow: "history" });
       const saved = {
@@ -1903,14 +3250,16 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, GALLERY_TAG);
 
     await expect(gallery.getByRole("heading", { name: "Saved map is read only" })).toBeVisible();
-    await expect(gallery).toContainText("Return to the live map below to choose rooms, run a plan, or draw a custom area.");
+    const recoveryExplanation = gallery.getByText("Return to the live map to choose rooms, run a plan, or draw a custom area.", { exact: true });
+    await expect(recoveryExplanation).toHaveCount(1);
+    await expect(recoveryExplanation).toBeVisible();
     await expect(gallery.getByRole("button", { name: "One-time clean" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Run a plan" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Clean a custom area" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Return to the live map" })).toBeVisible();
 
-    const workflows = await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    const workflows = await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const element = document.querySelector(tag);
       const state = element.getWorkspaceSnapshot();
       return ["rooms", "plan", "draw", "areaReview"].map((workflow) =>
@@ -1956,14 +3305,14 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator("#sheet-body")).toBeVisible();
 
     // Room choices are immediately visible; long forms start at full height.
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       document.querySelector(tag).replaceWorkspaceState(module.createGalleryState("rooms"));
     }, GALLERY_TAG);
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await expect(gallery.locator("#sheet-body")).toBeVisible();
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       document.querySelector(tag).replaceWorkspaceState({ ...module.createGalleryState("ready"), workflow: "plan" });
     }, GALLERY_TAG);
     await expect(sheet).toHaveAttribute("data-detent", "full");
@@ -1994,8 +3343,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("dialog", { name: "Delete this plan?" })).toHaveCount(0);
     expect(await page.evaluate(() => window.__mapStudioActions)).toEqual(["delete-plan"]);
 
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const galleryElement = document.querySelector(tag);
       galleryElement.replaceWorkspaceState({
         ...module.createGalleryState("draw"),
@@ -2276,15 +3625,77 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(list.locator(".room")).toHaveCount(4);
     await expect(list.locator('.room[data-selected="true"]')).toHaveCount(3);
     await expect(list.getByLabel("Cleaning system")).toHaveCount(3);
-    await expect(inspector.locator("details")).toHaveCount(0);
+    const cadenceSettings = list.locator("details");
+    await expect(cadenceSettings).toHaveCount(3);
+    await expect(cadenceSettings.first().locator("summary")).toHaveText("Room schedule for Kitchen");
+    await cadenceSettings.first().locator("summary").click();
+    await expect(cadenceSettings.first().getByLabel(/Vacuum and mop interval for .* from 1 to 100/)).toHaveAttribute("min", "1");
+    await expect(cadenceSettings.first().getByLabel(/Periodic coverage interval for .* from 1 to 100/)).toHaveAttribute("max", "100");
     // Completion options now FOLLOW the room list: choose what to clean first,
     // then how the run should end.
     await expect(inspector.getByRole("heading", { name: "When a run ends", level: 3 })).toBeVisible();
-    const options = inspector.locator(".plan-options");
+    const options = inspector.locator('[aria-labelledby="completion-heading"]');
     await expect(options).toHaveAttribute("role", "group");
     expect(await options.evaluate((element) =>
       Boolean(element.compareDocumentPosition(element.parentElement.querySelector('[aria-labelledby="plan-rooms-heading"]')) & Node.DOCUMENT_POSITION_PRECEDING),
     )).toBe(true);
+  });
+
+  test("@safety keeps room schedule controls readable in desktop and narrow inspectors", async ({ page }) => {
+    for (const viewport of [
+      { width: 1280, height: 900, narrow: false },
+      { width: 390, height: 844, narrow: true },
+      { width: 320, height: 700, narrow: true },
+    ]) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      const gallery = await loadGallery(page, { scenario: "ready", narrow: viewport.narrow });
+      await page.evaluate((tag) => {
+        const module = window.__galleryModule;
+        const state = module.createGalleryState("ready");
+        const catalog = state.resources.plans.value;
+        const plan = catalog.plans[0];
+        const rooms = plan.rooms.map((room) => room.roomId === "room-a" ? {
+          ...room,
+          cadence: {
+            scope: "shared",
+            mopEveryN: 100,
+            coverageEveryN: 2,
+            periodicCoverageSetting: "heavy_duty",
+            doMopNext: false,
+            doCoverageNext: false,
+          },
+        } : room);
+        document.querySelector(tag).replaceWorkspaceState({ ...state, resources: {
+          ...state.resources,
+          plans: { ...state.resources.plans, value: { ...catalog, plans: [{ ...plan, rooms }] } },
+        } });
+      }, GALLERY_TAG);
+      await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+      await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+      const cadence = gallery.getByLabel("Plan rooms").locator("details").first();
+      await cadence.locator("summary").click();
+      await expect(cadence.getByText("This integration cannot currently verify the coverage used for each clean. Once due, the selected coverage is requested on later cleans. Disable the rule to pause it. Resetting progress delays the next request only when the interval is greater than 1.")).toBeVisible();
+      const scope = cadence.getByLabel("Schedule scope for Kitchen");
+      const mopInterval = cadence.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100");
+      const coverageInterval = cadence.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100");
+      const coverage = cadence.getByLabel("Periodic coverage setting for Kitchen");
+      const layout = await cadence.locator(".cadence-fields").evaluate((settings) => {
+        const bounds = settings.getBoundingClientRect();
+        const fields = [...settings.querySelectorAll("input[type=number], select")].map((control) => {
+          const rect = control.getBoundingClientRect();
+          return { width: rect.width, left: rect.left, right: rect.right };
+        });
+        return { width: bounds.width, clientWidth: settings.clientWidth, scrollWidth: settings.scrollWidth,
+          fields: fields.map((field) => ({ ...field, inside: field.left >= bounds.left - 1 && field.right <= bounds.right + 1 })) };
+      });
+      expect(await mopInterval.inputValue()).toBe("100");
+      expect(await coverageInterval.inputValue()).toBe("2");
+      expect(await scope.inputValue()).toBe("shared");
+      expect(await coverage.inputValue()).toBe("heavy_duty");
+      expect(layout.fields).toHaveLength(4);
+      expect(layout.fields.every((field) => field.width >= 180 && field.inside), JSON.stringify({ ...viewport, layout })).toBe(true);
+      expect(layout.scrollWidth, JSON.stringify({ ...viewport, layout })).toBeLessThanOrEqual(layout.clientWidth + 1);
+    }
   });
 
   test("keeps plan choices available after catalog loading", async ({ page }) => {
@@ -2306,8 +3717,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }, GALLERY_TAG);
     await expect(gallery.getByRole("status")).toContainText("Loading rooms and plans…");
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const element = document.querySelector(tag);
       const current = element.getWorkspaceSnapshot();
       const ready = module.createGalleryState("ready");
@@ -2456,8 +3867,8 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("opens Custom areas on a blank draft and preserves only an explicit edit", async ({ page }) => {
     const scene = syntheticScene("Room", 10);
-    await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (sceneBytes) => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const entry = {
@@ -2602,14 +4013,14 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => window.__areaPanel.remove());
   });
 
-  test("keeps Stop reachable while paused and strips transition expanded map to safety controls", async ({ page }) => {
+  test("keeps Stop reachable while paused and strips transition expanded map to safety controls @safety", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "paused" });
     await gallery.getByRole("button", { name: "Hide cleaning panel" }).click();
     await expect(gallery.getByRole("button", { name: "Resume cleaning" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
 
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const galleryElement = document.querySelector(tag);
       galleryElement.replaceWorkspaceState({
         ...module.createGalleryState("transition"),
@@ -2626,7 +4037,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("uses identical map math for the brush cursor and scale", async ({ page }) => {
     await page.goto("/");
     const combinations = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const samples = [
         [100, 0.2],
         [100, 2.5],
@@ -2716,7 +4127,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(overlaps, `dock ${JSON.stringify(dockBounds)} vs inspector ${JSON.stringify(inspector)}`).toBe(false);
   });
 
-  test("restores classic display controls without compromising the map-first shell", async ({ page }) => {
+  test("uses modern map display controls without compromising the map-first shell", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
     await gallery.getByRole("complementary", { name: "Map workspace" })
@@ -2796,8 +4207,8 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("keeps the plan action honest while saved routines are loading", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const element = document.querySelector(tag);
       const state = module.createGalleryState("ready");
       element.replaceWorkspaceState({
@@ -2913,7 +4324,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     });
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -2953,6 +4364,29 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("keeps first-use supporting copy at AA contrast in light and dark themes", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.addScriptTag({
+      type: "module",
+      content: `
+        import { createGalleryState, withGalleryRoomPreview } from "/map_studio_v4-review/review.js";
+        const rooms = createGalleryState("rooms");
+        const roomIds = ["room-a", "room-b"];
+        window.__contrastGalleryStates = {
+          preview: withGalleryRoomPreview({
+            ...rooms,
+            selection: {
+              ...rooms.selection,
+              roomIds,
+              roomSettings: roomIds.map((roomId) => ({
+                roomId,
+                cleaningMode: "vacuum",
+                coverageSetting: "standard",
+              })),
+            },
+          }),
+          empty: { ...rooms, selection: { ...rooms.selection, roomIds: [] } },
+        };
+      `,
+    });
 
     const contrastRatios = async (selector) => gallery.locator(selector).evaluateAll((elements) => {
       const channel = (value) => {
@@ -2993,16 +4427,12 @@ test.describe("Map Studio v0.4 foundation", () => {
       await gallery.evaluate((element) => element.setScenario("ready"));
       await expectContrast(".quick-actions .ms-row__body small");
       await expectContrast(".floor-switcher");
-      await gallery.evaluate(async (element) => {
-        const module = await import("/map_studio_v4/index.js");
-        const rooms = module.createGalleryState("rooms");
-        element.replaceWorkspaceState({ ...rooms, selection: { ...rooms.selection, roomIds: ["room-a", "room-b"] } });
+      await gallery.evaluate((element) => {
+        element.replaceWorkspaceState(window.__contrastGalleryStates.preview);
       });
       await expectContrast(".action-summary");
-      await gallery.evaluate(async (element) => {
-        const module = await import("/map_studio_v4/index.js");
-        const rooms = module.createGalleryState("rooms");
-        element.replaceWorkspaceState({ ...rooms, selection: { ...rooms.selection, roomIds: [] } });
+      await gallery.evaluate((element) => {
+        element.replaceWorkspaceState(window.__contrastGalleryStates.empty);
       });
       await expectContrast(".action-reason");
       await gallery.evaluate((element) => element.setScenario("draw"));
@@ -3098,7 +4528,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         return original.call(this);
       };
     });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (tag) => {
       await customElements.whenDefined(tag);
       const gallery = document.createElement(tag);
@@ -3148,7 +4578,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         return original.call(this);
       };
     });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (tag) => {
       await customElements.whenDefined(tag);
       const gallery = document.createElement(tag);
@@ -3223,7 +4653,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("selects a requested robot deterministically", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const adapter = new module.HassAdapter();
       const hass = {
         connected: true,
@@ -3255,7 +4685,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("shows recharge-and-resume as charging with Stop still available", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const adapter = new module.HassAdapter();
       const projection = adapter.project({
         connected: true,
@@ -3302,7 +4732,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("hides the robot selector when non-vacuum Matic entities have stale entry metadata", async ({ page }) => {
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(() => {
       const panel = document.createElement("matic-map-panel-v0-4-0");
       panel.panel = { config: { entry_id: "entry-a" } };
@@ -3358,7 +4788,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.setViewportSize({ width: 320, height: 740 });
     await page.goto("/");
     await page.evaluate(() => { document.documentElement.dir = "rtl"; });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate((tag) => {
       const gallery = document.createElement(tag);
       gallery.controls = false;
@@ -3372,12 +4802,65 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= 320)).toBe(true);
   });
 
-  test("keeps native browser fullscreen as an optional secondary control", async ({ page }) => {
+  test("ignores a saved Classic preference and always starts the modern panel", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("matic-map-studio:preferred-frontend", "v3");
+    });
+    const fixtureInfo = await installPanelFixture(page, { moduleSource: "packaged" });
+    const classicRequests = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/classic-must-not-load.js") classicRequests.push(request.url());
+    });
+    await page.evaluate(async (panelTag) => {
+      await customElements.whenDefined(panelTag);
+      const panel = window.__panelFixture.createPanel();
+      panel.panel = { config: { classic_module_url: "/classic-must-not-load.js" } };
+      window.__modernPanel = panel;
+      document.body.append(panel);
+      await panel.updateComplete;
+    }, fixtureInfo.panelTag);
+    await expect.poll(() => page.evaluate(() =>
+      window.__modernPanel.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+
+    const result = await page.evaluate(() => ({
+      savedPreference: localStorage.getItem("matic-map-studio:preferred-frontend"),
+      modernShell: Boolean(window.__modernPanel.shadowRoot.querySelector("matic-map-shell-v4")),
+      classicPanel: Boolean(window.__modernPanel.shadowRoot.querySelector("matic-map-panel-v0-3-1")),
+    }));
+    expect(result).toEqual({ savedPreference: "v3", modernShell: true, classicPanel: false });
+    expect(classicRequests).toEqual([]);
+    await page.evaluate(() => window.__modernPanel.remove());
+  });
+
+  test("keeps native browser fullscreen as an optional secondary control @safety", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await page.evaluate(() => {
       window.__v4FullscreenRequested = false;
+      const panel = document.querySelector("matic-map-studio-gallery-v0-4-0");
+      const shell = panel.shadowRoot.querySelector("matic-map-shell-v4");
+      const root = shell.shadowRoot;
+      const app = root.querySelector(".app");
+      let fullscreenElement = null;
+      let exposesScopedFullscreen = true;
+      Object.defineProperty(root, "fullscreenElement", {
+        configurable: true,
+        get: () => exposesScopedFullscreen ? fullscreenElement : null,
+      });
+      Object.defineProperty(document, "fullscreenElement", {
+        configurable: true,
+        get: () => fullscreenElement ? panel : null,
+      });
+      window.__v4ExposeScopedFullscreen = (expose) => {
+        exposesScopedFullscreen = expose;
+      };
       Element.prototype.requestFullscreen = async function requestFullscreen() {
-        window.__v4FullscreenRequested = this.classList.contains("app");
+        window.__v4FullscreenRequested = this === app;
+        fullscreenElement = this;
+        document.dispatchEvent(new Event("fullscreenchange"));
+      };
+      document.exitFullscreen = async () => {
+        fullscreenElement = null;
+        document.dispatchEvent(new Event("fullscreenchange"));
       };
     });
     await gallery.getByRole("button", { name: "Map options" }).click();
@@ -3385,17 +4868,73 @@ test.describe("Map Studio v0.4 foundation", () => {
     const menu = gallery.locator("#map-options");
     await expect(menu).not.toHaveAttribute("role", /menu/);
     await expect(menu.getByRole("menuitem")).toHaveCount(0);
-    await expect(menu.getByRole("button")).toHaveText(["Map diagnostics", "Open classic map view", "Full screen"]);
+    await expect(menu.getByRole("button")).toHaveText(["Map diagnostics", "Full screen"]);
+    await expect(menu.getByRole("button", { name: /classic/i })).toHaveCount(0);
     await menu.getByRole("button", { name: "Full screen", exact: true }).click();
     expect(await page.evaluate(() => window.__v4FullscreenRequested)).toBe(true);
+
+    await gallery.getByRole("button", { name: "Map options" }).click();
+    await expect(gallery.locator("#map-options").getByRole("button", {
+      name: "Leave full screen",
+      exact: true,
+    })).toBeVisible();
+    await gallery.locator("#map-options").getByRole("button", {
+      name: "Leave full screen",
+      exact: true,
+    }).click();
+
+    await gallery.getByRole("button", { name: "Map options" }).click();
+    await expect(gallery.locator("#map-options").getByRole("button", {
+      name: "Full screen",
+      exact: true,
+    })).toBeVisible();
+
+    await page.evaluate(() => window.__v4ExposeScopedFullscreen(false));
+    await gallery.locator("#map-options").getByRole("button", {
+      name: "Full screen",
+      exact: true,
+    }).click();
+    await gallery.getByRole("button", { name: "Map options" }).click();
+    await expect(gallery.locator("#map-options").getByRole("button", {
+      name: "Leave full screen",
+      exact: true,
+    })).toBeVisible();
+    await gallery.locator("#map-options").getByRole("button", {
+      name: "Leave full screen",
+      exact: true,
+    }).click();
+
+    await gallery.getByRole("button", { name: "Map options" }).click();
+    await expect(gallery.locator("#map-options").getByRole("button", {
+      name: "Full screen",
+      exact: true,
+    })).toBeVisible();
   });
 
-  test("projects unrelated Home Assistant updates without service calls", async ({ page }) => {
+  test("coalesces 100 unrelated Home Assistant updates without workspace churn", async ({ page }) => {
+    let catalogRequests = 0;
+    await page.route("**/api/matic_robot/slam_entries*", async (route) => {
+      catalogRequests += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"entries":[]}' });
+    });
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     const result = await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       let calls = 0;
+      let updates = 0;
+      let renders = 0;
+      const Panel = customElements.get("matic-map-panel-v0-4-0");
+      const originalUpdate = Panel.prototype.update;
+      const originalRender = Panel.prototype.render;
+      Panel.prototype.update = function update(changed) {
+        updates += 1;
+        return originalUpdate.call(this, changed);
+      };
+      Panel.prototype.render = function render() {
+        renders += 1;
+        return originalRender.call(this);
+      };
       const panel = document.createElement("matic-map-panel-v0-4-0");
       panel.panel = { config: { entry_id: "synthetic-entry" } };
       const relevant = {
@@ -3412,15 +4951,76 @@ test.describe("Map Studio v0.4 foundation", () => {
         callService: () => { calls += 1; },
       };
       document.body.append(panel);
-      await panel.updateComplete;
-      panel.hass = {
-        ...panel.hass,
-        states: { ...relevant, "sensor.unrelated": { state: "changed", attributes: {} } },
+      const settle = async () => {
+        let settled = false;
+        for (let attempt = 0; attempt < 5 && !settled; attempt += 1) settled = await panel.updateComplete;
       };
-      await panel.updateComplete;
-      return { calls, defined: Boolean(customElements.get("matic-map-panel-v0-4-0")) };
+      await settle();
+      for (let attempt = 0; attempt < 50 && panel.getWorkspaceSnapshot().resources.catalog.status === "loading"; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 2));
+      }
+      await new Promise(resolve => setTimeout(resolve, 30));
+      await settle();
+      const beforeState = panel.getWorkspaceSnapshot();
+      const beforeUpdates = updates;
+      const beforeRenders = renders;
+      for (let index = 0; index < 100; index += 1) {
+        panel.hass = {
+          ...panel.hass,
+          states: { ...relevant, "sensor.unrelated": { state: String(index), attributes: {} } },
+        };
+        await settle();
+      }
+      return {
+        calls,
+        defined: Boolean(customElements.get("matic-map-panel-v0-4-0")),
+        workspaceUnchanged: panel.getWorkspaceSnapshot() === beforeState,
+        updateDelta: updates - beforeUpdates,
+        renderDelta: renders - beforeRenders,
+        lastUnrelatedState: panel.hass.states["sensor.unrelated"].state,
+      };
     });
-    expect(result).toEqual({ calls: 0, defined: true });
+    expect(result).toEqual({ calls: 0, defined: true, workspaceUnchanged: true,
+      updateDelta: 0, renderDelta: 0, lastUnrelatedState: "99" });
+    // Every iteration replaces the test map with the next synthetic state;
+    // no update may refetch the private catalog after initial admission.
+    expect(catalogRequests).toBe(1);
+  });
+
+  test("rebuilds the HA adapter boundary when the connection instance changes", async ({ page }) => {
+    await page.goto("/");
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
+    await page.evaluate(async () => {
+      await customElements.whenDefined("matic-map-panel-v0-4-0");
+      let fetches = 0;
+      const panel = document.createElement("matic-map-panel-v0-4-0");
+      panel.panel = { config: { entry_id: "synthetic-entry" } };
+      panel.hass = {
+        connected: true,
+        language: "en",
+        user: { id: "local-user", is_admin: true },
+        states: { "vacuum.synthetic": {
+            state: "docked",
+            attributes: { matic_entry_id: "synthetic-entry", battery_level: 91 },
+        } },
+        fetchWithAuth: async () => {
+          fetches += 1;
+          return new Response('{"entries":[]}', { status: 200,
+            headers: { "Content-Type": "application/json" } });
+        },
+      };
+      document.body.append(panel);
+      for (let attempt = 0; attempt < 5; attempt += 1) await panel.updateComplete;
+      window.__adapterConnectionHarness = { panel, fetchCount: () => fetches };
+    });
+    await expect.poll(() => page.evaluate(() => window.__adapterConnectionHarness.fetchCount())).toBe(1);
+
+    await page.evaluate(async () => {
+      const { panel } = window.__adapterConnectionHarness;
+      panel.hass = { ...panel.hass, connection: {} };
+      for (let attempt = 0; attempt < 5; attempt += 1) await panel.updateComplete;
+    });
+    await expect.poll(() => page.evaluate(() => window.__adapterConnectionHarness.fetchCount())).toBe(2);
   });
 
   test("streams a bounded live delta without refetching the full scene", async ({ page }) => {
@@ -3567,7 +5167,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }));
 
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -3620,6 +5220,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       return { revision: state.resources.scene.value?.revision, exactPose: state.map.exactPose };
     })).toEqual({ revision: 2, exactPose: true });
     expect(fullSceneRequests).toBe(1);
+    const contentGeneration = await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation);
     holdDeltaRecoveryScene = true;
     failNextDelta = true;
     await expect.poll(() => fullSceneRequests).toBe(2);
@@ -3627,6 +5228,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
     })).toEqual({ exactPose: true, position: [10, 12] });
+    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
     releaseDeltaRecoveryScene();
     expect(fullScenePreferCached).toEqual(["1", "1"]);
     await expect.poll(async () => page.evaluate(() =>
@@ -3674,6 +5276,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toEqual({ exactPose: true, position: [11, 13] });
     holdNextFullScene = true;
     catalogRevision = 3;
+    // End the live delta owner after publishing the new catalog revision.
+    // With no healthy delta stream, the catalog becomes the bounded full-scene
+    // fallback and this test can assert the retained-pose loading behavior.
+    failNextDelta = true;
     await expect.poll(() => fullSceneRequests, { timeout: 7_000 }).toBe(3);
     expect(await page.evaluate(() => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
@@ -3689,6 +5295,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       sceneRevision: 2,
       sceneStatus: "loading",
     });
+    expect(await page.evaluate(() => window.__deltaPanel.getWorkspaceSnapshot().generation)).toBe(contentGeneration);
     releaseHeldFullScene();
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(3);
@@ -3701,7 +5308,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => window.__deltaPanel.remove());
   });
 
-  test("retains a verified same-floor scene while a new revision is built", async ({ page }) => {
+  test("retains a verified same-floor scene while a new revision is built @safety", async ({ page }) => {
     const first = syntheticScene("Current room", 10);
     const second = syntheticScene("Updated room", 24);
     let revision = 1;
@@ -3789,7 +5396,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     });
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -3899,7 +5506,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       );
     });
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (sceneBytes) => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       let sceneRequests = 0;
@@ -4030,10 +5637,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.samples.some((sample) => sample.available && sample.scene !== "ready")).toBe(false);
   });
 
-  test("routes Stop through the server even when the catalog has no managed plan", async ({ page }) => {
+  test("routes Stop through the server even when the catalog has no managed plan @safety", async ({ page }) => {
     const scene = syntheticScene("Direct room", 18);
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (sceneBytes) => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const calls = [];
@@ -4135,9 +5742,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(await page.evaluate(() => window.__directStop.calls[0][2].include_unmanaged)).toBe(true);
   });
 
-  test("fails motion closed when the private catalog reports managed work", async ({ page }) => {
+  test("fails motion closed when the private catalog reports managed work @safety", async ({ page }) => {
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -4194,7 +5801,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       locked: window.__managedPanel.getWorkspaceSnapshot().managedLock,
     }))).toEqual({ catalog: "ready", locked: true });
     expect(await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       return module.canStartMotion(window.__managedPanel.getWorkspaceSnapshot());
     })).toBe(false);
   });
@@ -4219,7 +5826,7 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await page.evaluate((direction) => { document.documentElement.dir = direction; }, dir);
     await page.addScriptTag({
       type: "module",
-      content: 'import * as module from "/map_studio_v4/index.js"; window.__phoneModule = module;',
+      content: 'import * as module from "/map_studio_v4-review/review.js"; window.__phoneModule = module;',
     });
     await page.evaluate(async ({ tag, selectedScenario }) => {
       await customElements.whenDefined(tag);
@@ -4249,6 +5856,16 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
       const element = document.querySelector(tag);
       element.replaceWorkspaceState(build(module, element.getWorkspaceSnapshot()));
     }, { tag: GALLERY_TAG, source: build.toString() });
+  }
+
+  async function settlePhoneMap(gallery) {
+    await gallery.evaluate(async (element) => {
+      await element.updateComplete;
+      const shell = element.shadowRoot.querySelector(".shell");
+      await shell.updateComplete;
+      const canvas = shell.shadowRoot.querySelector("matic-map-canvas-v4");
+      await canvas.updateComplete;
+    });
   }
 
   // The draw scenario ships with a saved outline; start every stroke test
@@ -4300,16 +5917,45 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 
+    // Give the synthetic input a browser-clock cadence. Sending each event as
+    // a separate Playwright locator call adds WebKit IPC time to event.timeStamp
+    // and can turn this 1.5 px/ms flick into a sub-threshold drag on CI.
+    const fastFlick = async (points) => {
+      const box = await grip.boundingBox();
+      expect(box).not.toBeNull();
+      await grip.evaluate((element, { points, left, top }) => {
+        const pointerId = 11;
+        const start = performance.now();
+        const fire = (type, [x, y], elapsed) => {
+          const event = new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            pointerId,
+            pointerType: "touch",
+            isPrimary: true,
+            button: 0,
+            clientX: left + x,
+            clientY: top + y,
+          });
+          Object.defineProperty(event, "timeStamp", { value: start + elapsed });
+          element.dispatchEvent(event);
+        };
+        fire("pointerdown", points[0], 0);
+        for (let index = 1; index < points.length; index += 1) {
+          fire("pointermove", points[index], index * 16);
+        }
+        fire("pointerup", points.at(-1), (points.length - 1) * 16);
+      }, { points, left: box.x, top: box.y });
+    };
+
     // 75px is nowhere near the full detent, but ~1.5 px/ms is a flick.
-    // No spacing between moves: the flick is defined by wall-clock velocity,
-    // and a slow CI runner must not turn it into a drag.
-    await touchDrag(page, grip, [[160, 20], [160, -5], [160, -30], [160, -55]], { stepMs: 0 });
+    await fastFlick([[160, 20], [160, -5], [160, -30], [160, -55]]);
     await expect(sheet).toHaveAttribute("data-detent", "full");
     await settleSheet(gallery);
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
 
     // A flick down from full is one step, to half, never straight to peek.
-    await touchDrag(page, grip, [[160, 20], [160, 45], [160, 70], [160, 95]], { stepMs: 0 });
+    await fastFlick([[160, 20], [160, 45], [160, 70], [160, 95]]);
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 
@@ -4321,6 +5967,7 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
   test("does not paint when a second finger lands during the arming delay", async ({ page }) => {
     const gallery = await loadPhone(page, { scenario: "draw" });
     await replaceState(page, emptyDraw);
+    await settlePhoneMap(gallery);
     const root = gallery.locator(".map-root");
     const { x, y } = await sceneCentre(gallery);
 
@@ -4345,15 +5992,101 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await replaceState(page, emptyDraw);
     const root = gallery.locator(".map-root");
     const { x, y } = await sceneCentre(gallery);
+    await dispatch(root, pointer("pointermove", 99, x, y));
+    await page.waitForTimeout(50);
+    const overlay = gallery.locator(".overlay-canvas");
+    const beforePreview = await overlay.evaluate(canvas => canvas.toDataURL());
+    const baseline = (await snapshot(page)).draw;
 
     await dispatch(root, pointer("pointerdown", 11, x, y));
     await page.waitForTimeout(150);
     await dispatch(root, pointer("pointermove", 11, x + 20, y));
     await page.waitForTimeout(16);
     await dispatch(root, pointer("pointermove", 11, x + 40, y));
+    expect((await snapshot(page)).draw).toEqual(baseline);
+    await expect.poll(
+      async () => overlay.evaluate(canvas => canvas.toDataURL()),
+      { timeout: 2_000 },
+    ).not.toBe(beforePreview);
+    expect((await snapshot(page)).draw).toEqual(baseline);
     await dispatch(root, pointer("pointerup", 11, x + 40, y));
     await expect.poll(async () => (await snapshot(page)).draw.circles.length).toBeGreaterThan(0);
-    await expect.poll(async () => (await snapshot(page)).draw.strokeCount).toBe(1);
+    const committed = (await snapshot(page)).draw;
+    expect(committed.strokeCount).toBe(baseline.strokeCount + 1);
+    expect(committed.undo).toHaveLength(baseline.undo.length + 1);
+  });
+
+  for (const authorityChange of ["generation", "coherence", "permission", "new draft"]) test(`drops an armed brush preview when ${authorityChange} changes`, async ({ page }) => {
+    const gallery = await loadPhone(page, { scenario: "draw" });
+    await replaceState(page, (module) => {
+      const ready = module.createGalleryState("draw");
+      return { ...ready, draw: { ...ready.draw,
+        circles: [{ x: 1, y: 1, radius: .2 }], dirty: true, strokeCount: 3,
+        undo: [[{ x: .7, y: .7, radius: .1 }]], redo: [[{ x: .8, y: .8, radius: .1 }]],
+      } };
+    });
+    await settlePhoneMap(gallery);
+    const root = gallery.locator(".map-root");
+    const { x, y } = await sceneCentre(gallery);
+    const baseline = (await snapshot(page)).draw;
+
+    await dispatch(root, pointer("pointerdown", 11, x, y));
+    await page.waitForTimeout(150);
+    await dispatch(root, pointer("pointermove", 11, x + 24, y + 8));
+    await page.waitForTimeout(16);
+    await dispatch(root, pointer("pointermove", 11, x + 40, y + 14));
+    const beforeAuthorityChange = (await snapshot(page)).draw;
+    expect(beforeAuthorityChange).toEqual(baseline);
+
+    // Keep the current draft intact for authority losses. A same-generation
+    // draft replacement exercises the reducer's baseline identity fence.
+    const mutate = authorityChange === "generation"
+      ? (_module, state) => ({ ...state, generation: state.generation + 1 })
+      : authorityChange === "coherence"
+        ? (_module, state) => ({ ...state, coherence: "verifying" })
+        : authorityChange === "permission"
+          ? (_module, state) => ({ ...state, host: { ...state.host, robotConnected: false } })
+          : (_module, state) => ({ ...state, draw: { ...state.draw, circles: [{ x: 1.2, y: 1, radius: .2 }] } });
+    await replaceState(page, mutate);
+    const retained = authorityChange === "new draft"
+      ? { ...baseline, circles: [{ x: 1.2, y: 1, radius: .2 }] }
+      : baseline;
+    // Dispatch before Lit forwards the new state to the canvas. The reducer
+    // must reject the old capture while the controller can still hold its
+    // prior prop. The retained draft is not cleared to make the test pass.
+    await dispatch(root, pointer("pointermove", 11, x + 64, y + 14));
+    await dispatch(root, pointer("pointerup", 11, x + 64, y + 14));
+    expect((await snapshot(page)).draw).toEqual(retained);
+    await settlePhoneMap(gallery);
+    expect((await snapshot(page)).draw).toEqual(retained);
+  });
+
+  for (const dirty of [false, true]) test(`pointer cancellation preserves ${dirty ? "dirty" : "clean"} draft history`, async ({ page }) => {
+    const gallery = await loadPhone(page, { scenario: "draw" });
+    const setBaseline = dirty ? (module) => {
+      const ready = module.createGalleryState("draw");
+      const state = { ...ready, draw: { ...ready.draw, circles: [], strokeCount: 0, dirty: false, redo: [] } };
+      return { ...state, draw: { ...state.draw,
+        circles: [{ x: 1, y: 1, radius: .2 }], dirty: true, strokeCount: 3,
+        undo: [[{ x: .7, y: .7, radius: .1 }]], redo: [[{ x: .8, y: .8, radius: .1 }]],
+      } };
+    } : (module) => {
+      const ready = module.createGalleryState("draw");
+      return { ...ready, draw: { ...ready.draw, circles: [], strokeCount: 0, dirty: false, redo: [] } };
+    };
+    await replaceState(page, setBaseline);
+    await settlePhoneMap(gallery);
+    const root = gallery.locator(".map-root");
+    const { x, y } = await sceneCentre(gallery);
+    const baseline = (await snapshot(page)).draw;
+    await dispatch(root, pointer("pointerdown", 11, x, y));
+    await page.waitForTimeout(150);
+    await dispatch(root, pointer("pointermove", 11, x + 35, y + 8));
+    await page.waitForTimeout(30);
+    expect((await snapshot(page)).draw).toEqual(baseline);
+    await dispatch(root, pointer("pointercancel", 11, x + 35, y + 8));
+    await settlePhoneMap(gallery);
+    expect((await snapshot(page)).draw).toEqual(baseline);
   });
 
   // Finds a point over a room by tapping candidate spots and watching the
@@ -4418,6 +6151,32 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     const after = await snapshot(page);
     expect(after.draw.circles).toEqual(before.draw.circles);
     expect(after.draw.strokeCount).toBe(before.draw.strokeCount);
+  });
+
+  test("does not commit an outline handle drag across an authority generation", async ({ page }) => {
+    const gallery = await loadPhone(page, { scenario: "draw" });
+    await replaceState(page, (_module, state) => ({ ...state, draw: {
+      ...state.draw,
+      tool: "outline",
+      outline: { points: [{ x: 1.5, y: 1.4 }, { x: 1.9, y: 1.6 }, { x: 1.8, y: 2 }], closed: true },
+    } }));
+    await settlePhoneMap(gallery);
+    await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+    const handle = gallery.locator(".zone-point:not(.zone-midpoint)").first();
+    await expect(handle).toBeVisible();
+    const bounds = await handle.boundingBox();
+    const before = (await snapshot(page)).draw.outline;
+    const target = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+
+    await dispatch(handle, pointer("pointerdown", 11, target.x, target.y));
+    await dispatch(handle, pointer("pointermove", 11, target.x + 8, target.y + 6));
+    await expect.poll(async () => handle.boundingBox()).not.toEqual(bounds);
+    await replaceState(page, (_module, state) => ({ ...state, generation: state.generation + 1 }));
+    await dispatch(handle, pointer("pointerup", 11, target.x + 8, target.y + 6));
+
+    expect((await snapshot(page)).draw.outline).toEqual(before);
+    await settlePhoneMap(gallery);
+    expect((await snapshot(page)).draw.outline).toEqual(before);
   });
 
   test("keeps the primary action, Stop, and every draw tool within thumb reach", async ({ page }) => {
@@ -4628,8 +6387,8 @@ for (const activity of ["docked", "idle"]) {
   for (const betweenLegs of [false, true]) {
     test(`an active plan remains in progress while the robot is ${activity}${betweenLegs ? " between legs" : ""}`, async ({ page }) => {
       const gallery = await loadGallery(page);
-      await page.evaluate(async ({ tag, activity, betweenLegs }) => {
-        const module = await import("/map_studio_v4/index.js");
+      await page.evaluate(({ tag, activity, betweenLegs }) => {
+        const module = window.__galleryModule;
         const state = module.createGalleryState("ready");
         document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
           managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: !betweenLegs, runnerLocked: betweenLegs } } });
@@ -4645,8 +6404,8 @@ for (const activity of ["docked", "idle"]) {
 for (const ordered of [false, true]) {
   test(`mixed-settings guidance respects ${ordered ? "saved order" : "rotation"}`, async ({ page }) => {
     const gallery = await loadGallery(page);
-    await page.evaluate(async ({ tag, ordered }) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate(({ tag, ordered }) => {
+      const module = window.__galleryModule;
       const state = module.createGalleryState("ready");
       document.querySelector(tag).replaceWorkspaceState({ ...state, workflow: "plan", planDraft: {
         ...state.planDraft, runBehavior: ordered ? "ordered" : "intelligent", rooms: [
@@ -4732,8 +6491,8 @@ for (const width of [1024, 1100]) {
   test(`selected-room chip stays below camera controls at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const gallery = await loadGallery(page, { scenario: "rooms" });
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const state = module.createGalleryState("rooms");
       document.querySelector(tag).replaceWorkspaceState({ ...state, view: "three",
         selection: { ...state.selection, roomIds: ["room-a", "room-b"] } });
@@ -4907,9 +6666,26 @@ test("keyboard drawing paints erases and restores one centered mark", async ({ p
 });
 
 for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "unfocused", "no-canvas"]) {
-  test(`keyboard drawing ignores ${blocked} targets`, async ({ page }) => {
+  test(`keyboard drawing ignores ${blocked} targets @safety`, async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "draw" });
     const map = gallery.locator(".map-root");
+    const renderer = gallery.locator("matic-map-canvas-v4");
+    const waitForPublication = (hidden = false) => expect.poll(() => renderer.evaluate((element, { tag, hidden }) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      const scene = state.resources.scene.value;
+      const diagnostics = element.rendererDiagnostics();
+      const canvas = element.renderRoot.querySelector(".scene-canvas");
+      return {
+        published: Boolean(scene && diagnostics
+          && diagnostics.sceneRevision === scene.revision
+          && diagnostics.sourcePoints === scene.total
+          && diagnostics.renderedPoints === scene.total),
+        cameraEcho: hidden || Boolean(diagnostics && state.draw.zoomPercent === Math.max(100, Math.min(1000,
+          Math.round(diagnostics.fitDistance / diagnostics.cameraDistance * 100)))),
+        sized: !hidden || (canvas.width === 1 && canvas.height === 1),
+      };
+    }, { tag: GALLERY_TAG, hidden })).toEqual({ published: true, cameraEcho: true, sized: true });
+    await waitForPublication();
     await map.focus();
     await map.press("ArrowDown");
     if (blocked === "out-of-bounds") {
@@ -4927,8 +6703,10 @@ for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "u
     }, { tag: GALLERY_TAG, blocked });
     if (blocked === "unfocused") await gallery.getByRole("button", { name: "Paint", exact: true }).focus();
     if (blocked === "no-canvas") await gallery.locator(".scene-canvas").evaluate((canvas) => { canvas.style.display = "none"; });
-    // Render state settles before capturing the unchanged draft contract.
-    await page.waitForTimeout(50);
+    // Initial camera publication is settled; hidden resize need not emit a new camera intent.
+    await waitForPublication(blocked === "no-canvas");
+    if (blocked === "unfocused") await expect(map).not.toBeFocused();
+    else await expect(map).toBeFocused();
     const before = (await snapshot(page)).draw;
     await map.dispatchEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, composed: true });
     expect((await snapshot(page)).draw).toEqual(before);
@@ -5482,6 +7260,7 @@ test("plan catalog refresh preserves explicit selection and reconciles a saved n
       service: async () => {
         writes += 1;
         catalog = { ...catalog, selectedPlan: "new", plans: [...catalog.plans, { ...second, id: "new", name: "New routine", enabled: true }] };
+        return { response: { plan: { id: "new" } } };
       },
       dispose() {},
     });
@@ -5642,7 +7421,7 @@ for (const boundary of ["write", "catalog"]) {
   test(`late area save ${boundary} completion preserves a later area draft`, async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async (boundary) => {
-      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const { EffectController, WorkspaceStore, createGalleryState, captureCoordinateEdit } = await import("/plan-recovery-test.js");
       const initial = createGalleryState("ready");
       const store = new WorkspaceStore({ ...initial, workflow: "areaReview",
         areaDraft: { ...initial.areaDraft, id: null, name: "First area", dirty: true },
@@ -5661,7 +7440,12 @@ for (const boundary of ["write", "catalog"]) {
         store.dispatch({ type: "discard-draft" });
         store.dispatch({ type: "open-workflow", workflow: "draw" });
         store.dispatch({ type: "patch-area-draft", patch: { name: "Later area" } });
-        store.dispatch({ type: "set-draft-circles", circles: [{ x: 2, y: 2, radius: .3 }] });
+        // This test creates a later, independently admitted drawing state
+        // while the earlier save's catalog reconciliation is still pending.
+        store.patch({ command: "idle" });
+        const coordinateEdit = captureCoordinateEdit(store.value, "paint");
+        if (!coordinateEdit) throw new Error("Draw edit was not admitted");
+        store.dispatch({ type: "set-draft-circles", circles: [{ x: 2, y: 2, radius: .3 }], coordinateEdit });
         const expected = { draft: store.value.areaDraft, draw: store.value.draw, selection: store.value.selection };
         finish();
         await saving;
@@ -5740,7 +7524,7 @@ test("map taps select run and plan rooms in both views and clear old deletion no
       const renderer = new RendererController(canvas, overlay);
       renderer.setState(store.value);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const gestures = new GestureController(canvas, renderer, { state: () => store.value, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {} });
+      const gestures = new GestureController(canvas, renderer, { state: () => store.value, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {}, onCirclePreview: () => {} });
       const bounds = canvas.getBoundingClientRect();
       let hit;
       for (let y = 20; y < 520 && !hit; y += 10) for (let x = 20; x < 700 && !hit; x += 10) {

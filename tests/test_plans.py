@@ -6,6 +6,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, timedelta
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -37,32 +38,7 @@ from custom_components.matic_robot.const import (
     EVENT_PLAN_DOCKED,
     EVENT_PLAN_FINISHED,
 )
-from custom_components.matic_robot.plans import (
-    MAX_SAVED_PLANS_PER_ROBOT,
-    OEM_STOP_RECONCILIATION_SECONDS,
-    PLAN_FLOOR_TOKEN,
-    PLAN_MOTION_TOKEN,
-    AreaBindingUpgradeResult,
-    CleaningPlanManager,
-    CleaningRoom,
-    ManagedMotionReplacedError,
-    PlanStopDecision,
-    SavedPlanLimitError,
-    _compatible_duration_history,
-    _duration_history,
-    _elapsed_seconds,
-    _estimated_progress,
-    _expected_duration,
-    _latest_timestamp,
-    _reconcile_pending_native_history,
-    _record_native_completion,
-    _stored_count,
-    _validated_native_reconciliation,
-    leg_groups,
-    resolve_room_reference,
-    resolve_rooms,
-)
-from custom_components.matic_robot.services import (
+from custom_components.matic_robot.managed_executor import (
     SESSION_HISTORY_ATTEMPTS,
     PlanCancelledError,
     RoomInterruptedError,
@@ -82,16 +58,44 @@ from custom_components.matic_robot.services import (
     _async_wait_for_room_outcome,
     _async_wait_for_settled_leg_handoff,
     _async_wait_for_vacuum_state,
-    _entry_for_entity,
     _PreparedRoomDispatch,
 )
+from custom_components.matic_robot.plans import (
+    MAX_SAVED_PLANS_PER_ROBOT,
+    OEM_STOP_RECONCILIATION_SECONDS,
+    PLAN_FLOOR_TOKEN,
+    PLAN_MOTION_TOKEN,
+    AreaBindingUpgradeResult,
+    CleaningPlanManager,
+    CleaningRoom,
+    ManagedMotionReplacedError,
+    PlanStopDecision,
+    SavedPlanLimitError,
+    _compatible_duration_history,
+    _duration_history,
+    _elapsed_seconds,
+    _estimated_progress,
+    _expected_duration,
+    _latest_timestamp,
+    _reconcile_pending_native_history,
+    _record_native_completion,
+    _remember_native_reconciliation,
+    _stored_count,
+    _validated_cadence_snapshot,
+    _validated_native_reconciliation,
+    leg_groups,
+    resolve_room_reference,
+    resolve_rooms,
+)
+from custom_components.matic_robot.services import _entry_for_entity
 
 
 @pytest.fixture(autouse=True)
 def fast_native_history_retries(monkeypatch):
     """Exercise bounded retry counts without spending minutes on wall time."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     )
 
 
@@ -331,7 +335,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=fake_leg),
     ):
         await _async_execute_rooms(
@@ -341,11 +345,11 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
             "vacuum.matic",
             "serial",
             [room],
-            intelligent=False,
             confirm_room_completed=confirmed,
             set_activity_run_id=set_run_id,
         )
 
+    await hass.async_block_till_done()
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
@@ -393,7 +397,7 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=fake_leg),
     ):
         await _async_execute_rooms(
@@ -403,7 +407,6 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "room-kitchen")],
-            intelligent=False,
             set_activity_run_id=set_run_id,
             get_activity_run_id=lambda: scope["run_id"],
         )
@@ -438,7 +441,7 @@ async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> 
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=fake_leg),
     ):
         await _async_execute_rooms(
@@ -448,7 +451,6 @@ async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> 
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "room-kitchen")],
-            intelligent=False,
             set_activity_run_id=lambda run_id: scope.__setitem__("run_id", run_id),
             get_activity_run_id=lambda: scope["run_id"],
         )
@@ -477,7 +479,7 @@ async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=fake_leg),
     ):
         await _async_execute_rooms(
@@ -487,7 +489,6 @@ async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "room-kitchen")],
-            intelligent=False,
             set_activity_run_id=set_run_id,
             get_activity_run_id=lambda: "newer-run",
         )
@@ -510,7 +511,7 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
         raise ServiceValidationError("room interrupted") from cause
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=stopped_leg),
     ):
         await _async_execute_rooms(
@@ -520,7 +521,6 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "room-kitchen")],
-            intelligent=False,
         )
 
     last_run = manager.snapshot("serial")["last_run"]
@@ -596,6 +596,125 @@ async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
     assert last_run["terminal_activity"] == "docked"
 
 
+async def test_correlated_dock_clears_its_owned_stop_fence(hass) -> None:
+    """A confirmed dock closes the run and its matching stop fence together."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    await manager.async_finish_run(
+        "serial",
+        "run-1",
+        "cancelled",
+        "managed_stop",
+        0,
+        terminal_activity="cleaning",
+    )
+    await manager.async_mark_stop_pending("serial", run_id="run-1")
+    stop_fence_token = manager.stop_fence_token("serial")
+
+    assert stop_fence_token is not None
+    assert await manager.async_mark_run_docked(
+        "serial", "run-1", stop_fence_token=stop_fence_token
+    )
+
+    assert manager.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+    assert not manager.stop_pending("serial")
+    assert "stop_fence_expires_at" not in manager._robot("serial")
+
+
+async def test_stale_dock_confirmation_preserves_newer_stop_fence(hass) -> None:
+    """A prior dock watcher cannot clear a later STOP for the same run."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    await manager.async_finish_run(
+        "serial",
+        "run-1",
+        "cancelled",
+        "managed_stop",
+        0,
+        terminal_activity="cleaning",
+    )
+    with patch(
+        "custom_components.matic_robot.plans.monotonic", return_value=10_000_000_000.0
+    ):
+        await manager.async_mark_stop_pending("serial", run_id="run-1")
+        stale_token = manager.stop_fence_token("serial")
+        await manager.async_mark_stop_pending("serial", run_id="run-1")
+        current_token = manager.stop_fence_token("serial")
+
+    assert stale_token is not None
+    assert current_token is not None
+    assert current_token != stale_token
+    assert not await manager.async_mark_run_docked(
+        "serial", "run-1", stop_fence_token=stale_token
+    )
+
+    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.stop_fence_token("serial") == current_token
+    assert manager._robot("serial")["stop_fence_run_id"] == "run-1"
+
+
+async def test_stop_fence_clear_requires_current_token_and_owner(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_mark_stop_pending("serial", run_id="run-1")
+    first_token = manager.stop_fence_token("serial")
+    assert first_token is not None
+
+    assert not await manager.async_clear_stop_pending_if_token(
+        "serial", first_token, run_id=None
+    )
+    assert manager.stop_pending("serial")
+
+    with patch(
+        "custom_components.matic_robot.plans.monotonic", return_value=10_000_000_000.0
+    ):
+        await manager.async_mark_stop_pending("serial", run_id="run-1")
+        current_token = manager.stop_fence_token("serial")
+    assert current_token is not None and current_token != first_token
+    assert not await manager.async_clear_stop_pending_if_token(
+        "serial", first_token, run_id="run-1"
+    )
+    assert manager.stop_fence_token("serial") == current_token
+    assert await manager.async_clear_stop_pending_if_token(
+        "serial", current_token, run_id="run-1"
+    )
+    assert not manager.stop_pending("serial")
+
+
+def test_stop_fence_restore_extends_deadline_without_changing_identity(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    with patch(
+        "custom_components.matic_robot.plans.monotonic",
+        side_effect=[100.0, 105.0, 105.0, 105.0, 105.0],
+    ):
+        manager._arm_stop_pending("serial", 10)
+        token = manager.stop_fence_token("serial")
+        manager._arm_stop_pending("serial", 2)
+        manager._arm_stop_pending("serial", 10)
+        restored_token = manager.stop_fence_token("serial")
+
+    assert manager._stop_fences["serial"].deadline == 115.0
+    assert restored_token == token
+
+
 async def test_immediate_stop_records_managed_stop_reason(hass) -> None:
     """The default stop policy is distinguishable from motion replacement."""
     manager = CleaningPlanManager(hass)
@@ -629,7 +748,7 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
         raise PlanCancelledError
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=suspended_leg),
     ):
         await _async_execute_rooms(
@@ -639,7 +758,6 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
             "vacuum.matic",
             "serial",
             [room],
-            intelligent=False,
         )
 
     last_run = manager.snapshot("serial")["last_run"]
@@ -664,7 +782,7 @@ async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
         raise PlanCancelledError
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=suspended_leg),
     ):
         await _async_execute_rooms(
@@ -674,7 +792,6 @@ async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
             "vacuum.matic",
             "serial",
             [room],
-            intelligent=False,
         )
 
     last_run = manager.snapshot("serial")["last_run"]
@@ -693,7 +810,7 @@ async def test_finish_current_room_uses_normalized_cancelled_outcome(hass) -> No
         return False
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=stopped_leg),
     ):
         await _async_execute_rooms(
@@ -703,7 +820,6 @@ async def test_finish_current_room_uses_normalized_cancelled_outcome(hass) -> No
             "vacuum.matic",
             "serial",
             [room],
-            intelligent=False,
         )
 
     assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
@@ -743,7 +859,6 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
             "vacuum.matic",
             "serial",
             [_room("Study", "room-study")],
-            intelligent=False,
         )
     await hass.async_block_till_done()
     last_run = manager.snapshot("serial")["last_run"]
@@ -852,7 +967,7 @@ async def test_unload_waits_for_terminal_save_and_always_clears_run_scope(
 
     manager._store = SimpleNamespace(async_save=AsyncMock(side_effect=save))
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(return_value=False),
     ):
         run = asyncio.create_task(
@@ -863,7 +978,6 @@ async def test_unload_waits_for_terminal_save_and_always_clears_run_scope(
                 "vacuum.matic",
                 "serial",
                 [_room("Study", "room-study")],
-                intelligent=False,
                 set_activity_run_id=set_run_id,
             )
         )
@@ -903,7 +1017,6 @@ async def test_initial_save_failure_still_retires_the_run(
             "vacuum.matic",
             "serial",
             [_room("Study", "room-study")],
-            intelligent=False,
             set_activity_run_id=set_run_id,
         )
     await hass.async_block_till_done()
@@ -1003,11 +1116,11 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         if scenario in {"interrupted", "takeover"}
         else nullcontext(),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             side_effect=native_outcome,
         ),
     ):
@@ -1018,7 +1131,6 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             "vacuum.matic",
             "serial",
             [room],
-            intelligent=True,
             session_history=history,
             active_session=AsyncMock(return_value=False),
         )
@@ -1086,11 +1198,11 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
     with (
         nullcontext() if terminal == "stop" else pytest.raises(ServiceValidationError),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_leg_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_leg_outcome",
             side_effect=native_outcome,
         ),
     ):
@@ -1101,7 +1213,6 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_history=AsyncMock(return_value=()),
         )
     await hass.async_block_till_done()
@@ -1233,6 +1344,7 @@ async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
     assert params["coverage"] == "standard"
     assert params[PLAN_MOTION_TOKEN] == 7
     assert params[PLAN_FLOOR_TOKEN] == "a" * 64
+    assert len(params["_matic_plan_session"]) == 36
 
 
 async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
@@ -1934,7 +2046,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
 ) -> None:
     manager = CleaningPlanManager(hass)
     assert manager._store.version == 1
-    assert manager._store.minor_version == 5
+    assert manager._store.minor_version == 10
     assert manager._store._private is True
     stored = {
         "robots": {
@@ -2003,7 +2115,557 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
     with pytest.raises(ValueError, match="storage version"):
         await manager._store._async_migrate_func(2, 1, stored)
     with pytest.raises(ValueError, match="minor version"):
-        await manager._store._async_migrate_func(1, 6, stored)
+        await manager._store._async_migrate_func(1, 11, stored)
+
+
+async def test_plan_store_migrates_interrupted_manual_run_without_private_credit(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    room_id = "room-office"
+    identity = "a" * 64
+    shared = {
+        "scope": "shared",
+        "schedule_active": True,
+        "mop_every_n": 3,
+        "coverage_every_n": None,
+        "periodic_coverage_setting": None,
+        "effective_cleaning_mode": "vacuum_and_mop",
+        "effective_coverage_setting": "quick",
+        "mop_due": True,
+        "coverage_due": False,
+        "identity": identity,
+    }
+    private = {**shared, "scope": "plan"}
+    pending = {
+        "plan_id": "quick_clean",
+        "room_id": room_id,
+        "room": "Office",
+        "dispatched_at": "2026-09-28T17:00:00+00:00",
+        "expires_at": "2099-09-28T17:00:00+00:00",
+        "cleaning_mode": "vacuum_and_mop",
+        "run_id": "manual-run-1",
+        "cadence_state": private,
+    }
+    old_pending_key = plans_module._native_reconciliation_key(pending)
+    plans = {
+        "quick_clean": {"name": "Quick Clean", "rooms": []},
+        plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID: {
+            "name": "Legacy saved plan",
+            "rooms": [],
+        },
+    }
+    private_progress = {"mop": 2, "coverage": 1}
+    robot = {
+        "plans": plans,
+        "rotations": {
+            "quick_clean": {
+                "rooms": {
+                    room_id: {"run_id": "manual-run-1", "last_result": "completed"},
+                    "room-kitchen": {"run_id": "saved-run", "last_result": "completed"},
+                }
+            }
+        },
+        "plan_room_cadence": {
+            "quick_clean": {
+                room_id: {"identity": identity, "progress": private_progress}
+            }
+        },
+        "last_run": {
+            "run_id": "manual-run-1",
+            "plan_id": "quick_clean",
+            "plan_name": "Quick Clean",
+            "service": "clean_room_sequence",
+            "outcome": "running",
+            "recovery_checkpoint": {
+                "data": {"plan_id": "quick_clean"},
+                "cadence_by_room": {room_id: private, "room-kitchen": shared},
+            },
+        },
+        "active_plan": {
+            "run_id": "manual-run-1",
+            "plan_id": "quick_clean",
+            "plan_name": "Quick Clean",
+            "room_id": room_id,
+        },
+        "pending_native_reconciliation": pending,
+        "native_completion_dedup": [old_pending_key, "unrelated-key"],
+    }
+    saved_run = {
+        "run_id": "saved-run",
+        "plan_id": "quick_clean",
+        "service": "run_selected_plan",
+        "outcome": "running",
+    }
+    no_shared = {
+        "plans": {},
+        "last_run": {
+            "run_id": "manual-run-2",
+            "plan_id": "quick_clean",
+            "service": "clean_room_sequence",
+            "outcome": "running",
+            "recovery_checkpoint": {
+                "data": {"plan_id": "quick_clean"},
+                "cadence_by_room": {room_id: private},
+            },
+        },
+    }
+    malformed = {
+        "plans": {},
+        "last_run": {
+            "run_id": "",
+            "plan_id": "quick_clean",
+            "service": "clean_room_sequence",
+            "outcome": "running",
+        },
+    }
+    data = {
+        "robots": {
+            "serial": robot,
+            "saved": {"last_run": saved_run},
+            "no_shared": no_shared,
+            "malformed": malformed,
+        }
+    }
+
+    migrated = await manager._store._async_migrate_func(1, 8, data)
+
+    target = f"{plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
+    migrated_robot = migrated["robots"]["serial"]
+    run = migrated_robot["last_run"]
+    assert run["plan_id"] == target
+    assert run["plan_name"] == "Map Studio room clean"
+    assert run["recovery_checkpoint"]["data"]["plan_id"] == target
+    assert run["recovery_checkpoint"]["cadence_by_room"] == {"room-kitchen": shared}
+    assert migrated_robot["active_plan"]["plan_id"] == target
+    assert migrated_robot["active_plan"]["plan_name"] == "Map Studio room clean"
+    migrated_pending = migrated_robot["pending_native_reconciliation"]
+    assert migrated_pending["plan_id"] == target
+    assert "cadence_state" not in migrated_pending
+    new_pending_key = plans_module._native_reconciliation_key(migrated_pending)
+    assert migrated_robot["native_completion_dedup"] == [
+        new_pending_key,
+        "unrelated-key",
+    ]
+    assert migrated_robot["plans"] == plans
+    assert migrated_robot["rotations"]["quick_clean"]["rooms"] == {
+        "room-kitchen": {"run_id": "saved-run", "last_result": "completed"}
+    }
+    assert migrated_robot["rotations"][target]["rooms"][room_id] == {
+        "run_id": "manual-run-1",
+        "last_result": "completed",
+    }
+    assert (
+        migrated_robot["plan_room_cadence"]["quick_clean"][room_id]["progress"]
+        == private_progress
+    )
+    assert migrated["robots"]["saved"]["last_run"] == saved_run
+    assert (
+        "cadence_by_room"
+        not in migrated["robots"]["no_shared"]["last_run"]["recovery_checkpoint"]
+    )
+    assert migrated["robots"]["no_shared"]["last_run"]["plan_id"] == (
+        plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    )
+    malformed_run = migrated["robots"]["malformed"]["last_run"]
+    assert malformed_run["run_id"] == ""
+    assert malformed_run["plan_id"] == "quick_clean"
+
+    await manager._store._async_migrate_func(1, 8, migrated)
+    assert migrated_robot["last_run"]["plan_id"] == target
+
+
+async def test_plan_store_quarantines_legacy_private_cadence_and_moves_owned_rotation(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    room_policy = {
+        "scope": "plan",
+        "mop_every_n": 3,
+        "coverage_every_n": 4,
+        "periodic_coverage_setting": "heavy_duty",
+    }
+    saved_plan = {
+        "name": "Quick Clean",
+        "rooms": [
+            {"room_id": "room-office", "cadence": room_policy},
+            {
+                "room_id": "room-study",
+                "cadence": {"scope": "plan", "coverage_every_n": 2},
+            },
+            {
+                "room_id": "room-initialize",
+                "cadence": {"scope": "plan", "mop_every_n": 2},
+            },
+            {"room_id": "room-no-cadence", "cadence": {"scope": "plan"}},
+            {
+                "room_id": "room-repair",
+                "cadence": {"scope": "plan", "coverage_every_n": 3},
+            },
+            {
+                "room_id": "room-shared",
+                "cadence": {"scope": "shared", "mop_every_n": 2},
+            },
+        ],
+    }
+    office_progress = {"mop": 2, "coverage": 3}
+    study_progress = {"mop": 0, "coverage": 1}
+    shared_progress = {"mop": 1, "coverage": 0}
+    robot = {
+        "plans": {"quick_clean": saved_plan},
+        "plan_room_cadence": {
+            "quick_clean": {
+                "room-office": {"progress": office_progress},
+                "room-study": {"progress": study_progress},
+                "room-shared": {"progress": shared_progress},
+                "room-no-cadence": {"progress": {"mop": 1, "coverage": 0}},
+                "room-repair": "corrupt",
+            },
+            "unrelated": {"room-office": {"progress": {"mop": 1}}},
+        },
+        "rotations": {
+            "quick_clean": {
+                "rooms": {
+                    "room-office": {
+                        "run_id": "legacy-manual",
+                        "last_result": "completed",
+                    },
+                    "room-study": {"run_id": "saved-run", "last_result": "completed"},
+                }
+            },
+            manual_id: {"rooms": {"room-other": {"run_id": "new-manual"}}},
+        },
+        "last_run": {
+            "run_id": "legacy-manual",
+            "plan_id": manual_id,
+            "service": "clean_room_sequence",
+            "outcome": "complete",
+        },
+    }
+    stored = {"robots": {"serial": robot}}
+
+    migrated = await manager._store._async_migrate_func(1, 9, stored)
+    migrated_robot = migrated["robots"]["serial"]
+
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-office"] == {
+        "progress": office_progress,
+        "unverified_modes": ["mop", "coverage"],
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-study"] == {
+        "progress": study_progress,
+        "unverified_modes": ["coverage"],
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-shared"] == {
+        "progress": shared_progress,
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-initialize"] == {
+        "unverified_modes": ["mop"]
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-no-cadence"] == {
+        "progress": {"mop": 1, "coverage": 0}
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-repair"] == {
+        "unverified_modes": ["coverage"]
+    }
+    assert migrated_robot["plan_room_cadence"]["unrelated"] == {
+        "room-office": {"progress": {"mop": 1}}
+    }
+    assert migrated_robot["rotations"]["quick_clean"]["rooms"] == {
+        "room-study": {"run_id": "saved-run", "last_result": "completed"}
+    }
+    assert migrated_robot["rotations"][manual_id]["rooms"] == {
+        "room-other": {"run_id": "new-manual"},
+        "room-office": {"run_id": "legacy-manual", "last_result": "completed"},
+    }
+
+    await manager._store._async_migrate_func(1, 9, migrated)
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-office"][
+        "unverified_modes"
+    ] == ["mop", "coverage"]
+    assert (
+        migrated_robot["rotations"][manual_id]["rooms"]["room-office"]["run_id"]
+        == "legacy-manual"
+    )
+
+
+def test_legacy_manual_rotation_preserves_newest_room_authority() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    robot = {
+        "rotations": {
+            "quick_clean": {
+                "rooms": {
+                    "room-target-newer": {
+                        "run_id": "manual-run",
+                        "last_completed": "2000-01-01T00:00:00+00:00",
+                    },
+                    "room-source-newer": {
+                        "run_id": "manual-run",
+                        "last_completed": "2002-01-01T00:00:00+00:00",
+                    },
+                }
+            },
+            manual_id: {
+                "rooms": {
+                    "room-target-newer": {
+                        "run_id": "newer-private-run",
+                        "last_completed": "2001-01-01T00:00:00+00:00",
+                    },
+                    "room-source-newer": {
+                        "run_id": "older-private-run",
+                        "last_completed": "2001-01-01T00:00:00+00:00",
+                    },
+                }
+            },
+        }
+    }
+
+    plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+    moved_rooms = robot["rotations"][manual_id]["rooms"]
+    assert moved_rooms["room-target-newer"]["run_id"] == "newer-private-run"
+    assert moved_rooms["room-source-newer"]["run_id"] == "manual-run"
+    assert robot["rotations"]["quick_clean"]["rooms"] == {}
+
+
+def test_legacy_manual_rotation_keeps_row_owner_and_latest_completion() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    cases = (
+        # The moved run owns the latest opportunity, while the target owns
+        # the latest verified completion.
+        (
+            {
+                "run_id": "manual-run",
+                "last_result": "failed",
+                "last_opportunity": "2026-03-03T00:00:00+00:00",
+                "last_completed": "2026-03-01T00:00:00+00:00",
+                "last_duration_seconds": 100,
+            },
+            {
+                "run_id": "private-run",
+                "last_result": "completed",
+                "last_opportunity": "2026-03-01T00:00:00+00:00",
+                "last_completed": "2026-03-02T00:00:00+00:00",
+                "last_duration_seconds": 200,
+            },
+            "manual-run",
+            "failed",
+            "2026-03-02T00:00:00+00:00",
+            200,
+        ),
+        # The target owns the latest opportunity, while the moved run owns
+        # the latest verified completion.
+        (
+            {
+                "run_id": "manual-run",
+                "last_result": "completed",
+                "last_opportunity": "2026-03-01T00:00:00+00:00",
+                "last_completed": "2026-03-04T00:00:00+00:00",
+                "last_duration_seconds": 100,
+            },
+            {
+                "run_id": "private-run",
+                "last_result": "failed",
+                "last_opportunity": "2026-03-05T00:00:00+00:00",
+                "last_completed": "2026-03-01T00:00:00+00:00",
+                "last_duration_seconds": 200,
+            },
+            "private-run",
+            "failed",
+            "2026-03-04T00:00:00+00:00",
+            100,
+        ),
+    )
+
+    for (
+        source,
+        target,
+        owner_run_id,
+        owner_result,
+        latest_completed,
+        latest_duration,
+    ) in cases:
+        robot = {
+            "rotations": {
+                "quick_clean": {"rooms": {"room-a": source}},
+                manual_id: {"rooms": {"room-a": target}},
+            }
+        }
+
+        plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+        migrated = robot["rotations"][manual_id]["rooms"]["room-a"]
+        assert migrated["run_id"] == owner_run_id
+        assert migrated["last_result"] == owner_result
+        assert migrated["last_completed"] == latest_completed
+        assert migrated["last_duration_seconds"] == latest_duration
+        assert robot["rotations"]["quick_clean"]["rooms"] == {}
+
+
+def test_legacy_manual_rotation_equal_completions_keep_a_valid_duration() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    cases = (
+        ("not-a-duration", 200, 200),
+        (100, "not-a-duration", 100),
+        (100, 200, 100),
+        (None, 200, 200),
+        ("not-a-duration", 0, None),
+    )
+
+    for source_duration, target_duration, expected_duration in cases:
+        source = {
+            "run_id": "manual-run",
+            "last_result": "failed",
+            "last_completed": "2026-03-02T00:00:00+00:00",
+        }
+        target = {
+            "run_id": "private-run",
+            "last_result": "completed",
+            "last_completed": "2026-03-01T19:00:00-05:00",
+        }
+        if source_duration is not None:
+            source["last_duration_seconds"] = source_duration
+        if target_duration is not None:
+            target["last_duration_seconds"] = target_duration
+        robot = {
+            "rotations": {
+                "quick_clean": {"rooms": {"room-a": source}},
+                manual_id: {"rooms": {"room-a": target}},
+            }
+        }
+
+        plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+        migrated = robot["rotations"][manual_id]["rooms"]["room-a"]
+        # Equal activity leaves the target row's run/result ownership intact.
+        assert migrated["run_id"] == "private-run"
+        assert migrated["last_result"] == "completed"
+        if expected_duration is None:
+            assert "last_duration_seconds" not in migrated
+        else:
+            assert migrated["last_duration_seconds"] == expected_duration
+
+
+def test_legacy_manual_rotation_drops_stale_duration_without_completion_duration() -> (
+    None
+):
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    for duration in (None, "not-a-duration"):
+        target = {
+            "run_id": "private-run",
+            "last_result": "completed",
+            "last_opportunity": "2026-03-02T00:00:00+00:00",
+            "last_completed": "2026-03-02T00:00:00+00:00",
+        }
+        if duration is not None:
+            target["last_duration_seconds"] = duration
+        robot = {
+            "rotations": {
+                "quick_clean": {
+                    "rooms": {
+                        "room-a": {
+                            "run_id": "manual-run",
+                            "last_result": "failed",
+                            "last_opportunity": "2026-03-03T00:00:00+00:00",
+                            "last_duration_seconds": 100,
+                        }
+                    }
+                },
+                manual_id: {"rooms": {"room-a": target}},
+            }
+        }
+
+        plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+        migrated = robot["rotations"][manual_id]["rooms"]["room-a"]
+        assert migrated["run_id"] == "manual-run"
+        assert migrated["last_result"] == "failed"
+        assert migrated["last_completed"] == "2026-03-02T00:00:00+00:00"
+        assert "last_duration_seconds" not in migrated
+
+
+def test_legacy_manual_rotation_ignores_malformed_completion_timestamp() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    robot = {
+        "rotations": {
+            "quick_clean": {
+                "rooms": {
+                    "room-a": {
+                        "run_id": "manual-run",
+                        "last_result": "failed",
+                        "last_opportunity": "2026-03-03T00:00:00+00:00",
+                    }
+                }
+            },
+            manual_id: {
+                "rooms": {
+                    "room-a": {
+                        "run_id": "private-run",
+                        "last_result": "completed",
+                        "last_opportunity": "2026-03-02T00:00:00+00:00",
+                        "last_completed": "not-a-timestamp",
+                    }
+                }
+            },
+        }
+    }
+
+    plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+    migrated = robot["rotations"][manual_id]["rooms"]["room-a"]
+    assert migrated["run_id"] == "manual-run"
+    assert migrated["last_result"] == "failed"
+    assert "last_completed" not in migrated
+
+
+def test_legacy_manual_rotation_repairs_malformed_namespaces() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    for robot in (
+        {"rotations": {"quick_clean": None}},
+        {"rotations": {"quick_clean": {"rooms": None}}},
+    ):
+        plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+    robot = {
+        "rotations": {
+            "quick_clean": {"rooms": {"room-a": {"run_id": "manual-run"}}},
+            manual_id: {"rooms": "corrupt"},
+        }
+    }
+    plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+    assert robot["rotations"][manual_id]["rooms"] == {
+        "room-a": {"run_id": "manual-run"}
+    }
+    assert robot["rotations"]["quick_clean"]["rooms"] == {}
+
+
+def test_legacy_manual_cadence_quarantine_repairs_malformed_namespaces() -> None:
+    plan = {
+        "quick_clean": {
+            "rooms": [
+                None,
+                {"room_id": "room-a", "cadence": {"scope": "plan", "mop_every_n": 2}},
+            ]
+        }
+    }
+    robot = {"plans": plan, "plan_room_cadence": None}
+
+    plans_module._quarantine_legacy_manual_cadence(robot)
+
+    assert robot["plan_room_cadence"]["quick_clean"]["room-a"] == {
+        "unverified_modes": ["mop"]
+    }
+
+    robot = {
+        "plans": plan,
+        "plan_room_cadence": {"quick_clean": None},
+    }
+    plans_module._quarantine_legacy_manual_cadence(robot)
+
+    assert robot["plan_room_cadence"]["quick_clean"]["room-a"] == {
+        "unverified_modes": ["mop"]
+    }
 
 
 async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> None:
@@ -2086,6 +2748,95 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
     assert snapshot["failed_runs"] == 2
     assert snapshot["cancelled_runs"] == 1
     assert manager.choose("serial", "away", [kitchen, study]) == [kitchen, study]
+
+
+async def test_stale_run_completion_cannot_credit_new_run_with_same_plan_id(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    checkpoint = {"completed_room_ids": [], "cadence_by_room": {}}
+    manager._robot("serial").update(
+        {
+            "last_run": {
+                "run_id": "current-run",
+                "plan_id": "away",
+                "outcome": "running",
+                "room_count": 1,
+                "completed_room_count": 0,
+                "recovery_checkpoint": checkpoint,
+            },
+            "active_plan": {
+                "run_id": "current-run",
+                "plan_id": "away",
+                "room_id": room.room_id,
+            },
+        }
+    )
+
+    accepted = await manager.async_mark_completed(
+        "serial", "away", room, run_id="superseded-run"
+    )
+
+    assert accepted is False
+    assert manager._robot("serial")["rotations"] == {}
+    assert manager._robot("serial")["active_plan"]["run_id"] == "current-run"
+    assert manager._robot("serial")["last_run"]["completed_room_count"] == 0
+    manager._store.async_save.assert_not_awaited()
+
+    assert await manager.async_mark_completed(
+        "serial", "away", room, run_id="current-run"
+    )
+    assert manager._robot("serial")["last_run"]["completed_room_count"] == 1
+    assert manager._robot("serial")["active_plan"] is None
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "interrupted"])
+async def test_terminal_run_cannot_credit_late_completion(hass, outcome: str) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    robot = manager._robot("serial")
+    robot.update(
+        {
+            "plan_room_cadence": {
+                "away": {room.room_id: {"identity": "existing", "progress": 2}}
+            },
+            "last_run": {
+                "run_id": "finished-run",
+                "plan_id": "away",
+                "outcome": outcome,
+                "room_count": 1,
+                "completed_room_count": 0,
+                "recovery_checkpoint": {
+                    "completed_room_ids": [],
+                    "cadence_by_room": {
+                        room.room_id: {
+                            "scope": "shared",
+                            "identity": "late-completion",
+                            "progress": 0,
+                        }
+                    },
+                },
+            },
+            "active_plan": {
+                "run_id": "finished-run",
+                "plan_id": "away",
+                "room_id": room.room_id,
+            },
+        }
+    )
+    robot = manager._robot("serial")
+    before = deepcopy(robot)
+
+    accepted = await manager.async_mark_completed(
+        "serial", "away", room, run_id="finished-run", duration_seconds=120
+    )
+
+    assert accepted is False
+    assert manager._robot("serial") == before
+    manager._store.async_save.assert_not_awaited()
 
 
 async def test_three_room_short_runs_cycle_after_terminal_outcomes(hass) -> None:
@@ -2364,6 +3115,9 @@ async def test_load_repairs_malformed_plan_storage_without_inventing_history(
         "plans": {"valid": {"name": "Valid", "rooms": []}},
         "areas": {},
         "rotation_resets": {},
+        "shared_room_cadence": {},
+        "plan_room_cadence": {},
+        "native_completion_dedup": [],
         "selected_plan": "valid",
         "selected_area": None,
         "active_plan": None,
@@ -2744,11 +3498,11 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
 
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(side_effect=terminal_error),
         ),
         pytest.raises(ServiceValidationError) as failure,
@@ -3006,6 +3760,8 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
             "room_id": second.room_id,
             "room": second.name,
             "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+            "cleaning_mode": second.cleaning_mode,
+            "coverage_setting": second.coverage_setting,
             "run_id": "run-1",
         },
     )
@@ -3023,7 +3779,11 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
         completed_at=now.isoformat(),
         duration_seconds=12,
     )
-    last_run = manager.snapshot("serial")["last_run"]
+    snapshot = manager.snapshot("serial")
+    last_run = snapshot["last_run"]
+    reconciled_room = snapshot["plan_history"]["away"]["rooms"][second.room_id]
+    assert reconciled_room["cleaning_mode"] == second.cleaning_mode
+    assert reconciled_room["coverage_setting"] == second.coverage_setting
     assert last_run["completed_room_count"] == 2
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
@@ -3067,6 +3827,10 @@ async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
     manager._robot("serial")["rotations"]["away"]["rooms"][room.room_id][
         "last_result"
     ] = "completed"
+    _remember_native_reconciliation(
+        manager._robot("serial"),
+        manager._robot("serial")["pending_native_reconciliation"],
+    )
     assert (
         await manager.async_mark_native_completed(
             "serial", "away", room, dispatched_at=dispatched_at
@@ -3282,6 +4046,332 @@ async def test_native_reconciliation_import_rejects_ambiguous_and_invalid_record
         room,
         completed_at=now.isoformat(),
         duration_seconds=1,
+        room_settings=room,
+    )
+
+
+def test_native_history_reconciliation_preserves_frozen_duration_settings() -> None:
+    """Startup recovery retains settings needed by later duration estimates."""
+    now = dt_util.utcnow()
+    room_id = "room-kitchen"
+    dispatched_at = now - timedelta(seconds=30)
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                room_id,
+                "Kitchen",
+                "protocol-kitchen",
+                b"kitchen",
+                ((0, 0), (1, 0), (1, 1), (0, 1)),
+            ),
+        ),
+    )
+    robot: dict[str, Any] = {
+        "rotations": {},
+        "rooms": {},
+        "pending_native_reconciliation": {
+            "plan_id": "away",
+            "room_id": room_id,
+            "room": "Kitchen",
+            "dispatched_at": dispatched_at.isoformat(),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            "cleaning_mode": "vacuum",
+            "cadence_state": {
+                "scope": "plan",
+                "effective_cleaning_mode": "vacuum",
+                "effective_coverage_setting": "quick",
+            },
+        },
+    }
+    native_record = CleaningSessionRecord(
+        b"synthetic-native-session",
+        CleaningSession(
+            (dispatched_at - timedelta(seconds=1)).isoformat(),
+            (now - timedelta(seconds=1)).isoformat(),
+            30,
+            ("Kitchen",),
+            (("Kitchen", 30),),
+            True,
+            ("Kitchen",),
+        ),
+    )
+
+    assert _reconcile_pending_native_history(robot, floor_plan, [native_record])
+
+    completed = robot["rotations"]["away"]["rooms"][room_id]
+    assert completed["cleaning_mode"] == "vacuum"
+    assert completed["coverage_setting"] == "quick"
+    assert _compatible_duration_history(
+        robot,
+        room_id,
+        {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+    ) == [30]
+
+    # Conflicting frozen metadata cannot qualify a duration under either mode;
+    # the original mode evidence still owns completion admission.
+    for marker_coverage, cadence_mode, cadence_coverage in (
+        (None, "mop", "quick"),
+        ("standard", "mop", "quick"),
+        ("standard", "vacuum", "heavy_duty"),
+    ):
+        conflicting_marker = {
+            "plan_id": "away",
+            "room_id": room_id,
+            "room": "Kitchen",
+            "dispatched_at": dispatched_at.isoformat(),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            "cleaning_mode": "vacuum",
+            "cadence_state": {
+                "scope": "plan",
+                "schedule_active": True,
+                "mop_every_n": 3,
+                "effective_cleaning_mode": cadence_mode,
+                "effective_coverage_setting": cadence_coverage,
+            },
+        }
+        if marker_coverage is not None:
+            conflicting_marker["coverage_setting"] = marker_coverage
+        cadence_records = {"away": {room_id: {"progress": {"mop": 1, "coverage": 0}}}}
+        conflicting_robot: dict[str, Any] = {
+            "rotations": {},
+            "rooms": {},
+            "plans": {},
+            "plan_room_cadence": deepcopy(cadence_records),
+            "pending_native_reconciliation": conflicting_marker,
+        }
+        assert _reconcile_pending_native_history(
+            conflicting_robot, floor_plan, [native_record]
+        )
+        conflicting_completed = conflicting_robot["rotations"]["away"]["rooms"][room_id]
+        assert conflicting_completed["completed_runs"] == 1
+        assert "cleaning_mode" not in conflicting_completed
+        assert "coverage_setting" not in conflicting_completed
+        assert conflicting_robot["plan_room_cadence"] == cadence_records
+        for mode in ("vacuum", "mop"):
+            for coverage in ("quick", "standard", "heavy_duty"):
+                assert (
+                    _compatible_duration_history(
+                        conflicting_robot,
+                        room_id,
+                        {"cleaning_mode": mode, "coverage_setting": coverage},
+                    )
+                    == []
+                )
+
+    # A frozen cadence snapshot can recover settings from an older marker.
+    legacy_marker = {
+        "plan_id": "away",
+        "room_id": room_id,
+        "room": "Kitchen",
+        "dispatched_at": dispatched_at.isoformat(),
+        "expires_at": (now + timedelta(minutes=5)).isoformat(),
+        "cadence_state": {
+            "scope": "plan",
+            "effective_cleaning_mode": "vacuum",
+            "effective_coverage_setting": "quick",
+        },
+    }
+    legacy_robot: dict[str, Any] = {
+        "rotations": {},
+        "rooms": {},
+        "pending_native_reconciliation": legacy_marker,
+    }
+    assert _reconcile_pending_native_history(legacy_robot, floor_plan, [native_record])
+    legacy_completed = legacy_robot["rotations"]["away"]["rooms"][room_id]
+    assert legacy_completed["cleaning_mode"] == "vacuum"
+    assert legacy_completed["coverage_setting"] == "quick"
+    assert _compatible_duration_history(
+        legacy_robot,
+        room_id,
+        {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+    ) == [30]
+
+    unknown_robot: dict[str, Any] = {
+        "rotations": {},
+        "rooms": {},
+        "pending_native_reconciliation": {
+            key: value for key, value in legacy_marker.items() if key != "cadence_state"
+        },
+    }
+    assert _reconcile_pending_native_history(unknown_robot, floor_plan, [native_record])
+    unknown_completed = unknown_robot["rotations"]["away"]["rooms"][room_id]
+    assert "cleaning_mode" not in unknown_completed
+    assert "coverage_setting" not in unknown_completed
+    assert unknown_completed["duration_history_seconds"] == [30]
+    assert (
+        _compatible_duration_history(
+            unknown_robot,
+            room_id,
+            {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize(
+    ("previous_mode", "previous_coverage"),
+    [("vacuum", "quick"), ("mop", "heavy_duty")],
+    ids=["mode-changed", "coverage-changed"],
+)
+@pytest.mark.parametrize(
+    "duration_seconds", [None, 30], ids=["no-duration", "duration"]
+)
+def test_native_completion_resets_duration_samples_when_settings_change(
+    previous_mode: str, previous_coverage: str, duration_seconds: int | None
+) -> None:
+    room_id = "room-kitchen"
+    robot: dict[str, Any] = {
+        "rotations": {
+            "away": {
+                "rooms": {
+                    room_id: {
+                        "cleaning_mode": previous_mode,
+                        "coverage_setting": previous_coverage,
+                        "last_duration_seconds": 90,
+                        "average_duration_seconds": 90,
+                        "duration_samples": 1,
+                        "duration_history_seconds": [90],
+                        "last_cancelled_duration_seconds": 45,
+                        "last_unverified_duration_seconds": 60,
+                    }
+                }
+            }
+        },
+        "rooms": {},
+    }
+    room = CleaningRoom(room_id, "Kitchen", "mop", "quick")
+
+    _record_native_completion(
+        robot,
+        "away",
+        room,
+        completed_at=dt_util.utcnow().isoformat(),
+        duration_seconds=duration_seconds,
+        room_settings=room,
+    )
+
+    completed = robot["rotations"]["away"]["rooms"][room_id]
+    assert completed["cleaning_mode"] == "mop"
+    assert completed["coverage_setting"] == "quick"
+    assert "last_cancelled_duration_seconds" not in completed
+    assert "last_unverified_duration_seconds" not in completed
+    assert (
+        _compatible_duration_history(
+            robot,
+            room_id,
+            {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+        )
+        == []
+    )
+    assert (
+        _compatible_duration_history(
+            robot,
+            room_id,
+            {
+                "cleaning_mode": previous_mode,
+                "coverage_setting": previous_coverage,
+            },
+        )
+        == []
+    )
+    assert _compatible_duration_history(
+        robot,
+        room_id,
+        {"cleaning_mode": "mop", "coverage_setting": "quick"},
+    ) == ([duration_seconds] if duration_seconds is not None else [])
+    if duration_seconds is None:
+        assert "last_duration_seconds" not in completed
+        assert "average_duration_seconds" not in completed
+        assert "duration_samples" not in completed
+        assert "duration_history_seconds" not in completed
+    else:
+        assert completed["duration_history_seconds"] == [duration_seconds]
+        assert completed["duration_samples"] == 1
+
+
+def test_native_completion_does_not_qualify_legacy_unscoped_duration_samples() -> None:
+    room_id = "room-kitchen"
+    robot: dict[str, Any] = {
+        "rotations": {
+            "away": {
+                "rooms": {
+                    room_id: {
+                        "last_duration_seconds": 90,
+                        "average_duration_seconds": 90,
+                        "duration_samples": 1,
+                        "duration_history_seconds": [90],
+                    }
+                }
+            }
+        },
+        "rooms": {},
+    }
+
+    _record_native_completion(
+        robot,
+        "away",
+        CleaningRoom(room_id, "Kitchen", "mop", "quick"),
+        completed_at=dt_util.utcnow().isoformat(),
+        duration_seconds=None,
+        room_settings=None,
+    )
+
+    completed = robot["rotations"]["away"]["rooms"][room_id]
+    assert "cleaning_mode" not in completed
+    assert "coverage_setting" not in completed
+    assert "duration_history_seconds" not in completed
+    assert (
+        _compatible_duration_history(
+            robot,
+            room_id,
+            {"cleaning_mode": "mop", "coverage_setting": "quick"},
+        )
+        == []
+    )
+
+
+def test_native_completion_without_frozen_settings_discards_qualified_history() -> None:
+    room_id = "room-kitchen"
+    robot: dict[str, Any] = {
+        "rotations": {
+            "away": {
+                "rooms": {
+                    room_id: {
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "quick",
+                        "duration_samples": 1,
+                        "duration_history_seconds": [90],
+                    }
+                }
+            }
+        },
+        "rooms": {},
+    }
+    floor_room = Room(room_id, "Kitchen", "protocol-kitchen", b"kitchen", ())
+
+    _record_native_completion(
+        robot,
+        "away",
+        floor_room,
+        completed_at=dt_util.utcnow().isoformat(),
+        duration_seconds=30,
+        room_settings=None,
+    )
+
+    completed = robot["rotations"]["away"]["rooms"][room_id]
+    assert "cleaning_mode" not in completed
+    assert "coverage_setting" not in completed
+    assert completed["duration_history_seconds"] == [30]
+    assert (
+        _compatible_duration_history(
+            robot,
+            room_id,
+            {"cleaning_mode": "vacuum", "coverage_setting": "quick"},
+        )
+        == []
     )
 
 
@@ -3342,10 +4432,10 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
     ):
         await manager.async_load()
         assert manager.stop_pending("serial") is True
-        assert manager._stop_fences["serial"] == 130.0
+        assert manager._stop_fences["serial"].deadline == 130.0
         assert manager._robot("serial")["stop_fence_expires_at"] == valid["expires_at"]
         assert manager.stop_pending("generic") is True
-        assert manager._stop_fences["generic"] == 145.0
+        assert manager._stop_fences["generic"].deadline == 145.0
         assert "stop_fence_expires_at" not in manager._robot("bad-fence")
         assert "stop_fence_expires_at" not in manager._robot("stale-fence")
         assert "pending_native_reconciliation" not in manager._robot("other")
@@ -3840,13 +4930,761 @@ async def test_plan_validation_rejects_disabled_empty_unknown_and_missing(hass) 
         manager.rooms_for_plan("serial", {}, "empty")
 
     for rooms in ("room-kitchen", ["room-kitchen"]):
+        with pytest.raises(ValueError, match="plan contains an invalid room"):
+            await manager.async_save_plan(
+                "serial",
+                "corrupt",
+                {"name": "Corrupt", "enabled": True, "rooms": rooms},
+            )
+
+
+def test_plan_preview_rejects_corrupt_room_records(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    robot = manager._robot("serial")
+    robot["plans"]["corrupt"] = {
+        "name": "Corrupt",
+        "enabled": True,
+        "rooms": ["room-kitchen"],
+    }
+
+    with pytest.raises(ValueError, match="plan contains an invalid room"):
+        manager.rooms_for_plan("serial", {"room-kitchen": "Kitchen"}, "corrupt")
+
+
+async def test_shared_schedule_cannot_change_while_a_different_plan_owns_room(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    original = {
+        "name": "Kitchen",
+        "rooms": [
+            {
+                "room_id": "room-kitchen",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "cadence": {"scope": "shared", "mop_every_n": 3},
+            }
+        ],
+    }
+    await manager.async_save_plan(
+        "serial",
+        "kitchen",
+        original,
+        floor_token="f" * 64,
+        room_identities={"room-kitchen": "a" * 64},
+    )
+    manager._robot("serial")["active_plan"] = {
+        "plan_id": "another-plan",
+        "room_id": "room-kitchen",
+    }
+
+    with pytest.raises(ValueError, match="shared room cadence cannot change"):
         await manager.async_save_plan(
             "serial",
-            "corrupt",
-            {"name": "Corrupt", "enabled": True, "rooms": rooms},
+            "kitchen",
+            {
+                **original,
+                "rooms": [
+                    {
+                        **original["rooms"][0],
+                        "cadence": {"scope": "shared", "mop_every_n": 5},
+                    }
+                ],
+            },
         )
-        with pytest.raises(ValueError, match=r"plan (has no|contains an invalid) room"):
-            manager.rooms_for_plan("serial", {}, "corrupt")
+
+
+async def test_invalid_cadence_flag_cannot_mutate_an_existing_saved_plan(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    original = {
+        "name": "Cadence plan",
+        "enabled": True,
+        "rooms": [
+            {
+                "room_id": "room-hall",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "cadence": {"mop_every_n": 3, "do_mop_next": True},
+            }
+        ],
+    }
+    await manager.async_save_plan("serial", "cadence", original)
+    before = deepcopy(manager._data)
+    save_count = manager._store.async_save.await_count
+
+    with pytest.raises(ValueError, match="do_mop_next must be a boolean"):
+        await manager.async_save_plan(
+            "serial",
+            "cadence",
+            {
+                **original,
+                "name": "Renamed plan",
+                "rooms": [
+                    {
+                        **original["rooms"][0],
+                        "cadence": {"mop_every_n": 3, "do_mop_next": "true"},
+                    }
+                ],
+            },
+        )
+
+    assert manager._data == before
+    assert manager._store.async_save.await_count == save_count
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        None,
+        {
+            "scope": "plan",
+            "coverage_every_n": 2,
+            "periodic_coverage_setting": "heavy_duty",
+        },
+    ],
+)
+async def test_save_plan_can_clear_or_replace_invalid_inherited_cadence(
+    hass, replacement
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    original = {
+        "name": "Cadence plan",
+        "rooms": [
+            {
+                "room_id": "room-hall",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "cadence": {
+                    "scope": "plan",
+                    "coverage_every_n": 2,
+                    "periodic_coverage_setting": "heavy_duty",
+                },
+            }
+        ],
+    }
+    await manager.async_save_plan(
+        "serial",
+        "cadence",
+        original,
+        floor_token="f" * 64,
+        room_identities={"room-hall": "a" * 64},
+    )
+    robot = manager._robot("serial")
+    room = robot["plans"]["cadence"]["rooms"][0]
+    room["cadence"] = {
+        "scope": "plan",
+        "coverage_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty",
+        "do_mop_next": True,
+    }
+    robot["plan_room_cadence"]["cadence"]["room-hall"] = {
+        "identity": "a" * 64,
+        "progress": {"mop": 0, "coverage": 1},
+    }
+    submitted = deepcopy(robot["plans"]["cadence"])
+    submitted["name"] = "Repaired plan"
+    if replacement is None:
+        submitted["rooms"][0].pop("cadence")
+    else:
+        submitted["rooms"][0]["cadence"] = replacement
+
+    await manager.async_save_plan(
+        "serial",
+        "cadence",
+        submitted,
+        floor_token="f" * 64,
+        room_identities={"room-hall": "a" * 64},
+    )
+
+    saved_room = manager.plan("serial", "cadence")["rooms"][0]
+    if replacement is None:
+        assert "cadence" not in saved_room
+    else:
+        assert saved_room["cadence"] == {
+            "scope": "plan",
+            "mop_every_n": None,
+            "coverage_every_n": 2,
+            "periodic_coverage_setting": "heavy_duty",
+            "do_mop_next": False,
+            "do_coverage_next": False,
+        }
+    assert robot["plan_room_cadence"]["cadence"]["room-hall"]["progress"] == {
+        "mop": 0,
+        "coverage": 1,
+    }
+
+
+async def test_failed_plan_save_preserves_overlapping_mutation(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan("serial", "home", {"name": "Home", "rooms": []})
+    await manager.async_save_plan(
+        "serial", "away", {"name": "Away", "rooms": []}, select=False
+    )
+    await manager.async_select_plan("serial", "away")
+
+    first_write_started = asyncio.Event()
+    release_first_write = asyncio.Event()
+    persisted: list[dict] = []
+
+    async def save(data):
+        persisted.append(deepcopy(data["robots"]["serial"]))
+        if len(persisted) == 1:
+            first_write_started.set()
+            await release_first_write.wait()
+            raise OSError("synthetic first save failure")
+
+    manager._store.async_save = AsyncMock(side_effect=save)
+    first = asyncio.create_task(
+        manager.async_save_plan("serial", "home", {"name": "Changed Home", "rooms": []})
+    )
+    await asyncio.wait_for(first_write_started.wait(), timeout=1)
+
+    second_started = asyncio.Event()
+
+    async def select_home():
+        second_started.set()
+        await manager.async_select_plan("serial", "home")
+
+    second = asyncio.create_task(select_home())
+    await asyncio.wait_for(second_started.wait(), timeout=1)
+    assert manager._robot("serial")["selected_plan"] == "home"
+    assert not second.done()
+
+    release_first_write.set()
+    first_result, second_result = await asyncio.gather(
+        first, second, return_exceptions=True
+    )
+
+    assert isinstance(first_result, OSError)
+    assert second_result is None
+    assert manager.plan("serial", "home")["name"] == "Home"
+    assert manager._robot("serial")["selected_plan"] == "home"
+    assert persisted[-1]["plans"]["home"]["name"] == "Home"
+    assert persisted[-1]["selected_plan"] == "home"
+
+
+async def test_failed_reordered_plan_save_serializes_completion_cadence_credit(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
+    original_plan = {
+        "name": "Home",
+        "rooms": [
+            {
+                "room_id": room.room_id,
+                "name": room.name,
+                "cleaning_mode": "vacuum",
+                "coverage_setting": room.coverage_setting,
+                "cadence": {
+                    "scope": "plan",
+                    "mop_every_n": 2,
+                    "do_mop_next": True,
+                },
+            },
+            {
+                "room_id": "room-b",
+                "name": "Office",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            },
+        ],
+    }
+    await manager.async_save_plan("serial", "home", original_plan)
+    effective_rooms, snapshots = manager.resolve_cadence("serial", "home", [room])
+    cadence = snapshots[room.room_id]
+    assert cadence["mop_due"] is True
+    room = effective_rooms[0]
+    assert room.cleaning_mode == "vacuum_and_mop"
+    await manager.async_begin_run(
+        "serial", "home", "run-one-shot", 2, trigger="user", service="test"
+    )
+    await manager.async_set_recovery_checkpoint(
+        "serial",
+        "run-one-shot",
+        {
+            "cadence_by_room": {room.room_id: cadence},
+            "completed_room_ids": [],
+        },
+    )
+
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+    persisted: list[dict] = []
+
+    async def fail_reordered_save(data) -> None:
+        persisted.append(deepcopy(data["robots"]["serial"]))
+        if len(persisted) == 1:
+            save_started.set()
+            await release_save.wait()
+            raise OSError("synthetic reordered plan save failure")
+
+    manager._store.async_save = AsyncMock(side_effect=fail_reordered_save)
+    edited_plan = {
+        **original_plan,
+        "name": "Failed rename",
+        "rooms": list(reversed(original_plan["rooms"])),
+    }
+    plan_save = asyncio.create_task(
+        manager.async_save_plan("serial", "home", edited_plan)
+    )
+    await asyncio.wait_for(save_started.wait(), timeout=1)
+
+    completion_started = asyncio.Event()
+
+    async def complete_room() -> None:
+        completion_started.set()
+        await manager.async_mark_completed("serial", "home", room)
+
+    completion = asyncio.create_task(complete_room())
+    await asyncio.wait_for(completion_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+    try:
+        assert not completion.done()
+        in_flight_robot = manager._robot("serial")
+        in_flight_room = next(
+            item
+            for item in in_flight_robot["plans"]["home"]["rooms"]
+            if item["room_id"] == room.room_id
+        )
+        assert in_flight_room["cadence"]["do_mop_next"] is True
+        assert (
+            in_flight_robot["rooms"].get(room.room_id, {}).get("completed_runs", 0) == 0
+        )
+        assert (
+            in_flight_robot["last_run"]["recovery_checkpoint"]["completed_room_ids"]
+            == []
+        )
+        assert persisted[0]["plans"]["home"]["name"] == "Failed rename"
+        assert [item["room_id"] for item in persisted[0]["plans"]["home"]["rooms"]] == [
+            "room-b",
+            "room-a",
+        ]
+    finally:
+        release_save.set()
+
+    save_result, completion_result = await asyncio.gather(
+        plan_save, completion, return_exceptions=True
+    )
+
+    assert isinstance(save_result, OSError)
+    assert completion_result is None
+    robot = manager._robot("serial")
+    assert robot["plans"]["home"]["name"] == "Home"
+    assert [item["room_id"] for item in robot["plans"]["home"]["rooms"]] == [
+        "room-a",
+        "room-b",
+    ]
+    room_policy = robot["plans"]["home"]["rooms"][0]["cadence"]
+    assert room_policy["do_mop_next"] is False
+    assert robot["last_run"]["recovery_checkpoint"]["completed_room_ids"] == [
+        room.room_id
+    ]
+    assert robot["rooms"][room.room_id]["completed_runs"] == 1
+    assert len(persisted) == 2
+    assert persisted[-1]["plans"]["home"]["name"] == "Home"
+    assert [item["room_id"] for item in persisted[-1]["plans"]["home"]["rooms"]] == [
+        "room-a",
+        "room-b",
+    ]
+    assert persisted[-1]["plans"]["home"]["rooms"][0]["cadence"]["do_mop_next"] is False
+    assert persisted[-1]["rooms"][room.room_id]["completed_runs"] == 1
+
+
+async def test_active_plan_only_locks_cadence_for_its_current_room(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    original = {
+        "name": "Everyday",
+        "rooms": [
+            {
+                "room_id": "room-kitchen",
+                "cleaning_mode": "vacuum",
+                "cadence": {"scope": "plan", "mop_every_n": 3},
+            },
+            {
+                "room_id": "room-hall",
+                "cleaning_mode": "vacuum",
+                "cadence": {
+                    "scope": "plan",
+                    "coverage_every_n": 4,
+                    "periodic_coverage_setting": "heavy_duty",
+                },
+            },
+        ],
+    }
+    await manager.async_save_plan("serial", "everyday", original)
+    manager._robot("serial")["active_plan"] = {
+        "plan_id": "everyday",
+        "room_id": "room-kitchen",
+    }
+
+    # Editing a later room remains available while the kitchen owns execution.
+    await manager.async_save_plan(
+        "serial",
+        "everyday",
+        {
+            **original,
+            "rooms": [
+                original["rooms"][0],
+                {
+                    **original["rooms"][1],
+                    "cadence": {
+                        "scope": "plan",
+                        "coverage_every_n": 5,
+                        "periodic_coverage_setting": "heavy_duty",
+                    },
+                },
+            ],
+        },
+    )
+
+    with pytest.raises(ValueError, match="while its plan is running"):
+        await manager.async_save_plan(
+            "serial",
+            "everyday",
+            {
+                **original,
+                "rooms": [
+                    {
+                        **original["rooms"][0],
+                        "cadence": {"scope": "plan", "mop_every_n": 6},
+                    },
+                    {
+                        **original["rooms"][1],
+                        "cadence": {
+                            "scope": "plan",
+                            "coverage_every_n": 5,
+                            "periodic_coverage_setting": "heavy_duty",
+                        },
+                    },
+                ],
+            },
+        )
+
+
+async def test_partial_cadence_reset_preserves_other_mode_and_active_room(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "everyday",
+        {
+            "name": "Everyday",
+            "rooms": [
+                {
+                    "room_id": "room-kitchen",
+                    "cadence": {
+                        "scope": "shared",
+                        "mop_every_n": 3,
+                        "coverage_every_n": 4,
+                        "periodic_coverage_setting": "heavy_duty",
+                        "do_mop_next": True,
+                        "do_coverage_next": True,
+                    },
+                },
+                {
+                    "room_id": "room-hall",
+                    "cadence": {"scope": "plan", "mop_every_n": 3},
+                },
+            ],
+        },
+        floor_token="f" * 64,
+        room_identities={"room-kitchen": "a" * 64},
+    )
+    robot = manager._robot("serial")
+    shared_policy = robot["shared_room_cadence"]["room-kitchen"]["policy"]
+    shared_progress = robot["shared_room_cadence"]["room-kitchen"]["progress"]
+    shared_progress.update(mop=2, coverage=3)
+    shared_policy.update(do_mop_next=True, do_coverage_next=True)
+    robot["plan_room_cadence"]["everyday"]["room-hall"] = {
+        "progress": {"mop": 2, "coverage": 3}
+    }
+    robot["active_plan"] = {"plan_id": "everyday", "room_id": "room-hall"}
+
+    # The unrelated shared kitchen schedule can reset one mode while the hall
+    # run continues; its other counter and one-time request stay intact.
+    await manager.async_reset_cadence(
+        "serial", "everyday", ["room-kitchen"], modes=["mop"]
+    )
+    assert shared_progress == {"mop": 0, "coverage": 3}
+    assert shared_policy["do_mop_next"] is False
+    assert shared_policy["do_coverage_next"] is True
+
+    private_policy = robot["plans"]["everyday"]["rooms"][1]["cadence"]
+    private_policy.update(do_mop_next=True, do_coverage_next=True)
+    robot["active_plan"] = {"plan_id": "everyday", "room_id": "room-kitchen"}
+    await manager.async_reset_cadence(
+        "serial", "everyday", ["room-hall"], modes=["coverage"]
+    )
+    private_progress = robot["plan_room_cadence"]["everyday"]["room-hall"]["progress"]
+    assert private_progress == {"mop": 2, "coverage": 0}
+    assert private_policy["do_mop_next"] is True
+    assert private_policy["do_coverage_next"] is False
+
+    with pytest.raises(ValueError, match="while its plan is running"):
+        await manager.async_reset_cadence(
+            "serial", "everyday", ["room-kitchen"], modes=["mop"]
+        )
+
+
+async def test_cadence_reset_normalizes_malformed_progress_and_rejects_empty_modes(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "plan",
+        {
+            "name": "Plan",
+            "rooms": [
+                {"room_id": "shared", "cadence": {"scope": "shared", "mop_every_n": 3}},
+                {
+                    "room_id": "private",
+                    "cadence": {
+                        "scope": "plan",
+                        "coverage_every_n": 2,
+                        "periodic_coverage_setting": "quick",
+                    },
+                },
+            ],
+        },
+        floor_token="f" * 64,
+        room_identities={"shared": "a" * 64},
+    )
+    robot = manager._robot("serial")
+    robot["shared_room_cadence"]["shared"]["progress"] = None
+    robot["plan_room_cadence"].setdefault("plan", {})["private"] = {"progress": None}
+
+    with pytest.raises(ValueError, match="cadence reset modes"):
+        await manager.async_reset_cadence("serial", "plan", ["shared"], modes=[])
+    with pytest.raises(ValueError, match="cadence reset modes"):
+        await manager.async_reset_cadence(
+            "serial", "plan", ["shared"], modes=["vacuum"]
+        )
+
+    await manager.async_reset_cadence("serial", "plan", ["shared"], modes=["coverage"])
+    await manager.async_reset_cadence("serial", "plan", ["private"], modes=["mop"])
+    assert robot["shared_room_cadence"]["shared"]["progress"] == {
+        "mop": 0,
+        "coverage": 0,
+    }
+    assert robot["plan_room_cadence"]["plan"]["private"]["progress"] == {
+        "mop": 0,
+        "coverage": 0,
+    }
+
+
+@pytest.mark.parametrize("guard", ["active", "pending"])
+async def test_reset_cadence_rejects_unknown_room_and_shared_pending_owner(
+    hass, guard
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "kitchen",
+        {
+            "name": "Kitchen",
+            "rooms": [
+                {
+                    "room_id": "room-kitchen",
+                    "cadence": {"scope": "shared", "mop_every_n": 3},
+                }
+            ],
+        },
+        floor_token="f" * 64,
+        room_identities={"room-kitchen": "a" * 64},
+    )
+    with pytest.raises(ValueError, match="not part of the selected plan"):
+        await manager.async_reset_cadence("serial", "kitchen", ["retired-room"])
+
+    robot = manager._robot("serial")
+    if guard == "active":
+        robot["active_plan"] = {"plan_id": "other", "room_id": "room-kitchen"}
+        message = "while its plan is running"
+    else:
+        now = dt_util.utcnow()
+        robot["pending_native_reconciliation"] = {
+            "plan_id": "other",
+            "room_id": "room-kitchen",
+            "room": "Kitchen",
+            "dispatched_at": now.isoformat(),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(),
+        }
+        message = "completion is being verified"
+
+    with pytest.raises(ValueError, match=message):
+        await manager.async_reset_cadence("serial", "kitchen", ["room-kitchen"])
+
+
+def test_robot_normalization_repairs_cadence_records_without_inventing_progress():
+    legacy_plan = {
+        "name": "Legacy",
+        "rooms": [
+            {
+                "room_id": "room-a",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            }
+        ],
+    }
+    robot = {
+        "plans": {"legacy": deepcopy(legacy_plan)},
+        "areas": {},
+        "rooms": {},
+        "rotations": {},
+        "rotation_resets": {},
+        "native_completion_dedup": ["A" * 64, "b" * 64, "short"],
+        "plan_room_cadence": {
+            "broken-plan": [],
+            "home": {
+                "bad-room": None,
+                "room-a": {"progress": {"mop": -4, "coverage": "3"}, "identity": 7},
+            },
+        },
+        "shared_room_cadence": {
+            "bad-room": {"policy": []},
+            "room-a": {
+                "policy": {"mop_every_n": 3},
+                "progress": {"mop": 2, "coverage": -1},
+            },
+        },
+        "last_run": {
+            "run_id": "run-one",
+            "plan_id": "legacy",
+            "outcome": "running",
+            "recovery_checkpoint": {
+                "cadence_by_room": {
+                    "room-a": {
+                        **_valid_cadence_snapshot(),
+                        "coverage_setting_verified": True,
+                    }
+                }
+            },
+        },
+    }
+
+    changed = CleaningPlanManager._normalize_robot(robot)
+
+    assert changed is True
+    assert robot["plan_room_cadence"] == {
+        "home": {"room-a": {"progress": {"mop": 0, "coverage": 0}}}
+    }
+    assert robot["shared_room_cadence"] == {
+        "room-a": {
+            "policy": {"mop_every_n": 3},
+            "progress": {"mop": 2, "coverage": 0},
+        }
+    }
+    assert robot["plans"]["legacy"] == legacy_plan
+    assert "cadence" not in robot["plans"]["legacy"]["rooms"][0]
+    assert robot["native_completion_dedup"] == ["b" * 64]
+    stored_snapshot = robot["last_run"]["recovery_checkpoint"]["cadence_by_room"][
+        "room-a"
+    ]
+    assert "coverage_setting_verified" not in stored_snapshot
+
+
+def _valid_cadence_snapshot() -> dict[str, object]:
+    return {
+        "scope": "plan",
+        "schedule_active": True,
+        "mop_every_n": 3,
+        "coverage_every_n": None,
+        "periodic_coverage_setting": None,
+        "effective_cleaning_mode": "vacuum_and_mop",
+        "effective_coverage_setting": "heavy_duty",
+        "mop_due": True,
+        "coverage_due": False,
+        "identity": "a" * 64,
+    }
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("scope", "other"),
+        ("scope", []),
+        ("mop_every_n", True),
+        ("mop_every_n", 101),
+        ("periodic_coverage_setting", "invalid"),
+        ("periodic_coverage_setting", {}),
+        ("effective_cleaning_mode", "partial"),
+        ("effective_cleaning_mode", []),
+        ("effective_coverage_setting", "invalid"),
+        ("effective_coverage_setting", []),
+        ("identity", "not-a-hash"),
+        ("identity", "G" * 64),
+    ],
+)
+def test_cadence_checkpoint_validation_rejects_untrusted_values(key, value) -> None:
+    snapshot = _valid_cadence_snapshot()
+    snapshot[key] = value
+
+    assert _validated_cadence_snapshot(snapshot) is None
+
+
+def test_cadence_checkpoint_validation_keeps_only_typed_evidence() -> None:
+    snapshot = _valid_cadence_snapshot()
+    snapshot["unrecognized"] = "discard this"
+    snapshot["mop_due"] = 1
+
+    validated = _validated_cadence_snapshot(snapshot)
+
+    assert validated is not None
+    assert validated["mop_due"] is False
+    assert "coverage_setting_verified" not in validated
+    assert "unrecognized" not in validated
+
+    snapshot["coverage_setting_verified"] = True
+    assert "coverage_setting_verified" not in _validated_cadence_snapshot(snapshot)
+
+
+def test_robot_normalization_drops_nonmapping_cadence_checkpoint() -> None:
+    robot = {
+        "last_run": {
+            "run_id": "run-one",
+            "plan_id": "home",
+            "recovery_checkpoint": {"cadence_by_room": []},
+        }
+    }
+
+    assert CleaningPlanManager._normalize_robot(robot)
+    assert "cadence_by_room" not in robot["last_run"]["recovery_checkpoint"]
+
+
+async def test_recovery_checkpoint_write_discards_unsupported_coverage_proof(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial", "home", "run-one", 1, trigger="user", service="test"
+    )
+
+    snapshot = {
+        **_valid_cadence_snapshot(),
+        "coverage_setting_verified": True,
+        "unrecognized": "discard this",
+    }
+    await manager.async_set_recovery_checkpoint(
+        "serial",
+        "run-one",
+        {"cadence_by_room": {"room-a": snapshot, "room-b": {"scope": "invalid"}}},
+    )
+
+    cadence_by_room = manager._robot("serial")["last_run"]["recovery_checkpoint"][
+        "cadence_by_room"
+    ]
+    assert cadence_by_room == {"room-a": _valid_cadence_snapshot()}
 
 
 async def test_saved_plan_limit_rejects_creation_but_allows_replacement(hass) -> None:
@@ -3913,11 +5751,11 @@ async def test_room_execution_uses_its_individual_settings() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ) as wait,
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
@@ -3932,7 +5770,10 @@ async def test_room_execution_uses_its_individual_settings() -> None:
             active_session=AsyncMock(return_value=False),
         )
 
-    assert services.async_call.await_args.args[2] == {
+    dispatched = services.async_call.await_args.args[2]
+    session_id = dispatched["params"].pop("_matic_plan_session")
+    assert len(session_id) == 36
+    assert dispatched == {
         "entity_id": "vacuum.matic",
         "command": "clean_rooms",
         "params": {
@@ -3971,7 +5812,7 @@ async def test_room_timeout_is_failure_safe() -> None:
     sender = AsyncMock(side_effect=MaticError("synthetic cleanup failure"))
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(side_effect=TimeoutError),
         ),
         pytest.raises(
@@ -4016,11 +5857,11 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(side_effect=TimeoutError),
         ),
         pytest.raises(ServiceValidationError, match="Timed out") as failure,
@@ -4060,11 +5901,11 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(side_effect=RoomTakenOverError("replacement task")),
         ),
         pytest.raises(ServiceValidationError) as failure,
@@ -4102,11 +5943,11 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
     )
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(side_effect=["cleaning", "cleaning"]),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(
                 side_effect=[
                     RoomRunOutcome.SUSPENDED,
@@ -4162,11 +6003,11 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
     reader = AsyncMock(side_effect=[True, False])
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
@@ -4191,7 +6032,10 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
     manager.async_mark_completed.assert_not_awaited()
 
 
-async def test_new_native_completed_record_credits_only_after_manager_commit() -> None:
+@pytest.mark.parametrize("ownership_current", [True, False])
+async def test_new_native_completed_record_credits_only_after_manager_commit(
+    ownership_current: bool,
+) -> None:
     """A new, overlapping, single-room native success is positive evidence."""
     services = SimpleNamespace(async_call=AsyncMock())
     bus = SimpleNamespace(async_fire=MagicMock())
@@ -4204,7 +6048,9 @@ async def test_new_native_completed_record_credits_only_after_manager_commit() -
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
         async_mark_completed=AsyncMock(
-            side_effect=lambda *_args: order.append("manager_commit")
+            side_effect=lambda *_args, **_kwargs: (
+                order.append("manager_commit") or ownership_current
+            )
         ),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -4248,31 +6094,53 @@ async def test_new_native_completed_record_credits_only_after_manager_commit() -
     confirm = MagicMock(side_effect=lambda *_args: order.append("tracker_confirm"))
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
-        await _async_run_room(
-            hass,
-            _call(hass),
-            manager,
-            "vacuum.matic",
-            "serial",
-            _room("Kitchen", "room-kitchen"),
-            active_session=AsyncMock(return_value=False),
-            session_history=history,
-            confirm_room_completed=confirm,
-        )
+        if ownership_current:
+            await _async_run_room(
+                hass,
+                _call(hass),
+                manager,
+                "vacuum.matic",
+                "serial",
+                _room("Kitchen", "room-kitchen"),
+                active_session=AsyncMock(return_value=False),
+                session_history=history,
+                confirm_room_completed=confirm,
+            )
+        else:
+            with pytest.raises(PlanCancelledError, match="ownership changed"):
+                await _async_run_room(
+                    hass,
+                    _call(hass),
+                    manager,
+                    "vacuum.matic",
+                    "serial",
+                    _room("Kitchen", "room-kitchen"),
+                    active_session=AsyncMock(return_value=False),
+                    session_history=history,
+                    confirm_room_completed=confirm,
+                )
 
     manager.async_mark_verifying.assert_awaited_once()
     manager.async_mark_completed.assert_awaited_once()
     manager.async_mark_ended_unverified.assert_not_awaited()
-    assert order == ["manager_commit", "tracker_confirm"]
-    assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_completed"
+    if ownership_current:
+        assert order == ["manager_commit", "tracker_confirm"]
+        assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_completed"
+    else:
+        assert order == ["manager_commit"]
+        confirm.assert_not_called()
+        assert all(
+            call.args[0] != "matic_robot_room_completed"
+            for call in bus.async_fire.call_args_list
+        )
 
 
 async def test_managed_plan_rejects_duplicate_room_names_before_dispatch() -> None:
@@ -4344,7 +6212,9 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         now.isoformat(),
     )
     reader = AsyncMock(side_effect=[(invalid, old), (valid_one, valid_two)])
-    with patch("custom_components.matic_robot.services.asyncio.sleep", AsyncMock()):
+    with patch(
+        "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
+    ):
         assert (
             await _async_verify_room_completion(reader, frozenset(), room, now) is False
         )
@@ -4356,13 +6226,17 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         completed=False,
     )
     interrupted_reader = AsyncMock(return_value=(interrupted,))
-    with patch("custom_components.matic_robot.services.asyncio.sleep", AsyncMock()):
+    with patch(
+        "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
+    ):
         assert not await _async_verify_room_completion(
             interrupted_reader, frozenset(), room, now
         )
 
     empty = AsyncMock(return_value=())
-    with patch("custom_components.matic_robot.services.asyncio.sleep", AsyncMock()):
+    with patch(
+        "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
+    ):
         assert (
             await _async_verify_room_completion(empty, frozenset(), room, now) is False
         )
@@ -4376,7 +6250,8 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
 
     with (
         patch(
-            "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 1
+            "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+            1,
         ),
         pytest.raises(PlanCancelledError),
     ):
@@ -4390,7 +6265,8 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
 
     unset_cancel = asyncio.Event()
     with patch(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     ):
         assert not await _async_verify_room_completion(
             empty,
@@ -4448,11 +6324,11 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
     room = _room("Kitchen", "room-kitchen")
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(
                 side_effect=[
                     RoomRunOutcome.HANDOFF_CANDIDATE,
@@ -4556,7 +6432,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
 
     sender = AsyncMock()
     with patch(
-        "custom_components.matic_robot.services._async_wait_for_active_session_resolution",
+        "custom_components.matic_robot.managed_executor._async_wait_for_active_session_resolution",
         side_effect=resolve_session,
     ):
         completed = await _async_run_room(
@@ -4661,7 +6537,6 @@ async def test_partial_mixed_dispatch_preserves_its_transmitted_stop(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             managed_user_command=sender,
             floor_token="synthetic-floor-token",
             session_identity=AsyncMock(return_value=b""),
@@ -5137,7 +7012,8 @@ async def test_leg_partial_verification_does_not_start_next_leg(
     hass, monkeypatch
 ) -> None:
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     )
     rooms = _leg_rooms()
     manager = _leg_manager()
@@ -5308,7 +7184,8 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
     dispatched_at = dt_util.utcnow()
 
     with patch(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     ):
         assert (
             await _async_verify_leg_completion(
@@ -5351,7 +7228,8 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
     hass.loop.call_later(0.05, late_cancel.set)
     with (
         patch(
-            "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 1
+            "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+            1,
         ),
         pytest.raises(PlanCancelledError),
     ):
@@ -5402,8 +7280,9 @@ async def test_a_task_that_ends_in_place_is_not_a_completion_candidate(hass) -> 
 
 
 @pytest.mark.parametrize("real_store", [False, True])
+@pytest.mark.parametrize("reject_second_credit", [False, True])
 async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
-    hass, real_store
+    hass, real_store, reject_second_credit
 ) -> None:
     """One leg mission glides room to room; credit comes from one record."""
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
@@ -5411,6 +7290,8 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     if real_store:
         await manager.async_load()
         manager.async_mark_completed = AsyncMock(wraps=manager.async_mark_completed)
+    if reject_second_credit:
+        manager.async_mark_completed = AsyncMock(side_effect=[True, False])
     commands = []
 
     async def send_command(call) -> None:
@@ -5454,25 +7335,43 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     )
     sender = AsyncMock()
 
-    completed = await _async_run_leg(
-        hass,
-        _call(hass),
-        manager,
-        "vacuum.matic",
-        "serial",
-        rooms,
-        refresh=AsyncMock(),
-        session_history=history,
-        managed_user_command=sender,
-        motion_token=7,
-    )
+    if reject_second_credit:
+        with pytest.raises(PlanCancelledError, match="ownership changed"):
+            await _async_run_leg(
+                hass,
+                _call(hass),
+                manager,
+                "vacuum.matic",
+                "serial",
+                rooms,
+                refresh=AsyncMock(),
+                session_history=history,
+                managed_user_command=sender,
+                motion_token=7,
+            )
+        completed = False
+    else:
+        completed = await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            refresh=AsyncMock(),
+            session_history=history,
+            managed_user_command=sender,
+            motion_token=7,
+        )
     await hass.async_block_till_done()
 
-    assert completed is True
+    assert completed is (not reject_second_credit)
     assert len(commands) == 1
     assert commands[0]["params"]["rooms"] == ["room-kitchen", "room-office"]
     assert started_events == ["Kitchen", "Office"]
-    assert sorted(completed_events) == ["Kitchen", "Office"]
+    assert sorted(completed_events) == (
+        ["Kitchen"] if reject_second_credit else ["Kitchen", "Office"]
+    )
     assert manager.async_mark_completed.await_count == 2
     assert record is not None
     for call_args in manager.async_mark_completed.await_args_list:
@@ -5485,7 +7384,8 @@ async def test_leg_partial_record_credits_only_verified_subset(
     hass, monkeypatch
 ) -> None:
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     )
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
     manager = _leg_manager()
@@ -5782,7 +7682,8 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
 
     sender = AsyncMock()
     with patch(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     ):
         completed = await _async_run_room(
             hass,
@@ -5824,11 +7725,11 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
     prepared = _PreparedRoomDispatch((room,), None, dt_util.utcnow())
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
@@ -5887,14 +7788,16 @@ async def test_unknown_active_session_interrupts_without_room_credit(
     sender = AsyncMock()
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
-        patch("custom_components.matic_robot.services.asyncio.sleep", AsyncMock()),
+        patch(
+            "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
+        ),
         pytest.raises(ServiceValidationError) as interrupted,
     ):
         await _async_run_room(
@@ -5937,11 +7840,11 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
     wait = AsyncMock(side_effect=["paused", "cleaning"])
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             wait,
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ) as outcome,
     ):
@@ -6006,11 +7909,11 @@ async def test_room_pause_and_resume_outcome() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             wait,
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(
                 side_effect=[
                     RoomRunOutcome.PAUSED,
@@ -6055,11 +7958,11 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
         sender = AsyncMock()
         with (
             patch(
-                "custom_components.matic_robot.services._async_wait_for_room_outcome",
+                "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
                 outcome,
             ),
             patch(
-                "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+                "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
                 state,
             ),
             pytest.raises(
@@ -6108,11 +8011,11 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     sender = AsyncMock()
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             AsyncMock(side_effect=PlanCancelledError),
         ),
         pytest.raises(PlanCancelledError),
@@ -6309,13 +8212,12 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
                 "vacuum.matic",
                 "serial",
                 [room],
-                intelligent=True,
             )
     finally:
         lock.release()
 
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
+        "custom_components.matic_robot.managed_executor._async_run_room",
         AsyncMock(side_effect=PlanCancelledError),
     ):
         await _async_execute_rooms(
@@ -6325,7 +8227,6 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
             "vacuum.matic",
             "serial",
             [room],
-            intelligent=True,
         )
 
     service_call = AsyncMock()
@@ -6337,7 +8238,7 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
         ),
     )
     with patch(
-        "custom_components.matic_robot.services._async_run_room", AsyncMock()
+        "custom_components.matic_robot.managed_executor._async_run_room", AsyncMock()
     ) as run:
         await _async_execute_rooms(
             fake_hass,
@@ -6346,7 +8247,6 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
             "vacuum.matic",
             "serial",
             [room],
-            intelligent=False,
             managed_user_command=managed_command,
         )
     run.assert_awaited_once()
@@ -6375,7 +8275,7 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=finish_then_stop),
     ) as run:
         await _async_execute_rooms(
@@ -6385,7 +8285,6 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "one"), _heavy_room("Study", "two")],
-            intelligent=False,
             managed_user_command=managed_command,
         )
 
@@ -6421,7 +8320,7 @@ async def test_execute_rooms_groups_same_settings_rooms_into_one_leg(hass) -> No
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         side_effect=run_leg,
     ):
         await _async_execute_rooms(
@@ -6431,7 +8330,6 @@ async def test_execute_rooms_groups_same_settings_rooms_into_one_leg(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
         )
 
     assert legs_seen == [[rooms[0], rooms[1]], [rooms[2]]]
@@ -6451,7 +8349,7 @@ async def test_settled_leg_handoff_waits_for_returning_robot(hass, monkeypatch) 
         )
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.LEG_HANDOFF_POLL_SECONDS", 0
     )
 
     assert await _async_wait_for_settled_leg_handoff(
@@ -6469,7 +8367,7 @@ async def test_settled_leg_handoff_accepts_inactive_session_before_identity_clea
 ) -> None:
     """A blocked dock must not strand the next settings leg on stale identity."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.LEG_HANDOFF_POLL_SECONDS", 0
     )
     fake_hass = SimpleNamespace(
         states=SimpleNamespace(
@@ -6493,7 +8391,7 @@ async def test_settled_leg_handoff_tolerates_session_read_error(
 ) -> None:
     """A transient session read error keeps the bounded handoff fail-closed."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.LEG_HANDOFF_POLL_SECONDS", 0
     )
     fake_hass = SimpleNamespace(
         states=SimpleNamespace(
@@ -6566,7 +8464,7 @@ async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
 async def test_settled_leg_handoff_times_out_without_stop(hass, monkeypatch) -> None:
     """A returning robot reaches the bounded handoff timeout without STOP."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.LEG_HANDOFF_POLL_SECONDS", 0
     )
     fake_hass = SimpleNamespace(
         states=SimpleNamespace(
@@ -6585,7 +8483,7 @@ async def test_settled_leg_handoff_times_out_without_stop(hass, monkeypatch) -> 
 async def test_settled_leg_handoff_cancel_during_wait(hass, monkeypatch) -> None:
     """Cancellation while waiting aborts the handoff without cleanup."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 1
+        "custom_components.matic_robot.managed_executor.LEG_HANDOFF_POLL_SECONDS", 1
     )
     cancel_event = asyncio.Event()
     hass.loop.call_soon(cancel_event.set)
@@ -6610,7 +8508,7 @@ async def test_settled_handoff_wakes_on_graceful_stop(
 ) -> None:
     """A stop wakes the real waiter promptly even while the robot returns."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 60
+        "custom_components.matic_robot.managed_executor.LEG_HANDOFF_POLL_SECONDS", 60
     )
     finish = asyncio.Event()
     observed = asyncio.Event()
@@ -6676,15 +8574,15 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
 
     with (
         patch(
-            "custom_components.matic_robot.services._async_run_leg",
+            "custom_components.matic_robot.managed_executor._async_run_leg",
             AsyncMock(side_effect=complete_first_leg),
         ) as run,
         patch(
-            "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.managed_executor._async_wait_for_settled_leg_handoff",
             AsyncMock(side_effect=block_handoff),
         ),
         patch(
-            "custom_components.matic_robot.services.leg_groups",
+            "custom_components.matic_robot.managed_executor.leg_groups",
             side_effect=lambda rooms, **kwargs: leg_groups(rooms, mixed_settings=False),
         ),
     ):
@@ -6695,7 +8593,6 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             managed_user_command=sender,
             floor_is_current=lambda: True,
             floor_token="a" * 64,
@@ -6791,18 +8688,18 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
 
     with (
         patch(
-            "custom_components.matic_robot.services._async_run_leg",
+            "custom_components.matic_robot.managed_executor._async_run_leg",
             AsyncMock(side_effect=run_leg),
         ) as run,
         patch(
-            "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.managed_executor._async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
         pytest.raises(ServiceValidationError, match="original native cleaning task"),
         # Preserve coverage of legacy checkpoint boundaries: new mixed runs
         # deliberately have no separate native mission at these settings changes.
         patch(
-            "custom_components.matic_robot.services.leg_groups",
+            "custom_components.matic_robot.managed_executor.leg_groups",
             side_effect=lambda rooms, **kwargs: leg_groups(rooms, mixed_settings=False),
         ),
     ):
@@ -6813,7 +8710,6 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             managed_user_command=sender,
             floor_is_current=lambda: True,
             floor_token="a" * 64,
@@ -6860,7 +8756,7 @@ async def test_execute_rooms_prepares_next_command_during_current_return(hass) -
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         side_effect=run_leg,
     ) as run:
         await _async_execute_rooms(
@@ -6870,7 +8766,6 @@ async def test_execute_rooms_prepares_next_command_during_current_return(hass) -
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_history=AsyncMock(return_value=()),
             managed_user_command=managed_command,
         )
@@ -6905,7 +8800,7 @@ async def test_execute_rooms_cleans_up_prefetch_when_graceful_stop_arrives(
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         side_effect=run_leg,
     ) as run:
         await _async_execute_rooms(
@@ -6915,7 +8810,6 @@ async def test_execute_rooms_cleans_up_prefetch_when_graceful_stop_arrives(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_history=AsyncMock(return_value=()),
             managed_user_command=managed_command,
         )
@@ -6943,11 +8837,11 @@ async def test_execute_rooms_falls_back_when_prefetch_is_unavailable(hass) -> No
 
     with (
         patch(
-            "custom_components.matic_robot.services._async_run_leg",
+            "custom_components.matic_robot.managed_executor._async_run_leg",
             side_effect=run_leg,
         ) as run,
         patch(
-            "custom_components.matic_robot.services._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_executor._async_dispatch_leg_command",
             AsyncMock(side_effect=HomeAssistantError("synthetic failure")),
         ),
     ):
@@ -6958,7 +8852,6 @@ async def test_execute_rooms_falls_back_when_prefetch_is_unavailable(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
         )
 
     run.assert_awaited_once()
@@ -6984,7 +8877,7 @@ async def test_execute_rooms_skips_prefetch_after_stop_request(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         side_effect=run_leg,
     ):
         await _async_execute_rooms(
@@ -6994,7 +8887,6 @@ async def test_execute_rooms_skips_prefetch_after_stop_request(hass) -> None:
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             managed_user_command=managed_command,
         )
 
@@ -7022,7 +8914,7 @@ async def test_execute_rooms_skips_prefetch_while_stop_fence_pending(hass) -> No
         return False
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         side_effect=run_leg,
     ) as run:
         await _async_execute_rooms(
@@ -7032,7 +8924,6 @@ async def test_execute_rooms_skips_prefetch_while_stop_fence_pending(hass) -> No
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
         )
 
     run.assert_awaited_once()
@@ -7051,7 +8942,7 @@ async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
     hass.states.async_set("vacuum.matic", "idle")
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(return_value=False),
     ) as run:
         await _async_execute_rooms(
@@ -7061,7 +8952,6 @@ async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             managed_user_command=managed_command,
         )
 
@@ -7087,7 +8977,7 @@ async def test_execute_rooms_rechecks_ownership_after_room_history_save(hass) ->
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
+        "custom_components.matic_robot.managed_executor._async_run_room",
         AsyncMock(side_effect=replace_after_room),
     ):
         await _async_execute_rooms(
@@ -7097,7 +8987,6 @@ async def test_execute_rooms_rechecks_ownership_after_room_history_save(hass) ->
             "vacuum.matic",
             "serial",
             [_room("Kitchen", "one")],
-            intelligent=False,
             managed_user_command=managed_command,
         )
 
@@ -7117,7 +9006,10 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     with (
-        patch("custom_components.matic_robot.services._async_run_room", AsyncMock()),
+        patch(
+            "custom_components.matic_robot.managed_executor._async_run_room",
+            AsyncMock(),
+        ),
         patch.object(
             manager,
             "managed_motion_is_current",
@@ -7131,7 +9023,6 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
             "vacuum.matic",
             "serial",
             [room],
-            intelligent=False,
             managed_user_command=AsyncMock(),
         )
 
@@ -7143,7 +9034,8 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
         manager._store = SimpleNamespace(async_save=AsyncMock())
         sender = AsyncMock(side_effect=error)
         with patch(
-            "custom_components.matic_robot.services._async_run_room", AsyncMock()
+            "custom_components.matic_robot.managed_executor._async_run_room",
+            AsyncMock(),
         ):
             run = _async_execute_rooms(
                 fake_hass,
@@ -7152,7 +9044,6 @@ async def test_execute_rooms_handles_final_ownership_and_dock_failures(hass) -> 
                 "vacuum.matic",
                 "serial",
                 [room],
-                intelligent=False,
                 managed_user_command=sender,
             )
             if isinstance(error, MaticError):
@@ -7181,7 +9072,7 @@ async def test_config_unload_waits_for_managed_runner(hass) -> None:
         )
     )
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
+        "custom_components.matic_robot.managed_executor._async_run_room",
         AsyncMock(side_effect=wait_for_cancel),
     ):
         task = asyncio.create_task(
@@ -7192,7 +9083,6 @@ async def test_config_unload_waits_for_managed_runner(hass) -> None:
                 "vacuum.matic",
                 "serial",
                 [_room("Kitchen", "one")],
-                intelligent=False,
             )
         )
         await entered.wait()
@@ -7275,7 +9165,9 @@ async def test_replacing_motion_cancels_obsolete_reconciliation(hass) -> None:
 
 async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
     assert await _async_active_session_state(None) is None
-    with patch("custom_components.matic_robot.services.asyncio.sleep", AsyncMock()):
+    with patch(
+        "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
+    ):
         assert (
             await _async_active_session_state(
                 AsyncMock(side_effect=[None, None, False])
@@ -7303,7 +9195,9 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
         )
 
     hass.states.async_set("vacuum.matic", "returning")
-    with patch("custom_components.matic_robot.services.asyncio.sleep", AsyncMock()):
+    with patch(
+        "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
+    ):
         assert (
             await _async_wait_for_active_session_resolution(
                 hass, "vacuum.matic", AsyncMock(return_value=None)
@@ -7342,7 +9236,7 @@ async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:
         )
 
     with patch(
-        "custom_components.matic_robot.services.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
+        "custom_components.matic_robot.managed_executor.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
         0,
     ):
         assert (
@@ -7460,7 +9354,8 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
     hass.services.async_register("vacuum", "send_command", send_command)
     sender = AsyncMock()
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
+        0,
     )
 
     async def native_session():
@@ -7480,7 +9375,6 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_history=history,
             active_session=native_session,
             managed_user_command=sender,
@@ -7505,7 +9399,8 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
+        0,
     )
     session_reads = 0
     history_reads = 0
@@ -7555,7 +9450,8 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
 async def test_leg_retries_matching_history_until_room_evidence_arrives(monkeypatch):
     """A matching but incomplete record is not the end of verification."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     )
     final = _leg_record(("Kitchen", "Office"), ("Kitchen", "Office"))
     early = replace(
@@ -7581,7 +9477,8 @@ async def test_leg_retries_matching_history_until_room_evidence_arrives(monkeypa
 
 async def test_leg_rejects_different_matching_sessions_across_retries(monkeypatch):
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     )
     first = _leg_record(("Kitchen",), ("Kitchen",))
     second = replace(first, key=b"different-session")
@@ -7635,7 +9532,7 @@ async def test_leg_handles_unknown_and_resumed_native_session(
         return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.services._async_wait_for_active_session_resolution",
+        "custom_components.matic_robot.managed_executor._async_wait_for_active_session_resolution",
         resolution,
     )
     hass.services.async_register("vacuum", "send_command", send_command)
@@ -7673,7 +9570,8 @@ async def test_multi_room_leg_persists_completion_before_next_dispatch(
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     )
     reads = 0
     prefetched = False
@@ -7731,7 +9629,8 @@ async def test_multi_room_leg_persists_completion_before_next_dispatch(
 async def test_leg_accepts_native_history_after_three_minutes(monkeypatch):
     """The default budget covers delayed native publication, without motion."""
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     )
     final = _leg_record(("Kitchen", "Office"), ("Kitchen", "Office"))
     reader = AsyncMock(side_effect=[()] * 90 + [(final,)])
@@ -7776,7 +9675,7 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
         return outcome
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.services._async_wait_for_leg_outcome",
+        "custom_components.matic_robot.managed_executor._async_wait_for_leg_outcome",
         next_outcome,
     )
     reads = 0
@@ -7829,12 +9728,13 @@ async def test_terminal_history_has_its_own_budget(
             return RoomRunOutcome.HANDOFF_CANDIDATE, None
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
-    monkeypatch.setattr(
-        "custom_components.matic_robot.services._async_wait_for_leg_outcome"
+    waiter = (
+        "custom_components.matic_robot.managed_executor._async_wait_for_leg_outcome"
         if multi_room
-        else "custom_components.matic_robot.services._async_wait_for_room_outcome",
-        terminal,
+        else "custom_components.matic_robot.managed_executor."
+        "_async_wait_for_room_outcome"
     )
+    monkeypatch.setattr(waiter, terminal)
     reads = 0
 
     async def history():
@@ -7870,7 +9770,8 @@ async def test_terminal_history_has_its_own_budget(
 @pytest.mark.parametrize("multi_room", [False, True])
 async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room):
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.SESSION_HISTORY_TIMEOUT_SECONDS", 0.01
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_TIMEOUT_SECONDS",
+        0.01,
     )
     cancelled = False
 

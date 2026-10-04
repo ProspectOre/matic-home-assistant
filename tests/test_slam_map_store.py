@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from threading import get_ident
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from google.protobuf.message import DecodeError
@@ -1166,16 +1166,20 @@ async def test_slam_map_store_prime_propagates_cancellation(hass) -> None:
         await task
     assert store.health.bootstrap_state == "not_started"
 
-    future1 = asyncio.get_running_loop().create_future()
-    future1.set_result(())
-    future2 = asyncio.get_running_loop().create_future()
-    future2.set_result(())
-    client2 = SimpleNamespace(
-        async_get_tracked_collection_entries=MagicMock(side_effect=(future1, future2))
-    )
+    client2 = SimpleNamespace(async_get_tracked_collection_entries=AsyncMock())
+
+    async def gather_with_cancelled_result(*coroutines, return_exceptions):
+        assert return_exceptions is True
+        # The production gather awaits both layer readers. This substitute
+        # returns the native-cancellation result directly, so close the
+        # unstarted coroutines rather than leaving ResourceWarnings behind.
+        for coroutine in coroutines:
+            coroutine.close()
+        return [asyncio.CancelledError(), ()]
+
     with patch(
         "custom_components.matic_robot.slam_map_store.asyncio.gather",
-        new=AsyncMock(return_value=[asyncio.CancelledError(), ()]),
+        new=gather_with_cancelled_result,
     ):
         with pytest.raises(asyncio.CancelledError):
             await store.async_prime(client2)

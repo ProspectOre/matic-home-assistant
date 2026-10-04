@@ -35,7 +35,7 @@ export const tokens = css`
 --ms-bar-text: var(--app-header-text-color, var(--ms-text));
 --ms-local: var(--card-background-color, #fff);
 --ms-text: var(--primary-text-color, #1f2933);
---ms-text-quiet: var(--secondary-text-color, #5b6b75);
+--ms-text-quiet: color-mix(in srgb, var(--secondary-text-color, #5b6b75) 90%, var(--ms-text));
 --ms-text-disabled: var(--disabled-text-color, #8a959c);
 --ms-line: var(--divider-color, color-mix(in srgb, var(--ms-text) 14%, transparent));
 --ms-line-strong: color-mix(in srgb, var(--ms-text) 26%, transparent);
@@ -87,7 +87,7 @@ export const tokens = css`
 --ms-surface-sunken: var(--secondary-background-color, #141e23);
 --ms-local: var(--card-background-color, #1a262d);
 --ms-text: var(--primary-text-color, #eef4f7);
---ms-text-quiet: var(--secondary-text-color, #a4b3bc);
+--ms-text-quiet: color-mix(in srgb, var(--secondary-text-color, #a4b3bc) 90%, var(--ms-text));
 --ms-text-disabled: var(--disabled-text-color, #7c8a92);
 --ms-danger: var(--error-color, #f2837b);
 --ms-warning: var(--warning-color, #e0a63a);

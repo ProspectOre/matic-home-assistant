@@ -8,6 +8,7 @@ import type {
   HassProjection,
   PanelLike,
   RouteLike,
+  WorkspaceAction,
   WorkspaceState,
 } from "./contracts";
 import { isWorkspaceIntent } from "./contracts";
@@ -16,40 +17,14 @@ import { HassAdapter } from "./hass-adapter";
 import { MaticBackend } from "./backend";
 import { EffectController } from "./effects";
 import { LayerHistoryController } from "./layer-history";
-import {
-  preferredFrontend,
-  setPreferredFrontend,
-  type MapPreferences,
-} from "./preferences";
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
-import { translate } from "./localize";
 
 const shellTag = unsafeStatic(SHELL_TAG);
 
 export class MaticMapPanelV4 extends LitElement {
-  // The host must size itself on BOTH branches. This lived inside the classic
-  // branch's <style>, so on the v0.4 path the host stayed display:inline with
-  // auto height and the shell's block-size:100% resolved against nothing --
-  // the panel fell back to its 36rem minimum instead of filling the viewport.
   static override styles = [tokens, base, css`
 :host { display: block; block-size: 100%; }
-.classic { position: relative; block-size: 100%; }
-.return-v4 {
-  position: absolute;
-  z-index: 100;
-  inset-block-start: max(0.65rem, var(--ms-safe-top));
-  inset-inline-end: max(0.65rem, var(--ms-safe-right));
-  min-block-size: 2.75rem;
-  padding-inline: 0.85rem;
-  border: 1px solid var(--divider-color, #c2c8cc);
-  border-radius: 1.4rem;
-  color: var(--primary-text-color, #263238);
-  background: var(--card-background-color, #fff);
-  box-shadow: 0 5px 18px rgb(31 41 51 / 18%);
-  cursor: pointer;
-}
-matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
 `];
 
   static override properties = {
@@ -58,8 +33,6 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     route: { attribute: false },
     panel: { attribute: false },
     _workspace: { state: true },
-    _classic: { state: true },
-    entryOverride: { state: true },
   };
 
   hass?: HassLike;
@@ -67,8 +40,6 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
   route?: RouteLike;
   panel?: PanelLike;
   protected _workspace: WorkspaceState = initialWorkspaceState();
-  protected _classic = false;
-  entryOverride: string | null = null;
 
   readonly #adapter = new HassAdapter();
   readonly #store = new WorkspaceStore(this._workspace);
@@ -77,16 +48,42 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
   #backend: MaticBackend | null = null;
   #effects: EffectController | null = null;
   #layers: LayerHistoryController | null = null;
-  #preferenceSignature = "";
+
+  #project(
+    hass: HassLike | undefined = this.hass,
+    panel: PanelLike | undefined = this.panel,
+  ): HassProjection {
+    const selection = this.#store.value.selection;
+    return selection.entrySource === "user"
+      ? this.#adapter.project(hass, panel, selection.entryId)
+      : this.#adapter.project(hass, panel);
+  }
+
+  protected override shouldUpdate(changed: PropertyValues<this>): boolean {
+    if (!changed.has("hass")
+      || [...changed.keys()].some((property) => property !== "hass")) return true;
+    const previousHass = changed.get("hass") as HassLike | undefined;
+    // Connection replacement requires new HA subscriptions even when the
+    // visible projection is unchanged. Localization can also change while the
+    // selected language string remains stable.
+    if (previousHass?.connection !== this.hass?.connection
+      || previousHass?.localize !== this.hass?.localize) return true;
+    return this.#project() !== this.#projection;
+  }
 
   override connectedCallback(): void {
     super.connectedCallback();
-    this._classic = preferredFrontend() === "v3";
     this.#unsubscribe = this.#store.subscribe((state) => {
       this._workspace = state;
-      this.#savePreferences(state);
+      if (state.selection.entryId !== this.#projection?.entryKey) {
+        const projection = this.#project();
+        if (projection !== this.#projection) {
+          this.#projection = projection;
+          this.#effects?.sync(projection);
+        }
+      }
     });
-    if (!this._classic) this.#startControllers();
+    this.#startControllers();
   }
 
   override disconnectedCallback(): void {
@@ -97,18 +94,18 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
   }
 
   #startControllers(): void {
-    if (this.#effects) return;
+    if (!this.isConnected || this.#effects) return;
     // A panel can be detached while Home Assistant updates its properties.
     // Recompute from the current values before deciding whether any private
     // request is safe; the last projection may still describe a connected
     // host from before the detach.
-    this.#projection = this.#adapter.project(this.hass, this.panel, this.entryOverride);
+    this.#projection = this.#project();
     this.#backend = new MaticBackend(() => this.hass);
-    this.#effects = new EffectController(this.#store, this.#backend);
+    this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null);
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
     if (this.#projection) {
-      this.#effects.sync(this.#projection, this.panel);
+      this.#effects.sync(this.#projection);
       // A detached panel keeps its last verified workspace state, but its
       // controllers and authenticated requests are intentionally disposed.
       // Revalidate the catalog on reattach so a reused DOM node cannot present
@@ -131,49 +128,22 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     this.#backend = null;
   }
 
-  #savePreferences(state: WorkspaceState): void {
-    if (!this.#effects) return;
-    const preferences: MapPreferences = {
-      version: 4,
-      view: state.view,
-      appearance: state.appearance,
-      labels: state.labelsVisible,
-      quality: state.quality,
-      cameras: state.cameras,
-    };
-    const signature = JSON.stringify(preferences);
-    if (signature === this.#preferenceSignature) return;
-    this.#preferenceSignature = signature;
-    this.#effects.schedulePreferences(preferences);
-  }
-
   protected override willUpdate(changed: PropertyValues<this>): void {
-    if (changed.has("hass") || changed.has("panel") || changed.has("entryOverride")) {
-      const projection = this.#adapter.project(this.hass, this.panel, this.entryOverride);
-      if (projection !== this.#projection) {
+    if (changed.has("hass") || changed.has("panel")) {
+      const previousHass = changed.get("hass") as HassLike | undefined;
+      const connectionChanged = changed.has("hass")
+        && previousHass?.connection !== this.hass?.connection;
+      const projection = this.#project();
+      const projectionChanged = projection !== this.#projection;
+      if (projectionChanged) {
         this.#projection = projection;
-        const coherence = !projection.host.connected
-          ? "degraded"
-          : projection.host.robotCount === 0
-            ? "unavailable"
-            : projection.host.administrator
-              ? "verifying"
-              : "blocked";
-        this.#store.replace({
-          ...this.#store.value,
-          coherence,
-          activity: projection.activity,
-          batteryPercent: projection.batteryPercent,
-          host: projection.host,
-          fullMap: projection.host.administrator
-            && projection.host.robotCount > 0
-            && this.#store.value.fullMap,
-          robotLabel: projection.robotLabel,
-          robots: projection.robots,
-          locale: projection.language,
-        });
       }
-      if (!this._classic) this.#effects?.sync(projection, this.panel);
+      if (connectionChanged) {
+        this.#stopControllers();
+        this.#startControllers();
+      } else if (projectionChanged || changed.has("panel")) {
+        this.#effects?.sync(projection);
+      }
     }
     if (changed.has("narrow") && this.#store.value.narrowHint !== this.narrow) {
       this.#store.dispatch({ type: "set-narrow-hint", value: this.narrow });
@@ -198,7 +168,8 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     }
     if (intent.type === "select-entry") {
       if (!this._workspace.robots.some((robot) => robot.entryId === intent.entryId)) return;
-      this.entryOverride = intent.entryId;
+      if (this.#adapter.project(this.hass, this.panel, intent.entryId).entryKey !== intent.entryId) return;
+      this.#store.dispatch(intent);
       return;
     }
     if (intent.type === "set-history") {
@@ -217,17 +188,14 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     this.#store.dispatch(intent);
   }
 
-  #action(event: CustomEvent<{ readonly id?: unknown }>): void {
+  #action(event: CustomEvent<WorkspaceAction>): void {
     event.stopPropagation();
     if (typeof event.detail?.id !== "string") return;
-    if (event.detail.id === "use-classic") {
-      if (setPreferredFrontend("v3")) {
-        this.#stopControllers();
-        this._classic = true;
-      }
-      return;
+    if (event.detail.id === "reset-room-cadence" && "planId" in event.detail && "roomId" in event.detail && "mode" in event.detail) {
+      void this.#effects?.executeAction(event.detail);
+    } else {
+      void this.#effects?.executeAction(event.detail.id);
     }
-    void this.#effects?.executeAction(event.detail.id);
     this.dispatchEvent(new CustomEvent("matic-map-v4-action-requested", {
       detail: { id: event.detail.id },
       bubbles: true,
@@ -235,41 +203,11 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     }));
   }
 
-  #useV4(): void {
-    if (!setPreferredFrontend("v4")) return;
-    this._classic = false;
-    this.#startControllers();
-    this.requestUpdate();
-  }
-
-  protected override updated(): void {
-    if (!this._classic) return;
-    const classic = this.renderRoot.querySelector<HTMLElement & {
-      hass: HassLike | undefined;
-      narrow: boolean;
-      route: RouteLike | undefined;
-      panel: PanelLike | undefined;
-    }>("matic-map-panel-v0-3-1");
-    if (!classic) return;
-    classic.hass = this.hass;
-    classic.narrow = this.narrow;
-    classic.route = this.route;
-    classic.panel = this.panel;
-  }
-
   getWorkspaceSnapshot(): WorkspaceState {
     return this.#store.value;
   }
 
   protected override render() {
-    if (this._classic) {
-      return html`
-        <div class="classic">
-          <button class="return-v4" type="button" @click=${this.#useV4}>${translate(this.hass?.localize, "v4_use_new", "Use Map Studio 0.4")}</button>
-          <matic-map-panel-v0-3-1></matic-map-panel-v0-3-1>
-        </div>
-      `;
-    }
     return html`
       <${shellTag}
         .state=${this._workspace}

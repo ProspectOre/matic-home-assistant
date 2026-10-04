@@ -8,7 +8,7 @@ Pair once over Bluetooth; everyday control, maps, and state use your local netwo
 
 **[Install](#install) · [Cleaning guide](docs/cleaning.md) · [Automations](docs/automation.md) · [All docs](docs/README.md)**
 
-## Go beyond the app with Home Assistant
+## Home Assistant cleaning workflows
 
 - **Give every room a turn.** Intelligent rotation starts with rooms that have waited longest. Short trips away won't keep restarting the same first rooms; cleaning from the Matic app also informs the order.
 - **Build a plan around each room.** Save room order, vacuum/mop mode, and Quick, Optimal, or Heavy Duty coverage per room. Preview the next run before starting it.
@@ -27,9 +27,9 @@ Pair once over Bluetooth; everyday control, maps, and state use your local netwo
 - **Run insight:** inspect plan outcomes, command activity, and per-mode history through local diagnostics and administrator-only read-only MCP tools.
 - **Firmware tracking:** compare local protocol snapshots and see compatibility changes in Home Assistant.
 
-Matic's app already offers [room and custom-area schedules](https://support.maticrobots.com/frequently-asked-questions).
-This integration adds the plan logic, automation actions, and Home Assistant
-visibility described above. See the [full feature guide](docs/features.md).
+Home Assistant schedules and automations can run saved named areas or room
+plans. This integration also provides per-room plan settings and intelligent
+rotation. See the [full feature guide](docs/features.md).
 
 The integration has no telemetry or cloud service. Maps and plan data are stored
 locally in Home Assistant. [Matic Cues](docs/privacy.md#matic-cues) uses Matic's own voice service.

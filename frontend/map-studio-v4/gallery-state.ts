@@ -1,5 +1,5 @@
 import type { WorkspaceState } from "./contracts";
-import { initialWorkspaceState } from "./state";
+import { initialWorkspaceState, manualRoomPreviewKey } from "./state";
 import {
   syntheticAreas,
   syntheticEntry,
@@ -178,6 +178,48 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         ],
       };
   }
+};
+
+export const withGalleryRoomPreview = (state: WorkspaceState): WorkspaceState => {
+  if (state.workflow !== "rooms") {
+    return { ...state, manualRoomPreview: { status: "idle", value: null, problem: null } };
+  }
+  const key = manualRoomPreviewKey(state);
+  if (!key || !state.selection.entryId) return { ...state, manualRoomPreview: { status: "idle", value: null, problem: null } };
+  const entry = state.resources.entry;
+  const rooms = state.resources.plans.value?.rooms ?? [];
+  const preview = {
+    entryId: state.selection.entryId,
+    floorToken: "f".repeat(64),
+    previewToken: "e".repeat(64),
+    rooms: state.selection.roomIds.flatMap((roomId) => {
+      const settings = state.selection.roomSettings.find((room) => room.roomId === roomId);
+      if (!settings) return [];
+      return [{
+        roomId,
+        name: rooms.find((room) => room.roomId === roomId)?.name ?? roomId,
+        cleaningMode: settings.cleaningMode,
+        coverageSetting: settings.coverageSetting,
+        cadenceReasons: [],
+      }];
+    }),
+    missionBoundaries: [],
+    blocker: null,
+  } as const;
+  return {
+    ...state,
+    manualRoomPreview: {
+      status: "ready",
+      problem: null,
+      value: {
+        key,
+        generation: state.generation,
+        floorKey: [entry?.selectedFloorOrdinal ?? "none", entry?.mapFloorOrdinal ?? "none", entry?.mapFloorCoherent ? "coherent" : "transition"].join(":"),
+        missionKey: [entry?.mapFloorOrdinal ?? "none", entry?.mapSessionVerified ? "verified" : "unverified", entry?.mapSessionKey ?? "no-session"].join(":"),
+        preview,
+      },
+    },
+  };
 };
 
 export const GALLERY_SCENARIOS: readonly GalleryScenario[] = [

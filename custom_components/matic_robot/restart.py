@@ -20,8 +20,7 @@ from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
-from .plans import CleaningRoom, leg_groups, plan_floor_token
-from .services import (
+from .managed_executor import (
     LEG_HANDOFF_TIMEOUT_SECONDS,
     _async_execute_rooms,
     _async_managed_user_command,
@@ -31,6 +30,7 @@ from .services import (
     _schedule_managed_dock_after_stop,
     _shutdown_suspends_run,
 )
+from .plans import CleaningRoom, leg_groups, plan_floor_token
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -410,7 +410,7 @@ async def async_recover_managed_run(
                 entity_id,
                 cancel,
                 refresh=runtime.coordinator.async_request_refresh,
-                active_session=runtime.client.async_has_active_cleaning_session,
+                active_session=runtime.client.async_get_active_cleaning_session_state,
                 identity_reader=runtime.client.async_get_cleaning_session_identity,
                 expected_identity=identity if identity else None,
                 reject_new_identity=not identity,
@@ -436,9 +436,8 @@ async def async_recover_managed_run(
                 entity_id,
                 serial_number,
                 rooms,
-                intelligent=False,
                 refresh=runtime.coordinator.async_request_refresh,
-                active_session=runtime.client.async_has_active_cleaning_session,
+                active_session=runtime.client.async_get_active_cleaning_session_state,
                 session_history=partial(
                     runtime.client.async_get_cleaning_session_records, strict=True
                 ),
@@ -530,13 +529,16 @@ async def async_recover_managed_run(
                     and room.room_id not in completed_ids
                 ):
                     completed_at, duration = evidence[room.room_id]
-                    await manager.async_mark_completed(
+                    accepted = await manager.async_mark_completed(
                         serial_number,
                         run["plan_id"],
                         room,
+                        run_id=run.get("run_id"),
                         completed_at=completed_at,
                         duration_seconds=duration,
                     )
+                    if not accepted:
+                        continue
                     completed_ids.add(room.room_id)
                     checkpoint["completed_room_ids"] = list(completed_ids)
                     runtime.coordinator.async_confirm_room_completed(room.name)
@@ -568,9 +570,8 @@ async def async_recover_managed_run(
             entity_id,
             serial_number,
             rooms,
-            intelligent=False,
             refresh=runtime.coordinator.async_request_refresh,
-            active_session=runtime.client.async_has_active_cleaning_session,
+            active_session=runtime.client.async_get_active_cleaning_session_state,
             session_history=partial(
                 runtime.client.async_get_cleaning_session_records, strict=True
             ),

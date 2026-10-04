@@ -58,6 +58,7 @@ class SlamHistoryStore:
             serialize_in_event_loop=False,
         )
         self._snapshots: list[SlamHistorySnapshot] = []
+        self._listeners: set[Callable[[], None]] = set()
         self._closed = False
 
     async def async_load(self) -> None:
@@ -106,7 +107,18 @@ class SlamHistoryStore:
             self._snapshots.append(snapshot)
         _enforce_history_bounds(self._snapshots)
         self._schedule_save()
+        for listener in tuple(self._listeners):
+            listener()
         return True
+
+    def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Subscribe to catalog changes; return an idempotent remover."""
+        self._listeners.add(listener)
+
+        def remove_listener() -> None:
+            self._listeners.discard(listener)
+
+        return remove_listener
 
     def catalog(self) -> tuple[SlamHistorySnapshot, ...]:
         """Return immutable snapshot metadata and compressed payload references."""
@@ -180,8 +192,12 @@ class SlamHistoryStore:
     async def async_remove(self) -> None:
         """Erase every retained scene for a removed config entry."""
         self._closed = True
+        had_snapshots = bool(self._snapshots)
         self._snapshots.clear()
         await self._store.async_remove()
+        if had_snapshots:
+            for listener in tuple(self._listeners):
+                listener()
 
     def _schedule_save(self) -> None:
         if self._closed:

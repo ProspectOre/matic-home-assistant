@@ -62,30 +62,41 @@ async function loadQualityModules(page) {
   const bundle = await build({
     stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects";
       export { WorkspaceStore } from "./frontend/map-studio-v4/state";
-      export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+      export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";
       export { PreferenceStore, preferencesKey } from "./frontend/map-studio-v4/preferences";`, resolveDir: process.cwd() },
     bundle: true, format: "esm", write: false,
   });
   await page.route("**/quality-modules.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
-  await page.goto("/");
+  await page.goto("/", { waitUntil: "domcontentloaded" });
 }
 
 for (const action of ["save-plan", "clean-rooms"]) {
   test(`${action} preserves room IDs and never drops a missing target`, async ({ page }) => {
     await loadQualityModules(page);
     const result = await page.evaluate(async (action) => {
-      const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
-      const initial = createGalleryState("ready");
+      const { EffectController, WorkspaceStore, createGalleryState, withGalleryRoomPreview } = await import("/quality-modules.js");
       const targets = [
-        { roomId: initial.resources.plans.value.rooms[0].roomId, cleaningMode: "vacuum", coverageSetting: "quick" },
+        { roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "quick" },
         { roomId: "room-no-longer-listed", cleaningMode: "mop", coverageSetting: "standard" },
       ];
+      const base = createGalleryState(action === "clean-rooms" ? "rooms" : "ready");
+      const initial = action === "clean-rooms" ? withGalleryRoomPreview({ ...base, workflow: "rooms", selection: {
+        ...base.selection, roomSettings: targets, roomIds: targets.map((room) => room.roomId),
+      } }) : base;
       const store = new WorkspaceStore({ ...initial,
         planDraft: { ...initial.planDraft, name: "Exact targets", rooms: targets, dirty: true },
         selection: { ...initial.selection, roomSettings: targets, roomIds: targets.map((room) => room.roomId) },
       });
       const calls = [];
-      const effects = new EffectController(store, { service: async (...args) => calls.push(args), dispose() {} });
+      const effects = new EffectController(store, {
+        previewRoomSequence: async (_entityId, rooms) => ({
+          entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
+          rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
+            cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
+          missionBoundaries: [], blocker: null,
+        }),
+        service: async (...args) => calls.push(args), dispose() {},
+      });
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       try { await effects.executeAction(action); return { targets: targets.map((room) => room.roomId), sent: calls[0]?.[2]?.rooms.map((room) => room.room) }; }
       finally { effects.dispose(); }
@@ -94,7 +105,7 @@ for (const action of ["save-plan", "clean-rooms"]) {
   });
 }
 
-test("a new session on the same floor waits for its scene even when pose arrives first", async ({ page }) => {
+test("a new session on the same floor waits for its scene even when pose arrives first @safety", async ({ page }) => {
   await loadQualityModules(page);
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
@@ -271,7 +282,7 @@ test("All tasks returns from area review to the task chooser", async ({ page }) 
   await page.goto("/map-studio-v4-audit");
   const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
   await gallery.evaluate(async (element) => {
-    const module = await import("/map_studio_v4/index.js");
+    const module = await import("/map_studio_v4-review/review.js");
     element.replaceWorkspaceState({ ...module.createGalleryState("ready"), workflow: "areaReview" });
   });
   await gallery.getByRole("button", { name: "Back to all tasks", exact: true }).click();
@@ -279,7 +290,7 @@ test("All tasks returns from area review to the task chooser", async ({ page }) 
 });
 
 
-test("a changed live floor clears drafts and retains the previous map read only", async ({ page }) => {
+test("a changed live floor clears drafts and retains the previous map read only @safety", async ({ page }) => {
   await loadQualityModules(page);
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
@@ -303,7 +314,7 @@ test("a newly rendered narrow floor selector matches the saved map", async ({ pa
   await page.goto("/map-studio-v4-audit");
   const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
   await gallery.evaluate(async (element) => {
-    const module = await import("/map_studio_v4/index.js");
+    const module = await import("/map_studio_v4-review/review.js");
     const state = module.createGalleryState("history");
     element.replaceWorkspaceState({ ...state, workflow: "none", selection: { ...state.selection, floorId: "saved-1" } });
   });
@@ -420,7 +431,7 @@ for (const sameFloor of [true, false]) {
   });
 }
 
-test("revalidation clears drafts when the verified map session changes at the same floor ordinal", async ({ page }) => {
+test("revalidation clears drafts when the verified map session changes at the same floor ordinal @safety", async ({ page }) => {
   await loadQualityModules(page);
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
@@ -470,30 +481,38 @@ for (const change of ["user", "robot"]) {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
       const initial = createGalleryState("ready");
       const store = new WorkspaceStore(initial);
+      const nextEntry = change === "robot"
+        ? { ...initial.resources.entry, entryId: "other", mapSessionKey: "b".repeat(64) }
+        : initial.resources.entry;
       let calls = 0;
       const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
       const effects = new EffectController(store, {
         catalog: (signal) => {
           calls += 1;
           if (calls === 1) return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
-          return Promise.resolve([initial.resources.entry]);
+          return Promise.resolve([nextEntry]);
         }, scene: aborted, pose: aborted, history: aborted, plans: aborted, areas: aborted, dispose() {},
       });
       const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
       effects.sync(projection);
       const first = effects.refreshCatalog(true);
-      effects.sync({ ...projection, userKey: change === "user" ? "two" : "one", entryKey: change === "robot" ? "other" : projection.entryKey });
+      effects.sync({ ...projection, userKey: change === "user" ? "two" : "one",
+        entryKey: nextEntry.entryId,
+        vacuumEntityId: change === "robot" ? "vacuum.other" : projection.vacuumEntityId,
+        robots: change === "robot" ? [{ entryId: "other", label: "Other robot" }] : projection.robots });
       await first;
-      const result = { calls, status: store.value.resources.catalog.status };
+      const result = { calls, status: store.value.resources.catalog.status,
+        entryId: store.value.resources.entry?.entryId };
       effects.dispose();
       return result;
     }, change);
     expect(result.calls).toBeGreaterThanOrEqual(2);
     expect(result.status).toBe("ready");
+    expect(result.entryId).toBe(change === "robot" ? "other" : "synthetic-entry");
   });
 }
 
-test("a rejected pose session cannot be resurrected by a same-floor catalog refresh", async ({ page }) => {
+test("a rejected pose session cannot be resurrected by a same-floor catalog refresh @safety", async ({ page }) => {
   await loadQualityModules(page);
   await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");

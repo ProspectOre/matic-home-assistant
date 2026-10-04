@@ -304,9 +304,15 @@ export class MaticMapCanvasV4 extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     this.#watchTheme();
+    void this.updateComplete.then(() => this.#startControllers());
   }
 
   protected override firstUpdated(): void {
+    this.#startControllers();
+  }
+
+  #startControllers(): void {
+    if (!this.isConnected || this.#renderer || this.#gestures) return;
     const root = this.renderRoot.querySelector<HTMLElement>(".map-root");
     const scene = this.renderRoot.querySelector<HTMLCanvasElement>(".scene-canvas");
     const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".overlay-canvas");
@@ -344,14 +350,13 @@ export class MaticMapCanvasV4 extends LitElement {
     });
     this.#gestures = new GestureController(root, this.#renderer, {
       state: () => this.state,
-      onOutlinePoint: (point) => this.#outlineEditor.addPoint(point),
-      onCircles: (circles, record, previous, previousOutline) => this.#intent({
+      onOutlinePoint: (point, coordinateEdit) => this.#outlineEditor.addPoint(point, coordinateEdit),
+      onCircles: (circles, coordinateEdit) => this.#intent({
         type: "set-draft-circles",
         circles,
-        record,
-        ...(previous ? { previous, previousOutline: previousOutline ?? null } : {}),
-        ...(!record && previous ? { outline: previousOutline ?? null } : {}),
+        coordinateEdit,
       }),
+      onCirclePreview: (circles, coordinateEdit) => this.#renderer?.setCirclePreview(circles, coordinateEdit),
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
     });
     this.#renderer.setState(this.state);
@@ -360,6 +365,7 @@ export class MaticMapCanvasV4 extends LitElement {
 
   override disconnectedCallback(): void {
     this.#unwatchTheme();
+    this.#cancelScheduledPalette();
     this.#outlineEditor.cancel();
     this.#gestures?.dispose();
     this.#gestures = null;
@@ -374,8 +380,9 @@ export class MaticMapCanvasV4 extends LitElement {
       this.renderRoot.querySelector<HTMLElement>(".navigation-help button")?.focus();
     }
     if (!changed.has("state")) return;
+    this.#gestures?.observeState(this.state);
+    this.#outlineEditor.observeState(this.state);
     this.#renderer?.setState(this.state);
-    if (this.state.draw.tool === "outline") this.requestUpdate();
   }
 
   // Canvas 2D cannot read CSS custom properties, so the renderer is handed a
@@ -462,10 +469,7 @@ export class MaticMapCanvasV4 extends LitElement {
   }
 
   #clearSelection(): void {
-    // The store has no clear-selection intent; every room is toggled off.
-    for (const roomId of this.state.selection.roomIds) {
-      this.#intent({ type: "toggle-room", roomId });
-    }
+    this.#intent({ type: "clear-selection" });
   }
 
   #orbit(horizontal: number, vertical: number): void {
