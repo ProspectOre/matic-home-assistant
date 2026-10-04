@@ -3226,6 +3226,7 @@ def _mask_markdown_link_metadata(text: str) -> str:
     return _outside_html_blocks(text, _mask_markdown_link_metadata_in_markdown)
 
 
+@lru_cache(maxsize=8)
 def _mask_markdown_link_metadata_in_markdown(text: str) -> str:
     if "[" not in text:
         return text
@@ -4688,14 +4689,13 @@ def _section_spans(body: str, coordinator_bound: bool = False):
         )
         for index, line in enumerate(lines)
     ]
-    # Container boundaries carry only source-row references. Security authority
-    # comes from the existing authenticated marker scan on each priority row.
-    for start, (_label, priority_rows) in container_boundaries:
-        if priority_rows and all(
-            0 <= row < len(lines) and inline_security_matches[row]
-            for row in priority_rows
-        ):
-            inline_security_matches[start] = True
+    # Assign every mapped boundary explicitly. Ownership belongs to each
+    # authenticated cell/row, so a first marked row cannot hide later ordinary
+    # units and a same-row marker cannot claim another priority cell.
+    for start, (_label, units) in container_boundaries:
+        inline_security_matches[start] = bool(units) and all(
+            marked and not unknown for _row, _label, marked, unknown in units
+        )
     for index, _line in enumerate(lines):
         reviewed_counts.append(
             reviewed_counts[-1]
@@ -5050,7 +5050,6 @@ def _markdown_text(tokens):
     chunks = []
     code_chunks = {}
     html_code_depth = 0
-    html_code_group = None
     stack = [(token, False) for token in reversed(tokens)]
     visited = 0
     while stack:
@@ -5073,13 +5072,10 @@ def _markdown_text(tokens):
                 return html.unescape(ref).translate(EVIDENCE_LINE_SEPARATORS)
 
             if html_code_depth:
-                code_chunks[len(chunks)] = (in_link, html_code_group)
+                code_chunks[len(chunks)] = in_link
             chunks.append(VISIBLE_CHARACTER_REFERENCE.sub(decode, raw))
         elif kind == "codespan":
-            code_chunks[len(chunks)] = (
-                in_link,
-                html_code_group if html_code_depth else len(chunks),
-            )
+            code_chunks[len(chunks)] = in_link
             chunks.append(token.get("raw", ""))
         elif kind in ("softbreak", "linebreak"):
             chunks.append("\n")
@@ -5090,8 +5086,6 @@ def _markdown_text(tokens):
                 if code_tag.group(1):
                     html_code_depth = max(0, html_code_depth - 1)
                 else:
-                    if not html_code_depth:
-                        html_code_group = len(chunks)
                     html_code_depth += 1
             elif not html_code_depth and SECURITY_MARKER_COMMENT.fullmatch(raw):
                 chunks.append(raw)
@@ -5112,34 +5106,34 @@ def _markdown_text(tokens):
         (match.start(), match.end())
         for match in re.finditer(r"\[P[0-3]\]", rendered, re.I)
     ]
-    priority_starts = [start for start, _end in priorities]
-    priority_ends = [end for _start, end in priorities]
-    code_ranges = {}
+    # Adjacent code elements may jointly cover an entire priority. Only a
+    # priority with an actual rendered character outside the code union can
+    # restore otherwise inert fragments; group boundaries are not evidence.
+    code_ranges = []
     position = 0
     for index, chunk in enumerate(chunks):
         end = position + len(chunk)
-        if index in code_chunks:
-            group = code_chunks[index][1]
-            code_ranges[group] = (code_ranges.get(group, (position, end))[0], end)
+        if index in code_chunks and end > position:
+            if code_ranges and code_ranges[-1][1] == position:
+                code_ranges[-1] = (code_ranges[-1][0], end)
+            else:
+                code_ranges.append((position, end))
         position = end
+    code_starts = [start for start, _end in code_ranges]
+    composed_priorities = []
+    for start, end in priorities:
+        enclosing = bisect_right(code_starts, start) - 1
+        if enclosing < 0 or code_ranges[enclosing][1] < end:
+            composed_priorities.append((start, end))
+    priority_starts = [start for start, _end in composed_priorities]
+    priority_ends = [end for _start, end in composed_priorities]
     position = 0
     visible = []
     for index, chunk in enumerate(chunks):
         end = position + len(chunk)
         first = bisect_right(priority_ends, position)
         last = bisect_left(priority_starts, end) - 1
-        group_start, group_end = (
-            code_ranges[code_chunks[index][1]]
-            if index in code_chunks
-            else (position, end)
-        )
-        composed = first <= last and (
-            priorities[first][0] < group_start
-            or priorities[first][1] > group_end
-            or priorities[last][0] < group_start
-            or priorities[last][1] > group_end
-        )
-        if index not in code_chunks or code_chunks[index][0] or composed:
+        if index not in code_chunks or code_chunks[index] or first <= last:
             visible.append(chunk)
         position = end
     return "".join(visible)
@@ -5177,6 +5171,7 @@ def _parse_markdown_document(text, mistune):
         preserve_inline_markup=True,
     )
     source = source.replace("\r\n", "\n").replace("\r", "\n")
+    original_rows = _markdown_lines(original)
     count = len(_markdown_lines(text))
     rows = [""] * count
     uncertain = set()
@@ -5298,8 +5293,18 @@ def _parse_markdown_document(text, mistune):
                     _markdown_text(md.inline(cell.strip(), _state.env))
                     for cell in cells
                 ]
-                priorities = [label for label in labels if PRIORITY_RESULT.match(label)]
-                visible = " ".join(priorities or labels)
+                original_row = original_rows[first + offset]
+                original_strip = (
+                    table._strip_pipe_table_row
+                    if original_row.strip().startswith("|")
+                    else table._strip_table_line
+                )
+                original_row_text = original_strip(_BudgetText(original_row, work))
+                if original_row_text is None:
+                    return None
+                source_units = table._split_table_cells(original_row_text)
+                if len(source_units) != len(labels):
+                    return None
                 flattened.extend(labels)
             else:
                 pattern = (
@@ -5311,8 +5316,61 @@ def _parse_markdown_document(text, mistune):
                 if match is None:
                     return None
                 visible = _markdown_text(md.inline(match.group(1), _state.env))
+                original_match = re.fullmatch(pattern, original_rows[first + offset])
+                if original_match is None:
+                    return None
+                source_units = [original_match.group(1)]
+                labels = [visible]
                 flattened.append(visible)
-            mapped.append((first + offset, visible))
+            priority_units = []
+            standalone_marker = False
+            diagnostic_labels = []
+            for raw_unit, label in zip(source_units, labels):  # noqa: B905
+                # Marker ownership follows the actual cell/row source. Rendered
+                # labels cannot authenticate code, title or escaped examples.
+                authority = _visible_html(
+                    _mask_markdown_link_metadata(
+                        _without_inline_code(_actual_metadata(raw_unit))
+                    ),
+                    mask_attributes=True,
+                )
+                actual_marker = bool(
+                    SECURITY_MARKER_COMMENT.search(authority)
+                    and not _html_visibility_ambiguous(raw_unit)
+                )
+                if not actual_marker:
+                    label = SECURITY_MARKER_COMMENT.sub("", label)
+                diagnostic_labels.append(label)
+                standalone_marker |= bool(
+                    actual_marker and SECURITY_MARKER.fullmatch(label.strip())
+                )
+                if PRIORITY_RESULT.match(label):
+                    count_priorities = len(re.findall(r"\[P[0-3]\]", label, re.I))
+                    marked = bool(
+                        actual_marker and INLINE_SECURITY_MARKER.fullmatch(label)
+                    )
+                    priority_units.append(
+                        (
+                            first + offset,
+                            label,
+                            marked and count_priorities == 1,
+                            marked and count_priorities != 1,
+                        )
+                    )
+            if standalone_marker and priority_units:
+                if (
+                    len(priority_units) == 1
+                    and len(re.findall(r"\[P[0-3]\]", priority_units[0][1], re.I)) == 1
+                ):
+                    row, label, _marked, _unknown = priority_units[0]
+                    priority_units[0] = (row, label, True, False)
+                else:
+                    priority_units = [
+                        (row, label, marked, True)
+                        for row, label, marked, _unknown in priority_units
+                    ]
+            visible = " ".join(diagnostic_labels)
+            mapped.append((first + offset, visible, tuple(priority_units)))
         if "".join(flattened).replace("\n", "") != _markdown_text([token]).replace(
             "\n", ""
         ):
@@ -5335,8 +5393,8 @@ def _parse_markdown_document(text, mistune):
                     priority = next(
                         (
                             label
-                            for _row, label in mapped
-                            if PRIORITY_RESULT.match(label)
+                            for _row, _visible, units in mapped
+                            for _source_row, label, _marked, _unknown in units
                         ),
                         None,
                     )
@@ -5346,12 +5404,12 @@ def _parse_markdown_document(text, mistune):
                         container_boundaries[first] = (
                             priority,
                             tuple(
-                                row
-                                for row, label in mapped
-                                if PRIORITY_RESULT.match(label)
+                                unit
+                                for _row, _visible, units in mapped
+                                for unit in units
                             ),
                         )
-                    for row, label in mapped:
+                    for row, label, _units in mapped:
                         if row < count:
                             rows[row] = label
                             container_rows.add(row)
@@ -5390,7 +5448,7 @@ def _priority_projection(text):
         line if index not in uncertain | container_rows else ""
         for index, line in enumerate(rows)
     ]
-    for row, (label, _priority_rows) in container_boundaries:
+    for row, (label, _priority_units) in container_boundaries:
         if row not in uncertain:
             lines[row] = label
     return "\n".join(lines) + (" " if lines and not lines[-1] else "")
@@ -5712,15 +5770,31 @@ def _classify_body(body: str) -> dict[str, Any]:
         )
         _, _, first_row, last_row = spans[section_index]
         projection = "\n".join(markdown_rows[first_row:last_row])
+        mapped_units = [
+            unit
+            for start, (_label, units) in _boundaries
+            if first_row <= start < last_row
+            for unit in units
+        ]
+        mapped_security = any(
+            marked or unknown for _row, _label, marked, unknown in mapped_units
+        )
+        mapped_ordinary = any(
+            not marked for _row, _label, marked, _unknown in mapped_units
+        )
+        mapped_unknown = any(unknown for _row, _label, _marked, unknown in mapped_units)
         prefix_adverse = kind == "unheaded" and bool(
             EXPLICIT_ADVERSE.search(ordinary_text)
+            or mapped_ordinary
             or any(PRIORITY_RESULT.match(line) for line in _markdown_lines(projection))
         )
         security_event, security_finding = _security_facts(kind, text, projection)
+        security_event |= mapped_security
+        security_finding |= mapped_security
         priority_uncertain = _security_priority_uncertain(
             kind, text, security_finding, projection
         )
-        structured_unknown = any(
+        structured_unknown = mapped_unknown or any(
             first_row <= row < last_row for row in markdown_unknown
         )
         adverse_regular = bool(
@@ -5734,6 +5808,7 @@ def _classify_body(body: str) -> dict[str, Any]:
                 )
             )
         )
+        adverse_regular |= kind != "security" and mapped_ordinary
         has_result = (
             regular_heading
             or security_heading
