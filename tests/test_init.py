@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
-from homeassistant.components import frontend
+from homeassistant.components import frontend, panel_custom
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
@@ -930,7 +930,29 @@ async def test_setup_registers_services_without_media_view() -> None:
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
 
 
-async def test_setup_registers_configuration_editor_when_frontend_is_loaded() -> None:
+@pytest.mark.parametrize(
+    "legacy_panel_api", [True, False], ids=["ha-2026.7-8", "ha-2026.9+"]
+)
+async def test_setup_registers_configuration_editor_when_frontend_is_loaded(
+    legacy_panel_api: bool,
+) -> None:
+    async def register_legacy_panel(
+        hass,
+        frontend_url_path,
+        webcomponent_name,
+        sidebar_title=None,
+        sidebar_icon=None,
+        js_url=None,
+        module_url=None,
+        embed_iframe=False,
+        trust_external=False,
+        config=None,
+        require_admin=False,
+        config_panel_domain=None,
+    ):
+        """Match the strict panel API shared by Home Assistant 2026.7 and 2026.8."""
+
+    register_panel = panel_custom.async_register_panel
     hass = SimpleNamespace(
         http=SimpleNamespace(
             register_view=MagicMock(), async_register_static_paths=AsyncMock()
@@ -945,6 +967,11 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     )
 
     with (
+        patch(
+            "homeassistant.components.panel_custom.async_register_panel",
+            autospec=register_legacy_panel if legacy_panel_api else register_panel,
+            side_effect=register_panel,
+        ) as panel_registration,
         patch("custom_components.matic_robot.services.CleaningPlanManager") as history,
         patch("custom_components.matic_robot.services.FirmwareTracker") as firmware,
         patch(
@@ -992,11 +1019,26 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     assert ROOM_PLAN_EDITOR_LOADER_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     assert ROOM_PLAN_EDITOR_PATH not in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
+    safe_area_options = {} if legacy_panel_api else {"handle_safe_area": True}
+    panel_registration.assert_awaited_once_with(
+        hass,
+        frontend_url_path="matic-map",
+        webcomponent_name=MATIC_MAP_PANEL_ELEMENT,
+        sidebar_title="Matic Map",
+        sidebar_icon="matic:robot",
+        module_url=MATIC_MAP_STUDIO_V4_PATH,
+        require_admin=True,
+        **safe_area_options,
+    )
     assert panel.require_admin is True
     assert panel.sidebar_icon == "matic:robot"
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
+    assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
+    assert hass.services.async_register.call_count == 20
+    assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
+    assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
     assert "classic_module_url" not in panel.config
     assert ROOM_PLAN_EDITOR_ROOT_PATH in ROOM_PLAN_EDITOR_PATH
 
