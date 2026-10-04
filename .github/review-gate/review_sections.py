@@ -5514,7 +5514,8 @@ def _leading_link_priority(tokens, label, offset=0):
             }
             or token.get("_review_url")
         ):
-            end = position + len(_markdown_text([token]))
+            rendering = [{"type": "link", "children": [token]}] if in_link else [token]
+            end = position + len(_markdown_text(rendering))
             linked |= in_link and position < last and end > first
             position = end
         else:
@@ -5922,7 +5923,13 @@ def _parse_markdown_document(text, mistune):
         if token.get("type") == "heading":
             # Heading soft breaks collapse to spaces in the browser. This
             # category projection never replaces raw source/footer authority.
-            label = _markdown_text(token.get("children", ())).replace("\n", " ")
+            level = token.get("attrs", {}).get("level")
+            if type(level) is not int or not 1 <= level <= 6:
+                raise MarkdownBoundaryError("Invalid Markdown heading level")
+            heading_prefix = "#" * level + " "
+            label = heading_prefix + _markdown_text(
+                token.get("children", ())
+            ).replace("\n", " ")
             end = token.get("_review_end", position)
             last = bisect_left(starts, end)
             pending = list(token.get("children", ()))
@@ -5936,7 +5943,7 @@ def _parse_markdown_document(text, mistune):
                     code_heading = True
                 pending.extend(child.get("children", ()))
             if code_heading:
-                prefix = _markdown_text(
+                prefix = heading_prefix + _markdown_text(
                     token.get("children", ()), before_code=True
                 ).replace("\n", " ")
                 if (
@@ -6000,7 +6007,9 @@ def _parse_markdown_document(text, mistune):
                 block_markers=token.get("type") in ("list", "block_quote", "table"),
             )
             if (
-                re.search(r"(?i)P[0-3]\b", visible)
+                (re.search(r"(?i)P[0-3]", visible)
+                 if token.get("type") == "table"
+                 else re.search(r"(?i)P[0-3]\b", visible))
                 or _unicode_priority_uncertain(visible)
                 or SECURITY_MARKER_COMMENT.search(visible)
             ):
@@ -6065,8 +6074,20 @@ def _parse_markdown_document(text, mistune):
                 uncertain.add(first)
             continue
         for offset, line in zip(offsets, visible_lines):  # noqa: B905
-            if first + offset < count:
-                rows[first + offset] = line
+            row = first + offset
+            if row < count:
+                rows[row] = line
+                if (token.get("type") == "paragraph"
+                        and re.match(r"(?i)\A[ \t]*P[0-3]\b", line)):
+                    inline = md.inline(raw_lines[offset], _state.env)
+                    if _markdown_text(inline) != line:
+                        # A multiline inline construct cannot acquire a new
+                        # boundary from independently parsed source rows.
+                        uncertain.add(row)
+                    elif _leading_link_priority(inline, line):
+                        container_boundaries[row] = (
+                            line, ((row, line, False, False),)
+                        )
     uncertain.update(
         index for index, row in enumerate(rows) if _unicode_priority_uncertain(row)
     )
@@ -6356,6 +6377,21 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
             if not finding or not PRIORITY_RESULT.match(match.group()):
                 return True
     return False
+
+
+@lru_cache(maxsize=8)
+def _nested_regular_marker_uncertain(kind, text):
+    """Keep unsupported HTML marker ownership pending after a clean result."""
+    if kind != "regular" or "codex-security-review-finding" not in text.casefold():
+        return False
+    source = _without_inline_code(_actual_metadata(
+        _mask_backslash_escaped_container_tags(text)
+    ))
+    visible = _visible_html(source, preserve_markup_lines=True)
+    opening = re.search(r"<(?:details|div|span)(?:[ \t\r\n>])", source, re.I)
+    if opening is None or not _standalone_regular_clean(source[:opening.start()]):
+        return False
+    return bool(SECURITY_MARKER_COMMENT.search(visible))
 
 
 def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool, bool]:
@@ -6665,6 +6701,15 @@ def _classify_body(body: str) -> dict[str, Any]:
         ordinary_source = _without_heading(
             kind, _without_review_metadata(_without_known_review_footer(text))
         )
+        if kind == "unheaded":
+            # Link/image syntax cannot manufacture the ordinary bracketed
+            # protocol from a bare visible diagnostic or explanatory label.
+            ordinary_source = _outside_html_blocks(
+                ordinary_source,
+                lambda piece: _without_inline_code_in_markdown(
+                    piece, objects=True, links=True
+                ),
+            )
         ordinary_source = _mask_markdown_link_metadata(
             _without_inline_code(_actual_metadata(ordinary_source))
         )
@@ -6687,6 +6732,10 @@ def _classify_body(body: str) -> dict[str, Any]:
                 r"(?:[ \t]+(?:\[[ xX]\][ \t]*)?)?)?[ \t]*", line
             )
         )
+        if kind == "unheaded":
+            # Marker-only mapped wrappers own security evidence independently.
+            # They must not supply the ordinary adverse vocabulary predicate.
+            ordinary_text = SECURITY_MARKER_COMMENT.sub("", ordinary_text)
         _, _, first_row, last_row = spans[section_index]
         projection = "\n".join(markdown_rows[first_row:last_row])
         mapped_units = [
@@ -6702,8 +6751,20 @@ def _classify_body(body: str) -> dict[str, Any]:
         mapped_security = any(
             marked or unknown for _row, _label, marked, unknown in mapped_units
         )
+        prior_clean = section_index > 0 and (
+            _standalone_regular_clean(raw_sections[section_index - 1][1])
+            or _standalone_security_clean(raw_sections[section_index - 1][1])
+        )
+        linked_ordinary_bound = (
+            kind == "unheaded" and prior_clean
+            and _target_ref(text, request_head or shared_footer_ref) != "__unbound__"
+        )
         mapped_ordinary = any(
-            not marked for _row, _label, marked, _unknown in mapped_units
+            not marked and (
+                PRIORITY_RESULT.match(label)
+                or (linked_ordinary_bound and re.match(r"(?i)\A[ \t]*P[0-3]\b", label))
+            )
+            for _row, label, marked, _unknown in mapped_units
         )
         mapped_unknown = any(unknown for _row, _label, _marked, unknown in mapped_units)
         prefix_adverse = kind == "unheaded" and bool(
@@ -6717,6 +6778,7 @@ def _classify_body(body: str) -> dict[str, Any]:
         priority_uncertain = _security_priority_uncertain(
             kind, text, security_finding, projection
         )
+        priority_uncertain |= _nested_regular_marker_uncertain(kind, text)
         # Supported rendered links diagnose compositions outside the legacy
         # literal report-link protocol; they cannot manufacture source authority.
         if kind == "security" and not SECURITY_REPORT_LINK.search(text):

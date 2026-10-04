@@ -47,7 +47,8 @@ jobs:
             select(.id == ($id | tonumber)
               and .workflow_id == ($workflow | tonumber)
               and .repository.full_name == $repo
-              and .path == ".github/workflows/review-gate.yml"
+              and (.path == ".github/workflows/review-gate.yml"
+                or .path == (".github/workflows/review-gate.yml@" + $branch))
               and .event == "workflow_dispatch"
               and .head_branch == $branch
               and .status == "completed"
