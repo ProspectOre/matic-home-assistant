@@ -5745,6 +5745,75 @@ def _priority_projection(text):
 
 
 @lru_cache(maxsize=8)
+def _details_code_masked_source(text):
+    """Mask details Markdown code before HTML tags lose their block context."""
+    if "`" not in text or not re.search(r"<details(?:[ \t\r\n>])", text, re.I):
+        return text
+    source = _without_inline_code(_actual_metadata(text))
+    if _html_visibility_ambiguous(source):
+        return text
+    visible_summaries = []
+    _visible_html(source, visible_summary_ranges=visible_summaries)
+    visible_summaries = set(visible_summaries)
+    starts = [0] + [m.end() for m in re.finditer("\n", source)]
+    regions = []
+
+    class DetailsCode(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.details = []
+            self.summary = None
+
+        def source_offset(self):
+            line, column = self.getpos()
+            return starts[line - 1] + column
+
+        def handle_starttag(self, tag, attrs):
+            start = self.source_offset()
+            if tag == "details":
+                self.details.append([start, start + len(self.get_starttag_text()),
+                                     any(k == "open" for k, _v in attrs), []])
+            elif tag == "summary" and self.details:
+                self.summary = (start, start + len(self.get_starttag_text()))
+
+        def handle_endtag(self, tag):
+            end = self.source_offset()
+            close = source.find(">", end) + 1
+            if tag == "summary" and self.summary and self.details:
+                start, inner = self.summary
+                self.details[-1][3].append((start, close))
+                if (inner, end) in visible_summaries:
+                    regions.append((inner, end))
+                self.summary = None
+            elif tag == "details" and self.details:
+                start, inner, expanded, excluded = self.details.pop()
+                if expanded:
+                    position = inner
+                    for first, last in sorted(excluded):
+                        if first >= position:
+                            regions.append((position, first))
+                        position = max(position, last)
+                    regions.append((position, end))
+                if self.details:
+                    self.details[-1][3].append((start, close))
+
+    parser = DetailsCode()
+    parser.feed(source)
+    parser.close()
+    if parser.details or parser.summary:
+        return text  # Unmatched context cannot manufacture a clean projection.
+    masked = bytearray(len(text))
+    for first, last in regions:
+        raw = source[first:last]
+        # Keep nested raw HTML blocks, including literal backticks in divs.
+        clean = _without_inline_code(raw)
+        for offset, (before, after) in enumerate(zip(raw, clean)):
+            if before != after:
+                masked[first + offset] = 1
+    return "".join(" " if masked[i] else char for i, char in enumerate(text))
+
+
+@lru_cache(maxsize=8)
 def _security_details_priority_uncertain(text):
     """Retain uncertainty when visible HTML defeats ordinary row ownership."""
     source = _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(text)))
@@ -5824,9 +5893,28 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
         return False
     if projection is None:
         projection = _priority_projection(text)
-    for row in _markdown_lines(projection):
+    comment_rows = []
+    if "<!--" in source:
+        comment_rows = _markdown_lines(_visible_html(
+            source, mask_attributes=True, decode_entities=True,
+            strip_inline_markup=True, preserve_markdown_comments=True,
+        ))
+    for index, row in enumerate(_markdown_lines(projection)):
         if _unicode_priority_uncertain(row):
             return True
+        if index < len(comment_rows) and _PRIORITY_CANDIDATE.search(row):
+            # The AST erases ordinary HTML comments. Consult only source
+            # fragments that remain visible and already project to a priority.
+            source_row = comment_rows[index]
+            for fragment in re.finditer(
+                r"\[(?:[P0-3]|" + _DEFAULT_IGNORABLE_CLASS + r"|<!--[ \t]*-->)+\]",
+                source_row, re.I,
+            ):
+                if _backslash_escaped(source_row, fragment.start()):
+                    continue
+                composed_fragment = re.sub(r"<!--[ \t]*-->", "", fragment.group())
+                if composed_fragment != fragment.group() and _PRIORITY_CANDIDATE.search(composed_fragment):
+                    return True
         composed = re.sub(r"<!--[ \t\r\n]*-->", "", row)
         if composed != row and (
             _PRIORITY_CANDIDATE.search(composed)
@@ -6146,6 +6234,9 @@ def _classify_body(body: str) -> dict[str, Any]:
         )
         _, _, first_row, last_row = spans[section_index]
         projection = "\n".join(markdown_rows[first_row:last_row])
+        details_code_source = _details_code_masked_source(text)
+        if details_code_source != text:
+            projection = _priority_projection(details_code_source)
         mapped_units = [
             unit
             for start, (_label, units) in _boundaries

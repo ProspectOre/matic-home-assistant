@@ -17,7 +17,7 @@ permissions:
 jobs:
   quarantine:
     if: contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event.workflow_run.event)
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     timeout-minutes: 5
     steps:
       - name: Quarantine the provider-associated fork head
@@ -44,18 +44,34 @@ jobs:
               and .status == "completed"
               and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
               and (.pull_requests | type == "array")' >/dev/null
-          head="$(printf '%s' "$run" | jq -r '.head_sha')"
+          run_head="$(printf '%s' "$run" | jq -r '.head_sha')"
           prs="$(printf '%s' "$run" | jq -c '[.pull_requests[].number] | unique')"
           if [[ "$prs" == '[]' ]]; then
             # Provider association only. A full page is incomplete, never proof
             # that an unseen association cannot change this target selection.
-            associations="$(gh api "repos/$REPO/commits/$head/pulls?per_page=100")"
+            associations="$(gh api "repos/$REPO/commits/$run_head/pulls?per_page=100")"
             printf '%s' "$associations" | jq -e 'type == "array" and length < 100' >/dev/null
             prs="$(printf '%s' "$associations" | jq -c --arg repo "$REPO" \
               '[.[] | select(.base.repo.full_name == $repo) | .number] | unique')"
           fi
           printf '%s' "$prs" | jq -e 'length == 1 and (.[0] | type == "number" and . > 0 and floor == .)' >/dev/null
           pr="$(printf '%s' "$prs" | jq -r '.[0]')"
+          candidate="$(gh api "repos/$REPO/pulls/$pr")"
+          # Review workflow runs identify a merge ref, not the fork candidate.
+          # Resolve the live fork independently, then require its exact handoff.
+          if ! printf '%s' "$candidate" | jq -e --arg repo "$REPO" --arg pr "$pr" \
+            --arg branch "$DEFAULT_BRANCH" --arg repository "$REPOSITORY_ID" '
+              .number == ($pr | tonumber) and .state == "open"
+              and .base.repo.id == ($repository | tonumber) and .base.repo.full_name == $repo
+              and .base.ref == $branch
+              and (.head.sha | type == "string" and test("^[0-9a-f]{40}$"))
+              and (.head.repo.full_name | type == "string" and length > 0)
+              and .head.repo.full_name != $repo' >/dev/null; then
+            echo 'No unambiguous current fork candidate matched.'
+            exit 0
+          fi
+          head="$(printf '%s' "$candidate" | jq -r '.head.sha')"
+          fork="$(printf '%s' "$candidate" | jq -r '.head.repo.full_name')"
           # Job metadata is an invalidation signal only, never capture proof.
           # A route-only run from an unrelated author supplies no fork handoff.
           jobs="$(gh api "repos/$REPO/actions/runs/$SOURCE_RUN_ID/jobs?filter=latest&per_page=100")"
@@ -73,12 +89,13 @@ jobs:
           # Same-repository and stale-head deliveries cannot quarantine another
           # candidate. Deleted or ambiguous fork identity supplies no target.
           if ! printf '%s' "$current" | jq -e --arg repo "$REPO" --arg head "$head" \
-            --arg pr "$pr" --arg branch "$DEFAULT_BRANCH" --arg repository "$REPOSITORY_ID" '
+            --arg pr "$pr" --arg branch "$DEFAULT_BRANCH" --arg repository "$REPOSITORY_ID" \
+            --arg fork "$fork" '
               .number == ($pr | tonumber) and .state == "open"
               and .base.repo.id == ($repository | tonumber) and .base.repo.full_name == $repo
               and .base.ref == $branch and .head.sha == $head
               and (.head.repo.full_name | type == "string" and length > 0)
-              and .head.repo.full_name != $repo' >/dev/null; then
+              and .head.repo.full_name != $repo and .head.repo.full_name == $fork' >/dev/null; then
             echo 'No current fork target matched the provider run.'
             exit 0
           fi
