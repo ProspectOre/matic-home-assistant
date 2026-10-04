@@ -151,21 +151,6 @@ jobs:
             echo "The regular-review event did not provide a dispatchable pull request state." >&2
             exit 1
           fi
-          if ! current_review="$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID" 2>/dev/null)"; then
-            echo "Ignoring a stale delivery for missing review $REVIEW_ID."
-            exit 0
-          fi
-          current_review_state="$(jq -er '[.user.login, .commit_id, .state, ((.body // "") | @base64)] | @tsv' <<< "$current_review")"
-          IFS=$'\t' read -r current_author current_commit current_state current_body_b64 <<< "$current_review_state"
-          event_body_b64="$(jq -rn --arg body "$EVENT_REVIEW_BODY" '$body | @base64')"
-          if [[ "$current_author" != "$EVENT_REVIEW_AUTHOR" \
-            || "$current_commit" != "$EVENT_REVIEW_COMMIT_SHA" \
-            || "$current_body_b64" != "$event_body_b64" \
-            || ( "$EVENT_ACTION" == "dismissed" && "$current_state" != "DISMISSED" ) \
-            || ( "$EVENT_ACTION" != "dismissed" && "$current_state" == "DISMISSED" ) ]]; then
-            echo "Ignoring a stale review delivery superseded by newer review state."
-            exit 0
-          fi
           stamp_pending() {
             local context="$1"
             local description="$2"
@@ -175,18 +160,59 @@ jobs:
               -f description="$description" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
+          dispatch_review_gate() {
+            local audit="${1:-false}"
+            if ! gh api "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+              --silent >/dev/null 2>&1; then
+              echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+              return 0
+            fi
+            gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+              -f pull_request="$PR_NUMBER" -F audit="$audit"
+          }
+          # Establish the fail-closed state before any fallible revalidation.
           stamp_pending "$REVIEW_GATE_CONTEXT" \
             "Review state changed; evaluating regular Codex review"
-          if [[ "$REVIEW_INVALIDATED" == "true" ]]; then
-            stamp_pending "$REVIEW_REVIEW_CONTEXT" \
-              "Regular review invalidated; require a newer normal review"
-          fi
-          if ! gh api \
-            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
-            --silent >/dev/null 2>&1; then
-            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+          if ! current_review="$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID" 2>/dev/null)"; then
+            echo "Ignoring a stale delivery for missing review $REVIEW_ID."
+            dispatch_review_gate true
             exit 0
           fi
-          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
-            -f pull_request="$PR_NUMBER"
+          current_review_state="$(jq -er '[.user.login, (.user.type // ""), (.user.id // 0), .commit_id, .state, ((.body // "") | @base64)] | @tsv' <<< "$current_review")"
+          IFS=$'\t' read -r current_author current_author_type current_author_id current_commit current_state current_body_b64 <<< "$current_review_state"
+          event_body_b64="$(jq -rn --arg body "$EVENT_REVIEW_BODY" '$body | @base64')"
+          if [[ "$current_author" != "$EVENT_REVIEW_AUTHOR" \
+            || "$current_author_type" != "Bot" || "$current_author_id" != "199175422" \
+            || "$current_commit" != "$EVENT_REVIEW_COMMIT_SHA" \
+            || "$current_body_b64" != "$event_body_b64" \
+            || ( "$EVENT_ACTION" == "dismissed" && "$current_state" != "DISMISSED" ) \
+            || ( "$EVENT_ACTION" != "dismissed" && "$current_state" == "DISMISSED" ) ]]; then
+            echo "Ignoring a stale review delivery superseded by newer review state."
+            dispatch_review_gate true
+            exit 0
+          fi
+          if [[ "$REVIEW_INVALIDATED" == "true" ]]; then
+            review_node_id="$(jq -er '.node_id | select(type == "string" and length > 0)' <<< "$current_review")"
+            # shellcheck disable=SC2016 # GraphQL and jq own these variables.
+            review_updated_at="$(gh api graphql \
+              -f query='query($id: ID!) { node(id: $id) { ... on PullRequestReview { databaseId updatedAt state body commit { oid } author { login ... on Bot { id } } pullRequest { number repository { nameWithOwner } } } } }' \
+              -F id="$review_node_id" \
+              | jq -er --argjson review "$REVIEW_ID" --argjson pr "$PR_NUMBER" --arg repo "$REPO" \
+                --arg commit "$EVENT_REVIEW_COMMIT_SHA" --arg body "$event_body_b64" --arg state "$current_state" '
+                  .data.node
+                  | select(.databaseId == $review and .pullRequest.number == $pr
+                    and .pullRequest.repository.nameWithOwner == $repo)
+                  | select(.author.login == "chatgpt-codex-connector" and .author.id == "BOT_kgDOC98s_g")
+                  | select(.commit.oid == $commit and ((.body // "") | @base64) == $body and .state == $state)
+                  | .updatedAt
+                  | select(type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))')" || {
+              echo "Authenticated review timestamp revalidation failed; leaving required gate pending." >&2
+              exit 1
+            }
+          fi
+          if [[ "$REVIEW_INVALIDATED" == "true" ]]; then
+            stamp_pending "$REVIEW_REVIEW_CONTEXT" \
+              "Regular review invalidated at $review_updated_at; PR #$PR_NUMBER; withdrawn review:$REVIEW_ID"
+          fi
+          dispatch_review_gate false
           echo "Dispatched regular-review evaluation for PR #$PR_NUMBER."
