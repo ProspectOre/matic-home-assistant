@@ -1,39 +1,50 @@
-name: Test
+name: Panel setup acceptance
 
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  test:
+  native-setup:
+    name: Native setup (HA ${{ matrix.ha }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.14"]
+        ha: ["2026.7.0", "2026.8.0", "2026.9.3"]
+    env:
+      HA_VERSION: ${{ matrix.ha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[test]'
-      - run: pytest --cov=custom_components/matic_robot --cov-report=term-missing
-      - run: ruff check .
-      - run: ruff format --check .
-      - run: mypy custom_components/matic_robot
-      - run: python scripts/check_public_tree.py
-      - run: python -m build
-      - run: python scripts/check_release_artifacts.py dist
-      - run: python scripts/check_fresh_install.py dist
+          python-version: "3.14"
+      - name: Install the actual Home Assistant release and runtime dependencies
+        run: |
+          python -m venv .compat-venv
+          .compat-venv/bin/python - <<'PY'
+          import os
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+          dependencies = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
+          subprocess.run([sys.executable, "-m", "pip", "install", f"homeassistant=={os.environ['HA_VERSION']}", *dependencies], check=True)
+          PY
+      - name: Verify the source before the fix
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/matic-before" a9dde1f1caf47ac52429939fc5a76b4a4ff798b8
+          if [ "$HA_VERSION" = "2026.9.3" ]; then
+            .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$RUNNER_TEMP/matic-before/custom_components"
+          else
+            .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$RUNNER_TEMP/matic-before/custom_components" --expect-safe-area-error
+          fi
+      - name: Verify the merged fix
+        run: |
+          git diff --exit-code a194ee6b7f428946977bbce2dcbc12cad8c457ba -- custom_components
+          .compat-venv/bin/python scripts/check_panel_setup_acceptance.py --components "$GITHUB_WORKSPACE/custom_components"
