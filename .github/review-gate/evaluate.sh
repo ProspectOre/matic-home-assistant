@@ -332,9 +332,10 @@ if [[ -n "$event_head_sha" && "$event_name" != issue_comment \
     "Review state changed; evaluating the regular review"
 fi
 
-read_pr_snapshot() {
+read_pr_snapshot_once() {
+  local gh_reader="$1"
   # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
-    gh api graphql \
+    "$gh_reader" api graphql \
     -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { id state createdAt timelineItems(itemTypes: [REOPENED_EVENT], last: 100) { nodes { ... on ReopenedEvent { createdAt } } } headRefOid baseRefOid baseRefName isDraft author { login } headRepository { nameWithOwner } autoMergeRequest { enabledAt } } } }' \
     -F owner="$review_owner" \
     -F name="$review_repo" \
@@ -354,6 +355,41 @@ read_pr_snapshot() {
            ($pr.headRepository.nameWithOwner // ""),
            $pr.createdAt]
         | @tsv'
+}
+
+read_pr_snapshot() {
+  local attempt snapshot reader
+  local head_sha pr_opened_at base_sha base_ref is_draft pr_node_id
+  local auto_merge_enabled pr_state pr_author_login head_repo pr_created_at
+
+  for attempt in 1 2 3; do
+    reader=gh
+    if snapshot="$(read_pr_snapshot_once "$reader")"; then
+      IFS=$'\t' read -r head_sha pr_opened_at base_sha base_ref is_draft pr_node_id \
+        auto_merge_enabled pr_state pr_author_login head_repo pr_created_at <<< "$snapshot"
+      if [[ "$head_sha" =~ ^[0-9a-f]{40}$ \
+            && "$base_sha" =~ ^[0-9a-f]{40}$ \
+            && -n "$pr_opened_at" && -n "$base_ref" \
+            && "$is_draft" =~ ^(true|false)$ \
+            && "$pr_node_id" =~ ^PR_ \
+            && "$auto_merge_enabled" =~ ^(true|false)$ \
+            && "$pr_state" =~ ^(OPEN|CLOSED|MERGED)$ \
+            && -n "$pr_author_login" && -n "$head_repo" && -n "$pr_created_at" ]]; then
+        printf '%s\n' "$snapshot"
+        return 0
+      fi
+    fi
+
+    if [[ -n "${REVIEW_READ_CACHE:-}" ]]; then
+      rm -f "$REVIEW_READ_CACHE/"*.json
+    fi
+    if (( attempt < 3 )); then
+      sleep 0.25
+    fi
+  done
+
+  echo "Could not resolve a valid pull request snapshot after 3 attempts." >&2
+  return 1
 }
 
 pr_snapshot="$(read_pr_snapshot)"
@@ -645,7 +681,8 @@ active_security_findings() {
        | select(any(.review_gate_sections[]?; .security_finding == true
            and (.target_ref == $head or .target_ref == $prefix)))
        | {source:"issue-comment", id:(.id // 0 | tostring), body:(.body // "")}]')"
-  jq -cn --argjson reviews "$review_findings" --argjson comments "$issue_comment_findings" --argjson inline "$inline_findings" '$reviews + $comments + $inline | unique'
+  printf '%s\n%s\n%s\n' "$review_findings" "$issue_comment_findings" "$inline_findings" \
+    | jq -cs '.[0] + .[1] + .[2] | unique'
 }
 
 # Exact-head regular PR reviews and explicit clean regular issue
@@ -658,10 +695,8 @@ regular_evidence() {
   local prior_has_creation_receipt=false
   local eligible_comment_run_id="" eligible_comment_id="" eligible_comment_run_attempt=""
   local section_classifier="${REVIEW_SECTIONS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/review_sections.py}"
-  local prior_record prior_sections prior_prefix_known
-  prior_record="$(jq -cn --arg body "${1:-}" '{body:$body}' | python3 "$section_classifier" --records)"
-  prior_sections="$(jq -c '.review_gate_sections' <<< "$prior_record")"
-  prior_prefix_known="$(jq -c '.review_gate_prefix_known' <<< "$prior_record")"
+  local prior_record
+  prior_record="$(printf '%s' "${1:-}" | jq -R -s '{body:.}' | python3 "$section_classifier" --records)"
   review_records="$(
     # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
     gh api graphql --paginate \
@@ -670,8 +705,9 @@ regular_evidence() {
       -F name="$review_repo" \
       -F number="$pr_number" \
       | python3 "$section_classifier" --records \
-      | jq -cs --argjson prior_sections "$prior_sections" --argjson prior_prefix_known "$prior_prefix_known" --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
-        --arg prior_body "${1:-}" --arg prior_id "${2:-}" --arg prior_source "${3:-issue_comment}" --arg prior_at "${4:-}" '
+      | jq -cs --slurpfile prior_input <(printf '%s' "$prior_record") \
+        --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
+        --arg prior_id "${2:-}" --arg prior_source "${3:-issue_comment}" --arg prior_at "${4:-}" '
           def regular_heading:
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
@@ -750,8 +786,8 @@ regular_evidence() {
           # authenticated relay body, never as a verdict or live API evidence.
           | (if $prior_source == "review" then
                ($records | map(select((.databaseId | tostring) != $prior_id))) +
-               [{databaseId: ($prior_id | tonumber), body: $prior_body,
-                 state: "COMMENTED", submittedAt: $prior_at, updatedAt: $prior_at, review_gate_sections: $prior_sections, review_gate_prefix_known: $prior_prefix_known,
+               [{databaseId: ($prior_id | tonumber), body: $prior_input[0].body,
+                 state: "COMMENTED", submittedAt: $prior_at, updatedAt: $prior_at, review_gate_sections: $prior_input[0].review_gate_sections, review_gate_prefix_known: $prior_input[0].review_gate_prefix_known,
                  author: {login: $bot, id: "BOT_kgDOC98s_g"}, commit: {oid: $head}}]
              else $records end) as $records_with_prior
           | {all_reviews: $all_reviews,
@@ -831,7 +867,8 @@ regular_evidence() {
   fi
   issue_comment_records="$(printf '%s' "$issue_comment_pages" \
       | python3 "$section_classifier" --records \
-      | jq -c --argjson prior_sections "$prior_sections" --argjson prior_prefix_known "$prior_prefix_known" --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
+      | jq -c --slurpfile prior_input <(printf '%s' "$prior_record") \
+          --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
           --argjson require_creation_receipt "${REQUIRE_CLEAN_ISSUE_COMMENT_RECEIPT:-false}" \
           --argjson prior_creation_receipt "$prior_creation_receipt" \
           --argjson prior_has_creation_receipt "$prior_has_creation_receipt" \
@@ -906,14 +943,14 @@ regular_evidence() {
               else true end);
           ([.[][]] as $records
            | (if $prior_source == "issue_comment" and $prior_id != "" and all($records[]; (.id | tostring) != $prior_id) then
-                $records + [{id: ($prior_id | tonumber), body: $prior_body, created_at: $prior_at,
-                             updated_at: $prior_at, review_gate_sections: $prior_sections, review_gate_prefix_known: $prior_prefix_known, review_gate_creation_receipt: $prior_creation_receipt,
+                $records + [{id: ($prior_id | tonumber), body: $prior_input[0].body, created_at: $prior_at,
+                             updated_at: $prior_at, review_gate_sections: $prior_input[0].review_gate_sections, review_gate_prefix_known: $prior_input[0].review_gate_prefix_known, review_gate_creation_receipt: $prior_creation_receipt,
                              review_gate_has_creation_receipt: $prior_has_creation_receipt,
                              user: {login: $bot, id: 199175422, type: "Bot"}}]
               else [$records[] | if $prior_source == "issue_comment" and (.id | tostring) == $prior_id then
-                       .body = $prior_body
-                       | .review_gate_sections = $prior_sections
-                       | .review_gate_prefix_known = $prior_prefix_known
+                       .body = $prior_input[0].body
+                       | .review_gate_sections = $prior_input[0].review_gate_sections
+                       | .review_gate_prefix_known = $prior_input[0].review_gate_prefix_known
                        | .review_gate_creation_receipt = $prior_creation_receipt
                        | .review_gate_has_creation_receipt = $prior_has_creation_receipt
                        | if $prior_creation_receipt then .updated_at = .created_at else . end
@@ -946,10 +983,13 @@ regular_evidence() {
                                    and $section.target_ref == "__unbound__"),
               clean: ($clean_proof and $clean_envelope)}])'
     )"
-  jq -cn --argjson review_data "$review_records" --argjson issue_comments "$issue_comment_records" '
-    {deliveries: ($review_data.deliveries + $issue_comments),
-     all_reviews: $review_data.all_reviews,
-     review_ids: [$review_data.deliveries[] | select(.dismissed != true) | .id]}' | normalize_delivery_timestamps
+  printf '%s\n%s\n' "$review_records" "$issue_comment_records" \
+    | jq -cs '
+      .[0] as $review_data | .[1] as $issue_comments
+      | {deliveries: ($review_data.deliveries + $issue_comments),
+         all_reviews: $review_data.all_reviews,
+         review_ids: [$review_data.deliveries[] | select(.dismissed != true) | .id]}' \
+    | normalize_delivery_timestamps
 }
 
 regular_review_thread_summary() {
@@ -1142,7 +1182,9 @@ findings_dismissed() {
       -F name="$review_repo" \
       -F number="$pr_number" \
     | jq -rs '[.[] | .data.repository.pullRequest.reviews.nodes[]?]')" || return 1
-  jq -en --argjson markers "$markers" --argjson reviews "$reviews" --arg head "$head_sha" '
+  printf '%s\n%s\n' "$markers" "$reviews" \
+    | jq -se --arg head "$head_sha" '
+    .[0] as $markers | .[1] as $reviews |
     all($markers[]; . as $origin |
       if .source == "issue-comment" then
         false
@@ -1338,7 +1380,10 @@ read_gate_snapshot() (
     review_invalidation_at="$(latest_regular_review_invalidation_at)"
     finding_history_at="$(latest_regular_finding_history_at "$all_reviews")"
     withdrawal_at="$(withdrawn_evidence_at "$deliveries")"
-    jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" --arg finding_history_at "$finding_history_at" --arg withdrawal_at "$withdrawal_at" '
+    printf '%s\n%s\n%s\n' "$deliveries" "$reviews" "$thread_summary" \
+      | jq -cs --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" --arg finding_history_at "$finding_history_at" --arg withdrawal_at "$withdrawal_at" '
+      .[0] as $deliveries | .[1] as $reviews | .[2] as $thread_summary
+      |
       ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
       | (([$deliveries[] | select((.clean | not) and .neutral != true and .unverified != true) | .at]
           + [$reviews[]
@@ -1381,15 +1426,14 @@ read_gate_snapshot() (
   finding_count="$(jq '[.[].active_count] | add // 0' <<< "$thread_summary")"
   security_findings="$(active_security_findings)"
   security_finding_count="$(jq length <<< "$security_findings")"
-  jq -cn \
-    --argjson deliveries "$deliveries" \
-    --argjson thread_summary "$thread_summary" \
+  printf '%s\n%s\n%s\n' "$deliveries" "$thread_summary" "$security_findings" \
+    | jq -cs \
     --argjson verdict "$verdict" \
     --argjson finding_count "$finding_count" \
     --argjson security_finding_count "$security_finding_count" \
-    --argjson security_findings "$security_findings" \
     --arg latest_finding_at "$latest_finding_at" \
-    '{deliveries: $deliveries,
+    '.[0] as $deliveries | .[1] as $thread_summary | .[2] as $security_findings
+    | {deliveries: $deliveries,
       regular_findings: (([$deliveries[] | select((.clean | not) and .neutral != true and .unverified != true and .dismissed != true) | {source: (if .source == "issue_comment" then "issue-comment" else .source end), id: (.id | sub("^issue-comment-"; ""))}] + [$thread_summary[] | select(.total_count > 0) | {source:"review", id:.id}]) | unique),
       verdict: $verdict,
       finding_count: $finding_count,
@@ -1772,7 +1816,8 @@ if [[ "$native_event_head_bound" == true ]] && jq -e \
   fi
 fi
   if [[ "$event_name" == issue_comment && -f "$event_path" ]] &&
-   jq -e --arg native_head_bound "$native_event_head_bound" --argjson facts "$issue_comment_facts" '
+   jq -e --arg native_head_bound "$native_event_head_bound" \
+     --slurpfile facts <(printf '%s' "$issue_comment_facts") '
      (.action == "created" or .action == "edited" or .action == "deleted") and
      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
      .comment.user.login == "chatgpt-codex-connector[bot]" and
@@ -1780,13 +1825,13 @@ fi
        all(test("(?is)^[[:space:]]*<!--[[:space:]]*codex-pull-request-review-summary[[:space:]]*-->") | not)) and
      (.action == "edited" or .action == "deleted" or
        ($native_head_bound == "true" and
-        any([$facts.current.sections[]?, $facts.previous.sections[]?][]; .has_result == true)))
+        any([$facts[0].current.sections[]?, $facts[0].previous.sections[]?][]; .has_result == true)))
    ' "$event_path" >/dev/null; then
   edited_clean=false
   security_event=false
-  security_event_states="$(jq -cn --argjson facts "$issue_comment_facts" '
-    [($facts.current.sections | any(.[]; .security_event)),
-     ($facts.previous.sections | any(.[]; .security_event))]')"
+  security_event_states="$(jq -cn --slurpfile facts <(printf '%s' "$issue_comment_facts") '
+    [($facts[0].current.sections | any(.[]; .security_event)),
+     ($facts[0].previous.sections | any(.[]; .security_event))]')"
   if jq -e 'any' <<< "$security_event_states" >/dev/null; then
     security_event=true
     # Suppress regular withdrawal only when the edited comment was a security
@@ -1826,8 +1871,9 @@ fi
       fi
     fi
     if [[ "$native_event_head_bound" == true && "$event_regular_evidence" == true ]] && \
-       jq -en --arg head "$head_sha" --arg prefix "$head_prefix" --argjson facts "$issue_comment_facts" '
-         [$facts.previous.sections[] | select(.has_result)] as $previous
+       jq -en --arg head "$head_sha" --arg prefix "$head_prefix" \
+         --slurpfile facts <(printf '%s' "$issue_comment_facts") '
+         [$facts[0].previous.sections[] | select(.has_result)] as $previous
          | ($previous | length) > 0
            and all($previous[]; .target_ref != $head and .target_ref != $prefix and .target_ref != "__unbound__")
        ' >/dev/null; then
@@ -1838,8 +1884,8 @@ fi
     # Both immutable bodies matter: API visibility and lexical body ordering
     # must not hide a finding added by an edit or withdrawn from its prior body.
     if [[ "$native_event_head_bound" == true ]]; then
-      event_regular_finding_heads="$(jq -nr --argjson facts "$issue_comment_facts" '
-        [$facts.current.sections[], $facts.previous.sections[]]
+      event_regular_finding_heads="$(jq -nr --slurpfile facts <(printf '%s' "$issue_comment_facts") '
+        [$facts[0].current.sections[], $facts[0].previous.sections[]]
         | map(select(.regular_adverse) | .target_ref) | unique[]')"
       while IFS= read -r finding_ref; do
         [[ -n "$finding_ref" ]] || continue
@@ -1862,8 +1908,9 @@ fi
       # Creation is not a withdrawal; only actual adverse evidence blocks it.
       edited_clean=true
     elif [[ "$event_action" == edited && "$event_regular_evidence" == true ]] && \
-         jq -en --arg head "$head_sha" --arg prefix "$head_prefix" --argjson facts "$issue_comment_facts" '
-           [$facts.current.sections[] | select(.kind == "regular" and .has_result)] as $current
+         jq -en --arg head "$head_sha" --arg prefix "$head_prefix" \
+           --slurpfile facts <(printf '%s' "$issue_comment_facts") '
+           [$facts[0].current.sections[] | select(.kind == "regular" and .has_result)] as $current
            | ($current | length) > 0
              and all($current[]; .target_ref != $head and .target_ref != $prefix and .target_ref != "__unbound__")
          ' >/dev/null; then
@@ -1876,15 +1923,16 @@ fi
     fi
   fi
   security_finding=false
-  if [[ "$security_event" == true ]] && jq -en --argjson facts "$issue_comment_facts" '
-      any([$facts.current.sections[], $facts.previous.sections[]][]; .security_finding)
+  if [[ "$security_event" == true ]] && jq -en \
+      --slurpfile facts <(printf '%s' "$issue_comment_facts") '
+      any([$facts[0].current.sections[], $facts[0].previous.sections[]][]; .security_finding)
     ' >/dev/null; then
     security_finding=true
   fi
   security_finding_heads=""
   if [[ "$security_finding" == true ]]; then
-    security_finding_heads="$(jq -nr --argjson facts "$issue_comment_facts" '
-      [$facts.current.sections[], $facts.previous.sections[]]
+    security_finding_heads="$(jq -nr --slurpfile facts <(printf '%s' "$issue_comment_facts") '
+      [$facts[0].current.sections[], $facts[0].previous.sections[]]
       | map(select(.security_finding) | .target_ref) | unique[]')"
     if [[ -z "$security_finding_heads" ]]; then
       security_finding_heads="__unbound__"

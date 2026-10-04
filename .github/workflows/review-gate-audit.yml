@@ -71,9 +71,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '0d0606ab429e491dfa3d3873e4de9316adfd447e628a774d334688ed58e5c32f'
+          EXPECTED_SHA256: 'e1fbfcae26d7489ee2472fa183c398f15fa8b1e8ca0228fd7afa40a20d38b7ff'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'a79153ff75bf60142a502caf7929bf0d253007d8edb459af989fff163c22d4a8'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'bd6d7339bbba37bef733cc8d227a165a9801247ce09c41cfde06a2299eb96692'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |
@@ -100,9 +100,21 @@ jobs:
                 && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
             write_pending_status "$EVENT_HEAD_SHA" 'Loading canonical review policy'
           fi
-          pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
-          pr_head="$(jq -er '.head.sha' <<< "$pr")"
-          [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          pr_head=""
+          for attempt in 1 2 3; do
+            if pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")" \
+                && jq -e '.state == "open" or .state == "closed"' <<< "$pr" >/dev/null \
+                && pr_head="$(jq -er '.head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' <<< "$pr")" \
+                && [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]]; then
+              break
+            fi
+            pr_head=""
+            if [[ "$attempt" == 3 ]]; then
+              echo "Unable to discover a valid live PR snapshot after three attempts." >&2
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           # Revoke the live PR head before any secondary membership reads.
           if [[ "${AUDIT_MODE:-false}" != true && "$(jq -r '.state' <<< "$pr")" == open \
                 && ( "${EVENT_PR_NUMBER:-}" != "$PR_NUMBER" || "$pr_head" != "${EVENT_HEAD_SHA:-}" ) ]]; then

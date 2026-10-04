@@ -75,7 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.issue.number }}
           POLICY_REF: ${{ github.workflow_sha }}
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'a79153ff75bf60142a502caf7929bf0d253007d8edb459af989fff163c22d4a8'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'bd6d7339bbba37bef733cc8d227a165a9801247ce09c41cfde06a2299eb96692'
         shell: bash
         run: |
           set -euo pipefail
@@ -109,8 +109,10 @@ jobs:
           }
           live_head=""
           for attempt in 1 2 3; do
-            if live_head="$(gh api "repos/$REPO/pulls/$EVENT_PR" --jq '.head.sha')" \
+            if pr_snapshot="$(gh api "repos/$REPO/pulls/$EVENT_PR")" \
+                && live_head="$(jq -er '.head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' <<< "$pr_snapshot")" \
                 && [[ "$live_head" =~ ^[0-9a-f]{40}$ ]]; then break; fi
+            live_head=""
             [[ "$attempt" != 3 ]] || exit 1
             sleep "$attempt"
           done
@@ -152,6 +154,23 @@ jobs:
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           [[ "$EVENT_PR" =~ ^[1-9][0-9]*$ ]] || exit 1
+          discover_live_head() {
+            local pr_snapshot attempt
+            live_head=""
+            for attempt in 1 2 3; do
+              if pr_snapshot="$(gh api "repos/$REPO/pulls/$EVENT_PR")" \
+                  && live_head="$(jq -er '.head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' <<< "$pr_snapshot")" \
+                  && [[ "$live_head" =~ ^[0-9a-f]{40}$ ]]; then
+                return 0
+              fi
+              live_head=""
+              if [[ "$attempt" == 3 ]]; then
+                echo "Unable to discover a valid live PR head after three attempts." >&2
+                return 1
+              fi
+              sleep "$attempt"
+            done
+          }
           # Human @codex review comments are authorized triggers, not Codex
           # review receipts. Do not create an acknowledgement that a later
           # evaluator could accidentally attach to a newer PR head.
@@ -201,8 +220,7 @@ jobs:
             }
             pending_security_uncertainty() {
               local live_head
-              live_head="$(gh api "repos/$REPO/pulls/$EVENT_PR" --jq '.head.sha')"
-              [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+              discover_live_head || exit 1
               gh api "repos/$REPO/statuses/$live_head" --silent \
                 -f state=pending -f context="review-native-event/$GITHUB_RUN_ID" \
                 -f description="Unbound security review event for PR #$EVENT_PR" \
@@ -214,8 +232,7 @@ jobs:
             }
             pending_regular_uncertainty() {
               local live_head
-              live_head="$(gh api "repos/$REPO/pulls/$EVENT_PR" --jq '.head.sha')"
-              [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+              discover_live_head || exit 1
               gh api "repos/$REPO/statuses/$live_head" --silent \
                 -f state=pending -f context="review-native-event/$GITHUB_RUN_ID" \
                 -f description="Unbound regular review event for PR #$EVENT_PR" \
@@ -262,8 +279,7 @@ jobs:
               echo "neutral=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            live_head="$(gh api "repos/$REPO/pulls/$EVENT_PR" --jq '.head.sha')"
-            [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            discover_live_head || exit 1
             commit_associated_with_event_pr() {
               local target_sha="$1" associated
               [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
@@ -382,8 +398,7 @@ jobs:
             fi
           fi
           [[ "$event_head" =~ ^[0-9a-f]{40}$ ]] || exit 0
-          live_head="$(gh api "repos/$REPO/pulls/$EVENT_PR" --jq '.head.sha')"
-          [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          discover_live_head || exit 1
           if [[ "$event_head" != "$live_head" ]]; then echo "historical=true" >> "$GITHUB_OUTPUT"; fi
           [[ "$EVENT_PR" =~ ^[1-9][0-9]*$ && "$event_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
           EVENT_HEAD="$event_head"
@@ -515,9 +530,20 @@ jobs:
             fi
             sleep "$attempt"
           done
-          pr_snapshot="$(gh api "repos/$EXPECTED_REPO/pulls/$TARGET_PR")"
-          live_head="$(jq -er '.head.sha' <<< "$pr_snapshot")"
-          [[ "$live_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          live_head=""
+          for attempt in 1 2 3; do
+            if pr_snapshot="$(gh api "repos/$EXPECTED_REPO/pulls/$TARGET_PR")" \
+                && live_head="$(jq -er '.head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' <<< "$pr_snapshot")" \
+                && [[ "$live_head" =~ ^[0-9a-f]{40}$ ]]; then
+              break
+            fi
+            live_head=""
+            if [[ "$attempt" == 3 ]]; then
+              echo "Unable to discover a valid live PR head after three attempts." >&2
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           for attempt in 1 2 3; do
             if gh api "repos/$EXPECTED_REPO/statuses/$live_head" --silent \
               -f state=pending -f context=review-gate \
@@ -580,9 +606,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '0d0606ab429e491dfa3d3873e4de9316adfd447e628a774d334688ed58e5c32f'
+          EXPECTED_SHA256: 'e1fbfcae26d7489ee2472fa183c398f15fa8b1e8ca0228fd7afa40a20d38b7ff'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'a79153ff75bf60142a502caf7929bf0d253007d8edb459af989fff163c22d4a8'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'bd6d7339bbba37bef733cc8d227a165a9801247ce09c41cfde06a2299eb96692'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
         shell: bash
         run: |
@@ -609,9 +635,21 @@ jobs:
                 && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
             write_pending_status "$EVENT_HEAD_SHA" 'Loading canonical review policy'
           fi
-          pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
-          pr_head="$(jq -er '.head.sha' <<< "$pr")"
-          [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          pr_head=""
+          for attempt in 1 2 3; do
+            if pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")" \
+                && jq -e '.state == "open" or .state == "closed"' <<< "$pr" >/dev/null \
+                && pr_head="$(jq -er '.head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' <<< "$pr")" \
+                && [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]]; then
+              break
+            fi
+            pr_head=""
+            if [[ "$attempt" == 3 ]]; then
+              echo "Unable to discover a valid live PR snapshot after three attempts." >&2
+              exit 1
+            fi
+            sleep "$attempt"
+          done
           # Revoke the live PR head before any secondary membership reads.
           if [[ "${AUDIT_MODE:-false}" != true && "$(jq -r '.state' <<< "$pr")" == open \
                 && ( "${EVENT_PR_NUMBER:-}" != "$PR_NUMBER" || "$pr_head" != "${EVENT_HEAD_SHA:-}" ) ]]; then
