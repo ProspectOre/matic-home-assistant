@@ -1705,6 +1705,8 @@ def _visible_html(
         def __init__(self) -> None:
             super().__init__(convert_charrefs=False)
             self.open_elements: list[tuple[str, str, bool]] = []
+            self.open_element_counts: dict[str, int] = {}
+            self.html_open_element_counts: dict[str, int] = {}
             self.body_contexts: list[bool] = []
             self.table_modes: list[bool] = []
             self.active_form_index: int | None = None
@@ -1717,8 +1719,10 @@ def _visible_html(
             # including descendants implicitly closed by an ancestor end tag.
             for popped in range(len(self.open_elements) - 1, index - 1, -1):
                 tag, namespace, _ = self.open_elements[popped]
+                self.open_element_counts[tag] -= 1
                 if namespace != "html":
                     continue
+                self.html_open_element_counts[tag] -= 1
                 if tag == "template":
                     self.template_depth -= 1
                 if tag in HTML_CODE_CONTAINER_TAGS:
@@ -1879,6 +1883,8 @@ def _visible_html(
 
         def _close_implied_item(self, tag: str) -> None:
             targets = {"li"} if tag == "li" else {"dt", "dd"}
+            if not any(self.html_open_element_counts.get(target, 0) for target in targets):
+                return
             for index in range(len(self.open_elements) - 1, -1, -1):
                 element, namespace, _ = self.open_elements[index]
                 if namespace == "html":
@@ -1891,6 +1897,8 @@ def _visible_html(
                     return
 
         def _element_in_scope(self, tag: str) -> int | None:
+            if not self.html_open_element_counts.get(tag, 0):
+                return None
             for index in range(len(self.open_elements) - 1, -1, -1):
                 element, namespace, _ = self.open_elements[index]
                 if namespace == "html":
@@ -2009,7 +2017,8 @@ def _visible_html(
                     "html",
                 ):
                     self._pop_elements(len(self.open_elements) - 1, start, start)
-            if namespace == "html" and normalized_tag in HTML_P_CLOSING_START_TAGS:
+            if (namespace == "html" and normalized_tag in HTML_P_CLOSING_START_TAGS
+                    and self.html_open_element_counts.get("p", 0)):
                 paragraph_index = None
                 for index in range(len(self.open_elements) - 1, -1, -1):
                     element, element_namespace, _ = self.open_elements[index]
@@ -2089,6 +2098,9 @@ def _visible_html(
                 self.open_elements.append(
                     (normalized_tag, namespace, mathml_html_integration)
                 )
+                self.open_element_counts[normalized_tag] = self.open_element_counts.get(normalized_tag, 0) + 1
+                if namespace == "html":
+                    self.html_open_element_counts[normalized_tag] = self.html_open_element_counts.get(normalized_tag, 0) + 1
                 self.body_contexts.append(in_body)
                 self.table_modes.append(in_table)
                 if namespace == "html" and normalized_tag == "form":
@@ -2119,14 +2131,14 @@ def _visible_html(
                     attribute_end = markup[2] - 1
                     if attribute_start < attribute_end:
                         attribute_spans.append((attribute_start, attribute_end))
-            matching_index = next(
+            matching_index = (next(
                 (
                     index
                     for index in range(len(self.open_elements) - 1, -1, -1)
                     if self.open_elements[index][0] == normalized_tag
                 ),
                 None,
-            )
+            ) if self.open_element_counts.get(normalized_tag, 0) else None)
             matching_namespace = (
                 self.open_elements[matching_index][1]
                 if matching_index is not None
@@ -2148,6 +2160,8 @@ def _visible_html(
                     self._generate_implied_end_tags()
                     # HTML removes only the active form node. Descendants stay
                     # open and keep their existing summary visibility identity.
+                    self.open_element_counts[self.open_elements[form_index][0]] -= 1
+                    self.html_open_element_counts[self.open_elements[form_index][0]] -= 1
                     del self.open_elements[form_index]
                     del self.body_contexts[form_index]
                     del self.table_modes[form_index]
@@ -2823,6 +2837,16 @@ def _standalone_security_clean(section: str) -> bool:
     return bool(KNOWN_SECURITY_CLEAN_RESULT.fullmatch(text))
 
 
+def _markdown_priority_text(text: str) -> str:
+    for pattern in (
+        r"\[P(?P<em>\*{1,3})(?P<level>[0-3])(?P=em)\]",
+        r"\[(?P<em>\*{1,3})P(?P=em)(?P<level>[0-3])\]",
+        r"(?P<em>\*{1,3})\[P(?P<level>[0-3])\](?P=em)",
+    ):
+        text = re.sub(pattern, lambda match: "[P" + match.group("level") + "]", text)
+    return text
+
+
 def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     raw_section = section
     source = _without_inline_code(_actual_metadata(raw_section))
@@ -2875,6 +2899,8 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
             decoded_summaries.append(re.sub(r"</?[^>]+>", " ", summary_decoded))
         section = "\n".join((section, *summary_text))
         severity_text = "\n".join((severity_text, *decoded_summaries))
+    section = _markdown_priority_text(section)
+    severity_text = _markdown_priority_text(severity_text)
     report_link_candidates = list(SECURITY_REPORT_LINK.finditer(report_view))
     marker = bool(INLINE_SECURITY_MARKER.search(section)) or (
         kind in ("security", "unheaded") and bool(SECURITY_MARKER.search(section))
@@ -3041,6 +3067,12 @@ def classify_body(body: str) -> dict[str, Any]:
             "security_finding": False, "target_ref": "__unbound__",
         }]}
     ambiguous = _html_visibility_ambiguous(body)
+    metadata = _without_inline_code(_actual_metadata(body))
+    if SECURITY_MARKER_COMMENT.search(metadata) and any(
+        _markdown_priority_text(match.group()) == match.group()
+        for match in re.finditer(r"\[P(?=[^\]\r\n]{0,24}[*_~])(?=[^\]\r\n]{0,24}[0-3])[^\]\r\n]{1,24}\]", metadata)
+    ):
+        ambiguous = True
     parsed_body, request_head = _coordinator_body(body)
     raw_sections = _raw_sections(
         parsed_body, coordinator_bound=request_head is not None
@@ -3134,7 +3166,6 @@ def classify_body(body: str) -> dict[str, Any]:
         # Visibility repair can hide the protocol marker or category from the
         # rendered section classifier. Retain only uncertainty, never a finding
         # assertion, from raw metadata outside Markdown code.
-        metadata = _without_inline_code(_actual_metadata(body))
         security_origin = bool(SECURITY_MARKER_COMMENT.search(metadata)) or bool(
             re.search(r"\b(?:codex[ \t-]+)?security[ \t-]+review\b", metadata, re.I)
         )

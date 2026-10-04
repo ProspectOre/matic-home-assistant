@@ -137,11 +137,10 @@ native_issue_comment_event_bound() {
   ' "$event_path" >/dev/null || return 1
   [[ -n "$review_sections_facts" ]] || return 1
   jq -e --arg head "$event_head_sha" --arg prefix "${event_head_sha:0:10}" '
-    any([.current.sections[]?, .previous.sections[]?][];
-      .has_result == true and
-      (.target_ref == $head or .target_ref == $prefix))
-    or .current.request_head == $head
-    or .previous.request_head == $head
+    all([.current.sections[]?, .previous.sections[]?][]; .parser_ambiguous != true) and
+    (any([.current.sections[]?, .previous.sections[]?][];
+      .has_result == true and (.target_ref == $head or .target_ref == $prefix))
+     or .current.request_head == $head or .previous.request_head == $head)
   ' <<< "$review_sections_facts" >/dev/null
 }
 gh_path="${REVIEW_GATE_GH:-$(command -v gh || true)}"
@@ -422,7 +421,9 @@ if (( ! evidence_only_mode )) && [[ "${AUDIT_MODE:-false}" != true \
 fi
 review_sections_facts=""
 if [[ -f "$event_path" ]] && [[ "$event_name" == issue_comment ||
-      "$event_name" == pull_request_review || "$event_name" == pull_request_review_comment ]]; then
+      "$event_name" == pull_request_review || "$event_name" == pull_request_review_comment ]] &&
+   jq -e '(.review.user // .comment.user) |
+     .id == 199175422 and .type == "Bot" and .login == "chatgpt-codex-connector[bot]"' "$event_path" >/dev/null; then
   section_classifier="${REVIEW_SECTIONS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/review_sections.py}"
   [[ -f "$section_classifier" ]] || {
     echo "The canonical review-section classifier is unavailable; event remains pending." >&2
@@ -452,6 +453,38 @@ fi
 if native_issue_comment_event_bound; then
   native_event_head_bound=true
 elif [[ "$event_name" == issue_comment && "${REVIEW_NATIVE_EVENT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+  if jq -e --argjson number "$pr_number" '
+      .issue.number == $number and .issue.pull_request != null and
+      (.comment.id | type == "number" and . > 0 and floor == .) and
+      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
+      .comment.user.login == "chatgpt-codex-connector[bot]"
+    ' "$event_path" >/dev/null && jq -e '
+      any([.current.sections[]?, .previous.sections[]?][]; .parser_ambiguous == true)
+    ' <<< "$review_sections_facts" >/dev/null; then
+    uncertain_at="$(jq -r '.comment.updated_at // .comment.created_at // empty' "$event_path")"
+    uncertain_at="$(normalize_timestamp "${uncertain_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}")"
+    uncertain_comment_id="$(jq -r '.comment.id' "$event_path")"
+    stamp_status_for_sha "$pr_current_head_sha" "$REVIEW_REVIEW_CONTEXT" pending \
+      "Regular review invalidated at $uncertain_at; PR #$pr_number; uncertain issue-comment:$uncertain_comment_id" >/dev/null
+  fi
+  # The authenticated event proves source identity, never the ambiguous
+  # footer scope. Keep the receipt pending and retain observation on this
+  # current gate without claiming the body reviewed this commit.
+  if jq -e --argjson number "$pr_number" '
+      .issue.number == $number and .issue.pull_request != null and
+      (.comment.id | type == "number" and . > 0 and floor == .) and
+      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
+      .comment.user.login == "chatgpt-codex-connector[bot]"
+    ' "$event_path" >/dev/null && jq -e '
+      any([.current.sections[]?, .previous.sections[]?][]; .parser_ambiguous == true and
+          (.security_uncertain == true or .kind == "security" or .security_event == true or .security_finding == true))
+    ' <<< "$review_sections_facts" >/dev/null; then
+    uncertain_comment_id="$(jq -r '.comment.id' "$event_path")"
+    stamp_status_for_sha "$pr_current_head_sha" "review-security-history" pending \
+      "Unbound Security uncertainty for PR #$pr_number on head $pr_current_head_sha; issue-comment:$uncertain_comment_id; uncertain" >/dev/null
+    stamp_status_for_sha "$pr_current_head_sha" "$REVIEW_GATE_CONTEXT" pending \
+      "Security source scope unknown; obtain authenticated source correction and fresh review" >/dev/null
+  fi
   echo "Native issue-comment receipt has no authenticated reviewed-head binding; leaving it pending."
   exit 1
 fi
@@ -656,7 +689,7 @@ active_security_findings() {
   review_findings="$(gh api graphql --paginate \
     -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state submittedAt updatedAt body author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
     -F owner="$review_owner" -F name="$review_repo" -F number="$pr_number" \
-    | jq -s '[.[] | .data.repository.pullRequest.reviews.nodes[]?]' \
+    | jq -s '[.[] | .data.repository.pullRequest.reviews.nodes[]? | select(.author.login == "chatgpt-codex-connector" and .author.id == "BOT_kgDOC98s_g")]' \
     | python3 "$section_classifier" --records \
     | jq -c --arg bot "$SECURITY_REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
       [.[] | select(.author.login == $bot and .author.id == "BOT_kgDOC98s_g")
@@ -677,7 +710,7 @@ active_security_findings() {
     | jq -rs --arg head "$head_sha" '[.[] | .data.repository.pullRequest.reviews.nodes[]? | select(.author.login == "chatgpt-codex-connector" and .author.id == "BOT_kgDOC98s_g" and .commit.oid == $head) | {id:.databaseId, dismissed:(.state == "DISMISSED")}]')"
   # shellcheck disable=SC2016
   inline_findings="$(gh api "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate --slurp \
-    | jq -c '[.[][]]' | python3 "$section_classifier" --records \
+    | jq -c '[.[][] | select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot")]' | python3 "$section_classifier" --records \
     | jq -c --argjson reviews "$security_reviews" --arg head "$head_sha" --arg prefix "$head_prefix" '
       [.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot")
        | select(.original_commit_id == $head and .in_reply_to_id == null)
@@ -692,7 +725,7 @@ active_security_findings() {
   # section's explicit or authenticated coordinator binding to this head.
   # shellcheck disable=SC2016
   issue_comment_findings="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
-    | jq -c '[.[][]]' | python3 "$section_classifier" --records \
+    | jq -c '[.[][] | select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot")]' | python3 "$section_classifier" --records \
     | jq -c --arg bot "$SECURITY_REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
       [.[] | select(.user.login == $bot and .user.id == 199175422 and .user.type == "Bot")
        | (any(.review_gate_sections[]?; .parser_ambiguous == true and
@@ -700,7 +733,8 @@ active_security_findings() {
        # Mutable ambiguous text cannot authenticate its lexical footer scope.
        | select($uncertain or any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true
            and (.target_ref == $head or .target_ref == $prefix)))
-       | {source:"issue-comment", id:(.id // 0 | tostring), body:(.body // ""), uncertain:$uncertain}]')"
+       | {source:"issue-comment", id:(.id // 0 | tostring), body:(.body // ""), uncertain:$uncertain}
+       + (if $uncertain then {scope_unknown:true} else {} end)]')"
   printf '%s\n%s\n%s\n' "$review_findings" "$issue_comment_findings" "$inline_findings" \
     | jq -cs '.[0] + .[1] + .[2] | unique'
 }
@@ -724,6 +758,7 @@ regular_evidence() {
       -F owner="$review_owner" \
       -F name="$review_repo" \
       -F number="$pr_number" \
+      | jq -c '.data.repository.pullRequest.reviews.nodes |= map(select(.author.login == "chatgpt-codex-connector" and .author.id == "BOT_kgDOC98s_g"))' \
       | python3 "$section_classifier" --records \
       | jq -cs --slurpfile prior_input <(printf '%s' "$prior_record") \
         --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
@@ -841,7 +876,8 @@ regular_evidence() {
                                    and (($record.commit.oid // "") != $head)),
               clean: ($section.parser_ambiguous != true and .state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and ($section.regular_clean == true or ($body | strict_stock_clean_envelope)))}]}'
   )"
-  issue_comment_pages="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp)"
+  issue_comment_pages="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
+    | jq -c '[.[] | map(select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot"))]')"
   if [[ "${REQUIRE_CLEAN_ISSUE_COMMENT_RECEIPT:-false}" == true ]]; then
     # A historical body/timestamp receipt cannot prove the mutable comment is
     # still the same revision: GitHub timestamps have only second precision.
@@ -887,6 +923,7 @@ regular_evidence() {
     issue_comment_pages="$(jq -c '.comments' <<< "$issue_comment_receipt_data")"
   fi
   issue_comment_records="$(printf '%s' "$issue_comment_pages" \
+      | jq -c '[.[] | map(select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot"))]' \
       | python3 "$section_classifier" --records \
       | jq -c --slurpfile prior_input <(printf '%s' "$prior_record") \
           --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
@@ -1067,7 +1104,7 @@ write_security_finding_observations() {
     exit 1
   fi
   # Separate opaque holds from assertions that an actual finding was observed.
-  if ! { jq -r '.[] | select(.uncertain == true) | .source + ":" + .id + (if .inline_id != null then "; inline:" + .inline_id else "" end)' <<< "$findings";
+  if ! { jq -r '.[] | select(.uncertain == true) | (if .scope_unknown == true then "unbound:" else "" end) + .source + ":" + .id + (if .inline_id != null then "; inline:" + .inline_id else "" end)' <<< "$findings";
          printf '%s' "${security_uncertainty_origins:-}"; } \
        | LC_ALL=C sort -u > "$CANONICAL_SECURITY_FINDING_OUTPUT.uncertainty"; then
     echo "Could not persist canonical security uncertainty origins." >&2
@@ -1076,10 +1113,15 @@ write_security_finding_observations() {
 }
 
 stamp_security_uncertainty() {
-  local origin="$1"
+  local origin="$1" label="Security uncertainty"
+  if [[ "$origin" == unbound:issue-comment:* ]]; then
+    origin="${origin#unbound:}"
+    label="Unbound Security uncertainty"
+  fi
   [[ "$origin" =~ ^(review:[1-9][0-9]*(\;\ inline:[1-9][0-9]*)?|issue-comment:[1-9][0-9]*)$ ]] || return 1
   stamp_status "review-security-history" pending \
-    "Security uncertainty for PR #$pr_number on head $head_sha; $origin; uncertain" >/dev/null
+    "$label for PR #$pr_number on head $head_sha; $origin; uncertain" >/dev/null
+  [[ "$label" == "Security uncertainty" ]] || origin="unbound:$origin"
   security_uncertainty_origins+="$origin"$'\n'
 }
 
@@ -1327,6 +1369,7 @@ stamp_security_finding_history() {
     source="$(jq -r '.source' <<< "$finding")"
     key="$source:$(jq -r '.id' <<< "$finding")"
     if [[ "$(jq -r '.uncertain // false' <<< "$finding")" == true ]]; then
+      [[ "$(jq -r '.scope_unknown // false' <<< "$finding")" != true ]] || key="unbound:$key"
       if [[ "$(jq -r '.inline_id // empty' <<< "$finding")" != "" ]]; then
         [[ "$(jq -r '.original_commit_id' <<< "$finding")" == "$head_sha" ]] || return 1
         key+="; inline:$(jq -r '.inline_id' <<< "$finding")"
@@ -1484,6 +1527,7 @@ read_gate_snapshot() (
       finding_count: $finding_count,
       security_finding_count: $security_finding_count,
       security_uncertainty_count: ([$security_findings[] | select(.uncertain == true)] | length),
+      security_unknown_scope_count: ([$security_findings[] | select(.scope_unknown == true)] | length),
       security_findings: $security_findings,
       latest_finding_at: $latest_finding_at}'
 )
@@ -1613,6 +1657,15 @@ require_clean_regular_snapshot() {
   # persist statuses, and a resolved thread is not a native review dismissal.
   if [[ "$regular_finding_count" -gt 0 || "${edited_finding:-false}" == true ]] || { [[ "$(finding_history_head "$gate_snapshot")" == "$head_sha" ]] && ! regular_findings_dismissed "$gate_snapshot"; }; then
     stamp_review_gate pending "Unresolved finding history; fix code or record authorized review dismissal"
+    gate_pending
+  fi
+  if jq -e --arg pr "$pr_number" --arg head "$head_sha" '
+      any(.[][]; .context == "review-security-history" and .state == "pending" and
+          (.description // "" | startswith("Unbound Security uncertainty for PR #" + $pr + " on head " + $head + ";")))
+    ' <<< "$capture_statuses" >/dev/null ||
+     [[ "$(jq -r '.security_unknown_scope_count // 0' <<< "$gate_snapshot")" -gt 0 ]] ||
+     [[ "${security_uncertainty_origins:-}" == *unbound:issue-comment:* ]]; then
+    stamp_review_gate pending "Security source scope unknown; obtain authenticated source correction and fresh review"
     gate_pending
   fi
   if [[ "$(jq -r '.security_uncertainty_count // 0' <<< "$gate_snapshot")" -gt 0 ||
@@ -1863,7 +1916,9 @@ if [[ -n "$finding_after" ]]; then
   stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $finding_after; PR #$pr_number; withdrawn delivery" >/dev/null
 fi
 issue_comment_facts=""
-if [[ "$event_name" == issue_comment && -f "$event_path" ]]; then
+if [[ "$event_name" == issue_comment && -f "$event_path" ]] &&
+   jq -e '.comment.user | .id == 199175422 and .type == "Bot" and
+     .login == "chatgpt-codex-connector[bot]"' "$event_path" >/dev/null; then
   section_classifier="${REVIEW_SECTIONS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/review_sections.py}"
   [[ -f "$section_classifier" ]] || {
     echo "The canonical review-section classifier is unavailable; event remains pending." >&2
@@ -2008,7 +2063,7 @@ fi
           (.security_uncertain == true or .kind == "security" or .security_event == true or .security_finding == true))
     ' <<< "$issue_comment_facts" >/dev/null; then
     uncertain_comment_id="$(jq -r '.comment.id' "$event_path")"
-    stamp_security_uncertainty "issue-comment:$uncertain_comment_id"
+    stamp_security_uncertainty "unbound:issue-comment:$uncertain_comment_id"
   fi
   security_finding=false
   if [[ "$security_event" == true ]] && jq -en \
