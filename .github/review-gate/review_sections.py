@@ -5270,7 +5270,18 @@ def _parse_markdown_document(text, mistune):
         )
         if (
             wrapper
-            and SECURITY_MARKER.fullmatch(wrapper.group(1).strip())
+            and SECURITY_MARKER_COMMENT.search(
+                _visible_html(
+                    _mask_markdown_link_metadata(
+                        _without_inline_code(
+                            _actual_metadata(
+                                _mask_backslash_escaped_container_tags(wrapper.group(1))
+                            )
+                        )
+                    ),
+                    mask_attributes=True,
+                )
+            )
             and index < len(html_rows)
             and SECURITY_MARKER_COMMENT.search(html_rows[index])
             and not _html_visibility_ambiguous(line)
@@ -5449,12 +5460,19 @@ def _parse_markdown_document(text, mistune):
                 # labels cannot authenticate code, title or escaped examples.
                 authority = _visible_html(
                     _mask_markdown_link_metadata(
-                        _without_inline_code(_actual_metadata(raw_unit))
+                        _without_inline_code(
+                            _actual_metadata(
+                                _mask_backslash_escaped_container_tags(raw_unit)
+                            )
+                        )
                     ),
                     mask_attributes=True,
                 )
                 actual_marker = bool(
-                    SECURITY_MARKER_COMMENT.search(authority)
+                    any(
+                        not _backslash_escaped(authority, match.start())
+                        for match in SECURITY_MARKER_COMMENT.finditer(authority)
+                    )
                     and not _html_visibility_ambiguous(raw_unit)
                 )
                 if not actual_marker:
@@ -5473,11 +5491,19 @@ def _parse_markdown_document(text, mistune):
                     # has no validated list ownership; retain uncertainty.
                     return None
                 if kind == "list":
-                    # Task checkbox syntax is a list decoration, not a finding
-                    # owner. The AST equality below still validates raw labels.
-                    priority_label = re.sub(
-                        r"\A[^\S\r\n]*\[[ xX]\][^\S\r\n]+", "", label
+                    # Only literal source task syntax supplies list decoration.
+                    # Escapes, entities, HTML and code cannot create a checkbox.
+                    source_task = re.match(r"\A[ \t]*\[[ xX]\][ \t]+", raw_unit)
+                    rendered_task = re.match(r"\A[^\S\r\n]*\[[ xX]\][^\S\r\n]+", label)
+                    coded_task = re.match(
+                        r"\A[ \t]*(?:`+\[[ xX]\]`+|<code>\[[ xX]\]</code>)[ \t]+",
+                        raw_unit,
+                        re.I,
                     )
+                    if (rendered_task or coded_task) and not source_task:
+                        return None
+                    if source_task and rendered_task:
+                        priority_label = label[rendered_task.end() :]
                 if PRIORITY_RESULT.match(priority_label):
                     count_priorities = len(
                         re.findall(r"\[P[0-3]\]", priority_label, re.I)
@@ -5494,10 +5520,16 @@ def _parse_markdown_document(text, mistune):
                             marked and count_priorities != 1,
                         )
                     )
-                elif actual_marker and SECURITY_MARKER.fullmatch(label.strip()):
+                elif actual_marker and SECURITY_MARKER.fullmatch(
+                    priority_label.strip()
+                ):
                     # The marker is its own security signal. It cannot transfer
                     # ownership to a priority in another physical source cell.
-                    finding_units.append((first + offset, label, True, False))
+                    finding_units.append((first + offset, priority_label, True, False))
+                elif actual_marker:
+                    # Unsupported marker-bearing units cannot silently erase
+                    # security evidence merely because decoration is unmapped.
+                    return None
             visible = " ".join(diagnostic_labels)
             mapped.append((first + offset, visible, tuple(finding_units)))
         if "".join(flattened).replace("\n", "") != _markdown_text(
