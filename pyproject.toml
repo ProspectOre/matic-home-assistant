@@ -18,7 +18,7 @@ dependencies = [
   "grpclib==0.4.9",
   "h2>=4",
   "Pillow>=11",
-  "numpy==2.3.2",
+  "numpy>=2.3.2,<2.4",
   "protobuf>=6",
   "voluptuous>=0.15",
 ]
@@ -31,7 +31,7 @@ test = [
   "pytest>=8",
   "pytest-asyncio>=0.25",
   "pytest-cov>=6",
-  "pytest-homeassistant-custom-component>=0.13.338",
+  "pytest-homeassistant-custom-component==0.13.366",
   "ruff>=0.12",
   "types-protobuf>=6",
 ]
