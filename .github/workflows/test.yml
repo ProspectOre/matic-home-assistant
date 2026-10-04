@@ -24,10 +24,6 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.14"
-      - name: Install native Home Assistant media libraries
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends ffmpeg libturbojpeg0
       - name: Install the actual Home Assistant release and runtime dependencies
         run: |
           python -m venv .compat-venv
