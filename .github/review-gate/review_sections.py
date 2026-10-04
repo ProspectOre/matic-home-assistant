@@ -160,6 +160,12 @@ _LEGACY_METADATA = re.compile(
 )
 
 
+def _markdown_lines(text: str, keepends: bool = False) -> list[str]:
+    """Split physical Markdown CR/LF lines without rewriting inline characters."""
+    lines = re.findall(r"[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$", text)
+    return lines if keepends else [line.rstrip("\r\n") for line in lines]
+
+
 def _backslash_escaped(text: str, position: int) -> bool:
     before = position - 1
     while before >= 0 and text[before] == "\\":
@@ -310,16 +316,19 @@ HTML_SPECIAL_TAGS = frozenset(
 HTML_ITEM_START_BOUNDARY_TAGS = HTML_SPECIAL_TAGS - {"address", "div", "p"}
 HTML_SCOPE_BOUNDARY_TAGS = HTML_BUTTON_SCOPE_BOUNDARY_TAGS - {"button"}
 HTML_IN_BODY_IGNORED_START_TAGS = frozenset(
-    ("body caption col colgroup frame frameset head html "
-     "tbody td tfoot th thead tr").split()
+    (
+        "body caption col colgroup frame frameset head html tbody td tfoot th thead tr"
+    ).split()
 )
 HTML_TABLE_CONTEXT_TAGS = frozenset(
     "caption colgroup table tbody td tfoot th thead tr".split()
 )
 HTML_FOREIGN_BREAKOUT_TAGS = frozenset(
-    ("b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 "
-     "head hr i img li listing menu meta nobr ol p pre ruby s small span strong "
-     "strike sub sup table tt u ul var").split()
+    (
+        "b big blockquote body br center code dd div dl dt em embed h1 h2 h3 h4 h5 h6 "
+        "head hr i img li listing menu meta nobr ol p pre ruby s small span strong "
+        "strike sub sup table tt u ul var"
+    ).split()
 )
 HTML_ITEM_TAGS = frozenset({"li", "dt", "dd"})
 HTML_IMPLIED_END_TAGS = frozenset(
@@ -355,9 +364,6 @@ HTML_BLOCK_RAW_END = re.compile(r"</(?:pre|script|style|textarea)>", re.I)
 HTML_ATTRIBUTE_NAME = re.compile(r"[A-Za-z_:][A-Za-z0-9_.:-]*")
 VISIBLE_CHARACTER_REFERENCE = re.compile(
     r"&(?:#[xX][0-9a-fA-F]+|#[0-9]+|[A-Za-z][A-Za-z0-9]*);?"
-)
-NON_MARKDOWN_LINE_SEPARATORS = str.maketrans(
-    "\v\f\x1c\x1d\x1e\x85\u2028\u2029", " " * 8
 )
 EVIDENCE_LINE_SEPARATORS = str.maketrans(
     "\r\n\v\f\x1c\x1d\x1e\x85\u2028\u2029", " " * 10
@@ -804,7 +810,7 @@ def _reference_definition_scan_text(
     valid_openings: set[int] = set()
     label_closings: dict[int, int] = {}
     offset = 0
-    for line in text.splitlines(keepends=True):
+    for line in _markdown_lines(text, keepends=True):
         source = line.rstrip("\r\n")
         content, quotes, list_indent = _block_prefix(source)
         prefix_length = len(source) - len(content)
@@ -1496,7 +1502,7 @@ def _actual_metadata(
             return html_block_terminator in content
         return html_block_terminator.search(content) is not None
 
-    for line in text.splitlines(keepends=True):
+    for line in _markdown_lines(text, keepends=True):
         line_start = offset
         source_line = line.rstrip("\r\n")
         html_line = html_scan[offset : offset + len(line)].rstrip("\r\n")
@@ -1778,8 +1784,11 @@ def _visible_html(
             if not self.table_modes or not self.table_modes[-1]:
                 return None
             return next(
-                (index for index in range(len(self.open_elements) - 1, -1, -1)
-                 if self.open_elements[index][:2] == ("table", "html")),
+                (
+                    index
+                    for index in range(len(self.open_elements) - 1, -1, -1)
+                    if self.open_elements[index][:2] == ("table", "html")
+                ),
                 None,
             )
 
@@ -1820,19 +1829,28 @@ def _visible_html(
 
             if not process_as_html and (
                 tag in HTML_FOREIGN_BREAKOUT_TAGS
-                or (tag == "font" and any(
-                    name in {"color", "face", "size"} for name, _ in attrs
-                ))
+                or (
+                    tag == "font"
+                    and any(name in {"color", "face", "size"} for name, _ in attrs)
+                )
             ):
                 index = len(self.open_elements) - 1
                 while index >= 0:
                     element, namespace, integration = self.open_elements[index]
-                    if (namespace == "html"
-                            or (namespace == "svg"
-                                and element in SVG_HTML_INTEGRATION_POINT_TAGS)
-                            or (namespace == "math" and (
+                    if (
+                        namespace == "html"
+                        or (
+                            namespace == "svg"
+                            and element in SVG_HTML_INTEGRATION_POINT_TAGS
+                        )
+                        or (
+                            namespace == "math"
+                            and (
                                 integration
-                                or element in MATHML_TEXT_INTEGRATION_POINT_TAGS))):
+                                or element in MATHML_TEXT_INTEGRATION_POINT_TAGS
+                            )
+                        )
+                    ):
                         break
                     index -= 1
                 self._pop_elements(index + 1, self._offset(), self._offset())
@@ -1919,6 +1937,11 @@ def _visible_html(
         def handle_starttag(
             self, tag: str, attrs: list[tuple[str, str | None]]
         ) -> None:
+            if not re.match(
+                r"<[A-Za-z][A-Za-z0-9-]*(?=[ \t\r\n\v\f/>])",
+                self.get_starttag_text(),
+            ):
+                return
             normalized_tag = tag.lower()
             start = self._offset()
             if _backslash_escaped(scan, start):
@@ -1932,10 +1955,14 @@ def _visible_html(
                     if attribute_start < attribute_end:
                         attribute_spans.append((attribute_start, attribute_end))
             namespace = self._start_tag_namespace(normalized_tag, attrs)
-            if (namespace == "html"
-                    and normalized_tag in HTML_IN_BODY_IGNORED_START_TAGS
-                    and (normalized_tag in {"body", "frame", "frameset", "head", "html"}
-                         or self._in_body_insertion_context())):
+            if (
+                namespace == "html"
+                and normalized_tag in HTML_IN_BODY_IGNORED_START_TAGS
+                and (
+                    normalized_tag in {"body", "frame", "frameset", "head", "html"}
+                    or self._in_body_insertion_context()
+                )
+            ):
                 # Review bodies are fragments: document wrappers cannot create
                 # children or enable frameset insertion in the existing body.
                 self._ignore_start_markup(start)
@@ -1945,8 +1972,11 @@ def _visible_html(
                 if self.template_depth == 0 and self.active_form_index is not None:
                     self._ignore_start_markup(start)
                     return
-            if (namespace == "html" and normalized_tag == "table"
-                    and self.template_depth == 0):
+            if (
+                namespace == "html"
+                and normalized_tag == "table"
+                and self.template_depth == 0
+            ):
                 table_index = self._table_insertion_index()
                 if table_index is not None:
                     # In-table insertion closes the current table and then
@@ -2047,8 +2077,12 @@ def _visible_html(
                 elif normalized_tag == "template":
                     self.template_depth += 1
                 in_table = bool(self.table_modes and self.table_modes[-1])
-                if (namespace != "html"
-                        or normalized_tag in {"caption", "td", "th", "template"}):
+                if namespace != "html" or normalized_tag in {
+                    "caption",
+                    "td",
+                    "th",
+                    "template",
+                }:
                     in_table = False
                 elif normalized_tag == "table":
                     in_table = True
@@ -2104,8 +2138,11 @@ def _visible_html(
                     on_stack = self.active_form_on_stack
                     self.active_form_index = None
                     self.active_form_on_stack = False
-                    if (form_index is None or not on_stack
-                            or self._element_in_scope("form") != form_index):
+                    if (
+                        form_index is None
+                        or not on_stack
+                        or self._element_in_scope("form") != form_index
+                    ):
                         self._ignore_end_markup(start)
                         return
                     self._generate_implied_end_tags()
@@ -2318,16 +2355,15 @@ def _visible_html(
 
 def _commit_metadata(text: str) -> str:
     """Keep commit authority outside expandable, commented and code examples."""
-    text = text.translate(NON_MARKDOWN_LINE_SEPARATORS)
     metadata = _visible_html(
         _actual_metadata(text), visible_open=False, mask_attributes=True
     )
-    code_lines = _without_inline_code(metadata).splitlines(keepends=True)
+    code_lines = _markdown_lines(_without_inline_code(metadata), keepends=True)
     lines: list[str] = []
     quote_active = False
     list_content_indent: int | None = None
     list_after_blank = False
-    for index, line in enumerate(metadata.splitlines(keepends=True)):
+    for index, line in enumerate(_markdown_lines(metadata, keepends=True)):
         source = line.rstrip("\r\n")
         structural = code_lines[index].rstrip("\r\n")
         quote_text, quote_depth = _strip_quote_prefix(structural)
@@ -2458,11 +2494,11 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
     rest = body[match.end() :]
     # Metadata is the prefix before the first recognized result heading. Do not
     # let a malformed request marker supply a fallback commit to a section.
-    lines = rest.splitlines()
+    lines = _markdown_lines(rest)
     structural_text = _visible_html(_actual_metadata(rest))
-    structural_lines = _without_inline_code(
-        _mask_backslash_escaped_container_tags(structural_text)
-    ).splitlines()
+    structural_lines = _markdown_lines(
+        _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
+    )
     start = next(
         (
             i
@@ -2516,8 +2552,8 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
 
 
 def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str, str]]:
-    original_lines = body.splitlines()
-    authority_lines = _commit_metadata(body).splitlines()
+    original_lines = _markdown_lines(body)
+    authority_lines = _markdown_lines(_commit_metadata(body))
     # A section beginning inside an expanded container must not lose the
     # container context and acquire its copied footer as commit authority.
     original_lines = [
@@ -2528,15 +2564,17 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
         for index, line in enumerate(original_lines)
     ]
     structural_text = _visible_html(_actual_metadata(body))
-    lines = _without_inline_code(
-        _mask_backslash_escaped_container_tags(structural_text)
-    ).splitlines()
-    priority_lines = _visible_html(
-        _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(body))),
-        mask_attributes=True,
-        markdown_preprocessed=True,
-        decode_entities=True,
-    ).splitlines()
+    lines = _markdown_lines(
+        _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
+    )
+    priority_lines = _markdown_lines(
+        _visible_html(
+            _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(body))),
+            mask_attributes=True,
+            markdown_preprocessed=True,
+            decode_entities=True,
+        )
+    )
     starts: list[int] = []
     kinds: dict[int, str] = {}
     reviewed_counts = [0]
@@ -2724,7 +2762,7 @@ def _shared_footer_ref(raw_sections: list[tuple[str, str]]) -> str | None:
 
 
 def _without_heading(kind: str, section: str) -> str:
-    lines = section.splitlines()
+    lines = _markdown_lines(section)
     if not lines:
         return section
     heading = REGULAR_HEADING if kind == "regular" else SECURITY_HEADING
@@ -2846,7 +2884,7 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
         and INLINE_SECURITY_MARKER.search(decoded_line)
         # Preserve truncation and the ambient Python 3.9 host compatibility.
         for raw_line, decoded_line in zip(  # noqa: B905
-            section.splitlines(), severity_text.splitlines()
+            _markdown_lines(section), _markdown_lines(severity_text)
         )
     )
     coordinator_marker = (
@@ -2862,7 +2900,7 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     )
     security_text = "\n".join(
         line
-        for line in severity_text.splitlines()
+        for line in _markdown_lines(severity_text)
         if not SECURITY_MARKER.fullmatch(line)
     )
     unheaded_security = (
@@ -2890,10 +2928,119 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     return event, finding
 
 
+def _html_visibility_ambiguous(body: str) -> bool:
+    """Accept only balanced, explicit HTML whose visibility needs no tree repair.
+
+    This is an uncertainty boundary, not another HTML tree builder. Unsupported
+    elements, attributes, malformed tokens and formatting reconstruction cannot
+    authorize a clean verdict through the visibility approximation below.
+    """
+    scan = _mask_escaped_container_tags(
+        _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(body)))
+    )
+    # CommonMark URI/email autolinks are text, not raw HTML elements.
+    scan = re.sub(
+        r"<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\x00-\x20]*|"
+        r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9.-]+)>",
+        lambda match: _mask_code_line(match.group()),
+        scan,
+    )
+    safe = frozenset(
+        "div span details summary pre code a b strong em i u s sub sup br hr".split()
+    )
+    formatting = frozenset("a b strong em i u s".split())
+    blocks = frozenset("div details summary pre hr".split())
+    void = frozenset({"br", "hr"})
+    offsets = [0] + [match.end() for match in re.finditer("\n", scan)]
+
+    class ExplicitHTML(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=False)
+            self.stack: list[str] = []
+            self.active: set[str] = set()
+            self.ambiguous = False
+
+        def handle_starttag(self, tag, attrs):
+            raw = self.get_starttag_text()
+            if (
+                tag not in safe
+                or not re.match(r"<[A-Za-z][A-Za-z0-9-]*(?=[ \t\r\n\v\f/>])", raw)
+                or re.search(r"[\v\f\x1c-\x1e\x85\u2028\u2029]", raw)
+                or any(name != "open" or tag != "details" for name, _ in attrs)
+                or len(attrs) > 1
+                or tag in self.active
+                or (tag in blocks and self.active)
+            ):
+                self.ambiguous = True
+            if tag not in void:
+                self.stack.append(tag)
+                if tag in formatting:
+                    self.active.add(tag)
+
+        def handle_startendtag(self, tag, attrs):
+            self.handle_starttag(tag, attrs)
+            if tag not in void:
+                # HTML ignores the self-closing flag on ordinary elements.
+                self.ambiguous = True
+
+        def handle_comment(self, data):
+            # HTMLParser accepts legacy malformed comments that GFM can render
+            # literally. Only the standard lexical form belongs to this subset.
+            line, column = self.getpos()
+            start = offsets[line - 1] + column
+            raw = "<!--" + data + "-->"
+            if (
+                scan[start : start + len(raw)] != raw
+                or data.startswith((">", "->"))
+                or data.endswith("-")
+                or "--" in data
+            ):
+                self.ambiguous = True
+
+        def handle_decl(self, decl):
+            self.ambiguous = True
+
+        def unknown_decl(self, data):
+            self.ambiguous = True
+
+        def handle_pi(self, data):
+            self.ambiguous = True
+
+        def handle_endtag(self, tag):
+            line, column = self.getpos()
+            start = offsets[line - 1] + column
+            end = scan.find(">", start)
+            raw = scan[start : end + 1] if end >= 0 else ""
+            if (
+                not re.fullmatch(r"</[A-Za-z][A-Za-z0-9-]*[ \t\r\n]*>", raw)
+                or not self.stack
+                or self.stack[-1] != tag
+            ):
+                self.ambiguous = True
+                return
+            self.stack.pop()
+            self.active.discard(tag)
+
+    parser = ExplicitHTML()
+    try:
+        parser.feed(scan)
+        parser.close()
+    except (ValueError, AssertionError):
+        return True
+    return parser.ambiguous or bool(parser.stack)
+
+
 def classify_body(body: str) -> dict[str, Any]:
-    # CommonMark line endings are CR/LF. Other splitlines() separators are
-    # inline whitespace, consistently with decoded HTML character references.
-    body = body.translate(NON_MARKDOWN_LINE_SEPARATORS)
+    # Connector activity summaries are display metadata, never verdicts. Match
+    # the anchored protocol marker, not a quoted marker in review prose.
+    if re.match(r"\A\s*<!--\s*codex-pull-request-review-summary\s*-->", body, re.I):
+        return {"request_head": None, "sections": [{
+            "kind": "unheaded", "body": body, "has_result": False,
+            "regular_clean": False, "availability": False,
+            "regular_adverse": False, "security_event": False,
+            "security_finding": False, "target_ref": "__unbound__",
+        }]}
+    ambiguous = _html_visibility_ambiguous(body)
     parsed_body, request_head = _coordinator_body(body)
     raw_sections = _raw_sections(
         parsed_body, coordinator_bound=request_head is not None
@@ -2931,7 +3078,7 @@ def classify_body(body: str) -> dict[str, Any]:
         ordinary_text = _without_heading(kind, ordinary_text)
         ordinary_text = "\n".join(
             line
-            for line in ordinary_text.splitlines()
+            for line in _markdown_lines(ordinary_text)
             if not INLINE_SECURITY_MARKER.search(line)
             and not SECURITY_MARKER.fullmatch(line)
         )
@@ -2964,7 +3111,7 @@ def classify_body(body: str) -> dict[str, Any]:
                 "kind": kind,
                 "body": text,
                 "has_result": has_result,
-                "regular_clean": regular_heading and clean,
+                "regular_clean": regular_heading and clean and not ambiguous,
                 "availability": availability,
                 "regular_adverse": adverse_regular,
                 "security_event": security_event,
@@ -2983,6 +3130,9 @@ def classify_body(body: str) -> dict[str, Any]:
                 ),
             }
         )
+    if ambiguous:
+        for section in sections:
+            section["parser_ambiguous"] = True
     return {"request_head": request_head, "sections": sections}
 
 

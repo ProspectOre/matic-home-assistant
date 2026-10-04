@@ -75,7 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.issue.number }}
           POLICY_REF: ${{ github.workflow_sha }}
-          EXPECTED_REVIEW_SECTIONS_SHA256: '2cc302d81a3c129a309ae1452cc9566e06c4159298e57caefc88ee9b935d2cab'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '4871a7d93dbe8663315574201a90f3d45fc31073e8ed899bb989c19a38767d26'
         shell: bash
         run: |
           set -euo pipefail
@@ -191,19 +191,19 @@ jobs:
               exit 1
             }
             current_review_refs="$(jq -r '
-              ([.current.sections[]? | select(.has_result and .target_ref != "__unbound__")
+              ([.current.sections[]? | select(.has_result and .parser_ambiguous != true and .target_ref != "__unbound__")
                 | .target_ref]
                + (if .current.request_head then [.current.request_head] else [] end))
               | unique[]' <<< "$issue_comment_facts")"
             prior_review_refs="$(jq -r '
-              ([.previous.sections[]? | select(.has_result and .target_ref != "__unbound__")
+              ([.previous.sections[]? | select(.has_result and .parser_ambiguous != true and .target_ref != "__unbound__")
                 | .target_ref]
                + (if .previous.request_head then [.previous.request_head] else [] end))
               | unique[]' <<< "$issue_comment_facts")"
             current_unbound_regular="$(jq -r '
-              any(.current.sections[]?; .regular_adverse and .target_ref == "__unbound__")' <<< "$issue_comment_facts")"
+              any(.current.sections[]?; .parser_ambiguous or (.regular_adverse and .target_ref == "__unbound__"))' <<< "$issue_comment_facts")"
             prior_unbound_regular="$(jq -r '
-              any(.previous.sections[]?; .regular_adverse and .target_ref == "__unbound__")' <<< "$issue_comment_facts")"
+              any(.previous.sections[]?; .parser_ambiguous or (.regular_adverse and .target_ref == "__unbound__"))' <<< "$issue_comment_facts")"
             write_pending_gate_status() {
               local target_head="$1" description="$2" attempt
               for attempt in 1 2 3; do
@@ -251,10 +251,10 @@ jobs:
             fi
             security_event_flags="$(jq -c '
               {
-                current_adverse: any(.current.sections[]?; .security_finding),
-                prior_adverse: any(.previous.sections[]?; .security_finding),
-                current_unbound: any(.current.sections[]?; .security_finding and .target_ref == "__unbound__"),
-                prior_unbound: any(.previous.sections[]?; .security_finding and .target_ref == "__unbound__")
+                current_adverse: any(.current.sections[]?; .security_finding and .parser_ambiguous != true),
+                prior_adverse: any(.previous.sections[]?; .security_finding and .parser_ambiguous != true),
+                current_unbound: any(.current.sections[]?; .security_finding and .parser_ambiguous != true and .target_ref == "__unbound__"),
+                prior_unbound: any(.previous.sections[]?; .security_finding and .parser_ambiguous != true and .target_ref == "__unbound__")
               }
             ' <<< "$issue_comment_facts")"
             if jq -e '.current_unbound or .prior_unbound' <<< "$security_event_flags" >/dev/null; then
@@ -375,7 +375,7 @@ jobs:
             if [[ "$current_event_head" =~ ^[0-9a-f]{40}$ && "$review_head" =~ ^[0-9a-f]{40}$ && "$current_event_head" != "$review_head" && "$cross_head_comment_id" =~ ^[1-9][0-9]*$ ]] && jq -e \
               --arg head "$current_event_head" --arg prefix "${current_event_head:0:10}" '
               any(.current.sections[]?;
-                  .regular_adverse
+                  .regular_adverse and .parser_ambiguous != true
                   and (.target_ref == $head or .target_ref == $prefix))
             ' <<< "$issue_comment_facts" >/dev/null; then
               gh api "repos/$REPO/statuses/$current_event_head" --silent \
@@ -606,10 +606,10 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'cff0a1ddee29f4dfc9f023cf18f9fcdb2762f31bc69577d60d14c017b41bd835'
+          EXPECTED_SHA256: '9bae374b898efda9ef997b9849ca9f9c9fca2f9f499fa2c39238bfbe29223b28'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '2cc302d81a3c129a309ae1452cc9566e06c4159298e57caefc88ee9b935d2cab'
-          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'bf9ad41c2e35b4a2e32d6968afeba87c1eaebb48878445bcfeed658ff602afd5'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '4871a7d93dbe8663315574201a90f3d45fc31073e8ed899bb989c19a38767d26'
+          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '4c29f1f8f88813f736c348c24f3315b1f53add80982f33642b1f7b0ba52bc1be'
         shell: bash
         run: |
           set -euo pipefail

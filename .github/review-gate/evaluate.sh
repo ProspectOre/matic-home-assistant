@@ -534,56 +534,21 @@ head_prefix_resolves() {
 }
 
 base_change_marker_exists() {
-  # A new authenticated review can recover a known invalidation on this head
-  # only when it covers the unchanged current comparison strictly afterward.
-  local verdict="$1" statuses markers marker metadata marker_base embedded_at
-  local marker_at created_at updated_at verdict_at target_url prefix run_id run relationship
+  # Native review deliveries identify the head, but not the reviewed base or
+  # originating request. A later delivery can still belong to an in-flight
+  # pre-invalidation request. Submission time and ancestry cannot recover it.
+  local statuses
   statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)" || exit 1
-  markers="$(printf '%s\n' "$statuses" | jq -c --arg context "$REVIEW_BASE_CONTEXT" --arg pr "$pr_number" '
-    [.[][] | select(.context == $context and .state == "pending")
-      | select((.description // "") | (startswith("Base changed for PR #" + $pr + " (") or startswith("Base changed for PR #" + $pr + " at base ")))]')" || exit 1
-  [[ "$markers" != '[]' ]] || return 1
-  [[ "$verdict" != null ]] || return 0
-  verdict_at="$(normalize_timestamp "$(jq -r '.at // empty' <<< "$verdict")")" || return 0
-  [[ -n "$verdict_at" ]] || return 0
-  relationship="$(gh api "repos/$REPO/compare/$base_sha...$head_sha" --jq '.status')" || exit 1
-  [[ "$relationship" == ahead || "$relationship" == identical ]] || return 0
-  prefix="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/"
-  while IFS= read -r marker; do
-    jq -e '.creator.login == "github-actions[bot]" and .creator.type == "Bot"
-      and .creator.id == 41898282' <<< "$marker" >/dev/null || return 0
-    metadata="$(jq -r --arg pr "$pr_number" '
-      .description | capture("^Base changed for PR #" + $pr +
-        "(?: [(](?<modern>[0-9a-f]{40})[)]| at base (?<legacy>[0-9a-f]{40})(?: at (?<at>[^;]+))?); push a new head (?:for fresh review|before @codex review)[.]?$")
-      | [(.modern // .legacy), (.at // "")] | @tsv' <<< "$marker")" || return 0
-    [[ -n "$metadata" ]] || return 0
-    IFS=$'\t' read -r marker_base embedded_at <<< "$metadata"
-    [[ "$marker_base" == "$base_sha" ]] || return 0
-    created_at="$(normalize_timestamp "$(jq -r '.created_at // empty' <<< "$marker")")" || return 0
-    updated_at="$(normalize_timestamp "$(jq -r '.updated_at // empty' <<< "$marker")")" || return 0
-    [[ -n "$created_at" && -n "$updated_at" ]] || return 0
-    marker_at="$created_at"
-    if [[ "$updated_at" > "$marker_at" ]]; then marker_at="$updated_at"; fi
-    if [[ -n "$embedded_at" ]]; then
-      embedded_at="$(normalize_timestamp "$embedded_at")" || return 0
-      if [[ "$embedded_at" > "$marker_at" ]]; then marker_at="$embedded_at"; fi
-    fi
-    [[ "$verdict_at" > "$marker_at" ]] || return 0
-    target_url="$(jq -r '.target_url // empty' <<< "$marker")" || return 0
-    [[ "$target_url" == "$prefix"* ]] || return 0
-    run_id="${target_url#"$prefix"}"
-    [[ "$run_id" =~ ^[1-9][0-9]*$ ]] || return 0
-    run="$(gh api "repos/$REPO/actions/runs/$run_id")" || exit 1
-    jq -e --arg id "$run_id" --arg repo "$REPO" --arg branch "$DEFAULT_BRANCH" --arg base "$base_sha" '
-      .id == ($id | tonumber) and .repository.full_name == $repo
-      and .head_branch == $branch and .head_sha == $base
-      and .status == "completed" and .conclusion == "success"
-      and ((.path == ".github/workflows/review-base-advance.yml" and .event == "push")
-        or (.path == ".github/workflows/review-base-change.yml" and .event == "pull_request_target")
-        or (.path == ".github/workflows/review-gate.yml"
-          and (.event == "pull_request_target" or .event == "workflow_dispatch" or .event == "issue_comment")))' <<< "$run" >/dev/null || return 0
-  done < <(jq -c '.[]' <<< "$markers")
-  return 1
+  printf '%s\n' "$statuses" \
+    | jq -e --arg context "$REVIEW_BASE_CONTEXT" --arg pr "$pr_number" '
+        any(.[][]; .context == $context and .state == "pending"
+          and ((.description // "") |
+            (startswith("Base changed for PR #" + $pr + " (")
+             or startswith("Base changed for PR #" + $pr + " at base "))))' >/dev/null
+  local result=$?
+  # jq's empty-match exit is expected; API/parse failures must fail the gate.
+  if [[ "$result" != 0 && "$result" != 1 ]]; then exit 1; fi
+  return "$result"
 }
 
 latest_regular_issue_comment_at() {
@@ -699,7 +664,7 @@ active_security_findings() {
        # A top-level PR review has an immutable commit.oid. That authenticated
        # owner wins over a stale or foreign Reviewed commit footer in the body;
        # section target refs remain authoritative for mutable issue comments.
-       | select(any(.review_gate_sections[]?; .security_finding == true))
+       | select(any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true))
        | {source:"review", id:(.databaseId // 0 | tostring)}]')"
   # Inline findings are authenticated by immutable original commit and parent
   # review identity. Textual references cannot retarget a historical section.
@@ -715,7 +680,7 @@ active_security_findings() {
       [.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot")
        | select(.original_commit_id == $head and .in_reply_to_id == null)
        | select(.pull_request_review_id as $id | $reviews | index($id))
-       | select(any(.review_gate_sections[]?; .security_finding == true))
+       | select(any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true))
        | {source:"review", id:(.pull_request_review_id | tostring)}]')"
   # Issue comments lack an immutable review commit, so require their own
   # section's explicit or authenticated coordinator binding to this head.
@@ -724,7 +689,7 @@ active_security_findings() {
     | jq -c '[.[][]]' | python3 "$section_classifier" --records \
     | jq -c --arg bot "$SECURITY_REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
       [.[] | select(.user.login == $bot and .user.id == 199175422 and .user.type == "Bot")
-       | select(any(.review_gate_sections[]?; .security_finding == true
+       | select(any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true
            and (.target_ref == $head or .target_ref == $prefix)))
        | {source:"issue-comment", id:(.id // 0 | tostring), body:(.body // "")}]')"
   printf '%s\n%s\n%s\n' "$review_findings" "$issue_comment_findings" "$inline_findings" \
@@ -843,28 +808,29 @@ regular_evidence() {
            | . as $record
            | (if .state == "CHANGES_REQUESTED" then [{body: .body}] else .review_gate_sections end)[] as $section
            | ($section.body // "") as $body
-           | select(.state == "CHANGES_REQUESTED" or .review_gate_prefix_known != false or $section.regular_adverse)
-           | select(.state == "CHANGES_REQUESTED" or $section.kind == "regular" or $section.regular_adverse)
+           | select(.state == "CHANGES_REQUESTED" or .review_gate_prefix_known != false or $section.regular_adverse or $section.parser_ambiguous)
+           | select(.state == "CHANGES_REQUESTED" or $section.kind == "regular" or $section.regular_adverse or $section.parser_ambiguous)
            | select(.state == "CHANGES_REQUESTED" or $section.availability != true)
            # A top-level PR review is immutable at commit.oid. Historical
            # reviews cannot be retargeted by a current Reviewed commit footer;
            # current adverse sections may survive a stale footer.
            | select(.state == "CHANGES_REQUESTED" or $section.target_ref == $head or $section.target_ref == $prefix
-                   or ($section.regular_adverse and ((.commit.oid // "") == $head or $section.target_ref == "__unbound__")))
+                   or (($section.regular_adverse or $section.parser_ambiguous) and ((.commit.oid // "") == $head or $section.target_ref == "__unbound__")))
            | {at: (.updatedAt // .submittedAt),
               updated_at: (.updatedAt // .submittedAt),
               created_at: .submittedAt,
               id: (.databaseId | tostring),
               source: "review",
               dismissed: (.state == "DISMISSED"),
-              unverified: (.state != "CHANGES_REQUESTED" and $section.regular_adverse == true
+              parser_ambiguous: ($section.parser_ambiguous == true),
+              unverified: (.state != "CHANGES_REQUESTED" and ($section.parser_ambiguous == true or ($section.regular_adverse == true
                            and $section.target_ref == "__unbound__"
-                           and (($record.commit.oid // "") != $head)),
+                           and (($record.commit.oid // "") != $head)))),
               unverified_finding: (.state != "CHANGES_REQUESTED"
                                    and $section.regular_adverse == true
                                    and $section.target_ref == "__unbound__"
                                    and (($record.commit.oid // "") != $head)),
-              clean: (.state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and ($section.regular_clean == true or ($body | strict_stock_clean_envelope)))}]}'
+              clean: ($section.parser_ambiguous != true and .state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and ($section.regular_clean == true or ($body | strict_stock_clean_envelope)))}]}'
   )"
   issue_comment_pages="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp)"
   if [[ "${REQUIRE_CLEAN_ISSUE_COMMENT_RECEIPT:-false}" == true ]]; then
@@ -1006,10 +972,11 @@ regular_evidence() {
            | . as $record
            | .review_gate_sections[] as $section
            | ($section.body // "") as $body
-           | select(.review_gate_prefix_known != false or $section.regular_adverse or $section.security_finding)
-           | select($section.kind == "regular" or $section.regular_adverse or ($section.security_finding and $section.target_ref == "__unbound__"))
+           | select(.review_gate_prefix_known != false or $section.regular_adverse or $section.security_finding or $section.parser_ambiguous)
+           | select($section.kind == "regular" or $section.regular_adverse or $section.parser_ambiguous or ($section.security_finding and $section.target_ref == "__unbound__"))
            | select($section.availability != true)
-           | select($section.target_ref == $head or $section.target_ref == $prefix or (($section.regular_adverse or $section.security_finding) and $section.target_ref == "__unbound__"))
+           # Unsupported HTML cannot authenticate mutable footer scope.
+           | select($section.parser_ambiguous or $section.target_ref == $head or $section.target_ref == $prefix or (($section.regular_adverse or $section.security_finding) and $section.target_ref == "__unbound__"))
            | ($section.regular_clean == true or ($body | strict_stock_clean_issue_comment_envelope)) as $clean_envelope
            | ($clean_envelope and ($body | test("(?is)<details>"))) as $footer_clean
            | (.review_gate_creation_receipt == true or (($require_creation_receipt | not) and $footer_clean)) as $clean_proof
@@ -1024,10 +991,11 @@ regular_evidence() {
               # edited. Do not let it preserve an older clean verdict: wait
               # for the authenticated, body-bound native creation receipt.
               neutral: false,
-              unverified: ((($section.regular_adverse == true or $section.security_finding == true) and $section.target_ref == "__unbound__") or ($clean_envelope and ($clean_proof | not))),
+              parser_ambiguous: ($section.parser_ambiguous == true),
+              unverified: ($section.parser_ambiguous == true or (($section.regular_adverse == true or $section.security_finding == true) and $section.target_ref == "__unbound__") or ($clean_envelope and ($clean_proof | not))),
               unverified_finding: (($section.regular_adverse == true or $section.security_finding == true)
                                    and $section.target_ref == "__unbound__"),
-              clean: ($clean_proof and $clean_envelope)}])'
+              clean: ($section.parser_ambiguous != true and $clean_proof and $clean_envelope)}])'
     )"
   printf '%s\n%s\n' "$review_records" "$issue_comment_records" \
     | jq -cs '
@@ -1306,7 +1274,8 @@ reconcile_clean_security_history() {
       | python3 "${REVIEW_SECTIONS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/review_sections.py}" --records \
       | jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
           [.review_gate_sections[]? | select(.security_event == true or .security_finding == true)] as $sections
-          | any($sections[]; .security_finding != true
+          | all(.review_gate_sections[]?; .parser_ambiguous != true)
+          and any($sections[]; .security_finding != true
               and (.target_ref == $head or .target_ref == $prefix))
           and all($sections[]; .security_finding != true
               or (.target_ref != $head and .target_ref != $prefix and .target_ref != "__unbound__"))' >/dev/null || continue
@@ -1431,7 +1400,7 @@ read_gate_snapshot() (
       .[0] as $deliveries | .[1] as $reviews | .[2] as $thread_summary
       |
       ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
-      | (([$deliveries[] | select((.clean | not) and .neutral != true and .unverified != true) | .at]
+      | (([$deliveries[] | select((.clean | not) and .neutral != true and (.unverified != true or .dismissed == true)) | .at]
           + [$reviews[]
              | select(.id as $id | ($finding_ids | index($id)) != null)
              | .at]
@@ -1440,7 +1409,7 @@ read_gate_snapshot() (
           + (if $finding_history_at == "" then [] else [$finding_history_at] end)
           + (if $withdrawal_at == "" then [] else [$withdrawal_at] end))
          | max // "") as $latest_finding_at
-      | (([$deliveries[] | select((.clean | not) and .neutral != true and .unverified != true) | .at]
+      | (([$deliveries[] | select((.clean | not) and .neutral != true and (.unverified != true or .dismissed == true)) | .at]
           + [$reviews[]
              | select(.id as $id | ($finding_ids | index($id)) != null)
              | .at]
@@ -1453,8 +1422,8 @@ read_gate_snapshot() (
            [$latest_delivery.at, (if $latest_delivery.source == "review" then 1 else 0 end)]
          end) as $latest_delivery_order
       | {verdict:
-           (if any($deliveries[]; .unverified == true and
-                   (.unverified_finding == true or
+           (if any($deliveries[]; .unverified == true and .dismissed != true and
+                   (.unverified_finding == true or .parser_ambiguous == true or
                     ([.at, (if .source == "review" then 1 else 0 end)] >= $latest_delivery_order))) then null
             elif $latest_delivery != null
                  and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment")
@@ -1629,9 +1598,9 @@ require_clean_regular_snapshot() {
     stamp_status "$REVIEW_REVIEW_CONTEXT" pending \
       "Regular review invalidated at $latest_finding_at; PR #$pr_number; regular evidence changed; require a newer clean normal verdict"
   fi
-  if base_change_marker_exists "$verdict"; then
+  if base_change_marker_exists; then
     stamp_review_gate pending "Waiting for fresh regular review of the current base"
-    echo "The base-change marker is not covered by authenticated post-invalidation review."
+    echo "The base-change marker has no authenticated request and reviewed-base binding."
     gate_pending
   fi
 
@@ -1750,9 +1719,22 @@ if [[ ("$event_name" == pull_request_review || "$event_name" == pull_request_rev
         (.comment.pull_request_review_id | type == "number" and . > 0) and
         .comment.original_commit_id == $head
       end)' "$event_path" >/dev/null; then
+  if [[ "$(jq -r '.action' "$event_path")" != dismissed ]] && jq -e '
+      any([.current.sections[]?, .previous.sections[]?][]; .parser_ambiguous == true)
+    ' <<< "$review_sections_facts" >/dev/null; then
+    # Preserve uncertainty independently from finding history. The immutable
+    # native review/comment commit above authenticates this head; editing or
+    # deleting an unsupported body must require a newer independent verdict.
+    uncertain_at="$(jq -r '.review.updated_at // .comment.updated_at // .review.submitted_at // .comment.created_at // empty' "$event_path")"
+    uncertain_at="${uncertain_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    uncertain_at="$(normalize_timestamp "$uncertain_at")"
+    stamp_status "$REVIEW_REVIEW_CONTEXT" pending \
+      "Regular review invalidated at $uncertain_at; PR #$pr_number; uncertain captured native body" >/dev/null
+    evidence_after="$uncertain_at"
+  fi
   relayed_security_finding=false
   if jq -e '
-    any([.current.sections[]?, .previous.sections[]?][]; .security_finding == true)
+    any([.current.sections[]?, .previous.sections[]?][]; .security_finding == true and .parser_ambiguous != true)
   ' <<< "$review_sections_facts" >/dev/null; then
     relayed_security_finding=true
   fi
@@ -1868,10 +1850,10 @@ fi
      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
      .comment.user.login == "chatgpt-codex-connector[bot]" and
      ([.comment.body // "", .changes.body.from // ""] |
-       all(test("(?is)^[[:space:]]*<!--[[:space:]]*codex-pull-request-review-summary[[:space:]]*-->") | not)) and
+       any(length > 0 and (test("(?is)^[[:space:]]*<!--[[:space:]]*codex-pull-request-review-summary[[:space:]]*-->") | not))) and
      (.action == "edited" or .action == "deleted" or
        ($native_head_bound == "true" and
-        any([$facts[0].current.sections[]?, $facts[0].previous.sections[]?][]; .has_result == true)))
+        any([$facts[0].current.sections[]?, $facts[0].previous.sections[]?][]; .has_result == true or .parser_ambiguous == true)))
    ' "$event_path" >/dev/null; then
   edited_clean=false
   security_event=false
@@ -1932,7 +1914,7 @@ fi
     if [[ "$native_event_head_bound" == true ]]; then
       event_regular_finding_heads="$(jq -nr --slurpfile facts <(printf '%s' "$issue_comment_facts") '
         [$facts[0].current.sections[], $facts[0].previous.sections[]]
-        | map(select(.regular_adverse) | .target_ref) | unique[]')"
+        | map(select(.regular_adverse and .parser_ambiguous != true) | .target_ref) | unique[]')"
       while IFS= read -r finding_ref; do
         [[ -n "$finding_ref" ]] || continue
         if [[ "$finding_ref" == "__unbound__" ]]; then
@@ -1971,7 +1953,7 @@ fi
   security_finding=false
   if [[ "$security_event" == true ]] && jq -en \
       --slurpfile facts <(printf '%s' "$issue_comment_facts") '
-      any([$facts[0].current.sections[], $facts[0].previous.sections[]][]; .security_finding)
+      any([$facts[0].current.sections[], $facts[0].previous.sections[]][]; .security_finding and .parser_ambiguous != true)
     ' >/dev/null; then
     security_finding=true
   fi
@@ -1979,7 +1961,7 @@ fi
   if [[ "$security_finding" == true ]]; then
     security_finding_heads="$(jq -nr --slurpfile facts <(printf '%s' "$issue_comment_facts") '
       [$facts[0].current.sections[], $facts[0].previous.sections[]]
-      | map(select(.security_finding) | .target_ref) | unique[]')"
+      | map(select(.security_finding and .parser_ambiguous != true) | .target_ref) | unique[]')"
     if [[ -z "$security_finding_heads" ]]; then
       security_finding_heads="__unbound__"
     fi
@@ -2013,7 +1995,7 @@ fi
       done <<< "$security_finding_heads"
       edited_clean=true
     else
-      withdrawal_at="$(jq -r '.comment.updated_at // empty' "$event_path")"
+      withdrawal_at="$(jq -r '.comment.updated_at // .comment.created_at // empty' "$event_path")"
       withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
       security_marker="withdrawn delivery"
       if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
@@ -2086,12 +2068,23 @@ fi
       fi
     fi
   fi
+  event_parser_uncertain=false
+  if jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
+      any([.current.sections[]?, .previous.sections[]?][]; .parser_ambiguous == true)
+    ' <<< "$issue_comment_facts" >/dev/null; then
+    event_parser_uncertain=true
+    edited_clean=false
+  fi
   if [[ "$edited_clean" != true ]]; then
     withdrawal_at="$(jq -r '.comment.updated_at // empty' "$event_path")"
     withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     comment_id="$(jq -r '.comment.id // empty' "$event_path")"
     if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
-      withdrawal_marker="withdrawn issue-comment:$comment_id"
+      if [[ "$event_parser_uncertain" == true ]]; then
+        withdrawal_marker="uncertain issue-comment:$comment_id"
+      else
+        withdrawal_marker="withdrawn issue-comment:$comment_id"
+      fi
     else
       withdrawal_marker="withdrawn delivery"
     fi

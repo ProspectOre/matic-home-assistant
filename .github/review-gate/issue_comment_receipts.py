@@ -496,9 +496,12 @@ def may_be_clean_review_comment(body):
         os.path.dirname(__file__), "review_sections.py"
     )
     module = review_section_module(path)
+    classified = module.classify_body(body)["sections"]
+    if any(section.get("parser_ambiguous") for section in classified):
+        return False
     bound_clean = any(
         section["regular_clean"] and section["target_ref"] != "__unbound__"
-        for section in module.classify_body(body)["sections"]
+        for section in classified
     )
     # Keep the legacy automated-suggestions envelope eligible for proof too.
     return bound_clean or (
