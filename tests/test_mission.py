@@ -17,8 +17,9 @@ def _mission(mission_id: int) -> bytes:
     return b"\x15" + struct.pack("<I", mission_id)
 
 
-def _labeled(mission_id: int, label: bytes) -> bytes:
-    return _bfield(1, _mission(mission_id)) + _bfield(2, _bfield(2, label))
+def _labeled(mission_id: int, label: bytes | int) -> bytes:
+    encoded = _vfield(1, label) if isinstance(label, int) else _bfield(2, label)
+    return _bfield(1, _mission(mission_id)) + _bfield(2, encoded)
 
 
 def _state(
@@ -56,6 +57,93 @@ def test_decode_unknown_active_variant_fails_closed() -> None:
     assert state.active_floor is None
 
 
+@pytest.mark.parametrize("active_index", [0, 3])
+def test_decode_four_floors_with_a_numeric_only_label(active_index: int) -> None:
+    """A synthetic four-floor snapshot retains the reported 08 05 label form."""
+    floors = tuple(
+        _labeled(mission_id, label)
+        for mission_id, label in (
+            (42, b"Main"),
+            (84, b"Study"),
+            (126, b"Loft"),
+            (168, 5),
+        )
+    )
+    assert floors[-1].endswith(b"\x12\x02\x08\x05")
+
+    state = decode_mission_client_state(
+        _state(active=floors[active_index], canonical=floors)
+    )
+
+    assert state.active_floor is state.mapped_floors[active_index]
+    assert [floor.label for floor in state.mapped_floors] == [
+        "Main",
+        "Study",
+        "Loft",
+        "Floor",
+    ]
+    assert [floor.mission_id for floor in state.mapped_floors] == [42, 84, 126, 168]
+    for floor in state.mapped_floors:
+        assert (
+            floor.mission_token
+            == hashlib.sha256(_mission(floor.mission_id)).hexdigest()
+        )
+
+
+@pytest.mark.parametrize("label", [0, 5, 127, 2**64 - 1, b"Main"])
+def test_decode_labels_accepts_bounded_additive_metadata(label: bytes | int) -> None:
+    encoded = _vfield(1, label) if isinstance(label, int) else _bfield(2, label)
+    canonical = (
+        _bfield(1, _mission(42))
+        + _bfield(2, encoded + _bfield(3, b"future label metadata"))
+        + _vfield(3, 1)
+    )
+    state = decode_mission_client_state(
+        _state(active=_labeled(42, label), canonical=(canonical,))
+    )
+    assert state.active_floor is state.mapped_floors[0]
+    assert state.active_floor.label == ("Main" if isinstance(label, bytes) else "Floor")
+
+
+@pytest.mark.parametrize("other_label", [6, b"Floor"])
+def test_numeric_label_does_not_hide_active_canonical_disagreement(
+    other_label: bytes | int,
+) -> None:
+    with pytest.raises(DecodeError, match="does not match"):
+        decode_mission_client_state(
+            _state(active=_labeled(42, 5), canonical=(_labeled(42, other_label),))
+        )
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        b"",
+        _vfield(3, 5),
+        _bfield(1, b"bad"),
+        _vfield(2, 5),
+        _vfield(1, 5) * 2,
+        _bfield(2, b"Main") * 2,
+        _vfield(1, 5) + _bfield(2, b"Main"),
+        _vfield(1, 5) + _bfield(1, b"bad"),
+        _bfield(2, b"Main") + _vfield(2, 5),
+    ],
+)
+def test_decode_rejects_missing_ambiguous_or_wrong_wire_label(label: bytes) -> None:
+    floor = _bfield(1, _mission(42)) + _bfield(2, label)
+    with pytest.raises(DecodeError, match=r"floor label.*shape"):
+        decode_mission_client_state(_state(active=floor, canonical=(floor,)))
+
+
+@pytest.mark.parametrize(
+    "extra", [_vfield(1, 42), _bfield(1, _mission(42)), _vfield(2, 5), _bfield(2, b"")]
+)
+def test_additive_metadata_does_not_hide_repeated_known_mission_fields(extra: bytes):
+    floor = _labeled(42, 5) + extra
+    with pytest.raises(DecodeError, match=r"labeled mission.*shape"):
+        decode_mission_client_state(_state(active=floor, canonical=(floor,)))
+
+
 @pytest.mark.parametrize(
     ("payload", "message"),
     [
@@ -76,14 +164,11 @@ def test_decode_unknown_active_variant_fails_closed() -> None:
             "does not match",
         ),
         (
-            _state(active=b"bad", canonical=(_labeled(42, b"Main"),)),
-            "labeled mission",
+            _state(active=_labeled(42, 5), canonical=(_labeled(84, 5),)),
+            "does not match",
         ),
         (
-            _state(
-                active=_labeled(42, b"Main"),
-                canonical=(_labeled(42, b"Main") + _vfield(3, 1),),
-            ),
+            _state(active=b"bad", canonical=(_labeled(42, b"Main"),)),
             "labeled mission",
         ),
         (

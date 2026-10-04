@@ -13,6 +13,7 @@ from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.matic_robot import vacuum
 from custom_components.matic_robot.client.commands import UserCommand
+from custom_components.matic_robot.client.mission import decode_mission_client_state
 from custom_components.matic_robot.const import MAX_ROOM_SEQUENCE_SIZE
 from custom_components.matic_robot.plans import (
     PLAN_FLOOR_TOKEN,
@@ -24,6 +25,51 @@ from custom_components.matic_robot.plans import (
     plan_floor_token,
 )
 from tests.test_entities import _entry
+from tests.test_mission import _labeled as _labeled_floor
+from tests.test_mission import _state as _mission_client_state
+
+
+@pytest.mark.parametrize("command", ["start", "clean_rooms"])
+@pytest.mark.parametrize("coherent", [True, False])
+async def test_numeric_floor_label_preserves_map_command_guard(command, coherent):
+    """A display fallback neither blocks a verified floor nor authorizes a stale map."""
+    entry = _entry()
+    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    labeled = _labeled_floor(floor_plan.mission_id, 5)
+    decoded = decode_mission_client_state(
+        _mission_client_state(active=labeled, canonical=(labeled,))
+    )
+    entry.runtime_data.coordinator.data = replace(
+        entry.runtime_data.coordinator.data,
+        floor_plan=replace(
+            floor_plan,
+            floor_label=decoded.active_floor.label,
+            mapped_floors=decoded.mapped_floors,
+        ),
+    )
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = coherent
+    entity = vacuum.MaticVacuum(entry)
+    operation = (
+        entity.async_start()
+        if command == "start"
+        else entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+    )
+
+    if coherent:
+        await operation
+        entry.runtime_data.coordinator.client.async_start_coverage.assert_awaited_once()
+        assert (
+            entry.runtime_data.coordinator.client.async_start_coverage.await_args.args[
+                0
+            ].mission_id
+            == floor_plan.mission_id
+        )
+    else:
+        with pytest.raises(ServiceValidationError) as error:
+            await operation
+        assert error.value.translation_key == "room_plan_unavailable"
+        entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
 
 
 async def test_managed_clean_token_is_required_until_external_replacement(hass) -> None:
