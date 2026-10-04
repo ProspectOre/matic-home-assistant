@@ -2856,9 +2856,15 @@ def _markdown_priority_text(text: str) -> str:
     for pattern in (
         r"\[P(?P<em>\*{1,3})(?P<level>[0-3])(?P=em)\]",
         r"\[(?P<em>\*{1,3})P(?P=em)(?P<level>[0-3])\]",
-        r"(?P<em>\*{1,3})\[P(?P<level>[0-3])\](?P=em)",
+        r"\[(?P<em>\*{1,3}|_{1,3})P(?P<level>[0-3])(?P=em)\]",
+        r"(?P<em>\*{1,3}|_{1,3})\[P(?P<level>[0-3])\](?P=em)",
     ):
-        text = re.sub(pattern, lambda match: "[P" + match.group("level") + "]", text)
+        text = re.sub(
+            pattern,
+            lambda match: ("[P" + match.group("level") + "]").ljust(len(match.group())),
+            text,
+            flags=re.IGNORECASE,
+        )
     return text
 
 
@@ -2867,6 +2873,9 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
     source = _without_inline_code(_actual_metadata(raw_section))
     report_view = _visible_html(source, mask_attributes=True)
     source = _mask_markdown_link_metadata(source)
+    # Raw HTML blocks render emphasis literally. Normalize only Markdown
+    # regions and retain offsets used by report links and summary ranges.
+    source = _outside_html_blocks(source, _markdown_priority_text)
     raw_blocks = _html_block_spans(source)
     raw_block_starts = [start for start, _ in raw_blocks]
     raw_block_ends = [end for _, end in raw_blocks]
@@ -2914,8 +2923,6 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
             decoded_summaries.append(re.sub(r"</?[^>]+>", " ", summary_decoded))
         section = "\n".join((section, *summary_text))
         severity_text = "\n".join((severity_text, *decoded_summaries))
-    section = _markdown_priority_text(section)
-    severity_text = _markdown_priority_text(severity_text)
     report_link_candidates = list(SECURITY_REPORT_LINK.finditer(report_view))
     marker = bool(INLINE_SECURITY_MARKER.search(section)) or (
         kind in ("security", "unheaded") and bool(SECURITY_MARKER.search(section))
@@ -3093,18 +3100,27 @@ def classify_body(body: str) -> dict[str, Any]:
         }
     ambiguous = _html_visibility_ambiguous(body)
     metadata = _without_inline_code(_actual_metadata(body))
-    if SECURITY_MARKER_COMMENT.search(metadata) and any(
-        _markdown_priority_text(match.group()) == match.group()
-        for match in re.finditer(
-            r"\[P(?=[^\]\r\n]{0,24}[*_~])(?=[^\]\r\n]{0,24}[0-3])[^\]\r\n]{1,24}\]",
-            metadata,
-        )
-    ):
-        ambiguous = True
     parsed_body, request_head = _coordinator_body(body)
     raw_sections = _raw_sections(
         parsed_body, coordinator_bound=request_head is not None
     )
+    if SECURITY_MARKER_COMMENT.search(metadata) or any(
+        kind == "security" for kind, _ in raw_sections
+    ):
+        raw_blocks = _html_block_spans(metadata)
+        raw_ends = [end for _, end in raw_blocks]
+        for match in re.finditer(
+            r"\[[*_~]{0,6}P(?=[^\]\r\n]{0,24}[*_~])"
+            r"(?=[^\]\r\n]{0,24}[0-3])[^\]\r\n]{1,24}\]",
+            metadata,
+            re.IGNORECASE,
+        ):
+            block = bisect_right(raw_ends, match.start())
+            if block < len(raw_blocks) and raw_blocks[block][0] <= match.start():
+                continue
+            if _markdown_priority_text(match.group()) == match.group():
+                ambiguous = True
+                break
     # Coordinator request metadata already supplies an authenticated fallback;
     # a trailing footer is shared only for ordinary comments split by markers.
     shared_footer_ref = (
