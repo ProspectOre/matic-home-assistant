@@ -5126,7 +5126,7 @@ class _BudgetText(str):
         return found
 
 
-def _markdown_text(tokens, *, block_markers=False):
+def _markdown_text(tokens, *, block_markers=False, before_code=False):
     chunks = []
     code_chunks = {}
     html_code_depth = 0
@@ -5138,6 +5138,14 @@ def _markdown_text(tokens, *, block_markers=False):
         if visited > 65536:
             raise MarkdownBoundaryError("Markdown node budget exceeded")
         kind = token.get("type")
+        if before_code and (
+            kind == "codespan"
+            or (
+                kind == "inline_html"
+                and re.match(r"<code(?:[ \t/>]|$)", token.get("raw", ""), re.I)
+            )
+        ):
+            break
         if kind == "text":
             raw = token.get("raw", "")
 
@@ -5571,6 +5579,22 @@ def _parse_markdown_document(text, mistune):
                 ):
                     code_heading = True
                 pending.extend(child.get("children", ()))
+            if code_heading:
+                prefix = _markdown_text(
+                    token.get("children", ()), before_code=True
+                ).replace("\n", " ")
+                if (
+                    (
+                        RESULT_HEADING.match(prefix)
+                        or RESULT_HEADING.match(_DEFAULT_IGNORABLE.sub("", prefix))
+                    )
+                    and prefix
+                    and not prefix[-1].isalnum()
+                ):
+                    # Ancillary code cannot erase an already established
+                    # visible category with its own source boundary.
+                    label = prefix
+                    code_heading = False
             if code_heading and last > first:
                 # Code text must never be erased to synthesize a protocol
                 # category. Blank only the diagnostic heading projection.
@@ -6124,7 +6148,7 @@ def _classify_body(body: str) -> dict[str, Any]:
         priority_uncertain = _security_priority_uncertain(
             kind, text, security_finding, projection
         )
-        if kind == "security" and request_head is not None and not mapped_ordinary:
+        if kind == "security" and not mapped_ordinary:
             priority_uncertain |= _security_details_priority_uncertain(text)
         structured_unknown = mapped_unknown or any(
             first_row <= row < last_row for row in markdown_unknown
