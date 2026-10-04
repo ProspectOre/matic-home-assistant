@@ -10,6 +10,7 @@ from pathlib import Path
 
 import homeassistant
 import yaml
+from packaging.requirements import Requirement
 
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
@@ -157,6 +158,31 @@ def test_grpclib_pin_matches_between_pyproject_and_manifest() -> None:
         req for req in project["dependencies"] if req.startswith("grpclib")
     )
     assert manifest_grpclib == project_grpclib == "grpclib==0.4.9"
+
+
+def test_numpy_requirement_preserves_stable_compatibility() -> None:
+    """Allow HA's NumPy baseline without admitting an untested minor upgrade."""
+    manifest = json.loads((INTEGRATION / "manifest.json").read_text())
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    manifest_numpy = next(
+        Requirement(req)
+        for req in manifest["requirements"]
+        if Requirement(req).name == "numpy"
+    )
+    project_numpy = next(
+        Requirement(req)
+        for req in project["dependencies"]
+        if Requirement(req).name == "numpy"
+    )
+
+    assert manifest_numpy == project_numpy
+    assert not manifest_numpy.extras
+    assert all(spec.operator not in {"==", "==="} for spec in manifest_numpy.specifier)
+    assert "2.3.2" in manifest_numpy.specifier
+    assert "2.3.5" in manifest_numpy.specifier
+    assert "2.3.1" not in manifest_numpy.specifier
+    assert "2.4.0" not in manifest_numpy.specifier
+    assert "3.0.0" not in manifest_numpy.specifier
 
 
 def test_public_branding_is_explicitly_unofficial() -> None:
