@@ -2212,9 +2212,9 @@ def _without_inline_code(text: str) -> str:
 
 
 @lru_cache(maxsize=8)
-def _without_inline_code_in_markdown(text: str) -> str:
+def _without_inline_code_in_markdown(text: str, *, objects=False) -> str:
     """Mask only parser-confirmed code spans within their Markdown block."""
-    if "`" not in text:
+    if "`" not in text and not (objects and ("[" in text or "<" in text)):
         return text
     mistune = _markdown_packages()
     # Details enables Markdown in its visible ranges. Preserve offsets while
@@ -2232,65 +2232,160 @@ def _without_inline_code_in_markdown(text: str) -> str:
                 state.tokens[-1]["_code_source"] = state.src
             return end
 
+        def parse_link(self, match, state):
+            end = super().parse_link(match, state)
+            if end and objects and state.tokens[-1].get("type") == "image":
+                state.tokens[-1]["_object_span"] = (match.start(), end)
+                state.tokens[-1]["_code_source"] = state.src
+                state.tokens[-1]["_object_barrier"] = "IMAGE"
+            return end
+
+        def _add_auto_link(self, url, value, state):
+            super()._add_auto_link(url, value, state)
+            state.tokens[-1]["_review_url"] = True
+
+        def parse_auto_link(self, match, state):
+            end = super().parse_auto_link(match, state)
+            self.object_link(match, state, end)
+            return end
+
+        def parse_auto_email(self, match, state):
+            end = super().parse_auto_email(match, state)
+            self.object_link(match, state, end)
+            return end
+
+        def object_link(self, match, state, end):
+            if objects and state.tokens[-1].get("_review_url"):
+                state.tokens[-1]["_object_span"] = (match.start(), end)
+                state.tokens[-1]["_code_source"] = state.src
+                state.tokens[-1]["_object_barrier"] = "AUTOLINK"
+
     class CodeState(mistune.BlockState):
+        def process(self, value):
+            super().process(value)
+            self.origins = range(len(value))
+            self.child_cursor = 0
+
+        def child_state(self, value, lazy_line_starts=None):
+            child = super().child_state(value, lazy_line_starts)
+            origins = []
+            position = self.child_cursor
+            for line in _markdown_lines(value, keepends=True):
+                payload = line.lstrip(" \t").rstrip("\r\n")
+                mapped = [None] * len(line)
+                while position < self.cursor:
+                    end = self.src.find("\n", position, self.cursor)
+                    end = self.cursor if end < 0 else end + 1
+                    original = self.src[position:end]
+                    content = original.rstrip("\r\n")
+                    if content.endswith(payload):
+                        suffix = position + len(content) - len(payload)
+                        prefix = len(line) - len(line.lstrip(" \t"))
+                        for offset in range(len(payload)):
+                            mapped[prefix + offset] = self.origins[suffix + offset]
+                        # Expanded indentation has no authority; map only
+                        # identical suffix whitespace and physical line ends.
+                        for offset in range(1, prefix + 1):
+                            if suffix - offset < position:
+                                break
+                            if self.src[suffix - offset] != line[prefix - offset]:
+                                break
+                            mapped[prefix - offset] = self.origins[suffix - offset]
+                        tail = len(line) - len(line.rstrip("\r\n"))
+                        for offset in range(1, tail + 1):
+                            if (offset <= len(original)
+                                    and original[-offset] == line[-offset]):
+                                mapped[-offset] = self.origins[end - offset]
+                        position = end
+                        break
+                    position = end
+                origins.extend(mapped)
+            self.child_cursor = position
+            child.origins = origins
+            return child
+
         def append_token(self, token):
             token["_code_start"] = self.cursor
+            token["_code_state"] = self
             super().append_token(token)
 
         def add_paragraph(self, value):
             super().add_paragraph(value)
             self.tokens[-1].setdefault("_code_start", self.cursor)
+            self.tokens[-1]["_code_state"] = self
 
     class CodeBlock(mistune.BlockParser):
         def parse_method(self, match, state):
             start, index = state.cursor, len(state.tokens)
+            previous_child_cursor = state.child_cursor
+            state.child_cursor = start
             end = super().parse_method(match, state)
+            state.child_cursor = previous_child_cursor
             for token in state.tokens[index:]:
-                token["_code_start"] = start
+                token.setdefault("_code_start", start)
+                token.setdefault("_code_state", state)
             return end
 
     block = CodeBlock(max_nested_level=16)
     block.state_cls = CodeState
+    root_origins = range(len(scan))
+    if "\r" in scan:
+        chunks, root_origins = [], []
+        for match in re.finditer(r"\r\n|\r|[^\r]+", scan):
+            if match.group() in ("\r\n", "\r"):
+                chunks.append("\n")
+                root_origins.append(match.end() - 1)
+            else:
+                chunks.append(match.group())
+                root_origins.extend(range(match.start(), match.end()))
+        scan = "".join(chunks)
     state = block.state_cls()
     state.process(scan if scan.endswith("\n") else scan + "\n")
+    state.origins = (root_origins if scan.endswith("\n")
+                     else [*root_origins, None])
     block.parse(state)
     inline = CodeInline(max_emphasis_depth=20, max_image_depth=20)
     masked = bytearray(len(text))
-    pending = []
-    for index, token in reversed(list(enumerate(state.tokens))):
-        end = (state.tokens[index + 1].get("_code_start", len(scan))
-               if index + 1 < len(state.tokens) else len(scan))
-        pending.append((token, token.get("_code_start", 0), end))
+    barriers = {}
+    pending = list(reversed(state.tokens))
     visited = 0
     while pending:
-        token, first_bound, last_bound = pending.pop()
+        token = pending.pop()
         visited += 1
         if visited > 65536:
             raise MarkdownBoundaryError("Markdown code mapping budget exceeded")
-        pending.extend((child, first_bound, last_bound)
-                       for child in reversed(token.get("children", ())))
+        pending.extend(reversed(token.get("children", ())))
         value = token.get("text")
-        if not value or "`" not in value:
+        context = token.get("_code_state")
+        if not value or context is None or not ("`" in value or objects):
             continue
-        # Container prefix removal can defeat an exact source map. Leave that
-        # source intact instead of inferring code authority from another unit.
         fragment = value.rstrip("\n")
-        begin = scan.find(fragment, first_bound, last_bound)
-        if begin < 0 or scan.find(fragment, begin + 1, last_bound) >= 0:
-            continue
+        begin = context.src.find(fragment, token.get("_code_start", 0))
+        if begin < 0:
+            raise MarkdownBoundaryError("Unmapped Markdown code block")
         nodes = list(inline(value, state.env))
         while nodes:
             node = nodes.pop()
             nodes.extend(node.get("children", ()))
             if node.get("_code_source") is not value:
                 continue
-            first, last = node["_code_span"]
-            if not 0 <= begin + first <= begin + last <= len(text):
+            first, last = node.get("_code_span", node.get("_object_span"))
+            barrier = iter(node.get("_object_barrier", ""))
+            if not 0 <= begin + first <= begin + last <= len(context.origins):
                 raise MarkdownBoundaryError("Markdown code source map exceeded input")
-            for index in range(begin + first, begin + last):
-                if text[index] not in "\r\n":
-                    masked[index] = 1
-    return "".join(" " if masked[i] else char for i, char in enumerate(text))
+            for offset in range(begin + first, begin + last):
+                origin = context.origins[offset]
+                if origin is None and not context.src[offset].isspace():
+                    raise MarkdownBoundaryError("Unmapped Markdown code character")
+                if (origin is not None and origin < len(text)
+                        and text[origin] not in "\r\n"):
+                    masked[origin] = 1
+                    marker = next(barrier, None)
+                    if marker is not None:
+                        barriers[origin] = marker
+    result = "".join(barriers.get(i, " " if masked[i] else char)
+                     for i, char in enumerate(text))
+    return _mask_markdown_link_metadata(result) if objects else result
 
 
 SECURITY_MARKER_COMMENT = re.compile(
@@ -4782,9 +4877,8 @@ def _section_spans(body: str, coordinator_bound: bool = False):
     lines.extend([""] * (len(original_lines) - len(lines)))
     priority_lines = _markdown_lines(_priority_projection(body))
     priority_lines.extend([""] * (len(original_lines) - len(priority_lines)))
-    diagnostic_rows, _unknown, _containers, container_boundaries, headings, _reports = (
-        _markdown_document(body)
-    )
+    (diagnostic_rows, _unknown, _containers, container_boundaries,
+     headings, _reports, _literal) = _markdown_document(body)
     for first, _last, label, _kind in headings:
         lines[first] = label
     marker_container_starts = {
@@ -5310,7 +5404,7 @@ def _empty_comment_priority_source(source):
     return False
 
 
-def _rendered_report_link(tokens):
+def _rendered_report_link(tokens, *, literal_only=False):
     pending = list(reversed(tokens))
     code_depth = 0
     visited = 0
@@ -5324,7 +5418,8 @@ def _rendered_report_link(tokens):
             tag = re.fullmatch(r"<(/?)code(?:\s[^>]*)?>", token.get("raw", ""), re.I)
             if tag:
                 code_depth = max(0, code_depth - 1) if tag.group(1) else code_depth + 1
-        if kind == "link" and not code_depth and not token.get("_review_url"):
+        if (kind == "link" and not code_depth and not token.get("_review_url")
+                and (not literal_only or token.get("_literal_report_link"))):
             rendered = _markdown_text(token.get("children", ()))
             label = " ".join(rendered.split()).casefold()
             if label == "view security finding report":
@@ -5462,6 +5557,13 @@ def _parse_markdown_document(text, mistune):
             state.src = _BudgetText(state.src, work)
             return super().render(state)
 
+        def parse_link(self, match, state):
+            end = super().parse_link(match, state)
+            if (end and state.tokens[-1].get("type") == "link"
+                    and SECURITY_REPORT_LINK.match(state.src, match.start())):
+                state.tokens[-1]["_literal_report_link"] = True
+            return end
+
         def _add_auto_link(self, url, text, state):
             super()._add_auto_link(url, text, state)
             state.tokens[-1]["_review_url"] = True
@@ -5500,6 +5602,7 @@ def _parse_markdown_document(text, mistune):
     container_boundaries = {}
     heading_nodes = []
     report_link_rows = set()
+    literal_report_rows = set()
     has_report_candidate = "report" in source.casefold()
     for index, line in enumerate(source_rows):
         if "<!--" in line and _empty_comment_priority_source(line):
@@ -5671,6 +5774,8 @@ def _parse_markdown_document(text, mistune):
         first = bisect_right(starts, position) - 1
         if has_report_candidate and _rendered_report_link([token]):
             report_link_rows.add(first)
+            if _rendered_report_link([token], literal_only=True):
+                literal_report_rows.add(first)
         if token.get("type") == "heading":
             # Heading soft breaks collapse to spaces in the browser. This
             # category projection never replaces raw source/footer authority.
@@ -5828,13 +5933,13 @@ def _parse_markdown_document(text, mistune):
         tuple(container_boundaries.items()),
         tuple(heading_nodes),
         frozenset(report_link_rows),
+        frozenset(literal_report_rows),
     )
 
 
 def _priority_projection(text):
-    rows, uncertain, container_rows, container_boundaries, _headings, _reports = (
-        _markdown_document(text)
-    )
+    (rows, uncertain, container_rows, container_boundaries,
+     _headings, _reports, _literal) = _markdown_document(text)
     # Only a validated container start can establish a result boundary.
     # Interior diagnostics and unknown maps never become section authority.
     lines = [
@@ -5850,9 +5955,9 @@ def _priority_projection(text):
 @lru_cache(maxsize=8)
 def _details_code_masked_source(text):
     """Mask details Markdown code before HTML tags lose their block context."""
-    if "`" not in text or not re.search(r"<details(?:[ \t\r\n>])", text, re.I):
+    if not re.search(r"<details(?:[ \t\r\n>])", text, re.I):
         return text, frozenset()
-    source = _without_inline_code(_actual_metadata(text))
+    source = _actual_metadata(text)
     inline_mask = _without_inline_code_in_markdown(source)
     starts = [0] + [m.end() for m in re.finditer("\n", source)]
     regions = []
@@ -5927,6 +6032,7 @@ def _details_code_masked_source(text):
     if parser.invalid or parser.details or parser.summary:
         return text, frozenset()  # Unmatched context cannot manufacture clean.
     masked = bytearray(len(text))
+    replacements = {}
     for first, last in code_tags:
         for index in range(first, last):
             if source[index] not in "\r\n":
@@ -5940,21 +6046,39 @@ def _details_code_masked_source(text):
     regions.extend(unit for unit in summaries if unit in visible_summaries)
     unknown = set()
     mistune = _markdown_packages()
-    md = mistune.Markdown(renderer=None)
+    class DetailsInline(mistune.InlineParser):
+        def _add_auto_link(self, url, value, state):
+            super()._add_auto_link(url, value, state)
+            state.tokens[-1]["_review_url"] = True
+
+    md = mistune.Markdown(renderer=None, inline=DetailsInline())
+    env = md.parse(source)[1].env if re.search(r"\]\s*\[", source) else {}
     for first, last in regions:
         raw = source[first:last]
         # Keep nested raw HTML blocks, including literal backticks in divs.
         clean = _without_inline_code(raw)
         def composed_priority(piece, first=first):
-            visible = _markdown_text(md.inline(piece, {}))
-            code_free = _without_inline_code_in_markdown(piece)
-            without_code = _markdown_text(md.inline(code_free, {}))
+            original_visible = _visible_html(
+                piece, mask_attributes=True, strip_inline_markup=True,
+                mask_raw_html_text=True, preserve_markup_lines=True,
+                preserve_markdown_comments=True, preserve_inline_code=True,
+                preserve_inline_markup=True,
+            )
+            tokens = md.inline(original_visible, env)
+            visible = _markdown_text(tokens)
+            code_free = _without_inline_code_in_markdown(original_visible)
+            without_code = _markdown_text(md.inline(code_free, env))
             visible_priorities = Counter(_PRIORITY_CANDIDATE.findall(visible))
             code_free_priorities = Counter(_PRIORITY_CANDIDATE.findall(without_code))
-            if visible_priorities - code_free_priorities:
+            source_priorities = Counter(_PRIORITY_CANDIDATE.findall(
+                _without_inline_code_in_markdown(original_visible, objects=True)
+            ))
+            if (visible_priorities - code_free_priorities
+                    or visible_priorities - source_priorities
+                    or _rendered_report_link(tokens)):
                 unknown.add(bisect_right(starts, first) - 1)
             return piece
-        if "`" in raw:
+        if "[" in raw or "`" in raw:
             _outside_html_blocks(raw, composed_priority)
         if len(clean) != len(raw):
             raise MarkdownBoundaryError("Details code masking changed source offsets")
@@ -5962,7 +6086,9 @@ def _details_code_masked_source(text):
         for offset, (before, after) in enumerate(zip(raw, clean)):  # noqa: B905
             if before != after:
                 masked[first + offset] = 1
-    code_view = "".join(" " if masked[i] else char for i, char in enumerate(text))
+                replacements[first + offset] = after
+    code_view = "".join(replacements.get(i, " " if masked[i] else char)
+                        for i, char in enumerate(text))
     return code_view, frozenset(unknown)
 
 
@@ -6085,7 +6211,6 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
 def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool, bool]:
     raw_section = section
     source = _without_inline_code(_actual_metadata(raw_section))
-    report_view = _visible_html(source, mask_attributes=True)
     source = _mask_markdown_link_metadata(source)
     # Raw HTML blocks render emphasis literally. Normalize only Markdown
     # regions and retain offsets used by report links and summary ranges.
@@ -6140,7 +6265,6 @@ def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool
     # Only structured visible labels supply Markdown severity. Raw HTML rows
     # are already included by the separate visibility projection.
     severity_text = projection
-    report_link_candidates = list(SECURITY_REPORT_LINK.finditer(report_view))
     marker = bool(INLINE_SECURITY_MARKER.search(section)) or (
         kind in ("security", "unheaded") and bool(SECURITY_MARKER.search(section))
     )
@@ -6179,11 +6303,7 @@ def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool
             re.search(r"(?i)\bsecurity\b|\bvulnerab\w*|\bexploitable\b", security_text)
         )
     )
-    report_link = any(
-        section[match.start() : match.end() - 1].casefold()
-        == "[view security finding report]"
-        for match in report_link_candidates
-    )
+    report_link = bool(_markdown_document(raw_section)[6])
     clean_claim = (
         _standalone_security_clean(raw_section) and not severity and not marker
     )
@@ -6338,7 +6458,7 @@ def _classify_body(body: str) -> dict[str, Any]:
     raw_sections = [(kind, text) for kind, text, _, _ in spans]
     (
         markdown_rows, markdown_unknown, _container_rows,
-        _boundaries, _headings, report_link_rows,
+        _boundaries, _headings, report_link_rows, _literal_reports,
     ) = _markdown_document(parsed_body)
     # Coordinator request metadata already supplies an authenticated fallback;
     # a trailing footer is shared only for ordinary comments split by markers.
@@ -6377,6 +6497,10 @@ def _classify_body(body: str) -> dict[str, Any]:
             for line in _markdown_lines(ordinary_text)
             if not INLINE_SECURITY_MARKER.search(line)
             and not SECURITY_MARKER.fullmatch(line)
+            and not re.fullmatch(
+                r"[ \t]*(?:>[ \t]*)*(?:(?:[-+*]|[0-9]+[.)])"
+                r"(?:[ \t]+(?:\[[ xX]\][ \t]*)?)?)?[ \t]*", line
+            )
         )
         _, _, first_row, last_row = spans[section_index]
         projection = "\n".join(markdown_rows[first_row:last_row])
