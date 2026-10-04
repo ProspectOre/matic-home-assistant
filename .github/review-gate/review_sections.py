@@ -5966,6 +5966,13 @@ def _parse_markdown_document(text, mistune):
                 # category. Blank only the diagnostic heading projection.
                 heading_nodes.append((first, last, "", "inert"))
             diagnostic_label = _DEFAULT_IGNORABLE.sub("", label)
+            # Empty comments render invisibly, including when the inline AST
+            # leaves them in a text token. Diagnose the actual heading only;
+            # this projection supplies uncertainty, never source authority.
+            heading_source = "\n".join(original_rows[first:last])
+            if any(not _backslash_escaped(heading_source, match.start())
+                   for match in re.finditer(r"<!--[ \t]*-->", heading_source)):
+                diagnostic_label = re.sub(r"<!--[ \t]*-->", "", diagnostic_label)
             uncertain_heading = bool(
                 diagnostic_label != label
                 and RESULT_HEADING.match(diagnostic_label)
@@ -6339,7 +6346,24 @@ def _security_raw_block_priority_uncertain(text):
     """Keep unowned raw HTML priorities after a completed clean result pending."""
     source = _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(text)))
     blocks = _html_block_spans(source)
-    if not blocks or not _standalone_security_clean(source[:blocks[0][0]]):
+    if not blocks:
+        return False
+    # A completed clean result may follow context or an earlier harmless
+    # block. Keep source offsets and inspect only raw blocks after that row.
+    visible_source = _visible_html(
+        source, mask_attributes=True, strip_inline_markup=True,
+        preserve_markup_lines=True,
+    )
+    source_rows = _markdown_lines(source, keepends=True)
+    visible_rows = _markdown_lines(visible_source)
+    boundary = None
+    offset = 0
+    for index, row in enumerate(source_rows):
+        offset += len(row)
+        if index < len(visible_rows) and _standalone_security_clean(visible_rows[index]):
+            boundary = offset
+            break
+    if boundary is None:
         return False
     # Details bodies and summaries can contain real Markdown code spans.
     # Require a priority in the original structured rendered view first.
@@ -6348,7 +6372,10 @@ def _security_raw_block_priority_uncertain(text):
         for row in _markdown_document(text)[0]
     ):
         return False
-    fragment = source[blocks[0][0]:]
+    # Parsed lists, quotes and tables outside raw blocks already have physical
+    # per-unit ownership. Do not reclassify those units from container prefixes.
+    fragment = "\n".join(source[max(start, boundary):end]
+                         for start, end in blocks if end > boundary)
     visible = _visible_html(
         fragment, mask_attributes=True, decode_entities=True,
         strip_inline_markup=True,
@@ -6428,7 +6455,7 @@ def _nested_regular_marker_uncertain(kind, text):
     # Track actual complete tags once. Earlier balanced heading markup cannot
     # stand in for the later marker's container; attribute text is not markup.
     stack = []
-    counts = dict.fromkeys(("details", "div", "span"), 0)
+    counts = Counter()
     position = 0
     opening = None
     while position < len(source):
@@ -6444,7 +6471,7 @@ def _nested_regular_marker_uncertain(kind, text):
             if stack and SECURITY_MARKER_COMMENT.fullmatch(source[start:end]):
                 opening = stack[0][1]
                 break
-        elif tag in counts:
+        elif tag not in HTML_VOID_TAGS and not source[start:end].rstrip().endswith("/>"):
             if closing and counts[tag]:
                 while stack:
                     prior_tag, _ = stack.pop()
@@ -6455,7 +6482,10 @@ def _nested_regular_marker_uncertain(kind, text):
                 stack.append((tag, start))
                 counts[tag] += 1
         position = end
-    return opening is not None and _standalone_regular_clean(source[:opening])
+    return opening is not None and _standalone_regular_clean(_visible_html(
+        source[:opening], mask_attributes=True, strip_inline_markup=True,
+        preserve_markup_lines=True,
+    ))
 
 
 def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool, bool]:
