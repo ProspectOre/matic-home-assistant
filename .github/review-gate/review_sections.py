@@ -3131,8 +3131,16 @@ def classify_body(body: str) -> dict[str, Any]:
             }
         )
     if ambiguous:
+        # Visibility repair can hide the protocol marker or category from the
+        # rendered section classifier. Retain only uncertainty, never a finding
+        # assertion, from raw metadata outside Markdown code.
+        metadata = _without_inline_code(_actual_metadata(body))
+        security_origin = bool(SECURITY_MARKER_COMMENT.search(metadata)) or bool(
+            re.search(r"\b(?:codex[ \t-]+)?security[ \t-]+review\b", metadata, re.I)
+        )
         for section in sections:
             section["parser_ambiguous"] = True
+            section["security_uncertain"] = security_origin
     return {"request_head": request_head, "sections": sections}
 
 

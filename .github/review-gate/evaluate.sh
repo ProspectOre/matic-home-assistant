@@ -660,28 +660,34 @@ active_security_findings() {
     | python3 "$section_classifier" --records \
     | jq -c --arg bot "$SECURITY_REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
       [.[] | select(.author.login == $bot and .author.id == "BOT_kgDOC98s_g")
-       | select(.state != "DISMISSED" and .commit.oid == $head)
+       | select(.commit.oid == $head)
        # A top-level PR review has an immutable commit.oid. That authenticated
        # owner wins over a stale or foreign Reviewed commit footer in the body;
        # section target refs remain authoritative for mutable issue comments.
-       | select(any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true))
-       | {source:"review", id:(.databaseId // 0 | tostring)}]')"
+       | (any(.review_gate_sections[]?; .parser_ambiguous == true and
+           (.security_uncertain == true or .kind == "security" or .security_event == true or .security_finding == true))) as $uncertain
+       | select($uncertain or (.state != "DISMISSED" and any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true)))
+       | {source:"review", id:(.databaseId // 0 | tostring), uncertain:$uncertain}]')"
   # Inline findings are authenticated by immutable original commit and parent
   # review identity. Textual references cannot retarget a historical section.
   # shellcheck disable=SC2016
   security_reviews="$(gh api graphql --paginate \
     -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state submittedAt updatedAt body author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
     -F owner="$review_owner" -F name="$review_repo" -F number="$pr_number" \
-    | jq -rs --arg head "$head_sha" '[.[] | .data.repository.pullRequest.reviews.nodes[]? | select(.author.login == "chatgpt-codex-connector" and .author.id == "BOT_kgDOC98s_g" and .commit.oid == $head and .state != "DISMISSED") | .databaseId]')"
+    | jq -rs --arg head "$head_sha" '[.[] | .data.repository.pullRequest.reviews.nodes[]? | select(.author.login == "chatgpt-codex-connector" and .author.id == "BOT_kgDOC98s_g" and .commit.oid == $head) | {id:.databaseId, dismissed:(.state == "DISMISSED")}]')"
   # shellcheck disable=SC2016
   inline_findings="$(gh api "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate --slurp \
     | jq -c '[.[][]]' | python3 "$section_classifier" --records \
     | jq -c --argjson reviews "$security_reviews" --arg head "$head_sha" --arg prefix "$head_prefix" '
       [.[] | select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot")
        | select(.original_commit_id == $head and .in_reply_to_id == null)
-       | select(.pull_request_review_id as $id | $reviews | index($id))
-       | select(any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true))
-       | {source:"review", id:(.pull_request_review_id | tostring)}]')"
+       | . as $comment | ([$reviews[] | select(.id == $comment.pull_request_review_id)][0]) as $parent
+       | select($parent != null)
+       # An inline body has no authoritative regular/security category.
+       | (any(.review_gate_sections[]?; .parser_ambiguous == true)) as $uncertain
+       | select($uncertain or ($parent.dismissed != true and any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true)))
+       | {source:"review", id:(.pull_request_review_id | tostring), uncertain:$uncertain,
+          inline_id:(.id | tostring), original_commit_id:.original_commit_id}]')"
   # Issue comments lack an immutable review commit, so require their own
   # section's explicit or authenticated coordinator binding to this head.
   # shellcheck disable=SC2016
@@ -689,9 +695,12 @@ active_security_findings() {
     | jq -c '[.[][]]' | python3 "$section_classifier" --records \
     | jq -c --arg bot "$SECURITY_REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
       [.[] | select(.user.login == $bot and .user.id == 199175422 and .user.type == "Bot")
-       | select(any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true
+       | (any(.review_gate_sections[]?; .parser_ambiguous == true and
+           (.security_uncertain == true or .kind == "security" or .security_event == true or .security_finding == true))) as $uncertain
+       # Mutable ambiguous text cannot authenticate its lexical footer scope.
+       | select($uncertain or any(.review_gate_sections[]?; .security_finding == true and .parser_ambiguous != true
            and (.target_ref == $head or .target_ref == $prefix)))
-       | {source:"issue-comment", id:(.id // 0 | tostring), body:(.body // "")}]')"
+       | {source:"issue-comment", id:(.id // 0 | tostring), body:(.body // ""), uncertain:$uncertain}]')"
   printf '%s\n%s\n%s\n' "$review_findings" "$issue_comment_findings" "$inline_findings" \
     | jq -cs '.[0] + .[1] + .[2] | unique'
 }
@@ -1051,12 +1060,27 @@ write_finding_observation() {
 write_security_finding_observations() {
   local findings="$1"
   [[ -n "${CANONICAL_SECURITY_FINDING_OUTPUT:-}" ]] || return 0
-  if ! { jq -r '.[] | .source + ":" + .id' <<< "$findings";
+  if ! { jq -r '.[] | select(.uncertain != true) | .source + ":" + .id' <<< "$findings";
          printf '%s' "${security_event_origins:-}"; } \
        | LC_ALL=C sort -u > "$CANONICAL_SECURITY_FINDING_OUTPUT"; then
     echo "Could not persist canonical security finding origins." >&2
     exit 1
   fi
+  # Separate opaque holds from assertions that an actual finding was observed.
+  if ! { jq -r '.[] | select(.uncertain == true) | .source + ":" + .id + (if .inline_id != null then "; inline:" + .inline_id else "" end)' <<< "$findings";
+         printf '%s' "${security_uncertainty_origins:-}"; } \
+       | LC_ALL=C sort -u > "$CANONICAL_SECURITY_FINDING_OUTPUT.uncertainty"; then
+    echo "Could not persist canonical security uncertainty origins." >&2
+    exit 1
+  fi
+}
+
+stamp_security_uncertainty() {
+  local origin="$1"
+  [[ "$origin" =~ ^(review:[1-9][0-9]*(\;\ inline:[1-9][0-9]*)?|issue-comment:[1-9][0-9]*)$ ]] || return 1
+  stamp_status "review-security-history" pending \
+    "Security uncertainty for PR #$pr_number on head $head_sha; $origin; uncertain" >/dev/null
+  security_uncertainty_origins+="$origin"$'\n'
 }
 
 record_security_event_origin() {
@@ -1302,7 +1326,13 @@ stamp_security_finding_history() {
   while IFS= read -r finding; do
     source="$(jq -r '.source' <<< "$finding")"
     key="$source:$(jq -r '.id' <<< "$finding")"
-    if [[ "$key" =~ ^(review|issue-comment):[1-9][0-9]*$ ]]; then
+    if [[ "$(jq -r '.uncertain // false' <<< "$finding")" == true ]]; then
+      if [[ "$(jq -r '.inline_id // empty' <<< "$finding")" != "" ]]; then
+        [[ "$(jq -r '.original_commit_id' <<< "$finding")" == "$head_sha" ]] || return 1
+        key+="; inline:$(jq -r '.inline_id' <<< "$finding")"
+      fi
+      stamp_security_uncertainty "$key"
+    elif [[ "$key" =~ ^(review|issue-comment):[1-9][0-9]*$ ]]; then
       body="$(jq -r '.body // empty' <<< "$finding")"
       if [[ "$source" == issue-comment && -n "$body" ]]; then
         source_hash="$(printf '%s' "$body" | shasum -a 256 | awk '{print substr($1, 1, 24)}')"
@@ -1440,7 +1470,7 @@ read_gate_snapshot() (
   latest_finding_at="$(jq -r '.latest_finding_at' <<< "$verdict_selection")"
   finding_count="$(jq '[.[].active_count] | add // 0' <<< "$thread_summary")"
   security_findings="$(active_security_findings)"
-  security_finding_count="$(jq length <<< "$security_findings")"
+  security_finding_count="$(jq '[.[] | select(.uncertain != true)] | length' <<< "$security_findings")"
   printf '%s\n%s\n%s\n' "$deliveries" "$thread_summary" "$security_findings" \
     | jq -cs \
     --argjson verdict "$verdict" \
@@ -1453,6 +1483,7 @@ read_gate_snapshot() (
       verdict: $verdict,
       finding_count: $finding_count,
       security_finding_count: $security_finding_count,
+      security_uncertainty_count: ([$security_findings[] | select(.uncertain == true)] | length),
       security_findings: $security_findings,
       latest_finding_at: $latest_finding_at}'
 )
@@ -1524,7 +1555,7 @@ require_clean_regular_snapshot() {
     done < <(jq -r '.regular_findings[] | .source + ":" + .id' <<< "$gate_snapshot")
   fi
   # Retain every adverse origin before any existing finding can stop the audit.
-  if [[ "$security_finding_count" -gt 0 ]]; then
+  if [[ "$(jq '.security_findings | length' <<< "$gate_snapshot")" -gt 0 ]]; then
     stamp_security_finding_history "$(jq -c '.security_findings' <<< "$gate_snapshot")"
   fi
   # Evidence-only adapters cannot stamp GitHub statuses, so persist all
@@ -1582,6 +1613,11 @@ require_clean_regular_snapshot() {
   # persist statuses, and a resolved thread is not a native review dismissal.
   if [[ "$regular_finding_count" -gt 0 || "${edited_finding:-false}" == true ]] || { [[ "$(finding_history_head "$gate_snapshot")" == "$head_sha" ]] && ! regular_findings_dismissed "$gate_snapshot"; }; then
     stamp_review_gate pending "Unresolved finding history; fix code or record authorized review dismissal"
+    gate_pending
+  fi
+  if [[ "$(jq -r '.security_uncertainty_count // 0' <<< "$gate_snapshot")" -gt 0 ||
+        -n "${security_uncertainty_origins:-}" ]]; then
+    stamp_review_gate pending "Security evidence is uncertain on $head_prefix; push a fresh head"
     gate_pending
   fi
   if [[ "$native_security_finding_observed" == true ]] || { [[ "$(security_history_head "$gate_snapshot")" == "$head_sha" ]] && ! security_findings_dismissed "$gate_snapshot"; }; then
@@ -1732,6 +1768,20 @@ if [[ ("$event_name" == pull_request_review || "$event_name" == pull_request_rev
       "Regular review invalidated at $uncertain_at; PR #$pr_number; uncertain captured native body" >/dev/null
     evidence_after="$uncertain_at"
   fi
+  relayed_security_uncertain=false
+  if jq -e --arg event "$event_name" '
+    any([.current.sections[]?, .previous.sections[]?][]; .parser_ambiguous == true and
+        ($event == "pull_request_review_comment" or .security_uncertain == true or .kind == "security" or .security_event == true or .security_finding == true))
+  ' <<< "$review_sections_facts" >/dev/null &&
+     { [[ "$event_name" == pull_request_review ]] || jq -e '.comment.in_reply_to_id == null' "$event_path" >/dev/null; }; then
+    relayed_security_uncertain=true
+    if [[ "$event_name" == pull_request_review ]]; then
+      uncertain_origin="review:$(jq -r '.review.id' "$event_path")"
+    else
+      uncertain_origin="review:$(jq -r '.comment.pull_request_review_id' "$event_path"); inline:$(jq -r '.comment.id' "$event_path")"
+    fi
+    stamp_security_uncertainty "$uncertain_origin"
+  fi
   relayed_security_finding=false
   if jq -e '
     any([.current.sections[]?, .previous.sections[]?][]; .security_finding == true and .parser_ambiguous != true)
@@ -1792,7 +1842,10 @@ if [[ "$event_name" == pull_request_review_comment && -f "$event_path" ]] &&
   else
     relayed_review_event_suffix="; event:captured"
   fi
-  if [[ "${relayed_security_finding:-false}" == true ]]; then
+  if [[ "${relayed_security_uncertain:-false}" == true ]]; then
+    # Already retained as opaque security uncertainty, never regular findings.
+    :
+  elif [[ "${relayed_security_finding:-false}" == true ]]; then
     stamp_status "review-security-history" pending \
       "Security findings observed for PR #$pr_number on head $head_sha; review:$relayed_review_id; event:captured" >/dev/null
     record_security_event_origin "review:$relayed_review_id"
@@ -1949,6 +2002,13 @@ fi
     elif [[ "$event_regular_evidence" != true ]]; then
       edited_clean=true
     fi
+  fi
+  if jq -e '
+      any([.current.sections[]?, .previous.sections[]?][]; .parser_ambiguous == true and
+          (.security_uncertain == true or .kind == "security" or .security_event == true or .security_finding == true))
+    ' <<< "$issue_comment_facts" >/dev/null; then
+    uncertain_comment_id="$(jq -r '.comment.id' "$event_path")"
+    stamp_security_uncertainty "issue-comment:$uncertain_comment_id"
   fi
   security_finding=false
   if [[ "$security_event" == true ]] && jq -en \
