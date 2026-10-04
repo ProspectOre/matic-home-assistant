@@ -11,6 +11,7 @@ import sys
 from _thread import RLock
 from array import array
 from bisect import bisect_left, bisect_right
+from collections import Counter
 from functools import lru_cache
 from html.parser import HTMLParser
 from pathlib import Path
@@ -2210,34 +2211,86 @@ def _without_inline_code(text: str) -> str:
     return _outside_html_blocks(text, _without_inline_code_in_markdown)
 
 
+@lru_cache(maxsize=8)
 def _without_inline_code_in_markdown(text: str) -> str:
-    """Mask code spans with matching backtick runs, retaining line positions."""
-    runs = list(re.finditer(r"`+", text))
-    next_same: dict[int, int] = {}
-    closing: dict[int, int] = {}
-    for index in range(len(runs) - 1, -1, -1):
-        length = len(runs[index].group())
-        if length in next_same:
-            closing[index] = next_same[length]
-        next_same[length] = index
-    chunks: list[str] = []
-    position = 0
-    index = 0
-    while index < len(runs):
-        if _backslash_escaped(text, runs[index].start()):
-            index += 1
+    """Mask only parser-confirmed code spans within their Markdown block."""
+    if "`" not in text:
+        return text
+    mistune = _markdown_packages()
+    # Details enables Markdown in its visible ranges. Preserve offsets while
+    # preventing these wrapper tags from converting those ranges to raw HTML.
+    scan = re.sub(
+        r"</?(?:details|summary)\b[^>]*>",
+        lambda match: re.sub(r"[^\r\n]", " ", match.group()), text, flags=re.I,
+    )
+
+    class CodeInline(mistune.InlineParser):
+        def parse_codespan(self, match, state):
+            end = super().parse_codespan(match, state)
+            if state.tokens[-1].get("type") == "codespan":
+                state.tokens[-1]["_code_span"] = (match.start(), end)
+                state.tokens[-1]["_code_source"] = state.src
+            return end
+
+    class CodeState(mistune.BlockState):
+        def append_token(self, token):
+            token["_code_start"] = self.cursor
+            super().append_token(token)
+
+        def add_paragraph(self, value):
+            super().add_paragraph(value)
+            self.tokens[-1].setdefault("_code_start", self.cursor)
+
+    class CodeBlock(mistune.BlockParser):
+        def parse_method(self, match, state):
+            start, index = state.cursor, len(state.tokens)
+            end = super().parse_method(match, state)
+            for token in state.tokens[index:]:
+                token["_code_start"] = start
+            return end
+
+    block = CodeBlock(max_nested_level=16)
+    block.state_cls = CodeState
+    state = block.state_cls()
+    state.process(scan if scan.endswith("\n") else scan + "\n")
+    block.parse(state)
+    inline = CodeInline(max_emphasis_depth=20, max_image_depth=20)
+    masked = bytearray(len(text))
+    pending = []
+    for index, token in reversed(list(enumerate(state.tokens))):
+        end = (state.tokens[index + 1].get("_code_start", len(scan))
+               if index + 1 < len(state.tokens) else len(scan))
+        pending.append((token, token.get("_code_start", 0), end))
+    visited = 0
+    while pending:
+        token, first_bound, last_bound = pending.pop()
+        visited += 1
+        if visited > 65536:
+            raise MarkdownBoundaryError("Markdown code mapping budget exceeded")
+        pending.extend((child, first_bound, last_bound)
+                       for child in reversed(token.get("children", ())))
+        value = token.get("text")
+        if not value or "`" not in value:
             continue
-        end_index = closing.get(index)
-        if end_index is None:
-            index += 1
+        # Container prefix removal can defeat an exact source map. Leave that
+        # source intact instead of inferring code authority from another unit.
+        fragment = value.rstrip("\n")
+        begin = scan.find(fragment, first_bound, last_bound)
+        if begin < 0 or scan.find(fragment, begin + 1, last_bound) >= 0:
             continue
-        start, end = runs[index].start(), runs[end_index].end()
-        chunks.append(text[position:start])
-        chunks.append(re.sub(r"[^\r\n]", " ", text[start:end]))
-        position = end
-        index = end_index + 1
-    chunks.append(text[position:])
-    return "".join(chunks)
+        nodes = list(inline(value, state.env))
+        while nodes:
+            node = nodes.pop()
+            nodes.extend(node.get("children", ()))
+            if node.get("_code_source") is not value:
+                continue
+            first, last = node["_code_span"]
+            if not 0 <= begin + first <= begin + last <= len(text):
+                raise MarkdownBoundaryError("Markdown code source map exceeded input")
+            for index in range(begin + first, begin + last):
+                if text[index] not in "\r\n":
+                    masked[index] = 1
+    return "".join(" " if masked[i] else char for i, char in enumerate(text))
 
 
 SECURITY_MARKER_COMMENT = re.compile(
@@ -4729,7 +4782,7 @@ def _section_spans(body: str, coordinator_bound: bool = False):
     lines.extend([""] * (len(original_lines) - len(lines)))
     priority_lines = _markdown_lines(_priority_projection(body))
     priority_lines.extend([""] * (len(original_lines) - len(priority_lines)))
-    diagnostic_rows, _unknown, _containers, container_boundaries, headings = (
+    diagnostic_rows, _unknown, _containers, container_boundaries, headings, _reports = (
         _markdown_document(body)
     )
     for first, _last, label, _kind in headings:
@@ -5244,13 +5297,52 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
     return "".join(visible)
 
 
+def _empty_comment_priority_source(source):
+    for fragment in re.finditer(
+        r"\[(?:[P0-3]|" + _DEFAULT_IGNORABLE_CLASS + r"|<!--[ \t]*-->)+\]",
+        source, re.I,
+    ):
+        if _backslash_escaped(source, fragment.start()):
+            continue
+        composed = re.sub(r"<!--[ \t]*-->", "", fragment.group())
+        if composed != fragment.group() and _PRIORITY_CANDIDATE.search(composed):
+            return True
+    return False
+
+
+def _rendered_report_link(tokens):
+    pending = list(reversed(tokens))
+    code_depth = 0
+    visited = 0
+    while pending:
+        token = pending.pop()
+        visited += 1
+        if visited > 65536:
+            raise MarkdownBoundaryError("Markdown link budget exceeded")
+        kind = token.get("type")
+        if kind == "inline_html":
+            tag = re.fullmatch(r"<(/?)code(?:\s[^>]*)?>", token.get("raw", ""), re.I)
+            if tag:
+                code_depth = max(0, code_depth - 1) if tag.group(1) else code_depth + 1
+        if kind == "link" and not code_depth and not token.get("_review_url"):
+            rendered = _markdown_text(token.get("children", ()))
+            label = " ".join(rendered.split()).casefold()
+            if label == "view security finding report":
+                return True
+        if kind not in {"codespan", "block_code", "block_html", "image"}:
+            pending.extend(reversed(token.get("children", ())))
+    return False
+
+
 @lru_cache(maxsize=8)
 def _markdown_document(text):
     if len(text) > 262144:
         raise MarkdownBoundaryError("Markdown input budget exceeded")
     mistune = _markdown_packages()
     with _MarkdownDeadline():
-        return _parse_markdown_document(text, mistune)
+        code_view, code_unknown = _details_code_masked_source(text)
+        document = _parse_markdown_document(code_view, mistune)
+        return (document[0], document[1] | code_unknown, *document[2:])
 
 
 def _parse_markdown_document(text, mistune):
@@ -5407,6 +5499,14 @@ def _parse_markdown_document(text, mistune):
     container_rows = set()
     container_boundaries = {}
     heading_nodes = []
+    report_link_rows = set()
+    has_report_candidate = "report" in source.casefold()
+    for index, line in enumerate(source_rows):
+        if "<!--" in line and _empty_comment_priority_source(line):
+            composed = re.sub(r"<!--[ \t]*-->", "", line)
+            visible = _markdown_text(md.inline(composed, _state.env))
+            if _PRIORITY_CANDIDATE.search(visible):
+                uncertain.add(index)
 
     def mapped_container(token, next_start):
         """Verify simple physical container rows against the complete AST."""
@@ -5569,6 +5669,8 @@ def _parse_markdown_document(text, mistune):
     for token_index, token in enumerate(tokens):
         position = token.get("_review_start", 0)
         first = bisect_right(starts, position) - 1
+        if has_report_candidate and _rendered_report_link([token]):
+            report_link_rows.add(first)
         if token.get("type") == "heading":
             # Heading soft breaks collapse to spaces in the browser. This
             # category projection never replaces raw source/footer authority.
@@ -5725,11 +5827,12 @@ def _parse_markdown_document(text, mistune):
         frozenset(container_rows),
         tuple(container_boundaries.items()),
         tuple(heading_nodes),
+        frozenset(report_link_rows),
     )
 
 
 def _priority_projection(text):
-    rows, uncertain, container_rows, container_boundaries, _headings = (
+    rows, uncertain, container_rows, container_boundaries, _headings, _reports = (
         _markdown_document(text)
     )
     # Only a validated container start can establish a result boundary.
@@ -5748,21 +5851,21 @@ def _priority_projection(text):
 def _details_code_masked_source(text):
     """Mask details Markdown code before HTML tags lose their block context."""
     if "`" not in text or not re.search(r"<details(?:[ \t\r\n>])", text, re.I):
-        return text
+        return text, frozenset()
     source = _without_inline_code(_actual_metadata(text))
-    if _html_visibility_ambiguous(source):
-        return text
-    visible_summaries = []
-    _visible_html(source, visible_summary_ranges=visible_summaries)
-    visible_summaries = set(visible_summaries)
+    inline_mask = _without_inline_code_in_markdown(source)
     starts = [0] + [m.end() for m in re.finditer("\n", source)]
     regions = []
+    summaries = []
+    code_tags = []
 
     class DetailsCode(HTMLParser):
         def __init__(self):
             super().__init__(convert_charrefs=False)
             self.details = []
-            self.summary = None
+            self.summary = []
+            self.raw_tags = []
+            self.invalid = False
 
         def source_offset(self):
             line, column = self.getpos()
@@ -5770,21 +5873,42 @@ def _details_code_masked_source(text):
 
         def handle_starttag(self, tag, attrs):
             start = self.source_offset()
+            if not 0 <= start < len(source):
+                self.invalid = True
+                return
+            if (
+                self.details and not self.raw_tags
+                and inline_mask[start] != source[start]
+            ):
+                code_tags.append((start, start + len(self.get_starttag_text())))
+                return
+            if tag in HTML_BLOCK_TAGS and tag not in {"details", "summary"}:
+                self.raw_tags.append(tag)
             if tag == "details":
                 self.details.append([start, start + len(self.get_starttag_text()),
                                      any(k == "open" for k, _v in attrs), []])
             elif tag == "summary" and self.details:
-                self.summary = (start, start + len(self.get_starttag_text()))
+                self.summary.append((
+                    len(self.details), start, start + len(self.get_starttag_text())
+                ))
 
         def handle_endtag(self, tag):
             end = self.source_offset()
             close = source.find(">", end) + 1
-            if tag == "summary" and self.summary and self.details:
-                start, inner = self.summary
+            if not 0 <= end < close <= len(source):
+                self.invalid = True
+                return
+            if self.details and not self.raw_tags and inline_mask[end] != source[end]:
+                code_tags.append((end, close))
+                return
+            if tag in self.raw_tags:
+                matching = len(self.raw_tags) - 1 - self.raw_tags[::-1].index(tag)
+                del self.raw_tags[matching:]
+            if (tag == "summary" and self.summary and self.details
+                    and self.summary[-1][0] == len(self.details)):
+                _depth, start, inner = self.summary.pop()
                 self.details[-1][3].append((start, close))
-                if (inner, end) in visible_summaries:
-                    regions.append((inner, end))
-                self.summary = None
+                summaries.append((inner, end))
             elif tag == "details" and self.details:
                 start, inner, expanded, excluded = self.details.pop()
                 if expanded:
@@ -5800,17 +5924,46 @@ def _details_code_masked_source(text):
     parser = DetailsCode()
     parser.feed(source)
     parser.close()
-    if parser.details or parser.summary:
-        return text  # Unmatched context cannot manufacture a clean projection.
+    if parser.invalid or parser.details or parser.summary:
+        return text, frozenset()  # Unmatched context cannot manufacture clean.
     masked = bytearray(len(text))
+    for first, last in code_tags:
+        for index in range(first, last):
+            if source[index] not in "\r\n":
+                masked[index] = 1
+    structure = "".join(" " if masked[i] else char for i, char in enumerate(source))
+    if _html_visibility_ambiguous(structure):
+        return text, frozenset()
+    visible_summaries = []
+    _visible_html(structure, visible_summary_ranges=visible_summaries)
+    visible_summaries = set(visible_summaries)
+    regions.extend(unit for unit in summaries if unit in visible_summaries)
+    unknown = set()
+    mistune = _markdown_packages()
+    md = mistune.Markdown(renderer=None)
     for first, last in regions:
         raw = source[first:last]
         # Keep nested raw HTML blocks, including literal backticks in divs.
         clean = _without_inline_code(raw)
-        for offset, (before, after) in enumerate(zip(raw, clean)):
+        def composed_priority(piece, first=first):
+            visible = _markdown_text(md.inline(piece, {}))
+            code_free = _without_inline_code_in_markdown(piece)
+            without_code = _markdown_text(md.inline(code_free, {}))
+            visible_priorities = Counter(_PRIORITY_CANDIDATE.findall(visible))
+            code_free_priorities = Counter(_PRIORITY_CANDIDATE.findall(without_code))
+            if visible_priorities - code_free_priorities:
+                unknown.add(bisect_right(starts, first) - 1)
+            return piece
+        if "`" in raw:
+            _outside_html_blocks(raw, composed_priority)
+        if len(clean) != len(raw):
+            raise MarkdownBoundaryError("Details code masking changed source offsets")
+        # Retain Python 3.9 support after verifying the positional length.
+        for offset, (before, after) in enumerate(zip(raw, clean)):  # noqa: B905
             if before != after:
                 masked[first + offset] = 1
-    return "".join(" " if masked[i] else char for i, char in enumerate(text))
+    code_view = "".join(" " if masked[i] else char for i, char in enumerate(text))
+    return code_view, frozenset(unknown)
 
 
 @lru_cache(maxsize=8)
@@ -5905,16 +6058,8 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
         if index < len(comment_rows) and _PRIORITY_CANDIDATE.search(row):
             # The AST erases ordinary HTML comments. Consult only source
             # fragments that remain visible and already project to a priority.
-            source_row = comment_rows[index]
-            for fragment in re.finditer(
-                r"\[(?:[P0-3]|" + _DEFAULT_IGNORABLE_CLASS + r"|<!--[ \t]*-->)+\]",
-                source_row, re.I,
-            ):
-                if _backslash_escaped(source_row, fragment.start()):
-                    continue
-                composed_fragment = re.sub(r"<!--[ \t]*-->", "", fragment.group())
-                if composed_fragment != fragment.group() and _PRIORITY_CANDIDATE.search(composed_fragment):
-                    return True
+            if _empty_comment_priority_source(comment_rows[index]):
+                return True
         composed = re.sub(r"<!--[ \t\r\n]*-->", "", row)
         if composed != row and (
             _PRIORITY_CANDIDATE.search(composed)
@@ -6186,14 +6331,15 @@ def _classify_body(body: str) -> dict[str, Any]:
                 }
             ],
         }
-    ambiguous = _html_visibility_ambiguous(body)
+    ambiguous = _html_visibility_ambiguous(_details_code_masked_source(body)[0])
     metadata = _without_inline_code(_actual_metadata(body))
     parsed_body, request_head = _coordinator_body(body)
     spans = _section_spans(parsed_body, coordinator_bound=request_head is not None)
     raw_sections = [(kind, text) for kind, text, _, _ in spans]
-    markdown_rows, markdown_unknown, _container_rows, _boundaries, _headings = (
-        _markdown_document(parsed_body)
-    )
+    (
+        markdown_rows, markdown_unknown, _container_rows,
+        _boundaries, _headings, report_link_rows,
+    ) = _markdown_document(parsed_body)
     # Coordinator request metadata already supplies an authenticated fallback;
     # a trailing footer is shared only for ordinary comments split by markers.
     shared_footer_ref = (
@@ -6234,9 +6380,6 @@ def _classify_body(body: str) -> dict[str, Any]:
         )
         _, _, first_row, last_row = spans[section_index]
         projection = "\n".join(markdown_rows[first_row:last_row])
-        details_code_source = _details_code_masked_source(text)
-        if details_code_source != text:
-            projection = _priority_projection(details_code_source)
         mapped_units = [
             unit
             for start, (_label, units) in _boundaries
@@ -6261,6 +6404,12 @@ def _classify_body(body: str) -> dict[str, Any]:
         priority_uncertain = _security_priority_uncertain(
             kind, text, security_finding, projection
         )
+        # Supported rendered links diagnose compositions outside the legacy
+        # literal report-link protocol; they cannot manufacture source authority.
+        if kind == "security" and not SECURITY_REPORT_LINK.search(text):
+            priority_uncertain |= any(
+                first_row <= row < last_row for row in report_link_rows
+            )
         if kind == "security" and not mapped_ordinary:
             priority_uncertain |= _security_details_priority_uncertain(text)
         structured_unknown = mapped_unknown or any(
