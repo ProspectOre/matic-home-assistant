@@ -5270,6 +5270,7 @@ def _parse_markdown_document(text, mistune):
         )
         if (
             wrapper
+            and "codex-security-review-finding" in wrapper.group(1).casefold()
             and SECURITY_MARKER_COMMENT.search(
                 _visible_html(
                     _mask_markdown_link_metadata(
@@ -5458,23 +5459,25 @@ def _parse_markdown_document(text, mistune):
             for raw_unit, label in zip(source_units, labels):  # noqa: B905
                 # Marker ownership follows the actual cell/row source. Rendered
                 # labels cannot authenticate code, title or escaped examples.
-                authority = _visible_html(
-                    _mask_markdown_link_metadata(
-                        _without_inline_code(
-                            _actual_metadata(
-                                _mask_backslash_escaped_container_tags(raw_unit)
+                actual_marker = False
+                if "codex-security-review-finding" in raw_unit.casefold():
+                    authority = _visible_html(
+                        _mask_markdown_link_metadata(
+                            _without_inline_code(
+                                _actual_metadata(
+                                    _mask_backslash_escaped_container_tags(raw_unit)
+                                )
                             )
-                        )
-                    ),
-                    mask_attributes=True,
-                )
-                actual_marker = bool(
-                    any(
-                        not _backslash_escaped(authority, match.start())
-                        for match in SECURITY_MARKER_COMMENT.finditer(authority)
+                        ),
+                        mask_attributes=True,
                     )
-                    and not _html_visibility_ambiguous(raw_unit)
-                )
+                    actual_marker = bool(
+                        any(
+                            not _backslash_escaped(authority, match.start())
+                            for match in SECURITY_MARKER_COMMENT.finditer(authority)
+                        )
+                        and not _html_visibility_ambiguous(raw_unit)
+                    )
                 if not actual_marker:
                     label = SECURITY_MARKER_COMMENT.sub("", label)
                 diagnostic_labels.append(label)
@@ -5482,6 +5485,12 @@ def _parse_markdown_document(text, mistune):
                 task_candidate = re.sub(
                     r"\A[^\S\r\n]*(?:[-+*][ \t]+)?\[[ xX]\][^\S\r\n]+", "", label
                 )
+                if task_candidate != label and _unicode_priority_uncertain(
+                    task_candidate
+                ):
+                    # Checkbox projection must not conceal Unicode uncertainty
+                    # in the candidate label, including unsupported containers.
+                    return None
                 if (
                     kind != "list"
                     and task_candidate != label
@@ -5547,8 +5556,14 @@ def _parse_markdown_document(text, mistune):
             label = _markdown_text(token.get("children", ())).replace("\n", " ")
             end = token.get("_review_end", position)
             last = bisect_left(starts, end)
+            diagnostic_label = _DEFAULT_IGNORABLE.sub("", label)
+            uncertain_heading = bool(
+                diagnostic_label != label
+                and RESULT_HEADING.match(diagnostic_label)
+                and not RESULT_HEADING.match(label)
+            )
             if (
-                RESULT_HEADING.match(label)
+                (RESULT_HEADING.match(label) or uncertain_heading)
                 and last > first
                 and not _html_visibility_ambiguous("\n".join(original_rows[first:last]))
             ):
@@ -5557,9 +5572,25 @@ def _parse_markdown_document(text, mistune):
                         first,
                         last,
                         label,
-                        "security" if SECURITY_HEADING.match(label) else "regular",
+                        (
+                            (
+                                "security_uncertain"
+                                if SECURITY_HEADING.match(diagnostic_label)
+                                else "regular_uncertain"
+                            )
+                            if uncertain_heading
+                            else (
+                                "security"
+                                if SECURITY_HEADING.match(label)
+                                else "regular"
+                            )
+                        ),
                     )
                 )
+                if uncertain_heading:
+                    # Candidate-only Unicode projection cannot authenticate a
+                    # heading. Preserve its physical source and uncertainty.
+                    uncertain.add(first)
         if "_review_source" not in token:
             visible = _markdown_text(
                 [token],
@@ -6006,6 +6037,10 @@ def _classify_body(body: str) -> dict[str, Any]:
         structured_unknown = mapped_unknown or any(
             first_row <= row < last_row for row in markdown_unknown
         )
+        uncertain_security_heading = any(
+            first_row <= first < last_row and heading_kind == "security_uncertain"
+            for first, _last, _label, heading_kind in _headings
+        )
         adverse_regular = bool(
             prefix_adverse
             or (
@@ -6060,6 +6095,7 @@ def _classify_body(body: str) -> dict[str, Any]:
                 and (
                     kind == "security"
                     or security_event
+                    or uncertain_security_heading
                     or (
                         kind == "unheaded"
                         and SECURITY_MARKER_COMMENT.search(
