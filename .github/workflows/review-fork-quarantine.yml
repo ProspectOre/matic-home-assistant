@@ -1,3 +1,4 @@
+# Generated adapter; edit scripts/review-gate/adapters and render.py.
 name: Quarantine Fork Review Events
 
 on:
@@ -15,7 +16,7 @@ permissions:
 
 jobs:
   quarantine:
-    if: github.event.workflow_run.event == 'pull_request_review'
+    if: contains(fromJSON('["pull_request_review","pull_request_review_comment"]'), github.event.workflow_run.event)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -39,7 +40,8 @@ jobs:
               and .repository.id == ($repository | tonumber)
               and .repository.full_name == $repo
               and (.path | split("@")[0]) == ".github/workflows/review-regular-review.yml"
-              and .event == "pull_request_review" and .status == "completed"
+              and (.event == "pull_request_review" or .event == "pull_request_review_comment")
+              and .status == "completed"
               and (.head_sha | type == "string" and test("^[0-9a-f]{40}$"))
               and (.pull_requests | type == "array")' >/dev/null
           head="$(printf '%s' "$run" | jq -r '.head_sha')"
@@ -54,6 +56,19 @@ jobs:
           fi
           printf '%s' "$prs" | jq -e 'length == 1 and (.[0] | type == "number" and . > 0 and floor == .)' >/dev/null
           pr="$(printf '%s' "$prs" | jq -r '.[0]')"
+          # Job metadata is an invalidation signal only, never capture proof.
+          # A route-only run from an unrelated author supplies no fork handoff.
+          jobs="$(gh api "repos/$REPO/actions/runs/$SOURCE_RUN_ID/jobs?filter=latest&per_page=100")"
+          printf '%s' "$jobs" | jq -e '.jobs | type == "array" and length < 100' >/dev/null
+          if ! printf '%s' "$jobs" | jq -e --arg id "$SOURCE_RUN_ID" --arg pr "$pr" --arg head "$head" '
+              [.jobs[] | select(.run_id == ($id | tonumber)
+                and .status == "completed" and .conclusion == "success"
+                and (.name | type == "string" and test(
+                  "^fork-regular-review-" + $pr + "-" + $head + "-[1-9][0-9]*-(true|false)$")))]
+              | length == 1' >/dev/null; then
+            echo 'No unique successful fork review handoff matched.'
+            exit 0
+          fi
           current="$(gh api "repos/$REPO/pulls/$pr")"
           # Same-repository and stale-head deliveries cannot quarantine another
           # candidate. Deleted or ambiguous fork identity supplies no target.

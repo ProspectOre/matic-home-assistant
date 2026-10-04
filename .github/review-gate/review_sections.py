@@ -2048,13 +2048,7 @@ def _unicode_priority_uncertain(row):
         return False
     # Logical order cannot establish rendered order in a bidi-controlled row.
     # Retain only uncertainty from a priority-like signature, never a finding.
-    if (
-        _BIDI_CONTROL.search(row)
-        and "[" in row
-        and "]" in row
-        and re.search(r"P", row, re.I)
-        and re.search(r"[0-3]", row)
-    ):
+    if _BIDI_CONTROL.search(row) and _BIDI_PRIORITY_CANDIDATE.search(row):
         return True
     if any(
         _DEFAULT_IGNORABLE.search(match.group())
@@ -5268,10 +5262,12 @@ def _parse_markdown_document(text, mistune):
     source_rows = _markdown_lines(source)
     marker_visibility_safe = None
     for index, line in enumerate(original_rows):
-        # Raw-block masking also covers a pure comment inside a simple list or
+        # Raw-block masking also covers a pure comment inside a nested list or
         # quote. Restore only a globally visible authenticated marker row so the
         # official AST can validate its physical wrapper and cell ownership.
-        wrapper = re.fullmatch(r" {0,3}(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|> ?)(.*)", line)
+        wrapper = re.fullmatch(
+            r"(?: {0,3}(?:(?:[-+*]|\d{1,9}[.)])[ \t]+|> ?))+(.*)", line
+        )
         if (
             wrapper
             and SECURITY_MARKER.fullmatch(wrapper.group(1).strip())
@@ -5464,15 +5460,36 @@ def _parse_markdown_document(text, mistune):
                 if not actual_marker:
                     label = SECURITY_MARKER_COMMENT.sub("", label)
                 diagnostic_labels.append(label)
-                if PRIORITY_RESULT.match(label):
-                    count_priorities = len(re.findall(r"\[P[0-3]\]", label, re.I))
+                priority_label = label
+                task_candidate = re.sub(
+                    r"\A[^\S\r\n]*(?:[-+*][ \t]+)?\[[ xX]\][^\S\r\n]+", "", label
+                )
+                if (
+                    kind != "list"
+                    and task_candidate != label
+                    and PRIORITY_RESULT.match(task_candidate)
+                ):
+                    # An unmatched task-shaped priority in another container
+                    # has no validated list ownership; retain uncertainty.
+                    return None
+                if kind == "list":
+                    # Task checkbox syntax is a list decoration, not a finding
+                    # owner. The AST equality below still validates raw labels.
+                    priority_label = re.sub(
+                        r"\A[^\S\r\n]*\[[ xX]\][^\S\r\n]+", "", label
+                    )
+                if PRIORITY_RESULT.match(priority_label):
+                    count_priorities = len(
+                        re.findall(r"\[P[0-3]\]", priority_label, re.I)
+                    )
                     marked = bool(
-                        actual_marker and INLINE_SECURITY_MARKER.fullmatch(label)
+                        actual_marker
+                        and INLINE_SECURITY_MARKER.fullmatch(priority_label)
                     )
                     finding_units.append(
                         (
                             first + offset,
-                            label,
+                            priority_label,
                             marked and count_priorities == 1,
                             marked and count_priorities != 1,
                         )
