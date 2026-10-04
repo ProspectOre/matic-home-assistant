@@ -2004,6 +2004,43 @@ SECURITY_HEADING = re.compile(
     re.IGNORECASE,
 )
 PRIORITY_RESULT = re.compile(r"\A[ \t]*\[P[0-3]\](?:[ \t]|$)", re.I)
+
+# Unicode 17.0.0 DerivedCoreProperties.txt: Default_Ignorable_Code_Point.
+# https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
+# Candidate detection only: never normalize source, evidence or commit authority.
+_DEFAULT_IGNORABLE_CLASS = (
+    r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
+    r"\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f"
+    r"\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
+    r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]"
+)
+_DEFAULT_IGNORABLE = re.compile(_DEFAULT_IGNORABLE_CLASS)
+_PRIORITY_CANDIDATE = re.compile(
+    r"\["
+    + _DEFAULT_IGNORABLE_CLASS
+    + r"*P"
+    + _DEFAULT_IGNORABLE_CLASS
+    + r"*[0-3]"
+    + _DEFAULT_IGNORABLE_CLASS
+    + r"*\]",
+    re.I,
+)
+
+
+def _unicode_priority_uncertain(row):
+    if not _DEFAULT_IGNORABLE.search(row):
+        return False
+    if any(
+        _DEFAULT_IGNORABLE.search(match.group())
+        for match in _PRIORITY_CANDIDATE.finditer(row)
+    ):
+        return True
+    return bool(
+        PRIORITY_RESULT.match(_DEFAULT_IGNORABLE.sub("", row))
+        and not PRIORITY_RESULT.match(row)
+    )
+
+
 RESULT_HEADING = re.compile(
     r"(?:" + REGULAR_HEADING.pattern + r")|(?:" + SECURITY_HEADING.pattern + r")",
     re.IGNORECASE,
@@ -4595,6 +4632,8 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
         _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
     )
     priority_lines = _markdown_lines(_priority_projection(rest))
+    for first, _last, label, _kind in _markdown_document(rest)[4]:
+        structural_lines[first] = label
     start = next(
         (
             i
@@ -4665,9 +4704,11 @@ def _section_spans(body: str, coordinator_bound: bool = False):
         _without_inline_code(_mask_backslash_escaped_container_tags(structural_text))
     )
     priority_lines = _markdown_lines(_priority_projection(body))
-    diagnostic_rows, _unknown, _containers, container_boundaries = _markdown_document(
-        body
+    diagnostic_rows, _unknown, _containers, container_boundaries, headings = (
+        _markdown_document(body)
     )
+    for first, _last, label, _kind in headings:
+        lines[first] = label
     starts: list[int] = []
     kinds: dict[int, str] = {}
     reviewed_counts = [0]
@@ -4876,6 +4917,10 @@ def _without_heading(kind: str, section: str) -> str:
     if not lines:
         return section
     heading = REGULAR_HEADING if kind == "regular" else SECURITY_HEADING
+    for first, last, label, heading_kind in _markdown_document(section)[4]:
+        if first == 0 and heading_kind == kind:
+            match = heading.match(label)
+            return "\n".join([label[match.end() :], *lines[last:]])
     match = heading.match(lines[0])
     if match:
         lines[0] = lines[0][match.end() :]
@@ -5103,8 +5148,7 @@ def _markdown_text(tokens):
         return "".join(chunks)
     rendered = "".join(chunks)
     priorities = [
-        (match.start(), match.end())
-        for match in re.finditer(r"\[P[0-3]\]", rendered, re.I)
+        (match.start(), match.end()) for match in _PRIORITY_CANDIDATE.finditer(rendered)
     ]
     # Adjacent code elements may jointly cover an entire priority. Only a
     # priority with an actual rendered character outside the code union can
@@ -5204,7 +5248,18 @@ def _parse_markdown_document(text, mistune):
     class SourceBlockParser(mistune.BlockParser):
         def parse_method(self, match, state):
             start, index = state.cursor, len(state.tokens)
+            previous_kind = state.tokens[-1].get("type") if index else None
             result = super().parse_method(match, state)
+            # Setext parsing converts an existing paragraph instead of appending
+            # a token; retain its original start and record the underline end.
+            if (
+                previous_kind == "paragraph"
+                and index == len(state.tokens)
+                and state.tokens[-1].get("type") == "heading"
+            ):
+                state.tokens[-1]["_review_end"] = (
+                    result if isinstance(result, int) else state.cursor
+                )
             for token in state.tokens[index:]:
                 if token.get("type") in ("list", "block_quote", "table"):
                     token["_review_start"] = start
@@ -5256,6 +5311,7 @@ def _parse_markdown_document(text, mistune):
         raise MarkdownBoundaryError("Structured Markdown parsing failed") from exc
     container_rows = set()
     container_boundaries = {}
+    heading_nodes = []
 
     def mapped_container(token, next_start):
         """Verify simple physical container rows against the complete AST."""
@@ -5322,8 +5378,7 @@ def _parse_markdown_document(text, mistune):
                 source_units = [original_match.group(1)]
                 labels = [visible]
                 flattened.append(visible)
-            priority_units = []
-            standalone_marker = False
+            finding_units = []
             diagnostic_labels = []
             for raw_unit, label in zip(source_units, labels):  # noqa: B905
                 # Marker ownership follows the actual cell/row source. Rendered
@@ -5341,15 +5396,12 @@ def _parse_markdown_document(text, mistune):
                 if not actual_marker:
                     label = SECURITY_MARKER_COMMENT.sub("", label)
                 diagnostic_labels.append(label)
-                standalone_marker |= bool(
-                    actual_marker and SECURITY_MARKER.fullmatch(label.strip())
-                )
                 if PRIORITY_RESULT.match(label):
                     count_priorities = len(re.findall(r"\[P[0-3]\]", label, re.I))
                     marked = bool(
                         actual_marker and INLINE_SECURITY_MARKER.fullmatch(label)
                     )
-                    priority_units.append(
+                    finding_units.append(
                         (
                             first + offset,
                             label,
@@ -5357,20 +5409,12 @@ def _parse_markdown_document(text, mistune):
                             marked and count_priorities != 1,
                         )
                     )
-            if standalone_marker and priority_units:
-                if (
-                    len(priority_units) == 1
-                    and len(re.findall(r"\[P[0-3]\]", priority_units[0][1], re.I)) == 1
-                ):
-                    row, label, _marked, _unknown = priority_units[0]
-                    priority_units[0] = (row, label, True, False)
-                else:
-                    priority_units = [
-                        (row, label, marked, True)
-                        for row, label, marked, _unknown in priority_units
-                    ]
+                elif actual_marker and SECURITY_MARKER.fullmatch(label.strip()):
+                    # The marker is its own security signal. It cannot transfer
+                    # ownership to a priority in another physical source cell.
+                    finding_units.append((first + offset, label, True, False))
             visible = " ".join(diagnostic_labels)
-            mapped.append((first + offset, visible, tuple(priority_units)))
+            mapped.append((first + offset, visible, tuple(finding_units)))
         if "".join(flattened).replace("\n", "") != _markdown_text([token]).replace(
             "\n", ""
         ):
@@ -5380,9 +5424,28 @@ def _parse_markdown_document(text, mistune):
     for token_index, token in enumerate(tokens):
         position = token.get("_review_start", 0)
         first = bisect_right(starts, position) - 1
+        if token.get("type") == "heading":
+            label = _markdown_text(token.get("children", ()))
+            end = token.get("_review_end", position)
+            last = bisect_left(starts, end)
+            if (
+                RESULT_HEADING.match(label)
+                and last > first
+                and not _html_visibility_ambiguous("\n".join(original_rows[first:last]))
+            ):
+                heading_nodes.append(
+                    (
+                        first,
+                        last,
+                        label,
+                        "security" if SECURITY_HEADING.match(label) else "regular",
+                    )
+                )
         if "_review_source" not in token:
             visible = _markdown_text([token])
-            if re.search(r"(?i)\bP[0-3]\b", visible):
+            if re.search(r"(?i)\bP[0-3]\b", visible) or _unicode_priority_uncertain(
+                visible
+            ):
                 next_start = (
                     tokens[token_index + 1].get("_review_start", len(source))
                     if token_index + 1 < len(tokens)
@@ -5395,6 +5458,7 @@ def _parse_markdown_document(text, mistune):
                             label
                             for _row, _visible, units in mapped
                             for _source_row, label, _marked, _unknown in units
+                            if PRIORITY_RESULT.match(label)
                         ),
                         None,
                     )
@@ -5426,29 +5490,37 @@ def _parse_markdown_document(text, mistune):
         # their source offsets instead of treating the following row as earlier.
         offsets = [offset for offset, line in enumerate(raw_lines) if line.strip()]
         if len(offsets) != len(visible_lines):
-            if re.search(r"(?i)\bP[0-3]\b", visible):
+            if re.search(r"(?i)\bP[0-3]\b", visible) or _unicode_priority_uncertain(
+                visible
+            ):
                 uncertain.add(first)
             continue
         for offset, line in zip(offsets, visible_lines):  # noqa: B905
             if first + offset < count:
                 rows[first + offset] = line
+    uncertain.update(
+        index for index, row in enumerate(rows) if _unicode_priority_uncertain(row)
+    )
     return (
         tuple(rows),
         frozenset(uncertain),
         frozenset(container_rows),
         tuple(container_boundaries.items()),
+        tuple(heading_nodes),
     )
 
 
 def _priority_projection(text):
-    rows, uncertain, container_rows, container_boundaries = _markdown_document(text)
+    rows, uncertain, container_rows, container_boundaries, _headings = (
+        _markdown_document(text)
+    )
     # Only a validated container start can establish a result boundary.
     # Interior diagnostics and unknown maps never become section authority.
     lines = [
         line if index not in uncertain | container_rows else ""
         for index, line in enumerate(rows)
     ]
-    for row, (label, _priority_units) in container_boundaries:
+    for row, (label, _finding_units) in container_boundaries:
         if row not in uncertain:
             lines[row] = label
     return "\n".join(lines) + (" " if lines and not lines[-1] else "")
@@ -5464,6 +5536,8 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
     if projection is None:
         projection = _priority_projection(text)
     for row in _markdown_lines(projection):
+        if _unicode_priority_uncertain(row):
+            return True
         if kind != "security" and not standalone:
             marker = SECURITY_MARKER_COMMENT.search(row)
             if marker is None or row[marker.end() :].strip():
@@ -5728,8 +5802,8 @@ def _classify_body(body: str) -> dict[str, Any]:
     parsed_body, request_head = _coordinator_body(body)
     spans = _section_spans(parsed_body, coordinator_bound=request_head is not None)
     raw_sections = [(kind, text) for kind, text, _, _ in spans]
-    markdown_rows, markdown_unknown, _container_rows, _boundaries = _markdown_document(
-        parsed_body
+    markdown_rows, markdown_unknown, _container_rows, _boundaries, _headings = (
+        _markdown_document(parsed_body)
     )
     # Coordinator request metadata already supplies an authenticated fallback;
     # a trailing footer is shared only for ordinary comments split by markers.
