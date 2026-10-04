@@ -244,7 +244,7 @@ capture_receipt_is_authenticated() {
     .id == ($id | tonumber)
     and .workflow_id == ($workflow | tonumber)
     and .repository.full_name == $repo
-    and .path == $path
+    and (.path == $path or .path == ($path + "@" + $branch))
     and .event == "workflow_dispatch"
     and .head_branch == $branch
     and .status == "completed"

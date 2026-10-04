@@ -6334,6 +6334,41 @@ def _security_details_priority_uncertain(text):
     return unowned_priority(raw_body, visible_body)
 
 
+@lru_cache(maxsize=8)
+def _security_raw_block_priority_uncertain(text):
+    """Keep unowned raw HTML priorities after a completed clean result pending."""
+    source = _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(text)))
+    blocks = _html_block_spans(source)
+    if not blocks or not _standalone_security_clean(source[:blocks[0][0]]):
+        return False
+    # Details bodies and summaries can contain real Markdown code spans.
+    # Require a priority in the original structured rendered view first.
+    if not any(
+        _PRIORITY_CANDIDATE.search(row) or _unicode_priority_uncertain(row)
+        for row in _markdown_document(text)[0]
+    ):
+        return False
+    fragment = source[blocks[0][0]:]
+    visible = _visible_html(
+        fragment, mask_attributes=True, decode_entities=True,
+        strip_inline_markup=True,
+    )
+    candidates = [
+        row for row in _markdown_lines(visible)
+        if _PRIORITY_CANDIDATE.search(row) or _unicode_priority_uncertain(row)
+    ]
+    if not candidates:
+        return False
+    markers = list(SECURITY_MARKER_COMMENT.finditer(fragment))
+    return not (
+        len(candidates) == 1
+        and len(re.findall(r"\[P[0-3]\]", visible, re.I)) == 1
+        and INLINE_SECURITY_MARKER.fullmatch(candidates[0].strip())
+        and len(markers) == 1
+        and not _backslash_escaped(fragment, markers[0].start())
+    )
+
+
 def _security_priority_uncertain(kind: str, text: str, finding: bool, projection=None):
     source = _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(text)))
     standalone = (
@@ -6388,10 +6423,39 @@ def _nested_regular_marker_uncertain(kind, text):
         _mask_backslash_escaped_container_tags(text)
     ))
     visible = _visible_html(source, preserve_markup_lines=True)
-    opening = re.search(r"<(?:details|div|span)(?:[ \t\r\n>])", source, re.I)
-    if opening is None or not _standalone_regular_clean(source[:opening.start()]):
+    if not SECURITY_MARKER_COMMENT.search(visible):
         return False
-    return bool(SECURITY_MARKER_COMMENT.search(visible))
+    # Track actual complete tags once. Earlier balanced heading markup cannot
+    # stand in for the later marker's container; attribute text is not markup.
+    stack = []
+    counts = dict.fromkeys(("details", "div", "span"), 0)
+    position = 0
+    opening = None
+    while position < len(source):
+        start = source.find("<", position)
+        if start < 0:
+            break
+        markup = _html_markup_at(source, start, require_complete=True)
+        if markup is None:
+            position = start + 1
+            continue
+        tag, closing, end = markup
+        if not tag:
+            if stack and SECURITY_MARKER_COMMENT.fullmatch(source[start:end]):
+                opening = stack[0][1]
+                break
+        elif tag in counts:
+            if closing and counts[tag]:
+                while stack:
+                    prior_tag, _ = stack.pop()
+                    counts[prior_tag] -= 1
+                    if prior_tag == tag:
+                        break
+            elif not closing:
+                stack.append((tag, start))
+                counts[tag] += 1
+        position = end
+    return opening is not None and _standalone_regular_clean(source[:opening])
 
 
 def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool, bool]:
@@ -6787,6 +6851,7 @@ def _classify_body(body: str) -> dict[str, Any]:
             )
         if kind == "security" and not mapped_ordinary:
             priority_uncertain |= _security_details_priority_uncertain(text)
+            priority_uncertain |= _security_raw_block_priority_uncertain(text)
         structured_unknown = mapped_unknown or any(
             first_row <= row < last_row for row in markdown_unknown
         )
