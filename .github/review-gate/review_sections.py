@@ -3945,6 +3945,7 @@ def _visible_html(
     preserve_markdown_comments: bool = False,
     preserve_inline_code: bool = False,
     preserve_inline_markup: bool = False,
+    preserve_block_markup: bool = False,
     preserve_source_offsets: bool = False,
     rendered_block_breaks: bool = False,
 ) -> str:
@@ -4332,9 +4333,10 @@ def _visible_html(
                     else inline_markup_spans
                 )
                 if not (
-                    preserve_inline_markup
-                    and (normalized_tag in HTML_INLINE_FORMATTING_TAGS
-                         or normalized_tag == "br")
+                    (preserve_inline_markup
+                     and (normalized_tag in HTML_INLINE_FORMATTING_TAGS
+                          or normalized_tag == "br"))
+                    or (preserve_block_markup and normalized_tag in HTML_BLOCK_TAGS)
                 ):
                     destination.append((start, end))
             if namespace == "html" and (
@@ -4503,9 +4505,10 @@ def _visible_html(
                         block_markup_spans if separates else inline_markup_spans
                     )
                     if not (
-                        preserve_inline_markup
-                        and (normalized_tag in HTML_INLINE_FORMATTING_TAGS
-                             or normalized_tag == "br")
+                        (preserve_inline_markup
+                         and (normalized_tag in HTML_INLINE_FORMATTING_TAGS
+                              or normalized_tag == "br"))
+                        or (preserve_block_markup and separates)
                     ):
                         destination.append((start, markup[2]))
             if matching_index is not None:
@@ -5468,8 +5471,12 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False,
                 chunks.append(raw)
             elif not html_code_depth:
                 markup = _html_markup_at(raw, 0, require_complete=True)
-                if markup and markup[0] == "br":
-                    chunks.append("\n" if diagnostic_comments else " ")
+                if markup:
+                    if diagnostic_comments and (
+                            markup[0] == "br" or markup[0] in HTML_BLOCK_TAGS):
+                        chunks.append("\n")
+                    elif markup[0] == "br":
+                        chunks.append(" ")
         elif token.get("_review_url"):
             # A visible URL cannot join text on either side into a protocol.
             # Keep a non-authoritative word barrier without scanning URL labels.
@@ -5675,6 +5682,13 @@ def _diagnostic_inline_markup_lines(source):
     return "".join(diagnostic_source)
 
 
+def _configure_inline_extensions(md, mistune):
+    # Keep diagnostic inline tails in the same dialect as the source AST.
+    # Callable plugins avoid any ambient plugin discovery.
+    formatting = sys.modules[mistune.__name__ + ".plugins.formatting"]
+    md.use(formatting.strikethrough)
+
+
 def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
     original = _actual_metadata(text)
     raw_blocks = _html_block_spans(original)
@@ -5707,6 +5721,7 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
         preserve_markdown_comments=True,
         preserve_inline_code=True,
         preserve_inline_markup=True,
+        preserve_block_markup=diagnostic_bare,
     )
     source = source.replace("\r\n", "\n").replace("\r", "\n")
     original_rows = _markdown_lines(original)
@@ -5821,10 +5836,8 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
         block=block,
         inline=LabelInlineParser(max_emphasis_depth=20, max_image_depth=20),
     )
-    # Callable plugins avoid any ambient plugin discovery.
-    formatting = sys.modules[mistune.__name__ + ".plugins.formatting"]
+    _configure_inline_extensions(md, mistune)
     table = sys.modules[mistune.__name__ + ".plugins.table"]
-    md.use(formatting.strikethrough)
     md.use(table.table)
 
     def save_source(markdown, state):
@@ -6085,16 +6098,32 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
             ).replace("\n", " ")
             end = token.get("_review_end", position)
             last = bisect_left(starts, end)
-            pending = list(token.get("children", ()))
+            pending = list(reversed(token.get("children", ())))
             code_heading = False
+            code_tags = []
             while pending:
                 child = pending.pop()
-                if child.get("type") == "codespan" or (
-                    child.get("type") == "inline_html"
-                    and HTML_INLINE_CODE_OPEN.match(child.get("raw", ""))
-                ):
+                child_kind = child.get("type")
+                if child_kind == "codespan":
                     code_heading = True
-                pending.extend(child.get("children", ()))
+                elif child_kind == "inline_html":
+                    markup = _html_markup_at(child.get("raw", ""), 0,
+                                             require_complete=True)
+                    if markup and markup[0] in HTML_INLINE_CODE_TAGS:
+                        tag, closing, _end = markup
+                        if not closing:
+                            code_tags.append(tag)
+                        elif code_tags and code_tags[-1] == tag:
+                            code_tags.pop()
+                        elif code_tags:
+                            code_heading = True
+                elif code_tags and (child.get("raw") or child_kind in (
+                        "softbreak", "linebreak", "image") or child.get("_review_url")):
+                    code_heading = True
+                pending.extend(reversed(child.get("children", ())))
+            # Closed empty HTML code containers own no rendered heading text.
+            # Unclosed or mismatched containers retain the conservative mask.
+            code_heading |= bool(code_tags)
             if code_heading:
                 prefix = heading_prefix + _markdown_text(
                     token.get("children", ()), before_code=True
@@ -6735,6 +6764,7 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
                         state.tokens[-1]["_review_url"] = True
 
                 md = mistune.Markdown(renderer=None, inline=TailInline())
+                _configure_inline_extensions(md, mistune)
                 env = md.parse(text)[1].env if re.search(r"\]\s*\[", text) else {}
                 rendered_tail = _markdown_text(
                     md.inline(tail, env), diagnostic_comments=True)
@@ -7279,6 +7309,9 @@ def _classify_body(body: str) -> dict[str, Any]:
                 "regular_adverse": adverse_regular,
                 "security_event": security_event,
                 "security_finding": security_finding,
+                # Clean comment promotion needs reviewed evidence, not only
+                # the head named by a coordinator request.
+                "reviewed_ref": _target_ref(text, shared_footer_ref),
                 "target_ref": _target_ref(
                     text,
                     (

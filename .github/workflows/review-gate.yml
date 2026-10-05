@@ -75,7 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.issue.number }}
           POLICY_REF: ${{ github.workflow_sha }}
-          EXPECTED_REVIEW_SECTIONS_SHA256: '213643f6b14fe29a717365d81d91a00279822284c3d18f3795e793fc16085fc0'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '566ebdb319d6d0bfecdf1198bd8e5917537f633397845047070941694c6f4b51'
         shell: bash
         run: |
           set -euo pipefail
@@ -686,9 +686,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'e0f93f6ce073494acbd88c69bc22133e5401d7b04cedf3700a7c82f4989d0e10'
+          EXPECTED_SHA256: '7e8a550e6d21e07cd3bb7740c45ff00b9527d408ee4de9794e91b912a29289b6'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '213643f6b14fe29a717365d81d91a00279822284c3d18f3795e793fc16085fc0'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '566ebdb319d6d0bfecdf1198bd8e5917537f633397845047070941694c6f4b51'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '372a2f5289eaccbbc1983821c91bc18a9b8b5c0d02ffc0c5f7b367c601f6b077'
         shell: bash
         run: |

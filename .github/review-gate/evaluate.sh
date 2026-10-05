@@ -1035,8 +1035,8 @@ regular_evidence() {
           def known_codex_footer:
             test("(?is)\\A<details>[[:space:]]*<summary>[[:space:]]*(?:ℹ️[[:space:]]*)?about[[:space:]]+codex[[:space:]]+in[[:space:]]+github[[:space:]]*</summary>[[:space:]]*<br[[:space:]]*/?>[[:space:]]*\\[your team has set up codex to review pull requests in this repo\\]\\(https://chatgpt\\.com/codex/cloud/settings/general\\)\\.[[:space:]]*reviews are triggered when you[[:space:]]*-[[:space:]]*open a pull request for review[[:space:]]*-[[:space:]]*mark a draft as ready[[:space:]]*-[[:space:]]*comment \\\"@codex review\\\"\\.[[:space:]]*if codex has suggestions, it will comment; otherwise it will react with (?:👍|:\\+1:)\\.[[:space:]]*codex can also answer questions or update the pr\\.[[:space:]]*try commenting \\\"@codex address that feedback\\\"\\.[[:space:]]*</details>[[:space:]]*$");
           def stock_clean_issue_comment_body:
-            test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
-            or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
+            test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
+            or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*$");
           def stock_clean_issue_comment_envelope:
             if coordinator_request then
               (capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
@@ -1071,7 +1071,10 @@ regular_evidence() {
            | select($section.availability != true)
            # Unsupported HTML cannot authenticate mutable footer scope.
            | select($section.parser_ambiguous or $section.target_ref == $head or $section.target_ref == $prefix or (($section.regular_adverse or $section.security_finding) and $section.target_ref == "__unbound__"))
-           | ($section.regular_clean == true or ($body | strict_stock_clean_issue_comment_envelope)) as $clean_envelope
+           # A creation receipt authenticates delivery, not which colliding
+           # commit an abbreviated footer meant. Require reviewed full-SHA proof.
+           | (($section.regular_clean == true or ($body | strict_stock_clean_issue_comment_envelope))
+              and $section.reviewed_ref == $head) as $clean_envelope
            | ($clean_envelope and ($body | test("(?is)<details>"))) as $footer_clean
            | (.review_gate_creation_receipt == true or (($require_creation_receipt | not) and $footer_clean)) as $clean_proof
            | {at: (.updated_at // .created_at),
@@ -1382,7 +1385,8 @@ reconcile_clean_security_history() {
     [[ -n "$source_created" && -n "$source_updated" && -n "$body" ]] || continue
     [[ "$(printf '%s' "$body" | shasum -a 256 | awk '{print substr($1, 1, 24)}')" == "$source_hash" ]] || continue
     # Reconcile only this head's security section with the same immutable
-    # source body hash; another result's footer cannot supply its binding.
+    # source body hash and explicit full reviewed SHA; neither a colliding
+    # prefix nor a coordinator request can supply a clean verdict's binding.
     # shellcheck disable=SC2016
     jq -cn --arg body "$body" '{body:$body}' \
       | python3 "${REVIEW_SECTIONS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/review_sections.py}" --records \
@@ -1390,7 +1394,7 @@ reconcile_clean_security_history() {
           [.review_gate_sections[]? | select(.security_event == true or .security_finding == true)] as $sections
           | all(.review_gate_sections[]?; .parser_ambiguous != true)
           and any($sections[]; .security_finding != true
-              and (.target_ref == $head or .target_ref == $prefix))
+              and .target_ref == $head and .reviewed_ref == $head)
           and all($sections[]; .security_finding != true
               or (.target_ref != $head and .target_ref != $prefix and .target_ref != "__unbound__"))' >/dev/null || continue
     receipt_description="Security clean receipt #$marker_id for PR #$pr_number on head $head_sha; $origin"
