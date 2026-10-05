@@ -47,6 +47,8 @@ async function startRecovery(page, failure = null) {
       catalogFailuresRemaining: failure === "catalog" ? 1 : 0,
       replacementDeltaFailuresRemaining: failure === "delta" ? 1 : 0,
       releaseA: null,
+      failInitialDelta: null,
+      catalogPending: false,
       before204: null,
     };
     const setTimeoutBase = window.__deltaRecoveryWaitSetTimeoutBase
@@ -64,8 +66,17 @@ async function startRecovery(page, failure = null) {
       },
     });
     const effects = new EffectController(store, {
-      catalog: async () => {
+      catalog: async (signal) => {
         probe.catalogReads += 1;
+        if (failure === "queued-catalog" && probe.catalogReads === 2) {
+          probe.catalogPending = true;
+          await new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => {
+              probe.catalogPending = false;
+              reject(new DOMException("Aborted", "AbortError"));
+            }, { once: true });
+          });
+        }
         if (probe.catalogReads > 1 && probe.catalogFailuresRemaining > 0) {
           probe.catalogFailuresRemaining -= 1;
           throw new Error("synthetic terminal catalog failure");
@@ -95,7 +106,14 @@ async function startRecovery(page, failure = null) {
       sceneDelta: async (url, _scene, _floorCoherent, signal) => {
         const key = url === entryA.deltaUrl ? "a" : "b";
         probe.deltaReads[key] += 1;
-        if (key === "a" && probe.deltaReads.a === 1) throw new Error("synthetic transient delta failure");
+        if (key === "a" && probe.deltaReads.a === 1) {
+          if (failure === "queued-catalog") {
+            await new Promise((_resolve, reject) => {
+              probe.failInitialDelta = () => reject(new Error("synthetic transient delta failure"));
+            });
+          }
+          throw new Error("synthetic transient delta failure");
+        }
         if (key === "a" && probe.replacementDeltaFailuresRemaining > 0) {
           probe.replacementDeltaFailuresRemaining -= 1;
           throw new Error("synthetic replacement delta failure");
@@ -136,6 +154,10 @@ async function startRecovery(page, failure = null) {
     void effects.refreshCatalog(true);
     window.__deltaRecoveryWaitRun = { effects, store, projection, entryA, entryB };
   }, failure);
+  if (failure === "queued-catalog") {
+    await expect.poll(() => page.evaluate(() => typeof window.__deltaRecoveryWait.failInitialDelta)).toBe("function");
+    return;
+  }
   if (failure === "catalog") {
     await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWaitRun.store.value.resources.catalog.status))
       .toBe("error");
@@ -395,4 +417,20 @@ test("@safety terminal recovery reads and a failed replacement delta release the
     { sceneReads: { a: 3, b: 0 }, deltaAborts: { a: 0, b: 0 } },
     { sceneReads: { a: 3, b: 0 }, deltaAborts: { a: 0, b: 0 } },
   ]);
+});
+
+test("@safety queued delta recovery preserves the verified generation while superseding a catalog poll", async ({ page }) => {
+  await loadRecoveryHarness(page);
+  await startRecovery(page, "queued-catalog");
+  const generation = await page.evaluate(() => window.__deltaRecoveryWaitRun.store.value.generation);
+  await page.evaluate(() => { void window.__deltaRecoveryWaitRun.effects.refreshCatalog(); });
+  await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWait.catalogPending)).toBe(true);
+  await page.evaluate(() => window.__deltaRecoveryWait.failInitialDelta());
+  await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWait.deltaReads.a)).toBe(2);
+  expect(await page.evaluate(() => {
+    const state = window.__deltaRecoveryWaitRun.store.value;
+    return { generation: state.generation, exactPose: state.map.exactPose,
+      floorReadOnly: state.floor.readOnly, sceneStatus: state.resources.scene.status };
+  })).toEqual({ generation, exactPose: true, floorReadOnly: false, sceneStatus: "ready" });
+  await page.evaluate(() => window.__deltaRecoveryWaitRun.effects.dispose());
 });

@@ -5393,7 +5393,7 @@ class _BudgetText(str):
         return found
 
 
-def _markdown_text(tokens, *, block_markers=False, before_code=False):
+def _markdown_text(tokens, *, block_markers=False, before_code=False, mask_links=False):
     chunks = []
     code_chunks = {}
     html_code_depth = 0
@@ -5427,7 +5427,7 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
                 return html.unescape(ref).translate(EVIDENCE_LINE_SEPARATORS)
 
             if html_code_depth:
-                code_chunks[len(chunks)] = in_link
+                code_chunks[len(chunks)] = False
             chunks.append(VISIBLE_CHARACTER_REFERENCE.sub(decode, raw))
         elif (
             block_markers
@@ -5436,7 +5436,7 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
         ):
             chunks.append(token["raw"].strip())
         elif kind == "codespan":
-            code_chunks[len(chunks)] = in_link
+            code_chunks[len(chunks)] = in_link and not html_code_depth
             chunks.append(token.get("raw", ""))
         elif kind in ("softbreak", "linebreak"):
             chunks.append("\n")
@@ -5456,6 +5456,8 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
             chunks.append("AUTOLINK")
         elif kind == "image":
             chunks.append("IMAGE")
+        elif mask_links and kind == "link":
+            chunks.append("LINK")
         elif kind not in (
             "codespan",
             "image",
@@ -5759,13 +5761,17 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
             pending.extend(token.get("children", ()))
 
     md.before_render_hooks.append(save_source)
+    if diagnostic_bare:
+        escaped = _markdown_escaped_punctuation(source)
+        source = "".join("X" if char == "[" and escaped[index] else char
+                         for index, char in enumerate(source))
     try:
         tokens, _state = md.parse(source)
     except (RecursionError, RuntimeError, IndexError) as exc:
         raise MarkdownBoundaryError("Structured Markdown parsing failed") from exc
     if diagnostic_bare:
         # Inspect each actual rendered leaf independently. Container syntax
-        # cannot hide a bare label, and neighboring cells cannot compose one.
+        # cannot hide a label, and neighboring cells cannot compose one.
         pending = list(tokens)
         visited = 0
         while pending:
@@ -5773,13 +5779,15 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
             visited += 1
             if visited > 65536:
                 raise MarkdownBoundaryError("Markdown node budget exceeded")
-            if token.get("type") in ("paragraph", "block_text", "table_cell"):
-                label = _markdown_text(token.get("children", ()))
+            if token.get("type") in (
+                    "paragraph", "block_text", "table_cell", "heading"):
+                label = _markdown_text(token.get("children", ()), mask_links=True)
                 task = re.match(r"\A[ \t]*\[[ xX]\][ \t]+",
                                 token.get("_review_source", ""))
                 if task:
                     label = re.sub(r"\A[^\S\r\n]*\[[ xX]\][^\S\r\n]+", "", label)
-                if (BARE_PRIORITY_RESULT.search(label)
+                if (_PRIORITY_CANDIDATE.search(label)
+                        or BARE_PRIORITY_RESULT.search(label)
                         or any(_unicode_priority_uncertain(row)
                                for row in _markdown_lines(label))):
                     return True
@@ -6406,7 +6414,7 @@ def _security_details_priority_uncertain(text):
 
 
 def _rendered_html_projection(source, *, preserve_offsets=True,
-                              collapse_html_whitespace=False):
+                              collapse_html_whitespace=False, inline_spans=None):
     """Project explicit rendered block breaks without changing source offsets."""
     # A completed clean result may follow context or an earlier harmless
     # block. Keep source offsets and inspect only raw blocks after that row.
@@ -6443,11 +6451,13 @@ def _rendered_html_projection(source, *, preserve_offsets=True,
         if ((tag in HTML_BLOCK_TAGS or tag == "br")
                 and not _backslash_escaped(source, start)):
             diagnostic[start:end] = ["\n"] + [" "] * (end - start - 1)
-        elif (not preserve_offsets and not _backslash_escaped(source, start)
+        elif (not _backslash_escaped(source, start)
               and (tag or source.startswith("<!--", start))
               and all(char.isspace() for char in diagnostic[start:end])):
             invisible_spans.append((start, end))
         position = end
+    if inline_spans is not None:
+        inline_spans.extend(invisible_spans)
     if not preserve_offsets:
         chunks = []
         position = 0
@@ -6468,12 +6478,32 @@ def _completed_clean_boundary(source, kind):
     # whitespace collapse. Neither projection supplies source result authority.
     for collapse in (False, True):
         offset = 0
-        for row in _markdown_lines(_rendered_html_projection(
-                source, collapse_html_whitespace=collapse), keepends=True):
+        inline_spans = []
+        rendered = _rendered_html_projection(
+            source, collapse_html_whitespace=collapse, inline_spans=inline_spans)
+        span_index = 0
+        for row in _markdown_lines(rendered, keepends=True):
+            start = offset
             offset += len(row)
+            # Inline markup occupies source bytes but renders no word break.
+            # Remove only scanner-verified invisible spans for the predicate;
+            # the boundary below remains in original source coordinates.
+            chunks = []
+            position = start
+            while (span_index < len(inline_spans)
+                   and inline_spans[span_index][0] < offset):
+                first, last = inline_spans[span_index]
+                chunks.append(rendered[position:max(position, first)])
+                position = min(offset, last)
+                if last > offset:
+                    break
+                span_index += 1
+            chunks.append(rendered[position:offset])
+            predicate_row = "".join(chunks)
             visible_row = (_visible_html(
-                row, mask_attributes=True, decode_entities=True,
-                strip_inline_markup=True) if "<" in row or "&" in row else row)
+                predicate_row, mask_attributes=True, decode_entities=True,
+                strip_inline_markup=True)
+                if "<" in predicate_row or "&" in predicate_row else predicate_row)
             visible_row = re.sub(r"[ \t\r\n\f]+", " ", visible_row).strip()
             if predicate(visible_row):
                 # Hidden trailing markup may contain a same-line marker. Locate
@@ -6482,6 +6512,33 @@ def _completed_clean_boundary(source, kind):
                 boundary = found if boundary is None else min(boundary, found)
                 break
     return boundary
+
+
+def _raw_html_partial_code_projection(source):
+    """Keep partially code-owned priorities without interpreting raw Markdown."""
+    visible = _visible_html(
+        source, mask_attributes=True, strip_inline_markup=True,
+        preserve_inline_code=True,
+    )
+    tokens = []
+    position = scan = 0
+    while scan < len(visible):
+        start = visible.find("<", scan)
+        if start < 0:
+            break
+        markup = _html_markup_at(visible, start, require_complete=True)
+        if markup is None:
+            scan = start + 1
+            continue
+        tag, closing, end = markup
+        if tag in HTML_INLINE_CODE_TAGS and not _backslash_escaped(visible, start):
+            tokens.append({"type": "text", "raw": visible[position:start]})
+            tokens.append({"type": "inline_html",
+                           "raw": f"<{'/' if closing else ''}{tag}>"})
+            position = end
+        scan = end
+    tokens.append({"type": "text", "raw": visible[position:]})
+    return _markdown_text(tokens)
 
 
 @lru_cache(maxsize=8)
@@ -6496,11 +6553,10 @@ def _security_raw_block_priority_uncertain(text):
         return False
     # Details bodies and summaries can contain real Markdown code spans.
     # Require a priority in the original structured rendered view first.
-    if not any(
+    structured_priority = any(
         _PRIORITY_CANDIDATE.search(row) or _unicode_priority_uncertain(row)
         for row in _markdown_document(text)[0]
-    ):
-        return False
+    )
     # Parsed lists, quotes and tables outside raw blocks already have physical
     # per-unit ownership. Do not reclassify those units from container prefixes.
     fragment = "\n".join(source[max(start, boundary):end]
@@ -6509,6 +6565,14 @@ def _security_raw_block_priority_uncertain(text):
         fragment, mask_attributes=True, decode_entities=True,
         strip_inline_markup=True,
     )
+    if HTML_INLINE_CODE_OPEN.search(fragment):
+        code_source, _unknown = _details_code_masked_source(fragment)
+        partial_code = _raw_html_partial_code_projection(code_source)
+        if (_PRIORITY_CANDIDATE.search(partial_code)
+                or _unicode_priority_uncertain(partial_code)):
+            return True
+    if not structured_priority:
+        return False
     candidates = [
         row for row in _markdown_lines(visible)
         if _PRIORITY_CANDIDATE.search(row) or _unicode_priority_uncertain(row)
@@ -6551,7 +6615,15 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
         if re.search(r"(?i)P[0-3]\b", _DEFAULT_IGNORABLE.sub("", rendered)):
             # The offset-free view is uncertainty-only. Parse actual Markdown
             # leaves rather than stripping quote/list/table syntax globally.
-            code_view, _unknown = _details_code_masked_source(rendered)
+            # Keep destinations for the AST so a link label cannot become a
+            # literal bracketed priority when metadata masking removes its URL.
+            leaf_source = _visible_html(
+                _rendered_html_projection(
+                    _without_inline_code(_actual_metadata(text)),
+                    preserve_offsets=False),
+                markdown_preprocessed=True, decode_entities=True,
+            )
+            code_view, _unknown = _details_code_masked_source(leaf_source)
             if _parse_markdown_document(
                     code_view, _markdown_packages(), diagnostic_bare=True):
                 return True
@@ -6594,7 +6666,8 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
 @lru_cache(maxsize=8)
 def _nested_regular_marker_uncertain(kind, text):
     """Keep unsupported HTML marker ownership pending after a clean result."""
-    if kind != "regular" or "codex-security-review-finding" not in text.casefold():
+    if (kind not in ("regular", "unheaded")
+            or "codex-security-review-finding" not in text.casefold()):
         return False
     source = _without_inline_code(_actual_metadata(
         _mask_backslash_escaped_container_tags(text)
