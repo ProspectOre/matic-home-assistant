@@ -8,6 +8,31 @@ trap 'exit 1' ERR
 evidence_only="${EVIDENCE_ONLY:-false}"
 event_history_phase_done=false
 history_reconciled=false
+native_codex_receipt="${NATIVE_CODEX_REVIEW_RECEIPT:-}"
+native_codex_objects="${NATIVE_CODEX_REVIEW_OBJECTS:-}"
+native_codex_helper="$(dirname "${BASH_SOURCE[0]}")/native_codex_review.py"
+native_codex_delivery=""
+native_quiescence_started_at=""
+if [[ -n "$native_codex_receipt" || -n "$native_codex_objects" ]]; then
+  if [[ "${GITHUB_ACTIONS:-false}" == true || -n "${GITHUB_RUN_ID:-}" || "$evidence_only" == true || -z "$native_codex_receipt" || -z "$native_codex_objects" ]]; then
+    echo "Native Codex qualification requires the local live transport, durable status writes and immutable object database." >&2
+    exit 1
+  fi
+  # Existing parser/receipt helpers must not inherit candidate import paths.
+  unset PYTHONPATH PYTHONHOME
+  native_manifest="$(dirname "${BASH_SOURCE[0]}")/source.json"
+  if [[ -f "$native_manifest" ]]; then
+    native_expected="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("nativeCodexReviewSha256", ""))' "$native_manifest")"
+    native_actual="$(shasum -a 256 "$native_codex_helper" | awk '{print $1}')"
+    if [[ ! "$native_expected" =~ ^[0-9a-f]{64}$ || "$native_actual" != "$native_expected" ]]; then
+      echo "Native review helper does not match the installed canonical policy pin." >&2
+      exit 1
+    fi
+  else
+    echo "Native qualification requires the installed canonical policy manifest." >&2
+    exit 1
+  fi
+fi
 case "${RECORD_EVENT_ONLY:-false}" in
   true|false) ;;
   *) echo "RECORD_EVENT_ONLY must be true or false." >&2; exit 1 ;;
@@ -70,7 +95,7 @@ normalize_timestamp() {
     end'
 }
 timestamp_event_tag() {
-  python3 -c '
+  python3 -I -c '
 from datetime import datetime, timezone
 import sys
 
@@ -313,11 +338,15 @@ stamp_status_for_sha() {
       if jq -e --arg description "$description" --arg state "$state" '.state == $state and .description == $description' <<< "$current_status" >/dev/null; then return 0; fi
     fi
   fi
+  local status_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+  if [[ -n "$native_codex_receipt" ]]; then
+    status_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/pull/$pr_number"
+  fi
   gh api "repos/$REPO/statuses/$target_sha" --silent \
     -f state="$state" \
     -f context="$context" \
     -f description="$description" \
-    -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+    -f target_url="$status_url"
 }
 
 # Historical commits require positive PR association. Current PR head comes
@@ -1509,6 +1538,14 @@ read_gate_snapshot() (
   rm -f "$REVIEW_READ_CACHE/"*.json
   local evidence deliveries reviews all_reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count security_findings latest_finding_at issue_comment_at review_invalidation_at finding_history_at withdrawal_at
   evidence="$(regular_evidence)"
+  if [[ -n "$native_codex_receipt" ]]; then
+    # This delivery comes only from the fresh live capture in this invocation.
+    # Stored thread/receipt JSON never supplies qualification authority.
+    python3 -I "$native_codex_helper" check-source --objects "$native_codex_objects" \
+      --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" \
+      <<< "$native_codex_delivery" || exit 1
+    evidence="$(jq --argjson native "$native_codex_delivery" '.deliveries += [$native]' <<< "$evidence")"
+  fi
   deliveries="$(jq -c '.deliveries' <<< "$evidence")"
   reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
   all_reviews="$(jq -c '.all_reviews // []' <<< "$evidence")"
@@ -1551,7 +1588,8 @@ read_gate_snapshot() (
                    (.unverified_finding == true or .parser_ambiguous == true or
                     ([.at, (if .source == "review" then 1 else 0 end)] >= $latest_delivery_order))) then null
             elif $latest_delivery != null
-                 and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment")
+                 and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment"
+                      or $latest_delivery.source == "native_codex")
                  and $latest_delivery.clean
                  and (($finding_ids | index($latest_delivery.id)) == null)
                  and $latest_delivery.at > $latest_finding_at
@@ -1606,6 +1644,10 @@ require_clean_regular_snapshot() {
     marker_tag="${marker_tag//./}"
     marker_tag="${marker_tag:0:17}"
     while IFS= read -r origin; do
+      if [[ "$origin" =~ ^native_codex:[0-9a-f]{64}$ ]]; then
+        # Recorded immediately after live capture, before any fallible reads.
+        continue
+      fi
       [[ "$origin" =~ ^(review|issue-comment):[1-9][0-9]*$ ]] || exit 1
       origin_observed_at="$(jq -r --arg origin "$origin" '
         [.deliveries[]
@@ -1675,6 +1717,29 @@ require_clean_regular_snapshot() {
     echo "Could not read review-event capture receipts; refusing to clear the gate." >&2
     return 2
   }
+  if jq -e 'any(.[][]; ((.context // "" | startswith("native-codex-finding/"))
+        or (.context // "" | startswith("native-codex-uncertainty/"))) and .state == "pending")' \
+      <<< "$capture_statuses" >/dev/null; then
+    stamp_review_gate pending "Native Codex findings or uncertainty remain on this head; require a fresh head"
+    gate_pending
+  fi
+  if jq -e --arg head "$head_sha" '
+      [.[][] | select(.context // "" | startswith("native-codex-attempt/"))]
+      | group_by(.context) | any(.[];
+          (sort_by(.id // 0) | map(select(.state == "pending")) | .[0]) as $hold
+          | max_by(.id // 0) as $latest
+          | (($hold != null and ($hold.id | type) == "number" and $hold.id > 0
+              and ($hold.creator.id | type) == "number" and $hold.creator.id > 0
+              and ($hold.creator.login | type) == "string" and ($hold.creator.type | type) == "string"
+              and ($hold.description // "" | test("^Native attempt pending for PR #[1-9][0-9]*; h:" + $head + "; b:[0-9a-f]{40}$"))
+              and $latest.state == "success" and $latest.id > $hold.id
+              and $latest.creator.id == $hold.creator.id
+              and $latest.creator.login == $hold.creator.login and $latest.creator.type == $hold.creator.type
+              and $latest.description == ($hold.description | sub("^Native attempt pending"; "Native attempt completed"))) | not))
+      ' <<< "$capture_statuses" >/dev/null; then
+    stamp_review_gate pending "A native review attempt is in progress or incomplete; require completed capture or a fresh head"
+    gate_pending
+  fi
   untrusted_capture_receipt=false
   capture_successes="$(jq -c --arg pr_number "$pr_number" '[.[][]
       | select((.context // "") | test("^review-event-capture/([1-9][0-9]*/)?[1-9][0-9]*$"))
@@ -1739,7 +1804,9 @@ require_clean_regular_snapshot() {
     stamp_status "$REVIEW_REVIEW_CONTEXT" pending \
       "Regular review invalidated at $latest_finding_at; PR #$pr_number; regular evidence changed; require a newer clean normal verdict"
   fi
-  if base_change_marker_exists; then
+  if base_change_marker_exists && ! jq -e --arg base "$base_sha" --arg head "$head_sha" \
+      '.verdict.source == "native_codex" and .verdict.base == $base and .verdict.head == $head' \
+      <<< "$gate_snapshot" >/dev/null; then
     stamp_review_gate pending "Waiting for fresh regular review of the current base"
     echo "The base-change marker has no authenticated request and reviewed-base binding."
     gate_pending
@@ -2511,14 +2578,36 @@ wait_for_active_review_events() {
     return 2
   }
   current_run_id="${GITHUB_RUN_ID:-}"
-  [[ "$current_run_id" =~ ^[1-9][0-9]*$ ]] || {
-    echo "Could not bind event quiescence to the current workflow run." >&2
-    return 2
-  }
-  current_run_started_at="$(gh api "repos/$REPO/actions/runs/$current_run_id" --jq '.created_at')" || {
-    echo "Could not bind event discovery to the current workflow start time." >&2
-    return 2
-  }
+  if [[ -n "$native_codex_receipt" ]]; then
+    # A local invocation cannot claim or exclude an Actions run. Use a fixed
+    # authenticated server-clock boundary, preserving all historical/active
+    # censuses and source-event receipt checks on every publication boundary.
+    if [[ -z "$native_quiescence_started_at" ]]; then
+      local server_response
+      server_response="$(gh api "repos/$REPO" --include)" || return 2
+      native_quiescence_started_at="$(python3 -I -c '
+import re,sys
+from datetime import timezone
+from email.utils import parsedate_to_datetime
+headers=re.split(r"\r?\n\r?\n",sys.stdin.read(),maxsplit=1)[0]
+dates=re.findall(r"(?im)^date:[ \t]*(.+)$",headers)
+if not re.match(r"^HTTP/\S+ 200(?:\s|$)",headers) or len(dates)!=1:sys.exit(1)
+value=parsedate_to_datetime(dates[0])
+if value.tzinfo is None:sys.exit(1)
+print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+' <<< "$server_response")" || return 2
+    fi
+    current_run_started_at="$native_quiescence_started_at"
+  else
+    [[ "$current_run_id" =~ ^[1-9][0-9]*$ ]] || {
+      echo "Could not bind event quiescence to the current workflow run." >&2
+      return 2
+    }
+    current_run_started_at="$(gh api "repos/$REPO/actions/runs/$current_run_id" --jq '.created_at')" || {
+      echo "Could not bind event discovery to the current workflow start time." >&2
+      return 2
+    }
+  fi
   [[ "$current_run_started_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$ ]] || {
     echo "The current workflow run returned an invalid creation timestamp." >&2
     return 2
@@ -3189,6 +3278,34 @@ if [[ "$historical_event_head" != true ]] && ! head_prefix_resolves; then
   gate_pending
 fi
 refresh_review_timeline_watermark
+if [[ -n "$native_codex_receipt" ]]; then
+  # Audit mode skips routine evaluation markers. Revoke the required gate
+  # explicitly before capture so interruption cannot preserve prior success.
+  stamp_review_gate pending "Capturing native Codex review on $head_sha" || exit 1
+  # Shared hold: independent GitHub audits cannot republish success during live
+  # review. Failure/interruption, including archival failure, leaves it pending.
+  native_attempt_context="native-codex-attempt/$(python3 -I -c 'import uuid; print(uuid.uuid4().hex)')"
+  stamp_status "$native_attempt_context" pending \
+    "Native attempt pending for PR #$pr_number; h:$head_sha; b:$base_sha" || exit 1
+  native_codex_delivery="$(python3 -I "$native_codex_helper" capture --objects "$native_codex_objects" \
+    --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" \
+    --receipt "$native_codex_receipt")" || exit 1
+  native_completed_at="$(normalize_timestamp "$(jq -r '.at' <<< "$native_codex_delivery")")"
+  [[ -n "$native_completed_at" ]] || exit 1
+  native_codex_delivery="$(jq --arg at "$native_completed_at" '.at = $at | .created_at = $at' \
+    <<< "$native_codex_delivery")"
+  if ! jq -e '.clean == true and .uncertain != true' <<< "$native_codex_delivery" >/dev/null; then
+    native_adverse_kind=finding
+    if jq -e '.uncertain == true' <<< "$native_codex_delivery" >/dev/null; then native_adverse_kind=uncertainty; fi
+    native_result_id="$(jq -r '.id' <<< "$native_codex_delivery")"
+    [[ "$native_result_id" =~ ^[0-9a-f]{64}$ ]] || exit 1
+    stamp_status "native-codex-$native_adverse_kind/$native_result_id" pending \
+      "Native Codex $native_adverse_kind observed for PR #$pr_number on head $head_sha" || exit 1
+  fi
+  # Completes only this attempt; never clears another hold or adverse result.
+  stamp_status "$native_attempt_context" success \
+    "Native attempt completed for PR #$pr_number; h:$head_sha; b:$base_sha" || exit 1
+fi
 gate_snapshot="$(read_gate_snapshot)"
 reconcile_clean_regular_history "$gate_snapshot"
 reconcile_clean_security_history
@@ -3270,6 +3387,10 @@ case "$evidence_source" in
     evidence_comment_id="${evidence_id#issue-comment-}"
     [[ "$evidence_comment_id" =~ ^[1-9][0-9]*$ ]] || exit 1
     evidence_marker="issue-comment:$evidence_comment_id"
+    ;;
+  native_codex)
+    [[ "$evidence_id" =~ ^[0-9a-f]{64}$ ]] || exit 1
+    evidence_marker="native-codex:$evidence_id"
     ;;
   *)
     echo "Could not persist the current clean regular-review evidence." >&2
