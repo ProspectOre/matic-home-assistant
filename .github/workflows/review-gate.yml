@@ -303,8 +303,9 @@ jobs:
               gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
                 | jq -c --arg context "review-gate-request" --arg head "$head_sha" \
                     --arg base "$base_sha" --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
-                    --argjson comments "$issue_comments" '
-                    [flatten[]
+                    --slurpfile comment_input <(printf '%s' "$issue_comments") '
+                    $comment_input[0] as $comments
+                    | [flatten[]
                      | select(.context == $context and .state == "success")
                      | select((.creator.login // "") == "github-actions[bot]")
                      | (.description // "") as $description
