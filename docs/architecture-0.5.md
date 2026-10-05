@@ -53,6 +53,7 @@ withholds them until verification returns. Stop uses the selected, connected HA 
 | Coherence machine | Verified entry/floor/map identity and resource admission | Presentation or rendering |
 | Cleaning policy | Rotation, cadence, effective settings, explanations | Native dispatch or completion proof |
 | Managed executor | Dispatch, ownership, stop settlement, restart recovery | A second completion ledger |
+| Command admission | Manager-owned phase and epoch; reject new/queued commands during teardown and drain accepted lock owners | Revoke an accepted external operation midway through ownership transfer |
 | Completion accounting | Native verified outcomes and exactly-once credit | UI-derived completion |
 | Planning persistence | Mutation admission before shared-state edits, owned commit/rollback, lifecycle draining and post-commit notification | Request cancellation or observer failures changing a committed outcome |
 | Firmware tracker | Serialized committed observations; publish after persistence succeeds | Advancing read state or emitting events after a failed save |
@@ -146,5 +147,4 @@ Physical acceptance is separate and requires explicit authorization for a bounde
 preflight and post-run evidence, verify STOP/DOCK settlement, and retain cleanup receipts. Never infer motion/completion from screenshots, Activity, transient state, CI, or
 UI.
 
-Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement; reconsider mutation only if 0.4/0.5 evidence shows
-HA services cannot solve a stale-write or workflow limitation.
+Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement; reconsider mutation only if 0.4/0.5 evidence shows HA services cannot solve a stale-write or workflow limitation.

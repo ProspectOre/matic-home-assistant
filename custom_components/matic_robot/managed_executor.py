@@ -189,7 +189,9 @@ async def _async_managed_user_command(
     stop_run_id = (
         manager.active_run_id(serial_number) if command is UserCommand.STOP else None
     )
-    async with manager.managed_command(serial_number, token):
+    async with manager.managed_command(
+        serial_number, token, teardown_cleanup=command is UserCommand.STOP
+    ):
         await runtime.client.async_send_user_command(command)
         if command is UserCommand.STOP:
             await manager.async_mark_stop_pending(serial_number, run_id=stop_run_id)
@@ -3057,6 +3059,7 @@ async def _async_execute_rooms_reserved(
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
     async with lock:
+        manager.require_command_admission(serial_number)
         manager.register_run_task(serial_number)
         cancel_event = manager.prepare_run(serial_number)
         motion_token = manager.begin_managed_motion(serial_number)
@@ -3798,6 +3801,7 @@ async def _async_execute_rooms(
     validate_prepared_run: Callable[[], None] | None = None,
 ) -> None:
     """Reserve queued cadence synchronously, then execute the prepared run."""
+    manager.require_command_admission(serial_number)
     lock = manager.lock(serial_number)
     if recovery is None and manager.recovery_run(serial_number) is not None:
         raise _validation_error(

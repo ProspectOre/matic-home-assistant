@@ -863,12 +863,12 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
     replace_started = asyncio.Event()
     release_replace = asyncio.Event()
-    original_replace = manager.async_replace_managed_motion
+    original_persist = manager._async_persist_reconciliation_removal
 
-    async def delayed_replace(serial_number: str) -> None:
+    async def delayed_persist(serial_number: str, removed: bool) -> None:
         replace_started.set()
         await release_replace.wait()
-        await original_replace(serial_number)
+        await original_persist(serial_number, removed)
 
     with (
         patch(
@@ -877,8 +877,8 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
         ),
         patch.object(
             manager,
-            "async_replace_managed_motion",
-            side_effect=delayed_replace,
+            "_async_persist_reconciliation_removal",
+            side_effect=delayed_persist,
         ),
     ):
         task = asyncio.create_task(_registered_handler(services, "clean_area")(call))

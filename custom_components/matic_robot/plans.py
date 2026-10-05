@@ -65,6 +65,8 @@ from .native_completion import native_room_key as _native_room_key
 
 _LOGGER = logging.getLogger(__name__)
 _MetadataResult = TypeVar("_MetadataResult")
+_CommandAdmission = tuple[Literal["open", "managed_only", "closed"], int]
+_OPEN_COMMAND_ADMISSION: _CommandAdmission = ("open", 0)
 
 
 class _MetadataLockLease:
@@ -713,7 +715,7 @@ class CleaningPlanManager:
         self._metadata_admissions: dict[str, int] = {}
         self._metadata_admission_idle: dict[str, asyncio.Event] = {}
         self._metadata_admission_closed: set[str] = set()
-        self._command_admission_closed: set[str] = set()
+        self._command_admission: dict[str, _CommandAdmission] = {}
         self._reconciliation_removal_pending: set[str] = set()
         self._removed_robots: set[str] = set()
         self._robot_generations: dict[str, int] = {}
@@ -1190,6 +1192,7 @@ class CleaningPlanManager:
     @callback
     def begin_managed_motion(self, serial_number: str) -> int:
         """Claim a generation token for one managed plan run."""
+        self.require_command_admission(serial_number)
         generation = self._motion_generations.get(serial_number, 0) + 1
         self._motion_generations[serial_number] = generation
         self._managed_motion[serial_number] = generation
@@ -1215,7 +1218,7 @@ class CleaningPlanManager:
 
     @callback
     def replace_managed_motion(self, serial_number: str) -> bool:
-        """Cancel any managed plan before an independent motion command."""
+        """Transfer motion ownership to an admitted independent command."""
         if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
             self.cancellation_event(serial_number).set()
             self._cancellation_reasons.setdefault(serial_number, "motion_replaced")
@@ -1405,42 +1408,84 @@ class CleaningPlanManager:
 
     async def async_close_command_admission_and_wait(self, serial_number: str) -> None:
         """Reject new external commands and wait for the current owner to exit."""
-        self._command_admission_closed.add(serial_number)
+        _state, epoch = self._command_admission.get(
+            serial_number, _OPEN_COMMAND_ADMISSION
+        )
+        self._command_admission[serial_number] = ("closed", epoch + 1)
         async with self.command_lock(serial_number):
             pass
+
+    @callback
+    def begin_command_teardown(self, serial_number: str) -> None:
+        """Fence external commands while current managed work settles."""
+        state, epoch = self._command_admission.get(
+            serial_number, _OPEN_COMMAND_ADMISSION
+        )
+        if state == "open":
+            self._command_admission[serial_number] = ("managed_only", epoch + 1)
 
     @callback
     def command_admission_open(self, serial_number: str) -> bool:
         """Return whether an external command may dispatch for this entry."""
         return (
-            serial_number not in self._command_admission_closed
+            self._command_admission.get(serial_number, _OPEN_COMMAND_ADMISSION)[0]
+            == "open"
             and serial_number not in self._removed_robots
         )
 
-    def require_command_admission(self, serial_number: str) -> None:
-        """Raise when an external command reaches its serialization point too late."""
-        if not self.command_admission_open(serial_number):
+    @callback
+    def command_admission_epoch(self, serial_number: str) -> int:
+        """Return the current epoch for binding an admitted dispatch."""
+        return self._command_admission.get(serial_number, _OPEN_COMMAND_ADMISSION)[1]
+
+    def require_command_admission(
+        self,
+        serial_number: str,
+        *,
+        managed_owner: bool = False,
+        expected_epoch: int | None = None,
+    ) -> None:
+        """Raise when a command reaches dispatch after its owner has closed."""
+        admission, epoch = self._command_admission.get(
+            serial_number, _OPEN_COMMAND_ADMISSION
+        )
+        if (
+            (expected_epoch is not None and expected_epoch != epoch)
+            or serial_number in self._removed_robots
+            or admission == "closed"
+            or (admission == "managed_only" and not managed_owner)
+        ):
             raise HomeAssistantError("Matic commands are unavailable during unload")
 
     @asynccontextmanager
     async def external_command(self, serial_number: str) -> AsyncIterator[None]:
         """Admit one external command while holding its dispatch lock."""
+        _admission, epoch = self._command_admission.get(
+            serial_number, _OPEN_COMMAND_ADMISSION
+        )
+        self.require_command_admission(serial_number, expected_epoch=epoch)
         async with self.command_lock(serial_number):
-            self.require_command_admission(serial_number)
+            self.require_command_admission(serial_number, expected_epoch=epoch)
             yield
 
     @callback
     def reopen_metadata_admission(self, serial_number: str) -> None:
         """Reopen command and metadata admission after a failed config-entry unload."""
         self._metadata_admission_closed.discard(serial_number)
-        self._command_admission_closed.discard(serial_number)
+        _state, epoch = self._command_admission.get(
+            serial_number, _OPEN_COMMAND_ADMISSION
+        )
+        self._command_admission[serial_number] = ("open", epoch + 1)
 
     @callback
     def activate_robot(self, serial_number: str) -> int:
         """Clear removal state when a config entry activates this robot."""
         self._removed_robots.discard(serial_number)
         self._metadata_admission_closed.discard(serial_number)
-        self._command_admission_closed.discard(serial_number)
+        _state, epoch = self._command_admission.get(
+            serial_number, _OPEN_COMMAND_ADMISSION
+        )
+        self._command_admission[serial_number] = ("open", epoch + 1)
         generation = self._robot_generations.get(serial_number, 0) + 1
         self._robot_generations[serial_number] = generation
         return generation
@@ -1494,12 +1539,15 @@ class CleaningPlanManager:
 
     @asynccontextmanager
     async def external_motion(self, serial_number: str) -> AsyncIterator[int]:
-        """Replace a managed run and serialize one independent command."""
-        self.require_command_admission(serial_number)
-        reconciliation_removed = self.replace_managed_motion(serial_number)
-        generation = self.motion_generation(serial_number)
+        """Replace managed ownership only after external command admission."""
+        _admission, epoch = self._command_admission.get(
+            serial_number, _OPEN_COMMAND_ADMISSION
+        )
+        self.require_command_admission(serial_number, expected_epoch=epoch)
         async with self.command_lock(serial_number):
-            self.require_command_admission(serial_number)
+            self.require_command_admission(serial_number, expected_epoch=epoch)
+            reconciliation_removed = self.replace_managed_motion(serial_number)
+            generation = self.motion_generation(serial_number)
             await self._async_persist_reconciliation_removal(
                 serial_number, reconciliation_removed
             )
@@ -1507,11 +1555,17 @@ class CleaningPlanManager:
 
     @asynccontextmanager
     async def managed_command(
-        self, serial_number: str, token: int
+        self,
+        serial_number: str,
+        token: int,
+        *,
+        teardown_cleanup: bool = False,
     ) -> AsyncIterator[None]:
         """Serialize a plan command and reject a superseded generation."""
         async with self.command_lock(serial_number):
-            self.require_command_admission(serial_number)
+            self.require_command_admission(
+                serial_number, managed_owner=teardown_cleanup
+            )
             if not self.managed_motion_is_current(serial_number, token):
                 raise ManagedMotionReplacedError("managed motion was replaced")
             reconciliation_removed = (
@@ -1520,6 +1574,9 @@ class CleaningPlanManager:
             )
             await self._async_persist_reconciliation_removal(
                 serial_number, reconciliation_removed
+            )
+            self.require_command_admission(
+                serial_number, managed_owner=teardown_cleanup
             )
             if not self.managed_motion_is_current(serial_number, token):
                 raise ManagedMotionReplacedError("managed motion was replaced")

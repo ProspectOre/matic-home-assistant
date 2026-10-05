@@ -649,6 +649,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
     # HA can reload an enabled entry again during startup (for example after
     # discovery updates its endpoint). Losing this observer is not a Stop.
     preserve_run = entry.disabled_by is None
+    entry.runtime_data.cleaning_plans.begin_command_teardown(
+        str(entry.data[CONF_SERIAL_NUMBER])
+    )
     await entry.runtime_data.cleaning_plans.async_cancel_and_wait(
         str(entry.data[CONF_SERIAL_NUMBER]),
         preserve_run=preserve_run,

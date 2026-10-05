@@ -97,19 +97,16 @@ motion/configuration generations before mutation, preserving replacement safety.
 Real-file regressions cover cross-robot serialization, cancellation before and
 after admission, listener failure, and removal. Cancellation during ordered lock
 admission releases every acquired lock; a subsequent save and reload prove that
-writes remain available. Unload closes command admission before metadata admission,
-so accepted native commands can finish their persistence while later commands are
-rejected. Public edits rejected during this boundary return an error rather than
-acknowledging an unchanged plan or Area. Failed unload reopens admission.
+writes remain available. Unload fences new and queued commands before its first await.
+Accepted external lock owners drain through persistence and dispatch; managed cleanup
+requires its current token. Reopen advances the admission epoch, leaving old waiters
+rejected. Public edits fail visibly instead of acknowledging an unchanged plan or Area.
 
 The executor uses one bounded leg observer across checkpoint and room-metadata
 writes. It retains room, pause/resume, and terminal transitions during those awaits,
 rechecks native ownership before room effects, and removes its listener on exit.
-Stop/history regressions use synthetic state transitions through this observer.
-These software contracts do not establish physical acceptance. Hosted `99fffbf`
-passed 3,892 tests, 100% coverage, static/privacy/packaging/import checks and HACS.
-Browser and Hassfest never acquired runners. Earlier `3f6a5b7` Browser passed
-1,058 cases, one existing capability skip, and bundle parity.
+Stop/history regressions use synthetic state transitions; they do not establish physical acceptance. Published `5d7ce3c`
+Browser [37369702508](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37369702508) passed 1,058 cases, one existing capability skip, and bundle parity. Test [37369702468](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37369702468), Validate [37369702416](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37369702416), and review route [37370665084](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37370665084) failed hosted-runner acquisition before steps; no Test/HACS/Hassfest or review result was produced. The GitHub incident was last confirmed active at 19:50 UTC Oct 5, historical status only.
 
 Review identified duplicate pause observations and lost resume evidence during
 slow persistence. Each queued suspension now retains its own resume evidence.
@@ -125,10 +122,13 @@ cancellation retains precedence, including during reader cleanup. Tests reproduc
 both faults before repair and cover missing/wrong rooms, valid later resumption,
 repeated faults, overflow, blocked readers, and cancellation races.
 
-The repaired source passes 3,896 tests at 100% coverage (16,738 statements), Ruff,
-formatting, strict types, and privacy with unchanged hashes. Independent review
-found no remaining issue in the changed slice. Hosted checks and ordinary review
-remain required; no runtime acceptance is inferred.
+Review `5420174821` identified an admission gap before the first teardown await.
+The repair fences queued requests by epoch, drains accepted lock owners, and permits
+only current-token managed STOP cleanup. Tests cover reopen, rejected-owner preservation,
+accepted drain, native preflight, and late matching dock evidence after metadata shutdown.
+The frozen repair passes 3,905 tests, 100% coverage (16,771 statements), static checks,
+and privacy. Independent source review found no remaining issue; fresh hosted checks
+and clean ordinary review remain required. No runtime acceptance is inferred.
 
 ## Late cadence identity
 
@@ -146,5 +146,5 @@ native completion is recorded once and the pending marker is cleared. Malformed
 snapshots are discarded by the existing validator. The 138 focused manager,
 reservation, policy, and checkpoint-validation cases cover all 105 accounting
 statements. Independent review found no remaining issue in this identity repair.
-The observer follow-up needs hosted CI and ordinary review. These contracts do
-not supply causal coverage-setting or physical evidence.
+Hosted CI and ordinary review remain required; these contracts do not supply
+causal coverage-setting or physical evidence.

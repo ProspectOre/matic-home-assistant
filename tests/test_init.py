@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 from homeassistant.components import frontend, panel_custom
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 
 from custom_components.matic_robot import (
     ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS,
@@ -1537,6 +1537,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         async_retire_recovery=AsyncMock(),
         async_close_metadata_admission_and_wait=AsyncMock(),
         async_close_command_admission_and_wait=AsyncMock(),
+        begin_command_teardown=MagicMock(),
         reopen_metadata_admission=MagicMock(),
     )
     entry = SimpleNamespace(
@@ -1572,6 +1573,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     plans.async_cancel_and_wait.assert_awaited_once_with(
         "synthetic-serial", preserve_run=not disabled
     )
+    plans.begin_command_teardown.assert_called_once_with("synthetic-serial")
     plans.async_close_command_admission_and_wait.assert_awaited_once_with(
         "synthetic-serial"
     )
@@ -1592,6 +1594,124 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     assert slam_history.async_shutdown.await_count == int(unload_ok)
 
 
+async def test_unload_fences_external_command_before_managed_cleanup_wait(
+    hass, monkeypatch
+) -> None:
+    """External dispatch closes synchronously while managed cleanup can settle."""
+    from custom_components.matic_robot.frontend import (
+        DATA_SLAM_POSE_VIEW,
+        DATA_SLAM_SCENE_VIEW,
+    )
+
+    manager = CleaningPlanManager(hass)
+    serial = "synthetic-serial"
+    token = manager.begin_managed_motion(serial)
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    dispatched: list[str] = []
+
+    async def hold_existing_cleanup(_serial: str, *, preserve_run: bool) -> None:
+        assert preserve_run
+        async with manager.managed_command(serial, token, teardown_cleanup=True):
+            cleanup_started.set()
+            await release_cleanup.wait()
+
+    manager.async_cancel_and_wait = hold_existing_cleanup
+    client = SimpleNamespace(close=MagicMock())
+    slam_map = SimpleNamespace(async_shutdown=AsyncMock())
+    slam_history = SimpleNamespace(async_shutdown=AsyncMock())
+    entry = SimpleNamespace(
+        entry_id="entry",
+        disabled_by=None,
+        data={CONF_SERIAL_NUMBER: serial},
+        runtime_data=SimpleNamespace(
+            cleaning_plans=manager,
+            client=client,
+            slam_map=slam_map,
+            slam_history=slam_history,
+        ),
+    )
+    scene_view = SimpleNamespace(clear_entry=MagicMock())
+    pose_view = SimpleNamespace(clear_entry=MagicMock())
+    hass.data[DATA_SLAM_SCENE_VIEW] = scene_view
+    hass.data[DATA_SLAM_POSE_VIEW] = pose_view
+    monkeypatch.setattr(
+        hass.config_entries,
+        "async_unload_platforms",
+        AsyncMock(return_value=True),
+    )
+
+    unload = asyncio.create_task(async_unload_entry(hass, entry))
+    external: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(cleanup_started.wait(), timeout=3)
+        assert manager.command_admission_open(serial) is False
+
+        async def external_dispatch() -> None:
+            async with manager.external_command(serial):
+                dispatched.append("sent")
+
+        external = asyncio.create_task(external_dispatch())
+        await asyncio.sleep(0)
+        assert external.done()
+        with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+            await external
+        assert dispatched == []
+        release_cleanup.set()
+    finally:
+        release_cleanup.set()
+        await asyncio.gather(unload, return_exceptions=True)
+        if external is not None and not external.done():
+            external.cancel()
+            await asyncio.gather(external, return_exceptions=True)
+
+    client.close.assert_called_once()
+    assert not manager.command_admission_open(serial)
+
+
+async def test_teardown_allows_only_existing_managed_token_cleanup(
+    hass, monkeypatch
+) -> None:
+    """The staged fence preserves cleanup for the current managed owner only."""
+    manager = CleaningPlanManager(hass)
+    serial = "synthetic-serial"
+    token = manager.begin_managed_motion(serial)
+    persistence_started = asyncio.Event()
+    release_persistence = asyncio.Event()
+    dispatched: list[str] = []
+
+    async def delay_reconciliation_removal(_serial: str, _removed: bool) -> None:
+        persistence_started.set()
+        await release_persistence.wait()
+
+    monkeypatch.setattr(
+        manager, "_async_persist_reconciliation_removal", delay_reconciliation_removal
+    )
+
+    async def managed_cleanup() -> None:
+        async with manager.managed_command(serial, token, teardown_cleanup=True):
+            dispatched.append("managed")
+
+    command = asyncio.create_task(managed_cleanup())
+    try:
+        await asyncio.wait_for(persistence_started.wait(), timeout=3)
+        manager.begin_command_teardown(serial)
+        with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+            manager.begin_managed_motion(serial)
+        release_persistence.set()
+        await command
+        assert dispatched == ["managed"]
+        with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+            async with manager.managed_command(serial, token):
+                dispatched.append("clean")
+        assert dispatched == ["managed"]
+    finally:
+        release_persistence.set()
+        if not command.done():
+            command.cancel()
+            await asyncio.gather(command, return_exceptions=True)
+
+
 async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
     """A failed platform unload must not strand a preserved managed run."""
     plans = SimpleNamespace(
@@ -1599,6 +1719,7 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
         async_retire_recovery=AsyncMock(),
         async_close_metadata_admission_and_wait=AsyncMock(),
         async_close_command_admission_and_wait=AsyncMock(),
+        begin_command_teardown=MagicMock(),
         reopen_metadata_admission=MagicMock(),
         recovery_run=MagicMock(return_value={"run_id": "run"}),
     )
@@ -1628,6 +1749,7 @@ async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
         async_retire_recovery=AsyncMock(),
         async_close_metadata_admission_and_wait=AsyncMock(),
         async_close_command_admission_and_wait=AsyncMock(),
+        begin_command_teardown=MagicMock(),
         reopen_metadata_admission=MagicMock(),
         recovery_run=MagicMock(return_value=None),
         pending_stop_run_id=MagicMock(return_value="run"),
@@ -1658,6 +1780,7 @@ async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
         async_retire_recovery=AsyncMock(),
         async_close_metadata_admission_and_wait=AsyncMock(),
         async_close_command_admission_and_wait=AsyncMock(),
+        begin_command_teardown=MagicMock(),
         reopen_metadata_admission=MagicMock(),
         recovery_run=MagicMock(return_value={"run_id": "run"}),
         pending_stop_run_id=MagicMock(return_value="run"),

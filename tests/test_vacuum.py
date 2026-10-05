@@ -600,6 +600,38 @@ async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None
             await asyncio.gather(stop, return_exceptions=True)
 
 
+async def test_admitted_coverage_finishes_after_teardown_fence(hass) -> None:
+    """Teardown drains an external command admitted before the fence."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    client = entry.runtime_data.coordinator.client
+    preflight_started = asyncio.Event()
+    release_preflight = asyncio.Event()
+
+    async def delayed_preflight(*_args, **kwargs) -> None:
+        preflight_started.set()
+        await release_preflight.wait()
+        kwargs["require_current"]()
+
+    client.async_start_coverage.side_effect = delayed_preflight
+    start = asyncio.create_task(entity.async_start())
+    try:
+        await asyncio.wait_for(preflight_started.wait(), timeout=3)
+        manager.begin_command_teardown("synthetic-serial")
+        release_preflight.set()
+        await start
+    finally:
+        release_preflight.set()
+        if not start.done():
+            await asyncio.gather(start, return_exceptions=True)
+
+    client.async_start_coverage.assert_awaited_once()
+    entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once()
+
+
 async def test_command_admission_closure_rejects_late_managed_dispatch(hass) -> None:
     """A managed task that reaches command admission after unload cannot dispatch."""
     manager = CleaningPlanManager(hass)

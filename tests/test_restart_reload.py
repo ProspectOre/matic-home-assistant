@@ -51,7 +51,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
         "custom_components.matic_robot.managed_executor._async_wait_with_native_identity",
         side_effect=hold_native_wait,
     ) as executor:
-        for _ in range(2 if explicit_reason is None else 1):
+        for attempt in range(2 if explicit_reason is None else 1):
             entered.clear()
             recovery_task = asyncio.create_task(
                 async_recover_managed_run(hass, entry, "serial")
@@ -62,6 +62,10 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
                 manager._cancellation_reasons["serial"] = explicit_reason
             await async_unload_entry(hass, entry)
             await recovery_task
+            if explicit_reason is None and attempt == 0:
+                # A real config-entry reload runs setup again before another
+                # recovery callback; setup calls activate_robot for this entry.
+                manager.activate_robot("serial")
 
     executor.assert_awaited()
     await hass.async_block_till_done()

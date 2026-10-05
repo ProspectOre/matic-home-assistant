@@ -148,9 +148,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             else None
         )
         generation = self._plans.motion_generation(serial_number)
+        admission_epoch = self._plans.command_admission_epoch(serial_number)
         self._plans.require_command_admission(serial_number)
         if command is not UserCommand.STOP:
             await self._async_ensure_stop_settled(serial_number)
+            self._plans.require_command_admission(
+                serial_number, expected_epoch=admission_epoch
+            )
         context = (
             self._plans.external_motion(serial_number)
             if replace_plan
@@ -158,7 +162,6 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         )
         async with context:
             if command is not UserCommand.STOP:
-                self._require_motion_generation(serial_number, generation)
                 await self._async_ensure_stop_settled(serial_number)
                 self._require_motion_generation(serial_number, generation)
             await self.coordinator.client.async_send_user_command(command)
@@ -238,8 +241,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
         request_generation = self._plans.motion_generation(serial_number)
+        request_admission_epoch = self._plans.command_admission_epoch(serial_number)
         await self._async_ensure_stop_settled(serial_number)
         self._require_motion_generation(serial_number, request_generation)
+        self._plans.require_command_admission(
+            serial_number, expected_epoch=request_admission_epoch
+        )
         context = (
             self._plans.managed_command(serial_number, motion_token)
             if motion_token is not None
@@ -253,19 +260,23 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, expected_generation)
             floor_plan = self._current_floor_plan(command_floor_token)
+
+            def require_current_dispatch() -> None:
+                self._require_motion_generation(serial_number, expected_generation)
+                self._current_floor_plan(command_floor_token)
+                if (
+                    motion_token is not None
+                    and self._plans.cancellation_event(serial_number).is_set()
+                ):
+                    raise HomeAssistantError(
+                        "Managed coverage was stopped before dispatch"
+                    )
+
             if room_coverage is not None:
                 assert room_modes is not None
 
                 def require_owned() -> None:
                     self._require_motion_generation(serial_number, expected_generation)
-
-                def require_current() -> None:
-                    require_owned()
-                    self._current_floor_plan(command_floor_token)
-                    if self._plans.cancellation_event(serial_number).is_set():
-                        raise HomeAssistantError(
-                            "Mixed coverage was stopped before its update"
-                        )
 
                 stop_fence_run_id: str | None = None
 
@@ -312,7 +323,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         room_modes,
                         first_room_name=rooms[0].name,
                         session_id=managed_session_id,
-                        require_current=require_current,
+                        require_current=require_current_dispatch,
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
                         rollback_stop=rollback_stop,
@@ -344,6 +355,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         ordered=ordered,
                         require_settings_readback=True,
                         session_id=managed_session_id,
+                        require_current=require_current_dispatch,
                     )
                 else:
                     await self.coordinator.client.async_start_coverage(
@@ -352,6 +364,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         cleaning_mode=mode,
                         coverage_setting=setting,
                         ordered=ordered,
+                        require_current=require_current_dispatch,
                     )
             await self.coordinator.async_request_refresh()
 

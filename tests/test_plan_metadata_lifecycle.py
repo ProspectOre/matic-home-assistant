@@ -234,6 +234,41 @@ async def test_stale_dock_is_noop_and_matching_dock_commits(hass, monkeypatch) -
     assert reloaded.snapshot(SERIAL)["last_run"]["outcome"] == "stopped_docked"
 
 
+async def test_matching_dock_after_metadata_shutdown_cannot_commit(hass, monkeypatch):
+    """Even matching late evidence cannot mutate a closed entry or notify it."""
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+    manager._robot(SERIAL)["last_run"] = {
+        "run_id": "current-run",
+        "plan_id": "plan",
+        "outcome": "cancelled",
+        "provenance": "user",
+    }
+    manager.mark_stop_pending(SERIAL, run_id="current-run")
+    token = manager.stop_fence_token(SERIAL)
+    assert token is not None
+    await manager._store.async_save(manager._data)
+    before = deepcopy(manager._data)
+    notifications = []
+    manager.async_add_listener(SERIAL, lambda: notifications.append("changed"))
+
+    async def unexpected_save(_data):
+        pytest.fail("A late dock callback wrote after metadata shutdown")
+
+    monkeypatch.setattr(manager._store, "async_save", unexpected_save)
+    await manager.async_close_metadata_admission_and_wait(SERIAL)
+    assert not await manager.async_mark_run_docked(
+        SERIAL, "current-run", stop_fence_token=token
+    )
+    assert manager._data == before
+    assert notifications == []
+    assert not manager._metadata_persistence_tasks
+
+    reloaded = CleaningPlanManager(hass)
+    await reloaded.async_load()
+    assert reloaded.snapshot(SERIAL)["last_run"]["outcome"] == "cancelled"
+
+
 async def test_after_commit_callback_failure_preserves_durable_owner_result(
     hass, caplog
 ) -> None:

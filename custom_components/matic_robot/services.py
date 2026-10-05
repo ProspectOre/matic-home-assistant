@@ -409,6 +409,10 @@ async def async_register_services(hass: HomeAssistant) -> None:
             hass, call, require_current_floor=True
         )
         request_generation = manager.motion_generation(serial_number)
+        request_admission_epoch = manager.command_admission_epoch(serial_number)
+        manager.require_command_admission(
+            serial_number, expected_epoch=request_admission_epoch
+        )
 
         def require_generation(expected: int) -> None:
             if manager.motion_generation(serial_number) != expected:
@@ -423,6 +427,10 @@ async def async_register_services(hass: HomeAssistant) -> None:
             serial_number,
             entity_id,
             entry.runtime_data.client.async_get_active_cleaning_session_state,
+        )
+        require_generation(request_generation)
+        manager.require_command_admission(
+            serial_number, expected_epoch=request_admission_epoch
         )
         try:
             area = manager.area(serial_number, call.data["area"])
@@ -448,6 +456,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 entity_id,
                 entry.runtime_data.client.async_get_active_cleaning_session_state,
             )
+            require_generation(request_generation)
             try:
                 current_area = manager.area(serial_number, call.data["area"])
             except KeyError as err:
@@ -465,6 +474,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
             require_generation(request_generation)
             generation = await manager.async_replace_managed_motion(serial_number)
+            require_generation(generation)
             floor_plan = _current_floor_plan(entry)
             floor_plan, circles, mode, coverage = _validated_area_command(
                 current_area,
@@ -472,7 +482,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 call.data.get("cleaning_mode"),
                 call.data.get("coverage_setting"),
             )
-            require_generation(generation)
             try:
                 await entry.runtime_data.client.async_start_custom_coverage(
                     floor_plan,
@@ -676,6 +685,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
             )
 
+        manager.require_command_admission(serial_number)
         internal_plan_id = manager.reserve_manual_room_sequence_plan_id(serial_number)
         try:
             execution_call = ServiceCall(

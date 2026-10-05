@@ -247,7 +247,9 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_mark_stop_pending=AsyncMock(),
         async_clear_stop_pending=AsyncMock(),
         command_admission_open=MagicMock(return_value=True),
+        command_admission_epoch=MagicMock(return_value=0),
         require_command_admission=MagicMock(),
+        cancellation_event=MagicMock(return_value=asyncio.Event()),
         command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
         external_command=MagicMock(side_effect=_motion_context),
         external_motion=MagicMock(side_effect=_motion_context),
@@ -288,6 +290,17 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         entry_id="entry",
         async_on_unload=MagicMock(),
     )
+
+
+def _assert_current_coverage_call(call, expected_kwargs: dict[str, object]) -> None:
+    """Keep exact option assertions and exercise the post-preflight guard."""
+    assert set(call.kwargs) == {*expected_kwargs, "require_current"}
+    assert {
+        name: value for name, value in call.kwargs.items() if name != "require_current"
+    } == expected_kwargs
+    require_current = call.kwargs["require_current"]
+    assert callable(require_current)
+    require_current()
 
 
 async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
@@ -1850,11 +1863,14 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     await entity.async_clean_segments(["room-2"])
     coverage_call = coordinator.client.async_start_coverage.await_args
     assert coverage_call.args[1] == ["protocol-2"]
-    assert coverage_call.kwargs == {
-        "cleaning_mode": CleaningMode.BOTH,
-        "coverage_setting": CoverageSetting.STANDARD,
-        "ordered": False,
-    }
+    _assert_current_coverage_call(
+        coverage_call,
+        {
+            "cleaning_mode": CleaningMode.BOTH,
+            "coverage_setting": CoverageSetting.STANDARD,
+            "ordered": False,
+        },
+    )
     assert "require_settings_readback" not in coverage_call.kwargs
     assert coordinator.async_request_refresh.await_count == 4
 
@@ -1889,13 +1905,16 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
         entry.runtime_data.coordinator.client.async_start_coverage.await_args
     )
     assert coverage_call.args[1] == ["protocol-2"]
-    assert coverage_call.kwargs == {
-        "cleaning_mode": CleaningMode.BOTH,
-        "coverage_setting": CoverageSetting.STANDARD,
-        "ordered": False,
-        "require_settings_readback": True,
-        "session_id": UUID("11111111-1111-4111-8111-111111111111"),
-    }
+    _assert_current_coverage_call(
+        coverage_call,
+        {
+            "cleaning_mode": CleaningMode.BOTH,
+            "coverage_setting": CoverageSetting.STANDARD,
+            "ordered": False,
+            "require_settings_readback": True,
+            "session_id": UUID("11111111-1111-4111-8111-111111111111"),
+        },
+    )
     entry.runtime_data.cleaning_plans.managed_command.assert_called_once_with(
         "synthetic-serial", 7
     )
@@ -1935,11 +1954,14 @@ async def test_clean_action_supports_the_complete_verified_option_matrix() -> No
 
     call = entry.runtime_data.coordinator.client.async_start_coverage.await_args
     assert call.args[1] == ["protocol-2", "protocol-1"]
-    assert call.kwargs == {
-        "cleaning_mode": CleaningMode.MOP,
-        "coverage_setting": CoverageSetting.QUICK,
-        "ordered": True,
-    }
+    _assert_current_coverage_call(
+        call,
+        {
+            "cleaning_mode": CleaningMode.MOP,
+            "coverage_setting": CoverageSetting.QUICK,
+            "ordered": True,
+        },
+    )
     assert "require_settings_readback" not in call.kwargs
 
     await entity.async_send_command(
@@ -1950,11 +1972,14 @@ async def test_clean_action_supports_the_complete_verified_option_matrix() -> No
         },
     )
     call = entry.runtime_data.coordinator.client.async_start_coverage.await_args
-    assert call.kwargs == {
-        "cleaning_mode": CleaningMode.BOTH,
-        "coverage_setting": CoverageSetting.STANDARD,
-        "ordered": False,
-    }
+    _assert_current_coverage_call(
+        call,
+        {
+            "cleaning_mode": CleaningMode.BOTH,
+            "coverage_setting": CoverageSetting.STANDARD,
+            "ordered": False,
+        },
+    )
     assert "require_settings_readback" not in call.kwargs
 
 
@@ -2012,11 +2037,14 @@ async def test_send_command_defaults_and_option_type_validation() -> None:
         entry.runtime_data.coordinator.client.async_start_coverage.await_args
     )
     assert coverage_call.args[1] == ["protocol-1", "protocol-2"]
-    assert coverage_call.kwargs == {
-        "cleaning_mode": CleaningMode.BOTH,
-        "coverage_setting": CoverageSetting.STANDARD,
-        "ordered": False,
-    }
+    _assert_current_coverage_call(
+        coverage_call,
+        {
+            "cleaning_mode": CleaningMode.BOTH,
+            "coverage_setting": CoverageSetting.STANDARD,
+            "ordered": False,
+        },
+    )
     assert "require_settings_readback" not in coverage_call.kwargs
 
     await entity.async_send_command("clean_segments", ["Study"])
@@ -2048,11 +2076,14 @@ async def test_vacuum_named_commands_and_validation() -> None:
     )
     call = entry.runtime_data.coordinator.client.async_start_coverage.await_args
     assert call.args[1] == ["protocol-2", "protocol-1"]
-    assert call.kwargs == {
-        "cleaning_mode": CleaningMode.VACUUM,
-        "coverage_setting": CoverageSetting.QUICK,
-        "ordered": True,
-    }
+    _assert_current_coverage_call(
+        call,
+        {
+            "cleaning_mode": CleaningMode.VACUUM,
+            "coverage_setting": CoverageSetting.QUICK,
+            "ordered": True,
+        },
+    )
     assert "require_settings_readback" not in call.kwargs
 
     for command, params, message, translation_key in (
