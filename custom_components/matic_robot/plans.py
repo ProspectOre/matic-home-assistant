@@ -2383,10 +2383,12 @@ class CleaningPlanManager:
 
         async def commit(_lease: _MetadataLockLease) -> None:
             async with self._user_metadata_store_transaction(serial_number):
-                if plan_id not in self._robot(serial_number)["plans"]:
+                robot = self._robot(serial_number)
+                if plan_id not in robot["plans"]:
                     raise KeyError(plan_id)
-                self._robot(serial_number)["selected_plan"] = plan_id
-                await self._store.async_save(self._data)
+                before = deepcopy(robot)
+                robot["selected_plan"] = plan_id
+                await self._async_save_with_rollback(serial_number, before)
 
         await self._async_run_owned_metadata(
             serial_number,
@@ -2404,13 +2406,14 @@ class CleaningPlanManager:
         async def commit(_lease: _MetadataLockLease) -> None:
             async with self._user_metadata_store_transaction(serial_number):
                 robot = self._robot(serial_number)
+                before = deepcopy(robot)
                 pending = _validated_native_reconciliation(
                     robot.get("pending_native_reconciliation")
                 )
-                if plan_id is None or (
+                clear_reconciliation = plan_id is None or (
                     pending is not None and pending["plan_id"] == plan_id
-                ):
-                    self.cancel_reconciliation_tasks(serial_number)
+                )
+                if clear_reconciliation:
                     robot.pop("pending_native_reconciliation", None)
                 if plan_id is None:
                     robot["rotations"] = {}
@@ -2419,7 +2422,9 @@ class CleaningPlanManager:
                 else:
                     robot["rotations"].pop(plan_id, None)
                     robot["rotation_resets"][plan_id] = dt_util.utcnow().isoformat()
-                await self._store.async_save(self._data)
+                await self._async_save_with_rollback(serial_number, before)
+                if clear_reconciliation:
+                    self.cancel_reconciliation_tasks(serial_number)
 
         await self._async_run_owned_metadata(
             serial_number,

@@ -1112,7 +1112,11 @@ async def _async_run_leg(
             active_room,
             initial_observed=True,
             classify_current=True,
-            suppress_pause=start_state == "paused",
+            suppress_pause=(
+                start_state == "paused"
+                or recovered_suspend_reason in {"paused", "low_charge"}
+            ),
+            initial_suspended=recovered_suspend_reason in {"paused", "low_charge"},
         )
         dispatch = replace(dispatch, native_identity=native_identity)
         if checkpoint_dispatch is not None:
@@ -1688,18 +1692,26 @@ class _LegOutcomeObserver:
         initial_observed: bool,
         classify_current: bool = True,
         suppress_pause: bool = False,
+        initial_suspended: bool = False,
     ) -> None:
         self._rooms = tuple(rooms)
         self._queue: asyncio.Queue[
-            tuple[RoomRunOutcome, CleaningRoom | None] | BaseException
+            tuple[
+                tuple[RoomRunOutcome, CleaningRoom | None] | BaseException,
+                asyncio.Event | None,
+            ]
         ] = asyncio.Queue(maxsize=max(4, len(self._rooms) * 2 + 2))
         self._active_room = initial_room
         self._observed_any = initial_observed
         self._terminal_pending = False
         self._pause_pending = False
-        self._suppress_pause = suppress_pause
-        self._pause_open = suppress_pause
+        self._suppress_pause = suppress_pause or initial_suspended
+        self._pause_open = self._suppress_pause
         self.resume_event = asyncio.Event()
+        self._active_pause_resume_event = (
+            self.resume_event if self._pause_open else None
+        )
+        self._suppress_initial_suspend_state = initial_suspended
         self._overflowed = False
         self._closed = False
         self._remove_listener = async_track_state_change_event(
@@ -1715,11 +1727,12 @@ class _LegOutcomeObserver:
     def _enqueue(
         self,
         outcome: tuple[RoomRunOutcome, CleaningRoom | None] | BaseException,
+        resume_event: asyncio.Event | None = None,
     ) -> None:
         if self._closed or self._overflowed:
             return
         try:
-            self._queue.put_nowait(outcome)
+            self._queue.put_nowait((outcome, resume_event))
         except asyncio.QueueFull:
             # Losing one of the finite physical room transitions would make
             # both the active-room display and Finish current room ambiguous.
@@ -1748,17 +1761,25 @@ class _LegOutcomeObserver:
                     self._enqueue((RoomRunOutcome.ROOM_CHANGED, matched))
         if state.state == "paused":
             self._terminal_pending = False
-            self._pause_open = True
+            if not self._pause_open:
+                self._pause_open = True
+                self._active_pause_resume_event = asyncio.Event()
             if not self._suppress_pause and not self._pause_pending:
                 self._pause_pending = True
-                self._enqueue((RoomRunOutcome.PAUSED, None))
+                self._enqueue(
+                    (RoomRunOutcome.PAUSED, None),
+                    self._active_pause_resume_event,
+                )
             return
         if state.state == "cleaning":
             self._terminal_pending = False
             self._pause_pending = False
             if self._pause_open:
-                self.resume_event.set()
+                if self._active_pause_resume_event is not None:
+                    self._active_pause_resume_event.set()
+                self._suppress_pause = False
                 self._pause_open = False
+            self._suppress_initial_suspend_state = False
             return
         self._pause_pending = False
         if state.state == "error":
@@ -1772,8 +1793,14 @@ class _LegOutcomeObserver:
             if not self._terminal_pending:
                 self._terminal_pending = True
                 low_charge = state.attributes.get("low_charge") is True
+                if self._suppress_initial_suspend_state:
+                    self._suppress_initial_suspend_state = False
+                    if low_charge:
+                        return
                 if low_charge:
-                    self._pause_open = True
+                    if not self._pause_open:
+                        self._pause_open = True
+                        self._active_pause_resume_event = asyncio.Event()
                 self._enqueue(
                     (
                         RoomRunOutcome.SUSPENDED
@@ -1784,7 +1811,8 @@ class _LegOutcomeObserver:
                             else RoomRunOutcome.INTERRUPTED
                         ),
                         None,
-                    )
+                    ),
+                    self._active_pause_resume_event if low_charge else None,
                 )
         elif state.state == "idle":
             if not self._terminal_pending:
@@ -1792,6 +1820,9 @@ class _LegOutcomeObserver:
                 self._enqueue((RoomRunOutcome.STOPPED_IN_PLACE, None))
         elif state.state == "docked" and not self._terminal_pending:
             self._terminal_pending = True
+            if self._suppress_initial_suspend_state:
+                self._suppress_initial_suspend_state = False
+                return
             self._enqueue(
                 (
                     RoomRunOutcome.HANDOFF_CANDIDATE
@@ -1803,8 +1834,6 @@ class _LegOutcomeObserver:
 
     def resume_after_initial_pause(self) -> None:
         self._suppress_pause = False
-        self._pause_pending = False
-        self.resume_event.clear()
 
     async def next(
         self, cancel_event: asyncio.Event | None = None
@@ -1832,11 +1861,15 @@ class _LegOutcomeObserver:
                 observation.cancel()
                 cancelled.cancel()
                 await asyncio.gather(observation, cancelled, return_exceptions=True)
-        if isinstance(item, BaseException):
-            raise item
-        if item[0] is RoomRunOutcome.PAUSED:
-            self._pause_pending = False
-        return item
+        outcome, resume_event = item
+        if isinstance(outcome, BaseException):
+            raise outcome
+        if (
+            outcome[0] in {RoomRunOutcome.PAUSED, RoomRunOutcome.SUSPENDED}
+            and resume_event is not None
+        ):
+            self.resume_event = resume_event
+        return outcome
 
     def close(self) -> None:
         if self._closed:

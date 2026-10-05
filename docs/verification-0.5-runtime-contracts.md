@@ -45,15 +45,15 @@ source panel lifecycle cases. Three packaged-panel cases also passed across
 Chromium, WebKit, and Firefox. These include 100 passive diagnostics reads and
 the existing 20-cycle mount/unmount resource test. TypeScript checks passed.
 
-A fresh lockfile install and production build produced an initial graph of
+A historical fresh lockfile install and production build produced an initial graph of
 88,947 bytes gzip and lazy workflows of 13,830 bytes gzip, within the inherited
 90/30 KiB budgets. The committed assets match that build. Hosted rebuilding and
 bundle parity remain an independent check.
 
 These aggregates support controlled comparisons; they do not provide latency
 percentiles, presented-frame measurements, or causal performance attribution.
-The [paired desktop receipt](performance-0.5-runtime-contracts.md) records the
-current lab measurements and their limits. Live transport stays default-OFF. The proposed 1 s status, 3 s
+The [paired desktop receipt](performance-0.5-runtime-contracts.md) records that
+earlier source's lab measurements and their limits. Live transport stays default-OFF. The proposed 1 s status, 3 s
 resynchronization, and 70% request reduction targets remain unqualified.
 
 ## Persistence ownership
@@ -81,16 +81,6 @@ drain collects settled worker failures after rollback; the request still receive
 its error, and failure of the separate removal write still propagates. Real-Store
 regressions cover failed writes racing unload and removal, including unchanged
 durable Areas after unload and actual private-record deletion after removal.
-All 18 Area tests, five removal/terminal-save tests, and 13 integration-unload
-tests passed; independent re-review found no remaining issue in this change.
-
-The published `b0f1644` baseline passed 3,845 hosted backend tests at 100% coverage,
-1,058 browser cases with one existing skip, bundle parity, HACS, and Hassfest.
-Its ordinary review nevertheless found the shared-root Store race below. Green
-tests and earlier bounded source reviews did not establish blanket safety.
-The transaction follow-up is locally qualified below; hosted checks and
-exact-head review remain independent gates.
-
 Further review reproduced a shared-root transaction failure in both Area and
 public plan saves: a queued peer save can persist another writer's tentative
 change before that writer's own save fails. Memory rollback then disagrees with
@@ -118,14 +108,24 @@ The executor uses one bounded leg observer across checkpoint and room-metadata
 writes. It retains room, pause/resume, and terminal transitions during those awaits,
 rechecks native ownership before room effects, and removes its listener on exit.
 Stop/history regressions use synthetic state transitions through this observer.
-These are software contracts, not physical-cleaning evidence. Integrated local
-qualification passed 3,884 tests with all 16,705 statements covered (100%), Ruff,
-formatting, strict types, and public-tree privacy. Source hashes remained unchanged
-through the run. Eighteen lifecycle regressions include queued-Store removal,
-closed admission, rejected public edits, task-creation failure, post-commit callback
-failure, and no-op notification suppression. Independent source review found no
-remaining issue in those repairs. Hosted checks and exact-head ordinary review
-remain separate gates.
+These are software contracts, not physical-cleaning evidence. PR #207 baseline
+`3f6a5b7` passed hosted Test: 3,884 tests, 100% coverage, static checks, privacy,
+packaging, and fresh import. Browser passed 1,058 cases with one existing skip;
+bundle parity and HACS passed. Hassfest never acquired a hosted runner, so
+Validate failed without running that job; this was not a source or billing failure.
+
+Exact-head review `5419706886` identified duplicate pause observations during a
+slow suspension save and missing rollback after a rejected plan selection.
+Each queued pause or low-charge suspension now retains its own resume evidence;
+only observed transitions re-arm it. Executor tests cover repeated updates,
+multiple pause/resume episodes during a blocked save, and initially paused or
+recovered low-charge runs. Selection and history reset use the existing rollback
+authority. Real-Store failures preserve prior progress and pending reconciliation
+through a peer save and reload; watcher cancellation follows a successful reset.
+The repaired source passes 3,892 tests at 100% coverage (16,725 statements), Ruff,
+formatting, strict types, and privacy with unchanged source hashes. Independent
+source review found no remaining issue in this slice. Fresh hosted checks and
+ordinary exact-head review remain required; no runtime acceptance is inferred.
 
 ## Late cadence identity
 
@@ -143,5 +143,6 @@ native completion is recorded once and the pending marker is cleared. Malformed
 snapshots are discarded by the existing validator. The 138 focused manager,
 reservation, policy, and checkpoint-validation cases collectively cover all
 105 accounting statements. Independent re-review found
-no remaining issue in this repair. This follow-up needs fresh exact-head CI and
-ordinary review; it does not supply causal coverage-setting or physical evidence.
+no remaining issue in this specific repair. The repaired P1/P2 follow-up
+remains subject to fresh hosted CI and ordinary review. This source
+contract does not supply causal coverage-setting or physical evidence.
