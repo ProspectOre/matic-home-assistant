@@ -3778,8 +3778,26 @@ def _scan_actual_metadata(
         html_line = html_scan[offset : offset + len(line)].rstrip("\r\n")
         offset += len(line)
         if fence_char is not None:
-            content, found_quotes = _strip_quote_prefix(source_line, fence_quotes)
-            if found_quotes == fence_quotes:
+            # Tabs affect container columns, but the original code line stays inert.
+            content, found_quotes = _strip_quote_prefix(source_line.expandtabs(4), fence_quotes)
+            container_ended = found_quotes != fence_quotes or (
+                fence_list_indent
+                and content.strip(" \t")
+                and _column_indent(content) < fence_list_indent
+            )
+            if container_ended:
+                # A fence cannot outlive its enclosing quote or list item.
+                # Re-examine this line outside the ended code container.
+                fence_char = None
+                fence_length = 0
+                fence_quotes = 0
+                if fence_list_indent:
+                    active_list_indent = None
+                    list_has_blank = False
+                fence_list_indent = 0
+                block_boundary = True
+                html_paragraph_boundary = True
+            else:
                 content = _strip_list_indent(content, fence_list_indent)
                 closing = re.fullmatch(
                     r"[ ]{0,3}"
@@ -3789,17 +3807,15 @@ def _scan_actual_metadata(
                     + r",}[ \t]*",
                     content,
                 )
-            else:
-                closing = None
-            masked.append(_mask_code_line(line))
-            if closing:
-                fence_char = None
-                fence_length = 0
-                fence_quotes = 0
-                fence_list_indent = 0
-                block_boundary = True
-                html_paragraph_boundary = True
-            continue
+                masked.append(_mask_code_line(line))
+                if closing:
+                    fence_char = None
+                    fence_length = 0
+                    fence_quotes = 0
+                    fence_list_indent = 0
+                    block_boundary = True
+                    html_paragraph_boundary = True
+                continue
 
         if html_block_active:
             raw_content, quotes = _strip_quote_prefix(source_line, html_block_quotes)
@@ -3832,8 +3848,8 @@ def _scan_actual_metadata(
                 html_tag_quote = next_quote
             continue
 
-        content, quotes, list_indent = _block_prefix(source_line)
-        match = FENCE_LINE.match(content)
+        fence_content, quotes, list_indent = _block_prefix(source_line.expandtabs(4))
+        match = FENCE_LINE.match(fence_content)
         if match and match.group("char") == "`" and "`" in match.group("info"):
             match = None
         if match:
@@ -3847,6 +3863,7 @@ def _scan_actual_metadata(
             html_paragraph_boundary = True
             continue
 
+        content, quotes, list_indent = _block_prefix(source_line)
         plain, _ = _strip_quote_prefix(line.rstrip("\r\n"))
         indent = _column_indent(plain)
         if not plain.strip():
