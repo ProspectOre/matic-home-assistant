@@ -2012,11 +2012,13 @@ BARE_PRIORITY_RESULT = re.compile(BARE_PRIORITY_PREFIX + r"P[0-3]\b", re.I | re.
 
 # Unicode 17.0.0 DerivedCoreProperties.txt: Default_Ignorable_Code_Point.
 # https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
+# Also include the interlinear annotation controls U+FFF9..U+FFFB in this
+# conservative diagnostic class; they are not Default_Ignorable_Code_Point.
 # Candidate detection only: never normalize source, evidence or commit authority.
 _DEFAULT_IGNORABLE_CLASS = (
     r"[\u00ad\u034f\u061c\u115f-\u1160\u17b4-\u17b5\u180b-\u180f"
     r"\u200b-\u200f\u202a-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f"
-    r"\ufeff\uffa0\ufff0-\ufff8\U0001bca0-\U0001bca3"
+    r"\ufeff\uffa0\ufff0-\ufffb\U0001bca0-\U0001bca3"
     r"\U0001d173-\U0001d17a\U000e0000-\U000e0fff]"
 )
 _DEFAULT_IGNORABLE = re.compile(_DEFAULT_IGNORABLE_CLASS)
@@ -3944,6 +3946,7 @@ def _visible_html(
     preserve_inline_code: bool = False,
     preserve_inline_markup: bool = False,
     preserve_source_offsets: bool = False,
+    rendered_block_breaks: bool = False,
 ) -> str:
     """Mask only container spans, preserving visible prefixes and suffixes."""
     metadata = text if markdown_preprocessed else _actual_metadata(text)
@@ -4526,6 +4529,7 @@ def _visible_html(
     markup_spans = list(escaped_markup_spans) + inline_markup_spans
     spans.extend(attribute_spans)
     spans.extend(block_markup_spans)
+    rendered_break_spans = set(block_markup_spans)
     inline_code_tokens = set()
     if preserve_inline_code:
         line_breaks = [match.start() for match in re.finditer(r"[\r\n]", text)]
@@ -4622,6 +4626,7 @@ def _visible_html(
             if kind == "summary-open":
                 spans.append((start, token_start))
                 markup_spans.append((token_start, token_end))
+                rendered_break_spans.add((token_start, token_end))
             else:
                 spans.append((start, token_end))
             start = None
@@ -4637,6 +4642,7 @@ def _visible_html(
             }
         ):
             markup_spans.append((token_start, token_end))
+            rendered_break_spans.add((token_start, token_end))
     if start is not None:
         spans.append((start, len(text)))
     if visible_summary_ranges is not None:
@@ -4713,6 +4719,8 @@ def _visible_html(
                 masked = " " + masked
             if masked.endswith("\r") and text[end:].startswith("\n"):
                 masked += " "
+        if rendered_block_breaks and (start, end) in rendered_break_spans:
+            masked = "\n"
         chunks.append(masked)
         position = end
     chunks.append(visible_text(position, len(text)))
@@ -6604,6 +6612,7 @@ def _raw_html_partial_code_projection(source, *, preserve_markup_lines=True):
     visible = _visible_html(
         source, mask_attributes=True, strip_inline_markup=True,
         preserve_inline_code=True, preserve_markup_lines=preserve_markup_lines,
+        rendered_block_breaks=not preserve_markup_lines,
     )
     tokens = []
     position = scan = 0
@@ -6654,7 +6663,9 @@ def _security_raw_block_priority_uncertain(text):
         code_source, _unknown = _details_code_masked_source(fragment)
         partial_code = _raw_html_partial_code_projection(code_source)
         if (_PRIORITY_CANDIDATE.search(partial_code)
-                or _unicode_priority_uncertain(partial_code)):
+                or re.search(r"(?im)^[^\S\r\n]*P[0-3]\b", partial_code)
+                or any(_unicode_priority_uncertain(row)
+                       for row in _markdown_lines(partial_code))):
             return True
     if not structured_priority:
         return False
@@ -6700,6 +6711,39 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
                 # unit nevertheless cannot become unambiguous security-only
                 # history and erase a potentially ordinary finding.
                 return True
+            if completed_row in priority_rows:
+                # A rendered break can follow the clean phrase on the same
+                # physical row. Keep the source offset and parse only inline
+                # syntax, so a break cannot manufacture a Markdown block.
+                if len(source) != len(text):
+                    raise MarkdownSourceMapError("Clean tail lost source offsets")
+                visible = _visible_html(
+                    text, mask_attributes=True, preserve_source_offsets=True,
+                    preserve_inline_code=True, preserve_markdown_comments=True)
+                if len(visible) != len(text):
+                    raise MarkdownSourceMapError("Visible tail lost source offsets")
+                suffix = visible[boundary:]
+                tail = _markdown_lines(suffix)[0] if suffix else ""
+                escaped = _markdown_escaped_punctuation(tail)
+                tail = "".join("X" if char == "[" and escaped[index] else char
+                               for index, char in enumerate(tail))
+                mistune = _markdown_packages()
+
+                class TailInline(mistune.InlineParser):
+                    def _add_auto_link(self, url, value, state):
+                        super()._add_auto_link(url, value, state)
+                        state.tokens[-1]["_review_url"] = True
+
+                md = mistune.Markdown(renderer=None, inline=TailInline())
+                env = md.parse(text)[1].env if re.search(r"\]\s*\[", text) else {}
+                rendered_tail = _markdown_text(
+                    md.inline(tail, env), diagnostic_comments=True)
+                if any(not INLINE_SECURITY_MARKER.fullmatch(row.strip()) and (
+                        _PRIORITY_CANDIDATE.search(row)
+                        or re.match(r"(?i)^[^\S\r\n]*P[0-3]\b", row)
+                        or _unicode_priority_uncertain(row))
+                       for row in _markdown_lines(rendered_tail)):
+                    return True
     if kind == "security" and not finding and BARE_PRIORITY_RESULT.search(projection):
         return True
     if kind == "security" and not finding and "<" in source:
@@ -6725,7 +6769,9 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
             raw_rendered = _raw_html_partial_code_projection(
                 code_view[start:end], preserve_markup_lines=False)
             if (_PRIORITY_CANDIDATE.search(raw_rendered)
-                    or _unicode_priority_uncertain(raw_rendered)):
+                    or re.search(r"(?im)^[^\S\r\n]*P[0-3]\b", raw_rendered)
+                    or any(_unicode_priority_uncertain(row)
+                           for row in _markdown_lines(raw_rendered))):
                 return True
     comment_rows = []
     if "<!--" in source:
