@@ -174,7 +174,9 @@ gh() {
   local cache_key cache_file response argument readonly=false
   if [[ -n "${REVIEW_READ_CACHE:-}" && "${1:-}" == api ]]; then
     case "${2:-}" in
-      */statuses\?*|*/comments\?*|*/actions/runs/*|*/actions/workflows/*) readonly=true ;;
+      # Run state can change between quiescence polls without any status write.
+      */actions/runs/*|*/actions/workflows/*/runs\?*) "$gh_path" "$@"; return ;;
+      */statuses\?*|*/comments\?*|*/actions/workflows/*) readonly=true ;;
       graphql)
         for argument in "$@"; do
           [[ "$argument" == query=query* ]] && readonly=true
