@@ -230,6 +230,68 @@ async def test_failed_store_commit_rolls_back_area_and_suppresses_notification(
     assert reloaded.snapshot(SERIAL)["selected_area"] == before_selected
 
 
+@pytest.mark.parametrize("concurrent_update", (False, True))
+async def test_failed_fresh_robot_commit_removes_only_empty_record(
+    hass, monkeypatch, concurrent_update
+):
+    """Failed Area creation removes defaults but preserves concurrent metadata."""
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+    assert SERIAL not in manager._data["robots"]
+    notifications = 0
+
+    def notified() -> None:
+        nonlocal notifications
+        notifications += 1
+
+    manager.async_add_listener(SERIAL, notified)
+    loop = asyncio.get_running_loop()
+    write_started = asyncio.Event()
+    release_write = threading.Event()
+    original_write = Store._write_prepared_data
+
+    def reject_store_write(store, mode: str, payload: str | bytes) -> None:
+        if store is manager._store:
+            loop.call_soon_threadsafe(write_started.set)
+            if not release_write.wait(timeout=30):
+                raise TimeoutError("test did not release the failing Store write")
+            raise WriteError("synthetic storage failure detail")
+        original_write(store, mode, payload)
+
+    monkeypatch.setattr(Store, "_write_prepared_data", reject_store_write)
+    mutation = asyncio.create_task(
+        manager.async_save_area(SERIAL, "created", CREATED_AREA)
+    )
+    try:
+        await asyncio.wait_for(write_started.wait(), timeout=3)
+        if concurrent_update:
+            robot = manager._data["robots"][SERIAL]
+            robot["plans"]["concurrent-write"] = {"name": "Concurrent"}
+            robot["rooms"]["concurrent-write"] = {"name": "Concurrent"}
+        release_write.set()
+        with pytest.raises(
+            HomeAssistantError, match="Cleaning plan state could not be saved"
+        ):
+            await mutation
+    finally:
+        release_write.set()
+        await asyncio.gather(mutation, return_exceptions=True)
+
+    if concurrent_update:
+        robot = manager._data["robots"][SERIAL]
+        assert robot["areas"] == {}
+        assert robot["plans"]["concurrent-write"] == {"name": "Concurrent"}
+        assert robot["rooms"]["concurrent-write"] == {"name": "Concurrent"}
+    else:
+        assert SERIAL not in manager._data["robots"]
+    assert notifications == 0
+    assert not manager.state_lock(SERIAL).locked()
+
+    reloaded = CleaningPlanManager(hass)
+    await reloaded.async_load()
+    assert SERIAL not in reloaded._data["robots"]
+
+
 async def test_removed_robot_rejects_area_mutation(hass):
     """A robot already being removed does not accept new Area mutations."""
     manager = await _manager_with_areas(hass)

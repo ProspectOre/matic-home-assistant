@@ -76,9 +76,11 @@ omits the rejected payload. This does not change Home Assistant's deferred-save
 behavior during shutdown into a synchronous durable acknowledgment.
 
 The affected plan and cadence regression modules passed 421 cases. The final
-real-Store and Area tests passed 16 cases and exercised all 89 added persistence
-statements; the focused packaging, metadata, and privacy run passed 78 cases
-including those persistence tests. Full
+real-Store and Area tests passed 18 cases and exercised all 94 added persistence
+statements, including failed first-save cleanup that preserves unrelated
+concurrent metadata. The initial candidate also passed the hosted 3,833-test
+backend suite at 100% coverage and 1,058 browser cases with one existing skip;
+source revisions require fresh exact-head checks. Full
 candidate coverage, generated-bundle parity, hosted checks, and exact-head
 ordinary review remain separate gates. Independent bounded source review found
 no introduced defect in the measurements or persistence ownership changes;

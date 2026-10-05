@@ -4270,6 +4270,11 @@ class CleaningPlanManager:
                     await self._store.async_save(self._data)
             except Exception:
                 _restore_unsaved_changes(robot, before, applied)
+                if not robot_was_present:
+                    empty_robot: dict[str, Any] = {}
+                    self._normalize_robot(empty_robot)
+                    if robot == empty_robot:
+                        robots.pop(serial_number, None)
                 raise
             self._notify_listeners(serial_number)
         finally:
