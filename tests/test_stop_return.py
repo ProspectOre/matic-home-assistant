@@ -1,11 +1,13 @@
 """Docking as soon as an accepted OEM stop settles."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.matic_robot import stop_return
 from custom_components.matic_robot.client.api import MaticHermesClient
@@ -32,10 +34,24 @@ def _fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _manager(pending: bool = True) -> SimpleNamespace:
-    return SimpleNamespace(
+    manager = SimpleNamespace(
         stop_pending=MagicMock(return_value=pending),
         register_reconciliation_task=MagicMock(),
+        command_admission_open=MagicMock(return_value=True),
+        command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
     )
+    manager.external_command = MagicMock(
+        side_effect=lambda serial: _command_context(manager, serial)
+    )
+    return manager
+
+
+@asynccontextmanager
+async def _command_context(manager: SimpleNamespace, serial_number: str):
+    async with manager.command_lock(serial_number):
+        if not manager.command_admission_open(serial_number):
+            raise HomeAssistantError("Matic commands are unavailable during unload")
+        yield
 
 
 def _client(session: object = False) -> SimpleNamespace:

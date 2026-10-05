@@ -1032,6 +1032,7 @@ async def _async_run_leg(
         (room for room in leg if room.room_id == recovered_room_id), leg[0]
     )
     observed_ids = {active_room.room_id}
+    room_observer: _LegOutcomeObserver | None = None
     first_start = await manager.async_mark_started(
         serial_number, call.data["plan_id"], active_room, run_id=run_id
     )
@@ -1104,9 +1105,61 @@ async def _async_run_leg(
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
+        room_observer = _LegOutcomeObserver(
+            hass,
+            entity_id,
+            leg,
+            active_room,
+            initial_observed=True,
+            classify_current=True,
+            suppress_pause=start_state == "paused",
+        )
         dispatch = replace(dispatch, native_identity=native_identity)
         if checkpoint_dispatch is not None:
             await checkpoint_dispatch(dispatch)
+
+        async def persist_room_start(changed_room: CleaningRoom) -> None:
+            nonlocal active_room, stop_sent
+
+            async def confirm_ownership() -> None:
+                return None
+
+            await _async_wait_with_native_identity(
+                confirm_ownership, session_identity, native_identity
+            )
+            if (
+                finish_room_event is not None
+                and finish_room_event.is_set()
+                and not stop_sent
+            ):
+                # A finish-current-room stop cannot withhold the next room
+                # inside one native mission. Honor it at the first boundary.
+                await _async_cleanup_managed_motion(
+                    managed_user_command,
+                    motion_token,
+                    dispatch_attempted=True,
+                )
+                stop_sent = True
+            first_observation = changed_room.room_id not in observed_ids
+            observed_ids.add(changed_room.room_id)
+            if first_observation:
+                first_start = await manager.async_mark_started(
+                    serial_number,
+                    call.data["plan_id"],
+                    changed_room,
+                    run_id=run_id,
+                )
+                if first_start:
+                    hass.bus.async_fire(
+                        f"{DOMAIN}_room_started",
+                        event_data(changed_room),
+                        context=call.context,
+                    )
+            active_room = changed_room
+            await manager.async_mark_resumed(
+                serial_number, call.data["plan_id"], active_room
+            )
+
         if start_state == "paused" or recovered_suspend_reason in {
             "paused",
             "low_charge",
@@ -1125,7 +1178,9 @@ async def _async_run_leg(
                 leg,
                 session_identity,
                 native_identity,
+                resume_event=room_observer.resume_event,
             )
+            room_observer.resume_after_initial_pause()
         await manager.async_mark_resumed(
             serial_number, call.data["plan_id"], active_room
         )
@@ -1140,58 +1195,30 @@ async def _async_run_leg(
         try:
             async with asyncio.timeout(completion_budget) as mission_timeout:
                 while True:
-                    outcome, changed_room = await _async_wait_with_native_identity(
-                        partial(
-                            wait_for_leg_outcome
-                            if wait_for_leg_outcome is not None
-                            else _async_wait_for_leg_outcome,
+                    wait_for_outcome: Callable[
+                        [], Awaitable[tuple[RoomRunOutcome, CleaningRoom | None]]
+                    ]
+                    if wait_for_leg_outcome is not None:
+                        wait_for_outcome = partial(
+                            wait_for_leg_outcome,
                             hass,
                             entity_id,
                             leg,
                             active_room,
                             cancel_event,
                             initial_observed=True,
-                        ),
+                        )
+                    else:
+                        assert room_observer is not None
+                        wait_for_outcome = partial(room_observer.next, cancel_event)
+                    outcome, changed_room = await _async_wait_with_native_identity(
+                        wait_for_outcome,
                         session_identity,
                         native_identity,
                     )
                     if outcome is RoomRunOutcome.ROOM_CHANGED:
                         assert changed_room is not None
-                        if (
-                            finish_room_event is not None
-                            and finish_room_event.is_set()
-                            and not stop_sent
-                        ):
-                            # A finish-current-room stop cannot withhold the
-                            # next dispatch inside one native mission, so the
-                            # first observed room boundary is where the managed
-                            # STOP honors it. Keep observing room transitions
-                            # during firmware settlement without restarting the
-                            # OEM countdown with duplicate STOP commands.
-                            await _async_cleanup_managed_motion(
-                                managed_user_command,
-                                motion_token,
-                                dispatch_attempted=True,
-                            )
-                            stop_sent = True
-                        active_room = changed_room
-                        first_observation = active_room.room_id not in observed_ids
-                        observed_ids.add(active_room.room_id)
-                        first_start = await manager.async_mark_started(
-                            serial_number,
-                            call.data["plan_id"],
-                            active_room,
-                            run_id=run_id,
-                        )
-                        if first_observation and first_start:
-                            hass.bus.async_fire(
-                                f"{DOMAIN}_room_started",
-                                event_data(active_room),
-                                context=call.context,
-                            )
-                        await manager.async_mark_resumed(
-                            serial_number, call.data["plan_id"], active_room
-                        )
+                        await persist_room_start(changed_room)
                         continue
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
                         if active_session is not None or session_identity is not None:
@@ -1237,9 +1264,8 @@ async def _async_run_leg(
                             f"{active_room.name} ended in place without returning; "
                             "the stop cause is unconfirmed"
                         )
-                    # INTERRUPTED cannot occur here: the leg loop starts only
-                    # after a confirmed in-room start, so the waiter is seeded
-                    # with that observation.
+                    # The observer starts with the owned room positively
+                    # observed, so terminal states cannot classify as unknown.
                     suspend_reason = (
                         "paused" if outcome is RoomRunOutcome.PAUSED else "low_charge"
                     )
@@ -1257,7 +1283,14 @@ async def _async_run_leg(
                         leg,
                         session_identity,
                         native_identity,
+                        resume_event=(
+                            room_observer.resume_event
+                            if room_observer is not None
+                            else None
+                        ),
                     )
+                    if room_observer is not None:
+                        room_observer.resume_after_initial_pause()
                     await manager.async_mark_resumed(
                         serial_number, call.data["plan_id"], active_room
                     )
@@ -1428,6 +1461,9 @@ async def _async_run_leg(
                 {"room": active_room.name},
             ) from err
         raise
+    finally:
+        if room_observer is not None:
+            room_observer.close()
 
     credited = evidence or {}
     for room in leg:
@@ -1639,6 +1675,176 @@ async def _async_wait_for_room_outcome(
     return outcome
 
 
+class _LegOutcomeObserver:
+    """Own ordered, bounded observations for one multi-room native leg."""
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entity_id: str,
+        rooms: Sequence[CleaningRoom],
+        initial_room: CleaningRoom,
+        *,
+        initial_observed: bool,
+        classify_current: bool = True,
+        suppress_pause: bool = False,
+    ) -> None:
+        self._rooms = tuple(rooms)
+        self._queue: asyncio.Queue[
+            tuple[RoomRunOutcome, CleaningRoom | None] | BaseException
+        ] = asyncio.Queue(maxsize=max(4, len(self._rooms) * 2 + 2))
+        self._active_room = initial_room
+        self._observed_any = initial_observed
+        self._terminal_pending = False
+        self._pause_pending = False
+        self._suppress_pause = suppress_pause
+        self._pause_open = suppress_pause
+        self.resume_event = asyncio.Event()
+        self._overflowed = False
+        self._closed = False
+        self._remove_listener = async_track_state_change_event(
+            hass, entity_id, self._state_changed
+        )
+        if classify_current:
+            self._classify(hass.states.get(entity_id))
+
+    @callback
+    def _state_changed(self, event: Event[EventStateChangedData]) -> None:
+        self._classify(event.data["new_state"])
+
+    def _enqueue(
+        self,
+        outcome: tuple[RoomRunOutcome, CleaningRoom | None] | BaseException,
+    ) -> None:
+        if self._closed or self._overflowed:
+            return
+        try:
+            self._queue.put_nowait(outcome)
+        except asyncio.QueueFull:
+            # Losing one of the finite physical room transitions would make
+            # both the active-room display and Finish current room ambiguous.
+            self._overflowed = True
+
+    def _classify(self, state: Any) -> None:
+        if self._closed or state is None:
+            return
+        if state.state in {"cleaning", "paused"}:
+            current_area = state.attributes.get("current_area")
+            matched = next(
+                (
+                    room
+                    for room in self._rooms
+                    if _area_matches_room(current_area, room)
+                ),
+                None,
+            )
+            if matched is not None:
+                self._observed_any = True
+                if (
+                    matched.room_id != self._active_room.room_id
+                    and state.state == "cleaning"
+                ):
+                    self._active_room = matched
+                    self._enqueue((RoomRunOutcome.ROOM_CHANGED, matched))
+        if state.state == "paused":
+            self._terminal_pending = False
+            self._pause_open = True
+            if not self._suppress_pause and not self._pause_pending:
+                self._pause_pending = True
+                self._enqueue((RoomRunOutcome.PAUSED, None))
+            return
+        if state.state == "cleaning":
+            self._terminal_pending = False
+            self._pause_pending = False
+            if self._pause_open:
+                self.resume_event.set()
+                self._pause_open = False
+            return
+        self._pause_pending = False
+        if state.state == "error":
+            self._terminal_pending = True
+            self._enqueue(
+                _validation_error(
+                    "The selected Matic robot reported an error", "robot_error"
+                )
+            )
+        elif state.state == "returning":
+            if not self._terminal_pending:
+                self._terminal_pending = True
+                low_charge = state.attributes.get("low_charge") is True
+                if low_charge:
+                    self._pause_open = True
+                self._enqueue(
+                    (
+                        RoomRunOutcome.SUSPENDED
+                        if low_charge
+                        else (
+                            RoomRunOutcome.HANDOFF_CANDIDATE
+                            if self._observed_any
+                            else RoomRunOutcome.INTERRUPTED
+                        ),
+                        None,
+                    )
+                )
+        elif state.state == "idle":
+            if not self._terminal_pending:
+                self._terminal_pending = True
+                self._enqueue((RoomRunOutcome.STOPPED_IN_PLACE, None))
+        elif state.state == "docked" and not self._terminal_pending:
+            self._terminal_pending = True
+            self._enqueue(
+                (
+                    RoomRunOutcome.HANDOFF_CANDIDATE
+                    if self._observed_any
+                    else RoomRunOutcome.INTERRUPTED,
+                    None,
+                )
+            )
+
+    def resume_after_initial_pause(self) -> None:
+        self._suppress_pause = False
+        self._pause_pending = False
+        self.resume_event.clear()
+
+    async def next(
+        self, cancel_event: asyncio.Event | None = None
+    ) -> tuple[RoomRunOutcome, CleaningRoom | None]:
+        if self._overflowed:
+            raise RoomInterruptedError(
+                "Room observations exceeded the bounded leg queue"
+            )
+        if cancel_event is None:
+            item = await self._queue.get()
+        else:
+            if cancel_event.is_set():
+                raise PlanCancelledError
+            observation = asyncio.create_task(self._queue.get())
+            cancelled = asyncio.create_task(cancel_event.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {observation, cancelled},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if cancelled in done and cancelled.result():
+                    raise PlanCancelledError
+                item = observation.result()
+            finally:
+                observation.cancel()
+                cancelled.cancel()
+                await asyncio.gather(observation, cancelled, return_exceptions=True)
+        if isinstance(item, BaseException):
+            raise item
+        if item[0] is RoomRunOutcome.PAUSED:
+            self._pause_pending = False
+        return item
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._remove_listener()
+
+
 async def _async_wait_for_leg_outcome(
     hass: HomeAssistant,
     entity_id: str,
@@ -1648,93 +1854,18 @@ async def _async_wait_for_leg_outcome(
     *,
     initial_observed: bool = False,
 ) -> tuple[RoomRunOutcome, CleaningRoom | None]:
-    """Classify the next leg transition using positive room evidence.
-
-    Inside one multi-room mission the robot glides between rooms without a
-    terminal state change, so observing ``current_area`` move to another leg
-    room is itself an event.  Terminal classification matches the single-room
-    contract: completion requires an observed leg room before a normal return
-    and a low-charge return is a suspension.
-    """
-    leg = tuple(rooms)
-    observed_any = initial_observed
-    future: asyncio.Future[tuple[RoomRunOutcome, CleaningRoom | None]] = (
-        hass.loop.create_future()
+    """One-shot lifecycle adapter over the shared leg outcome observer."""
+    observer = _LegOutcomeObserver(
+        hass,
+        entity_id,
+        rooms,
+        active_room,
+        initial_observed=initial_observed,
     )
-
-    def classify(state: Any) -> None:
-        nonlocal observed_any
-        if state is None or future.done():
-            return
-        current_area = state.attributes.get("current_area")
-        if state.state in {"cleaning", "paused"}:
-            matched = next(
-                (
-                    candidate
-                    for candidate in leg
-                    if _area_matches_room(current_area, candidate)
-                ),
-                None,
-            )
-            if matched is not None:
-                observed_any = True
-                if matched.room_id != active_room.room_id and state.state == "cleaning":
-                    future.set_result((RoomRunOutcome.ROOM_CHANGED, matched))
-                    return
-            if state.state == "paused":
-                future.set_result((RoomRunOutcome.PAUSED, None))
-                return
-        if state.state == "error":
-            future.set_exception(
-                _validation_error(
-                    "The selected Matic robot reported an error", "robot_error"
-                )
-            )
-        elif state.state == "returning":
-            if state.attributes.get("low_charge") is True:
-                future.set_result((RoomRunOutcome.SUSPENDED, None))
-            elif observed_any:
-                future.set_result((RoomRunOutcome.HANDOFF_CANDIDATE, None))
-            else:
-                future.set_result((RoomRunOutcome.INTERRUPTED, None))
-        elif state.state == "idle":
-            # Ending in place is a stop, not a finished room.  A task that
-            # completes normally goes through `returning` first and is
-            # resolved above; the robot's own record calls both completed, so
-            # this transition is the only thing that separates them.
-            future.set_result((RoomRunOutcome.STOPPED_IN_PLACE, None))
-        elif state.state == "docked":
-            future.set_result(
-                (RoomRunOutcome.HANDOFF_CANDIDATE, None)
-                if observed_any
-                else (RoomRunOutcome.INTERRUPTED, None)
-            )
-
-    @callback
-    def state_changed(event: Event[EventStateChangedData]) -> None:
-        classify(event.data["new_state"])
-
-    remove_listener = async_track_state_change_event(hass, entity_id, state_changed)
-    classify(hass.states.get(entity_id))
-    cancel_wait: asyncio.Task[bool] | None = None
     try:
-        if cancel_event is None:
-            return await future
-        cancel_wait = asyncio.create_task(cancel_event.wait())
-        waiters: set[asyncio.Future[Any]] = {future, cancel_wait}
-        done, _pending = await asyncio.wait(
-            waiters, return_when=asyncio.FIRST_COMPLETED
-        )
-        if cancel_wait in done and cancel_wait.result():
-            if not future.done():
-                future.cancel()
-            raise PlanCancelledError
-        cancel_wait.cancel()
-        return future.result()
+        return await observer.next(cancel_event)
     finally:
-        if cancel_wait is not None:
-            cancel_wait.cancel()
-        remove_listener()
+        observer.close()
 
 
 async def _async_active_session_state(
@@ -2561,6 +2692,8 @@ async def _async_wait_for_owned_resume(
     rooms: CleaningRoom | Sequence[CleaningRoom],
     reader: Callable[[], Awaitable[bytes | None]] | None,
     expected: bytes | None,
+    *,
+    resume_event: asyncio.Event | None = None,
 ) -> None:
     """Resume only the original native mission, including while docked.
 
@@ -2576,13 +2709,18 @@ async def _async_wait_for_owned_resume(
             hass, entity_id, {"cleaning"}, timeout_seconds, cancel_event, rooms
         )
     )
+    observed_resume = (
+        asyncio.create_task(resume_event.wait()) if resume_event is not None else None
+    )
     unknown_reads = 0
     try:
         async with asyncio.timeout(timeout_seconds):
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise PlanCancelledError
-                transition_observed = resumed.done()
+                transition_observed = resumed.done() or (
+                    observed_resume is not None and observed_resume.done()
+                )
                 identity = await _async_read_session_identity(reader)
                 if identity is None:
                     unknown_reads += 1
@@ -2599,7 +2737,8 @@ async def _async_wait_for_owned_resume(
                     if transition_observed:
                         # The identity read began after the observed resume.
                         # Propagate errors/cancellation before recording it.
-                        resumed.result()
+                        if resumed.done():
+                            resumed.result()
                         return
                 # Check again after the state transition, and keep checking
                 # session continuity during a potentially long charge interval.
@@ -2607,12 +2746,19 @@ async def _async_wait_for_owned_resume(
                     resumed.result()
                     await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
                 else:
+                    waiters: set[asyncio.Task[Any]] = {resumed}
+                    if observed_resume is not None:
+                        waiters.add(observed_resume)
                     await asyncio.wait(
-                        {resumed}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS
+                        waiters, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS
                     )
     finally:
         resumed.cancel()
-        await asyncio.gather(resumed, return_exceptions=True)
+        tasks: list[asyncio.Task[Any]] = [resumed]
+        if observed_resume is not None:
+            observed_resume.cancel()
+            tasks.append(observed_resume)
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def _async_wait_for_vacuum_state(

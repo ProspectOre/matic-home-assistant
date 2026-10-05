@@ -58,7 +58,7 @@ resynchronization, and 70% request reduction targets remain unqualified.
 
 ## Persistence ownership
 
-Actual-filesystem tests reproduced two failures hidden by in-memory Store mocks:
+Initial real-filesystem tests reproduced failures hidden by in-memory Store mocks:
 
 - Cancelling an Area request during a write could leave memory and disk updated
   without notifying listeners. Accepted Area commits now have manager-owned
@@ -84,15 +84,48 @@ durable Areas after unload and actual private-record deletion after removal.
 All 18 Area tests, five removal/terminal-save tests, and 13 integration-unload
 tests passed; independent re-review found no remaining issue in this change.
 
-The affected plan and cadence regression modules passed 421 cases. The real-Store and Area checks now cover 20 cases and exercised all 94 added persistence
-statements, including failed first-save cleanup that preserves unrelated
-concurrent metadata. The `d9310fd` qualification baseline passed the hosted
-3,835-test backend suite at 100% coverage and 1,058 browser cases with one existing skip;
-source revisions require fresh exact-head checks. Full
-candidate coverage, generated-bundle parity, hosted checks, and exact-head
-ordinary review remain separate gates. Independent bounded source review found
-no introduced defect in the measurements or persistence ownership changes;
-that review does not replace the full product and architecture acceptance.
+The published `b0f1644` baseline passed 3,845 hosted backend tests at 100% coverage,
+1,058 browser cases with one existing skip, bundle parity, HACS, and Hassfest.
+Its ordinary review nevertheless found the shared-root Store race below. Green
+tests and earlier bounded source reviews did not establish blanket safety.
+The transaction follow-up is locally qualified below; hosted checks and
+exact-head review remain independent gates.
+
+Further review reproduced a shared-root transaction failure in both Area and
+public plan saves: a queued peer save can persist another writer's tentative
+change before that writer's own save fails. Memory rollback then disagrees with
+disk. Listener failure and cancellation during actual executor I/O are additional
+commit-boundary regressions. The follow-up admits ordered domain/state ownership
+before creating a manager-owned worker; rollbackable edits begin only after that
+worker owns Store. Accepted work retains its locks until save or rollback settles,
+even if its request waiter is cancelled. Unload drains accepted work; removal owns
+its deletion and cleanup. Listeners run after commit and cannot undo it.
+
+Immediate safety fences and motion-generation changes remain synchronous and
+sticky, with their writes settled through the same owner. Run finalization retains
+terminal memory state on save failure. Startup repair precedes runtime admission.
+Native import releases command ownership before waiting for Store and rechecks
+motion/configuration generations before mutation, preserving replacement safety.
+Real-file regressions cover cross-robot serialization, cancellation before and
+after admission, listener failure, and removal. Cancellation during ordered lock
+admission releases every acquired lock; a subsequent save and reload prove that
+writes remain available. Unload closes command admission before metadata admission,
+so accepted native commands can finish their persistence while later commands are
+rejected. Public edits rejected during this boundary return an error rather than
+acknowledging an unchanged plan or Area. Failed unload reopens admission.
+
+The executor uses one bounded leg observer across checkpoint and room-metadata
+writes. It retains room, pause/resume, and terminal transitions during those awaits,
+rechecks native ownership before room effects, and removes its listener on exit.
+Stop/history regressions use synthetic state transitions through this observer.
+These are software contracts, not physical-cleaning evidence. Integrated local
+qualification passed 3,884 tests with all 16,705 statements covered (100%), Ruff,
+formatting, strict types, and public-tree privacy. Source hashes remained unchanged
+through the run. Eighteen lifecycle regressions include queued-Store removal,
+closed admission, rejected public edits, task-creation failure, post-commit callback
+failure, and no-op notification suppression. Independent source review found no
+remaining issue in those repairs. Hosted checks and exact-head ordinary review
+remain separate gates.
 
 ## Late cadence identity
 

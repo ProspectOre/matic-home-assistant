@@ -657,7 +657,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         await entry.runtime_data.cleaning_plans.async_retire_recovery(
             str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
         )
+    await entry.runtime_data.cleaning_plans.async_close_command_admission_and_wait(
+        str(entry.data[CONF_SERIAL_NUMBER])
+    )
+    await entry.runtime_data.cleaning_plans.async_close_metadata_admission_and_wait(
+        str(entry.data[CONF_SERIAL_NUMBER])
+    )
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok:
+        entry.runtime_data.cleaning_plans.reopen_metadata_admission(
+            str(entry.data[CONF_SERIAL_NUMBER])
+        )
     if not unload_ok and preserve_run and not getattr(hass, "is_stopping", False):
         recovery_reader = getattr(
             entry.runtime_data.cleaning_plans, "recovery_run", None

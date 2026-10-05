@@ -148,12 +148,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             else None
         )
         generation = self._plans.motion_generation(serial_number)
+        self._plans.require_command_admission(serial_number)
         if command is not UserCommand.STOP:
             await self._async_ensure_stop_settled(serial_number)
         context = (
             self._plans.external_motion(serial_number)
             if replace_plan
-            else self._plans.command_lock(serial_number)
+            else self._plans.external_command(serial_number)
         )
         async with context:
             if command is not UserCommand.STOP:

@@ -54,6 +54,7 @@ withholds them until verification returns. Stop uses the selected, connected HA 
 | Cleaning policy | Rotation, cadence, effective settings, explanations | Native dispatch or completion proof |
 | Managed executor | Dispatch, ownership, stop settlement, restart recovery | A second completion ledger |
 | Completion accounting | Native verified outcomes and exactly-once credit | UI-derived completion |
+| Planning persistence | Mutation admission before shared-state edits, owned commit/rollback, lifecycle draining and post-commit notification | Request cancellation or observer failures changing a committed outcome |
 | Firmware tracker | Serialized committed observations; publish after persistence succeeds | Advancing read state or emitting events after a failed save |
 | HA/HTTP/WebSocket adapters | Authorized bounded projections and invalidation | Independent business rules |
 

@@ -38,6 +38,7 @@ from .client.slam_map import decode_slam_tile, encode_slam_scene
 from .const import DOMAIN
 from .plans import (
     CleaningRoom,
+    MetadataAdmissionClosedError,
     RoomSequenceLimitError,
     leg_groups,
     plan_floor_token,
@@ -1122,19 +1123,25 @@ class MaticAreasView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
             )
-        await runtime.cleaning_plans.async_save_area(
-            serial_number,
-            area_id,
-            {
-                "schema_version": AREA_SCHEMA_VERSION,
-                "name": name,
-                "circles": circles,
-                **({"outline": outline} if outline is not None else {}),
-                "cleaning_mode": cleaning_mode.value,
-                "coverage_setting": coverage_setting.value,
-                "map_binding": binding,
-            },
-        )
+        try:
+            await runtime.cleaning_plans.async_save_area(
+                serial_number,
+                area_id,
+                {
+                    "schema_version": AREA_SCHEMA_VERSION,
+                    "name": name,
+                    "circles": circles,
+                    **({"outline": outline} if outline is not None else {}),
+                    "cleaning_mode": cleaning_mode.value,
+                    "coverage_setting": coverage_setting.value,
+                    "map_binding": binding,
+                },
+            )
+        except MetadataAdmissionClosedError:
+            return web.Response(
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+                headers=PRIVATE_NO_STORE_HEADERS,
+            )
         return self.json(
             {"id": area_id},
             headers=PRIVATE_NO_STORE_HEADERS,
@@ -1155,7 +1162,13 @@ class MaticAreasView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        await runtime.cleaning_plans.async_delete_area(serial_number, area_id)
+        try:
+            await runtime.cleaning_plans.async_delete_area(serial_number, area_id)
+        except MetadataAdmissionClosedError:
+            return web.Response(
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+                headers=PRIVATE_NO_STORE_HEADERS,
+            )
         return web.Response(
             status=HTTPStatus.NO_CONTENT, headers=PRIVATE_NO_STORE_HEADERS
         )

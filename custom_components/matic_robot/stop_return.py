@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from collections.abc import Awaitable, Callable
 from time import monotonic
 from typing import Protocol
 
@@ -101,25 +100,6 @@ async def async_clear_ownerless_stop_if_settled(
     )
 
 
-@asynccontextmanager
-async def _command_guard(
-    manager: CleaningPlanManager, serial_number: str
-) -> AsyncIterator[None]:
-    """Serialize the final stop-settlement check with replacement commands.
-
-    Older test doubles and integrations may not expose a command lock; those
-    callers retain the previous fail-closed behavior.  The real plan manager
-    does expose one, so a replacement cannot dispatch between the native
-    session read and the final stop-fence check.
-    """
-    command_lock = getattr(manager, "command_lock", None)
-    if not callable(command_lock):
-        yield
-        return
-    async with command_lock(serial_number):
-        yield
-
-
 async def async_dock_when_stop_settles(
     hass: HomeAssistant,
     *,
@@ -195,7 +175,7 @@ async def async_dock_when_stop_settles(
                     refresh_transition = True
                 elif state.state == SETTLED_STATE:
                     settled_state_observed = True
-                    async with _command_guard(manager, serial_number):
+                    async with manager.external_command(serial_number):
                         # Replacements invalidate the fence before waiting for
                         # this lock. Recheck it both before and after the native
                         # session read so a late false result cannot trigger a

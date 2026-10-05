@@ -81,7 +81,7 @@ async def _async_stop_interrupted_mixed_dispatch(
     token: int | None = None
     transmitted = False
 
-    async with manager.command_lock(serial_number):
+    async with manager.external_command(serial_number):
         if (
             cancel.is_set()
             or manager.motion_generation(serial_number) != generation

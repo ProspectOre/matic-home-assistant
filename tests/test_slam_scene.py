@@ -37,6 +37,7 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
+    MetadataAdmissionClosedError,
     RoomSequenceLimitError,
     plan_floor_token,
     room_cadence_identity,
@@ -1948,6 +1949,44 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
     runtime.cleaning_plans.async_delete_area.assert_awaited_once_with(
         "synthetic-serial", "under_table"
     )
+
+
+@pytest.mark.parametrize("operation", ("save", "delete"))
+async def test_area_workspace_reports_metadata_admission_closed(operation) -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticAreasView()
+    runtime.cleaning_plans.areas.return_value = (
+        {"under_table": {"name": "Under table"}} if operation == "delete" else {}
+    )
+    runtime.cleaning_plans.async_save_area.side_effect = MetadataAdmissionClosedError(
+        "Matic metadata is unavailable during unload"
+    )
+    runtime.cleaning_plans.async_delete_area.side_effect = MetadataAdmissionClosedError(
+        "Matic metadata is unavailable during unload"
+    )
+    values = {
+        "name": "Under table",
+        "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+        "cleaning_mode": "vacuum_and_mop",
+        "coverage_setting": "standard",
+    }
+
+    if operation == "save":
+        response = await view.post(_json_request(hass, "POST", values), "entry")
+        runtime.cleaning_plans.async_save_area.assert_awaited_once()
+        runtime.cleaning_plans.async_delete_area.assert_not_awaited()
+    else:
+        response = await view.delete(
+            _request(hass, path="/?area_id=under_table"), "entry"
+        )
+        runtime.cleaning_plans.async_delete_area.assert_awaited_once_with(
+            "synthetic-serial", "under_table"
+        )
+        runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+    assert response.status == HTTPStatus.SERVICE_UNAVAILABLE
+    assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
 
 
 async def test_area_mutations_require_admin_before_body_or_store_access() -> None:

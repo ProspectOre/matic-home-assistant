@@ -11,6 +11,7 @@ from collections import Counter
 from collections.abc import (
     AsyncIterator,
     Callable,
+    Coroutine,
     Iterable,
     Mapping,
     MutableMapping,
@@ -22,7 +23,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from statistics import median
 from time import monotonic
-from typing import Any, Literal, cast, override
+from typing import Any, Literal, TypeVar, cast, override
 
 from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -63,6 +64,27 @@ from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
 
 _LOGGER = logging.getLogger(__name__)
+_MetadataResult = TypeVar("_MetadataResult")
+
+
+class _MetadataLockLease:
+    """Track precisely which transaction locks are still owned by a worker."""
+
+    def __init__(self) -> None:
+        self._locks: list[asyncio.Lock] = []
+
+    def add(self, lock: asyncio.Lock) -> None:
+        self._locks.append(lock)
+
+    def release(self, lock: asyncio.Lock) -> None:
+        if lock in self._locks:
+            self._locks.remove(lock)
+            lock.release()
+
+    def release_all(self) -> None:
+        while self._locks:
+            self._locks.pop().release()
+
 
 STORAGE_VERSION = 1
 STORAGE_MINOR_VERSION = 10
@@ -130,6 +152,10 @@ def normalize_run_provenance(value: str | None) -> RunProvenance:
 
 class SavedPlanLimitError(HomeAssistantError):
     """Raised when a robot already has the maximum saved plans."""
+
+
+class MetadataAdmissionClosedError(HomeAssistantError):
+    """Raised when a user metadata write reaches an unloading robot."""
 
 
 class RoomSequenceLimitError(ValueError):
@@ -683,7 +709,11 @@ class CleaningPlanManager:
             ],
         ] = {}
         self._native_history_saves: dict[str, set[asyncio.Event]] = {}
-        self._area_persistence_tasks: dict[str, set[asyncio.Task[None]]] = {}
+        self._metadata_persistence_tasks: dict[str, set[asyncio.Task[Any]]] = {}
+        self._metadata_admissions: dict[str, int] = {}
+        self._metadata_admission_idle: dict[str, asyncio.Event] = {}
+        self._metadata_admission_closed: set[str] = set()
+        self._command_admission_closed: set[str] = set()
         self._reconciliation_removal_pending: set[str] = set()
         self._removed_robots: set[str] = set()
         self._robot_generations: dict[str, int] = {}
@@ -977,9 +1007,9 @@ class CleaningPlanManager:
         return token
 
     def _end_cadence_mutation(self, serial_number: str, token: object) -> None:
-        pending = self._pending_cadence_mutations.get(serial_number)
-        if pending is None:
-            return
+        # Managed mutation workers are drained before robot removal clears
+        # this registry, so every registered token has a corresponding owner.
+        pending = self._pending_cadence_mutations[serial_number]
         pending.pop(token, None)
         if not pending:
             self._pending_cadence_mutations.pop(serial_number, None)
@@ -1050,6 +1080,8 @@ class CleaningPlanManager:
         run_id: str | None = None,
     ) -> None:
         """Persist an accepted OEM STOP before releasing command ownership."""
+        if serial_number in self._metadata_admission_closed:
+            return
         self.mark_stop_pending(serial_number, duration_seconds, run_id=run_id)
         await self._async_save_and_notify(serial_number)
 
@@ -1109,7 +1141,7 @@ class CleaningPlanManager:
         When ``run_id`` is supplied, only that run may roll back its fence.
         This keeps a failed STOP from clearing a newer run's accepted fence.
         """
-        if (
+        if serial_number in self._metadata_admission_closed or (
             run_id is not None
             and self._robot(serial_number).get(STOP_FENCE_RUN_ID) != run_id
         ):
@@ -1121,7 +1153,7 @@ class CleaningPlanManager:
         self, serial_number: str, stop_fence_token: int, *, run_id: str | None
     ) -> bool:
         """Clear an observed stop only if its original fence still owns it."""
-        if (
+        if serial_number in self._metadata_admission_closed or (
             self.stop_fence_token(serial_number) != stop_fence_token
             or self._robot(serial_number).get(STOP_FENCE_RUN_ID) != run_id
         ):
@@ -1188,6 +1220,9 @@ class CleaningPlanManager:
             self.cancellation_event(serial_number).set()
             self._cancellation_reasons.setdefault(serial_number, "motion_replaced")
         self.cancel_reconciliation_tasks(serial_number)
+        # Keep the settle countdown active, but revoke its persisted run owner:
+        # replacement motion must not resume an obsolete dock watcher after a
+        # Home Assistant restart.
         stop_owner_removed = (
             self._robot(serial_number).pop(STOP_FENCE_RUN_ID, None) is not None
         )
@@ -1361,12 +1396,51 @@ class CleaningPlanManager:
         if reconciliation_tasks:
             await asyncio.gather(*reconciliation_tasks, return_exceptions=True)
 
-        await self._async_wait_area_persistence(serial_number)
+        await self._async_wait_metadata_persistence(serial_number)
+
+    async def async_close_metadata_admission_and_wait(self, serial_number: str) -> None:
+        """Reject new metadata work and drain every caller admitted before closure."""
+        self._metadata_admission_closed.add(serial_number)
+        await self._async_wait_metadata_persistence(serial_number)
+
+    async def async_close_command_admission_and_wait(self, serial_number: str) -> None:
+        """Reject new external commands and wait for the current owner to exit."""
+        self._command_admission_closed.add(serial_number)
+        async with self.command_lock(serial_number):
+            pass
+
+    @callback
+    def command_admission_open(self, serial_number: str) -> bool:
+        """Return whether an external command may dispatch for this entry."""
+        return (
+            serial_number not in self._command_admission_closed
+            and serial_number not in self._removed_robots
+        )
+
+    def require_command_admission(self, serial_number: str) -> None:
+        """Raise when an external command reaches its serialization point too late."""
+        if not self.command_admission_open(serial_number):
+            raise HomeAssistantError("Matic commands are unavailable during unload")
+
+    @asynccontextmanager
+    async def external_command(self, serial_number: str) -> AsyncIterator[None]:
+        """Admit one external command while holding its dispatch lock."""
+        async with self.command_lock(serial_number):
+            self.require_command_admission(serial_number)
+            yield
+
+    @callback
+    def reopen_metadata_admission(self, serial_number: str) -> None:
+        """Reopen command and metadata admission after a failed config-entry unload."""
+        self._metadata_admission_closed.discard(serial_number)
+        self._command_admission_closed.discard(serial_number)
 
     @callback
     def activate_robot(self, serial_number: str) -> int:
         """Clear removal state when a config entry activates this robot."""
         self._removed_robots.discard(serial_number)
+        self._metadata_admission_closed.discard(serial_number)
+        self._command_admission_closed.discard(serial_number)
         generation = self._robot_generations.get(serial_number, 0) + 1
         self._robot_generations[serial_number] = generation
         return generation
@@ -1379,15 +1453,12 @@ class CleaningPlanManager:
         """Cancel work and erase one robot's private persisted planning data."""
         self._removed_robots.add(serial_number)
         await self.async_cancel_and_wait(serial_number)
+        await self.async_close_command_admission_and_wait(serial_number)
+        await self.async_close_metadata_admission_and_wait(serial_number)
         for done in tuple(self._native_history_saves.get(serial_number, ())):
             await done.wait()
 
-        async with (
-            self.native_history_lock(serial_number),
-            self.lock(serial_number),
-            self.command_lock(serial_number),
-            self.state_lock(serial_number),
-        ):
+        async def commit(_lease: _MetadataLockLease) -> bool:
             async with self._store_lock:
                 robots = self._data.get("robots")
                 if isinstance(robots, dict):
@@ -1398,19 +1469,37 @@ class CleaningPlanManager:
                         except BaseException:
                             robots[serial_number] = removed
                             raise
+                        return True
+                return False
 
-        self._listeners.pop(serial_number, None)
-        self._stop_fences.pop(serial_number, None)
-        self._reconciliation_removal_pending.discard(serial_number)
-        self._prepared_runs.pop(serial_number, None)
-        self._pending_cadence_mutations.pop(serial_number, None)
+        def forget_runtime_state(_removed: bool) -> None:
+            self._listeners.pop(serial_number, None)
+            self._stop_fences.pop(serial_number, None)
+            self._reconciliation_removal_pending.discard(serial_number)
+            self._prepared_runs.pop(serial_number, None)
+            self._pending_cadence_mutations.pop(serial_number, None)
+
+        await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(
+                self.native_history_lock(serial_number),
+                self.lock(serial_number),
+                self.command_lock(serial_number),
+            ),
+            after_commit=forget_runtime_state,
+            allow_removed=True,
+            allow_closed=True,
+        )
 
     @asynccontextmanager
     async def external_motion(self, serial_number: str) -> AsyncIterator[int]:
         """Replace a managed run and serialize one independent command."""
+        self.require_command_admission(serial_number)
         reconciliation_removed = self.replace_managed_motion(serial_number)
         generation = self.motion_generation(serial_number)
         async with self.command_lock(serial_number):
+            self.require_command_admission(serial_number)
             await self._async_persist_reconciliation_removal(
                 serial_number, reconciliation_removed
             )
@@ -1422,6 +1511,7 @@ class CleaningPlanManager:
     ) -> AsyncIterator[None]:
         """Serialize a plan command and reject a superseded generation."""
         async with self.command_lock(serial_number):
+            self.require_command_admission(serial_number)
             if not self.managed_motion_is_current(serial_number, token):
                 raise ManagedMotionReplacedError("managed motion was replaced")
             reconciliation_removed = (
@@ -1612,70 +1702,99 @@ class CleaningPlanManager:
         generation: int | None = None,
     ) -> bool:
         """Import native activity and reconcile only the matching pending room."""
-        async with self.plan_write_lock(serial_number):
-            return await self._async_import_native_history(
-                serial_number, floor_plan, records, generation=generation
-            )
-
-    async def _async_import_native_history(
-        self,
-        serial_number: str,
-        floor_plan: FloorPlan | None,
-        records: Iterable[CleaningSessionRecord],
-        *,
-        generation: int | None,
-    ) -> bool:
-        """Import and reconcile native history under the plan-write lock."""
         if floor_plan is None:
             return False
-        # Serialize removal with history persistence without making the
-        # managed-run lock appear occupied while storage is slow.
-        async with self.native_history_lock(serial_number):
-            async with self.command_lock(serial_number):
-                if serial_number in self._removed_robots or (
-                    generation is not None
-                    and generation != self.robot_generation(serial_number)
-                ):
-                    return False
-                robot = self._robot(serial_number)
-                before = deepcopy(robot)
-                records = tuple(records)
-                changed = _import_native_room_activity(robot, floor_plan, records)
-                reconciled: list[dict[str, Any]] = []
-                changed = (
-                    _reconcile_pending_native_history(
-                        robot, floor_plan, records, on_reconciled=reconciled.append
-                    )
-                    or changed
-                )
+        entry_generation = self.robot_generation(serial_number)
+        reconciled: list[dict[str, Any]] = []
+
+        async def commit(lease: _MetadataLockLease) -> bool:
+            motion_generation = self.motion_generation(serial_number)
+            lease.release(self.command_lock(serial_number))
+            async with self._store_lock:
                 if (
-                    not changed
-                    or serial_number in self._removed_robots
+                    serial_number in self._removed_robots
+                    or self.robot_generation(serial_number) != entry_generation
+                    or self.motion_generation(serial_number) != motion_generation
                     or (
                         generation is not None
                         and generation != self.robot_generation(serial_number)
                     )
                 ):
                     return False
-            await self._async_save_native_history(serial_number, before)
-        for marker in reconciled:
-            entity_id = er.async_get(self.hass).async_get_entity_id(
-                "vacuum", DOMAIN, f"{serial_number}_vacuum"
+                return await self._async_import_native_history(
+                    serial_number,
+                    floor_plan,
+                    records,
+                    generation=generation,
+                    reconciled=reconciled,
+                )
+
+        def after_commit(changed: bool) -> None:
+            if not changed:
+                return
+            self._notify_listeners(serial_number)
+            for marker in reconciled:
+                entity_id = er.async_get(self.hass).async_get_entity_id(
+                    "vacuum", DOMAIN, f"{serial_number}_vacuum"
+                )
+                self.hass.bus.async_fire(
+                    f"{DOMAIN}_room_reconciled",
+                    {
+                        **({"entity_id": entity_id} if entity_id else {}),
+                        "plan_id": marker["plan_id"],
+                        "room_id": marker["room_id"],
+                        "room": marker["room"],
+                        **(
+                            {"run_id": marker["run_id"]} if marker.get("run_id") else {}
+                        ),
+                        "native_stop_reconciled": True,
+                        "reason_code": "native_reconciled_completion",
+                        "cause": "late_native_history",
+                    },
+                )
+
+        result = await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(
+                self.plan_write_lock(serial_number),
+                self.native_history_lock(serial_number),
+                self.command_lock(serial_number),
+            ),
+            after_commit=after_commit,
+        )
+        return bool(result)
+
+    async def _async_import_native_history(
+        self,
+        serial_number: str,
+        floor_plan: FloorPlan,
+        records: Iterable[CleaningSessionRecord],
+        *,
+        generation: int | None,
+        reconciled: list[dict[str, Any]],
+    ) -> bool:
+        """Import and reconcile native history under the plan-write lock."""
+        robot = self._robot(serial_number)
+        before = deepcopy(robot)
+        records = tuple(records)
+        changed = _import_native_room_activity(robot, floor_plan, records)
+        changed = (
+            _reconcile_pending_native_history(
+                robot, floor_plan, records, on_reconciled=reconciled.append
             )
-            self.hass.bus.async_fire(
-                f"{DOMAIN}_room_reconciled",
-                {
-                    **({"entity_id": entity_id} if entity_id else {}),
-                    "plan_id": marker["plan_id"],
-                    "room_id": marker["room_id"],
-                    "room": marker["room"],
-                    **({"run_id": marker["run_id"]} if marker.get("run_id") else {}),
-                    "native_stop_reconciled": True,
-                    "reason_code": "native_reconciled_completion",
-                    "cause": "late_native_history",
-                },
+            or changed
+        )
+        if (
+            not changed
+            or serial_number in self._removed_robots
+            or (
+                generation is not None
+                and generation != self.robot_generation(serial_number)
             )
-        self._notify_listeners(serial_number)
+        ):
+            return False
+        await self._async_save_native_history(serial_number, before)
         return True
 
     def areas(self, serial_number: str) -> dict[str, dict[str, Any]]:
@@ -1686,6 +1805,29 @@ class CleaningPlanManager:
         self, serial_number: str, floor_plan: FloorPlan | None
     ) -> AreaBindingUpgradeResult:
         """Upgrade exactly current whole-map area bindings to scoped bindings."""
+
+        async def commit(_lease: _MetadataLockLease) -> AreaBindingUpgradeResult:
+            async with self._store_lock:
+                result = await self._async_upgrade_area_bindings_transaction(
+                    serial_number, floor_plan
+                )
+                if result.upgraded:
+                    await self._store.async_save(self._data)
+                return result
+
+        def notify_if_upgraded(result: AreaBindingUpgradeResult) -> None:
+            if result.upgraded:
+                self._notify_listeners(serial_number)
+
+        result = await self._async_run_owned_metadata(
+            serial_number, commit, after_commit=notify_if_upgraded
+        )
+        return cast(AreaBindingUpgradeResult, result)
+
+    async def _async_upgrade_area_bindings_transaction(
+        self, serial_number: str, floor_plan: FloorPlan | None
+    ) -> AreaBindingUpgradeResult:
+        """Apply a verified Area binding migration inside its Store transaction."""
         upgraded = 0
         pending = False
         room_geometry = None
@@ -1741,8 +1883,6 @@ class CleaningPlanManager:
                 continue
             area["map_binding"] = upgraded_binding
             upgraded += 1
-        if upgraded:
-            await self._async_save_and_notify(serial_number)
         return AreaBindingUpgradeResult(upgraded, pending)
 
     def area(self, serial_number: str, reference: str | None = None) -> dict[str, Any]:
@@ -1813,15 +1953,25 @@ class CleaningPlanManager:
         room_identities: Mapping[str, str] | None = None,
     ) -> None:
         """Create or replace a validated room-native plan definition."""
-        async with self.plan_write_lock(serial_number):
-            await self._async_save_plan(
-                serial_number,
-                plan_id,
-                plan,
-                select=select,
-                floor_token=floor_token,
-                room_identities=room_identities,
-            )
+
+        async def commit(_lease: _MetadataLockLease) -> None:
+            async with self._user_metadata_store_transaction(serial_number):
+                await self._async_save_plan(
+                    serial_number,
+                    plan_id,
+                    plan,
+                    select=select,
+                    floor_token=floor_token,
+                    room_identities=room_identities,
+                )
+
+        await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.plan_write_lock(serial_number),),
+            notify=True,
+            reject_on_admission_close=True,
+        )
 
     async def _async_save_plan(
         self,
@@ -2171,8 +2321,18 @@ class CleaningPlanManager:
 
     async def async_delete_plan(self, serial_number: str, plan_id: str) -> None:
         """Delete one saved plan without deleting unrelated history."""
-        async with self.plan_write_lock(serial_number):
-            await self._async_delete_plan(serial_number, plan_id)
+
+        async def commit(_lease: _MetadataLockLease) -> None:
+            async with self._user_metadata_store_transaction(serial_number):
+                await self._async_delete_plan(serial_number, plan_id)
+
+        await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.plan_write_lock(serial_number),),
+            notify=True,
+            reject_on_admission_close=True,
+        )
 
     async def _async_delete_plan(self, serial_number: str, plan_id: str) -> None:
         """Delete one saved plan without deleting unrelated history."""
@@ -2220,35 +2380,53 @@ class CleaningPlanManager:
 
     async def async_select_plan(self, serial_number: str, plan_id: str) -> None:
         """Persist the selected plan used by native entities."""
-        async with self.plan_write_lock(serial_number):
-            await self._async_select_plan(serial_number, plan_id)
 
-    async def _async_select_plan(self, serial_number: str, plan_id: str) -> None:
-        """Persist the selected plan used by native entities."""
-        if plan_id not in self._robot(serial_number)["plans"]:
-            raise KeyError(plan_id)
-        self._robot(serial_number)["selected_plan"] = plan_id
-        await self._async_save_and_notify(serial_number)
+        async def commit(_lease: _MetadataLockLease) -> None:
+            async with self._user_metadata_store_transaction(serial_number):
+                if plan_id not in self._robot(serial_number)["plans"]:
+                    raise KeyError(plan_id)
+                self._robot(serial_number)["selected_plan"] = plan_id
+                await self._store.async_save(self._data)
+
+        await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.plan_write_lock(serial_number),),
+            notify=True,
+            reject_on_admission_close=True,
+        )
 
     async def async_reset_history(
         self, serial_number: str, plan_id: str | None = None
     ) -> None:
         """Reset one plan's room history or all managed history."""
-        robot = self._robot(serial_number)
-        pending = _validated_native_reconciliation(
-            robot.get("pending_native_reconciliation")
+
+        async def commit(_lease: _MetadataLockLease) -> None:
+            async with self._user_metadata_store_transaction(serial_number):
+                robot = self._robot(serial_number)
+                pending = _validated_native_reconciliation(
+                    robot.get("pending_native_reconciliation")
+                )
+                if plan_id is None or (
+                    pending is not None and pending["plan_id"] == plan_id
+                ):
+                    self.cancel_reconciliation_tasks(serial_number)
+                    robot.pop("pending_native_reconciliation", None)
+                if plan_id is None:
+                    robot["rotations"] = {}
+                    robot["rooms"] = {}
+                    robot["rotation_resets"] = {}
+                else:
+                    robot["rotations"].pop(plan_id, None)
+                    robot["rotation_resets"][plan_id] = dt_util.utcnow().isoformat()
+                await self._store.async_save(self._data)
+
+        await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            notify=True,
+            reject_on_admission_close=True,
         )
-        if plan_id is None or (pending is not None and pending["plan_id"] == plan_id):
-            self.cancel_reconciliation_tasks(serial_number)
-            robot.pop("pending_native_reconciliation", None)
-        if plan_id is None:
-            robot["rotations"] = {}
-            robot["rooms"] = {}
-            robot["rotation_resets"] = {}
-        else:
-            robot["rotations"].pop(plan_id, None)
-            robot["rotation_resets"][plan_id] = dt_util.utcnow().isoformat()
-        await self._async_save_and_notify(serial_number)
 
     def rooms_for_plan(
         self,
@@ -2671,10 +2849,24 @@ class CleaningPlanManager:
         can reset only mop or coverage cadence while retaining the other
         counter and its one-time due request.
         """
-        async with self.plan_write_lock(serial_number):
-            return await self._async_reset_cadence(
-                serial_number, plan_id, room_ids, modes=modes
-            )
+
+        async def commit(_lease: _MetadataLockLease) -> dict[str, list[str]]:
+            async with self._user_metadata_store_transaction(serial_number):
+                return await self._async_reset_cadence(
+                    serial_number,
+                    plan_id,
+                    room_ids,
+                    modes=modes,
+                )
+
+        result = await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.plan_write_lock(serial_number),),
+            notify=True,
+            reject_on_admission_close=True,
+        )
+        return cast(dict[str, list[str]], result)
 
     async def _async_reset_cadence(
         self,
@@ -3034,32 +3226,39 @@ class CleaningPlanManager:
         finish_current_room_threshold: int | None = None,
     ) -> None:
         """Persist the bounded identity and provenance of a managed run."""
-        robot = self._robot(serial_number)
-        safe_provenance = normalize_run_provenance(provenance or trigger)
-        stop_enabled, stop_threshold = _managed_stop_policy(
-            robot["plans"].get(plan_id, {})
-        )
-        if finish_current_room is not None:
-            stop_enabled = finish_current_room
-        if finish_current_room_threshold is not None:
-            stop_threshold = _bounded_stop_threshold(finish_current_room_threshold)
-        robot["last_run"] = {
-            "run_id": run_id,
-            "plan_id": plan_id,
-            "plan_name": self._plan_name(serial_number, plan_id),
-            "started_at": dt_util.utcnow().isoformat(),
-            "ended_at": None,
-            "outcome": "running",
-            "reason_code": "run_started",
-            "trigger": safe_provenance,
-            "provenance": safe_provenance,
-            "service": service[:128],
-            "room_count": max(0, room_count),
-            "completed_room_count": 0,
-            "finish_current_room": stop_enabled,
-            "finish_current_room_threshold": stop_threshold,
-        }
-        await self._async_save_and_notify(serial_number)
+
+        async def commit(_lease: _MetadataLockLease) -> None:
+            async with self._store_lock:
+                robot = self._robot(serial_number)
+                safe_provenance = normalize_run_provenance(provenance or trigger)
+                stop_enabled, stop_threshold = _managed_stop_policy(
+                    robot["plans"].get(plan_id, {})
+                )
+                if finish_current_room is not None:
+                    stop_enabled = finish_current_room
+                if finish_current_room_threshold is not None:
+                    stop_threshold = _bounded_stop_threshold(
+                        finish_current_room_threshold
+                    )
+                robot["last_run"] = {
+                    "run_id": run_id,
+                    "plan_id": plan_id,
+                    "plan_name": self._plan_name(serial_number, plan_id),
+                    "started_at": dt_util.utcnow().isoformat(),
+                    "ended_at": None,
+                    "outcome": "running",
+                    "reason_code": "run_started",
+                    "trigger": safe_provenance,
+                    "provenance": safe_provenance,
+                    "service": service[:128],
+                    "room_count": max(0, room_count),
+                    "completed_room_count": 0,
+                    "finish_current_room": stop_enabled,
+                    "finish_current_room_threshold": stop_threshold,
+                }
+                await self._store.async_save(self._data)
+
+        await self._async_run_owned_metadata(serial_number, commit, notify=True)
 
     async def async_set_recovery_checkpoint(
         self,
@@ -3068,62 +3267,92 @@ class CleaningPlanManager:
         checkpoint: dict[str, Any],
     ) -> None:
         """Persist the resolved queue required for safe restart recovery."""
-        robot = self._robot(serial_number)
-        before = deepcopy(robot)
-        last_run = robot.get("last_run")
-        if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
-            return
-        existing = last_run.get("recovery_checkpoint", {})
-        normalized_checkpoint = deepcopy(checkpoint)
-        cadence_by_room = _validated_cadence_snapshots(
-            normalized_checkpoint.get("cadence_by_room")
+        changed = False
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            nonlocal changed
+            async with self._store_lock:
+                robot = self._robot(serial_number)
+                before = deepcopy(robot)
+                last_run = robot.get("last_run")
+                if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
+                    return False
+                existing = last_run.get("recovery_checkpoint", {})
+                normalized_checkpoint = deepcopy(checkpoint)
+                cadence_by_room = _validated_cadence_snapshots(
+                    normalized_checkpoint.get("cadence_by_room")
+                )
+                if cadence_by_room is None:
+                    normalized_checkpoint.pop("cadence_by_room", None)
+                else:
+                    normalized_checkpoint["cadence_by_room"] = cadence_by_room
+                last_run["recovery_checkpoint"] = {
+                    **normalized_checkpoint,
+                    **(
+                        {"started_room_ids": existing["started_room_ids"]}
+                        if "started_room_ids" in existing
+                        else {}
+                    ),
+                    **(
+                        {"stop_intent": existing["stop_intent"]}
+                        if "stop_intent" in existing
+                        else {}
+                    ),
+                }
+                changed = True
+                await self._async_save_with_rollback(serial_number, before)
+                return True
+
+        def notify_if_changed(committed: bool) -> None:
+            if committed and changed:
+                self._notify_listeners(serial_number)
+
+        await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            after_commit=notify_if_changed,
         )
-        if cadence_by_room is None:
-            normalized_checkpoint.pop("cadence_by_room", None)
-        else:
-            normalized_checkpoint["cadence_by_room"] = cadence_by_room
-        last_run["recovery_checkpoint"] = {
-            **normalized_checkpoint,
-            **(
-                {"started_room_ids": existing["started_room_ids"]}
-                if "started_room_ids" in existing
-                else {}
-            ),
-            **(
-                {"stop_intent": existing["stop_intent"]}
-                if "stop_intent" in existing
-                else {}
-            ),
-        }
-        await self._async_save_with_rollback(serial_number, before)
 
     async def async_checkpoint_mixed_session(
         self, serial_number: str, run_id: str, session_identity_hash: str
     ) -> None:
         """Persist the generated native identity before mixed START is sent."""
-        if len(session_identity_hash) != 64 or any(
-            char not in "0123456789abcdef" for char in session_identity_hash
-        ):
-            raise ValueError("mixed session identity must be a SHA-256 fingerprint")
-        run = self._robot(serial_number).get("last_run")
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
-        if (
-            not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or run.get("outcome") != "running"
-            or not isinstance(checkpoint, dict)
-            or checkpoint.get("phase") != "dispatching"
-            or checkpoint.get("mixed_settings") is not True
-            or checkpoint.get("leg_index") != 0
-        ):
-            raise HomeAssistantError("Mixed mission checkpoint is not dispatchable")
-        checkpoint["mixed_initial_session_hash"] = session_identity_hash
-        await self._async_save_and_notify(serial_number)
+
+        async def commit(_lease: _MetadataLockLease) -> None:
+            async with self._store_lock:
+                if len(session_identity_hash) != 64 or any(
+                    char not in "0123456789abcdef" for char in session_identity_hash
+                ):
+                    raise ValueError(
+                        "mixed session identity must be a SHA-256 fingerprint"
+                    )
+                run = self._robot(serial_number).get("last_run")
+                checkpoint = (
+                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
+                )
+                if (
+                    not isinstance(run, dict)
+                    or run.get("run_id") != run_id
+                    or run.get("outcome") != "running"
+                    or not isinstance(checkpoint, dict)
+                    or checkpoint.get("phase") != "dispatching"
+                    or checkpoint.get("mixed_settings") is not True
+                    or checkpoint.get("leg_index") != 0
+                ):
+                    raise HomeAssistantError(
+                        "Mixed mission checkpoint is not dispatchable"
+                    )
+                checkpoint["mixed_initial_session_hash"] = session_identity_hash
+                await self._store.async_save(self._data)
+
+        await self._async_run_owned_metadata(serial_number, commit, notify=True)
 
     async def async_prepare_mixed_dispatch_stop(
         self, serial_number: str, run_id: str, session_identity_hash: str
     ) -> None:
         """Persist an at-most-once STOP intent for an exact partial mission."""
+        if serial_number in self._metadata_admission_closed:
+            return
         run = self._robot(serial_number).get("last_run")
         checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
         if (
@@ -3144,6 +3373,8 @@ class CleaningPlanManager:
         self, serial_number: str, run_id: str, session_identity_hash: str
     ) -> None:
         """Roll back a STOP fence only when transport proves no bytes were sent."""
+        if serial_number in self._metadata_admission_closed:
+            return
         run = self._robot(serial_number).get("last_run")
         checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
         if (
@@ -3163,11 +3394,29 @@ class CleaningPlanManager:
         self, serial_number: str, behavior: str
     ) -> None:
         """Do not lose a user's stop request if HA restarts before completion."""
-        run = self._robot(serial_number).get("last_run")
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
-        if isinstance(checkpoint, dict):
-            checkpoint["stop_intent"] = behavior
-            await self._async_save_and_notify(serial_number)
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._user_metadata_store_transaction(serial_number):
+                run = self._robot(serial_number).get("last_run")
+                checkpoint = (
+                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
+                )
+                if not isinstance(checkpoint, dict):
+                    return False
+                checkpoint["stop_intent"] = behavior
+                await self._store.async_save(self._data)
+                return True
+
+        def notify_if_changed(committed: bool) -> None:
+            if committed:
+                self._notify_listeners(serial_number)
+
+        await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            after_commit=notify_if_changed,
+            reject_on_admission_close=True,
+        )
 
     def recovery_run(self, serial_number: str) -> dict[str, Any] | None:
         """Return private local recovery state, never exposed by entity snapshots."""
@@ -3193,15 +3442,30 @@ class CleaningPlanManager:
         self, serial_number: str, status: str, *, reason: str
     ) -> None:
         """Publish reconnection state without inventing a robot outcome."""
-        last_run = self._robot(serial_number).get("last_run")
-        if not isinstance(last_run, dict) or last_run.get("outcome") != "running":
-            return
-        last_run["recovery_status"] = status[:32]
-        last_run["recovery_reason"] = reason[:64]
-        active = self._robot(serial_number).get("active_plan")
-        if isinstance(active, dict):
-            active["status"] = status
-        await self._async_save_and_notify(serial_number)
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._store_lock:
+                last_run = self._robot(serial_number).get("last_run")
+                if (
+                    not isinstance(last_run, dict)
+                    or last_run.get("outcome") != "running"
+                ):
+                    return False
+                last_run["recovery_status"] = status[:32]
+                last_run["recovery_reason"] = reason[:64]
+                active = self._robot(serial_number).get("active_plan")
+                if isinstance(active, dict):
+                    active["status"] = status
+                await self._store.async_save(self._data)
+                return True
+
+        def notify_if_changed(committed: bool) -> None:
+            if committed:
+                self._notify_listeners(serial_number)
+
+        await self._async_run_owned_metadata(
+            serial_number, commit, after_commit=notify_if_changed
+        )
 
     async def async_finish_run(
         self,
@@ -3216,11 +3480,61 @@ class CleaningPlanManager:
         entity_id: str | None = None,
         context: Context | None = None,
     ) -> bool:
+        """Finish one matching run as an owned sticky metadata transaction."""
+
+        async def commit(
+            _lease: _MetadataLockLease,
+        ) -> tuple[bool, list[dict[str, Any]]]:
+            async with self._store_lock:
+                return await self._async_finish_run_transaction(
+                    serial_number,
+                    run_id,
+                    outcome,
+                    reason_code,
+                    completed_room_count,
+                    terminal_activity=terminal_activity,
+                    cause=cause,
+                )
+
+        def after_commit(result: tuple[bool, list[dict[str, Any]]]) -> None:
+            committed, unfinished = result
+            if not committed:
+                return
+            self._notify_listeners(serial_number)
+            for room in unfinished:
+                self.hass.bus.async_fire(
+                    f"{DOMAIN}_room_ended_unverified",
+                    {
+                        **({"entity_id": entity_id} if entity_id else {}),
+                        **room,
+                        "run_id": run_id,
+                        "reason_code": "unverified_completion",
+                        "cause": "unknown",
+                    },
+                    context=context,
+                )
+
+        result = await self._async_run_owned_metadata(
+            serial_number, commit, after_commit=after_commit
+        )
+        return bool(result and result[0])
+
+    async def _async_finish_run_transaction(
+        self,
+        serial_number: str,
+        run_id: str,
+        outcome: str,
+        reason_code: str,
+        completed_room_count: int,
+        *,
+        terminal_activity: str | None,
+        cause: str,
+    ) -> tuple[bool, list[dict[str, Any]]]:
         """Persist one terminal managed-run outcome when its ID still matches."""
         robot = self._robot(serial_number)
         last_run = robot.get("last_run")
         if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
-            return False
+            return False, []
         room_count = last_run.get("room_count")
         max_rooms = room_count if isinstance(room_count, int) and room_count >= 0 else 0
         ended_at = dt_util.utcnow().isoformat()
@@ -3282,25 +3596,13 @@ class CleaningPlanManager:
         if terminal_activity is not None and not docked:
             last_run["terminal_activity"] = terminal_activity[:64]
         try:
-            await self._async_save_and_notify(serial_number)
+            await self._store.async_save(self._data)
         finally:
             # A failed save still leaves this in-memory run terminal. If HA
             # restarts before that write becomes durable, async_load rebuilds
             # ownership from the persisted checkpoint and run ID.
             self.release_prepared_run(serial_number, run_id)
-        for room in unfinished:
-            self.hass.bus.async_fire(
-                f"{DOMAIN}_room_ended_unverified",
-                {
-                    **({"entity_id": entity_id} if entity_id else {}),
-                    **room,
-                    "run_id": run_id,
-                    "reason_code": "unverified_completion",
-                    "cause": "unknown",
-                },
-                context=context,
-            )
-        return True
+        return True, unfinished
 
     @callback
     def active_run_id(self, serial_number: str) -> str | None:
@@ -3321,38 +3623,37 @@ class CleaningPlanManager:
         stop_fence_token: int | None = None,
     ) -> bool:
         """Close a stopped run only after a correlated final DOCK settles."""
-        robot = self._robot(serial_number)
-        last_run = robot.get("last_run")
-        if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
-            return False
-        if last_run.get("outcome") not in {"running", "cancelled", "unverified"}:
-            return False
-        if stop_fence_token is not None and (
-            self.stop_fence_token(serial_number) != stop_fence_token
-            or robot.get(STOP_FENCE_RUN_ID) != run_id
-        ):
-            return False
-        now = dt_util.utcnow().isoformat()
-        provenance = normalize_run_provenance(
-            last_run.get("provenance")
-            if isinstance(last_run.get("provenance"), str)
-            else None
-        )
-        last_run.update(
-            {
-                "outcome": "stopped_docked",
-                "reason_code": "stopped_docked",
-                "terminal_activity": "docked",
-                "docked_at": now,
-                "provenance": provenance,
-            }
-        )
-        if stop_fence_token is not None:
-            self.clear_stop_pending(serial_number)
-        await self._async_save_and_notify(serial_number)
-        self.hass.bus.async_fire(
-            EVENT_PLAN_DOCKED,
-            {
+
+        def mutate() -> dict[str, Any] | None:
+            robot = self._robot(serial_number)
+            last_run = robot.get("last_run")
+            if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
+                return None
+            if last_run.get("outcome") not in {"running", "cancelled", "unverified"}:
+                return None
+            if stop_fence_token is not None and (
+                self.stop_fence_token(serial_number) != stop_fence_token
+                or robot.get(STOP_FENCE_RUN_ID) != run_id
+            ):
+                return None
+            now = dt_util.utcnow().isoformat()
+            provenance = normalize_run_provenance(
+                last_run.get("provenance")
+                if isinstance(last_run.get("provenance"), str)
+                else None
+            )
+            last_run.update(
+                {
+                    "outcome": "stopped_docked",
+                    "reason_code": "stopped_docked",
+                    "terminal_activity": "docked",
+                    "docked_at": now,
+                    "provenance": provenance,
+                }
+            )
+            if stop_fence_token is not None:
+                self.clear_stop_pending(serial_number)
+            return {
                 **({"entity_id": entity_id} if entity_id else {}),
                 "run_id": run_id,
                 "plan_id": last_run.get("plan_id"),
@@ -3361,10 +3662,16 @@ class CleaningPlanManager:
                 "terminal_activity": "docked",
                 "docked_at": now,
                 "provenance": provenance,
-            },
-            context=context,
+            }
+
+        def notify_docked(event_data: dict[str, Any] | None) -> None:
+            if event_data is not None:
+                self.hass.bus.async_fire(EVENT_PLAN_DOCKED, event_data, context=context)
+
+        result = await self._async_mutate_and_save(
+            serial_number, mutate, after_commit=notify_docked
         )
-        return True
+        return result is not None
 
     async def async_mark_started(
         self,
@@ -3375,87 +3682,93 @@ class CleaningPlanManager:
         run_id: str | None = None,
     ) -> bool:
         """Record and publish the start of one room."""
-        now = dt_util.utcnow().isoformat()
-        record = self._room(serial_number, plan_id, room)
-        robot = self._robot(serial_number)
-        last_run = robot.get("last_run")
-        checkpoint = (
-            last_run.get("recovery_checkpoint", {})
-            if isinstance(last_run, dict) and last_run.get("run_id") == run_id
-            else {}
-        )
-        started_ids = (
-            checkpoint.get("started_room_ids", [])
-            if isinstance(checkpoint, dict)
-            else []
-        )
-        duplicate = run_id is not None and room.room_id in started_ids
-        if not duplicate:
-            record["last_started"] = now
-        record["last_result"] = "running"
-        if run_id is not None:
-            record["run_id"] = run_id
-        else:
-            record.pop("run_id", None)
-        robot.pop("pending_native_reconciliation", None)
-        previous_active = robot.get("active_plan")
-        previous_active = previous_active if isinstance(previous_active, dict) else {}
-        recovering_same_room = (
-            run_id is not None
-            and (duplicate or previous_active.get("status") == "recovering")
-            and previous_active.get("plan_id") == plan_id
-            and previous_active.get("room_id") == room.room_id
-            and previous_active.get("run_id") == run_id
-        )
-        robot["active_plan"] = {
-            "plan_id": plan_id,
-            "plan_name": self._plan_name(serial_number, plan_id),
-            "room_id": room.room_id,
-            "room": room.name,
-            "started": (
-                previous_active.get("started", now) if recovering_same_room else now
-            ),
-            "status": "starting",
-            "cleaning_started": (
-                previous_active.get("cleaning_started")
-                if recovering_same_room
-                else None
-            ),
-            "active_elapsed_seconds": (
-                previous_active.get("active_elapsed_seconds", 0)
-                if recovering_same_room
-                else 0
-            ),
-            "active_segment_started": (
-                previous_active.get("active_segment_started")
-                if recovering_same_room
-                else None
-            ),
-        }
-        stop_policy = (
-            last_run
-            if isinstance(last_run, Mapping)
-            and last_run.get("run_id") == run_id
-            and _has_frozen_stop_policy(last_run)
-            else checkpoint
-        )
-        if _has_frozen_stop_policy(stop_policy):
-            robot["active_plan"].update(
-                {
-                    "finish_current_room": stop_policy["finish_current_room"],
-                    "finish_current_room_threshold": _bounded_stop_threshold(
-                        stop_policy["finish_current_room_threshold"]
-                    ),
-                }
+
+        def mutate() -> bool:
+            now = dt_util.utcnow().isoformat()
+            record = self._room(serial_number, plan_id, room)
+            robot = self._robot(serial_number)
+            last_run = robot.get("last_run")
+            checkpoint = (
+                last_run.get("recovery_checkpoint", {})
+                if isinstance(last_run, dict) and last_run.get("run_id") == run_id
+                else {}
             )
-        if run_id is not None:
-            robot["active_plan"]["run_id"] = run_id
-            if isinstance(checkpoint, dict):
-                checkpoint["started_room_ids"] = list(
-                    dict.fromkeys([*started_ids, room.room_id])
+            started_ids = (
+                checkpoint.get("started_room_ids", [])
+                if isinstance(checkpoint, dict)
+                else []
+            )
+            duplicate = run_id is not None and room.room_id in started_ids
+            if not duplicate:
+                record["last_started"] = now
+            record["last_result"] = "running"
+            if run_id is not None:
+                record["run_id"] = run_id
+            else:
+                record.pop("run_id", None)
+            robot.pop("pending_native_reconciliation", None)
+            previous_active = robot.get("active_plan")
+            previous_active = (
+                previous_active if isinstance(previous_active, dict) else {}
+            )
+            recovering_same_room = (
+                run_id is not None
+                and (duplicate or previous_active.get("status") == "recovering")
+                and previous_active.get("plan_id") == plan_id
+                and previous_active.get("room_id") == room.room_id
+                and previous_active.get("run_id") == run_id
+            )
+            robot["active_plan"] = {
+                "plan_id": plan_id,
+                "plan_name": self._plan_name(serial_number, plan_id),
+                "room_id": room.room_id,
+                "room": room.name,
+                "started": (
+                    previous_active.get("started", now) if recovering_same_room else now
+                ),
+                "status": "starting",
+                "cleaning_started": (
+                    previous_active.get("cleaning_started")
+                    if recovering_same_room
+                    else None
+                ),
+                "active_elapsed_seconds": (
+                    previous_active.get("active_elapsed_seconds", 0)
+                    if recovering_same_room
+                    else 0
+                ),
+                "active_segment_started": (
+                    previous_active.get("active_segment_started")
+                    if recovering_same_room
+                    else None
+                ),
+            }
+            stop_policy = (
+                last_run
+                if isinstance(last_run, Mapping)
+                and last_run.get("run_id") == run_id
+                and _has_frozen_stop_policy(last_run)
+                else checkpoint
+            )
+            if _has_frozen_stop_policy(stop_policy):
+                robot["active_plan"].update(
+                    {
+                        "finish_current_room": stop_policy["finish_current_room"],
+                        "finish_current_room_threshold": _bounded_stop_threshold(
+                            stop_policy["finish_current_room_threshold"]
+                        ),
+                    }
                 )
-        await self._async_save_and_notify(serial_number)
-        return not duplicate
+            if run_id is not None:
+                robot["active_plan"]["run_id"] = run_id
+                if isinstance(checkpoint, dict):
+                    checkpoint["started_room_ids"] = list(
+                        dict.fromkeys([*started_ids, room.room_id])
+                    )
+            return not duplicate
+
+        result = await self._async_mutate_and_save(serial_number, mutate)
+        return bool(result)
 
     async def async_mark_completed(
         self,
@@ -3473,15 +3786,29 @@ class CleaningPlanManager:
         precedence over wall-clock tracking so one multi-room leg mission can
         credit each verified room with the robot's own per-room timing.
         """
-        async with self.plan_write_lock(serial_number):
-            return await self._async_mark_completed(
-                serial_number,
-                plan_id,
-                room,
-                run_id=run_id,
-                completed_at=completed_at,
-                duration_seconds=duration_seconds,
-            )
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._store_lock:
+                return await self._async_mark_completed(
+                    serial_number,
+                    plan_id,
+                    room,
+                    run_id=run_id,
+                    completed_at=completed_at,
+                    duration_seconds=duration_seconds,
+                )
+
+        def notify_if_changed(changed: bool) -> None:
+            if changed:
+                self._notify_listeners(serial_number)
+
+        result = await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.plan_write_lock(serial_number),),
+            after_commit=notify_if_changed,
+        )
+        return bool(result)
 
     async def _async_mark_completed(
         self,
@@ -3515,7 +3842,7 @@ class CleaningPlanManager:
             if room.room_id in credited:
                 # A previous disk write may have failed after updating the
                 # in-memory credit. Retry persistence, never increment twice.
-                await self._async_save_and_notify(serial_number)
+                await self._store.async_save(self._data)
                 return True
             credited.append(room.room_id)
         now = (
@@ -3594,18 +3921,22 @@ class CleaningPlanManager:
         self, serial_number: str, plan_id: str, room: CleaningRoom
     ) -> None:
         """Record an operational room handoff without claiming completion."""
-        now_value = dt_util.utcnow()
-        record = self._room(serial_number, plan_id, room)
-        record["last_result"] = "ended_unverified"
-        record["last_ended_unverified"] = now_value.isoformat()
-        record["unverified_runs"] = _stored_count(record, "unverified_runs") + 1
-        active = self._robot(serial_number).get("active_plan")
-        if active is not None:
-            record["last_unverified_duration_seconds"] = _active_elapsed_seconds(
-                active, now_value
-            )
-        self._robot(serial_number)["active_plan"] = None
-        await self._async_save_and_notify(serial_number)
+
+        def mutate() -> bool:
+            now_value = dt_util.utcnow()
+            record = self._room(serial_number, plan_id, room)
+            record["last_result"] = "ended_unverified"
+            record["last_ended_unverified"] = now_value.isoformat()
+            record["unverified_runs"] = _stored_count(record, "unverified_runs") + 1
+            active = self._robot(serial_number).get("active_plan")
+            if active is not None:
+                record["last_unverified_duration_seconds"] = _active_elapsed_seconds(
+                    active, now_value
+                )
+            self._robot(serial_number)["active_plan"] = None
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
 
     async def async_mark_failed(
         self,
@@ -3617,21 +3948,25 @@ class CleaningPlanManager:
         native_reconciliation: Mapping[str, object] | None = None,
     ) -> None:
         """Persist failure separately so it never advances room history."""
-        robot = self._robot(serial_number)
-        record = self._room(serial_number, plan_id, room)
-        record["last_result"] = "failed"
-        record["last_failed"] = dt_util.utcnow().isoformat()
-        record["last_error"] = reason
-        record["failed_runs"] = _stored_count(record, "failed_runs") + 1
-        if native_reconciliation is not None:
-            pending = _validated_native_reconciliation(
-                native_reconciliation, create_expiry=True
-            )
-            if pending is not None:
-                _attach_cadence_state(robot, pending)
-                robot["pending_native_reconciliation"] = pending
-        robot["active_plan"] = None
-        await self._async_save_and_notify(serial_number)
+
+        def mutate() -> bool:
+            robot = self._robot(serial_number)
+            record = self._room(serial_number, plan_id, room)
+            record["last_result"] = "failed"
+            record["last_failed"] = dt_util.utcnow().isoformat()
+            record["last_error"] = reason
+            record["failed_runs"] = _stored_count(record, "failed_runs") + 1
+            if native_reconciliation is not None:
+                pending = _validated_native_reconciliation(
+                    native_reconciliation, create_expiry=True
+                )
+                if pending is not None:
+                    _attach_cadence_state(robot, pending)
+                    robot["pending_native_reconciliation"] = pending
+            robot["active_plan"] = None
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
 
     async def async_mark_native_completed(
         self,
@@ -3651,16 +3986,37 @@ class CleaningPlanManager:
         only to the exact pending dispatch captured by that runner and is
         therefore safe against later or superseding native sessions.
         """
-        async with self.plan_write_lock(serial_number):
-            return await self._async_mark_native_completed(
-                serial_number,
-                plan_id,
-                room,
-                dispatched_at=dispatched_at,
-                completed_at=completed_at,
-                duration_seconds=duration_seconds,
-                room_identity=room_identity,
-            )
+        changed = False
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            nonlocal changed
+            async with self._store_lock:
+                return await self._async_mark_native_completed(
+                    serial_number,
+                    plan_id,
+                    room,
+                    dispatched_at=dispatched_at,
+                    completed_at=completed_at,
+                    duration_seconds=duration_seconds,
+                    room_identity=room_identity,
+                    changed=lambda: _set_true(),
+                )
+
+        def _set_true() -> None:
+            nonlocal changed
+            changed = True
+
+        def notify_if_changed(_result: bool) -> None:
+            if changed:
+                self._notify_listeners(serial_number)
+
+        result = await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.plan_write_lock(serial_number),),
+            after_commit=notify_if_changed,
+        )
+        return bool(result)
 
     async def _async_mark_native_completed(
         self,
@@ -3672,6 +4028,7 @@ class CleaningPlanManager:
         completed_at: str | None = None,
         duration_seconds: int | None = None,
         room_identity: str | None = None,
+        changed: Callable[[], None] | None = None,
     ) -> bool:
         """Reconcile late completion while owning the plan-write transaction."""
         robot = self._robot(serial_number)
@@ -3683,8 +4040,9 @@ class CleaningPlanManager:
             return False
         if _native_reconciliation_expired(pending):
             robot.pop("pending_native_reconciliation", None)
+            if changed is not None:
+                changed()
             await self._async_save_native_history(serial_number, before)
-            self._notify_listeners(serial_number)
             return False
         if (
             pending["plan_id"] != plan_id
@@ -3694,8 +4052,9 @@ class CleaningPlanManager:
             return False
         if _native_reconciliation_was_committed(robot, pending):
             robot.pop("pending_native_reconciliation", None)
+            if changed is not None:
+                changed()
             await self._async_save_native_history(serial_number, before)
-            self._notify_listeners(serial_number)
             return False
         completed_value = (
             completed_at
@@ -3724,8 +4083,9 @@ class CleaningPlanManager:
             )
         _repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
+        if changed is not None:
+            changed()
         await self._async_save_native_history(serial_number, before)
-        self._notify_listeners(serial_number)
         return True
 
     async def async_clear_native_reconciliation(
@@ -3736,42 +4096,63 @@ class CleaningPlanManager:
         dispatched_at: datetime,
     ) -> bool:
         """Durably clear one exact late-completion marker after its watcher ends."""
-        async with self.command_lock(serial_number):
-            robot = self._robot(serial_number)
-            pending = _validated_native_reconciliation(
-                robot.get("pending_native_reconciliation")
-            )
-            if (
-                pending is None
-                or pending["plan_id"] != plan_id
-                or pending["room_id"] != room_id
-                or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
-            ):
-                return False
-            before = deepcopy(robot)
-            robot.pop("pending_native_reconciliation", None)
-            await self._async_save_with_rollback(serial_number, before)
-            return True
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._store_lock:
+                robot = self._robot(serial_number)
+                pending = _validated_native_reconciliation(
+                    robot.get("pending_native_reconciliation")
+                )
+                if (
+                    pending is None
+                    or pending["plan_id"] != plan_id
+                    or pending["room_id"] != room_id
+                    or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
+                ):
+                    return False
+                before = deepcopy(robot)
+                robot.pop("pending_native_reconciliation", None)
+                applied = deepcopy(robot)
+                try:
+                    await self._store.async_save(self._data)
+                except Exception, asyncio.CancelledError:
+                    _restore_unsaved_changes(robot, before, applied)
+                    raise
+                return True
+
+        def notify_if_cleared(cleared: bool) -> None:
+            if cleared:
+                self._notify_listeners(serial_number)
+
+        result = await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.command_lock(serial_number),),
+            after_commit=notify_if_cleared,
+        )
+        return bool(result)
 
     async def async_mark_suspended(
         self, serial_number: str, plan_id: str, room: CleaningRoom, reason: str
     ) -> None:
-        """Persist a temporary recharge suspension without advancing history."""
-        now_value = dt_util.utcnow()
-        record = self._room(serial_number, plan_id, room)
-        record["last_result"] = "suspended"
-        record["last_suspended"] = now_value.isoformat()
-        record["last_suspend_reason"] = reason
-        record["suspended_runs"] = _stored_count(record, "suspended_runs") + 1
-        active = self._robot(serial_number).get("active_plan")
-        if active is not None:
-            active["active_elapsed_seconds"] = _active_elapsed_seconds(
-                active, now_value
-            )
-            active["active_segment_started"] = None
-            active["status"] = "suspended"
-            active["suspend_reason"] = reason
-        await self._async_save_and_notify(serial_number)
+        def mutate() -> bool:
+            now_value = dt_util.utcnow()
+            record = self._room(serial_number, plan_id, room)
+            record["last_result"] = "suspended"
+            record["last_suspended"] = now_value.isoformat()
+            record["last_suspend_reason"] = reason
+            record["suspended_runs"] = _stored_count(record, "suspended_runs") + 1
+            active = self._robot(serial_number).get("active_plan")
+            if active is not None:
+                active["active_elapsed_seconds"] = _active_elapsed_seconds(
+                    active, now_value
+                )
+                active["active_segment_started"] = None
+                active["status"] = "suspended"
+                active["suspend_reason"] = reason
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
 
     async def async_mark_verifying(
         self,
@@ -3781,51 +4162,57 @@ class CleaningPlanManager:
         *,
         verification_deadline: datetime | None = None,
     ) -> None:
-        """Close active timing while native completion evidence is checked."""
-        now_value = dt_util.utcnow()
-        record = self._room(serial_number, plan_id, room)
-        record["last_result"] = "verifying"
-        active = self._robot(serial_number).get("active_plan")
-        if active is not None:
-            active["active_elapsed_seconds"] = _active_elapsed_seconds(
-                active, now_value
-            )
-            active["active_segment_started"] = None
-            active["status"] = "verifying"
-            active.pop("suspend_reason", None)
-        run = self._robot(serial_number).get("last_run")
-        if run is not None and verification_deadline is not None:
-            checkpoint = run.get("recovery_checkpoint")
-            if checkpoint is not None:
-                checkpoint["phase"] = "verifying"
-                checkpoint["verification_deadline"] = verification_deadline.isoformat()
-        await self._async_save_and_notify(serial_number)
+        def mutate() -> bool:
+            now_value = dt_util.utcnow()
+            record = self._room(serial_number, plan_id, room)
+            record["last_result"] = "verifying"
+            active = self._robot(serial_number).get("active_plan")
+            if active is not None:
+                active["active_elapsed_seconds"] = _active_elapsed_seconds(
+                    active, now_value
+                )
+                active["active_segment_started"] = None
+                active["status"] = "verifying"
+                active.pop("suspend_reason", None)
+            run = self._robot(serial_number).get("last_run")
+            if run is not None and verification_deadline is not None:
+                checkpoint = run.get("recovery_checkpoint")
+                if checkpoint is not None:
+                    checkpoint["phase"] = "verifying"
+                    checkpoint["verification_deadline"] = (
+                        verification_deadline.isoformat()
+                    )
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
 
     async def async_mark_resumed(
         self, serial_number: str, plan_id: str, room: CleaningRoom
     ) -> None:
-        """Record a robot-confirmed initial start or automatic resume."""
-        now = dt_util.utcnow().isoformat()
-        record = self._room(serial_number, plan_id, room)
-        record["last_result"] = "running"
-        robot = self._robot(serial_number)
-        active = robot.get("active_plan")
-        if (
-            active is not None
-            and active.get("plan_id") == plan_id
-            and active.get("room_id") == room.room_id
-        ):
-            active["status"] = "running"
-            if not isinstance(active.get("cleaning_started"), str):
-                active["cleaning_started"] = now
-                record["last_opportunity"] = now
-                global_room = self._global_room(robot, room)
-                global_room["name"] = room.name
-                global_room["last_opportunity"] = now
-            if active.get("active_segment_started") is None:
-                active["active_segment_started"] = now
-            active.pop("suspend_reason", None)
-        await self._async_save_and_notify(serial_number)
+        def mutate() -> bool:
+            now = dt_util.utcnow().isoformat()
+            record = self._room(serial_number, plan_id, room)
+            record["last_result"] = "running"
+            robot = self._robot(serial_number)
+            active = robot.get("active_plan")
+            if (
+                active is not None
+                and active.get("plan_id") == plan_id
+                and active.get("room_id") == room.room_id
+            ):
+                active["status"] = "running"
+                if not isinstance(active.get("cleaning_started"), str):
+                    active["cleaning_started"] = now
+                    record["last_opportunity"] = now
+                    global_room = self._global_room(robot, room)
+                    global_room["name"] = room.name
+                    global_room["last_opportunity"] = now
+                if active.get("active_segment_started") is None:
+                    active["active_segment_started"] = now
+                active.pop("suspend_reason", None)
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
 
     async def async_mark_interrupted(
         self,
@@ -3836,43 +4223,47 @@ class CleaningPlanManager:
         *,
         native_reconciliation: Mapping[str, object] | None = None,
     ) -> None:
-        """Persist an unexplained terminal transition without room credit."""
-        now = dt_util.utcnow().isoformat()
-        robot = self._robot(serial_number)
-        record = self._room(serial_number, plan_id, room)
-        record["last_result"] = "interrupted"
-        record["last_interrupted"] = now
-        record["last_error"] = reason
-        record["interrupted_runs"] = _stored_count(record, "interrupted_runs") + 1
-        if native_reconciliation is not None:
-            pending = _validated_native_reconciliation(
-                native_reconciliation, create_expiry=True
-            )
-            if pending is not None:
-                _attach_cadence_state(robot, pending)
-                robot["pending_native_reconciliation"] = pending
-        active = robot.get("active_plan")
-        if active is not None:
-            robot["last_interrupted_plan"] = deepcopy(active)
-        robot["active_plan"] = None
-        await self._async_save_and_notify(serial_number)
+        def mutate() -> bool:
+            now = dt_util.utcnow().isoformat()
+            robot = self._robot(serial_number)
+            record = self._room(serial_number, plan_id, room)
+            record["last_result"] = "interrupted"
+            record["last_interrupted"] = now
+            record["last_error"] = reason
+            record["interrupted_runs"] = _stored_count(record, "interrupted_runs") + 1
+            if native_reconciliation is not None:
+                pending = _validated_native_reconciliation(
+                    native_reconciliation, create_expiry=True
+                )
+                if pending is not None:
+                    _attach_cadence_state(robot, pending)
+                    robot["pending_native_reconciliation"] = pending
+            active = robot.get("active_plan")
+            if active is not None:
+                robot["last_interrupted_plan"] = deepcopy(active)
+            robot["active_plan"] = None
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
 
     async def async_mark_cancelled(
         self, serial_number: str, plan_id: str, room: CleaningRoom
     ) -> None:
-        """Record cancellation without treating the room as completed."""
-        now_value = dt_util.utcnow()
-        record = self._room(serial_number, plan_id, room)
-        record["last_result"] = "cancelled"
-        record["last_cancelled"] = now_value.isoformat()
-        record["cancelled_runs"] = _stored_count(record, "cancelled_runs") + 1
-        active = self._robot(serial_number).get("active_plan")
-        if active is not None:
-            record["last_cancelled_duration_seconds"] = _active_elapsed_seconds(
-                active, now_value
-            )
-        self._robot(serial_number)["active_plan"] = None
-        await self._async_save_and_notify(serial_number)
+        def mutate() -> bool:
+            now_value = dt_util.utcnow()
+            record = self._room(serial_number, plan_id, room)
+            record["last_result"] = "cancelled"
+            record["last_cancelled"] = now_value.isoformat()
+            record["cancelled_runs"] = _stored_count(record, "cancelled_runs") + 1
+            active = self._robot(serial_number).get("active_plan")
+            if active is not None:
+                record["last_cancelled_duration_seconds"] = _active_elapsed_seconds(
+                    active, now_value
+                )
+            self._robot(serial_number)["active_plan"] = None
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
 
     def snapshot(self, serial_number: str) -> dict[str, Any]:
         """Return compact, automation-friendly plan and room history state."""
@@ -4195,60 +4586,243 @@ class CleaningPlanManager:
         return cast(dict[str, Any], record)
 
     async def _async_save_and_notify(self, serial_number: str) -> None:
-        async with self.state_lock(serial_number):
-            if serial_number in self._removed_robots:
-                return
+        async def commit(_lease: _MetadataLockLease) -> bool:
             async with self._store_lock:
+                if serial_number in self._removed_robots:
+                    return False
                 await self._store.async_save(self._data)
-        self._notify_listeners(serial_number)
+            return True
+
+        def notify_if_saved(saved: bool) -> None:
+            if saved:
+                self._notify_listeners(serial_number)
+
+        await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            after_commit=notify_if_saved,
+            allow_closed=True,
+            register_before_lock_wait=True,
+        )
+
+    async def _async_mutate_and_save(
+        self,
+        serial_number: str,
+        mutate: Callable[[], _MetadataResult],
+        *,
+        domain_locks: Sequence[asyncio.Lock] = (),
+        after_commit: Callable[[_MetadataResult | None], None] | None = None,
+    ) -> _MetadataResult | None:
+        """Serialize a sticky robot mutation before exposing it to Store."""
+
+        async def commit(_lease: _MetadataLockLease) -> _MetadataResult | None:
+            async with self._store_lock:
+                if serial_number in self._removed_robots:
+                    return None
+                result = mutate()
+                if result is None:
+                    return None
+                await self._store.async_save(self._data)
+            return result
+
+        def after_saved(result: _MetadataResult | None) -> None:
+            if result is None:
+                return
+            self._notify_listeners(serial_number)
+            if after_commit is not None:
+                after_commit(result)
+
+        return await self._async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=domain_locks,
+            after_commit=after_saved,
+        )
 
     async def _async_mutate_area_metadata(
         self,
         serial_number: str,
         mutate: Callable[[dict[str, Any]], None],
     ) -> None:
-        """Own an accepted Area metadata commit independently of its waiter."""
-        state_lock = self.state_lock(serial_number)
-        await state_lock.acquire()
-        if serial_number in self._removed_robots:
-            state_lock.release()
-            return
-        released = False
+        """Own an admitted Area metadata commit independently of its waiter."""
 
-        def release_state_lock() -> None:
-            nonlocal released
-            if not released:
-                released = True
-                state_lock.release()
+        async def persist(_lease: _MetadataLockLease) -> None:
+            await self._async_persist_area_metadata(serial_number, mutate)
 
-        worker = self._async_save_area_metadata_and_notify(
-            serial_number, mutate, release_state_lock
+        await self._async_run_owned_metadata(
+            serial_number,
+            persist,
+            notify=True,
+            reject_on_admission_close=True,
         )
-        try:
-            task = asyncio.create_task(worker)
-        except BaseException:
-            worker.close()
-            release_state_lock()
-            raise
-        tasks = self._area_persistence_tasks.setdefault(serial_number, set())
+
+    def _register_metadata_task(
+        self,
+        serial_number: str,
+        task: asyncio.Task[Any],
+        on_done: Callable[[], None] | None = None,
+    ) -> None:
+        """Track an accepted metadata worker until its commit settles."""
+        tasks = self._metadata_persistence_tasks.setdefault(serial_number, set())
         tasks.add(task)
         task.add_done_callback(
-            lambda completed: self._area_persistence_task_done(
-                serial_number, completed, release_state_lock
+            lambda completed: self._metadata_task_done(
+                serial_number, completed, on_done
             )
         )
-        await asyncio.shield(task)
 
-    async def _async_save_area_metadata_and_notify(
+    def _begin_metadata_admission(self, serial_number: str) -> None:
+        """Count a caller after admission policy passes and before it queues."""
+        idle = self._metadata_admission_idle.get(serial_number)
+        if idle is None:
+            idle = asyncio.Event()
+            idle.set()
+            self._metadata_admission_idle[serial_number] = idle
+        self._metadata_admissions[serial_number] = (
+            self._metadata_admissions.get(serial_number, 0) + 1
+        )
+        idle.clear()
+
+    def _end_metadata_admission(self, serial_number: str) -> None:
+        remaining = self._metadata_admissions.get(serial_number, 0) - 1
+        if remaining <= 0:
+            self._metadata_admissions.pop(serial_number, None)
+            self._metadata_admission_idle[serial_number].set()
+        else:
+            self._metadata_admissions[serial_number] = remaining
+
+    def _metadata_write_rejected(
+        self,
+        serial_number: str,
+        *,
+        allow_removed: bool,
+        allow_closed: bool,
+        reject_on_admission_close: bool,
+    ) -> bool:
+        """Apply the public-write rejection policy at every admission gate."""
+        rejected = (serial_number in self._removed_robots and not allow_removed) or (
+            serial_number in self._metadata_admission_closed and not allow_closed
+        )
+        if rejected and reject_on_admission_close:
+            raise MetadataAdmissionClosedError(
+                "Matic metadata is unavailable during unload"
+            )
+        return rejected
+
+    @asynccontextmanager
+    async def _user_metadata_store_transaction(
+        self, serial_number: str
+    ) -> AsyncIterator[None]:
+        """Acquire the shared Store and recheck admission before a public edit."""
+        async with self._store_lock:
+            self._metadata_write_rejected(
+                serial_number,
+                allow_removed=False,
+                allow_closed=False,
+                reject_on_admission_close=True,
+            )
+            yield
+
+    async def _async_run_owned_metadata(
+        self,
+        serial_number: str,
+        operation: Callable[[_MetadataLockLease], Coroutine[Any, Any, _MetadataResult]],
+        *,
+        domain_locks: Sequence[asyncio.Lock] = (),
+        notify: bool = False,
+        after_commit: Callable[[_MetadataResult], None] | None = None,
+        allow_removed: bool = False,
+        allow_closed: bool = False,
+        register_before_lock_wait: bool = False,
+        reject_on_admission_close: bool = False,
+    ) -> _MetadataResult | None:
+        """Admit mutation after cancellable locks, then own it through settlement."""
+        lease = _MetadataLockLease()
+        effective_allow_closed = allow_closed and not register_before_lock_wait
+        if self._metadata_write_rejected(
+            serial_number,
+            allow_removed=allow_removed,
+            allow_closed=effective_allow_closed,
+            reject_on_admission_close=reject_on_admission_close,
+        ):
+            return None
+        self._begin_metadata_admission(serial_number)
+
+        async def acquire_owned_locks() -> None:
+            for lock in (*domain_locks, self.state_lock(serial_number)):
+                await lock.acquire()
+                lease.add(lock)
+
+        async def run() -> _MetadataResult | None:
+            try:
+                if register_before_lock_wait:
+                    await acquire_owned_locks()
+                if self._metadata_write_rejected(
+                    serial_number,
+                    allow_removed=allow_removed,
+                    allow_closed=allow_closed,
+                    reject_on_admission_close=reject_on_admission_close,
+                ):
+                    return None
+                result = await operation(lease)
+                lease.release_all()
+                if notify:
+                    self._notify_listeners(serial_number)
+                if after_commit is not None:
+                    try:
+                        after_commit(result)
+                    except Exception:
+                        _LOGGER.error("Metadata commit callback failed")
+                return result
+            finally:
+                lease.release_all()
+
+        if register_before_lock_wait:
+            runner = run()
+            try:
+                task = asyncio.create_task(runner)
+            except BaseException:
+                runner.close()
+                lease.release_all()
+                self._end_metadata_admission(serial_number)
+                raise
+            self._register_metadata_task(serial_number, task, lease.release_all)
+            self._end_metadata_admission(serial_number)
+            return await asyncio.shield(task)
+
+        lease_transferred = False
+        try:
+            await acquire_owned_locks()
+            if self._metadata_write_rejected(
+                serial_number,
+                allow_removed=allow_removed,
+                allow_closed=allow_closed,
+                reject_on_admission_close=reject_on_admission_close,
+            ):
+                return None
+            runner = run()
+            try:
+                task = asyncio.create_task(runner)
+            except BaseException:
+                runner.close()
+                raise
+            self._register_metadata_task(serial_number, task, lease.release_all)
+            lease_transferred = True
+        finally:
+            if not lease_transferred:
+                lease.release_all()
+            self._end_metadata_admission(serial_number)
+        return await asyncio.shield(task)
+
+    async def _async_persist_area_metadata(
         self,
         serial_number: str,
         mutate: Callable[[dict[str, Any]], None],
-        release_state_lock: Callable[[], None],
     ) -> None:
         """Persist current shared state while retaining its per-robot fence."""
-        try:
-            if serial_number in self._removed_robots:
-                return
+        async with self._user_metadata_store_transaction(serial_number):
+            # Do not expose an uncommitted Area change to another robot's
+            # whole-root Store serialization while it is queued here.
             robots = self._data["robots"]
             robot_was_present = serial_number in robots
             robot = self._robot(serial_number)
@@ -4266,8 +4840,7 @@ class CleaningPlanManager:
                 raise
             applied = {key: deepcopy(robot[key]) for key in area_keys if key in robot}
             try:
-                async with self._store_lock:
-                    await self._store.async_save(self._data)
+                await self._store.async_save(self._data)
             except Exception:
                 _restore_unsaved_changes(robot, before, applied)
                 if not robot_was_present:
@@ -4276,59 +4849,70 @@ class CleaningPlanManager:
                     if robot == empty_robot:
                         robots.pop(serial_number, None)
                 raise
-            self._notify_listeners(serial_number)
-        finally:
-            release_state_lock()
 
-    def _area_persistence_task_done(
+    def _metadata_task_done(
         self,
         serial_number: str,
-        task: asyncio.Task[None],
-        release_state_lock: Callable[[], None],
+        task: asyncio.Task[Any],
+        on_done: Callable[[], None] | None = None,
     ) -> None:
         """Retrieve errors from commits whose request waiter was cancelled."""
-        release_state_lock()
-        tasks = self._area_persistence_tasks.get(serial_number)
+        if on_done is not None:
+            on_done()
+        tasks = self._metadata_persistence_tasks.get(serial_number)
         if tasks is not None:
             tasks.discard(task)
             if not tasks:
-                self._area_persistence_tasks.pop(serial_number, None)
+                self._metadata_persistence_tasks.pop(serial_number, None)
         if task.cancelled():
-            _LOGGER.error("Area metadata persistence task was cancelled")
+            _LOGGER.error("Metadata persistence task was cancelled")
         elif task.exception() is not None:
-            _LOGGER.error("Area metadata persistence task failed")
+            _LOGGER.error("Metadata persistence task failed")
 
-    async def _async_wait_area_persistence(self, serial_number: str) -> None:
-        """Wait until all accepted Area commits for a robot have settled.
+    async def _async_wait_metadata_persistence(self, serial_number: str) -> None:
+        """Wait until all accepted metadata commits for a robot have settled.
 
         Mutation waiters receive their commit errors, while lifecycle cleanup
         only needs each worker to finish its rollback and release the state
         lock before unloading or removing the robot.
         """
-        tasks = tuple(self._area_persistence_tasks.get(serial_number, ()))
-        if tasks:
-            await asyncio.gather(
-                *(asyncio.shield(task) for task in tasks), return_exceptions=True
-            )
+        idle = self._metadata_admission_idle.get(serial_number)
+        while True:
+            if idle is not None:
+                await idle.wait()
+            tasks = tuple(self._metadata_persistence_tasks.get(serial_number, ()))
+            if not tasks and not self._metadata_admissions.get(serial_number):
+                return
+            if tasks:
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in tasks), return_exceptions=True
+                )
 
     async def _async_save_with_rollback(
-        self, serial_number: str, before: dict[str, Any]
+        self,
+        serial_number: str,
+        before: dict[str, Any],
     ) -> None:
         """Restore this failed mutation without reverting later writers."""
         robot = self._robot(serial_number)
         applied = deepcopy(robot)
         try:
-            await self._async_save_and_notify(serial_number)
+            await self._store.async_save(self._data)
         except Exception, asyncio.CancelledError:
             _restore_unsaved_changes(robot, before, applied)
             raise
 
     def _notify_listeners(self, serial_number: str) -> None:
         for listener in tuple(self._listeners.get(serial_number, ())):
-            listener()
+            try:
+                listener()
+            except Exception:
+                _LOGGER.error("Cleaning plan listener failed")
 
     async def _async_save_native_history(
-        self, serial_number: str, before: dict[str, Any]
+        self,
+        serial_number: str,
+        before: dict[str, Any],
     ) -> None:
         """Retain retryable evidence and fence replacement behind this save."""
         robot = self._robot(serial_number)
@@ -4338,8 +4922,7 @@ class CleaningPlanManager:
         saves = self._native_history_saves.setdefault(serial_number, set())
         saves.add(done)
         try:
-            async with self._store_lock:
-                await self._store.async_save(self._data)
+            await self._store.async_save(self._data)
         except Exception, asyncio.CancelledError:
             if self.motion_generation(serial_number) != generation:
                 # Replacement must persist removal after this rollback finishes.

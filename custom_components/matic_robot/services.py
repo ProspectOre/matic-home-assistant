@@ -439,7 +439,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             call.data.get("coverage_setting"),
         )
 
-        async with manager.command_lock(serial_number):
+        async with manager.external_command(serial_number):
             require_generation(request_generation)
             await _ensure_stop_settled(
                 hass,

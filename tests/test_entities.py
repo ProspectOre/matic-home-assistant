@@ -246,7 +246,10 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         stop_pending=MagicMock(return_value=False),
         async_mark_stop_pending=AsyncMock(),
         async_clear_stop_pending=AsyncMock(),
+        command_admission_open=MagicMock(return_value=True),
+        require_command_admission=MagicMock(),
         command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
+        external_command=MagicMock(side_effect=_motion_context),
         external_motion=MagicMock(side_effect=_motion_context),
         managed_command=MagicMock(side_effect=_managed_motion_context),
     )

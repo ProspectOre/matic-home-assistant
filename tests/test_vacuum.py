@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.matic_robot import vacuum
 from custom_components.matic_robot.client.commands import UserCommand
@@ -524,11 +524,23 @@ async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
     lock = manager.command_lock("synthetic-serial")
     await lock.acquire()
 
+    async def wait_for_queued_commands(count: int) -> None:
+        for _ in range(30):
+            waiters = getattr(lock, "_waiters", None)
+            if (
+                waiters is not None
+                and sum(not waiter.done() for waiter in waiters) >= count
+            ):
+                return
+            await asyncio.sleep(0)
+        pytest.fail(f"{count} commands did not reach the command lock")
+
     stop_task = asyncio.create_task(entity.async_stop())
-    await asyncio.sleep(0)
+    await wait_for_queued_commands(1)
     clean_task = asyncio.create_task(entity.async_start())
+    await wait_for_queued_commands(2)
     pause_task = asyncio.create_task(entity.async_pause())
-    await asyncio.sleep(0)
+    await wait_for_queued_commands(3)
     lock.release()
 
     await stop_task
@@ -542,6 +554,65 @@ async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
         item.args[0] for item in client.async_send_user_command.await_args_list
     ] == [UserCommand.STOP]
     client.async_start_coverage.assert_not_awaited()
+
+
+async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None:
+    """An accepted STOP persists its fence before command admission drains."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    entered_send = asyncio.Event()
+    release_send = asyncio.Event()
+    client = entry.runtime_data.coordinator.client
+
+    async def delayed_send(command: UserCommand) -> None:
+        assert command is UserCommand.STOP
+        entered_send.set()
+        await release_send.wait()
+
+    client.async_send_user_command.side_effect = delayed_send
+    stop = asyncio.create_task(
+        entity._async_command(UserCommand.STOP, replace_plan=True)
+    )
+    try:
+        await entered_send.wait()
+        close = asyncio.create_task(
+            manager.async_close_command_admission_and_wait("synthetic-serial")
+        )
+        await asyncio.sleep(0)
+        assert not close.done()
+
+        release_send.set()
+        await stop
+        await close
+        assert manager.stop_pending("synthetic-serial")
+        assert manager.command_admission_open("synthetic-serial") is False
+        with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+            await entity._async_command(UserCommand.PAUSE)
+        assert [
+            call.args[0] for call in client.async_send_user_command.call_args_list
+        ] == [UserCommand.STOP]
+    finally:
+        release_send.set()
+        if not stop.done():
+            await asyncio.gather(stop, return_exceptions=True)
+
+
+async def test_command_admission_closure_rejects_late_managed_dispatch(hass) -> None:
+    """A managed task that reaches command admission after unload cannot dispatch."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    token = manager.begin_managed_motion("synthetic-serial")
+    await manager.async_close_command_admission_and_wait("synthetic-serial")
+    dispatch = AsyncMock()
+
+    with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+        async with manager.managed_command("synthetic-serial", token):
+            await dispatch()
+
+    dispatch.assert_not_awaited()
 
 
 @pytest.mark.parametrize("command", ["resume", "clean_all"])

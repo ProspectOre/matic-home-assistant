@@ -1533,7 +1533,11 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
     plans = SimpleNamespace(
-        async_cancel_and_wait=AsyncMock(), async_retire_recovery=AsyncMock()
+        async_cancel_and_wait=AsyncMock(),
+        async_retire_recovery=AsyncMock(),
+        async_close_metadata_admission_and_wait=AsyncMock(),
+        async_close_command_admission_and_wait=AsyncMock(),
+        reopen_metadata_admission=MagicMock(),
     )
     entry = SimpleNamespace(
         entry_id="entry",
@@ -1568,6 +1572,13 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     plans.async_cancel_and_wait.assert_awaited_once_with(
         "synthetic-serial", preserve_run=not disabled
     )
+    plans.async_close_command_admission_and_wait.assert_awaited_once_with(
+        "synthetic-serial"
+    )
+    plans.async_close_metadata_admission_and_wait.assert_awaited_once_with(
+        "synthetic-serial"
+    )
+    assert plans.reopen_metadata_admission.called is not unload_ok
     if disabled:
         plans.async_retire_recovery.assert_awaited_once_with(
             "synthetic-serial", "config_entry_unload"
@@ -1586,6 +1597,9 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
     plans = SimpleNamespace(
         async_cancel_and_wait=AsyncMock(),
         async_retire_recovery=AsyncMock(),
+        async_close_metadata_admission_and_wait=AsyncMock(),
+        async_close_command_admission_and_wait=AsyncMock(),
+        reopen_metadata_admission=MagicMock(),
         recovery_run=MagicMock(return_value={"run_id": "run"}),
     )
     target_tasks = []
@@ -1603,6 +1617,7 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
     )
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
     await async_unload_entry(hass, entry)
+    plans.reopen_metadata_admission.assert_called_once_with("serial")
     entry.async_create_background_task.assert_called_once()
     assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
 
@@ -1611,6 +1626,9 @@ async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
     plans = SimpleNamespace(
         async_cancel_and_wait=AsyncMock(),
         async_retire_recovery=AsyncMock(),
+        async_close_metadata_admission_and_wait=AsyncMock(),
+        async_close_command_admission_and_wait=AsyncMock(),
+        reopen_metadata_admission=MagicMock(),
         recovery_run=MagicMock(return_value=None),
         pending_stop_run_id=MagicMock(return_value="run"),
     )
@@ -1629,6 +1647,7 @@ async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
     )
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
     await async_unload_entry(hass, entry)
+    plans.reopen_metadata_admission.assert_called_once_with("serial")
     entry.async_create_background_task.assert_called_once()
     assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
 
@@ -1637,6 +1656,9 @@ async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
     plans = SimpleNamespace(
         async_cancel_and_wait=AsyncMock(),
         async_retire_recovery=AsyncMock(),
+        async_close_metadata_admission_and_wait=AsyncMock(),
+        async_close_command_admission_and_wait=AsyncMock(),
+        reopen_metadata_admission=MagicMock(),
         recovery_run=MagicMock(return_value={"run_id": "run"}),
         pending_stop_run_id=MagicMock(return_value="run"),
     )
@@ -1650,6 +1672,7 @@ async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
     hass.is_stopping = True
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
     await async_unload_entry(hass, entry)
+    plans.reopen_metadata_admission.assert_called_once_with("serial")
     entry.async_create_background_task.assert_not_called()
 
 

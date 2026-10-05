@@ -13,9 +13,12 @@ from homeassistant.exceptions import ServiceValidationError
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.managed_executor import (
     PlanCancelledError,
+    RoomInterruptedError,
+    RoomRunOutcome,
     RoomTakenOverError,
     _async_execute_rooms,
     _async_wait_for_owned_resume,
+    _LegOutcomeObserver,
 )
 from custom_components.matic_robot.plans import (
     PLAN_SESSION_ID,
@@ -751,9 +754,15 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
         raise RuntimeError("unexpected observer failure")
 
     hass.services.async_register("vacuum", "send_command", dispatch)
-    for waiter in ("_async_wait_for_room_outcome", "_async_wait_for_leg_outcome"):
+    if multi_room:
         monkeypatch.setattr(
-            "custom_components.matic_robot.managed_executor." + waiter,
+            _LegOutcomeObserver,
+            "next",
+            fail_after_replacement,
+        )
+    else:
+        monkeypatch.setattr(
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
             fail_after_replacement,
         )
     rooms = [ROOM]
@@ -885,6 +894,101 @@ async def test_state_transition_requires_a_new_identity_read(
         with pytest.raises(RoomTakenOverError):
             await asyncio.wait_for(task, 1)
     assert reads >= 2
+
+
+@pytest.mark.parametrize(
+    ("start_state", "transitions", "suspended_outcome"),
+    [
+        ("paused", ("cleaning", "returning"), None),
+        (
+            "cleaning",
+            ("returning", "cleaning", "returning"),
+            RoomRunOutcome.SUSPENDED,
+        ),
+    ],
+)
+async def test_owned_resume_uses_observed_resume_when_terminal_arrives_during_save(
+    hass, monkeypatch, start_state, transitions, suspended_outcome
+):
+    """A pause/resume/return burst during persistence must not strand the run."""
+    import custom_components.matic_robot.managed_executor as executor
+
+    hass.states.async_set("vacuum.matic", start_state, {"current_area": ROOM.name})
+    observer = _LegOutcomeObserver(
+        hass,
+        "vacuum.matic",
+        [ROOM],
+        ROOM,
+        initial_observed=True,
+        suppress_pause=True,
+    )
+    try:
+        # This burst can happen while a Store write is awaited. By the time
+        # resume waiting starts, the latest state is terminal again.
+        for index, state in enumerate(transitions):
+            hass.states.async_set(
+                "vacuum.matic",
+                state,
+                {
+                    "current_area": ROOM.name,
+                    **(
+                        {"low_charge": True}
+                        if index == 0 and suspended_outcome is not None
+                        else {}
+                    ),
+                },
+            )
+        await hass.async_block_till_done()
+
+        async def wait_forever(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(executor, "_async_wait_for_vacuum_state", wait_forever)
+        if suspended_outcome is not None:
+            assert (await observer.next())[0] is suspended_outcome
+        await asyncio.wait_for(
+            _async_wait_for_owned_resume(
+                hass,
+                "vacuum.matic",
+                1,
+                None,
+                ROOM,
+                AsyncMock(return_value=ORIGINAL),
+                ORIGINAL,
+                resume_event=observer.resume_event,
+            ),
+            1,
+        )
+        outcome, changed = await observer.next()
+        assert outcome is RoomRunOutcome.HANDOFF_CANDIDATE
+        assert changed is None
+    finally:
+        observer.close()
+
+
+async def test_leg_outcome_observer_overflow_fails_closed_and_close_is_idempotent(hass):
+    observer = _LegOutcomeObserver(
+        hass,
+        "vacuum.matic",
+        [ROOM],
+        ROOM,
+        initial_observed=True,
+    )
+    boundary = (RoomRunOutcome.ROOM_CHANGED, ROOM)
+    try:
+        for _ in range(observer._queue.maxsize):
+            observer._enqueue(boundary)
+        observer._enqueue(boundary)
+        assert observer._overflowed
+        with pytest.raises(RoomInterruptedError, match="bounded leg queue"):
+            await observer.next()
+
+        observer.close()
+        observer._enqueue(boundary)
+        assert observer._queue.qsize() == observer._queue.maxsize
+        observer.close()
+    finally:
+        observer.close()
 
 
 async def test_return_does_not_accept_an_ended_read_from_before_new_cleaning(hass):
