@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock
 
 from homeassistant.util import dt as dt_util
 
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
+from custom_components.matic_robot.client.models import FloorPlan, Room
+from custom_components.matic_robot.plans import (
+    CleaningPlanManager,
+    CleaningRoom,
+    plan_floor_token,
+    room_cadence_identity,
+)
 
 
 async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
@@ -18,6 +24,13 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
+    floor_plan = FloorPlan(
+        7,
+        "partition-proto",
+        b"partition-wire",
+        (Room(room.room_id, room.name, "room-proto", b"room-wire", ()),),
+    )
+    identity = room_cadence_identity(floor_plan, room.room_id)
     await manager.async_save_plan(
         "synthetic-robot",
         "home",
@@ -36,13 +49,17 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
                 }
             ],
         },
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={room.room_id: identity},
     )
     _effective_rooms, cadence = manager.resolve_cadence(
         "synthetic-robot",
         "home",
         [CleaningRoom(room.room_id, room.name, "vacuum", "standard")],
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={room.room_id: identity},
     )
-    cadence_state = cadence[room.room_id]
+    cadence_state = {**cadence[room.room_id], "identity": identity}
     assert cadence_state["mop_due"] is False
 
     await manager.async_begin_run(
@@ -111,6 +128,7 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
             dispatched_at=dispatched_at,
             completed_at=dt_util.utcnow().isoformat(),
             duration_seconds=30,
+            room_identity=identity,
         )
 
     first_reconciliation = asyncio.create_task(reconcile())
