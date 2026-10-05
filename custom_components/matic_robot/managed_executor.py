@@ -1713,6 +1713,7 @@ class _LegOutcomeObserver:
         )
         self._suppress_initial_suspend_state = initial_suspended
         self._overflowed = False
+        self._fault: BaseException | None = None
         self._closed = False
         self._remove_listener = async_track_state_change_event(
             hass, entity_id, self._state_changed
@@ -1739,7 +1740,7 @@ class _LegOutcomeObserver:
             self._overflowed = True
 
     def _classify(self, state: Any) -> None:
-        if self._closed or state is None:
+        if self._closed or self._fault is not None or state is None:
             return
         if state.state in {"cleaning", "paused"}:
             current_area = state.attributes.get("current_area")
@@ -1759,6 +1760,10 @@ class _LegOutcomeObserver:
                 ):
                     self._active_room = matched
                     self._enqueue((RoomRunOutcome.ROOM_CHANGED, matched))
+        if state.state == "cleaning" and matched is None:
+            # Raw activity is not evidence that this leg resumed. Keep the
+            # current pause episode open until a target-room state arrives.
+            return
         if state.state == "paused":
             self._terminal_pending = False
             if not self._pause_open:
@@ -1784,11 +1789,15 @@ class _LegOutcomeObserver:
         self._pause_pending = False
         if state.state == "error":
             self._terminal_pending = True
-            self._enqueue(
-                _validation_error(
-                    "The selected Matic robot reported an error", "robot_error"
-                )
+            self._fault = _validation_error(
+                "The selected Matic robot reported an error", "robot_error"
             )
+            # A verified robot fault supersedes queued ordinary outcomes and
+            # queue overflow. Preserve one authoritative first fault.
+            while not self._queue.empty():
+                self._queue.get_nowait()
+            self._overflowed = False
+            self._queue.put_nowait((self._fault, None))
         elif state.state == "returning":
             if not self._terminal_pending:
                 self._terminal_pending = True
@@ -1838,6 +1847,14 @@ class _LegOutcomeObserver:
     async def next(
         self, cancel_event: asyncio.Event | None = None
     ) -> tuple[RoomRunOutcome, CleaningRoom | None]:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PlanCancelledError
+        item: tuple[
+            tuple[RoomRunOutcome, CleaningRoom | None] | BaseException,
+            asyncio.Event | None,
+        ]
+        if self._fault is not None:
+            raise self._fault
         if self._overflowed:
             raise RoomInterruptedError(
                 "Room observations exceeded the bounded leg queue"
@@ -1845,8 +1862,6 @@ class _LegOutcomeObserver:
         if cancel_event is None:
             item = await self._queue.get()
         else:
-            if cancel_event.is_set():
-                raise PlanCancelledError
             observation = asyncio.create_task(self._queue.get())
             cancelled = asyncio.create_task(cancel_event.wait())
             try:
@@ -1861,6 +1876,10 @@ class _LegOutcomeObserver:
                 observation.cancel()
                 cancelled.cancel()
                 await asyncio.gather(observation, cancelled, return_exceptions=True)
+            if cancel_event.is_set():
+                raise PlanCancelledError
+        if self._fault is not None:
+            item = (self._fault, None)
         outcome, resume_event = item
         if isinstance(outcome, BaseException):
             raise outcome

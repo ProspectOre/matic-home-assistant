@@ -45,10 +45,8 @@ source panel lifecycle cases. Three packaged-panel cases also passed across
 Chromium, WebKit, and Firefox. These include 100 passive diagnostics reads and
 the existing 20-cycle mount/unmount resource test. TypeScript checks passed.
 
-A historical fresh lockfile install and production build produced an initial graph of
-88,947 bytes gzip and lazy workflows of 13,830 bytes gzip, within the inherited
-90/30 KiB budgets. The committed assets match that build. Hosted rebuilding and
-bundle parity remain an independent check.
+The earlier build measured 88,947/13,830 gzip bytes for the initial/lazy graphs,
+within the inherited 90/30 KiB budgets; hosted bundle parity is a separate check.
 
 These aggregates support controlled comparisons; they do not provide latency
 percentiles, presented-frame measurements, or causal performance attribution.
@@ -108,24 +106,29 @@ The executor uses one bounded leg observer across checkpoint and room-metadata
 writes. It retains room, pause/resume, and terminal transitions during those awaits,
 rechecks native ownership before room effects, and removes its listener on exit.
 Stop/history regressions use synthetic state transitions through this observer.
-These are software contracts, not physical-cleaning evidence. PR #207 baseline
-`3f6a5b7` passed hosted Test: 3,884 tests, 100% coverage, static checks, privacy,
-packaging, and fresh import. Browser passed 1,058 cases with one existing skip;
-bundle parity and HACS passed. Hassfest never acquired a hosted runner, so
-Validate failed without running that job; this was not a source or billing failure.
+These software contracts do not establish physical acceptance. Hosted `99fffbf`
+passed 3,892 tests, 100% coverage, static/privacy/packaging/import checks and HACS.
+Browser and Hassfest never acquired runners. Earlier `3f6a5b7` Browser passed
+1,058 cases, one existing capability skip, and bundle parity.
 
-Exact-head review `5419706886` identified duplicate pause observations during a
-slow suspension save and missing rollback after a rejected plan selection.
-Each queued pause or low-charge suspension now retains its own resume evidence;
-only observed transitions re-arm it. Executor tests cover repeated updates,
-multiple pause/resume episodes during a blocked save, and initially paused or
-recovered low-charge runs. Selection and history reset use the existing rollback
-authority. Real-Store failures preserve prior progress and pending reconciliation
-through a peer save and reload; watcher cancellation follows a successful reset.
-The repaired source passes 3,892 tests at 100% coverage (16,725 statements), Ruff,
-formatting, strict types, and privacy with unchanged source hashes. Independent
-source review found no remaining issue in this slice. Fresh hosted checks and
-ordinary exact-head review remain required; no runtime acceptance is inferred.
+Review identified duplicate pause observations and lost resume evidence during
+slow persistence. Each queued suspension now retains its own resume evidence.
+Executor tests cover repeated updates, multiple pause/resume episodes during a
+blocked save, and initially paused or recovered low-charge runs. Selection and
+history reset use the existing rollback authority. Real-Store failures preserve
+progress and pending reconciliation through peer save/reload; watcher cancellation
+follows a successful reset. Review `5419928741` then found that unmatched-room
+cleaning could satisfy retained resume evidence, and duplicate faults could mask
+the original error with queue overflow. Only target-room cleaning now resolves a
+suspension. One terminal fault supersedes stale outcomes and wakes pending readers;
+cancellation retains precedence, including during reader cleanup. Tests reproduce
+both faults before repair and cover missing/wrong rooms, valid later resumption,
+repeated faults, overflow, blocked readers, and cancellation races.
+
+The repaired source passes 3,896 tests at 100% coverage (16,738 statements), Ruff,
+formatting, strict types, and privacy with unchanged hashes. Independent review
+found no remaining issue in the changed slice. Hosted checks and ordinary review
+remain required; no runtime acceptance is inferred.
 
 ## Late cadence identity
 
@@ -141,8 +144,7 @@ missing, malformed, matching, and mismatched identities. Valid matches still
 credit cadence; missing or conflicting evidence leaves progress unchanged while
 native completion is recorded once and the pending marker is cleared. Malformed
 snapshots are discarded by the existing validator. The 138 focused manager,
-reservation, policy, and checkpoint-validation cases collectively cover all
-105 accounting statements. Independent re-review found
-no remaining issue in this specific repair. The repaired P1/P2 follow-up
-remains subject to fresh hosted CI and ordinary review. This source
-contract does not supply causal coverage-setting or physical evidence.
+reservation, policy, and checkpoint-validation cases cover all 105 accounting
+statements. Independent review found no remaining issue in this identity repair.
+The observer follow-up needs hosted CI and ordinary review. These contracts do
+not supply causal coverage-setting or physical evidence.

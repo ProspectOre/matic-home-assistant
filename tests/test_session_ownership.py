@@ -994,6 +994,129 @@ async def test_leg_outcome_observer_overflow_fails_closed_and_close_is_idempoten
         observer.close()
 
 
+@pytest.mark.parametrize("current_area", ["Hall", None])
+async def test_unmatched_cleaning_does_not_resume_an_observed_pause(hass, current_area):
+    observer = _LegOutcomeObserver(
+        hass,
+        "vacuum.matic",
+        [ROOM],
+        ROOM,
+        initial_observed=True,
+    )
+    try:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+        hass.states.async_set("vacuum.matic", "paused", {"current_area": ROOM.name})
+        await hass.async_block_till_done()
+        assert (await observer.next())[0] is RoomRunOutcome.PAUSED
+
+        resume = asyncio.create_task(
+            _async_wait_for_owned_resume(
+                hass,
+                "vacuum.matic",
+                1,
+                None,
+                ROOM,
+                AsyncMock(return_value=ORIGINAL),
+                ORIGINAL,
+                resume_event=observer.resume_event,
+            )
+        )
+        attrs = {} if current_area is None else {"current_area": current_area}
+        hass.states.async_set("vacuum.matic", "cleaning", attrs)
+        await hass.async_block_till_done()
+        await asyncio.sleep(0)
+        assert not observer.resume_event.is_set()
+        assert observer._pause_open
+        assert not resume.done()
+
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+        await hass.async_block_till_done()
+        await asyncio.wait_for(resume, 1)
+        assert not observer._pause_open
+    finally:
+        observer.close()
+
+
+async def test_repeated_error_updates_preserve_first_robot_error_after_returning(hass):
+    observer = _LegOutcomeObserver(
+        hass,
+        "vacuum.matic",
+        [ROOM],
+        ROOM,
+        initial_observed=True,
+    )
+    try:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+        hass.states.async_set("vacuum.matic", "returning", {"current_area": ROOM.name})
+        boundary = (RoomRunOutcome.ROOM_CHANGED, ROOM)
+        for _ in range(observer._queue.maxsize + 1):
+            observer._enqueue(boundary)
+        assert observer._overflowed
+        for code in range(8):
+            hass.states.async_set("vacuum.matic", "error", {"error_code": code})
+        await hass.async_block_till_done()
+
+        assert not observer._overflowed
+        assert observer._queue.qsize() == 1
+        with pytest.raises(ServiceValidationError) as error:
+            await observer.next()
+        assert error.value.translation_key == "robot_error"
+    finally:
+        observer.close()
+
+
+async def test_robot_error_wakes_waiter_and_simultaneous_cancel_wins(hass, monkeypatch):
+    observer = _LegOutcomeObserver(
+        hass,
+        "vacuum.matic",
+        [ROOM],
+        ROOM,
+        initial_observed=True,
+    )
+    try:
+        waiter = asyncio.create_task(observer.next())
+        await asyncio.sleep(0)
+        hass.states.async_set("vacuum.matic", "error", {"error_code": 1})
+        await hass.async_block_till_done()
+        with pytest.raises(ServiceValidationError) as error:
+            await asyncio.wait_for(waiter, 1)
+        assert error.value.translation_key == "robot_error"
+
+        observer.close()
+        hass.states.async_set("vacuum.matic", "idle")
+        await hass.async_block_till_done()
+        observer = _LegOutcomeObserver(
+            hass,
+            "vacuum.matic",
+            [ROOM],
+            ROOM,
+            initial_observed=True,
+            classify_current=False,
+        )
+        hass.states.async_set("vacuum.matic", "paused", {"current_area": ROOM.name})
+        await hass.async_block_till_done()
+        cancel_event = asyncio.Event()
+        original_gather = asyncio.gather
+
+        def cancel_during_cleanup(*awaitables, **kwargs):
+            def cancel_and_fault() -> None:
+                cancel_event.set()
+                hass.states.async_set("vacuum.matic", "error", {"error_code": 2})
+
+            asyncio.get_running_loop().call_soon(cancel_and_fault)
+            return original_gather(*awaitables, **kwargs)
+
+        monkeypatch.setattr(asyncio, "gather", cancel_during_cleanup)
+        waiter = asyncio.create_task(observer.next(cancel_event))
+        await asyncio.sleep(0)
+        with pytest.raises(PlanCancelledError):
+            await asyncio.wait_for(waiter, 1)
+        await hass.async_block_till_done()
+        assert observer._fault is not None
+    finally:
+        observer.close()
+
+
 async def test_repeated_pause_during_suspension_save_does_not_leave_stale_pause(
     hass, monkeypatch
 ):
