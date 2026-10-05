@@ -3279,14 +3279,15 @@ if [[ "$historical_event_head" != true ]] && ! head_prefix_resolves; then
 fi
 refresh_review_timeline_watermark
 if [[ -n "$native_codex_receipt" ]]; then
-  # Audit mode skips routine evaluation markers. Revoke the required gate
-  # explicitly before capture so interruption cannot preserve prior success.
-  stamp_review_gate pending "Capturing native Codex review on $head_sha" || exit 1
   # Shared hold: independent GitHub audits cannot republish success during live
-  # review. Failure/interruption, including archival failure, leaves it pending.
+  # review. Establish it before revoking the required gate so a failed revocation
+  # or interruption leaves a durable hold for subsequent audits.
   native_attempt_context="native-codex-attempt/$(python3 -I -c 'import uuid; print(uuid.uuid4().hex)')"
   stamp_status "$native_attempt_context" pending \
     "Native attempt pending for PR #$pr_number; h:$head_sha; b:$base_sha" || exit 1
+  # Audit mode skips routine evaluation markers. Revoke the required gate
+  # explicitly before capture so interruption cannot preserve prior success.
+  stamp_review_gate pending "Capturing native Codex review on $head_sha" || exit 1
   native_codex_delivery="$(python3 -I "$native_codex_helper" capture --objects "$native_codex_objects" \
     --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" \
     --receipt "$native_codex_receipt")" || exit 1
