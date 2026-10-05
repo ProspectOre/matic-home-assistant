@@ -267,6 +267,15 @@ stamp_status_for_sha() {
       && (( ${#description} > 140 )); then
     description="Regular findings${description#Regular findings observed}"
   fi
+  if [[ "$context" == review-security-history && "$state" == pending ]] \
+      && (( ${#description} > 140 )); then
+    case "$description" in
+      "Security findings observed for PR #"*)
+        description="Security findings${description#Security findings observed}" ;;
+      "Security for PR #"*"; sha256:"*)
+        description="${description/; sha256:/; h:}" ;;
+    esac
+  fi
   # GitHub commit-status descriptions are limited to 140 characters. History
   # records must fail closed rather than truncating the head or origin marker.
   if (( ${#description} > 140 )); then

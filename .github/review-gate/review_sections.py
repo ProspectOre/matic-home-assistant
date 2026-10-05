@@ -4330,7 +4330,8 @@ def _visible_html(
                 )
                 if not (
                     preserve_inline_markup
-                    and normalized_tag in HTML_INLINE_FORMATTING_TAGS
+                    and (normalized_tag in HTML_INLINE_FORMATTING_TAGS
+                         or normalized_tag == "br")
                 ):
                     destination.append((start, end))
             if namespace == "html" and (
@@ -4500,7 +4501,8 @@ def _visible_html(
                     )
                     if not (
                         preserve_inline_markup
-                        and normalized_tag in HTML_INLINE_FORMATTING_TAGS
+                        and (normalized_tag in HTML_INLINE_FORMATTING_TAGS
+                             or normalized_tag == "br")
                     ):
                         destination.append((start, markup[2]))
             if matching_index is not None:
@@ -4854,6 +4856,7 @@ def _coordinator_container_prefix(lines: list[str]) -> tuple[list[str], list[boo
     return result, container_lines
 
 
+@lru_cache(maxsize=8)
 def _coordinator_body(body: str) -> tuple[str, str | None]:
     match = COORDINATOR_PRELUDE.match(body)
     if not match:
@@ -5455,6 +5458,10 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False,
                     html_code_depth += 1
             elif not html_code_depth and SECURITY_MARKER_COMMENT.fullmatch(raw):
                 chunks.append(raw)
+            elif not html_code_depth:
+                markup = _html_markup_at(raw, 0, require_complete=True)
+                if markup and markup[0] == "br":
+                    chunks.append("\n" if diagnostic_comments else " ")
         elif token.get("_review_url"):
             # A visible URL cannot join text on either side into a protocol.
             # Keep a non-authoritative word barrier without scanning URL labels.
@@ -5486,6 +5493,15 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False,
     ]
     priorities.extend((match.end() - 2, match.end())
                       for match in BARE_PRIORITY_RESULT.finditer(rendered))
+    if _DEFAULT_IGNORABLE.search(rendered):
+        positions = [index for index, char in enumerate(rendered)
+                     if not _DEFAULT_IGNORABLE.fullmatch(char)]
+        normalized = "".join(rendered[index] for index in positions)
+        labels = r"(?:P[0-3]|[0-3]P)" if _BIDI_CONTROL.search(rendered) else r"P[0-3]"
+        for match in re.finditer(BARE_PRIORITY_PREFIX + "(" + labels + r")\b",
+                                 normalized, re.I | re.M):
+            start, end = match.span(1)
+            priorities.append((positions[start], positions[end - 1] + 1))
     priorities.sort()
     if _BIDI_CONTROL.search(rendered):
         priorities.extend(
@@ -5527,7 +5543,8 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False,
             # Masked code must separate neighbors rather than invent a label.
             joins_text = ((position > 0 and not rendered[position - 1].isspace())
                           or (end < len(rendered) and not rendered[end].isspace()))
-            visible.append(re.sub(r"[^\r\n]+", "CODE" if joins_text else "", chunk))
+            replacement = "CODE" if joins_text else (" " if raw_html_entities else "")
+            visible.append(re.sub(r"[^\r\n]+", replacement, chunk))
         position = end
     return "".join(visible)
 
@@ -5623,6 +5640,33 @@ def _markdown_document(text):
         return (document[0], document[1] | code_unknown, *document[2:])
 
 
+def _diagnostic_inline_markup_lines(source):
+    """Normalize only newline bytes inside actual invisible inline markup."""
+    # An inline tag may contain a physical newline without creating a
+    # Markdown block. Normalize only that invisible markup whitespace;
+    # rendered breaks and all source text retain their physical structure.
+    markup_scan = _mask_markdown_link_metadata(source)
+    diagnostic_source = list(source)
+    position = 0
+    while position < len(markup_scan):
+        start = markup_scan.find("<", position)
+        if start < 0:
+            break
+        markup = _html_markup_at(markup_scan, start, require_complete=True)
+        if markup is None:
+            position = start + 1
+            continue
+        tag, _closing, end = markup
+        if (not _backslash_escaped(markup_scan, start)
+                and (tag in HTML_INLINE_FORMATTING_TAGS
+                     or markup_scan.startswith("<!--", start))):
+            diagnostic_source[start:end] = [
+                " " if char in "\r\n" else char for char in source[start:end]
+            ]
+        position = end
+    return "".join(diagnostic_source)
+
+
 def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
     original = _actual_metadata(text)
     raw_blocks = _html_block_spans(original)
@@ -5638,7 +5682,9 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
     if raw_blocks and HTML_INLINE_CODE_OPEN.search(original):
         code_rows = _markdown_lines(_raw_html_partial_code_projection(original))
         html_lines = _markdown_lines(html_view)
-        row_starts = [0] + [match.end() for match in re.finditer("\n", original)]
+        row_starts = [0]
+        for row in _markdown_lines(original, keepends=True):
+            row_starts.append(row_starts[-1] + len(row))
         for begin, end in raw_blocks:
             for row in range(bisect_right(row_starts, begin) - 1,
                              min(bisect_left(row_starts, end), len(html_lines))):
@@ -5787,6 +5833,7 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
 
     md.before_render_hooks.append(save_source)
     if diagnostic_bare:
+        source = _diagnostic_inline_markup_lines(source)
         escaped = _markdown_escaped_punctuation(source)
         source = "".join("X" if char == "[" and escaped[index] else char
                          for index, char in enumerate(source))
@@ -5813,7 +5860,7 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
                 if task:
                     label = re.sub(r"\A[^\S\r\n]*\[[ xX]\][^\S\r\n]+", "", label)
                 if (_PRIORITY_CANDIDATE.search(label)
-                        or BARE_PRIORITY_RESULT.search(label)
+                        or re.search(r"(?im)^[^\S\r\n]*P[0-3]\b", label)
                         or any(_unicode_priority_uncertain(row)
                                for row in _markdown_lines(label))):
                     return True
@@ -6328,6 +6375,11 @@ def _details_code_masked_source(text):
         # Keep nested raw HTML blocks, including literal backticks in divs.
         clean = _without_inline_code(raw)
         def composed_priority(piece, first=first):
+            # Both a priority and the report-link label require an ASCII P.
+            # Keep entity spellings eligible before any visibility/code masks;
+            # image-only regions otherwise need no inline AST construction.
+            if not re.search(r"[pP&]", piece):
+                return piece
             original_visible = _visible_html(
                 piece, mask_attributes=True, strip_inline_markup=True,
                 mask_raw_html_text=True, preserve_markup_lines=True,
@@ -6499,6 +6551,7 @@ def _rendered_html_projection(source, *, preserve_offsets=True,
     return "".join(diagnostic)
 
 
+@lru_cache(maxsize=8)
 def _completed_clean_boundary(source, kind):
     """Locate a diagnostic clean boundary without changing source offsets."""
     boundary = None
@@ -6544,11 +6597,13 @@ def _completed_clean_boundary(source, kind):
     return boundary
 
 
-def _raw_html_partial_code_projection(source):
+def _raw_html_partial_code_projection(source, *, preserve_markup_lines=True):
     """Keep partially code-owned priorities without interpreting raw Markdown."""
+    if not preserve_markup_lines:
+        source = _diagnostic_inline_markup_lines(source)
     visible = _visible_html(
         source, mask_attributes=True, strip_inline_markup=True,
-        preserve_inline_code=True, preserve_markup_lines=True,
+        preserve_inline_code=True, preserve_markup_lines=preserve_markup_lines,
     )
     tokens = []
     position = scan = 0
@@ -6628,6 +6683,23 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
         return False
     if projection is None:
         projection = _priority_projection(text)
+    if kind == "security":
+        priority_rows = [
+            index for index, row in enumerate(_markdown_lines(projection))
+            if not INLINE_SECURITY_MARKER.fullmatch(row.strip())
+            and (_PRIORITY_CANDIDATE.search(row)
+                 or BARE_PRIORITY_RESULT.search(row)
+                 or _unicode_priority_uncertain(row))
+        ]
+        boundary = (_completed_clean_boundary(source, "security")
+                    if priority_rows else None)
+        if boundary is not None:
+            completed_row = len(_markdown_lines(source[:boundary])) - 1
+            if any(index > completed_row for index in priority_rows):
+                # Context before a clean row is not clean authority. A later
+                # unit nevertheless cannot become unambiguous security-only
+                # history and erase a potentially ordinary finding.
+                return True
     if kind == "security" and not finding and BARE_PRIORITY_RESULT.search(projection):
         return True
     if kind == "security" and not finding and "<" in source:
@@ -6642,18 +6714,23 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
             # Rendered block breaks diagnose unsupported bare ownership only.
             # They cannot establish an authoritative source result boundary.
             return True
-        if re.search(r"(?i)P", rendered) and re.search(r"[0-3]", rendered):
-            # Only physical Markdown source can establish block structure.
-            # A rendered HTML break must not manufacture a heading or list.
-            # Retain link destinations so the AST owns visible label text.
-            code_view, _unknown = _details_code_masked_source(text)
-            if _parse_markdown_document(
-                    code_view, _markdown_packages(), diagnostic_bare=True):
+        # Only physical Markdown source can establish block structure. Keep
+        # code and link ownership until the inline diagnostic has rendered
+        # candidates: an earlier masked view cannot qualify this parse.
+        code_view, _unknown = _details_code_masked_source(text)
+        if _parse_markdown_document(
+                code_view, _markdown_packages(), diagnostic_bare=True):
+            return True
+        for start, end in _html_block_spans(code_view):
+            raw_rendered = _raw_html_partial_code_projection(
+                code_view[start:end], preserve_markup_lines=False)
+            if (_PRIORITY_CANDIDATE.search(raw_rendered)
+                    or _unicode_priority_uncertain(raw_rendered)):
                 return True
     comment_rows = []
     if "<!--" in source:
         comment_rows = _markdown_lines(_visible_html(
-            source, mask_attributes=True, decode_entities=True,
+            source, mask_attributes=True,
             strip_inline_markup=True, preserve_markdown_comments=True,
         ))
     for index, row in enumerate(_markdown_lines(projection)):
@@ -6665,10 +6742,11 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
             if _empty_comment_priority_source(comment_rows[index]):
                 return True
         composed = re.sub(r"<!--[ \t\r\n]*-->", "", row)
-        if composed != row and (
+        if (composed != row and index < len(comment_rows)
+                and _empty_comment_priority_source(comment_rows[index]) and (
             _PRIORITY_CANDIDATE.search(composed)
             or _unicode_priority_uncertain(composed)
-        ):
+        )):
             # Browser-invisible empty comments are diagnostic only. They
             # cannot normalize source into definitive priority authority.
             return True
