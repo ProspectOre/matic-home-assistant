@@ -75,7 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.issue.number }}
           POLICY_REF: ${{ github.workflow_sha }}
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'db2609ae0f4bd405e268aa92313ffec977a308595d0d2eda5056ee507de2097e'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'e3fabbaed615c7c6b14cd55df90c3fc4ad8c5f32d69e16d8108727b332f6e475'
         shell: bash
         run: |
           set -euo pipefail
@@ -414,9 +414,17 @@ jobs:
                   .regular_adverse and .parser_ambiguous != true
                   and (.target_ref == $head or .target_ref == $prefix))
             ' <<< "$issue_comment_facts" >/dev/null; then
+              regular_history_description="Regular findings observed for PR #$EVENT_PR on head $current_event_head; issue-comment:$cross_head_comment_id; event:captured"
+              if (( ${#regular_history_description} > 140 )); then
+                regular_history_description="Regular findings${regular_history_description#Regular findings observed}"
+              fi
+              if (( ${#regular_history_description} > 140 )); then
+                echo "A finding-history status description exceeded GitHub's 140-character limit." >&2
+                exit 1
+              fi
               gh api "repos/$REPO/statuses/$current_event_head" --silent \
                 -f state=pending -f context=review-finding-history \
-                -f description="Regular findings observed for PR #$EVENT_PR on head $current_event_head; issue-comment:$cross_head_comment_id; event:captured" \
+                -f description="$regular_history_description" \
                 -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
             fi
             if [[ -n "$review_head" ]]; then
@@ -678,9 +686,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'e9071b03cdadc4fd806884f05f68b9c338d8d11be0160bc87301b8e4f596f632'
+          EXPECTED_SHA256: '3c4357e09b51950530a1ba072cffdba0f0215b59aa3552b3ca76283ff3fce562'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: 'db2609ae0f4bd405e268aa92313ffec977a308595d0d2eda5056ee507de2097e'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'e3fabbaed615c7c6b14cd55df90c3fc4ad8c5f32d69e16d8108727b332f6e475'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '372a2f5289eaccbbc1983821c91bc18a9b8b5c0d02ffc0c5f7b367c601f6b077'
         shell: bash
         run: |

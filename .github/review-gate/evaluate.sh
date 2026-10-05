@@ -262,6 +262,11 @@ stamp_status_for_sha() {
   local context="$2"
   local state="$3"
   local description="$4"
+  if [[ "$context" == review-finding-history && "$state" == pending \
+        && "$description" == "Regular findings observed for PR #"* ]] \
+      && (( ${#description} > 140 )); then
+    description="Regular findings${description#Regular findings observed}"
+  fi
   # GitHub commit-status descriptions are limited to 140 characters. History
   # records must fail closed rather than truncating the head or origin marker.
   if (( ${#description} > 140 )); then

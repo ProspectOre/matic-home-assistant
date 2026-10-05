@@ -2452,9 +2452,14 @@ SECURITY_MARKER_COMMENT = re.compile(
     r"(?is)<!--[ \t]*codex-security-review-finding:v1[ \t]*-->"
 )
 HTML_COMMENT_END = re.compile(r"--!?>")
+HTML_INLINE_CODE_TAGS = frozenset({"code", "kbd", "samp"})
+HTML_INLINE_CODE_OPEN = re.compile(r"<(?:code|kbd|samp)(?:[ \t/>]|$)", re.I)
+HTML_INLINE_CODE_TAG = re.compile(r"<(/?)(?:code|kbd|samp)(?:\s[^>]*)?>", re.I)
 HTML_CODE_CONTAINER_TAGS = frozenset(
     {
         "code",
+        "kbd",
+        "samp",
         "iframe",
         "noembed",
         "noframes",
@@ -4528,7 +4533,7 @@ def _visible_html(
                 unsupported_counts[-1]
                 + (
                     token[2] not in {"comment", "code-open", "code-close"}
-                    or (token[2] != "comment" and token[4] != "code")
+                    or (token[2] != "comment" and token[4] not in HTML_INLINE_CODE_TAGS)
                 )
             )
         pending_codes = []
@@ -4540,7 +4545,7 @@ def _visible_html(
                 for position in range(len(pending_codes) - 1, -1, -1):
                     opening, source_start, opened_tag = pending_codes[position]
                     if opened_tag == tag:
-                        if tag == "code" and (
+                        if tag in HTML_INLINE_CODE_TAGS and (
                             bisect_left(line_breaks, end)
                             == bisect_left(line_breaks, source_start)
                             and unsupported_counts[index]
@@ -5404,7 +5409,7 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
             kind == "codespan"
             or (
                 kind == "inline_html"
-                and re.match(r"<code(?:[ \t/>]|$)", token.get("raw", ""), re.I)
+                and HTML_INLINE_CODE_OPEN.match(token.get("raw", ""))
             )
         ):
             break
@@ -5437,7 +5442,7 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
             chunks.append("\n")
         elif kind == "inline_html":
             raw = token.get("raw", "")
-            code_tag = re.fullmatch(r"<(/?)code(?:\s[^>]*)?>", raw, re.I)
+            code_tag = HTML_INLINE_CODE_TAG.fullmatch(raw)
             if code_tag:
                 if code_tag.group(1):
                     html_code_depth = max(0, html_code_depth - 1)
@@ -5467,6 +5472,9 @@ def _markdown_text(tokens, *, block_markers=False, before_code=False):
     priorities = [
         (match.start(), match.end()) for match in _PRIORITY_CANDIDATE.finditer(rendered)
     ]
+    priorities.extend((match.end() - 2, match.end())
+                      for match in BARE_PRIORITY_RESULT.finditer(rendered))
+    priorities.sort()
     if _BIDI_CONTROL.search(rendered):
         priorities.extend(
             (match.start(), match.end())
@@ -5572,7 +5580,7 @@ def _rendered_report_link(tokens, *, literal_only=False):
             raise MarkdownBoundaryError("Markdown link budget exceeded")
         kind = token.get("type")
         if kind == "inline_html":
-            tag = re.fullmatch(r"<(/?)code(?:\s[^>]*)?>", token.get("raw", ""), re.I)
+            tag = HTML_INLINE_CODE_TAG.fullmatch(token.get("raw", ""))
             if tag:
                 code_depth = max(0, code_depth - 1) if tag.group(1) else code_depth + 1
         if (kind == "link" and not code_depth and not token.get("_review_url")
@@ -5597,7 +5605,7 @@ def _markdown_document(text):
         return (document[0], document[1] | code_unknown, *document[2:])
 
 
-def _parse_markdown_document(text, mistune):
+def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
     original = _actual_metadata(text)
     raw_blocks = _html_block_spans(original)
     # HTML visibility and source authority remain separate from Markdown.
@@ -5755,6 +5763,29 @@ def _parse_markdown_document(text, mistune):
         tokens, _state = md.parse(source)
     except (RecursionError, RuntimeError, IndexError) as exc:
         raise MarkdownBoundaryError("Structured Markdown parsing failed") from exc
+    if diagnostic_bare:
+        # Inspect each actual rendered leaf independently. Container syntax
+        # cannot hide a bare label, and neighboring cells cannot compose one.
+        pending = list(tokens)
+        visited = 0
+        while pending:
+            token = pending.pop()
+            visited += 1
+            if visited > 65536:
+                raise MarkdownBoundaryError("Markdown node budget exceeded")
+            if token.get("type") in ("paragraph", "block_text", "table_cell"):
+                label = _markdown_text(token.get("children", ()))
+                task = re.match(r"\A[ \t]*\[[ xX]\][ \t]+",
+                                token.get("_review_source", ""))
+                if task:
+                    label = re.sub(r"\A[^\S\r\n]*\[[ xX]\][^\S\r\n]+", "", label)
+                if (BARE_PRIORITY_RESULT.search(label)
+                        or any(_unicode_priority_uncertain(row)
+                               for row in _markdown_lines(label))):
+                    return True
+            elif token.get("type") not in ("block_code", "block_html", "codespan"):
+                pending.extend(token.get("children", ()))
+        return False
     container_rows = set()
     container_boundaries = {}
     heading_nodes = []
@@ -5971,7 +6002,7 @@ def _parse_markdown_document(text, mistune):
                 child = pending.pop()
                 if child.get("type") == "codespan" or (
                     child.get("type") == "inline_html"
-                    and re.match(r"<code(?:[ \t/>]|$)", child.get("raw", ""), re.I)
+                    and HTML_INLINE_CODE_OPEN.match(child.get("raw", ""))
                 ):
                     code_heading = True
                 pending.extend(child.get("children", ()))
@@ -6374,7 +6405,8 @@ def _security_details_priority_uncertain(text):
     return unowned_priority(raw_body, visible_body)
 
 
-def _rendered_html_projection(source, *, preserve_offsets=True):
+def _rendered_html_projection(source, *, preserve_offsets=True,
+                              collapse_html_whitespace=False):
     """Project explicit rendered block breaks without changing source offsets."""
     # A completed clean result may follow context or an earlier harmless
     # block. Keep source offsets and inspect only raw blocks after that row.
@@ -6391,6 +6423,12 @@ def _rendered_html_projection(source, *, preserve_offsets=True):
         lambda match: re.sub(r"[^\r\n]", " ", match.group()), visible_source
     )
     diagnostic = list(visible_source)
+    # Physical newlines inside raw HTML render as collapsible whitespace.
+    # Keep their offsets while explicit block tags below supply rendered rows.
+    for start, end in (_html_block_spans(source) if collapse_html_whitespace else ()):
+        diagnostic[start:end] = [
+            " " if char in "\r\n" else char for char in diagnostic[start:end]
+        ]
     invisible_spans = []
     position = 0
     while position < len(source):
@@ -6424,20 +6462,25 @@ def _rendered_html_projection(source, *, preserve_offsets=True):
 def _completed_clean_boundary(source, kind):
     """Locate a diagnostic clean boundary without changing source offsets."""
     boundary = None
-    offset = 0
     predicate = (_standalone_regular_clean if kind == "regular"
                  else _standalone_security_clean)
-    for row in _markdown_lines(_rendered_html_projection(source), keepends=True):
-        offset += len(row)
-        visible_row = (_visible_html(
-            row, mask_attributes=True, decode_entities=True,
-            strip_inline_markup=True) if "<" in row or "&" in row else row)
-        visible_row = re.sub(r"[ \t\r\n\f]+", " ", visible_row).strip()
-        if predicate(visible_row):
-            # Hidden trailing markup may contain a same-line marker. Locate
-            # the visible clean suffix using the unchanged source projection.
-            boundary = offset - len(row) + len(row.rstrip())
-            break
+    # Retain conservative physical-row diagnostics as well as actual raw-HTML
+    # whitespace collapse. Neither projection supplies source result authority.
+    for collapse in (False, True):
+        offset = 0
+        for row in _markdown_lines(_rendered_html_projection(
+                source, collapse_html_whitespace=collapse), keepends=True):
+            offset += len(row)
+            visible_row = (_visible_html(
+                row, mask_attributes=True, decode_entities=True,
+                strip_inline_markup=True) if "<" in row or "&" in row else row)
+            visible_row = re.sub(r"[ \t\r\n\f]+", " ", visible_row).strip()
+            if predicate(visible_row):
+                # Hidden trailing markup may contain a same-line marker. Locate
+                # the visible clean suffix using the unchanged source offsets.
+                found = offset - len(row) + len(row.rstrip())
+                boundary = found if boundary is None else min(boundary, found)
+                break
     return boundary
 
 
@@ -6491,6 +6534,8 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
         return False
     if projection is None:
         projection = _priority_projection(text)
+    if kind == "security" and not finding and BARE_PRIORITY_RESULT.search(projection):
+        return True
     if kind == "security" and not finding and "<" in source:
         rendered = _visible_html(
             _rendered_html_projection(source, preserve_offsets=False),
@@ -6503,6 +6548,13 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
             # Rendered block breaks diagnose unsupported bare ownership only.
             # They cannot establish an authoritative source result boundary.
             return True
+        if re.search(r"(?i)P[0-3]\b", _DEFAULT_IGNORABLE.sub("", rendered)):
+            # The offset-free view is uncertainty-only. Parse actual Markdown
+            # leaves rather than stripping quote/list/table syntax globally.
+            code_view, _unknown = _details_code_masked_source(rendered)
+            if _parse_markdown_document(
+                    code_view, _markdown_packages(), diagnostic_bare=True):
+                return True
     comment_rows = []
     if "<!--" in source:
         comment_rows = _markdown_lines(_visible_html(
@@ -6547,15 +6599,15 @@ def _nested_regular_marker_uncertain(kind, text):
     source = _without_inline_code(_actual_metadata(
         _mask_backslash_escaped_container_tags(text)
     ))
-    visible = _visible_html(source, preserve_markup_lines=True)
+    visible = _visible_html(source, preserve_source_offsets=True)
     if not SECURITY_MARKER_COMMENT.search(visible):
         return False
-    # Track actual complete tags once. Earlier balanced heading markup cannot
-    # stand in for the later marker's container; attribute text is not markup.
-    stack = []
-    counts = Counter()
+    boundary = _completed_clean_boundary(source, "regular")
+    if boundary is None:
+        return False
+    # Inspect actual complete tags once; attribute text is not markup. A
+    # visible marker after a rendered clean row needs no enclosing element.
     position = 0
-    marker_start = None
     while position < len(source):
         start = source.find("<", position)
         if start < 0:
@@ -6564,26 +6616,15 @@ def _nested_regular_marker_uncertain(kind, text):
         if markup is None:
             position = start + 1
             continue
-        tag, closing, end = markup
+        tag, _closing, end = markup
         if not tag:
-            if stack and SECURITY_MARKER_COMMENT.fullmatch(source[start:end]):
-                marker_start = start
-                break
-        elif (tag not in HTML_VOID_TAGS
-              and not source[start:end].rstrip().endswith("/>")):
-            if closing and counts[tag]:
-                while stack:
-                    prior_tag = stack.pop()
-                    counts[prior_tag] -= 1
-                    if prior_tag == tag:
-                        break
-            elif not closing:
-                stack.append(tag)
-                counts[tag] += 1
+            if (SECURITY_MARKER_COMMENT.fullmatch(source[start:end])
+                    and start >= boundary
+                    and not _backslash_escaped(source, start)
+                    and visible[start:end] == source[start:end]):
+                return True
         position = end
-    boundary = _completed_clean_boundary(source, "regular")
-    return (marker_start is not None and boundary is not None
-            and marker_start >= boundary)
+    return False
 
 
 def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool, bool]:
@@ -6738,7 +6779,8 @@ def _html_visibility_ambiguous(body: str) -> bool:
         # retaining rawdata; use the existing source scanner before parsing.
         return True
     safe = frozenset(
-        "div span details summary pre code a b strong em i u s sub sup br hr".split()
+        "div span details summary pre code kbd samp "
+        "a b strong em i u s sub sup br hr".split()
     )
     formatting = frozenset("a b strong em i u s".split())
     blocks = frozenset("div details summary pre hr".split())
