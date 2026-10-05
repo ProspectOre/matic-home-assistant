@@ -222,14 +222,18 @@ jobs:
             echo "Review-gate rollout cleanup did not complete successfully." >&2
             exit 1
           fi
-          if ! repository_policy="$(gh api "repos/$REPO")"; then
+          # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
+          if ! repository_policy="$(gh api graphql \
+            -f query='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { autoMergeAllowed } }' \
+            -f owner="${REPO%%/*}" -f name="${REPO#*/}")"; then
             echo "Repository auto-merge: UNVERIFIED (repository read failed)." >&2
             exit 1
           fi
           if ! auto_merge_state="$(jq -r '
             if type != "object" then "UNVERIFIED"
-            elif (.allow_auto_merge | type) != "boolean" then "UNVERIFIED"
-            elif .allow_auto_merge then "ENABLED" else "DISABLED" end
+            elif (.errors != null and .errors != []) then "UNVERIFIED"
+            elif (.data.repository.autoMergeAllowed | type) != "boolean" then "UNVERIFIED"
+            elif .data.repository.autoMergeAllowed then "ENABLED" else "DISABLED" end
           ' <<< "$repository_policy")"; then
             echo "Repository auto-merge: UNVERIFIED (invalid repository response)." >&2
             exit 1
