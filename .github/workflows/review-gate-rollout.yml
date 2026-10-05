@@ -15,6 +15,9 @@ on:
       - .github/workflows/review-gate-audit.yml
       - .github/workflows/review-gate-rollout.yml
       - .github/review-gate/**
+  pull_request:
+    paths:
+      - .github/workflows/review-gate-rollout.yml
   workflow_dispatch:
 
 permissions:
@@ -24,6 +27,7 @@ permissions:
 
 jobs:
   discover:
+    if: ${{ github.event_name != 'pull_request' }}
     name: discover-open-prs
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     outputs:
@@ -50,6 +54,7 @@ jobs:
           echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
 
   cancel-legacy-auto-merge-runs:
+    if: ${{ github.event_name != 'pull_request' }}
     name: cancel-legacy-auto-merge-runs
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
@@ -86,7 +91,7 @@ jobs:
   disarm-open-prs:
     name: disarm-open-prs (${{ matrix.pr_number }})
     needs: [discover, cancel-legacy-auto-merge-runs]
-    if: ${{ always() && needs.discover.outputs.count != '0' }}
+    if: ${{ always() && github.event_name != 'pull_request' && needs.discover.outputs.count != '0' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
@@ -194,27 +199,47 @@ jobs:
             -f pull_request="$PR_NUMBER"
 
   verify-repository-policy:
+    permissions:
+      contents: read
     name: verify-repository-auto-merge-disabled
     needs: [discover, cancel-legacy-auto-merge-runs, disarm-open-prs]
     if: always()
-    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Verify cleanup completed and repository auto-merge is disabled
         env:
           CANCEL_RESULT: ${{ needs.cancel-legacy-auto-merge-runs.result }}
           DISARM_RESULT: ${{ needs.disarm-open-prs.result }}
           DISCOVER_RESULT: ${{ needs.discover.result }}
+          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [[ "$DISCOVER_RESULT" != "success" \
+          if [[ "$EVENT_NAME" != "pull_request" ]] && [[ "$DISCOVER_RESULT" != "success" \
             || "$CANCEL_RESULT" != "success" \
             || ( "$DISARM_RESULT" != "success" && "$DISARM_RESULT" != "skipped" ) ]]; then
             echo "Review-gate rollout cleanup did not complete successfully." >&2
             exit 1
           fi
-          if [[ "$(gh api "repos/$REPO" --jq '.allow_auto_merge')" != "false" ]]; then
-            echo "Repository auto-merge must be disabled for the manual review gate." >&2
+          if ! repository_policy="$(gh api "repos/$REPO")"; then
+            echo "Repository auto-merge: UNVERIFIED (repository read failed)." >&2
             exit 1
           fi
+          if ! auto_merge_state="$(jq -r '
+            if type != "object" then "UNVERIFIED"
+            elif (.allow_auto_merge | type) != "boolean" then "UNVERIFIED"
+            elif .allow_auto_merge then "ENABLED" else "DISABLED" end
+          ' <<< "$repository_policy")"; then
+            echo "Repository auto-merge: UNVERIFIED (invalid repository response)." >&2
+            exit 1
+          fi
+          case "$auto_merge_state" in
+            DISABLED) echo "Repository auto-merge: DISABLED." ;;
+            ENABLED)
+              echo "Repository auto-merge: ENABLED; manual review requires disabled." >&2
+              exit 1 ;;
+            *)
+              echo "Repository auto-merge: UNVERIFIED (missing or non-boolean setting)." >&2
+              exit 1 ;;
+          esac

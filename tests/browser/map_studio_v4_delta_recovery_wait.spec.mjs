@@ -1,6 +1,13 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
+async function pauseRecoveryClock(page) {
+  const anchor = new Date("2026-09-30T12:00:00Z");
+  // Installed time advances between calls; pause before loading the harness.
+  await page.clock.install({ time: new Date(anchor.getTime() - 60_000) });
+  await page.clock.pauseAt(anchor);
+}
+
 async function loadRecoveryHarness(page) {
   const bundle = await build({
     stdin: {
@@ -173,9 +180,7 @@ async function startRecovery(page, failure = null) {
 }
 
 test("@safety delta recovery waits for the replacement long-poll result and treats delayed 204 as success", async ({ page }) => {
-  const anchor = new Date("2026-09-30T12:00:00Z");
-  await page.clock.install({ time: anchor });
-  await page.clock.pauseAt(anchor);
+  await pauseRecoveryClock(page);
   await loadRecoveryHarness(page);
   await startRecovery(page);
 
@@ -265,9 +270,7 @@ test("@safety delta recovery waits for the replacement long-poll result and trea
 
 for (const boundary of ["floor", "entry", "dispose"]) {
   test(`@safety a ${boundary} change cancels a recovery waiting on its replacement delta`, async ({ page }) => {
-    const anchor = new Date("2026-09-30T12:00:00Z");
-    await page.clock.install({ time: anchor });
-    await page.clock.pauseAt(anchor);
+    await pauseRecoveryClock(page);
     await loadRecoveryHarness(page);
     await startRecovery(page);
     const before = await page.evaluate(() => ({
@@ -316,9 +319,7 @@ for (const boundary of ["floor", "entry", "dispose"]) {
 }
 
 test("@safety a pose mismatch during replacement delta recovery releases the waiter for one cooldown retry", async ({ page }) => {
-  const anchor = new Date("2026-09-30T12:00:00Z");
-  await page.clock.install({ time: anchor });
-  await page.clock.pauseAt(anchor);
+  await pauseRecoveryClock(page);
   await loadRecoveryHarness(page);
   await startRecovery(page);
 
@@ -374,9 +375,7 @@ test("@safety a pose mismatch during replacement delta recovery releases the wai
 });
 
 test("@safety terminal recovery reads and a failed replacement delta release the waiter for one cooldown retry", async ({ page }) => {
-  const anchor = new Date("2026-09-30T12:00:00Z");
-  await page.clock.install({ time: anchor });
-  await page.clock.pauseAt(anchor);
+  await pauseRecoveryClock(page);
   await loadRecoveryHarness(page);
   const outcomes = [];
   for (const failure of ["catalog", "scene", "delta"]) {
