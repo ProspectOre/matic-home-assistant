@@ -1140,8 +1140,12 @@ export class EffectController {
           this.#catalogRefreshQueued = true;
         }
         if (spatialRecoveryOwner) {
+          if (!this.#catalogRefreshQueued) {
+            this.#catalogRefreshQueuedPreserveGeneration = preserveGeneration;
+          } else {
+            this.#catalogRefreshQueuedPreserveGeneration &&= preserveGeneration;
+          }
           this.#catalogRefreshQueuedSpatialRecoveryOwner = spatialRecoveryOwner;
-          this.#catalogRefreshQueuedPreserveGeneration = false;
           this.#catalogRefreshQueued = true;
         }
       }

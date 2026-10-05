@@ -138,9 +138,11 @@ jobs:
 
           active_gate_runs() {
             gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \
-              | jq -r --argjson pr "$PR_NUMBER" --arg run_name "review-gate #$PR_NUMBER" '.[] | .workflow_runs[]?
+              | jq -r --argjson pr "$PR_NUMBER" --arg run_name "review-gate #$PR_NUMBER" --arg policy_title_prefix "Review gate PR #$PR_NUMBER | policy-workflow-sha=" --arg human_title_prefix "Review gate PR #$PR_NUMBER | review-origin=authorized-human-review-v1 | policy-workflow-sha=" '.[] | .workflow_runs[]?
                   | select(.status != "completed")
-                  | select(any(.pull_requests[]?; .number == $pr) or .display_title == $run_name)
+                  | select(any(.pull_requests[]?; .number == $pr) or .display_title == $run_name
+                      or ((.display_title // "") | startswith($policy_title_prefix))
+                      or ((.display_title // "") | startswith($human_title_prefix)))
                   | .id'
           }
 
