@@ -2005,9 +2005,10 @@ SECURITY_HEADING = re.compile(
     re.IGNORECASE,
 )
 PRIORITY_RESULT = re.compile(r"\A[^\S\r\n]*\[P[0-3]\](?:[^\S\r\n]|$)", re.I)
-BARE_PRIORITY_RESULT = re.compile(
-    r"^[ \t]*(?:[-+*][ \t]+|[0-9]+[.)][ \t]+)?P[0-3]\b", re.I | re.M
+BARE_PRIORITY_PREFIX = (
+    r"^[ \t]*(?:(?:[-+*]|[0-9]+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?"
 )
+BARE_PRIORITY_RESULT = re.compile(BARE_PRIORITY_PREFIX + r"P[0-3]\b", re.I | re.M)
 
 # Unicode 17.0.0 DerivedCoreProperties.txt: Default_Ignorable_Code_Point.
 # https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
@@ -2048,6 +2049,9 @@ _BIDI_PRIORITY_CANDIDATE = re.compile(
 
 
 def _unicode_priority_uncertain(row):
+    # A rendered checkbox may decorate an otherwise bare diagnostic label.
+    # This projection supplies uncertainty only, never validated ownership.
+    row = re.sub(r"\A[ \t]*\[[ xX]\][ \t]+", "", row)
     if not _DEFAULT_IGNORABLE.search(row):
         return False
     # Logical order cannot establish rendered order in a bidi-controlled row.
@@ -2056,8 +2060,9 @@ def _unicode_priority_uncertain(row):
         return True
     normalized = _DEFAULT_IGNORABLE.sub("", row)
     if _BIDI_CONTROL.search(row) and re.match(
-        r"(?i)\A[ \t]*(?:[-+*][ \t]+|[0-9]+[.)][ \t]+)?(?:P[0-3]|[0-3]P)\b",
+        BARE_PRIORITY_PREFIX + r"(?:P[0-3]|[0-3]P)\b",
         normalized,
+        re.I,
     ):
         return True
     if any(
@@ -5762,7 +5767,8 @@ def _parse_markdown_document(text, mistune):
             visible = _markdown_text(md.inline(composed, _state.env))
             if (_PRIORITY_CANDIDATE.search(visible)
                     or (BARE_PRIORITY_RESULT.match(composed)
-                        and BARE_PRIORITY_RESULT.match(visible))):
+                        and BARE_PRIORITY_RESULT.match(re.sub(
+                            r"\A[ \t]*\[[ xX]\][ \t]+", "", visible)))):
                 uncertain.add(index)
 
     def mapped_container(token, next_start):
@@ -5915,6 +5921,13 @@ def _parse_markdown_document(text, mistune):
                             marked and count_priorities != 1,
                         )
                     )
+                elif (kind == "list" and source_task and rendered_task
+                      and re.match(r"(?i)\A[ \t]*P[0-3]\b", priority_label)):
+                    # Only the source-validated checkbox may decorate a bare
+                    # security label. Preserve ordinary bracket ownership.
+                    if actual_marker:
+                        return None
+                    finding_units.append((first + offset, priority_label, False, False))
                 elif actual_marker and SECURITY_MARKER.fullmatch(
                     priority_label.strip()
                 ):
@@ -6361,18 +6374,22 @@ def _security_details_priority_uncertain(text):
     return unowned_priority(raw_body, visible_body)
 
 
-def _completed_clean_boundary(source, kind):
-    """Locate a diagnostic clean boundary without changing source offsets."""
+def _rendered_html_projection(source):
+    """Project explicit rendered block breaks without changing source offsets."""
     # A completed clean result may follow context or an earlier harmless
     # block. Keep source offsets and inspect only raw blocks after that row.
     visible_source = _visible_html(
         source, mask_attributes=True,
+        strip_inline_markup=True,
         preserve_source_offsets=True,
     )
     if len(visible_source) != len(source):
         raise MarkdownSourceMapError("Clean boundary lost source offsets")
     # Block elements render separately even on one physical line. Reuse the
     # complete-tag scanner and visible mask, retaining every source offset.
+    visible_source = SECURITY_MARKER_COMMENT.sub(
+        lambda match: re.sub(r"[^\r\n]", " ", match.group()), visible_source
+    )
     diagnostic = list(visible_source)
     position = 0
     while position < len(source):
@@ -6388,17 +6405,24 @@ def _completed_clean_boundary(source, kind):
                 and not _backslash_escaped(source, start)):
             diagnostic[start:end] = ["\n"] + [" "] * (end - start - 1)
         position = end
+    return "".join(diagnostic)
+
+
+def _completed_clean_boundary(source, kind):
+    """Locate a diagnostic clean boundary without changing source offsets."""
     boundary = None
     offset = 0
     predicate = (_standalone_regular_clean if kind == "regular"
                  else _standalone_security_clean)
-    for row in _markdown_lines("".join(diagnostic), keepends=True):
+    for row in _markdown_lines(_rendered_html_projection(source), keepends=True):
         offset += len(row)
         visible_row = (_visible_html(
-            row, mask_attributes=True, strip_inline_markup=True)
-                       if "<" in row else row)
+            row, mask_attributes=True, decode_entities=True,
+            strip_inline_markup=True) if "<" in row or "&" in row else row)
         if predicate(visible_row):
-            boundary = offset
+            # Hidden trailing markup may contain a same-line marker. Locate
+            # the visible clean suffix using the unchanged source projection.
+            boundary = offset - len(row) + len(row.rstrip())
             break
     return boundary
 
@@ -6453,6 +6477,17 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
         return False
     if projection is None:
         projection = _priority_projection(text)
+    if kind == "security" and not finding and "<" in source:
+        rendered = _visible_html(
+            _rendered_html_projection(source), markdown_preprocessed=True,
+            decode_entities=True,
+        )
+        if (BARE_PRIORITY_RESULT.search(rendered)
+                or any(_unicode_priority_uncertain(row)
+                       for row in _markdown_lines(rendered))):
+            # Rendered block breaks diagnose unsupported bare ownership only.
+            # They cannot establish an authoritative source result boundary.
+            return True
     comment_rows = []
     if "<!--" in source:
         comment_rows = _markdown_lines(_visible_html(
