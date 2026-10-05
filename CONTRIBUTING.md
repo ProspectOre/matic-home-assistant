@@ -20,8 +20,10 @@ python -m venv .venv
 .venv/bin/python scripts/check_public_tree.py
 ```
 
-For Map Studio changes, run `npm ci`, `npm run build:map-studio-v4`, and
-`npm run test:browser`. Commit the rebuilt bundle with its source.
+For Map Studio changes, use Node.js 24, matching CI. Run `npm ci` in the
+checkout, then `npm run build:map-studio-v4` and `npm run test:browser`.
+Do not share a symlinked `node_modules` directory across worktrees; module
+resolution can change the generated chunks. Commit the rebuilt bundle with its source.
 
 Python 3.14's unparenthesized multiple exception types are intentional project
 style. Keep runtime traffic local and use Home Assistant's asynchronous APIs.
