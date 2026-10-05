@@ -54,6 +54,14 @@ CLEAN_COMMENT_CAPTURE_LOG_LINE = re.compile(
 )
 
 
+def workflow_run_path_matches(value, workflow_file, default_branch):
+    """Accept only the bare path or its trusted default-branch qualifier."""
+    expected = f".github/workflows/{workflow_file}"
+    return bool(default_branch) and value in (
+        expected, expected + "@" + default_branch
+    )
+
+
 def validate_run_actor(actor, label):
     """Require GitHub's server-attested account identity on a workflow run."""
     if (
@@ -630,7 +638,9 @@ def authenticated_clean_comment_statuses(
                         and run.get("run_attempt") == attempt
                         and run.get("workflow_id") == workflow_id
                         and run.get("event") == "issue_comment"
-                        and run.get("path") == workflow_path
+                        and workflow_run_path_matches(
+                            run.get("path"), workflow_file, default_branch
+                        )
                         and run.get("head_branch") == default_branch
                         and (run.get("head_repository") or {}).get("full_name") == repo
                         and isinstance(run.get("head_sha"), str)
@@ -909,7 +919,9 @@ def trusted_native_attempt(
         and record.get("run_attempt") == attempt
         and record.get("workflow_id") == workflow_id
         and record.get("event") == "issue_comment"
-        and record.get("path") == f".github/workflows/{workflow_file}"
+        and workflow_run_path_matches(
+            record.get("path"), workflow_file, default_branch
+        )
         and record.get("head_branch") == default_branch
         and (record.get("head_repository") or {}).get("full_name") == repo
         and record.get("head_sha") == source_head
@@ -951,9 +963,11 @@ def native_capture_proof(repo, head, number, run_id, workflow_id, workflow_file=
         or run.get("id") != run_id
         or run.get("workflow_id") != workflow_id
         or run.get("event") != "issue_comment"
-        or run.get("path") != f".github/workflows/{workflow_file}"
         or not isinstance(repository, dict)
         or not isinstance(repository.get("default_branch"), str)
+        or not workflow_run_path_matches(
+            run.get("path"), workflow_file, repository["default_branch"]
+        )
         or run.get("head_branch") != repository["default_branch"]
         or (run.get("head_repository") or {}).get("full_name") != repo
         or not isinstance(run.get("head_sha"), str)

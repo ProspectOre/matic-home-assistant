@@ -2005,6 +2005,9 @@ SECURITY_HEADING = re.compile(
     re.IGNORECASE,
 )
 PRIORITY_RESULT = re.compile(r"\A[^\S\r\n]*\[P[0-3]\](?:[^\S\r\n]|$)", re.I)
+BARE_PRIORITY_RESULT = re.compile(
+    r"^[ \t]*(?:[-+*][ \t]+|[0-9]+[.)][ \t]+)?P[0-3]\b", re.I | re.M
+)
 
 # Unicode 17.0.0 DerivedCoreProperties.txt: Default_Ignorable_Code_Point.
 # https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt
@@ -2051,14 +2054,21 @@ def _unicode_priority_uncertain(row):
     # Retain only uncertainty from a priority-like signature, never a finding.
     if _BIDI_CONTROL.search(row) and _BIDI_PRIORITY_CANDIDATE.search(row):
         return True
+    normalized = _DEFAULT_IGNORABLE.sub("", row)
+    if _BIDI_CONTROL.search(row) and re.match(
+        r"(?i)\A[ \t]*(?:[-+*][ \t]+|[0-9]+[.)][ \t]+)?(?:P[0-3]|[0-3]P)\b",
+        normalized,
+    ):
+        return True
     if any(
         _DEFAULT_IGNORABLE.search(match.group())
         for match in _PRIORITY_CANDIDATE.finditer(row)
     ):
         return True
     return bool(
-        PRIORITY_RESULT.match(_DEFAULT_IGNORABLE.sub("", row))
-        and not PRIORITY_RESULT.match(row)
+        (PRIORITY_RESULT.match(normalized) and not PRIORITY_RESULT.match(row))
+        or (BARE_PRIORITY_RESULT.match(normalized)
+            and not BARE_PRIORITY_RESULT.match(row))
     )
 
 
@@ -3923,6 +3933,7 @@ def _visible_html(
     preserve_markdown_comments: bool = False,
     preserve_inline_code: bool = False,
     preserve_inline_markup: bool = False,
+    preserve_source_offsets: bool = False,
 ) -> str:
     """Mask only container spans, preserving visible prefixes and suffixes."""
     metadata = text if markdown_preprocessed else _actual_metadata(text)
@@ -4677,6 +4688,7 @@ def _visible_html(
         if start < position:
             continue
         chunks.append(visible_text(position, start))
+        remove_markup = remove_markup and not preserve_source_offsets
         replacement = "" if remove_markup else " "
         masked = re.sub(r"[^\r\n]", replacement, text[start:end])
         if remove_markup and preserve_markup_lines:
@@ -5526,6 +5538,12 @@ def _leading_link_priority(tokens, label, offset=0):
 
 
 def _empty_comment_priority_source(source):
+    composed = re.sub(r"<!--[ \t]*-->", "", source)
+    if composed != source and BARE_PRIORITY_RESULT.match(composed) and any(
+        not _backslash_escaped(source, match.start())
+        for match in re.finditer(r"<!--[ \t]*-->", source)
+    ):
+        return True
     for fragment in re.finditer(
         r"\[(?:[P0-3]|" + _DEFAULT_IGNORABLE_CLASS + r"|<!--[ \t]*-->)+\]",
         source, re.I,
@@ -5742,7 +5760,9 @@ def _parse_markdown_document(text, mistune):
         if "<!--" in line and _empty_comment_priority_source(line):
             composed = re.sub(r"<!--[ \t]*-->", "", line)
             visible = _markdown_text(md.inline(composed, _state.env))
-            if _PRIORITY_CANDIDATE.search(visible):
+            if (_PRIORITY_CANDIDATE.search(visible)
+                    or (BARE_PRIORITY_RESULT.match(composed)
+                        and BARE_PRIORITY_RESULT.match(visible))):
                 uncertain.add(index)
 
     def mapped_container(token, next_start):
@@ -6341,6 +6361,48 @@ def _security_details_priority_uncertain(text):
     return unowned_priority(raw_body, visible_body)
 
 
+def _completed_clean_boundary(source, kind):
+    """Locate a diagnostic clean boundary without changing source offsets."""
+    # A completed clean result may follow context or an earlier harmless
+    # block. Keep source offsets and inspect only raw blocks after that row.
+    visible_source = _visible_html(
+        source, mask_attributes=True,
+        preserve_source_offsets=True,
+    )
+    if len(visible_source) != len(source):
+        raise MarkdownSourceMapError("Clean boundary lost source offsets")
+    # Block elements render separately even on one physical line. Reuse the
+    # complete-tag scanner and visible mask, retaining every source offset.
+    diagnostic = list(visible_source)
+    position = 0
+    while position < len(source):
+        start = source.find("<", position)
+        if start < 0:
+            break
+        markup = _html_markup_at(source, start, require_complete=True)
+        if markup is None:
+            position = start + 1
+            continue
+        tag, _closing, end = markup
+        if ((tag in HTML_BLOCK_TAGS or tag == "br")
+                and not _backslash_escaped(source, start)):
+            diagnostic[start:end] = ["\n"] + [" "] * (end - start - 1)
+        position = end
+    boundary = None
+    offset = 0
+    predicate = (_standalone_regular_clean if kind == "regular"
+                 else _standalone_security_clean)
+    for row in _markdown_lines("".join(diagnostic), keepends=True):
+        offset += len(row)
+        visible_row = (_visible_html(
+            row, mask_attributes=True, strip_inline_markup=True)
+                       if "<" in row else row)
+        if predicate(visible_row):
+            boundary = offset
+            break
+    return boundary
+
+
 @lru_cache(maxsize=8)
 def _security_raw_block_priority_uncertain(text):
     """Keep unowned raw HTML priorities after a completed clean result pending."""
@@ -6348,21 +6410,7 @@ def _security_raw_block_priority_uncertain(text):
     blocks = _html_block_spans(source)
     if not blocks:
         return False
-    # A completed clean result may follow context or an earlier harmless
-    # block. Keep source offsets and inspect only raw blocks after that row.
-    visible_source = _visible_html(
-        source, mask_attributes=True, strip_inline_markup=True,
-        preserve_markup_lines=True,
-    )
-    source_rows = _markdown_lines(source, keepends=True)
-    visible_rows = _markdown_lines(visible_source)
-    boundary = None
-    offset = 0
-    for index, row in enumerate(source_rows):
-        offset += len(row)
-        if index < len(visible_rows) and _standalone_security_clean(visible_rows[index]):
-            boundary = offset
-            break
+    boundary = _completed_clean_boundary(source, "security")
     if boundary is None:
         return False
     # Details bodies and summaries can contain real Markdown code spans.
@@ -6457,7 +6505,7 @@ def _nested_regular_marker_uncertain(kind, text):
     stack = []
     counts = Counter()
     position = 0
-    opening = None
+    marker_start = None
     while position < len(source):
         start = source.find("<", position)
         if start < 0:
@@ -6469,23 +6517,23 @@ def _nested_regular_marker_uncertain(kind, text):
         tag, closing, end = markup
         if not tag:
             if stack and SECURITY_MARKER_COMMENT.fullmatch(source[start:end]):
-                opening = stack[0][1]
+                marker_start = start
                 break
-        elif tag not in HTML_VOID_TAGS and not source[start:end].rstrip().endswith("/>"):
+        elif (tag not in HTML_VOID_TAGS
+              and not source[start:end].rstrip().endswith("/>")):
             if closing and counts[tag]:
                 while stack:
-                    prior_tag, _ = stack.pop()
+                    prior_tag = stack.pop()
                     counts[prior_tag] -= 1
                     if prior_tag == tag:
                         break
             elif not closing:
-                stack.append((tag, start))
+                stack.append(tag)
                 counts[tag] += 1
         position = end
-    return opening is not None and _standalone_regular_clean(_visible_html(
-        source[:opening], mask_attributes=True, strip_inline_markup=True,
-        preserve_markup_lines=True,
-    ))
+    boundary = _completed_clean_boundary(source, "regular")
+    return (marker_start is not None and boundary is not None
+            and marker_start >= boundary)
 
 
 def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool, bool]:
@@ -6586,10 +6634,7 @@ def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool
         # A rendered line-leading severity is a result label even when its
         # visible characters span links. Explanatory inline link labels stay
         # neutral; destinations and code remain absent from the projection.
-        bare_severity = bare_severity or bool(re.search(
-            r"(?im)^[ \t]*(?:[-+*][ \t]+|[0-9]+[.)][ \t]+)?P[0-3]\b",
-            severity_text,
-        ))
+        bare_severity |= bool(BARE_PRIORITY_RESULT.search(severity_text))
     severity = bool(
         SECURITY_SEVERITY.search(severity_text)
         or (heading and re.search(r"(?i)\[P[0-3]\]", severity_text))
