@@ -2006,7 +2006,7 @@ SECURITY_HEADING = re.compile(
 )
 PRIORITY_RESULT = re.compile(r"\A[^\S\r\n]*\[P[0-3]\](?:[^\S\r\n]|$)", re.I)
 BARE_PRIORITY_PREFIX = (
-    r"^[ \t]*(?:(?:[-+*]|[0-9]+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?"
+    r"^[^\S\r\n]*(?:(?:[-+*]|[0-9]+[.)])[ \t]+(?:\[[ xX]\][ \t]+)?)?"
 )
 BARE_PRIORITY_RESULT = re.compile(BARE_PRIORITY_PREFIX + r"P[0-3]\b", re.I | re.M)
 
@@ -6374,7 +6374,7 @@ def _security_details_priority_uncertain(text):
     return unowned_priority(raw_body, visible_body)
 
 
-def _rendered_html_projection(source):
+def _rendered_html_projection(source, *, preserve_offsets=True):
     """Project explicit rendered block breaks without changing source offsets."""
     # A completed clean result may follow context or an earlier harmless
     # block. Keep source offsets and inspect only raw blocks after that row.
@@ -6391,6 +6391,7 @@ def _rendered_html_projection(source):
         lambda match: re.sub(r"[^\r\n]", " ", match.group()), visible_source
     )
     diagnostic = list(visible_source)
+    invisible_spans = []
     position = 0
     while position < len(source):
         start = source.find("<", position)
@@ -6404,7 +6405,19 @@ def _rendered_html_projection(source):
         if ((tag in HTML_BLOCK_TAGS or tag == "br")
                 and not _backslash_escaped(source, start)):
             diagnostic[start:end] = ["\n"] + [" "] * (end - start - 1)
+        elif (not preserve_offsets and not _backslash_escaped(source, start)
+              and (tag or source.startswith("<!--", start))
+              and all(char.isspace() for char in diagnostic[start:end])):
+            invisible_spans.append((start, end))
         position = end
+    if not preserve_offsets:
+        chunks = []
+        position = 0
+        for start, end in invisible_spans:
+            chunks.append("".join(diagnostic[position:start]))
+            position = end
+        chunks.append("".join(diagnostic[position:]))
+        return "".join(chunks)
     return "".join(diagnostic)
 
 
@@ -6419,6 +6432,7 @@ def _completed_clean_boundary(source, kind):
         visible_row = (_visible_html(
             row, mask_attributes=True, decode_entities=True,
             strip_inline_markup=True) if "<" in row or "&" in row else row)
+        visible_row = re.sub(r"[ \t\r\n\f]+", " ", visible_row).strip()
         if predicate(visible_row):
             # Hidden trailing markup may contain a same-line marker. Locate
             # the visible clean suffix using the unchanged source projection.
@@ -6479,7 +6493,8 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
         projection = _priority_projection(text)
     if kind == "security" and not finding and "<" in source:
         rendered = _visible_html(
-            _rendered_html_projection(source), markdown_preprocessed=True,
+            _rendered_html_projection(source, preserve_offsets=False),
+            markdown_preprocessed=True,
             decode_entities=True,
         )
         if (BARE_PRIORITY_RESULT.search(rendered)
