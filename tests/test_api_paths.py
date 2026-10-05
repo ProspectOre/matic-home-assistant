@@ -57,6 +57,8 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
     KabukiOutputWire,
     SequenceId,
 )
+from tests.test_mission import _labeled as _labeled_floor
+from tests.test_mission import _state as _mission_client_state
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -1407,6 +1409,74 @@ async def test_decode_wrappers_translate_malformed_payloads(monkeypatch) -> None
         await client.async_get_floor_plan()
     with pytest.raises(CannotConnectError, match="malformed robot pose"):
         await client.async_get_pose()
+
+
+@pytest.mark.parametrize("expected_mission_id", [None, 42])
+async def test_multi_floor_read_keeps_numeric_labels_and_current_mission(
+    monkeypatch, expected_mission_id: int | None
+) -> None:
+    """The new label must not discard the current state in favor of an old one."""
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    plans = (
+        FloorPlan(42, "first", b"first", ()),
+        FloorPlan(84, "second", b"second", ()),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans", lambda _: plans
+    )
+    old_floors = (_labeled_floor(42, b"Main"), _labeled_floor(84, b"Study"))
+    floors = (_labeled_floor(42, 5), _labeled_floor(84, 5))
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(
+                b"old",
+                _mission_client_state(active=old_floors[0], canonical=old_floors),
+            ),
+            HermesCollectionEntry(
+                b"current", _mission_client_state(active=floors[1], canonical=floors)
+            ),
+        )
+    )
+
+    selected = await client.async_get_floor_plan(
+        expected_mission_id=expected_mission_id
+    )
+
+    assert selected.mission_id == (84 if expected_mission_id is None else 42)
+    assert selected.floor_label == "Floor"
+    assert [floor.label for floor in selected.mapped_floors] == ["Floor", "Floor"]
+    assert len({floor.mission_token for floor in selected.mapped_floors}) == 2
+
+
+@pytest.mark.parametrize("mismatch", ["coverage", "verified_map", "label_variant"])
+async def test_numeric_floor_labels_preserve_identity_rejections(monkeypatch, mismatch):
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    plans = (
+        FloorPlan(42, "first", b"first", ()),
+        FloorPlan(84, "second", b"second", ()),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans", lambda _: plans
+    )
+    active = _labeled_floor(84, 6 if mismatch == "label_variant" else 5)
+    canonical = (
+        _labeled_floor(126 if mismatch == "coverage" else 42, 5),
+        _labeled_floor(84, 5),
+    )
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(
+                b"current", _mission_client_state(active=active, canonical=canonical)
+            ),
+        )
+    )
+
+    with pytest.raises(CannotConnectError, match="malformed floor plan"):
+        await client.async_get_floor_plan(
+            expected_mission_id=126 if mismatch == "verified_map" else None
+        )
 
 
 async def test_multi_floor_read_selects_the_verified_active_mission(

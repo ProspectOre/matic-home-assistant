@@ -185,11 +185,37 @@ def _preferred_discovery_host(discovery_info: ZeroconfServiceInfo) -> str:
     )
 
 
+def _discovery_certificate_identity(
+    discovery_info: ZeroconfServiceInfo,
+) -> tuple[str, str | None]:
+    """Bind a conflict-renamed mDNS address to its advertised robot identity."""
+    hostname = discovery_info.hostname.rstrip(".")
+    advertised = decode_bot_information(
+        discovery_info.properties.get("bot_information", "")
+    )
+    if advertised is None:
+        return hostname, None
+    canonical = advertised.hostname.rstrip(".").casefold().removesuffix(".local")
+    # TXT data is a constraint, never a trust source: the CA-validated certificate
+    # must match both this canonical hostname and the advertised serial number.
+    if (
+        canonical
+        and "." not in canonical
+        and re.fullmatch(
+            rf"{re.escape(canonical)}-(?:[2-9]|[1-9][0-9]+)\.local",
+            hostname.casefold(),
+        )
+    ):
+        hostname = advertised.hostname.rstrip(".")
+    return hostname, advertised.serial_number
+
+
 async def _async_select_discovery_host(
     discovery_info: ZeroconfServiceInfo,
 ) -> str:
     """Select the first advertised address that proves the robot's identity."""
     hostname = discovery_info.hostname.rstrip(".")
+    expected_hostname, expected_serial = _discovery_certificate_identity(discovery_info)
     port = discovery_info.port or DEFAULT_PORT
     try:
         async with asyncio.timeout(DISCOVERY_RESOLVE_TIMEOUT_SECONDS):
@@ -226,7 +252,11 @@ async def _async_select_discovery_host(
     async def _async_probe(address: str) -> str | None:
         try:
             certificate = await async_fetch_peer_certificate(address, port)
-            validate_certificate(certificate, expected_hostname=hostname)
+            validate_certificate(
+                certificate,
+                expected_hostname=expected_hostname,
+                expected_serial=expected_serial,
+            )
         except (
             CannotConnectError,
             CertificateMismatchError,
@@ -335,17 +365,15 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     ) -> config_entries.ConfigFlowResult:
         """Handle Matic robot zeroconf discovery."""
         self._discovery_info = discovery_info
-        hostname = discovery_info.hostname.rstrip(".")
+        hostname, self._discovered_serial = _discovery_certificate_identity(
+            discovery_info
+        )
         host = await _async_select_discovery_host(discovery_info)
         self._discovered = {
             CONF_HOST: host,
             CONF_PORT: discovery_info.port,
             CONF_HOSTNAME: hostname,
         }
-        if advertised := decode_bot_information(
-            discovery_info.properties.get("bot_information", "")
-        ):
-            self._discovered_serial = advertised.serial_number
         self.context["title_placeholders"] = {"name": discovery_info.name}
         if self._discovered_serial:
             await self.async_set_unique_id(self._discovered_serial)
@@ -943,6 +971,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             identity = validate_certificate(
                 certificate,
                 expected_hostname=data.get(CONF_HOSTNAME),
+                expected_serial=self._discovered_serial,
             )
             needs_bluetooth_credential = False
             async with MaticHermesClient(
