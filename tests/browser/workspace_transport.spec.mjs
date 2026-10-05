@@ -51,6 +51,7 @@ async function load(page) {
       deferRecoverySnapshot: () => { recoverySnapshot = new Promise((resolve, reject) => { recoverySnapshotResolve = resolve; recoverySnapshotReject = reject; }); },
       resolveRecoverySnapshot: value => recoverySnapshotResolve?.(value), transport,
       rejectRecoverySnapshot: error => recoverySnapshotReject?.(error),
+      diagnostics: () => transport.diagnostics(),
       get snapshotCalls() { return snapshotCalls; }, get snapshotCallTimes() { return snapshotCallTimes; }, get subscribeCalls() { return subscribeCalls; }, get unsubscribed() { return unsubscribed; } };
     return true;
   });
@@ -217,6 +218,111 @@ test("recovers a sequence gap from a fresh snapshot and replays racing updates",
   ]);
   expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([0, 1]);
   expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+});
+
+test("diagnostics separate snapshot RPC latency from completed recovery after replay", async ({ page }) => {
+  await load(page);
+  await page.evaluate(async value => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(value);
+    await start;
+  }, snapshot(0));
+  await page.evaluate(value => {
+    const h = window.workspaceHarness;
+    h.deferRecoverySnapshot();
+    h.callback(value);
+  }, invalidate(2));
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+
+  const inProgress = await page.evaluate(() => window.workspaceHarness.diagnostics());
+  expect(inProgress.snapshotAttempts).toMatchObject({ requests: 1, completed: 1, failed: 0 });
+  expect(inProgress.recoveryEpisodes.gap).toMatchObject({ requests: 0, completed: 0 });
+  expect(inProgress.activeRecovery.reason).toBe("gap");
+
+  await page.evaluate(value => window.workspaceHarness.callback(value), invalidate(3));
+  await page.evaluate(value => window.workspaceHarness.resolveRecoverySnapshot(value), snapshot(1));
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "invalidation").map(event => event.invalidation.sequence))).toEqual([3]);
+
+  const completed = await page.evaluate(() => window.workspaceHarness.diagnostics());
+  expect(completed.snapshotAttempts).toMatchObject({ requests: 2, completed: 2, failed: 0 });
+  expect(completed.recoveryEpisodes.gap).toMatchObject({ requests: 1, completed: 1, failed: 0 });
+  expect(completed.activeRecovery).toBeNull();
+  expect(await page.evaluate(() => Object.isFrozen(window.workspaceHarness.diagnostics())
+    && Object.isFrozen(window.workspaceHarness.diagnostics().recoveryEpisodes)
+    && Object.isFrozen(window.workspaceHarness.diagnostics().recoveryEpisodes.gap))).toBe(true);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("failed snapshot RPC is measured as an attempt while recovery remains pending", async ({ page }) => {
+  await load(page);
+  await page.evaluate(() => {
+    const h = window.workspaceHarness;
+    void h.transport.start();
+    h.rejectInitialSnapshot(new Error("temporary snapshot failure"));
+  });
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.errors.length)).toBe(1);
+  await page.evaluate(() => new Promise(resolve => queueMicrotask(resolve)));
+
+  const diagnostics = await page.evaluate(() => window.workspaceHarness.diagnostics());
+  expect(diagnostics.snapshotAttempts).toMatchObject({ requests: 1, completed: 0, failed: 1 });
+  expect(diagnostics.recoveryEpisodes.reconnect).toMatchObject({ requests: 0, completed: 0 });
+  expect(diagnostics.activeRecovery.reason).toBe("reconnect");
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("recovery diagnostics stay active when replay requires another resync", async ({ page }) => {
+  await load(page);
+  await page.evaluate(async value => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(value);
+    await start;
+  }, snapshot(0));
+  await page.evaluate(value => {
+    const h = window.workspaceHarness;
+    h.deferRecoverySnapshot();
+    h.callback(value);
+  }, invalidate(2));
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.evaluate(value => window.workspaceHarness.callback(value), invalidate(4));
+  await page.evaluate(value => window.workspaceHarness.resolveRecoverySnapshot(value), snapshot(1));
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").length)).toBe(2);
+
+  const diagnostics = await page.evaluate(() => window.workspaceHarness.diagnostics());
+  expect(diagnostics.recoveryEpisodes.gap).toMatchObject({ requests: 0, completed: 0 });
+  expect(diagnostics.activeRecovery.reason).toBe("gap");
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("dispose clears diagnostics and a late recovery result cannot restore them", async ({ page }) => {
+  await load(page);
+  await page.evaluate(async value => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(value);
+    await start;
+  }, snapshot(0));
+  await page.evaluate(value => {
+    const h = window.workspaceHarness;
+    h.deferRecoverySnapshot();
+    h.callback(value);
+  }, invalidate(2));
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  expect(await page.evaluate(() => window.workspaceHarness.diagnostics().activeRecovery.reason)).toBe("gap");
+
+  await page.evaluate(value => {
+    const h = window.workspaceHarness;
+    h.transport.dispose();
+    h.resolveRecoverySnapshot(value);
+  }, snapshot(1));
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.diagnostics())).toEqual({
+    snapshotAttempts: { requests: 0, completed: 0, failed: 0, aborted: 0, timedOut: 0, totalDurationMs: 0, maxDurationMs: 0 },
+    recoveryEpisodes: Object.fromEntries(["gap", "overflow", "reconnect", "invalid_message", "server_request", "restart", "entry_removed", "authorization", "snapshot_required"].map(reason => [reason, {
+      requests: 0, completed: 0, failed: 0, aborted: 0, timedOut: 0, totalDurationMs: 0, maxDurationMs: 0,
+    }])),
+    activeRecovery: null,
+  });
 });
 
 test("initial authorization retries once at the steady interval and restores the stream", async ({ page }) => {

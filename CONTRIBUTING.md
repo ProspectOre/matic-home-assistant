@@ -26,6 +26,19 @@ For Map Studio changes, run `npm ci`, `npm run build:map-studio-v4`, and
 Python 3.14's unparenthesized multiple exception types are intentional project
 style. Keep runtime traffic local and use Home Assistant's asynchronous APIs.
 
+## CI routing
+
+Matic is a public repository. Test, Browser, and Validate run on standard
+GitHub-hosted `ubuntu-latest` runners, which are
+[free for public repositories](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+Use the existing hosted workflows; private-repository paid-minute limits and
+missing self-hosted runners do not block this route. A local Linux VM is not a
+prerequisite. Larger runners and storage/cache allowances have separate billing.
+Recheck the route if repository visibility or runner configuration changes.
+
+Hosted CI does not replace exact-head review, manual merge, approved RC
+installation, runtime verification, physical acceptance, or release permission.
+
 ## Changes and pull requests
 
 - Explain the user-visible change briefly; update relevant docs and tests.

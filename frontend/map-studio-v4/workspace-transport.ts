@@ -8,11 +8,17 @@
  */
 
 import { parseCatalog, type MapEntry } from "./backend-contracts";
+import {
+  BoundedRequestMetric,
+  type BackendRequestOperationDiagnostics,
+  type BackendRequestOutcome,
+} from "./request-diagnostics";
 
 export const WORKSPACE_PROTOCOL_VERSION = 1;
 const MAX_SEQUENCE = Number.MAX_SAFE_INTEGER;
 const MAX_REVISION = Number.MAX_SAFE_INTEGER;
 const MAX_INVALIDATIONS = 64;
+const MAX_DIAGNOSTIC_DURATION_MS = 1_000_000_000_000;
 const MAX_SNAPSHOT_RETRIES = 4;
 const MAX_SNAPSHOT_PROJECTION_BYTES = 16 * 1024;
 const SNAPSHOT_RETRY_BASE_MS = 250;
@@ -88,6 +94,12 @@ export interface WorkspaceTransportOptions {
   readonly onEvent: (event: WorkspaceTransportEvent) => void;
   readonly onError?: (error: Error) => void;
   readonly maxPendingInvalidations?: number;
+}
+
+export interface WorkspaceTransportDiagnostics {
+  readonly snapshotAttempts: BackendRequestOperationDiagnostics;
+  readonly recoveryEpisodes: Readonly<Record<WorkspaceResyncReason, BackendRequestOperationDiagnostics>>;
+  readonly activeRecovery: Readonly<{ reason: WorkspaceResyncReason; durationMs: number }> | null;
 }
 
 type UnknownRecord = Record<string, unknown>;
@@ -212,6 +224,21 @@ function parseRecoveryReason(value: unknown): WorkspaceResyncReason | null {
     : null;
 }
 
+function requestOutcome(error: unknown): BackendRequestOutcome {
+  const candidate = record(error);
+  if (candidate?.name === "AbortError") return "aborted";
+  if (candidate?.name === "TimeoutError") return "timedOut";
+  return "failed";
+}
+
+type SnapshotAttempt = { readonly startedAt: number; readonly generation: number };
+
+function createRecoveryMetrics(): Record<WorkspaceResyncReason, BoundedRequestMetric> {
+  return Object.fromEntries(
+    RECOVERY_REASONS.map((reason) => [reason, new BoundedRequestMetric()]),
+  ) as Record<WorkspaceResyncReason, BoundedRequestMetric>;
+}
+
 export class WorkspaceTransport {
   readonly #connection: WorkspaceConnection;
   readonly #options: WorkspaceTransportOptions;
@@ -240,6 +267,11 @@ export class WorkspaceTransport {
   #started = false;
   #subscriptionTask: Promise<void> | null = null;
   #buffer: WorkspaceInvalidation[] = [];
+  readonly #snapshotAttempts = new BoundedRequestMetric();
+  readonly #recoveryEpisodes = createRecoveryMetrics();
+  #activeSnapshotAttempt: SnapshotAttempt | null = null;
+  #recoveryEpisodeReason: WorkspaceResyncReason | null = null;
+  #recoveryEpisodeStartedAt: number | null = null;
 
   constructor(connection: WorkspaceConnection, options: WorkspaceTransportOptions) {
     this.#connection = connection;
@@ -263,7 +295,11 @@ export class WorkspaceTransport {
   }
 
   notifyReconnect(): void {
-    if (this.#authorizationBlocked || this.#authorizationProbeInFlight) this.#recoveryGeneration += 1;
+    if (this.#authorizationBlocked || this.#authorizationProbeInFlight) {
+      this.#abortSnapshotAttempt();
+      this.#finishRecoveryEpisode("aborted");
+      this.#recoveryGeneration += 1;
+    }
     this.#retryAttempt = 0;
     this.#forcedRecoveryUsed = false;
     this.#authorizationBlocked = false;
@@ -279,6 +315,28 @@ export class WorkspaceTransport {
     this.#requestResync(reason, true);
   }
 
+  /** Return aggregate-only measurements; values contain no transport data. */
+  diagnostics(): WorkspaceTransportDiagnostics {
+    const recoveryEpisodes = Object.fromEntries(RECOVERY_REASONS.map((reason) => [
+      reason,
+      this.#recoveryEpisodes[reason].snapshot(),
+    ])) as Record<WorkspaceResyncReason, BackendRequestOperationDiagnostics>;
+    const activeRecovery = this.#recoveryEpisodeReason !== null && this.#recoveryEpisodeStartedAt !== null
+      ? Object.freeze({
+        reason: this.#recoveryEpisodeReason,
+        durationMs: Math.round(Math.min(
+          MAX_DIAGNOSTIC_DURATION_MS,
+          Math.max(0, performance.now() - this.#recoveryEpisodeStartedAt),
+        ) * 100) / 100,
+      })
+      : null;
+    return Object.freeze({
+      snapshotAttempts: this.#snapshotAttempts.snapshot(),
+      recoveryEpisodes: Object.freeze(recoveryEpisodes),
+      activeRecovery,
+    });
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
@@ -289,6 +347,11 @@ export class WorkspaceTransport {
     this.#unsubscribe = null;
     this.#pending.clear();
     this.#buffer = [];
+    this.#activeSnapshotAttempt = null;
+    this.#recoveryEpisodeReason = null;
+    this.#recoveryEpisodeStartedAt = null;
+    this.#snapshotAttempts.dispose();
+    for (const reason of RECOVERY_REASONS) this.#recoveryEpisodes[reason].dispose();
   }
 
   #onMessage(message: unknown): void {
@@ -447,6 +510,7 @@ export class WorkspaceTransport {
       return;
     }
     if (this.#authorizationBlocked) return;
+    this.#beginRecoveryEpisode(reason);
     if (!this.#resyncing) {
       this.#resyncing = true;
       this.#options.onEvent({ type: "resync", reason });
@@ -508,6 +572,7 @@ export class WorkspaceTransport {
 
   async #readSnapshot(recovering: boolean, authorizationProbe = false): Promise<void> {
     if (this.#disposed || this.#recovering) return;
+    if (recovering) this.#beginRecoveryEpisode(authorizationProbe ? "authorization" : "snapshot_required");
     const generation = this.#recoveryGeneration;
     this.#recovering = true;
     this.#authorizationProbeInFlight = authorizationProbe;
@@ -516,11 +581,22 @@ export class WorkspaceTransport {
       // initial startup deliberately snapshots first and then replays.
       if (recovering) await this.#ensureSubscription();
       if (this.#disposed || (this.#authorizationBlocked && !authorizationProbe) || generation !== this.#recoveryGeneration) return;
-      const value = await this.#connection.sendMessagePromise<unknown>({
-        type: "matic_robot/workspace_snapshot",
-        version: WORKSPACE_PROTOCOL_VERSION,
-        entry_id: this.#options.entryId,
-      });
+      const attempt: SnapshotAttempt = { startedAt: performance.now(), generation };
+      this.#activeSnapshotAttempt = attempt;
+      let attemptOutcome: BackendRequestOutcome = "completed";
+      let value: unknown;
+      try {
+        value = await this.#connection.sendMessagePromise<unknown>({
+          type: "matic_robot/workspace_snapshot",
+          version: WORKSPACE_PROTOCOL_VERSION,
+          entry_id: this.#options.entryId,
+        });
+      } catch (error) {
+        attemptOutcome = requestOutcome(error);
+        throw error;
+      } finally {
+        this.#finishSnapshotAttempt(attempt, attemptOutcome);
+      }
       if (this.#disposed || (this.#authorizationBlocked && !authorizationProbe) || generation !== this.#recoveryGeneration) return;
       const snapshot = parseSnapshot(value, this.#options.entryId);
       if (!snapshot) throw new Error("invalid-workspace-snapshot");
@@ -549,6 +625,7 @@ export class WorkspaceTransport {
       } finally {
         this.#acceptingSnapshot = false;
       }
+      const replayNeedsResync = this.#resyncDuringSnapshot || this.#bufferOverflowed;
       if (!this.#resyncDuringSnapshot) {
         this.#retryAttempt = 0;
         this.#forcedRecoveryUsed = false;
@@ -562,6 +639,10 @@ export class WorkspaceTransport {
         this.#bufferOverflowed = false;
         this.#requestResync("overflow");
       }
+      if (recovering && snapshot.status.state === "ready" && !replayNeedsResync
+          && !this.#disposed && generation === this.#recoveryGeneration) {
+        this.#finishRecoveryEpisode("completed");
+      }
     } catch (error) {
       if (this.#disposed || (this.#authorizationBlocked && !authorizationProbe) || generation !== this.#recoveryGeneration) return;
       this.#report(error);
@@ -569,6 +650,7 @@ export class WorkspaceTransport {
         this.#stopRecoveryForAuthorization();
         this.#options.onEvent({ type: "resync", reason: "authorization" });
       } else if (!authorizationProbe) {
+        if (!recovering) this.#beginRecoveryEpisode("reconnect");
         const retryImmediately = this.#immediateRetryAfterRead;
         this.#immediateRetryAfterRead = false;
         this.#scheduleFailedRecovery(retryImmediately);
@@ -640,9 +722,42 @@ export class WorkspaceTransport {
       || status === 401 || status === 403;
   }
 
+  #beginRecoveryEpisode(reason: WorkspaceResyncReason): void {
+    if (this.#recoveryEpisodeReason !== null || this.#disposed) return;
+    this.#recoveryEpisodeReason = reason;
+    this.#recoveryEpisodeStartedAt = performance.now();
+  }
+
+  #finishRecoveryEpisode(outcome: BackendRequestOutcome): void {
+    const reason = this.#recoveryEpisodeReason;
+    const startedAt = this.#recoveryEpisodeStartedAt;
+    this.#recoveryEpisodeReason = null;
+    this.#recoveryEpisodeStartedAt = null;
+    if (reason === null || startedAt === null || this.#disposed) return;
+    this.#recoveryEpisodes[reason].record(outcome, performance.now() - startedAt);
+  }
+
+  #finishSnapshotAttempt(attempt: SnapshotAttempt, outcome: BackendRequestOutcome): void {
+    if (this.#activeSnapshotAttempt !== attempt || this.#disposed
+        || attempt.generation !== this.#recoveryGeneration) return;
+    this.#activeSnapshotAttempt = null;
+    this.#snapshotAttempts.record(outcome, performance.now() - attempt.startedAt);
+  }
+
+  #abortSnapshotAttempt(): void {
+    const attempt = this.#activeSnapshotAttempt;
+    if (attempt === null) return;
+    this.#activeSnapshotAttempt = null;
+    if (!this.#disposed && attempt.generation === this.#recoveryGeneration) {
+      this.#snapshotAttempts.record("aborted", performance.now() - attempt.startedAt);
+    }
+  }
+
   #stopRecoveryForAuthorization(): void {
     // Keep authorization failures fail-closed, but probe slowly so a robot
     // reauthentication can restore the stream without an HA reconnect.
+    this.#abortSnapshotAttempt();
+    this.#finishRecoveryEpisode("failed");
     this.#recoveryGeneration += 1;
     if (!this.#authorizationBlocked) {
       this.#authorizationBlocked = true;

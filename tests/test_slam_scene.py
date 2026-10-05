@@ -946,6 +946,54 @@ async def test_pose_view_coalesces_concurrent_live_reads_and_rechecks_runtime() 
     replacement.client.async_get_pose.assert_awaited_once()
 
 
+async def test_pose_view_cancellation_releases_waiter_for_next_live_read() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamPoseView()
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+    attempts = 0
+
+    async def read_pose():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                raise
+        return RobotPose(0.2, 0.3, 0.0)
+
+    runtime.client.async_get_pose.side_effect = read_pose
+    first = asyncio.create_task(view.get(_request(hass), "entry"))
+    second = None
+    try:
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        second = asyncio.create_task(view.get(_request(hass), "entry"))
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert first_cancelled.is_set()
+
+        second_response = await asyncio.wait_for(second, timeout=1)
+        assert second_response.status == HTTPStatus.OK
+    finally:
+        for task in (first, second):
+            if task is None:
+                continue
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    assert attempts == 2
+
+
 async def test_pose_view_discards_result_if_entry_unloads_during_read() -> None:
     runtime = _runtime()
     entry = _entry(runtime)
@@ -1902,6 +1950,75 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
     )
 
 
+async def test_area_mutations_require_admin_before_body_or_store_access() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticAreasView()
+    request = _json_request(hass, "POST", {})
+    request["hass_user"] = SimpleNamespace(is_admin=False)
+    request.json = AsyncMock()
+
+    with pytest.raises(Unauthorized):
+        await view.post(request, "entry")
+
+    request.json.assert_not_awaited()
+    runtime.cleaning_plans.areas.assert_not_called()
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+    with pytest.raises(Unauthorized):
+        await view.delete(
+            _request(hass, admin=False, path="/?area_id=under_table"), "entry"
+        )
+
+    runtime.cleaning_plans.areas.assert_not_called()
+    runtime.cleaning_plans.async_delete_area.assert_not_awaited()
+
+
+async def test_area_post_cancellation_during_body_read_does_not_reach_store() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    request = _json_request(
+        hass,
+        "POST",
+        {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": CoverageSetting.OPTIMAL.value,
+        },
+    )
+    body_started = asyncio.Event()
+    body_cancelled = asyncio.Event()
+
+    async def wait_for_body(**_kwargs):
+        body_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            body_cancelled.set()
+            raise
+
+    request.json = AsyncMock(side_effect=wait_for_body)
+    waiting = asyncio.create_task(MaticAreasView().post(request, "entry"))
+    try:
+        await asyncio.wait_for(body_started.wait(), timeout=1)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        if not waiting.done():
+            waiting.cancel()
+        try:
+            await waiting
+        except asyncio.CancelledError:
+            pass
+
+    assert body_cancelled.is_set()
+    request.json.assert_awaited_once_with(loads=json.loads)
+    runtime.cleaning_plans.areas.assert_not_called()
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+
 async def test_area_workspace_rejects_floor_change_during_request_body_read() -> None:
     """A body authored for one floor cannot be rebound to a later selection."""
     runtime = _runtime()
@@ -2263,6 +2380,59 @@ async def test_delta_view_waits_bounds_query_and_handles_unload() -> None:
     ).status == HTTPStatus.NOT_FOUND
 
 
+async def test_delta_view_cancellation_removes_long_poll_listeners() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    scene_view = MaticSlamSceneView()
+    initial = await scene_view.get(_request(hass), "entry")
+    assert initial.headers["X-Matic-Revision"] == "7"
+
+    subscribed = asyncio.Event()
+    map_listeners = set()
+    coordinator_listeners = set()
+
+    def subscribe_map(listener):
+        map_listeners.add(listener)
+
+        def remove() -> None:
+            map_listeners.discard(listener)
+
+        return remove
+
+    def subscribe_coordinator(listener):
+        coordinator_listeners.add(listener)
+        subscribed.set()
+
+        def remove() -> None:
+            coordinator_listeners.discard(listener)
+
+        return remove
+
+    runtime.slam_map.async_add_listener.side_effect = subscribe_map
+    runtime.coordinator.async_add_listener.side_effect = subscribe_coordinator
+    waiting = asyncio.create_task(
+        MaticSlamDeltaView(scene_view).get(_request(hass, path="/?since=7"), "entry")
+    )
+    try:
+        await asyncio.wait_for(subscribed.wait(), timeout=1)
+        assert len(map_listeners) == 1
+        assert len(coordinator_listeners) == 1
+
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        if not waiting.done():
+            waiting.cancel()
+        try:
+            await waiting
+        except asyncio.CancelledError:
+            pass
+
+    assert map_listeners == set()
+    assert coordinator_listeners == set()
+
+
 async def test_delta_view_wakes_when_only_the_floor_plan_changes() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
@@ -2374,6 +2544,51 @@ async def test_delta_view_rejects_entry_unload_after_wakeup() -> None:
     )
 
     assert response.status == HTTPStatus.NOT_FOUND
+
+
+async def test_history_scene_cancellation_propagates_to_store_read() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    mission_token = runtime.slam_map.mission_identity.mission_token
+    assert mission_token is not None
+    snapshot = SimpleNamespace(
+        snapshot_id="0123456789abcdef01234567",
+        mission_token=mission_token,
+    )
+    runtime.slam_history.catalog.return_value = (snapshot,)
+    read_started = asyncio.Event()
+    read_cancelled = asyncio.Event()
+
+    async def wait_for_scene(*_args, **_kwargs):
+        read_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            read_cancelled.set()
+            raise
+
+    runtime.slam_history.async_scene.side_effect = wait_for_scene
+    waiting = asyncio.create_task(
+        MaticSlamHistorySceneView().get(_request(hass), "entry", snapshot.snapshot_id)
+    )
+    try:
+        await asyncio.wait_for(read_started.wait(), timeout=1)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        if not waiting.done():
+            waiting.cancel()
+        try:
+            await waiting
+        except asyncio.CancelledError:
+            pass
+
+    assert read_cancelled.is_set()
+    runtime.slam_history.async_scene.assert_awaited_once_with(
+        snapshot.snapshot_id,
+        mission_token=snapshot.mission_token,
+    )
 
 
 async def test_history_views_list_serve_hide_and_require_admin() -> None:

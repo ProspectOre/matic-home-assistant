@@ -3,7 +3,7 @@ import { build } from "esbuild";
 
 const bundle = await build({
   stdin: {
-    contents: 'export { parsePlansCatalog } from "./frontend/map-studio-v4/backend-contracts";',
+    contents: 'export { parseAreasCatalog, parseCatalog, parseHistoryCatalog, parsePlansCatalog, parsePose } from "./frontend/map-studio-v4/backend-contracts";',
     resolveDir: process.cwd(),
   },
   bundle: true,
@@ -13,6 +13,34 @@ const bundle = await build({
 
 test.beforeEach(async ({ browserName }) => {
   test.skip(browserName !== "chromium", "Backend contract checks run once in Chromium");
+});
+
+test("catalog, pose, history, and area parsers reject their own malformed root shapes", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async () => {
+    const { parseAreasCatalog, parseCatalog, parseHistoryCatalog, parsePose } = await import("/backend-contracts.js");
+    const cases = [
+      ["catalog", parseCatalog, {}, "invalid-catalog-entries"],
+      ["pose", parsePose, { position: null }, "invalid-pose-freshness"],
+      ["history", parseHistoryCatalog, {}, "invalid-history-floors"],
+      ["areas", parseAreasCatalog, { rooms: [], scene_url: "/api/matic_robot/scene" }, "invalid-area-list"],
+    ];
+    return cases.map(([name, parse, payload, expected]) => {
+      try {
+        parse(payload);
+        return { name, code: null, expected };
+      } catch (error) {
+        return { name, code: error.code ?? null, expected };
+      }
+    });
+  });
+
+  expect(result).toEqual([
+    { name: "catalog", code: "invalid-catalog-entries", expected: "invalid-catalog-entries" },
+    { name: "pose", code: "invalid-pose-freshness", expected: "invalid-pose-freshness" },
+    { name: "history", code: "invalid-history-floors", expected: "invalid-history-floors" },
+    { name: "areas", code: "invalid-area-list", expected: "invalid-area-list" },
+  ]);
 });
 
 async function load(page) {

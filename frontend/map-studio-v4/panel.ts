@@ -207,6 +207,14 @@ export class MaticMapPanelV4 extends LitElement {
     return this.#store.value;
   }
 
+  /** Content-free, on-demand measurements for this controller lifetime. */
+  getRequestDiagnostics() {
+    return Object.freeze({
+      http: this.#backend?.requestDiagnostics() ?? null,
+      workspace: this.#effects?.workspaceDiagnostics() ?? null,
+    });
+  }
+
   protected override render() {
     return html`
       <${shellTag}

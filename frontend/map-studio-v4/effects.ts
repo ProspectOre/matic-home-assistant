@@ -193,6 +193,10 @@ export class EffectController {
   readonly #workspaceConnection: WorkspaceConnection | null;
   readonly #workspaceTransportEnabled: boolean;
 
+  workspaceDiagnostics() {
+    return this.#workspaceTransport?.diagnostics() ?? null;
+  }
+
   constructor(store: WorkspaceStore, backend: MaticBackend, workspaceConnection: WorkspaceConnection | null = null, workspaceTransportEnabled = WORKSPACE_TRANSPORT_ENABLED) {
     this.#store = store;
     // A remounted controller continues the store's existing public generation
