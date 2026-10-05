@@ -230,6 +230,66 @@ async def test_failed_store_commit_rolls_back_area_and_suppresses_notification(
     assert reloaded.snapshot(SERIAL)["selected_area"] == before_selected
 
 
+@pytest.mark.parametrize("lifecycle", ("unload", "remove"))
+async def test_failed_accepted_area_write_does_not_abort_lifecycle_drain(
+    hass, monkeypatch, lifecycle
+):
+    """A failed owned write rolls back, but does not strand lifecycle cleanup."""
+    manager = await _manager_with_areas(hass)
+    before = manager.areas(SERIAL)
+    before_selected = manager.snapshot(SERIAL)["selected_area"]
+    loop = asyncio.get_running_loop()
+    write_started = asyncio.Event()
+    release_write = threading.Event()
+    original_write = Store._write_prepared_data
+    write_count = 0
+
+    def fail_first_store_write(store, mode: str, payload: str | bytes) -> None:
+        nonlocal write_count
+        if store is manager._store:
+            write_count += 1
+            if write_count == 1:
+                loop.call_soon_threadsafe(write_started.set)
+                if not release_write.wait(timeout=30):
+                    raise TimeoutError("test did not release the failing Store write")
+                raise WriteError("synthetic storage failure detail")
+        original_write(store, mode, payload)
+
+    monkeypatch.setattr(Store, "_write_prepared_data", fail_first_store_write)
+    mutation = asyncio.create_task(
+        manager.async_save_area(SERIAL, "existing", UPDATED_AREA)
+    )
+    lifecycle_task = None
+    try:
+        await asyncio.wait_for(write_started.wait(), timeout=3)
+        if lifecycle == "unload":
+            lifecycle_task = asyncio.create_task(manager.async_cancel_and_wait(SERIAL))
+        else:
+            lifecycle_task = asyncio.create_task(manager.async_remove_robot(SERIAL))
+        await asyncio.sleep(0)
+        assert not lifecycle_task.done()
+    finally:
+        release_write.set()
+
+    mutation_result, lifecycle_result = await asyncio.gather(
+        mutation, lifecycle_task, return_exceptions=True
+    )
+    assert isinstance(mutation_result, HomeAssistantError)
+    assert str(mutation_result) == "Cleaning plan state could not be saved"
+    assert lifecycle_result is None
+    assert not manager.state_lock(SERIAL).locked()
+    assert not manager._area_persistence_tasks.get(SERIAL)
+
+    reloaded = CleaningPlanManager(hass)
+    await reloaded.async_load()
+    if lifecycle == "remove":
+        assert SERIAL not in reloaded._data["robots"]
+        assert write_count == 2  # failed area write, then successful removal write
+    else:
+        assert reloaded.areas(SERIAL) == before
+        assert reloaded.snapshot(SERIAL)["selected_area"] == before_selected
+
+
 @pytest.mark.parametrize("concurrent_update", (False, True))
 async def test_failed_fresh_robot_commit_removes_only_empty_record(
     hass, monkeypatch, concurrent_update

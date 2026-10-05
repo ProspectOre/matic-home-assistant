@@ -75,8 +75,16 @@ completion/cadence credit after retry followed by duplicate evidence. Error text
 omits the rejected payload. This does not change Home Assistant's deferred-save
 behavior during shutdown into a synchronous durable acknowledgment.
 
-The affected plan and cadence regression modules passed 421 cases. The final
-real-Store and Area tests passed 18 cases and exercised all 94 added persistence
+Review also found that a failed Area write could abort unload or robot removal
+when the lifecycle drain re-raised the already-reported request failure. The
+drain collects settled worker failures after rollback; the request still receives
+its error, and failure of the separate removal write still propagates. Real-Store
+regressions cover failed writes racing unload and removal, including unchanged
+durable Areas after unload and actual private-record deletion after removal.
+All 18 Area tests, five removal/terminal-save tests, and 13 integration-unload
+tests passed; independent re-review found no remaining issue in this change.
+
+The affected plan and cadence regression modules passed 421 cases. The real-Store and Area checks now cover 20 cases and exercised all 94 added persistence
 statements, including failed first-save cleanup that preserves unrelated
 concurrent metadata. The `d9310fd` qualification baseline passed the hosted
 3,835-test backend suite at 100% coverage and 1,058 browser cases with one existing skip;

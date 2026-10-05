@@ -4299,10 +4299,17 @@ class CleaningPlanManager:
             _LOGGER.error("Area metadata persistence task failed")
 
     async def _async_wait_area_persistence(self, serial_number: str) -> None:
-        """Wait until all accepted Area commits for a robot have settled."""
+        """Wait until all accepted Area commits for a robot have settled.
+
+        Mutation waiters receive their commit errors, while lifecycle cleanup
+        only needs each worker to finish its rollback and release the state
+        lock before unloading or removing the robot.
+        """
         tasks = tuple(self._area_persistence_tasks.get(serial_number, ()))
         if tasks:
-            await asyncio.gather(*(asyncio.shield(task) for task in tasks))
+            await asyncio.gather(
+                *(asyncio.shield(task) for task in tasks), return_exceptions=True
+            )
 
     async def _async_save_with_rollback(
         self, serial_number: str, before: dict[str, Any]
