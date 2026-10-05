@@ -1706,9 +1706,13 @@ class _LegOutcomeObserver:
         self._active_room = initial_room
         self._observed_any = initial_observed
         self._terminal_pending = False
-        self._pause_pending = False
         self._suppress_pause = suppress_pause or initial_suspended
         self._pause_open = self._suppress_pause
+        # One runner suspension write owns an entire native pause episode.
+        # In particular, a low-charge RETURNING update may follow PAUSED
+        # before the target room reports CLEANING; it must not enqueue a
+        # second outcome carrying the same resume event.
+        self._pause_episode_handled = self._suppress_pause
         self.resume_event = asyncio.Event()
         self._active_pause_resume_event = (
             self.resume_event if self._pause_open else None
@@ -1771,8 +1775,8 @@ class _LegOutcomeObserver:
             if not self._pause_open:
                 self._pause_open = True
                 self._active_pause_resume_event = asyncio.Event()
-            if not self._suppress_pause and not self._pause_pending:
-                self._pause_pending = True
+            if not self._suppress_pause and not self._pause_episode_handled:
+                self._pause_episode_handled = True
                 self._enqueue(
                     (RoomRunOutcome.PAUSED, None),
                     self._active_pause_resume_event,
@@ -1780,15 +1784,14 @@ class _LegOutcomeObserver:
             return
         if state.state == "cleaning":
             self._terminal_pending = False
-            self._pause_pending = False
             if self._pause_open:
                 if self._active_pause_resume_event is not None:
                     self._active_pause_resume_event.set()
                 self._suppress_pause = False
                 self._pause_open = False
+            self._pause_episode_handled = False
             self._suppress_initial_suspend_state = False
             return
-        self._pause_pending = False
         if state.state == "error":
             self._terminal_pending = True
             self._fault = _validation_error(
@@ -1812,19 +1815,22 @@ class _LegOutcomeObserver:
                     if not self._pause_open:
                         self._pause_open = True
                         self._active_pause_resume_event = asyncio.Event()
-                self._enqueue(
-                    (
-                        RoomRunOutcome.SUSPENDED
-                        if low_charge
-                        else (
-                            RoomRunOutcome.HANDOFF_CANDIDATE
-                            if self._observed_any
-                            else RoomRunOutcome.INTERRUPTED
+                if not low_charge or not self._pause_episode_handled:
+                    if low_charge:
+                        self._pause_episode_handled = True
+                    self._enqueue(
+                        (
+                            RoomRunOutcome.SUSPENDED
+                            if low_charge
+                            else (
+                                RoomRunOutcome.HANDOFF_CANDIDATE
+                                if self._observed_any
+                                else RoomRunOutcome.INTERRUPTED
+                            ),
+                            None,
                         ),
-                        None,
-                    ),
-                    self._active_pause_resume_event if low_charge else None,
-                )
+                        self._active_pause_resume_event if low_charge else None,
+                    )
         elif state.state == "idle":
             if not self._terminal_pending:
                 self._terminal_pending = True

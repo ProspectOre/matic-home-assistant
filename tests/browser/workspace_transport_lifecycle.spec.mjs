@@ -75,6 +75,136 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
   expect(lifecycle.afterInvalidation).toBe(lifecycle.baselineCatalogCalls);
 });
 
+test("production transport follows the admitted entry capability", async ({ page }) => {
+  await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/lifecycle.js");
+    const base = createGalleryState("ready");
+    let transportEnabled = true;
+    let unsubscribed = 0;
+    const callbacks = [];
+    const connection = {
+      subscribeMessage: async callback => { callbacks.push(callback); return () => { unsubscribed += 1; }; },
+      sendMessagePromise: async message => ({ schema: 1, capabilities: {}, epoch: "e", sequence: 0, coherence_generation: 1,
+        revisions: {}, entry_id: message.entry_id, identity: { entry_id: message.entry_id, floor_mission_id: null, floor_verified: false },
+        status: { state: "ready", reason: null, retryable: false }, payload: { available: true, entry: null } }),
+    };
+    const entry = { ...base.resources.entry, deltaUrl: null, liveWorkspaceTransportEnabled: true };
+    const backend = {
+      catalog: async () => [{ ...entry, liveWorkspaceTransportEnabled: transportEnabled }],
+      scene: async () => ({ ...base.resources.scene.value, revision: 7, floorCoherent: true }),
+      pose: async () => base.resources.pose.value,
+      history: async () => base.resources.history.value,
+      plans: async () => base.resources.plans.value,
+      areas: async () => base.resources.areas.value,
+      dispose() {},
+    };
+    const projection = { host: base.host, activity: base.activity, batteryPercent: base.batteryPercent,
+      language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
+      entryKey: entry.entryId, robotLabel: "Matic", robots: base.robots };
+    const controller = new EffectController(new WorkspaceStore(), backend, connection);
+    controller.sync(projection);
+    for (let attempt = 0; attempt < 40 && callbacks.length === 0; attempt += 1) await Promise.resolve();
+    if (callbacks.length !== 1) throw new Error("ready catalog capability did not enable production transport");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    transportEnabled = false;
+    await controller.refreshCatalog(true);
+    for (let attempt = 0; attempt < 40 && unsubscribed === 0; attempt += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    window.productionTransportResult = { subscriptions: callbacks.length, unsubscribed };
+    controller.dispose();
+  });
+  await expect.poll(() => page.evaluate(() => window.productionTransportResult)).toEqual({ subscriptions: 1, unsubscribed: 1 });
+});
+
+test("production transport stays off when the admitted catalog capability is absent", async ({ page }) => {
+  await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/lifecycle.js");
+    const base = createGalleryState("ready");
+    const { liveWorkspaceTransportEnabled: _legacyFlag, ...legacyEntry } = base.resources.entry;
+    let finishCatalog;
+    const catalogReady = new Promise(resolve => { finishCatalog = resolve; });
+    const callbacks = [];
+    const connection = { subscribeMessage: async callback => { callbacks.push(callback); return () => {}; }, sendMessagePromise: async () => ({}) };
+    const backend = { catalog: async () => { finishCatalog(); return [legacyEntry]; }, dispose() {} };
+    const projection = { host: base.host, activity: base.activity, batteryPercent: base.batteryPercent,
+      language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
+      entryKey: base.resources.entry.entryId, robotLabel: "Matic", robots: base.robots };
+    const controller = new EffectController(new WorkspaceStore(), backend, connection);
+    controller.sync(projection);
+    await catalogReady;
+    await new Promise(resolve => setTimeout(resolve, 0));
+    window.productionTransportOffResult = callbacks.length;
+    controller.dispose();
+  });
+  await expect.poll(() => page.evaluate(() => window.productionTransportOffResult)).toBe(0);
+});
+
+test("an old enabled catalog row cannot start transport for a changed entry", async ({ page }) => {
+  await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/lifecycle.js");
+    const base = createGalleryState("ready");
+    const oldEntry = { ...base.resources.entry, liveWorkspaceTransportEnabled: true };
+    const callbacks = [];
+    let unsubscribed = 0;
+    let catalogCalls = 0;
+    const connection = {
+      subscribeMessage: async callback => { callbacks.push(callback); return () => { unsubscribed += 1; }; },
+      sendMessagePromise: async message => ({ schema: 1, capabilities: {}, epoch: "e", sequence: 0, coherence_generation: 1,
+        revisions: {}, entry_id: message.entry_id, identity: { entry_id: message.entry_id, floor_mission_id: null, floor_verified: false },
+        status: { state: "ready", reason: null, retryable: false }, payload: { available: true, entry: null } }),
+    };
+    const backend = { catalog: async () => { catalogCalls += 1; return [oldEntry]; }, dispose() {} };
+    const projection = entryKey => ({ host: base.host, activity: base.activity, batteryPercent: base.batteryPercent,
+      language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
+      entryKey, robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
+    const controller = new EffectController(new WorkspaceStore(), backend, connection);
+    controller.sync(projection(oldEntry.entryId));
+    for (let attempt = 0; attempt < 40 && callbacks.length === 0; attempt += 1) await Promise.resolve();
+    if (callbacks.length !== 1) throw new Error("initial enabled entry did not start transport");
+    await new Promise(resolve => setTimeout(resolve, 0));
+    controller.sync(projection("entry-b"));
+    for (let attempt = 0; attempt < 40 && catalogCalls < 2; attempt += 1) await Promise.resolve();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    window.productionEntrySwitchResult = { subscriptions: callbacks.length, unsubscribed, catalogCalls };
+    controller.dispose();
+  });
+  await expect.poll(() => page.evaluate(() => window.productionEntrySwitchResult)).toMatchObject({ subscriptions: 1, unsubscribed: 1 });
+  const result = await page.evaluate(() => window.productionEntrySwitchResult);
+  expect(result.catalogCalls).toBeGreaterThanOrEqual(2);
+});
+
+test("a delayed obsolete enabled catalog cannot start after entry and authorization change", async ({ page }) => {
+  await page.route("**/lifecycle.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/lifecycle.js");
+    const base = createGalleryState("ready");
+    let releaseCatalog;
+    let catalogStarted = false;
+    const oldEntry = { ...base.resources.entry, liveWorkspaceTransportEnabled: true };
+    const callbacks = [];
+    const connection = { subscribeMessage: async callback => { callbacks.push(callback); return () => {}; }, sendMessagePromise: async () => ({}) };
+    const backend = { catalog: async () => { catalogStarted = true; return await new Promise(resolve => { releaseCatalog = resolve; }); }, dispose() {} };
+    const projection = (entryKey, administrator = true) => ({ host: { ...base.host, administrator },
+      activity: base.activity, batteryPercent: base.batteryPercent, language: "en", userKey: "synthetic-user",
+      vacuumEntityId: "vacuum.synthetic", entryKey, robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
+    const controller = new EffectController(new WorkspaceStore(), backend, connection);
+    controller.sync(projection(oldEntry.entryId));
+    for (let attempt = 0; attempt < 40 && !catalogStarted; attempt += 1) await Promise.resolve();
+    controller.sync(projection("entry-b", false));
+    releaseCatalog([oldEntry]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    window.productionStaleCatalogResult = { subscriptions: callbacks.length };
+    controller.dispose();
+  });
+  await expect.poll(() => page.evaluate(() => window.productionStaleCatalogResult)).toEqual({ subscriptions: 0 });
+});
+
 /*
 Paired receipt, same 10s/20Hz long-poll fixture: before routing, legacy was
 3 catalog/2 full-scene/201 delta, while workspace-enabled was 203/202/1;

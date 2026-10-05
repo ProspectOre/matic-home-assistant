@@ -43,6 +43,53 @@ test("catalog, pose, history, and area parsers reject their own malformed root s
   ]);
 });
 
+test("catalog live workspace capability defaults off and validates explicit booleans", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async () => {
+    const { parseCatalog } = await import("/backend-contracts.js");
+    const entry = {
+      entry_id: "entry-a",
+      scene_url: "/api/matic_robot/scene",
+      delta_url: null,
+      pose_url: "/api/matic_robot/pose",
+      history_url: "/api/matic_robot/history",
+      areas_url: "/api/matic_robot/areas",
+      plans_url: "/api/matic_robot/plans",
+      map_revision: 0,
+      map_floor_coherent: true,
+      map_session_verified: true,
+      map_session_key: null,
+      map_block_reason: null,
+      runner_locked: false,
+      stop_settle_pending: false,
+      active_plan: false,
+      native_reconciliation_pending: false,
+      native_session_active: null,
+      map_complete: false,
+      map_truncated: false,
+      selected_floor_ordinal: null,
+      map_floor_ordinal: null,
+      history_count: 0,
+      history_floor_count: 0,
+      map_health: "unknown",
+      stream_failures: 0,
+      bootstrap_state: "not_started",
+      bootstrap_photo_seen: false,
+      bootstrap_structure_seen: false,
+      bootstrap_failures: 0,
+    };
+    const parse = value => parseCatalog({ entries: [value] })[0].liveWorkspaceTransportEnabled;
+    const malformed = { ...entry, live_workspace_transport_enabled: "yes" };
+    let malformedCode = null;
+    try { parse(malformed); } catch (error) { malformedCode = error.code ?? null; }
+    return { omitted: parse(entry), enabled: parse({ ...entry, live_workspace_transport_enabled: true }),
+      disabled: parse({ ...entry, live_workspace_transport_enabled: false }), malformedCode };
+  });
+
+  expect(result).toEqual({ omitted: false, enabled: true, disabled: false,
+    malformedCode: "invalid-live-workspace-transport" });
+});
+
 async function load(page) {
   await page.route("**/backend-contracts.js", route => route.fulfill({
     contentType: "text/javascript",

@@ -523,6 +523,7 @@
       "room_sequence_limit": "Keep the plan at or below 100 rooms. Remove rooms, then save again.",
       "plan_limit_reached": "Delete an existing plan before creating another one.",
       "no_rooms": "Turn on at least one room.",
+      "invalid_workspace_transport": "Choose on or off for live workspace updates.",
       "room_plan_unavailable": "The live room map must be available before you can draw or save an area.",
       "area_map_changed": "The map changed while the editor was open. Previous marks were cleared; redraw the area on the current map.",
       "area_geometry_too_complex": "This area exceeds the safe geometry-checking limit. Try fewer marks or redraw it in a simpler part of the map."
@@ -535,7 +536,18 @@
           "manage_plan": "Manage a plan",
           "add_plan": "Create a plan",
           "manage_areas": "Custom cleaning areas",
+          "workspace_transport": "Live workspace updates",
           "finish": "Done"
+        }
+      },
+      "workspace_transport": {
+        "title": "Live workspace updates",
+        "description": "Allow the administrator-only Map Studio to receive live updates from Home Assistant. This is disabled by default, does not control the robot, and can be turned off at any time.",
+        "data": {
+          "live_workspace_transport": "Enable live workspace updates"
+        },
+        "data_description": {
+          "live_workspace_transport": "Reversible per-robot setting. Server-side administrator checks remain required for every workspace request."
         }
       },
       "manage_areas": {

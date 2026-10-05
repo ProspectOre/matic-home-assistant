@@ -34,7 +34,10 @@ from custom_components.matic_robot.config_flow import (
     _async_select_discovery_host,
     _preferred_discovery_host,
 )
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import (
+    CONF_LIVE_WORKSPACE_TRANSPORT,
+    DOMAIN,
+)
 from custom_components.matic_robot.plans import CleaningPlanManager
 
 PAIRING_CONFIRMED = {"pairing_mode_enabled": True}
@@ -991,7 +994,7 @@ async def test_removing_flow_cancels_pairing_tasks_and_passkey() -> None:
     assert passkey_exchange._passkey.cancelled()
 
 
-async def _options_entry(hass):
+async def _options_entry(hass, *, options: dict[str, object] | None = None):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(
         async_load=AsyncMock(return_value=None), async_save=AsyncMock()
@@ -1027,7 +1030,9 @@ async def _options_entry(hass):
             "return_to_base": True,
         },
     )
-    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={}, options={} if options is None else options
+    )
     entry.runtime_data = SimpleNamespace(
         coordinator=SimpleNamespace(
             data=SimpleNamespace(
@@ -1059,6 +1064,57 @@ async def test_options_flow_opens_when_entry_is_loaded(hass) -> None:
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
+
+
+async def test_live_workspace_transport_option_defaults_off_and_is_reversible(
+    hass,
+) -> None:
+    entry, _manager = await _options_entry(
+        hass, options={"existing_option": "preserved"}
+    )
+
+    form = await _start_options_step(hass, entry, "workspace_transport")
+
+    assert form["step_id"] == "workspace_transport"
+    assert _form_defaults(form) == {CONF_LIVE_WORKSPACE_TRANSPORT: False}
+    enabled = await hass.config_entries.options.async_configure(
+        form["flow_id"], {CONF_LIVE_WORKSPACE_TRANSPORT: True}
+    )
+    assert enabled["type"] is FlowResultType.CREATE_ENTRY
+    assert enabled["data"] == {
+        "existing_option": "preserved",
+        CONF_LIVE_WORKSPACE_TRANSPORT: True,
+    }
+    assert dict(entry.options) == enabled["data"]
+
+    persisted_entry, _manager = await _options_entry(hass, options=dict(entry.options))
+    form = await _start_options_step(hass, persisted_entry, "workspace_transport")
+    assert _form_defaults(form) == {CONF_LIVE_WORKSPACE_TRANSPORT: True}
+    disabled = await hass.config_entries.options.async_configure(
+        form["flow_id"], {CONF_LIVE_WORKSPACE_TRANSPORT: False}
+    )
+    assert disabled["type"] is FlowResultType.CREATE_ENTRY
+    assert disabled["data"] == {
+        "existing_option": "preserved",
+        CONF_LIVE_WORKSPACE_TRANSPORT: False,
+    }
+    assert dict(persisted_entry.options) == disabled["data"]
+
+
+@pytest.mark.parametrize("malformed", ["true", 1, None])
+async def test_live_workspace_transport_rejects_malformed_values(
+    hass, malformed
+) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    result = await flow.async_step_workspace_transport(
+        {CONF_LIVE_WORKSPACE_TRANSPORT: malformed}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_workspace_transport"}
+    assert _form_defaults(result) == {CONF_LIVE_WORKSPACE_TRANSPORT: False}
 
 
 def _direct_options_flow(hass, entry) -> MaticRobotOptionsFlow:

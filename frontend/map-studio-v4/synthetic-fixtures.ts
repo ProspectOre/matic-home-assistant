@@ -95,6 +95,7 @@ export const syntheticScene = (): SceneModel => {
 
 export const syntheticEntry = (): MapEntry => ({
   entryId: "synthetic-entry",
+  liveWorkspaceTransportEnabled: false,
   sceneUrl: "/api/matic_robot/slam_scene/synthetic",
   deltaUrl: "/api/matic_robot/slam_delta/synthetic",
   poseUrl: "/api/matic_robot/slam_pose/synthetic",

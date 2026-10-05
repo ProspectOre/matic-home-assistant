@@ -61,6 +61,7 @@ from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
     CONF_HOSTNAME,
+    CONF_LIVE_WORKSPACE_TRANSPORT,
     CONF_SERIAL_NUMBER,
     DEFAULT_PORT,
     DOMAIN,
@@ -1684,11 +1685,42 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             menu_options.append("manage_plan")
         menu_options.append("add_plan")
         menu_options.append("manage_areas")
+        menu_options.append("workspace_transport")
         menu_options.append("finish")
         return self.async_show_menu(
             step_id="init",
             menu_options=menu_options,
             description_placeholders=self._summary(),
+        )
+
+    async def async_step_workspace_transport(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Configure the reversible, administrator workspace live transport."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            enabled = user_input.get(CONF_LIVE_WORKSPACE_TRANSPORT)
+            if type(enabled) is not bool:
+                errors["base"] = "invalid_workspace_transport"
+            else:
+                options = dict(self.config_entry.options)
+                options[CONF_LIVE_WORKSPACE_TRANSPORT] = enabled
+                return self.async_create_entry(title="", data=options)
+
+        return self.async_show_form(
+            step_id="workspace_transport",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_LIVE_WORKSPACE_TRANSPORT,
+                        default=(
+                            self.config_entry.options.get(CONF_LIVE_WORKSPACE_TRANSPORT)
+                            is True
+                        ),
+                    ): selector.BooleanSelector()
+                }
+            ),
+            errors=errors,
         )
 
     async def async_step_manage_areas(

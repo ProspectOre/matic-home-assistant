@@ -35,11 +35,6 @@ import { PreferenceStore, type MapPreferences } from "./preferences";
 import { WorkspaceTransport, type WorkspaceConnection } from "./workspace-transport";
 import { PageLifecycle } from "./page-lifecycle";
 
-// Transport switchover remains disabled until snapshot parity and performance
-// evidence are recorded. The lifecycle is wired so enabling it is one policy
-// change rather than a second state path.
-export const WORKSPACE_TRANSPORT_ENABLED = false;
-
 const resource = <T>(
   status: "idle" | "loading" | "ready" | "empty" | "error",
   value: T | null,
@@ -191,20 +186,25 @@ export class EffectController {
   #manualPreviewRequestIdentity = "";
   #manualPreviewPreflight = false;
   readonly #workspaceConnection: WorkspaceConnection | null;
-  readonly #workspaceTransportEnabled: boolean;
+  readonly #workspaceTransportOverride: boolean | undefined;
 
   workspaceDiagnostics() {
     return this.#workspaceTransport?.diagnostics() ?? null;
   }
 
-  constructor(store: WorkspaceStore, backend: MaticBackend, workspaceConnection: WorkspaceConnection | null = null, workspaceTransportEnabled = WORKSPACE_TRANSPORT_ENABLED) {
+  constructor(
+    store: WorkspaceStore,
+    backend: MaticBackend,
+    workspaceConnection: WorkspaceConnection | null = null,
+    workspaceTransportOverride?: boolean,
+  ) {
     this.#store = store;
     // A remounted controller continues the store's existing public generation
     // sequence while keeping the coherence machine as the sole authority.
     this.#coherence = new CoherenceMachine(store.value.generation);
     this.#backend = backend;
     this.#workspaceConnection = workspaceConnection;
-    this.#workspaceTransportEnabled = workspaceTransportEnabled;
+    this.#workspaceTransportOverride = workspaceTransportOverride;
     this.#pageLifecycle = new PageLifecycle({
       onSuspend: () => this.#suspendPage(),
       onResume: () => { void this.#resumePage(); },
@@ -561,7 +561,14 @@ export class EffectController {
 
   #syncWorkspaceTransport(projection: HassProjection): void {
     const entryId = projection.entryKey;
-    if (!this.#workspaceTransportEnabled || !this.#workspaceConnection || !projection.host.administrator
+    const state = this.#store.value;
+    const catalogEntry = state.resources.catalog.value?.find((entry) => entry.entryId === entryId);
+    const admittedEntry = state.resources.entry;
+    const capabilityEnabled = this.#workspaceTransportOverride
+      ?? Boolean(catalogEntry?.liveWorkspaceTransportEnabled
+        && admittedEntry?.entryId === entryId
+        && admittedEntry.liveWorkspaceTransportEnabled);
+    if (!capabilityEnabled || !this.#workspaceConnection || !projection.host.administrator
       || !projection.host.connected || !projection.vacuumEntityId || !entryId || !this.#pageLifecycle.active) {
       this.#disposeWorkspaceTransport();
       return;
@@ -767,6 +774,7 @@ export class EffectController {
         ...(rows ? { catalog: { ...catalog, value: rows } } : {}),
       },
     });
+    if (this.#projection) this.#syncWorkspaceTransport(this.#projection);
     return true;
   }
 
@@ -1218,6 +1226,7 @@ export class EffectController {
           entry: selected,
         },
       });
+      if (this.#projection) this.#syncWorkspaceTransport(this.#projection);
       if (!selected) {
         this.#clearPrivate("no-loaded-robot", this.#projection?.entryKey ?? null);
         return;

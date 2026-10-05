@@ -21,6 +21,7 @@ CONF_CLEANING_MODE: Final = "cleaning_mode"
 CONF_COVERAGE_SETTING: Final = "coverage_setting"
 CONF_HERMES_CREDENTIAL: Final = "hermes_credential"
 CONF_HOSTNAME: Final = "hostname"
+CONF_LIVE_WORKSPACE_TRANSPORT: Final = "live_workspace_transport"
 CONF_SERIAL_NUMBER: Final = "serial_number"
 
 DEFAULT_PORT: Final = 16320

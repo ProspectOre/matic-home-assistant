@@ -33,7 +33,10 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.client.slam_map import decode_slam_tile
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import (
+    CONF_LIVE_WORKSPACE_TRANSPORT,
+    DOMAIN,
+)
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
@@ -288,9 +291,14 @@ def _entry(
     domain: str = DOMAIN,
     state=ConfigEntryState.LOADED,
     entry_id: str = "entry",
+    options: dict[str, object] | None = None,
 ):
     return SimpleNamespace(
-        domain=domain, state=state, runtime_data=runtime, entry_id=entry_id
+        domain=domain,
+        state=state,
+        runtime_data=runtime,
+        entry_id=entry_id,
+        options={} if options is None else options,
     )
 
 
@@ -1071,7 +1079,7 @@ async def test_pose_view_hides_missing_entry_and_requires_admin() -> None:
 
 async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> None:
     runtime = _runtime()
-    loaded = _entry(runtime)
+    loaded = _entry(runtime, options={CONF_LIVE_WORKSPACE_TRANSPORT: True})
     unloaded = _entry(
         _runtime(), state=ConfigEntryState.NOT_LOADED, entry_id="unloaded"
     )
@@ -1088,6 +1096,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         await MaticSlamCatalogView("/matic_robot/test/room-plan-editor.js").get(
             _request(hass, admin=False)
         )
+    hass.config_entries.async_entries.assert_not_called()
 
     scene_view = MaticSlamSceneView()
     response = await MaticSlamCatalogView(
@@ -1102,6 +1111,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         "entries": [
             {
                 "entry_id": loaded.entry_id,
+                "live_workspace_transport_enabled": True,
                 "scene_url": f"/api/matic_robot/slam_scene/{loaded.entry_id}",
                 "delta_url": f"/api/matic_robot/slam_delta/{loaded.entry_id}",
                 "pose_url": f"/api/matic_robot/slam_pose/{loaded.entry_id}",
@@ -1227,6 +1237,27 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         json.loads(mismatched.body)["entries"][0]["map_block_reason"]
         == "floor_plan_mismatch"
     )
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, False),
+        ({CONF_LIVE_WORKSPACE_TRANSPORT: True}, True),
+        ({CONF_LIVE_WORKSPACE_TRANSPORT: False}, False),
+        ({CONF_LIVE_WORKSPACE_TRANSPORT: "true"}, False),
+        ({CONF_LIVE_WORKSPACE_TRANSPORT: 1}, False),
+    ],
+)
+async def test_admin_catalog_projects_only_strict_live_transport_boolean(
+    options: dict[str, object], expected: bool
+) -> None:
+    runtime = _runtime()
+    loaded = _entry(runtime, options=options)
+    response = await MaticSlamCatalogView("/editor.js").get(_request(_hass(loaded)))
+
+    entry = json.loads(response.body)["entries"][0]
+    assert entry["live_workspace_transport_enabled"] is expected
 
 
 async def test_area_workspace_lists_current_and_stale_private_areas() -> None:

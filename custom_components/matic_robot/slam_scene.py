@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
@@ -35,7 +36,7 @@ from .client.exceptions import MaticError
 from .client.floor_plan import resolve_robot_map_position, robot_location_source
 from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
 from .client.slam_map import decode_slam_tile, encode_slam_scene
-from .const import DOMAIN
+from .const import CONF_LIVE_WORKSPACE_TRANSPORT, DOMAIN
 from .plans import (
     CleaningRoom,
     MetadataAdmissionClosedError,
@@ -134,6 +135,8 @@ def catalog_entry_projection(
     entry_id: str,
     runtime: MaticRuntimeData,
     scene_view: MaticSlamSceneView | None = None,
+    *,
+    options: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Project the bounded catalog row shared by REST and workspace snapshots."""
     health = runtime.slam_map.health
@@ -180,6 +183,9 @@ def catalog_entry_projection(
     telemetry = getattr(runtime.coordinator.data, "telemetry", None)
     return {
         "entry_id": entry_id,
+        "live_workspace_transport_enabled": (
+            options is not None and options.get(CONF_LIVE_WORKSPACE_TRANSPORT) is True
+        ),
         "scene_url": scene_api_url(entry_id),
         "delta_url": delta_api_url(entry_id),
         "pose_url": pose_api_url(entry_id),
@@ -933,7 +939,10 @@ class MaticSlamCatalogView(HomeAssistantView):
                 continue
             health = runtime.slam_map.health
             projection = catalog_entry_projection(
-                entry.entry_id, runtime, self._scene_view
+                entry.entry_id,
+                runtime,
+                self._scene_view,
+                options=getattr(entry, "options", None),
             )
             entries.append(
                 {

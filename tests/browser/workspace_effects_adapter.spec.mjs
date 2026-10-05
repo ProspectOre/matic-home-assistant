@@ -22,6 +22,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
     const wireCatalogEntry = entry => ({ entry_id: entry.entryId, scene_url: entry.sceneUrl,
       delta_url: entry.deltaUrl, pose_url: entry.poseUrl, history_url: entry.historyUrl,
       areas_url: entry.areasUrl, plans_url: entry.plansUrl, map_revision: entry.mapRevision,
+      live_workspace_transport_enabled: entry.liveWorkspaceTransportEnabled,
       map_floor_coherent: entry.mapFloorCoherent, map_session_verified: entry.mapSessionVerified,
       map_session_key: entry.mapSessionKey, map_block_reason: entry.mapBlockReason,
       runner_locked: entry.runnerLocked, stop_settle_pending: entry.stopSettlePending,

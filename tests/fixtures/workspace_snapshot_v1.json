@@ -35,6 +35,7 @@
     "available": true,
     "entry": {
       "entry_id": "synthetic-entry",
+      "live_workspace_transport_enabled": false,
       "scene_url": "/api/matic_robot/slam_scene/synthetic-entry",
       "delta_url": "/api/matic_robot/slam_delta/synthetic-entry",
       "pose_url": "/api/matic_robot/slam_pose/synthetic-entry",
