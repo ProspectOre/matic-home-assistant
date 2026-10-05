@@ -119,7 +119,7 @@ history.
 Effective mode and coverage are resolved before mixed mission grouping and are persisted, with policy identity and cadence snapshot, before dispatch. Manual and saved-plan
 starts consume the authoritative preview, bound to identity, order, settings, and progress by a fingerprint revalidated after preparation awaits. Stop policy belongs to the
 frozen run. Only a unique, verified managed room completion advances progress. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to
-match before comparing goals. Hermes exposes no verified `coverage_plan` generation, so matching goal values are only a consistency guard, not causal proof of the dispatched
+match before comparing goals. The supported `coverage_plan` read model has no verified generation/receipt marker, so matching goal values are only a consistency guard, not causal proof of the dispatched
 settings. They never clear periodic coverage; due work remains due until a verified per-run settings signal exists. Persisted legacy proof flags are ignored. Partial,
 interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate, or ambiguous floor/name evidence does not. Keep the bounded 64-key completion
 receipt dedupe independent of the Activity journal. Dispatch markers freeze the requested mode/coverage; live and startup reconciliation share one recorder. Completion proof is independent of settings-qualified duration estimates; changed or unknown settings invalidate prior samples. A due rule stays due until

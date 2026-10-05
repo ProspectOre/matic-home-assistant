@@ -1,22 +1,16 @@
 # Workspace and persistence contract qualification
 
 This source qualification extends the [0.5 evidence matrix](acceptance-0.5.md).
-It does not qualify an installed RC, enable live transport, or establish the
-remaining performance, device, physical, or owner acceptance gates.
+It does not qualify an installed RC, enable live transport, or establish performance/device/physical/owner acceptance.
 
 ## Retained adapters
 
-The browser contracts exercise the actual backend reader for malformed JSON,
-Area-save envelopes, truncated live/history scene bodies, and invalid content
-type, revision, and floor headers. Shared parsers reject malformed catalog,
-pose, history, and Area roots. The configured focused browser run passed 13
-cases across Chromium, WebKit, and Firefox safety.
-
-Five Python cases verify administrator checks precede Area body/store access,
-cancellation before an Area body is accepted cannot mutate storage, cancelled
-pose/history reads propagate cancellation, and cancelled delta long polls
-remove both subscriptions. These complement the existing deadline and endpoint
-contracts; they are not a claim that every possible malformed input was tested.
+Browser contracts exercise the actual backend reader for malformed JSON, Area
+envelopes, truncated scene bodies, content type/revision/floor headers, and
+invalid catalog/pose/history roots. Python contracts verify administrator checks
+precede body/store access, cancellation before admission cannot mutate storage,
+and cancelled delta reads remove both subscriptions. These complement deadline
+and endpoint checks; they do not exhaust malformed-input combinations.
 
 ## Local measurements
 
@@ -28,25 +22,19 @@ boundary. In-flight, pre-aborted, and rejected-path calls are excluded.
 Validation performed after that boundary returns is not measured as HTTP failure.
 
 `WorkspaceTransport` separately measures snapshot RPC attempts and recovery
-episodes under the existing typed recovery reasons. An RPC resolving does not
-mean recovery succeeded. Recovery completes only after a ready snapshot is
-admitted and buffered replay requires no further resynchronization. An ongoing
-episode remains active in diagnostics; the instrumentation adds no timeout policy.
+episodes under the existing typed recovery reasons. An RPC resolving does not mean recovery succeeded. Recovery completes only after
+a ready snapshot is admitted and replay needs no resynchronization. Ongoing episodes
+remain active in diagnostics; instrumentation adds no timeout policy.
 
 The panel's on-demand `getRequestDiagnostics()` returns immutable aggregates
 for its current controllers. Reading them issues no request and causes no store
 commit or render. Disposal clears them; late results cannot repopulate them.
 Counters and cumulative durations saturate; no per-request samples accumulate.
-No URLs, identifiers, headers, payloads, names, geometry, or credentials are
-recorded. There is no persistence or telemetry transmission.
+No URLs, identifiers, headers, payloads, names, geometry or credentials are recorded; there is no persistence or telemetry transmission.
 
-The focused checks passed three HTTP-metric cases, 36 transport cases, and five
-source panel lifecycle cases. Three packaged-panel cases also passed across
-Chromium, WebKit, and Firefox. These include 100 passive diagnostics reads and
-the existing 20-cycle mount/unmount resource test. TypeScript checks passed.
-
-The earlier build measured 88,947/13,830 gzip bytes for the initial/lazy graphs,
-within the inherited 90/30 KiB budgets; hosted bundle parity is a separate check.
+Focused HTTP/transport and packaged lifecycle contracts include passive diagnostics
+reads and the 20-cycle mount/unmount test. Matching full hosted results are below;
+[the paired desktop receipt](performance-0.5-runtime-contracts.md) supplies byte budgets.
 
 These aggregates support controlled comparisons; they do not provide latency
 percentiles, presented-frame measurements, or causal performance attribution.
@@ -105,8 +93,7 @@ rejected. Public edits fail visibly instead of acknowledging an unchanged plan o
 The executor uses one bounded leg observer across checkpoint and room-metadata
 writes. It retains room, pause/resume, and terminal transitions during those awaits,
 rechecks native ownership before room effects, and removes its listener on exit.
-Stop/history regressions use synthetic state transitions; they do not establish physical acceptance. Published `5d7ce3c`
-Browser [37369702508](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37369702508) passed 1,058 cases, one existing capability skip, and bundle parity. Test [37369702468](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37369702468), Validate [37369702416](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37369702416), and review route [37370665084](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37370665084) failed hosted-runner acquisition before steps; no Test/HACS/Hassfest or review result was produced. The GitHub incident was last confirmed active at 19:50 UTC Oct 5, historical status only.
+Stop/history regressions use synthetic state transitions; they do not establish physical acceptance. Product head `a9f5e4dcc957850e0f7f30bcc66bdb83f2f22b16` passes hosted [Test 37375038495](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37375038495) (3,905 tests, 16,771 statements, 100% coverage, quality/privacy/package gates), [Browser 37375038517](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37375038517) (1,058 cases, one named Firefox capability skip, bundle parity), and [Validate 37375038592](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37375038592) (HACS/Hassfest). The preceding head's hosted-runner acquisition failures are historical and establish no source result.
 
 Review identified duplicate pause observations and lost resume evidence during
 slow persistence. Each queued suspension now retains its own resume evidence.
@@ -127,8 +114,11 @@ The repair fences queued requests by epoch, drains accepted lock owners, and per
 only current-token managed STOP cleanup. Tests cover reopen, rejected-owner preservation,
 accepted drain, native preflight, and late matching dock evidence after metadata shutdown.
 The frozen repair passes 3,905 tests, 100% coverage (16,771 statements), static checks,
-and privacy. Independent source review found no remaining issue; fresh hosted checks
-and clean ordinary review remain required. No runtime acceptance is inferred.
+and privacy. The matching hosted checks above pass. Independent source review found
+no remaining issue. The provider's [finding-free response](https://github.com/ProspectOre/matic-home-assistant/pull/207#issuecomment-6003257337)
+uses only an abbreviated commit; historical event acknowledgements also remain
+unverified. Supported exact-comparison review reconciliation is required, without
+an override or duplicate request. No runtime acceptance is inferred.
 
 ## Late cadence identity
 
@@ -146,5 +136,15 @@ native completion is recorded once and the pending marker is cleared. Malformed
 snapshots are discarded by the existing validator. The 138 focused manager,
 reservation, policy, and checkpoint-validation cases cover all 105 accounting
 statements. Independent review found no remaining issue in this identity repair.
-Hosted CI and ordinary review remain required; these contracts do not supply
-causal coverage-setting or physical evidence.
+The matching hosted CI above passes; exact-comparison review reconciliation remains
+required. These contracts do not supply causal coverage-setting or physical evidence.
+
+## Coverage evidence boundary
+
+Current supported reads do not causally bind retained `coverage_plan` goals to dispatch.
+The active-session UUID supplies task identity; stable reads supply consistency only.
+Native history's `AreaModeSummary` field 6 is not qualified: neither its enum meaning nor
+record-to-dispatch attribution is established by supported synthetic fixtures. Credit
+requires a verified robot receipt linking effective room settings to dispatch, or a
+verified per-run history setting and attribution contract. Guessing either violates the
+protocol boundary. Coverage remains due; this gap is not an approved scope deferral.
