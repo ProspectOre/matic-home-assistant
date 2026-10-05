@@ -134,10 +134,10 @@ def apply_verified_cadence(
     ):
         return False
     expected_identity = cadence_state.get("identity")
-    if (
-        validate_current_identity
-        and isinstance(expected_identity, str)
-        and expected_identity != current_identity
+    if validate_current_identity and (
+        not _valid_room_identity(expected_identity)
+        or not _valid_room_identity(current_identity)
+        or expected_identity != current_identity
     ):
         return False
     scope = cadence_state.get("scope")

@@ -2435,6 +2435,145 @@ async def test_late_native_reconciliation_credits_frozen_cadence_once(
     assert "pending_native_reconciliation" not in robot
 
 
+@pytest.mark.parametrize("scope", ("plan", "shared"))
+@pytest.mark.parametrize(
+    ("identity_case", "expected_mop_progress"),
+    (
+        ("missing", 1),
+        ("malformed", 1),
+        ("matching", 0),
+        ("mismatch", 1),
+    ),
+)
+async def test_manager_native_reconciliation_requires_checkpoint_identity(
+    hass, scope, identity_case, expected_mop_progress
+):
+    """Manager reconciliation credits only a current, matching room identity."""
+    manager = _manager(hass)
+    floor = _floor()
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
+    current_identity = room_cadence_identity(floor, room.room_id)
+    policy = {"scope": scope, "mop_every_n": 2}
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room.room_id,
+                    "cleaning_mode": room.cleaning_mode,
+                    "coverage_setting": room.coverage_setting,
+                    "cadence": policy,
+                }
+            ],
+        },
+        room_identities={room.room_id: current_identity},
+        floor_token=plan_floor_token(floor),
+    )
+    robot = manager._robot("serial")
+    if scope == "shared":
+        cadence_record = robot["shared_room_cadence"][room.room_id]
+    else:
+        cadence_record = (
+            robot["plan_room_cadence"]
+            .setdefault("home", {})
+            .setdefault(room.room_id, {"identity": current_identity})
+        )
+    cadence_record["progress"] = {"mop": 1, "coverage": 0}
+    _effective_rooms, snapshots = manager.resolve_cadence(
+        "serial",
+        "home",
+        [room],
+        floor_token=plan_floor_token(floor),
+        room_identities={room.room_id: current_identity},
+    )
+    cadence_state = dict(snapshots[room.room_id])
+    if identity_case == "matching":
+        cadence_state["identity"] = current_identity
+    elif identity_case == "mismatch":
+        cadence_state["identity"] = "b" * 64
+    elif identity_case == "malformed":
+        cadence_state["identity"] = "not-a-room-identity"
+
+    effective_room = CleaningRoom(
+        room.room_id,
+        room.name,
+        cadence_state["effective_cleaning_mode"],
+        cadence_state["effective_coverage_setting"],
+    )
+    run_id = f"identity-{scope}-{identity_case}"
+    await manager.async_begin_run(
+        "serial", "home", run_id, 1, trigger="user", service="test"
+    )
+    await manager.async_set_recovery_checkpoint(
+        "serial",
+        run_id,
+        {
+            "cadence_by_room": {room.room_id: cadence_state},
+            "completed_room_ids": [],
+        },
+    )
+    now = dt_util.utcnow()
+    dispatched_at = now - timedelta(seconds=30)
+    await manager.async_mark_interrupted(
+        "serial",
+        "home",
+        effective_room,
+        "delayed native completion",
+        native_reconciliation={
+            "plan_id": "home",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": dispatched_at.isoformat(),
+            "expires_at": (now + timedelta(minutes=5)).isoformat(),
+            "cleaning_mode": effective_room.cleaning_mode,
+            "coverage_setting": effective_room.coverage_setting,
+            "run_id": run_id,
+        },
+    )
+    pending = robot.get("pending_native_reconciliation")
+    assert isinstance(pending, dict)
+    if identity_case == "missing":
+        stored_state = pending.get("cadence_state")
+        assert isinstance(stored_state, dict)
+        assert "identity" not in stored_state
+    elif identity_case == "malformed":
+        assert "cadence_state" not in pending
+    else:
+        stored_state = pending.get("cadence_state")
+        assert isinstance(stored_state, dict)
+        expected_identity = (
+            current_identity if identity_case == "matching" else "b" * 64
+        )
+        assert stored_state["identity"] == expected_identity
+    record = CleaningSessionRecord(
+        b"identity-reconciliation-session",
+        CleaningSession(
+            (now - timedelta(seconds=31)).isoformat(),
+            (now - timedelta(seconds=1)).isoformat(),
+            30,
+            (room.name,),
+            ((room.name, 30),),
+            None,
+            (room.name,),
+            combined_completed_rooms=(room.name,),
+            mode_results=(
+                CleaningModeResult(
+                    room.name, effective_room.cleaning_mode, "completed", 30
+                ),
+            ),
+        ),
+    )
+
+    assert await manager.async_import_native_history("serial", floor, [record])
+    assert manager.cadence_progress("serial", "home", room.room_id)["mop"] == (
+        expected_mop_progress
+    )
+    assert len(robot["native_completion_dedup"]) == 1
+    assert "pending_native_reconciliation" not in robot
+
+
 async def test_late_completion_is_saved_when_current_room_identity_is_unavailable(
     hass, monkeypatch
 ) -> None:

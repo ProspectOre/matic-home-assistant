@@ -1,6 +1,6 @@
 # Matic 0.5 authority contract
 
-Status: implementation contract; evidence: `acceptance-0.5.md`. Baseline: public stable `v0.4.6` at `52166df`. Binding inputs: the Matic Map Studio Roadmap, architecture
+Status: implementation contract; evidence: `acceptance-0.5.md`. Baseline: public stable `v0.4.7`. Binding inputs: the Matic Map Studio Roadmap, architecture
 authority, and full 2026-08-29 independent review; historical status and release counts are refreshed in the evidence matrix. Scope: integration ownership and lifecycle,
 map-first operation, reliable live updates, explainable cleaning, independent room cadence. Owner refinement (2026-09-27): Map Studio v4 is the sole workspace UI. Remove
 Classic, its switch and saved frontend choice; preserve HA-native configuration forms and safe map/view preferences.

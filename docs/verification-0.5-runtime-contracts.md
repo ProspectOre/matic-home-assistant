@@ -52,8 +52,8 @@ bundle parity remain an independent check.
 
 These aggregates support controlled comparisons; they do not provide latency
 percentiles, presented-frame measurements, or causal performance attribution.
-The existing paired performance harness remains responsible for those lab
-measurements. Live transport stays default-OFF. The proposed 1 s status, 3 s
+The [paired desktop receipt](performance-0.5-runtime-contracts.md) records the
+current lab measurements and their limits. Live transport stays default-OFF. The proposed 1 s status, 3 s
 resynchronization, and 70% request reduction targets remain unqualified.
 
 ## Persistence ownership
@@ -78,10 +78,29 @@ behavior during shutdown into a synchronous durable acknowledgment.
 The affected plan and cadence regression modules passed 421 cases. The final
 real-Store and Area tests passed 18 cases and exercised all 94 added persistence
 statements, including failed first-save cleanup that preserves unrelated
-concurrent metadata. The initial candidate also passed the hosted 3,833-test
-backend suite at 100% coverage and 1,058 browser cases with one existing skip;
+concurrent metadata. The `d9310fd` qualification baseline passed the hosted
+3,835-test backend suite at 100% coverage and 1,058 browser cases with one existing skip;
 source revisions require fresh exact-head checks. Full
 candidate coverage, generated-bundle parity, hosted checks, and exact-head
 ordinary review remain separate gates. Independent bounded source review found
 no introduced defect in the measurements or persistence ownership changes;
 that review does not replace the full product and architecture acceptance.
+
+## Late cadence identity
+
+Independent review found that a legacy checkpoint without a saved room identity
+could credit the current room's cadence during native-history reconciliation.
+The manager-path regression reproduced the incorrect credit before the repair.
+The accounting authority now requires valid, equal saved and current room
+identities whenever current-identity validation is requested. Completion history
+and deduplication remain independent of cadence eligibility.
+
+All 72 cadence-manager cases passed, including private/shared schedules with
+missing, malformed, matching, and mismatched identities. Valid matches still
+credit cadence; missing or conflicting evidence leaves progress unchanged while
+native completion is recorded once and the pending marker is cleared. Malformed
+snapshots are discarded by the existing validator. The 138 focused manager,
+reservation, policy, and checkpoint-validation cases collectively cover all
+105 accounting statements. Independent re-review found
+no remaining issue in this repair. This follow-up needs fresh exact-head CI and
+ordinary review; it does not supply causal coverage-setting or physical evidence.
