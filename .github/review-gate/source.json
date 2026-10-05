@@ -4,7 +4,7 @@
   "sha256": "fd7ca16b44aa429cdc1b6e5295248a58b0cf447413f5825aff5106f7b94bd913",
   "dependencyClassifierSha256": "3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455",
   "reviewSectionsSha256": "566ebdb319d6d0bfecdf1198bd8e5917537f633397845047070941694c6f4b51",
-  "nativeCodexReviewSha256": "fa3edede163d8561f6717ae0b4e42454e1021490f42a091d1b04692bfce08349",
+  "nativeCodexReviewSha256": "ba8e4e6238800590b8f99178bdc2943e170f1bdbf0ea91d64db0240213efa93d",
   "markdownRuntime": {
     "version": 1,
     "parser": "mistune",
