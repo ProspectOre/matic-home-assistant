@@ -1,46 +1,48 @@
 import { expect, test } from "@playwright/test";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
-test("@safety request diagnostics are passive and scoped to the mounted controller", async ({ page }) => {
-  await installPanelFixture(page);
-  await page.evaluate(() => {
-    const panel = window.__panelFixture.createPanel();
-    window.diagnosticsPanel = panel;
-    document.body.append(panel);
+for (const moduleSource of ["typescript", "packaged"]) {
+  test(`@safety request diagnostics are passive and scoped to the mounted controller (${moduleSource})`, async ({ page }) => {
+    await installPanelFixture(page, { moduleSource });
+    await page.evaluate(() => {
+      const panel = window.__panelFixture.createPanel();
+      window.diagnosticsPanel = panel;
+      document.body.append(panel);
+    });
+    await expect.poll(() => page.evaluate(() => window.diagnosticsPanel.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+    const result = await page.evaluate(() => {
+      const panel = window.diagnosticsPanel;
+      const before = panel.getWorkspaceSnapshot();
+      const fixture = window.__panelFixture;
+      const reads = fixture.catalogReads;
+      const stats = fixture.stats();
+      const first = panel.getRequestDiagnostics();
+      let unchanged = true;
+      for (let i = 0; i < 100; i += 1) {
+        unchanged &&= JSON.stringify(panel.getRequestDiagnostics()) === JSON.stringify(first);
+      }
+      const passive = panel.getWorkspaceSnapshot() === before
+        && reads === fixture.catalogReads && JSON.stringify(stats) === JSON.stringify(fixture.stats());
+      const frozen = Object.isFrozen(first) && Object.isFrozen(first.http)
+        && Object.values(first.http).every(Object.isFrozen);
+      panel.remove();
+      const detached = panel.getRequestDiagnostics();
+      document.body.append(panel);
+      const remounted = panel.getRequestDiagnostics();
+      panel.remove();
+      return { first, unchanged, passive, frozen, detached, remounted };
+    });
+    expect(result.first.http.catalog.completed).toBeGreaterThan(0);
+    expect(result.first.http.scene.completed).toBeGreaterThan(0);
+    expect(result.first.workspace).toBeNull();
+    expect(result.unchanged).toBe(true);
+    expect(result.passive).toBe(true);
+    expect(result.frozen).toBe(true);
+    expect(result.detached).toEqual({ http: null, workspace: null });
+    for (const metric of Object.values(result.remounted.http)) expect(metric.requests).toBe(0);
+    expect(JSON.stringify(result.first)).not.toMatch(/synthetic|entry_id|floor|\/api\//u);
   });
-  await expect.poll(() => page.evaluate(() => window.diagnosticsPanel.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
-  const result = await page.evaluate(() => {
-    const panel = window.diagnosticsPanel;
-    const before = panel.getWorkspaceSnapshot();
-    const fixture = window.__panelFixture;
-    const reads = fixture.catalogReads;
-    const stats = fixture.stats();
-    const first = panel.getRequestDiagnostics();
-    let unchanged = true;
-    for (let i = 0; i < 100; i += 1) {
-      unchanged &&= JSON.stringify(panel.getRequestDiagnostics()) === JSON.stringify(first);
-    }
-    const passive = panel.getWorkspaceSnapshot() === before
-      && reads === fixture.catalogReads && JSON.stringify(stats) === JSON.stringify(fixture.stats());
-    const frozen = Object.isFrozen(first) && Object.isFrozen(first.http)
-      && Object.values(first.http).every(Object.isFrozen);
-    panel.remove();
-    const detached = panel.getRequestDiagnostics();
-    document.body.append(panel);
-    const remounted = panel.getRequestDiagnostics();
-    panel.remove();
-    return { first, unchanged, passive, frozen, detached, remounted };
-  });
-  expect(result.first.http.catalog.completed).toBeGreaterThan(0);
-  expect(result.first.http.scene.completed).toBeGreaterThan(0);
-  expect(result.first.workspace).toBeNull();
-  expect(result.unchanged).toBe(true);
-  expect(result.passive).toBe(true);
-  expect(result.frozen).toBe(true);
-  expect(result.detached).toEqual({ http: null, workspace: null });
-  for (const metric of Object.values(result.remounted.http)) expect(metric.requests).toBe(0);
-  expect(JSON.stringify(result.first)).not.toMatch(/synthetic|entry_id|floor|\/api\//u);
-});
+}
 
 test("20 admitted panel lifecycles release resources and ignore late history scenes", async ({ page }) => {
   const fixtureInfo = await installPanelFixture(page);

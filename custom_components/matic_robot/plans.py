@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import math
 import struct
 from collections import Counter
@@ -28,6 +29,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
+from homeassistant.util.file import WriteError
+from homeassistant.util.json import SerializationError
 
 from .area_binding import (
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
@@ -58,6 +61,8 @@ from .const import (
 )
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
+
+_LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
 STORAGE_MINOR_VERSION = 10
@@ -566,6 +571,17 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
     """Private plan storage with fail-closed schema migrations."""
 
     @override
+    async def _async_write_data(self, data: dict[str, Any]) -> None:
+        """Make failed writes visible to the caller's accounting rollback."""
+        try:
+            await super()._async_write_data(data)
+        except SerializationError, WriteError:
+            # Store otherwise logs these errors and returns a successful await.
+            # Keep its atomic writer and locks, but do not acknowledge a failed
+            # commit or expose serialization payloads in a service error.
+            raise HomeAssistantError("Cleaning plan state could not be saved") from None
+
+    @override
     async def _async_migrate_func(
         self,
         old_major_version: int,
@@ -667,6 +683,7 @@ class CleaningPlanManager:
             ],
         ] = {}
         self._native_history_saves: dict[str, set[asyncio.Event]] = {}
+        self._area_persistence_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._reconciliation_removal_pending: set[str] = set()
         self._removed_robots: set[str] = set()
         self._robot_generations: dict[str, int] = {}
@@ -1344,6 +1361,8 @@ class CleaningPlanManager:
         if reconciliation_tasks:
             await asyncio.gather(*reconciliation_tasks, return_exceptions=True)
 
+        await self._async_wait_area_persistence(serial_number)
+
     @callback
     def activate_robot(self, serial_number: str) -> int:
         """Clear removal state when a config entry activates this robot."""
@@ -1743,25 +1762,32 @@ class CleaningPlanManager:
         self, serial_number: str, area_id: str, area: Mapping[str, Any]
     ) -> None:
         """Create or replace a private local drawn-area definition."""
-        robot = self._robot(serial_number)
-        robot["areas"][area_id] = deepcopy(dict(area))
-        robot["selected_area"] = area_id
-        await self._async_save_and_notify(serial_number)
+
+        def save(robot: dict[str, Any]) -> None:
+            robot["areas"][area_id] = deepcopy(dict(area))
+            robot["selected_area"] = area_id
+
+        await self._async_mutate_area_metadata(serial_number, save)
 
     async def async_delete_area(self, serial_number: str, area_id: str) -> None:
         """Delete one local drawn area."""
-        robot = self._robot(serial_number)
-        robot["areas"].pop(area_id, None)
-        if robot.get("selected_area") == area_id:
-            robot["selected_area"] = next(iter(robot["areas"]), None)
-        await self._async_save_and_notify(serial_number)
+
+        def delete(robot: dict[str, Any]) -> None:
+            robot["areas"].pop(area_id, None)
+            if robot.get("selected_area") == area_id:
+                robot["selected_area"] = next(iter(robot["areas"]), None)
+
+        await self._async_mutate_area_metadata(serial_number, delete)
 
     async def async_select_area(self, serial_number: str, area_id: str) -> None:
         """Persist the custom area used by native entities."""
-        if area_id not in self._robot(serial_number)["areas"]:
-            raise KeyError(area_id)
-        self._robot(serial_number)["selected_area"] = area_id
-        await self._async_save_and_notify(serial_number)
+
+        def select(robot: dict[str, Any]) -> None:
+            if area_id not in robot["areas"]:
+                raise KeyError(area_id)
+            robot["selected_area"] = area_id
+
+        await self._async_mutate_area_metadata(serial_number, select)
 
     def plan(self, serial_number: str, plan_id: str | None = None) -> dict[str, Any]:
         """Return one saved plan by ID, name, or current selection."""
@@ -4175,6 +4201,103 @@ class CleaningPlanManager:
             async with self._store_lock:
                 await self._store.async_save(self._data)
         self._notify_listeners(serial_number)
+
+    async def _async_mutate_area_metadata(
+        self,
+        serial_number: str,
+        mutate: Callable[[dict[str, Any]], None],
+    ) -> None:
+        """Own an accepted Area metadata commit independently of its waiter."""
+        state_lock = self.state_lock(serial_number)
+        await state_lock.acquire()
+        if serial_number in self._removed_robots:
+            state_lock.release()
+            return
+        released = False
+
+        def release_state_lock() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                state_lock.release()
+
+        worker = self._async_save_area_metadata_and_notify(
+            serial_number, mutate, release_state_lock
+        )
+        try:
+            task = asyncio.create_task(worker)
+        except BaseException:
+            worker.close()
+            release_state_lock()
+            raise
+        tasks = self._area_persistence_tasks.setdefault(serial_number, set())
+        tasks.add(task)
+        task.add_done_callback(
+            lambda completed: self._area_persistence_task_done(
+                serial_number, completed, release_state_lock
+            )
+        )
+        await asyncio.shield(task)
+
+    async def _async_save_area_metadata_and_notify(
+        self,
+        serial_number: str,
+        mutate: Callable[[dict[str, Any]], None],
+        release_state_lock: Callable[[], None],
+    ) -> None:
+        """Persist current shared state while retaining its per-robot fence."""
+        try:
+            if serial_number in self._removed_robots:
+                return
+            robots = self._data["robots"]
+            robot_was_present = serial_number in robots
+            robot = self._robot(serial_number)
+            area_keys = ("areas", "selected_area")
+            before = {key: deepcopy(robot[key]) for key in area_keys if key in robot}
+            try:
+                mutate(robot)
+            except BaseException:
+                current = {
+                    key: deepcopy(robot[key]) for key in area_keys if key in robot
+                }
+                _restore_unsaved_changes(robot, before, current)
+                if not robot_was_present:
+                    robots.pop(serial_number, None)
+                raise
+            applied = {key: deepcopy(robot[key]) for key in area_keys if key in robot}
+            try:
+                async with self._store_lock:
+                    await self._store.async_save(self._data)
+            except Exception:
+                _restore_unsaved_changes(robot, before, applied)
+                raise
+            self._notify_listeners(serial_number)
+        finally:
+            release_state_lock()
+
+    def _area_persistence_task_done(
+        self,
+        serial_number: str,
+        task: asyncio.Task[None],
+        release_state_lock: Callable[[], None],
+    ) -> None:
+        """Retrieve errors from commits whose request waiter was cancelled."""
+        release_state_lock()
+        tasks = self._area_persistence_tasks.get(serial_number)
+        if tasks is not None:
+            tasks.discard(task)
+            if not tasks:
+                self._area_persistence_tasks.pop(serial_number, None)
+        if task.cancelled():
+            _LOGGER.error("Area metadata persistence task was cancelled")
+        elif task.exception() is not None:
+            _LOGGER.error("Area metadata persistence task failed")
+
+    async def _async_wait_area_persistence(self, serial_number: str) -> None:
+        """Wait until all accepted Area commits for a robot have settled."""
+        tasks = tuple(self._area_persistence_tasks.get(serial_number, ()))
+        if tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks))
 
     async def _async_save_with_rollback(
         self, serial_number: str, before: dict[str, Any]
