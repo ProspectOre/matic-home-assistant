@@ -1104,8 +1104,11 @@ regular_evidence() {
            | select($section.parser_ambiguous or $section.target_ref == $head or $section.target_ref == $prefix or (($section.regular_adverse or $section.security_finding) and $section.target_ref == "__unbound__"))
            # A creation receipt authenticates delivery, not which colliding
            # commit an abbreviated footer meant. Require reviewed full-SHA proof.
+           # Insufficient scope makes a finding-free clean candidate unverified;
+           # it must not manufacture retained substantive finding history.
            | (($section.regular_clean == true or ($body | strict_stock_clean_issue_comment_envelope))
-              and $section.reviewed_ref == $head) as $clean_envelope
+              and $section.regular_adverse != true and $section.security_finding != true) as $clean_candidate
+           | ($clean_candidate and $section.reviewed_ref == $head) as $clean_envelope
            | ($clean_envelope and ($body | test("(?is)<details>"))) as $footer_clean
            | (.review_gate_creation_receipt == true or (($require_creation_receipt | not) and $footer_clean)) as $clean_proof
            | {at: (.updated_at // .created_at),
@@ -1120,7 +1123,7 @@ regular_evidence() {
               # for the authenticated, body-bound native creation receipt.
               neutral: false,
               parser_ambiguous: ($section.parser_ambiguous == true),
-              unverified: ($section.parser_ambiguous == true or (($section.regular_adverse == true or $section.security_finding == true) and $section.target_ref == "__unbound__") or ($clean_envelope and ($clean_proof | not))),
+              unverified: ($section.parser_ambiguous == true or (($section.regular_adverse == true or $section.security_finding == true) and $section.target_ref == "__unbound__") or ($clean_candidate and (($clean_envelope | not) or ($clean_proof | not)))),
               unverified_finding: (($section.regular_adverse == true or $section.security_finding == true)
                                    and $section.target_ref == "__unbound__"),
               clean: ($section.parser_ambiguous != true and $clean_proof and $clean_envelope)}])'
@@ -3285,8 +3288,11 @@ if [[ -n "$native_codex_receipt" ]]; then
   # review. Establish it before revoking the required gate so a failed revocation
   # or interruption leaves a durable hold for subsequent audits.
   native_attempt_context="native-codex-attempt/$(python3 -I -c 'import uuid; print(uuid.uuid4().hex)')"
-  stamp_status "$native_attempt_context" pending \
-    "Native attempt pending for PR #$pr_number; h:$head_sha; b:$base_sha" || exit 1
+  if ! stamp_status "$native_attempt_context" pending \
+    "Native attempt pending for PR #$pr_number; h:$head_sha; b:$base_sha"; then
+    stamp_review_gate pending "Native attempt hold could not be established on $head_sha" || true
+    exit 1
+  fi
   # Audit mode skips routine evaluation markers. Revoke the required gate
   # explicitly before capture so interruption cannot preserve prior success.
   stamp_review_gate pending "Capturing native Codex review on $head_sha" || exit 1
