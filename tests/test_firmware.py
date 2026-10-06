@@ -158,6 +158,7 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
         "custom_components.matic_robot.firmware.ir.async_create_issue"
     ) as create_issue:
         await tracker.async_record_snapshot("entry", failed_again)
+    await hass.async_block_till_done()
     assert create_issue.call_args.kwargs["translation_key"] == "firmware_regression"
     assert create_issue.call_args.kwargs["translation_placeholders"] == {
         "previous": "v169.0",
