@@ -377,7 +377,7 @@ def test_native_automation_blueprints_are_importable() -> None:
         (ROOT / "blueprints" / "automation" / "matic_robot").glob("*.yaml")
     )
 
-    assert len(blueprints) == 4
+    assert len(blueprints) == 5
     for path in blueprints:
         content = load_yaml(path)
         blueprint = Blueprint(
