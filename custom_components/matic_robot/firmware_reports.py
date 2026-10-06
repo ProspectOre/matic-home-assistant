@@ -156,7 +156,10 @@ def _has_firmware_version(snapshot: dict[str, Any]) -> bool:
 
 
 def prepare_release(
-    robot: dict[str, Any], current: dict[str, Any]
+    robot: dict[str, Any],
+    current: dict[str, Any],
+    *,
+    force_new_occurrence: bool = False,
 ) -> dict[str, Any] | None:
     """Retain release evidence separately from the rolling snapshot history."""
     release = robot.get("release_evidence")
@@ -168,7 +171,7 @@ def prepare_release(
         if previous := robot.get("snapshot"):
             _advance_release(robot, previous)
     if _has_firmware_version(current):
-        _advance_release(robot, current)
+        _advance_release(robot, current, force_new_occurrence=force_new_occurrence)
     # Legacy reports used a key-derived ID. Keep their current ID during an
     # in-place storage upgrade; subsequent release occurrences get fresh IDs.
     release = robot.get("release_evidence")
@@ -179,6 +182,7 @@ def prepare_release(
     if (
         current_report
         and current_identity is not None
+        and not force_new_occurrence
         and "report_id" not in release
         and current_identity[0] == release["key"][0]
         and current_identity[2] == release["key"][2]
@@ -207,7 +211,12 @@ def _new_report_id(robot: dict[str, Any]) -> str:
     return candidate
 
 
-def _advance_release(robot: dict[str, Any], snapshot: dict[str, Any]) -> None:
+def _advance_release(
+    robot: dict[str, Any],
+    snapshot: dict[str, Any],
+    *,
+    force_new_occurrence: bool = False,
+) -> None:
     if not _has_firmware_version(snapshot):
         return
     release = robot.get("release_evidence")
@@ -224,7 +233,7 @@ def _advance_release(robot: dict[str, Any], snapshot: dict[str, Any]) -> None:
         # Completing version metadata must not replace the preceding release's
         # baseline with this release's own first sample.
         release["key"] = key
-    if release is None or release["key"] != key:
+    if release is None or release["key"] != key or force_new_occurrence:
         previous_good = (
             release.get("last_good") or release.get("baseline") if release else None
         )
@@ -434,9 +443,17 @@ def _observe_finding(
             "supported_capability": False,
         }
     elif finding["status"] == "recovered":
-        finding["observation_count"] += 1
         finding["consecutive_observations"] = 1
-        finding["last_confirmation_at"] = sample_time.isoformat()
+        if (
+            accepted_sample
+            and sample_time
+            >= datetime.fromisoformat(
+                finding.get("last_confirmation_at", finding["first_seen_at"])
+            )
+            + CONFIRMATION_INTERVAL
+        ):
+            finding["observation_count"] += 1
+            finding["last_confirmation_at"] = sample_time.isoformat()
     elif (
         accepted_sample
         and sample_time

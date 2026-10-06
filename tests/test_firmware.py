@@ -67,6 +67,9 @@ async def test_firmware_changes_publish_only_after_persistence(
     tracker._store = SimpleNamespace(async_save=AsyncMock())
     await tracker.async_observe_version("entry", "v168.11", 25)
     await tracker.async_record_snapshot("entry", _snapshot())
+    if operation == "snapshot":
+        # Production observes the current identity before scheduling its scan.
+        await tracker.async_observe_version("entry", "v169.0", 25)
     before = deepcopy(tracker._data)
     summary = tracker.summary("entry")
     listener = MagicMock()
@@ -100,7 +103,7 @@ async def test_firmware_changes_publish_only_after_persistence(
         patch("custom_components.matic_robot.firmware.ir.async_delete_issue") as delete,
     ):
         pending = asyncio.create_task(mutate())
-        await started.wait()
+        await asyncio.wait_for(started.wait(), timeout=5)
         assert tracker.summary("entry") == summary
         assert tracker._data == before
         listener.assert_not_called()
@@ -628,6 +631,7 @@ async def test_wire_shape_candidates_stay_silent_and_compatible(hass) -> None:
         async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
     )
     await tracker.async_load()
+    assert await tracker.async_observe_version("entry", "v169.0", 25) is True
     events = []
     hass.bus.async_listen("matic_robot_firmware_analyzed", events.append)
     current = _snapshot("v169.0", wire_shapes=["1:2", "18:2", "18:2/17:2"])
@@ -910,3 +914,152 @@ async def test_missing_firmware_version_preserves_release_and_report(hass) -> No
     assert result["reason"] == "firmware_version_unavailable"
     assert tracker._data == before
     assert tracker._store.async_save.await_count == saves_before
+
+
+async def test_snapshot_pending_survives_failed_release_and_rollback(
+    hass, monkeypatch
+) -> None:
+    class MemoryStore:
+        data = None
+        fail_next_save = False
+
+        async def async_load(self):
+            return deepcopy(self.data)
+
+        async def async_save(self, data):
+            if self.fail_next_save:
+                self.fail_next_save = False
+                raise OSError("synthetic store failure")
+            self.data = deepcopy(data)
+
+    clock = [datetime(2026, 7, 20, tzinfo=UTC)]
+    monkeypatch.setattr(
+        "custom_components.matic_robot.firmware.dt_util.utcnow", lambda: clock[0]
+    )
+    tracker = FirmwareTracker(hass)
+    store = MemoryStore()
+    tracker._store = store
+    await tracker.async_load()
+
+    assert await tracker.async_observe_version("entry", "v168.11", 25) is False
+    await tracker.async_record_snapshot("entry", _snapshot("v168.11"))
+    assert "snapshot_pending" not in tracker._data["robots"]["entry"]
+    assert "occurrence_pending" not in tracker._data["robots"]["entry"]
+    assert tracker.needs_snapshot("entry", "v168.11", 25) is False
+    original_report = tracker.report("entry")
+    original_report_id = original_report["id"]
+    original_revision = original_report["revision"]
+
+    assert await tracker.async_observe_version("entry", "v169.0", 26) is True
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    assert tracker.needs_snapshot("entry", "v169.0", 26) is True
+    stale_candidate = _snapshot("v168.11")
+    stale = await tracker.async_record_snapshot("entry", stale_candidate)
+    assert stale["discarded"] is True
+    assert stale["reason"] == "snapshot_superseded"
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    # The B capture failed or was cancelled. When firmware returns to A, the
+    # old A snapshot cannot satisfy this newly observed occurrence.
+    assert await tracker.async_observe_version("entry", "v168.11", 25) is True
+    assert tracker.needs_snapshot("entry", "v168.11", 25) is True
+
+    mismatched = _snapshot("v168.11")
+    mismatched["protocol_version"] = 26
+    rejected = await tracker.async_record_snapshot("entry", mismatched)
+    assert rejected["discarded"] is True
+    assert rejected["reason"] == "snapshot_superseded"
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    assert tracker.report("entry")["id"] == original_report_id
+
+    store.fail_next_save = True
+    rollback = _snapshot("v168.11")
+    rollback["captured_at"] = "2026-07-20T00:15:00+00:00"
+    clock[0] = datetime(2026, 7, 20, 0, 15, tzinfo=UTC)
+    with pytest.raises(OSError, match="synthetic store failure"):
+        await tracker.async_record_snapshot("entry", rollback)
+    assert tracker._data["robots"]["entry"]["snapshot_pending"] is True
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    assert store.data["robots"]["entry"]["snapshot_pending"] is True
+    assert store.data["robots"]["entry"]["occurrence_pending"] is True
+
+    reloaded = FirmwareTracker(hass)
+    reloaded._store = store
+    await reloaded.async_load()
+    assert reloaded.needs_snapshot("entry", "v168.11", 25) is True
+    await reloaded.async_record_snapshot("entry", rollback)
+    assert "snapshot_pending" not in reloaded._data["robots"]["entry"]
+    assert "occurrence_pending" not in reloaded._data["robots"]["entry"]
+    assert reloaded.needs_snapshot("entry", "v168.11", 25) is False
+    assert reloaded.report("entry")["id"] != original_report_id
+    assert reloaded.report("entry")["firmware_version"] == "v168.11"
+    assert reloaded._data["robots"]["entry"]["release_evidence"]["key"][0] == (
+        "v168.11"
+    )
+    assert all(
+        item["firmware_version"] != "v169.0"
+        for item in reloaded._data["robots"]["entry"]["history"]
+    )
+    assert all(
+        item["firmware_version"] != "v169.0"
+        for item in reloaded._data["robots"]["entry"].get("report_history", [])
+    )
+    state_after_rollback = deepcopy(reloaded._data)
+    late_b = _snapshot("v169.0")
+    late_b["captured_at"] = "2026-07-20T00:16:00+00:00"
+    late_result = await reloaded.async_record_snapshot("entry", late_b)
+    assert late_result["discarded"] is True
+    assert late_result["reason"] == "snapshot_superseded"
+    assert reloaded._data == state_after_rollback
+    with pytest.raises(ValueError, match="superseded"):
+        await reloaded.async_notification_action(
+            "entry", original_report_id, original_revision, "acknowledge"
+        )
+
+
+async def test_missing_snapshot_protocol_uses_authenticated_known_identity(
+    hass, monkeypatch
+) -> None:
+    clock = [datetime(2026, 7, 20, tzinfo=UTC)]
+    monkeypatch.setattr(
+        "custom_components.matic_robot.firmware.dt_util.utcnow", lambda: clock[0]
+    )
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    await tracker.async_observe_version("entry", "v168.11", 25)
+    await tracker.async_record_snapshot("entry", _snapshot("v168.11"))
+    prior_report_id = tracker.report("entry")["id"]
+
+    assert await tracker.async_observe_version("entry", "v168.11", 26) is True
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    clock[0] = datetime(2026, 7, 20, 0, 15, tzinfo=UTC)
+    incomplete = _snapshot("v168.11")
+    incomplete["protocol_version"] = None
+    incomplete["captured_at"] = clock[0].isoformat()
+    await tracker.async_record_snapshot("entry", incomplete)
+
+    robot = tracker._data["robots"]["entry"]
+    assert robot["snapshot"]["protocol_version"] == 26
+    assert robot["release_evidence"]["key"][1] == 26
+    assert "occurrence_pending" not in robot
+    assert tracker.report("entry")["id"] != prior_report_id
+    assert tracker.needs_snapshot("entry", "v168.11", 26) is False
+
+
+async def test_blank_firmware_identity_does_not_observe_or_request_snapshot(
+    hass,
+) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+
+    assert await tracker.async_observe_version("entry", "", 25) is False
+    assert await tracker.async_observe_version("entry", "   ", None) is False
+    assert tracker.needs_snapshot("entry", "", 25) is False
+    assert tracker.needs_snapshot("entry", "   ", None) is False
+    assert tracker._data == {"robots": {}}
+    tracker._store.async_save.assert_not_awaited()
