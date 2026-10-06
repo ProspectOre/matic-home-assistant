@@ -14,7 +14,7 @@ import json
 import re
 import secrets
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from urllib.parse import urlsplit
 
@@ -39,6 +39,66 @@ ASSESSMENTS = (
     "integration_opportunity",
     "compatibility_issue",
 )
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed
+
+
+def is_future_timestamp(value: Any, now: datetime) -> bool:
+    """Return whether one persisted or incoming timestamp is ahead of wall time."""
+    parsed = _parse_time(value)
+    return parsed is not None and parsed > now
+
+
+def has_future_anchor(robot: dict[str, Any], now: datetime) -> bool:
+    """Find a future snapshot/report anchor that can stall time-based retries."""
+    snapshot = robot.get("snapshot") or {}
+    if is_future_timestamp(snapshot.get("captured_at"), now):
+        return True
+    report = robot.get("firmware_report") or {}
+    if any(
+        is_future_timestamp(report.get(key), now)
+        for key in (
+            "first_seen_at",
+            "last_checked_at",
+            "last_sample_at",
+            "last_confirmation_at",
+        )
+    ):
+        return True
+    return any(
+        is_future_timestamp(finding.get(key), now)
+        for finding in report.get("findings", {}).values()
+        for key in ("first_seen_at", "last_confirmation_at")
+    )
+
+
+def rebase_future_anchors(robot: dict[str, Any], now: datetime) -> bool:
+    """Rebase the active report after wall time moves behind persisted evidence."""
+    if not has_future_anchor(robot, now):
+        return False
+    if report := robot.get("firmware_report"):
+        anchor = now.isoformat()
+        report["first_seen_at"] = anchor
+        report["last_confirmation_at"] = anchor
+        report["last_checked_at"] = anchor
+        report["last_sample_at"] = anchor
+        report["scan_count"] = 0
+        report["failure_scan_count"] = 0
+        for finding in report.get("findings", {}).values():
+            if is_future_timestamp(finding.get("first_seen_at"), now):
+                finding["first_seen_at"] = anchor
+            finding["last_confirmation_at"] = anchor
+    if is_future_timestamp(robot.get("next_firmware_scan_at"), now):
+        robot["next_firmware_scan_at"] = now.isoformat()
+    return True
 
 
 def identity(snapshot: dict[str, Any]) -> list[Any]:
@@ -182,6 +242,7 @@ def update_report(
     robot: dict[str, Any], snapshot: dict[str, Any], now: datetime
 ) -> bool:
     """Reconcile a single scan; return whether meaningful evidence changed."""
+    rebase_future_anchors(robot, now)
     release = robot["release_evidence"]
     report_id = release["report_id"]
     report = robot.get("firmware_report")
@@ -388,16 +449,20 @@ def _evidence_signature(report: dict[str, Any]) -> str:
 
 def scan_due(robot: dict[str, Any], now: datetime, context: str | None = None) -> bool:
     """Bound proactive sweeps and sample naturally occurring activity states."""
+    if has_future_anchor(robot, now):
+        return True
     due = robot.get("next_firmware_scan_at")
-    if due is None or now >= datetime.fromisoformat(due):
+    due_time = _parse_time(due)
+    if due_time is None or now >= due_time:
         return True
     report = robot.get("firmware_report") or {}
     last = report.get("last_confirmation_at")
+    last_time = _parse_time(last)
     return bool(
         context in _CONTEXTS
         and context not in report.get("observation_contexts", [])
-        and last
-        and now >= datetime.fromisoformat(last) + STATE_SAMPLE_INTERVAL
+        and last_time
+        and now >= last_time + STATE_SAMPLE_INTERVAL
     )
 
 
