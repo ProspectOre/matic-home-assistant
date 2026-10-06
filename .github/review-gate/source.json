@@ -1,9 +1,10 @@
 {
   "source": "ProspectOre/dev-workspace",
   "path": "scripts/review-gate/evaluate.sh",
-  "sha256": "e0f93f6ce073494acbd88c69bc22133e5401d7b04cedf3700a7c82f4989d0e10",
+  "sha256": "e98172db491c3ff5f152b35cc2f1033e8a31f929fe0262e5c4213f9202188494",
   "dependencyClassifierSha256": "3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455",
-  "reviewSectionsSha256": "213643f6b14fe29a717365d81d91a00279822284c3d18f3795e793fc16085fc0",
+  "reviewSectionsSha256": "44cb7932846b97e4497393265691dd836315d9193d580b09a1ab869fdb9b35e3",
+  "nativeCodexReviewSha256": "d81e82ccdc31971e6c1d399a8291a2f84c1510f97b4c88367bf2e04529cfdc98",
   "markdownRuntime": {
     "version": 1,
     "parser": "mistune",
@@ -23,9 +24,9 @@
     "version": 1,
     "workflow": "review-gate.yml",
     "ref": "refs/heads/main",
-    "sha256": "6d0bdd922bc0a39f34e43119113abd5af2e88885f85f090dedc05774768ba189",
+    "sha256": "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
     "completionWorkflow": "review-gate-capture-completion.yml",
-    "completionSha256": "3c23f0ae22ff0adf9e838fa517bcb30f9aa9ba92a0dd5d83007e7c6d0b87bd7b"
+    "completionSha256": "929cba1573057c12eb9f4662441938be01f10e99091c634b7591899931d55217"
   },
   "issueCommentReceiptsSha256": "372a2f5289eaccbbc1983821c91bc18a9b8b5c0d02ffc0c5f7b367c601f6b077",
   "generated": true,

@@ -8,6 +8,33 @@ trap 'exit 1' ERR
 evidence_only="${EVIDENCE_ONLY:-false}"
 event_history_phase_done=false
 history_reconciled=false
+native_codex_receipt="${NATIVE_CODEX_REVIEW_RECEIPT:-}"
+native_codex_objects="${NATIVE_CODEX_REVIEW_OBJECTS:-}"
+native_codex_helper="$(dirname "${BASH_SOURCE[0]}")/native_codex_review.py"
+native_codex_delivery=""
+native_quiescence_started_at=""
+matic_base_transition_seen=false
+timeline_head_stale=false
+if [[ -n "$native_codex_receipt" || -n "$native_codex_objects" ]]; then
+  if [[ "${GITHUB_ACTIONS:-false}" == true || -n "${GITHUB_RUN_ID:-}" || "$evidence_only" == true || -z "$native_codex_receipt" || -z "$native_codex_objects" ]]; then
+    echo "Native Codex qualification requires the local live transport, durable status writes and immutable object database." >&2
+    exit 1
+  fi
+  # Existing parser/receipt helpers must not inherit candidate import paths.
+  unset PYTHONPATH PYTHONHOME
+  native_manifest="$(dirname "${BASH_SOURCE[0]}")/source.json"
+  if [[ -f "$native_manifest" ]]; then
+    native_expected="$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("nativeCodexReviewSha256", ""))' "$native_manifest")"
+    native_actual="$(shasum -a 256 "$native_codex_helper" | awk '{print $1}')"
+    if [[ ! "$native_expected" =~ ^[0-9a-f]{64}$ || "$native_actual" != "$native_expected" ]]; then
+      echo "Native review helper does not match the installed canonical policy pin." >&2
+      exit 1
+    fi
+  else
+    echo "Native qualification requires the installed canonical policy manifest." >&2
+    exit 1
+  fi
+fi
 case "${RECORD_EVENT_ONLY:-false}" in
   true|false) ;;
   *) echo "RECORD_EVENT_ONLY must be true or false." >&2; exit 1 ;;
@@ -70,7 +97,7 @@ normalize_timestamp() {
     end'
 }
 timestamp_event_tag() {
-  python3 -c '
+  python3 -I -c '
 from datetime import datetime, timezone
 import sys
 
@@ -149,7 +176,9 @@ gh() {
   local cache_key cache_file response argument readonly=false
   if [[ -n "${REVIEW_READ_CACHE:-}" && "${1:-}" == api ]]; then
     case "${2:-}" in
-      */statuses\?*|*/comments\?*|*/actions/runs/*|*/actions/workflows/*) readonly=true ;;
+      # Run state can change between quiescence polls without any status write.
+      */actions/runs/*|*/actions/workflows/*/runs\?*) "$gh_path" "$@"; return ;;
+      */statuses\?*|*/comments\?*|*/actions/workflows/*) readonly=true ;;
       graphql)
         for argument in "$@"; do
           [[ "$argument" == query=query* ]] && readonly=true
@@ -313,11 +342,15 @@ stamp_status_for_sha() {
       if jq -e --arg description "$description" --arg state "$state" '.state == $state and .description == $description' <<< "$current_status" >/dev/null; then return 0; fi
     fi
   fi
+  local status_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+  if [[ -n "$native_codex_receipt" ]]; then
+    status_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/pull/$pr_number"
+  fi
   gh api "repos/$REPO/statuses/$target_sha" --silent \
     -f state="$state" \
     -f context="$context" \
     -f description="$description" \
-    -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+    -f target_url="$status_url"
 }
 
 # Historical commits require positive PR association. Current PR head comes
@@ -1035,8 +1068,8 @@ regular_evidence() {
           def known_codex_footer:
             test("(?is)\\A<details>[[:space:]]*<summary>[[:space:]]*(?:ℹ️[[:space:]]*)?about[[:space:]]+codex[[:space:]]+in[[:space:]]+github[[:space:]]*</summary>[[:space:]]*<br[[:space:]]*/?>[[:space:]]*\\[your team has set up codex to review pull requests in this repo\\]\\(https://chatgpt\\.com/codex/cloud/settings/general\\)\\.[[:space:]]*reviews are triggered when you[[:space:]]*-[[:space:]]*open a pull request for review[[:space:]]*-[[:space:]]*mark a draft as ready[[:space:]]*-[[:space:]]*comment \\\"@codex review\\\"\\.[[:space:]]*if codex has suggestions, it will comment; otherwise it will react with (?:👍|:\\+1:)\\.[[:space:]]*codex can also answer questions or update the pr\\.[[:space:]]*try commenting \\\"@codex address that feedback\\\"\\.[[:space:]]*</details>[[:space:]]*$");
           def stock_clean_issue_comment_body:
-            test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
-            or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
+            test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
+            or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*$");
           def stock_clean_issue_comment_envelope:
             if coordinator_request then
               (capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
@@ -1071,7 +1104,13 @@ regular_evidence() {
            | select($section.availability != true)
            # Unsupported HTML cannot authenticate mutable footer scope.
            | select($section.parser_ambiguous or $section.target_ref == $head or $section.target_ref == $prefix or (($section.regular_adverse or $section.security_finding) and $section.target_ref == "__unbound__"))
-           | ($section.regular_clean == true or ($body | strict_stock_clean_issue_comment_envelope)) as $clean_envelope
+           # A creation receipt authenticates delivery, not which colliding
+           # commit an abbreviated footer meant. Require reviewed full-SHA proof.
+           # Insufficient scope makes a finding-free clean candidate unverified;
+           # it must not manufacture retained substantive finding history.
+           | (($section.regular_clean == true or ($body | strict_stock_clean_issue_comment_envelope))
+              and $section.regular_adverse != true and $section.security_finding != true) as $clean_candidate
+           | ($clean_candidate and $section.reviewed_ref == $head) as $clean_envelope
            | ($clean_envelope and ($body | test("(?is)<details>"))) as $footer_clean
            | (.review_gate_creation_receipt == true or (($require_creation_receipt | not) and $footer_clean)) as $clean_proof
            | {at: (.updated_at // .created_at),
@@ -1086,7 +1125,7 @@ regular_evidence() {
               # for the authenticated, body-bound native creation receipt.
               neutral: false,
               parser_ambiguous: ($section.parser_ambiguous == true),
-              unverified: ($section.parser_ambiguous == true or (($section.regular_adverse == true or $section.security_finding == true) and $section.target_ref == "__unbound__") or ($clean_envelope and ($clean_proof | not))),
+              unverified: ($section.parser_ambiguous == true or (($section.regular_adverse == true or $section.security_finding == true) and $section.target_ref == "__unbound__") or ($clean_candidate and (($clean_envelope | not) or ($clean_proof | not)))),
               unverified_finding: (($section.regular_adverse == true or $section.security_finding == true)
                                    and $section.target_ref == "__unbound__"),
               clean: ($section.parser_ambiguous != true and $clean_proof and $clean_envelope)}])'
@@ -1382,7 +1421,8 @@ reconcile_clean_security_history() {
     [[ -n "$source_created" && -n "$source_updated" && -n "$body" ]] || continue
     [[ "$(printf '%s' "$body" | shasum -a 256 | awk '{print substr($1, 1, 24)}')" == "$source_hash" ]] || continue
     # Reconcile only this head's security section with the same immutable
-    # source body hash; another result's footer cannot supply its binding.
+    # source body hash and explicit full reviewed SHA; neither a colliding
+    # prefix nor a coordinator request can supply a clean verdict's binding.
     # shellcheck disable=SC2016
     jq -cn --arg body "$body" '{body:$body}' \
       | python3 "${REVIEW_SECTIONS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/review_sections.py}" --records \
@@ -1390,7 +1430,7 @@ reconcile_clean_security_history() {
           [.review_gate_sections[]? | select(.security_event == true or .security_finding == true)] as $sections
           | all(.review_gate_sections[]?; .parser_ambiguous != true)
           and any($sections[]; .security_finding != true
-              and (.target_ref == $head or .target_ref == $prefix))
+              and .target_ref == $head and .reviewed_ref == $head)
           and all($sections[]; .security_finding != true
               or (.target_ref != $head and .target_ref != $prefix and .target_ref != "__unbound__"))' >/dev/null || continue
     receipt_description="Security clean receipt #$marker_id for PR #$pr_number on head $head_sha; $origin"
@@ -1505,6 +1545,14 @@ read_gate_snapshot() (
   rm -f "$REVIEW_READ_CACHE/"*.json
   local evidence deliveries reviews all_reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count security_findings latest_finding_at issue_comment_at review_invalidation_at finding_history_at withdrawal_at
   evidence="$(regular_evidence)"
+  if [[ -n "$native_codex_receipt" ]]; then
+    # This delivery comes only from the fresh live capture in this invocation.
+    # Stored thread/receipt JSON never supplies qualification authority.
+    python3 -I "$native_codex_helper" check-source --objects "$native_codex_objects" \
+      --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" \
+      <<< "$native_codex_delivery" || exit 1
+    evidence="$(jq --argjson native "$native_codex_delivery" '.deliveries += [$native]' <<< "$evidence")"
+  fi
   deliveries="$(jq -c '.deliveries' <<< "$evidence")"
   reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
   all_reviews="$(jq -c '.all_reviews // []' <<< "$evidence")"
@@ -1547,7 +1595,8 @@ read_gate_snapshot() (
                    (.unverified_finding == true or .parser_ambiguous == true or
                     ([.at, (if .source == "review" then 1 else 0 end)] >= $latest_delivery_order))) then null
             elif $latest_delivery != null
-                 and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment")
+                 and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment"
+                      or $latest_delivery.source == "native_codex")
                  and $latest_delivery.clean
                  and (($finding_ids | index($latest_delivery.id)) == null)
                  and $latest_delivery.at > $latest_finding_at
@@ -1589,6 +1638,14 @@ require_clean_regular_snapshot() {
   finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
   regular_finding_count="$(jq '.regular_findings | length' <<< "$gate_snapshot")"
   security_finding_count="$(jq -r '.security_finding_count' <<< "$gate_snapshot")"
+  if [[ "$matic_base_transition_seen" == true ]]; then
+    hold_matic_retargeted_pr || true
+    return 0
+  fi
+  if [[ "$timeline_head_stale" == true ]]; then
+    hold_timeline_head_stale || true
+    return 0
+  fi
   if [[ "$regular_finding_count" -gt 0 ]]; then
     local origin
     history_statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)"
@@ -1602,6 +1659,10 @@ require_clean_regular_snapshot() {
     marker_tag="${marker_tag//./}"
     marker_tag="${marker_tag:0:17}"
     while IFS= read -r origin; do
+      if [[ "$origin" =~ ^native_codex:[0-9a-f]{64}$ ]]; then
+        # Recorded immediately after live capture, before any fallible reads.
+        continue
+      fi
       [[ "$origin" =~ ^(review|issue-comment):[1-9][0-9]*$ ]] || exit 1
       origin_observed_at="$(jq -r --arg origin "$origin" '
         [.deliveries[]
@@ -1671,6 +1732,29 @@ require_clean_regular_snapshot() {
     echo "Could not read review-event capture receipts; refusing to clear the gate." >&2
     return 2
   }
+  if jq -e 'any(.[][]; ((.context // "" | startswith("native-codex-finding/"))
+        or (.context // "" | startswith("native-codex-uncertainty/"))) and .state == "pending")' \
+      <<< "$capture_statuses" >/dev/null; then
+    stamp_review_gate pending "Native Codex findings or uncertainty remain on this head; require a fresh head"
+    gate_pending
+  fi
+  if jq -e --arg head "$head_sha" '
+      [.[][] | select(.context // "" | startswith("native-codex-attempt/"))]
+      | group_by(.context) | any(.[];
+          (sort_by(.id // 0) | map(select(.state == "pending")) | .[0]) as $hold
+          | max_by(.id // 0) as $latest
+          | (($hold != null and ($hold.id | type) == "number" and $hold.id > 0
+              and ($hold.creator.id | type) == "number" and $hold.creator.id > 0
+              and ($hold.creator.login | type) == "string" and ($hold.creator.type | type) == "string"
+              and ($hold.description // "" | test("^Native attempt pending for PR #[1-9][0-9]*; h:" + $head + "; b:[0-9a-f]{40}$"))
+              and $latest.state == "success" and $latest.id > $hold.id
+              and $latest.creator.id == $hold.creator.id
+              and $latest.creator.login == $hold.creator.login and $latest.creator.type == $hold.creator.type
+              and $latest.description == ($hold.description | sub("^Native attempt pending"; "Native attempt completed"))) | not))
+      ' <<< "$capture_statuses" >/dev/null; then
+    stamp_review_gate pending "A native review attempt is in progress or incomplete; require completed capture or a fresh head"
+    gate_pending
+  fi
   untrusted_capture_receipt=false
   capture_successes="$(jq -c --arg pr_number "$pr_number" '[.[][]
       | select((.context // "") | test("^review-event-capture/([1-9][0-9]*/)?[1-9][0-9]*$"))
@@ -1735,7 +1819,9 @@ require_clean_regular_snapshot() {
     stamp_status "$REVIEW_REVIEW_CONTEXT" pending \
       "Regular review invalidated at $latest_finding_at; PR #$pr_number; regular evidence changed; require a newer clean normal verdict"
   fi
-  if base_change_marker_exists; then
+  if base_change_marker_exists && ! jq -e --arg base "$base_sha" --arg head "$head_sha" \
+      '.verdict.source == "native_codex" and .verdict.base == $base and .verdict.head == $head' \
+      <<< "$gate_snapshot" >/dev/null; then
     stamp_review_gate pending "Waiting for fresh regular review of the current base"
     echo "The base-change marker has no authenticated request and reviewed-base binding."
     gate_pending
@@ -1774,6 +1860,72 @@ require_no_security_findings() {
   fi
 }
 
+# The default branch remains the normal review target everywhere. One trusted
+# maintenance lane may use the exact Matic release branch; keep this pair in
+# canonical policy so consumers cannot broaden it with workflow inputs.
+supported_base_ref() {
+  local candidate_ref="$1"
+  [[ -n "$DEFAULT_BRANCH" ]] || return 1
+  [[ "$candidate_ref" == "$DEFAULT_BRANCH" ]] && return 0
+  [[ "$REPO" == "ProspectOre/matic-home-assistant" \
+    && "$candidate_ref" == "release/0.4" ]]
+}
+
+requires_timeline_freshness() {
+  [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true \
+    || ( "$REPO" == "ProspectOre/matic-home-assistant" && "$base_ref" == "release/0.4" ) ]]
+}
+
+is_matic_repository() {
+  [[ "$REPO" == "ProspectOre/matic-home-assistant" ]]
+}
+
+refresh_review_timeline_watermark() {
+  if requires_timeline_freshness || is_matic_repository; then
+    local timeline_events timeline_base_at timeline_retarget_at timeline_force_push_at
+    timeline_events="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp)"
+    timeline_base_at="$(jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' <<< "$timeline_events" | latest_timestamp)"
+    timeline_retarget_at="$(jq -r '[.[][] | select(.event == "base_ref_changed") | (.updated_at // .created_at)]' <<< "$timeline_events" | latest_timestamp)"
+    timeline_force_push_at="$(jq -r '[.[][] | select(.event == "base_ref_force_pushed") | (.updated_at // .created_at)]' <<< "$timeline_events" | latest_timestamp)"
+    timeline_base_at="$(normalize_timestamp "$timeline_base_at")"
+    timeline_retarget_at="$(normalize_timestamp "$timeline_retarget_at")"
+    timeline_force_push_at="$(normalize_timestamp "$timeline_force_push_at")"
+    if is_matic_repository && { [[ -n "$timeline_retarget_at" ]] || { [[ "$base_ref" == "release/0.4" ]] && [[ -n "$timeline_force_push_at" ]]; }; }; then
+      # GitHub's native review evidence binds to the head, not to the base or
+      # the request that produced it. Timeline timestamps therefore cannot
+      # safely qualify a late in-flight review after a retarget or a release
+      # base rewrite. Require a fresh PR so the transition is absent from its
+      # authenticated history.
+      matic_base_transition_seen=true
+    fi
+    if requires_timeline_freshness \
+      && [[ -n "$timeline_base_at" && -n "$head_observed_at" \
+        && "$timeline_base_at" > "$head_observed_at" ]]; then
+      timeline_head_stale=true
+    fi
+    if requires_timeline_freshness \
+      && [[ "$timeline_base_at" > "$evidence_after" ]]; then
+      evidence_after="$timeline_base_at"
+    fi
+  fi
+}
+
+hold_matic_retargeted_pr() {
+  [[ "$matic_base_transition_seen" == true ]] || return 1
+  stamp_review_gate pending "Base changed; create a new PR targeting the chosen branch"
+  echo "This PR has base-change history. Close it and create a new PR targeting the chosen branch; reopening this PR does not clear its history."
+  gate_pending
+  return 0
+}
+
+hold_timeline_head_stale() {
+  [[ "$timeline_head_stale" == true ]] || return 1
+  stamp_review_gate pending "Base changed after head observation; push a fresh head before evaluation"
+  echo "A base change occurred after the authenticated head observation; push a fresh head before review."
+  gate_pending
+  return 0
+}
+
 # A pre-policy or manually armed pull request must be made manual-only
 # before this gate evaluates it. This mutation only disables auto-merge.
 if [[ "$auto_merge_enabled" == "true" ]]; then
@@ -1784,9 +1936,9 @@ if [[ "$auto_merge_enabled" == "true" ]]; then
   disable_auto_merge "$pr_node_id"
   echo "Disabled automatic merge for PR #$pr_number."
 fi
-if [[ -z "$DEFAULT_BRANCH" || "$base_ref" != "$DEFAULT_BRANCH" ]]; then
-  stamp_review_gate pending "Retarget to the repository default branch before review"
-  echo "PR #$pr_number targets unsupported base '$base_ref'; expected '$DEFAULT_BRANCH'."
+if ! supported_base_ref "$base_ref"; then
+  stamp_review_gate pending "Retarget to a supported repository branch before review"
+  echo "PR #$pr_number targets unsupported base '$base_ref' for repository '$REPO'."
   gate_pending
 fi
 
@@ -1801,30 +1953,21 @@ if [[ "$shared_head_owner" != "$pr_number" && "$historical_event_head" != true ]
   gate_pending
 fi
 
-if [[ "${REQUIRE_CURRENT_BASE:-false}" == true ]]; then
+if [[ "${REQUIRE_CURRENT_BASE:-false}" == true \
+  || ( "$REPO" == "ProspectOre/matic-home-assistant" && "$base_ref" == "release/0.4" ) ]]; then
   relationship="$(gh api "repos/$REPO/compare/$base_sha...$head_sha" --jq '.status')"
   if [[ "$relationship" != ahead && "$relationship" != identical ]]; then
-    stamp_review_gate pending "Current head must include the current default branch"
+    stamp_review_gate pending "Current head must include the current base branch"
     gate_pending
   fi
 fi
 
-# A base retarget or force-push invalidates the reviewed comparison.
+# A base retarget, or a force-pushed release base, invalidates the reviewed comparison.
 # Evidence-only runs cannot persist a marker on the contributor head, so
 # reconstruct that invalidation from the authenticated timeline.
-if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
-  timeline_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
-    | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)" || exit 1
-  timeline_base_at="$(normalize_timestamp "$timeline_base_at")"
-  if [[ -n "$timeline_base_at" && -z "$head_observed_at" ]]; then
-    # Without an authenticated head-observation watermark, a base event cannot
-    # reuse an earlier verdict. A fresh regular review can recover normally.
-    if [[ "$timeline_base_at" > "$evidence_after" ]]; then evidence_after="$timeline_base_at"; fi
-  elif [[ -n "$timeline_base_at" && "$timeline_base_at" > "$head_observed_at" ]]; then
-    stamp_review_gate pending "Base changed after head observation; push a fresh head before evaluation"
-    gate_pending
-  fi
-fi
+refresh_review_timeline_watermark
+hold_matic_retargeted_pr || true
+hold_timeline_head_stale || true
 
 # A retarget event carries persistent base invalidation even when the head did
 # not change. Ignore stale deliveries for other heads or unrelated title edits.
@@ -2507,14 +2650,36 @@ wait_for_active_review_events() {
     return 2
   }
   current_run_id="${GITHUB_RUN_ID:-}"
-  [[ "$current_run_id" =~ ^[1-9][0-9]*$ ]] || {
-    echo "Could not bind event quiescence to the current workflow run." >&2
-    return 2
-  }
-  current_run_started_at="$(gh api "repos/$REPO/actions/runs/$current_run_id" --jq '.created_at')" || {
-    echo "Could not bind event discovery to the current workflow start time." >&2
-    return 2
-  }
+  if [[ -n "$native_codex_receipt" ]]; then
+    # A local invocation cannot claim or exclude an Actions run. Use a fixed
+    # authenticated server-clock boundary, preserving all historical/active
+    # censuses and source-event receipt checks on every publication boundary.
+    if [[ -z "$native_quiescence_started_at" ]]; then
+      local server_response
+      server_response="$(gh api "repos/$REPO" --include)" || return 2
+      native_quiescence_started_at="$(python3 -I -c '
+import re,sys
+from datetime import timezone
+from email.utils import parsedate_to_datetime
+headers=re.split(r"\r?\n\r?\n",sys.stdin.read(),maxsplit=1)[0]
+dates=re.findall(r"(?im)^date:[ \t]*(.+)$",headers)
+if not re.match(r"^HTTP/\S+ 200(?:\s|$)",headers) or len(dates)!=1:sys.exit(1)
+value=parsedate_to_datetime(dates[0])
+if value.tzinfo is None:sys.exit(1)
+print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+' <<< "$server_response")" || return 2
+    fi
+    current_run_started_at="$native_quiescence_started_at"
+  else
+    [[ "$current_run_id" =~ ^[1-9][0-9]*$ ]] || {
+      echo "Could not bind event quiescence to the current workflow run." >&2
+      return 2
+    }
+    current_run_started_at="$(gh api "repos/$REPO/actions/runs/$current_run_id" --jq '.created_at')" || {
+      echo "Could not bind event discovery to the current workflow start time." >&2
+      return 2
+    }
+  fi
   [[ "$current_run_started_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:.+-]+Z$ ]] || {
     echo "The current workflow run returned an invalid creation timestamp." >&2
     return 2
@@ -3164,18 +3329,6 @@ elif (( quiescence_result == 1 )); then
   gate_pending
 fi
 
-# Requests schedule work; only findings, comparison changes, or withdrawn
-# evidence invalidate a completed review.
-refresh_review_timeline_watermark() {
-  if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
-    local latest_base_at
-    latest_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
-      | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)"
-    latest_base_at="$(normalize_timestamp "$latest_base_at")"
-    if [[ "$latest_base_at" > "$evidence_after" ]]; then evidence_after="$latest_base_at"; fi
-  fi
-}
-
 # The event head was revoked before its first API read. Revoke the
 # resolved head as well for manual dispatches and stale event payloads.
 stamp_review_gate pending "Evaluating the regular review on $head_prefix"
@@ -3185,6 +3338,44 @@ if [[ "$historical_event_head" != true ]] && ! head_prefix_resolves; then
   gate_pending
 fi
 refresh_review_timeline_watermark
+hold_matic_retargeted_pr || true
+hold_timeline_head_stale || true
+if [[ -n "$native_codex_receipt" ]]; then
+  # Unsupported comparisons never start a native invocation or orphan a hold.
+  # The existing GitHub paths can still evaluate diverged branches.
+  python3 -I "$native_codex_helper" check-comparison --objects "$native_codex_objects" \
+    --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" || exit 1
+  # Shared hold: independent GitHub audits cannot republish success during live
+  # review. Establish it before revoking the required gate so a failed revocation
+  # or interruption leaves a durable hold for subsequent audits.
+  native_attempt_context="native-codex-attempt/$(python3 -I -c 'import uuid; print(uuid.uuid4().hex)')"
+  if ! stamp_status "$native_attempt_context" pending \
+    "Native attempt pending for PR #$pr_number; h:$head_sha; b:$base_sha"; then
+    stamp_review_gate pending "Native attempt hold could not be established on $head_sha" || true
+    exit 1
+  fi
+  # Audit mode skips routine evaluation markers. Revoke the required gate
+  # explicitly before capture so interruption cannot preserve prior success.
+  stamp_review_gate pending "Capturing native Codex review on $head_sha" || exit 1
+  native_codex_delivery="$(python3 -I "$native_codex_helper" capture --objects "$native_codex_objects" \
+    --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" \
+    --receipt "$native_codex_receipt")" || exit 1
+  native_completed_at="$(normalize_timestamp "$(jq -r '.at' <<< "$native_codex_delivery")")"
+  [[ -n "$native_completed_at" ]] || exit 1
+  native_codex_delivery="$(jq --arg at "$native_completed_at" '.at = $at | .created_at = $at' \
+    <<< "$native_codex_delivery")"
+  if ! jq -e '.clean == true and .uncertain != true' <<< "$native_codex_delivery" >/dev/null; then
+    native_adverse_kind=finding
+    if jq -e '.uncertain == true' <<< "$native_codex_delivery" >/dev/null; then native_adverse_kind=uncertainty; fi
+    native_result_id="$(jq -r '.id' <<< "$native_codex_delivery")"
+    [[ "$native_result_id" =~ ^[0-9a-f]{64}$ ]] || exit 1
+    stamp_status "native-codex-$native_adverse_kind/$native_result_id" pending \
+      "Native Codex $native_adverse_kind observed for PR #$pr_number on head $head_sha" || exit 1
+  fi
+  # Completes only this attempt; never clears another hold or adverse result.
+  stamp_status "$native_attempt_context" success \
+    "Native attempt completed for PR #$pr_number; h:$head_sha; b:$base_sha" || exit 1
+fi
 gate_snapshot="$(read_gate_snapshot)"
 reconcile_clean_regular_history "$gate_snapshot"
 reconcile_clean_security_history
@@ -3219,7 +3410,7 @@ if [[ "$final_base_sha" != "$base_sha" ]]; then
   echo "The PR base changed during evaluation; push a new head before requesting a regular review."
   gate_pending
 fi
-if [[ "$final_base_ref" != "$DEFAULT_BRANCH" || "$final_is_draft" != "false" || "$final_auto_merge_enabled" != "false" ]]; then
+if ! supported_base_ref "$final_base_ref" || [[ "$final_base_ref" != "$base_ref" || "$final_is_draft" != "false" || "$final_auto_merge_enabled" != "false" ]]; then
   if [[ "$final_auto_merge_enabled" == "true" ]]; then
     disable_auto_merge "$final_pr_node_id"
     echo "Disabled automatic merge that was enabled during evaluation."
@@ -3229,6 +3420,8 @@ if [[ "$final_base_ref" != "$DEFAULT_BRANCH" || "$final_is_draft" != "false" || 
   gate_pending
 fi
 refresh_review_timeline_watermark
+hold_matic_retargeted_pr || true
+hold_timeline_head_stale || true
 final_gate_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$final_gate_snapshot"
 
@@ -3236,7 +3429,7 @@ last_pr_snapshot="$(read_pr_snapshot)"
 IFS=$'\t' read -r last_head_sha last_pr_opened_at last_base_sha last_base_ref last_is_draft last_pr_node_id last_auto_merge_enabled last_pr_state last_pr_author_login last_head_repo last_created_at <<< "$last_pr_snapshot"
 last_pr_opened_at="$(normalize_timestamp "$last_pr_opened_at")"
 last_created_at="$(normalize_timestamp "$last_created_at")"
-if [[ "$last_head_sha" != "$head_sha" || "$last_pr_opened_at" != "$pr_opened_at" || "$last_base_sha" != "$base_sha" || "$last_base_ref" != "$DEFAULT_BRANCH" || "$last_is_draft" != "false" || "$last_auto_merge_enabled" != "false" || "$last_pr_state" != "OPEN" || "$last_pr_author_login" != "$pr_author_login" || "$last_head_repo" != "$head_repo" || "$last_created_at" != "$pr_created_at" ]]; then
+if [[ "$last_head_sha" != "$head_sha" || "$last_pr_opened_at" != "$pr_opened_at" || "$last_base_sha" != "$base_sha" ]] || ! supported_base_ref "$last_base_ref" || [[ "$last_base_ref" != "$base_ref" || "$last_is_draft" != "false" || "$last_auto_merge_enabled" != "false" || "$last_pr_state" != "OPEN" || "$last_pr_author_login" != "$pr_author_login" || "$last_head_repo" != "$head_repo" || "$last_created_at" != "$pr_created_at" ]]; then
   if [[ "$last_head_sha" == "$head_sha" && "$last_base_sha" != "$base_sha" ]]; then
     stamp_base_change_marker
     stamp_review_gate pending "Base changed; push a new head for a fresh regular review"
@@ -3267,6 +3460,10 @@ case "$evidence_source" in
     [[ "$evidence_comment_id" =~ ^[1-9][0-9]*$ ]] || exit 1
     evidence_marker="issue-comment:$evidence_comment_id"
     ;;
+  native_codex)
+    [[ "$evidence_id" =~ ^[0-9a-f]{64}$ ]] || exit 1
+    evidence_marker="native-codex:$evidence_id"
+    ;;
   *)
     echo "Could not persist the current clean regular-review evidence." >&2
     exit 1
@@ -3285,6 +3482,8 @@ fi
 stamp_review_gate success "Clean regular review for $head_prefix; evidence $evidence_marker"
 trap 'stamp_review_gate pending "Review state could not be revalidated after publication"; exit 1' ERR
 refresh_review_timeline_watermark
+hold_matic_retargeted_pr || true
+hold_timeline_head_stale || true
 post_success_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$post_success_snapshot"
 post_snapshot="$(read_pr_snapshot)"

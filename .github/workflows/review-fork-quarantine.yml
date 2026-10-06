@@ -30,6 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ && "$REPOSITORY_ID" =~ ^[1-9][0-9]*$ ]]
+          [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]
           [[ "$GITHUB_WORKFLOW_REF" == "$REPO/.github/workflows/review-fork-quarantine.yml@refs/heads/$DEFAULT_BRANCH" ]]
           workflow_id="$(gh api "repos/$REPO/actions/workflows/review-regular-review.yml" --jq '.id')"
           [[ "$workflow_id" =~ ^[1-9][0-9]*$ ]]
@@ -63,7 +64,8 @@ jobs:
             --arg branch "$DEFAULT_BRANCH" --arg repository "$REPOSITORY_ID" '
               .number == ($pr | tonumber) and .state == "open"
               and .base.repo.id == ($repository | tonumber) and .base.repo.full_name == $repo
-              and .base.ref == $branch
+              and (.base.ref == $branch
+                or ($repo == "ProspectOre/matic-home-assistant" and .base.ref == "release/0.4"))
               and (.head.sha | type == "string" and test("^[0-9a-f]{40}$"))
               and (.head.repo.full_name | type == "string" and length > 0)
               and .head.repo.full_name != $repo' >/dev/null; then
@@ -93,7 +95,9 @@ jobs:
             --arg fork "$fork" '
               .number == ($pr | tonumber) and .state == "open"
               and .base.repo.id == ($repository | tonumber) and .base.repo.full_name == $repo
-              and .base.ref == $branch and .head.sha == $head
+              and (.base.ref == $branch
+                or ($repo == "ProspectOre/matic-home-assistant" and .base.ref == "release/0.4"))
+              and .head.sha == $head
               and (.head.repo.full_name | type == "string" and length > 0)
               and .head.repo.full_name != $repo and .head.repo.full_name == $fork' >/dev/null; then
             echo 'No current fork target matched the provider run.'
