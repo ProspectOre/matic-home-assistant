@@ -141,15 +141,25 @@ class FirmwareTracker:
             previous = robot.get("snapshot")
             current = deepcopy(dict(snapshot))
             comparison = _compare_snapshots(previous, current)
-            if previous and current.get("captured_at", "") < previous.get(
-                "captured_at", ""
+            now = dt_util.utcnow()
+            current_is_future = reports.is_future_timestamp(
+                current.get("captured_at"), now
+            )
+            previous_is_future = bool(
+                previous
+                and reports.is_future_timestamp(previous.get("captured_at"), now)
+            )
+            if current_is_future or (
+                previous
+                and not previous_is_future
+                and current.get("captured_at", "") < previous.get("captured_at", "")
             ):
                 # A slower overlapping sweep must not roll evidence backward.
                 return {**comparison, "discarded": True}
             history = robot.setdefault("history", [])
             baseline = reports.prepare_release(robot, current)
             release_comparison = _compare_snapshots(baseline, current)
-            report_changed = reports.update_report(robot, current, dt_util.utcnow())
+            report_changed = reports.update_report(robot, current, now)
             robot["snapshot"] = current
             report = robot["firmware_report"]
             if report["failed_endpoints"]:

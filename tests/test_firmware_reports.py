@@ -297,6 +297,85 @@ def test_scan_cadence_confirmation_cap_and_natural_context() -> None:
     assert not reports.scan_due(robot, natural_at, "cleaning")
 
 
+@pytest.mark.parametrize(
+    "anchor",
+    [
+        "snapshot",
+        "first_seen_at",
+        "last_checked_at",
+        "last_sample_at",
+        "last_confirmation_at",
+        "finding_confirmation",
+        "finding_first_seen",
+    ],
+)
+def test_future_anchors_make_scans_due_and_rebase_confirmation_budget(anchor) -> None:
+    robot = start_robot()
+    report = robot["firmware_report"]
+    future = (NOW + timedelta(hours=2)).isoformat()
+    if anchor == "snapshot":
+        robot["snapshot"] = snapshot(captured=NOW + timedelta(hours=2))
+    elif anchor.startswith("finding_"):
+        report["findings"]["synthetic"] = {
+            "id": "synthetic",
+            "kind": "read_failure",
+            "endpoint": "current_version",
+            "path": None,
+            "status": "first_observed",
+            "first_seen_at": future
+            if anchor == "finding_first_seen"
+            else NOW.isoformat(),
+            "last_confirmation_at": (
+                future if anchor == "finding_confirmation" else NOW.isoformat()
+            ),
+            "observation_count": 1,
+            "consecutive_observations": 1,
+        }
+    else:
+        report[anchor] = future
+    report["scan_count"] = 3
+    report["failure_scan_count"] = 3
+
+    assert reports.has_future_anchor(robot, NOW)
+    assert reports.scan_due(robot, NOW) is True
+    assert reports.rebase_future_anchors(robot, NOW) is True
+    assert report["last_confirmation_at"] == NOW.isoformat()
+    assert report["last_checked_at"] == NOW.isoformat()
+    assert report["scan_count"] == 0
+    assert report["failure_scan_count"] == 0
+    assert all(
+        finding["last_confirmation_at"] == NOW.isoformat()
+        and finding["first_seen_at"] == NOW.isoformat()
+        for finding in report["findings"].values()
+    )
+    if anchor == "snapshot":
+        robot["snapshot"]["captured_at"] = NOW.isoformat()
+    assert reports.rebase_future_anchors(robot, NOW) is False
+
+
+def test_future_timestamp_parser_rejects_missing_and_malformed_values() -> None:
+    assert not reports.is_future_timestamp(None, NOW)
+    assert not reports.is_future_timestamp("not-a-timestamp", NOW)
+    assert reports.is_future_timestamp(
+        (NOW + timedelta(seconds=1)).replace(tzinfo=None).isoformat(), NOW
+    )
+
+
+def test_future_scheduled_deadline_alone_does_not_trigger_rebase() -> None:
+    robot = start_robot()
+    report = robot["firmware_report"]
+    report["next_check_at"] = (NOW + timedelta(hours=2)).isoformat()
+    report["scan_count"] = 3
+    report["failure_scan_count"] = 2
+    robot["next_firmware_scan_at"] = (NOW + timedelta(hours=2)).isoformat()
+
+    assert not reports.has_future_anchor(robot, NOW)
+    assert reports.scan_due(robot, NOW) is False
+    assert reports.rebase_future_anchors(robot, NOW) is False
+    assert report["scan_count"] == 3
+    assert report["failure_scan_count"] == 2
+
+
 def test_robots_have_independent_reports() -> None:
     first, second = start_robot(), start_robot()
     new = snapshot(paths=["1:2", "3:2"], captured=NOW + timedelta(minutes=1))
