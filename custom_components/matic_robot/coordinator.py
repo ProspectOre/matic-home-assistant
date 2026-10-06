@@ -109,8 +109,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._map_refresh_due = 0.0
         self._slow_refresh_due = 0.0
         self._force_full_refresh = False
-        self._snapshot_versions_in_progress: set[str] = set()
-        self._snapshot_retry_after = 0.0
+        self._snapshot_versions_in_progress: set[tuple[str, int | None]] = set()
+        self._snapshot_retry_after: dict[tuple[str, int | None], float] = {}
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
         self._finished_observation_started_at = dt_util.utcnow()
@@ -322,25 +322,27 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     telemetry.protocol_version,
                     device_id=self._device_id(info.serial_number),
                 )
-                if (
-                    version is not None
-                    and version not in self._snapshot_versions_in_progress
-                    and monotonic() >= self._snapshot_retry_after
-                    and self.firmware_tracker.needs_snapshot(
-                        self.config_entry.entry_id,
-                        version,
-                        telemetry.protocol_version,
-                        context=operational.activity.value,
-                    )
-                ):
-                    self._snapshot_versions_in_progress.add(version)
-                    self.config_entry.async_create_background_task(
-                        self.hass,
-                        self._async_capture_firmware_snapshot(
-                            self.firmware_tracker, state, version
-                        ),
-                        f"{DOMAIN} firmware snapshot",
-                    )
+                if version is not None:
+                    snapshot_identity = (version, telemetry.protocol_version)
+                    if (
+                        snapshot_identity not in self._snapshot_versions_in_progress
+                        and monotonic()
+                        >= self._snapshot_retry_after.get(snapshot_identity, 0.0)
+                        and self.firmware_tracker.needs_snapshot(
+                            self.config_entry.entry_id,
+                            version,
+                            telemetry.protocol_version,
+                            context=operational.activity.value,
+                        )
+                    ):
+                        self._snapshot_versions_in_progress.add(snapshot_identity)
+                        self.config_entry.async_create_background_task(
+                            self.hass,
+                            self._async_capture_firmware_snapshot(
+                                self.firmware_tracker, state, version
+                            ),
+                            f"{DOMAIN} firmware snapshot",
+                        )
             if self._cues_push_sequence != cues_push_sequence:
                 latest_cues_state = self._latest_cues_state
                 assert latest_cues_state is not None
@@ -636,12 +638,15 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         version: str,
     ) -> None:
         """Persist one background snapshot without delaying normal state."""
+        snapshot_identity = (version, state.telemetry.protocol_version)
         try:
-            self._snapshot_retry_after = monotonic() + SNAPSHOT_RETRY_SECONDS
+            self._snapshot_retry_after[snapshot_identity] = (
+                monotonic() + SNAPSHOT_RETRY_SECONDS
+            )
             snapshot = await async_build_firmware_snapshot(self.client, state)
             await tracker.async_record_snapshot(self.config_entry.entry_id, snapshot)
         finally:
-            self._snapshot_versions_in_progress.discard(version)
+            self._snapshot_versions_in_progress.discard(snapshot_identity)
 
     @callback
     def _async_fire_session_finished(
