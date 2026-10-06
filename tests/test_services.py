@@ -972,6 +972,102 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
     coordinator.async_request_refresh.assert_not_awaited()
 
 
+async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
+    hass,
+) -> None:
+    """A custom-area request queued before graceful Stop cannot replace its run."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor = _area_floor_plan()
+    await manager.async_save_area(
+        "serial",
+        "litter_box",
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": "Litter box",
+            "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+            "map_binding": binding_for_floor_plan(floor),
+        },
+    )
+    room = CleaningRoom("room-2", "Study", "vacuum", "quick")
+    managed_token = manager.begin_managed_motion("serial")
+    await manager.async_begin_run(
+        "serial",
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=True,
+        finish_current_room_threshold=0,
+    )
+    await manager.async_mark_started("serial", "plan", room, run_id="run-id")
+    plan_lock = manager.lock("serial")
+    await plan_lock.acquire()
+    command_lock = manager.command_lock("serial")
+    await command_lock.acquire()
+    services = await _registered_services(hass, manager)
+    client = SimpleNamespace(
+        async_start_custom_coverage=AsyncMock(),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
+    )
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor),
+        async_request_refresh=AsyncMock(),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_area",
+        CLEAN_AREA_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "area": "Litter box"}),
+    )
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
+    ):
+        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
+        try:
+            for _ in range(30):
+                waiters = getattr(command_lock, "_waiters", None)
+                if waiters is not None and any(not waiter.done() for waiter in waiters):
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("Custom-area clean never queued for the command lock")
+
+            decision = manager.request_stop("serial")
+            assert decision.behavior == "after_room"
+            assert manager.finish_room_event("serial").is_set()
+            assert not manager.cancellation_event("serial").is_set()
+
+            command_lock.release()
+            with pytest.raises(ServiceValidationError, match="superseded"):
+                await task
+
+            assert manager.managed_motion_is_current("serial", managed_token)
+            client.async_start_custom_coverage.assert_not_awaited()
+            coordinator.async_request_refresh.assert_not_awaited()
+        finally:
+            if command_lock.locked():
+                command_lock.release()
+            if plan_lock.locked():
+                plan_lock.release()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_clean_area_translates_client_failure_without_protocol_details(
     hass,
 ) -> None:

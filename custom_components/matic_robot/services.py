@@ -409,13 +409,22 @@ async def async_register_services(hass: HomeAssistant) -> None:
             hass, call, require_current_floor=True
         )
         request_generation = manager.motion_generation(serial_number)
+        request_stop_generation = manager.stop_request_generation(serial_number)
         request_admission_epoch = manager.command_admission_epoch(serial_number)
         manager.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
 
-        def require_generation(expected: int) -> None:
-            if manager.motion_generation(serial_number) != expected:
+        def require_current_request(expected_motion_generation: int) -> None:
+            if manager.motion_generation(serial_number) != expected_motion_generation:
+                raise _validation_error(
+                    "The cleaning request was superseded before it could start",
+                    "robot_command_failed",
+                )
+            if (
+                manager.stop_request_generation(serial_number)
+                != request_stop_generation
+            ):
                 raise _validation_error(
                     "The cleaning request was superseded before it could start",
                     "robot_command_failed",
@@ -428,7 +437,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             entity_id,
             entry.runtime_data.client.async_get_active_cleaning_session_state,
         )
-        require_generation(request_generation)
+        require_current_request(request_generation)
         manager.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
@@ -448,7 +457,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async with manager.external_command(serial_number):
-            require_generation(request_generation)
+            require_current_request(request_generation)
             await _ensure_stop_settled(
                 hass,
                 manager,
@@ -456,7 +465,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 entity_id,
                 entry.runtime_data.client.async_get_active_cleaning_session_state,
             )
-            require_generation(request_generation)
+            require_current_request(request_generation)
             try:
                 current_area = manager.area(serial_number, call.data["area"])
             except KeyError as err:
@@ -472,9 +481,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 call.data.get("cleaning_mode"),
                 call.data.get("coverage_setting"),
             )
-            require_generation(request_generation)
+            require_current_request(request_generation)
             generation = await manager.async_replace_managed_motion(serial_number)
-            require_generation(generation)
+            require_current_request(generation)
             floor_plan = _current_floor_plan(entry)
             floor_plan, circles, mode, coverage = _validated_area_command(
                 current_area,
