@@ -88,7 +88,13 @@ async def test_tracker_loads_observes_and_signals_version_changes(hass) -> None:
     }
 
 
-async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> None:
+async def test_tracker_persists_snapshots_caps_history_and_summarizes(
+    hass, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        lambda: datetime(2026, 7, 20, tzinfo=UTC),
+    )
     stored = {"robots": {"entry": {"history": [_snapshot()] * MAX_HISTORY}}}
     tracker = FirmwareTracker(hass)
     tracker._store = SimpleNamespace(
@@ -440,8 +446,12 @@ def test_activity_dependent_population_is_not_availability_drift() -> None:
 
 
 async def test_protocol_metadata_arriving_after_firmware_triggers_resnapshot(
-    hass,
+    hass, monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        lambda: datetime(2026, 7, 20, tzinfo=UTC),
+    )
     old_release = _snapshot("v168.11")
     staged_release = _snapshot("v169.9")
     staged_release["protocol_version"] = None

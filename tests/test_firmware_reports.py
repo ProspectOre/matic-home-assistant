@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
 from custom_components.matic_robot import firmware_reports as reports
+from custom_components.matic_robot.firmware import FirmwareTracker
 
 NOW = datetime(2026, 10, 5, 12, 0, tzinfo=UTC)
 
@@ -75,12 +79,20 @@ def test_release_baseline_survives_history_eviction_and_shape_union() -> None:
     for index, paths in enumerate((["1:2", "2:2"], ["1:2"], ["1:2", "2:2"])):
         reports.prepare_release(
             robot,
-            snapshot("v1", paths=list(paths), captured=NOW + timedelta(minutes=index)),
+            snapshot(
+                "v1",
+                paths=list(paths),
+                captured=NOW + timedelta(minutes=index * 15),
+            ),
         )
         reports.update_report(
             robot,
-            snapshot("v1", paths=list(paths), captured=NOW + timedelta(minutes=index)),
-            NOW + timedelta(minutes=index),
+            snapshot(
+                "v1",
+                paths=list(paths),
+                captured=NOW + timedelta(minutes=index * 15),
+            ),
+            NOW + timedelta(minutes=index * 15),
         )
     new_field = finding(robot, "new_field", "current_version", "2:2")
     assert new_field["observation_count"] == 2
@@ -105,11 +117,107 @@ def test_new_field_first_and_repeated_observation_and_timestamp_replay() -> None
     # An exact captured-at replay is not another independent confirmation.
     assert not reports.update_report(robot, changed, NOW + timedelta(minutes=2))
     assert item["observation_count"] == 1
-    repeated = snapshot(paths=["1:2", "2:2"], captured=NOW + timedelta(minutes=3))
+    repeated = snapshot(paths=["1:2", "2:2"], captured=NOW + timedelta(minutes=16))
     reports.prepare_release(robot, repeated)
-    assert reports.update_report(robot, repeated, NOW + timedelta(minutes=3))
+    assert reports.update_report(robot, repeated, NOW + timedelta(minutes=16))
     assert item["status"] == "observed_again"
     assert item["observation_count"] == 2
+
+
+def test_late_new_field_requires_its_own_confirmation_spacing() -> None:
+    robot = start_robot()
+    first = snapshot(paths=["1:2", "2:2"], captured=NOW + timedelta(minutes=10))
+    reports.prepare_release(robot, first)
+    reports.update_report(robot, first, NOW + timedelta(minutes=10))
+    item = finding(robot, "new_field", "current_version", "2:2")
+    assert item["observation_count"] == 1
+
+    early_global_slot = snapshot(
+        paths=["1:2", "2:2"], captured=NOW + timedelta(minutes=15)
+    )
+    reports.prepare_release(robot, early_global_slot)
+    reports.update_report(robot, early_global_slot, NOW + timedelta(minutes=15))
+    assert item["observation_count"] == 1
+
+    next_global_slot = snapshot(
+        paths=["1:2", "2:2"], captured=NOW + timedelta(minutes=30)
+    )
+    reports.prepare_release(robot, next_global_slot)
+    reports.update_report(robot, next_global_slot, NOW + timedelta(minutes=30))
+    assert item["observation_count"] == 2
+    assert item["status"] == "observed_again"
+
+
+def test_rapid_failure_reads_do_not_confirm_or_consume_scan_budget() -> None:
+    robot = start_robot()
+    initial_due = robot["next_firmware_scan_at"]
+    for offset in (1, 2, 3):
+        failed = snapshot(status="error", captured=NOW + timedelta(minutes=offset))
+        reports.prepare_release(robot, failed)
+        reports.update_report(robot, failed, NOW + timedelta(minutes=offset))
+    item = finding(robot, "read_failure", "current_version")
+    report = robot["firmware_report"]
+    assert item["observation_count"] == 1
+    assert item["status"] == "first_observed"
+    assert report["scan_count"] == 1
+    assert report.get("failure_scan_count", 0) == 0
+    assert robot["next_firmware_scan_at"] == initial_due
+
+    confirmed = snapshot(status="error", captured=NOW + timedelta(minutes=15))
+    reports.prepare_release(robot, confirmed)
+    reports.update_report(robot, confirmed, NOW + timedelta(minutes=15))
+    assert report["scan_count"] == 2
+    assert report["failure_scan_count"] == 1
+    assert item["observation_count"] == 1  # Only 14 minutes since first sighting.
+
+    repeated = snapshot(status="error", captured=NOW + timedelta(minutes=30))
+    reports.prepare_release(robot, repeated)
+    reports.update_report(robot, repeated, NOW + timedelta(minutes=30))
+    assert item["observation_count"] == 2
+    assert item["status"] == "observed_again"
+
+
+def test_legacy_scan_sample_seeds_confirmation_anchor() -> None:
+    robot = start_robot()
+    report = robot["firmware_report"]
+    expected_due = robot["next_firmware_scan_at"]
+    report.pop("last_confirmation_at")
+    early = snapshot(captured=NOW + timedelta(minutes=1))
+    reports.prepare_release(robot, early)
+    reports.update_report(robot, early, NOW + timedelta(minutes=1))
+    assert report["last_confirmation_at"] == NOW.isoformat()
+    assert report["scan_count"] == 1
+    assert robot["next_firmware_scan_at"] == expected_due
+
+
+def test_early_recovery_resets_failure_budget_before_a_new_failure() -> None:
+    robot = start_robot()
+    first_failure_at = NOW + timedelta(minutes=15)
+    failed = snapshot(status="error", captured=first_failure_at)
+    reports.prepare_release(robot, failed)
+    reports.update_report(robot, failed, first_failure_at)
+    report = robot["firmware_report"]
+    item = finding(robot, "read_failure", "current_version")
+    assert report["failure_scan_count"] == 1
+
+    recovery_at = first_failure_at + timedelta(minutes=1)
+    recovered = snapshot(status="empty", captured=recovery_at)
+    reports.prepare_release(robot, recovered)
+    reports.update_report(robot, recovered, recovery_at)
+    assert item["status"] == "recovered"
+    assert report["failure_scan_count"] == 0
+
+    recurrence_at = first_failure_at + timedelta(minutes=2)
+    recurring = snapshot(status="error", captured=recurrence_at)
+    reports.prepare_release(robot, recurring)
+    reports.update_report(robot, recurring, recurrence_at)
+    assert item["status"] == "first_observed"
+    assert item["consecutive_observations"] == 1
+    assert report["failure_scan_count"] == 0
+    assert (
+        robot["next_firmware_scan_at"]
+        == (first_failure_at + reports.CONFIRMATION_INTERVAL).isoformat()
+    )
 
 
 def test_missing_baseline_endpoint_does_not_create_false_new_field() -> None:
@@ -196,7 +304,7 @@ def test_robots_have_independent_reports() -> None:
     reports.update_report(first, new, NOW + timedelta(minutes=1))
     assert first["firmware_report"]["findings"]
     assert second["firmware_report"]["findings"] == {}
-    assert first["firmware_report"]["id"] == second["firmware_report"]["id"]
+    assert first["firmware_report"]["id"] != second["firmware_report"]["id"]
 
 
 def _lease_args(robot: dict, provider: str = "researcher") -> tuple:
@@ -370,22 +478,144 @@ def test_metadata_and_degraded_releases_preserve_last_good_baseline() -> None:
 
     good_v1 = snapshot("v1", protocol=9, captured=NOW + timedelta(minutes=2))
     reports.prepare_release(robot, good_v1)
+    missing_protocol = snapshot(
+        "v1", protocol=None, captured=NOW + timedelta(minutes=3)
+    )
+    reports.prepare_release(robot, missing_protocol)
+    assert missing_protocol["protocol_version"] is None
+    assert robot["release_evidence"]["last_good"]["protocol_version"] == 9
     degraded_v2 = snapshot(
         "v2",
         protocol=10,
-        captured=NOW + timedelta(minutes=3),
+        captured=NOW + timedelta(minutes=4),
         endpoints=[{"name": "current_version", "status": "error", "entries": []}],
     )
     reports.prepare_release(robot, degraded_v2)
     degraded_v3 = snapshot(
         "v3",
         protocol=11,
-        captured=NOW + timedelta(minutes=4),
+        captured=NOW + timedelta(minutes=5),
         endpoints=[{"name": "current_version", "status": "error", "entries": []}],
     )
     reports.prepare_release(robot, degraded_v3)
     assert robot["release_evidence"]["baseline"]["firmware_version"] == "v1"
     assert robot["release_evidence"]["baseline_shapes"]["current_version"] == ["1:2"]
+    assert robot["release_evidence"]["baseline"]["protocol_version"] == 9
+
+
+def test_legacy_current_report_id_survives_upgrade_and_restart() -> None:
+    robot = start_robot()
+    report_id = robot["firmware_report"]["id"]
+    robot["release_evidence"].pop("report_id")
+    current = snapshot("v1", captured=NOW)
+    reports.prepare_release(robot, current)
+    reports.update_report(robot, current, NOW)
+    assert robot["release_evidence"]["report_id"] == report_id
+    assert robot["firmware_report"]["id"] == report_id
+
+    restored = deepcopy(robot)
+    reports.prepare_release(restored, current)
+    reports.update_report(restored, current, NOW)
+    assert restored["firmware_report"]["id"] == report_id
+
+
+def test_legacy_id_colliding_with_history_is_rotated() -> None:
+    robot = start_robot()
+    legacy_id = robot["firmware_report"]["id"]
+    robot["report_history"] = [deepcopy(reports.public_report(robot))]
+    robot["release_evidence"].pop("report_id")
+    current = snapshot("v1", captured=NOW)
+    reports.prepare_release(robot, current)
+    assert robot["release_evidence"]["report_id"] != legacy_id
+    reports.update_report(robot, current, NOW)
+    assert robot["firmware_report"]["id"] != legacy_id
+
+
+def test_metadata_completion_preserves_legacy_report_occurrence_id() -> None:
+    robot: dict = {}
+    initial = snapshot("v1", protocol=None)
+    reports.prepare_release(robot, initial)
+    reports.update_report(robot, initial, NOW)
+    report_id = robot["firmware_report"]["id"]
+    reports.configure_investigator(robot, "researcher")
+    claim_args = _lease_args(robot)
+    token = reports.claim_report(robot, *claim_args, "metadata-bound", NOW)["token"]
+    evidence_revision = robot["firmware_report"]["evidence_revision"]
+    robot["release_evidence"].pop("report_id")
+
+    completed = snapshot("v1", protocol=9, captured=NOW + timedelta(minutes=1))
+    reports.prepare_release(robot, completed)
+    reports.update_report(robot, completed, NOW + timedelta(minutes=1))
+    assert robot["firmware_report"]["id"] == report_id
+    assert robot["firmware_report"]["protocol_version"] == 9
+    assert robot["firmware_report"]["evidence_revision"] > evidence_revision
+    assert robot.get("report_history", []) == []
+    with pytest.raises(ValueError, match="evidence or investigator routing changed"):
+        reports.complete_report(
+            robot,
+            *claim_args,
+            token,
+            "known_behavior",
+            "Old protocol metadata",
+            [],
+            NOW + timedelta(minutes=2),
+        )
+
+
+async def test_rollback_creates_new_report_id_and_rejects_stale_notification(
+    hass,
+) -> None:
+    robot = start_robot()
+    original = reports.public_report(robot)
+    moment = NOW  # Frozen wall time still needs distinct release occurrence IDs.
+
+    for version in ("v2", "v1"):
+        current = snapshot(version, captured=moment)
+        reports.prepare_release(robot, current)
+        reports.update_report(robot, current, moment)
+    restored_report = reports.public_report(robot)
+    assert restored_report["id"] != original["id"]
+    assert re.fullmatch(r"[0-9a-f]{24}", restored_report["id"])
+    assert restored_report["revision"] == original["revision"]
+
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(async_save=AsyncMock())
+    tracker._data = {"robots": {"entry": robot}}
+    with pytest.raises(ValueError, match="superseded"):
+        await tracker.async_notification_action(
+            "entry", original["id"], original["revision"], "acknowledge"
+        )
+    assert tracker.report("entry")["acknowledged_revision"] == 0
+    tracker._store.async_save.assert_not_awaited()
+
+
+def test_new_report_id_retries_a_collision_with_retained_ids(monkeypatch) -> None:
+    robot = {
+        "firmware_report": {"id": "current"},
+        "report_history": [{"id": "archived"}],
+    }
+    generated = iter(("current", "archived", "fresh"))
+    monkeypatch.setattr(reports.secrets, "token_hex", lambda _size: next(generated))
+    assert reports._new_report_id(robot) == "fresh"
+
+
+def test_legacy_missing_protocol_last_good_is_normalized_on_release_change() -> None:
+    old = snapshot("v1", protocol=None, captured=NOW)
+    robot = {
+        "release_evidence": {
+            "key": ["v1", 9, "a1"],
+            "report_id": "legacy-id",
+            "baseline": None,
+            "baseline_shapes": {},
+            "seen_shapes": {"current_version": ["1:2"]},
+            "last_good": old,
+            "contexts": [],
+        }
+    }
+    current = snapshot("v2", protocol=10, captured=NOW + timedelta(minutes=1))
+    reports.prepare_release(robot, current)
+    assert current["protocol_version"] == 10
+    assert robot["release_evidence"]["baseline"]["protocol_version"] == 9
 
 
 def test_public_report_without_a_report_and_investigator_provider_validation() -> None:
@@ -408,9 +638,9 @@ def test_finding_count_is_bounded_and_additional_observations_are_ignored() -> N
         "1:2",
         *(f"{index}:2" for index in range(2, reports.MAX_FIELD_FINDINGS + 3)),
     ]
-    expanded = snapshot(paths=field_paths, captured=NOW + timedelta(minutes=1))
+    expanded = snapshot(paths=field_paths, captured=NOW + timedelta(minutes=15))
     reports.prepare_release(robot, expanded)
-    reports.update_report(robot, expanded, NOW + timedelta(minutes=1))
+    reports.update_report(robot, expanded, NOW + timedelta(minutes=15))
     report = robot["firmware_report"]
     assert (
         sum(f["kind"] == "new_field" for f in report["findings"].values())
@@ -423,10 +653,10 @@ def test_finding_count_is_bounded_and_additional_observations_are_ignored() -> N
     ]
     failed = snapshot(
         endpoints=failed_endpoints,
-        captured=NOW + timedelta(minutes=2),
+        captured=NOW + timedelta(minutes=30),
     )
     reports.prepare_release(robot, failed)
-    reports.update_report(robot, failed, NOW + timedelta(minutes=2))
+    reports.update_report(robot, failed, NOW + timedelta(minutes=30))
     assert sum(f["kind"] == "read_failure" for f in report["findings"].values()) == len(
         reports.HERMES_ENDPOINT_NAMES
     )
