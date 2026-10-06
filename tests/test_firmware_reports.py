@@ -376,6 +376,63 @@ def test_future_scheduled_deadline_alone_does_not_trigger_rebase() -> None:
     assert report["failure_scan_count"] == 2
 
 
+def test_rebase_preserves_historical_report_and_finding_times() -> None:
+    robot = start_robot()
+    report = robot["firmware_report"]
+    old = (NOW - timedelta(days=2)).isoformat()
+    future = (NOW + timedelta(hours=2)).isoformat()
+    report["first_seen_at"] = old
+    report["last_sample_at"] = future
+    report["findings"]["historical"] = {
+        "id": "historical",
+        "kind": "read_failure",
+        "endpoint": "current_version",
+        "path": None,
+        "status": "first_observed",
+        "first_seen_at": old,
+        "last_confirmation_at": old,
+        "observation_count": 1,
+        "consecutive_observations": 1,
+    }
+
+    assert reports.rebase_future_anchors(robot, NOW)
+    assert report["first_seen_at"] == old
+    historical = report["findings"]["historical"]
+    assert historical["first_seen_at"] == old
+    assert historical["last_confirmation_at"] == old
+    assert report["last_confirmation_at"] == NOW.isoformat()
+
+
+def test_missing_firmware_version_cannot_create_release_or_report() -> None:
+    unversioned = snapshot(captured=NOW)
+    unversioned["firmware_version"] = "  "
+    robot: dict = {"history": [unversioned], "snapshot": unversioned}
+
+    assert reports.prepare_release(robot, unversioned) is None
+    assert "release_evidence" not in robot
+    assert reports.update_report(robot, unversioned, NOW) is False
+    assert "firmware_report" not in robot
+
+    robot = start_robot()
+    before_release = deepcopy(robot["release_evidence"])
+    before_report = deepcopy(robot["firmware_report"])
+    assert reports.prepare_release(robot, unversioned) == before_release["baseline"]
+    assert robot["release_evidence"] == before_release
+    assert reports.update_report(robot, unversioned, NOW) is False
+    assert robot["firmware_report"] == before_report
+
+
+def test_unversioned_legacy_history_cannot_become_a_release_baseline() -> None:
+    legacy = snapshot("v0", captured=NOW - timedelta(days=1))
+    legacy["firmware_version"] = None
+    robot: dict = {"history": [legacy]}
+
+    reports.prepare_release(robot, snapshot("v1"))
+
+    assert robot["release_evidence"]["key"] == ["v1", 7, "a1"]
+    assert robot["release_evidence"]["baseline"] is None
+
+
 def test_robots_have_independent_reports() -> None:
     first, second = start_robot(), start_robot()
     new = snapshot(paths=["1:2", "3:2"], captured=NOW + timedelta(minutes=1))
@@ -457,7 +514,122 @@ def test_routing_change_expiry_reclaim_and_stale_or_wrong_tokens_rejected() -> N
         ["https://example.org/source"],
         NOW + reports.LEASE_DURATION * 2 + timedelta(seconds=2),
     )
-    assert robot["firmware_report"]["investigation"]["status"] == "complete"
+
+
+def test_future_claimed_at_is_rebased_and_old_lease_is_invalidated() -> None:
+    robot = start_robot()
+    reports.configure_investigator(robot, "researcher")
+    args = _lease_args(robot)
+    token = reports.claim_report(robot, *args, "future-lease", NOW)["token"]
+    investigation = robot["firmware_report"]["investigation"]
+    investigation["claimed_at"] = (NOW + timedelta(hours=2)).isoformat()
+    investigation["lease_expires_at"] = (
+        NOW + timedelta(hours=2, minutes=30)
+    ).isoformat()
+
+    with pytest.raises(ValueError):
+        reports.complete_report(
+            robot, *args, token, "known_behavior", "too early", [], NOW
+        )
+
+    assert reports.has_future_anchor(robot, NOW)
+    assert reports.scan_due(robot, NOW)
+    assert reports.rebase_future_anchors(robot, NOW)
+    assert robot["firmware_report"]["investigation"] == {"status": "pending"}
+    with pytest.raises(ValueError):
+        reports.complete_report(robot, *args, token, "known_behavior", "stale", [], NOW)
+
+    replacement = reports.claim_report(robot, *args, "replacement", NOW)["token"]
+    with pytest.raises(ValueError):
+        reports.complete_report(robot, *args, token, "known_behavior", "stale", [], NOW)
+    reports.complete_report(
+        robot,
+        *args,
+        replacement,
+        "known_behavior",
+        "current claim",
+        [],
+        NOW + timedelta(seconds=1),
+    )
+
+
+def test_claim_self_recovers_an_impossible_future_claim() -> None:
+    robot = start_robot()
+    reports.configure_investigator(robot, "researcher")
+    args = _lease_args(robot)
+    old_token = reports.claim_report(robot, *args, "old", NOW)["token"]
+    robot["firmware_report"]["investigation"]["claimed_at"] = (
+        NOW + timedelta(hours=1)
+    ).isoformat()
+
+    replacement = reports.claim_report(robot, *args, "new", NOW)["token"]
+
+    assert replacement != old_token
+    assert robot["firmware_report"]["investigation"]["status"] == "claimed"
+    with pytest.raises(ValueError):
+        reports.complete_report(
+            robot, *args, old_token, "known_behavior", "stale", [], NOW
+        )
+
+
+def test_normal_future_lease_expiry_is_not_clock_skew() -> None:
+    robot = start_robot()
+    reports.configure_investigator(robot, "researcher")
+    args = _lease_args(robot)
+    claimed = reports.claim_report(robot, *args, "lease", NOW)
+
+    assert reports.has_future_anchor(robot, NOW) is False
+    assert reports.rebase_future_anchors(robot, NOW) is False
+    with pytest.raises(ValueError, match="already being investigated"):
+        reports.claim_report(robot, *args, "another", NOW + timedelta(minutes=1))
+    assert (
+        robot["firmware_report"]["investigation"]["lease_expires_at"]
+        == claimed["lease_expires_at"]
+    )
+
+
+def test_clock_rebase_does_not_resurrect_an_expired_active_lease() -> None:
+    robot = start_robot()
+    reports.configure_investigator(robot, "researcher")
+    args = _lease_args(robot)
+    token = reports.claim_report(robot, *args, "old-lease", NOW)["token"]
+    investigation = robot["firmware_report"]["investigation"]
+    investigation["claimed_at"] = (NOW - timedelta(hours=1)).isoformat()
+    investigation["lease_expires_at"] = (NOW + timedelta(minutes=10)).isoformat()
+    robot["firmware_report"]["last_checked_at"] = (NOW + timedelta(hours=2)).isoformat()
+
+    assert reports.has_future_anchor(robot, NOW)
+    with pytest.raises(ValueError):
+        reports.complete_report(
+            robot, *args, token, "known_behavior", "resurrected", [], NOW
+        )
+    assert reports.rebase_future_anchors(robot, NOW)
+    assert robot["firmware_report"]["investigation"] == {"status": "pending"}
+    with pytest.raises(ValueError):
+        reports.complete_report(robot, *args, token, "known_behavior", "stale", [], NOW)
+
+    reports.claim_report(robot, *args, "new-lease", NOW)
+
+
+def test_completed_investigation_survives_unrelated_clock_rebase() -> None:
+    robot = start_robot()
+    reports.configure_investigator(robot, "researcher")
+    args = _lease_args(robot)
+    token = reports.claim_report(robot, *args, "lease", NOW)["token"]
+    reports.complete_report(
+        robot,
+        *args,
+        token,
+        "known_behavior",
+        "completed",
+        [],
+        NOW + timedelta(seconds=1),
+    )
+    report = robot["firmware_report"]
+    report["last_sample_at"] = (NOW + timedelta(hours=2)).isoformat()
+
+    assert reports.rebase_future_anchors(robot, NOW)
+    assert report["investigation"]["status"] == "complete"
 
 
 def test_completed_assessment_is_untrusted_and_cannot_enable_capabilities() -> None:

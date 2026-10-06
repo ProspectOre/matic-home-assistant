@@ -141,6 +141,15 @@ class FirmwareTracker:
             previous = robot.get("snapshot")
             current = deepcopy(dict(snapshot))
             comparison = _compare_snapshots(previous, current)
+            version = current.get("firmware_version")
+            if not isinstance(version, str) or not version.strip():
+                # Endpoint readings without a firmware identity cannot establish
+                # release provenance or become the next release's baseline.
+                return {
+                    **comparison,
+                    "discarded": True,
+                    "reason": "firmware_version_unavailable",
+                }
             now = dt_util.utcnow()
             current_is_future = reports.is_future_timestamp(
                 current.get("captured_at"), now
