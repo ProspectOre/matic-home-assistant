@@ -1017,7 +1017,7 @@
           "pending": "Checking",
           "baseline": "Baseline recorded",
           "compatible": "Compatible",
-          "regression": "Regression detected",
+          "regression": "Read checks need attention",
           "current": "Current"
         }
       },
@@ -1222,8 +1222,8 @@
   },
   "issues": {
     "firmware_regression": {
-      "title": "Matic firmware compatibility changed",
-      "description": "After Matic changed from firmware {previous} (protocol {previous_protocol}) to {current} (protocol {current_protocol}), {count} Hermes endpoint(s) changed availability or transport status. Review the **Firmware snapshot** response and compatibility ledger."
+      "title": "Matic firmware read checks need attention",
+      "description": "Repeated local checks on firmware {current} (protocol {current_protocol}) could not read {count} Hermes endpoint(s). The retained baseline is {previous} (protocol {previous_protocol}). A read failure does not prove a firmware defect. Open the Firmware compatibility sensor for evidence and recovery status."
     },
     "robot_identity_changed": {
       "title": "Matic robot identity changed",
@@ -1491,6 +1491,34 @@
     "firmware_snapshot": {
       "name": "Firmware snapshot",
       "description": "Checks every known non-credential Hermes endpoint, stores a payload-free compatibility record, and reports availability, content, and value-free wire-shape changes from the prior snapshot."
+    },
+    "firmware_investigator": {
+      "name": "Set firmware investigator",
+      "description": "Assign firmware research to any connected agent without changing robot controls. Switching invalidates active claims and preserves evidence. Administrator access is required.",
+      "fields": {
+        "provider": {
+          "name": "Investigator",
+          "description": "A lowercase name such as openclaw, dot, or bot. Use manual to stop automatic claims. The named agent must be connected separately."
+        }
+      }
+    },
+    "firmware_notification": {
+      "name": "Update firmware notification",
+      "description": "Acknowledge a current report, record accepted notification delivery, or request a bounded read-only recheck. Used by the Firmware intelligence blueprint.",
+      "fields": {
+        "report_id": {
+          "name": "Report ID",
+          "description": "The current report ID from the Firmware compatibility sensor."
+        },
+        "revision": {
+          "name": "Revision",
+          "description": "The exact current notification revision."
+        },
+        "action": {
+          "name": "Action",
+          "description": "Acknowledge, mark delivered, or request a recheck."
+        }
+      }
     }
   }
 }

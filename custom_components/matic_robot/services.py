@@ -26,6 +26,7 @@ from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_FLOOR_ID,
     ATTR_LABEL_ID,
+    EVENT_HOMEASSISTANT_STARTED,
     STATE_UNAVAILABLE,
 )
 from homeassistant.core import (
@@ -332,6 +333,8 @@ FIRMWARE_SNAPSHOT_SCHEMA = cv.make_entity_service_schema({})
 def _require_matic_control[ServiceResult](
     hass: HomeAssistant,
     handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
+    *,
+    allow_unavailable: bool = False,
 ) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
     """Apply Home Assistant's entity-control policy to a domain service."""
 
@@ -343,7 +346,9 @@ def _require_matic_control[ServiceResult](
             if user is None:
                 raise UnknownUser(context=call.context)
             if not user.is_admin:
-                for entity_id in _resolve_loaded_matic_vacuums(hass, call):
+                for entity_id in _resolve_loaded_matic_vacuums(
+                    hass, call, require_available=not allow_unavailable
+                ):
                     if not user.permissions.check_entity(entity_id, POLICY_CONTROL):
                         raise Unauthorized(
                             context=call.context,
@@ -355,6 +360,23 @@ def _require_matic_control[ServiceResult](
     return async_authorized
 
 
+def _require_matic_admin[ServiceResult](
+    hass: HomeAssistant,
+    handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
+) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
+    """Require an authenticated administrator to change investigator routing."""
+
+    @wraps(handler)
+    async def authorized(call: ServiceCall) -> ServiceResult:
+        user_id = call.context.user_id
+        user = await hass.auth.async_get_user(user_id) if user_id else None
+        if user is None or not user.is_admin:
+            raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+        return await handler(call)
+
+    return authorized
+
+
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register actions before any config entry is loaded."""
 
@@ -362,6 +384,68 @@ async def async_register_services(hass: HomeAssistant) -> None:
     firmware_tracker = FirmwareTracker(hass)
     await firmware_tracker.async_load()
     hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = firmware_tracker
+    if hass.is_running:
+        firmware_tracker.replay_reports()
+    else:
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, lambda event: firmware_tracker.replay_reports()
+        )
+
+    async def async_firmware_investigator(call: ServiceCall) -> None:
+        """Change research routing without changing any robot behavior."""
+        entry = firmware_entry(call)
+        try:
+            await firmware_tracker.async_configure_investigator(
+                entry.entry_id, call.data["provider"]
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    async def async_firmware_notification(call: ServiceCall) -> None:
+        """Apply a revision-bound notification action from trusted HA code."""
+        entry = firmware_entry(call)
+        try:
+            await firmware_tracker.async_notification_action(
+                entry.entry_id,
+                call.data["report_id"],
+                call.data["revision"],
+                call.data["action"],
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    def firmware_entry(call: ServiceCall) -> ConfigEntry[Any]:
+        entity_ids = _resolve_loaded_matic_vacuums(hass, call, require_available=False)
+        if len(entity_ids) != 1:
+            raise ServiceValidationError(
+                "Firmware actions require exactly one Matic robot"
+            )
+        return _entry_for_entity(hass, entity_ids[0])
+
+    hass.services.async_register(
+        DOMAIN,
+        "firmware_investigator",
+        _require_matic_admin(hass, async_firmware_investigator),
+        schema=cv.make_entity_service_schema(
+            {vol.Required("provider"): vol.All(cv.string, vol.Length(min=1, max=48))}
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "firmware_notification",
+        _require_matic_control(
+            hass, async_firmware_notification, allow_unavailable=True
+        ),
+        schema=cv.make_entity_service_schema(
+            {
+                vol.Required("report_id"): vol.All(
+                    cv.string, vol.Length(min=24, max=24)
+                ),
+                vol.Required("revision"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Required("action"): vol.In(("acknowledge", "delivered", "recheck")),
+            }
+        ),
+    )
 
     async def async_clean(call: ServiceCall) -> None:
         """Route the complete verified cleaning matrix to selected vacuums."""
@@ -1056,9 +1140,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
         entry = _entry_for_entity(hass, entity_ids[0])
         state = entry.runtime_data.coordinator.data
+        occurrence_generation = firmware_tracker.occurrence_generation(entry.entry_id)
         snapshot = await async_build_firmware_snapshot(entry.runtime_data.client, state)
         comparison = await firmware_tracker.async_record_snapshot(
-            entry.entry_id, snapshot
+            entry.entry_id,
+            snapshot,
+            occurrence_generation=occurrence_generation,
         )
         return {**snapshot, "comparison": comparison}
 
@@ -4544,7 +4631,9 @@ def _invalid_room_position(position: int, room_count: int) -> ServiceValidationE
     )
 
 
-def _resolve_loaded_matic_vacuums(hass: HomeAssistant, call: ServiceCall) -> list[str]:
+def _resolve_loaded_matic_vacuums(
+    hass: HomeAssistant, call: ServiceCall, *, require_available: bool = True
+) -> list[str]:
     """Resolve every target form and reject missing or unloaded robots."""
     selection = target.TargetSelection(
         {key: call.data[key] for key in TARGET_KEYS if key in call.data}
@@ -4570,8 +4659,10 @@ def _resolve_loaded_matic_vacuums(hass: HomeAssistant, call: ServiceCall) -> lis
         if (
             entry is None
             or entry.state is not ConfigEntryState.LOADED
-            or state is None
-            or state.state == STATE_UNAVAILABLE
+            or (
+                require_available
+                and (state is None or state.state == STATE_UNAVAILABLE)
+            )
         ):
             raise ServiceValidationError(
                 "The selected Matic robot is unavailable",

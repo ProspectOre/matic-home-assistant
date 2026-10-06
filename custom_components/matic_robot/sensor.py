@@ -394,6 +394,9 @@ class MaticFirmwareCompatibilitySensor(MaticEntity, SensorEntity):
     """Persistent firmware and endpoint compatibility state."""
 
     entity_description = FIRMWARE_COMPATIBILITY_DESCRIPTION
+    # Keep the bounded evidence inbox available to automations without exceeding
+    # Recorder's state-attribute limit or duplicating the durable report store.
+    _unrecorded_attributes = frozenset({"firmware_report"})
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)

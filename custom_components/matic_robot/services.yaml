@@ -287,3 +287,34 @@ inspect_hermes_endpoint:
 
 firmware_snapshot:
   target: *vacuum_target
+
+firmware_investigator:
+  target: *vacuum_target
+  fields:
+    provider:
+      required: true
+      example: openclaw
+      selector:
+        text:
+
+firmware_notification:
+  target: *vacuum_target
+  fields:
+    report_id:
+      required: true
+      selector:
+        text:
+    revision:
+      required: true
+      selector:
+        number:
+          min: 1
+          mode: box
+    action:
+      required: true
+      selector:
+        select:
+          options:
+            - acknowledge
+            - delivered
+            - recheck

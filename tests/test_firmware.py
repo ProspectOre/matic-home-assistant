@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
+from custom_components.matic_robot import firmware_reports as reports
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.firmware import (
     ANALYSIS_VERSION,
     MAX_HISTORY,
     FirmwareTracker,
     _compare_snapshots,
-    _compatibility_status,
     fingerprint_entry,
     snapshot_timestamp,
 )
@@ -86,7 +90,206 @@ async def test_tracker_loads_observes_and_signals_version_changes(hass) -> None:
     }
 
 
-async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> None:
+async def test_invalid_occurrence_generation_fails_closed_and_recovers(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(
+            return_value={
+                "robots": {
+                    "entry": {
+                        "observed_version": "v168.11",
+                        "observed_protocol": 25,
+                        "occurrence_generation": True,
+                    }
+                }
+            }
+        ),
+        async_save=AsyncMock(),
+    )
+    await tracker.async_load()
+
+    assert tracker.occurrence_generation("entry") == 0
+    invalid_capture = await tracker.async_record_snapshot(
+        "entry", _snapshot("v168.11"), occurrence_generation=True
+    )
+    assert invalid_capture["discarded"] is True
+    assert invalid_capture["reason"] == "snapshot_generation_invalid"
+
+    assert await tracker.async_observe_version("entry", "v168.12", 25) is True
+    assert tracker.occurrence_generation("entry") == 1
+
+
+async def test_snapshot_pending_survives_failed_release_and_rollback(
+    hass, monkeypatch
+) -> None:
+    class MemoryStore:
+        data = None
+        fail_next_save = False
+
+        async def async_load(self):
+            return deepcopy(self.data)
+
+        async def async_save(self, data):
+            if self.fail_next_save:
+                self.fail_next_save = False
+                raise OSError("synthetic store failure")
+            self.data = deepcopy(data)
+
+    clock = [datetime(2026, 7, 20, tzinfo=UTC)]
+    monkeypatch.setattr(
+        "custom_components.matic_robot.firmware.dt_util.utcnow", lambda: clock[0]
+    )
+    tracker = FirmwareTracker(hass)
+    store = MemoryStore()
+    tracker._store = store
+    await tracker.async_load()
+
+    assert await tracker.async_observe_version("entry", "v168.11", 25) is False
+    await tracker.async_record_snapshot("entry", _snapshot("v168.11"))
+    first_occurrence_generation = tracker.occurrence_generation("entry")
+    assert "snapshot_pending" not in tracker._data["robots"]["entry"]
+    assert "occurrence_pending" not in tracker._data["robots"]["entry"]
+    assert tracker.needs_snapshot("entry", "v168.11", 25) is False
+    original_report = tracker.report("entry")
+    original_report_id = original_report["id"]
+    original_revision = original_report["revision"]
+
+    assert await tracker.async_observe_version("entry", "v169.0", 26) is True
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    assert tracker.needs_snapshot("entry", "v169.0", 26) is True
+    stale_candidate = _snapshot("v168.11")
+    stale = await tracker.async_record_snapshot("entry", stale_candidate)
+    assert stale["discarded"] is True
+    assert stale["reason"] == "snapshot_superseded"
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    # The B capture failed or was cancelled. When firmware returns to A, the
+    # old A snapshot cannot satisfy this newly observed occurrence.
+    assert await tracker.async_observe_version("entry", "v168.11", 25) is True
+    assert tracker.needs_snapshot("entry", "v168.11", 25) is True
+
+    stale_aba = _snapshot("v168.11")
+    stale_aba_result = await tracker.async_record_snapshot(
+        "entry",
+        stale_aba,
+        occurrence_generation=first_occurrence_generation,
+    )
+    assert stale_aba_result["discarded"] is True
+    assert stale_aba_result["reason"] == "snapshot_occurrence_superseded"
+    assert tracker.occurrence_generation("entry") == first_occurrence_generation + 2
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    assert tracker.report("entry")["id"] == original_report_id
+
+    mismatched = _snapshot("v168.11")
+    mismatched["protocol_version"] = 26
+    rejected = await tracker.async_record_snapshot("entry", mismatched)
+    assert rejected["discarded"] is True
+    assert rejected["reason"] == "snapshot_superseded"
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    assert tracker.report("entry")["id"] == original_report_id
+
+    store.fail_next_save = True
+    rollback = _snapshot("v168.11")
+    rollback["captured_at"] = "2026-07-20T00:15:00+00:00"
+    clock[0] = datetime(2026, 7, 20, 0, 15, tzinfo=UTC)
+    with pytest.raises(OSError, match="synthetic store failure"):
+        await tracker.async_record_snapshot("entry", rollback)
+    assert tracker._data["robots"]["entry"]["snapshot_pending"] is True
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    assert store.data["robots"]["entry"]["snapshot_pending"] is True
+    assert store.data["robots"]["entry"]["occurrence_pending"] is True
+
+    reloaded = FirmwareTracker(hass)
+    reloaded._store = store
+    await reloaded.async_load()
+    assert reloaded.occurrence_generation("entry") == first_occurrence_generation + 2
+    assert reloaded.needs_snapshot("entry", "v168.11", 25) is True
+    await reloaded.async_record_snapshot("entry", rollback)
+    assert "snapshot_pending" not in reloaded._data["robots"]["entry"]
+    assert "occurrence_pending" not in reloaded._data["robots"]["entry"]
+    assert reloaded.needs_snapshot("entry", "v168.11", 25) is False
+    assert reloaded.report("entry")["id"] != original_report_id
+    assert reloaded.report("entry")["firmware_version"] == "v168.11"
+    assert reloaded._data["robots"]["entry"]["release_evidence"]["key"][0] == (
+        "v168.11"
+    )
+    assert all(
+        item["firmware_version"] != "v169.0"
+        for item in reloaded._data["robots"]["entry"]["history"]
+    )
+    assert all(
+        item["firmware_version"] != "v169.0"
+        for item in reloaded._data["robots"]["entry"].get("report_history", [])
+    )
+    state_after_rollback = deepcopy(reloaded._data)
+    late_b = _snapshot("v169.0")
+    late_b["captured_at"] = "2026-07-20T00:16:00+00:00"
+    late_result = await reloaded.async_record_snapshot("entry", late_b)
+    assert late_result["discarded"] is True
+    assert late_result["reason"] == "snapshot_superseded"
+    assert reloaded._data == state_after_rollback
+    with pytest.raises(ValueError, match="superseded"):
+        await reloaded.async_notification_action(
+            "entry", original_report_id, original_revision, "acknowledge"
+        )
+
+
+async def test_missing_snapshot_protocol_uses_authenticated_known_identity(
+    hass, monkeypatch
+) -> None:
+    clock = [datetime(2026, 7, 20, tzinfo=UTC)]
+    monkeypatch.setattr(
+        "custom_components.matic_robot.firmware.dt_util.utcnow", lambda: clock[0]
+    )
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    await tracker.async_observe_version("entry", "v168.11", 25)
+    await tracker.async_record_snapshot("entry", _snapshot("v168.11"))
+    prior_report_id = tracker.report("entry")["id"]
+
+    assert await tracker.async_observe_version("entry", "v168.11", 26) is True
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    clock[0] = datetime(2026, 7, 20, 0, 15, tzinfo=UTC)
+    incomplete = _snapshot("v168.11")
+    incomplete["protocol_version"] = None
+    incomplete["captured_at"] = clock[0].isoformat()
+    await tracker.async_record_snapshot("entry", incomplete)
+
+    robot = tracker._data["robots"]["entry"]
+    assert robot["snapshot"]["protocol_version"] == 26
+    assert robot["release_evidence"]["key"][1] == 26
+    assert "occurrence_pending" not in robot
+    assert tracker.report("entry")["id"] != prior_report_id
+    assert tracker.needs_snapshot("entry", "v168.11", 26) is False
+
+
+async def test_blank_firmware_identity_does_not_observe_or_request_snapshot(
+    hass,
+) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+
+    assert await tracker.async_observe_version("entry", "", 25) is False
+    assert await tracker.async_observe_version("entry", "   ", None) is False
+    assert tracker.needs_snapshot("entry", "", 25) is False
+    assert tracker.needs_snapshot("entry", "   ", None) is False
+    assert tracker._data == {"robots": {}}
+    tracker._store.async_save.assert_not_awaited()
+
+
+async def test_tracker_persists_snapshots_caps_history_and_summarizes(
+    hass, monkeypatch
+) -> None:
+    clock = [datetime(2026, 7, 20, tzinfo=UTC)]
+    monkeypatch.setattr(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        lambda: clock[0],
+    )
     stored = {"robots": {"entry": {"history": [_snapshot()] * MAX_HISTORY}}}
     tracker = FirmwareTracker(hass)
     tracker._store = SimpleNamespace(
@@ -101,10 +304,15 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
 
     assert comparison["baseline"] is True
     assert len(tracker._data["robots"]["entry"]["history"]) == MAX_HISTORY
-    assert tracker.summary("entry") == {
+    summary = tracker.summary("entry")
+    assert {
+        key: value
+        for key, value in summary.items()
+        if key not in ("firmware_report", "firmware_report_revision")
+    } == {
         "observed_version": None,
         "observed_protocol": None,
-        "compatibility_status": "baseline",
+        "compatibility_status": "compatible",
         "analysis_version": ANALYSIS_VERSION,
         "last_snapshot_at": "2026-07-20T00:00:00+00:00",
         "snapshot_count": MAX_HISTORY,
@@ -121,6 +329,8 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
         "wire_shape_candidate_endpoints": [],
     }
     assert tracker.summary("missing")["snapshot_count"] == 0
+    assert summary["firmware_report"]["scan_status"] == "complete"
+    assert summary["firmware_report_revision"] == tracker.report("entry")["revision"]
     assert tracker.needs_snapshot("entry", "v169.0", 25) is False
     # An unreadable protocol version is missing information, not a new
     # release: re-snapshotting on it turned a connection blip into a
@@ -141,6 +351,16 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
     ) as create_issue:
         await tracker.async_record_snapshot("entry", _snapshot("v170", status="error"))
     await hass.async_block_till_done()
+    create_issue.assert_not_called()
+    assert tracker.summary("entry")["compatibility_status"] == "pending"
+    failed_again = _snapshot("v170", status="error")
+    failed_again["captured_at"] = "2026-07-20T00:15:00+00:00"
+    clock[0] = datetime(2026, 7, 20, 0, 15, tzinfo=UTC)
+    with patch(
+        "custom_components.matic_robot.firmware.ir.async_create_issue"
+    ) as create_issue:
+        await tracker.async_record_snapshot("entry", failed_again)
+    await hass.async_block_till_done()
     assert create_issue.call_args.kwargs["translation_key"] == "firmware_regression"
     assert create_issue.call_args.kwargs["translation_placeholders"] == {
         "previous": "v169.0",
@@ -150,7 +370,7 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
         "count": "1",
     }
     assert "entry" not in create_issue.call_args.args[2]
-    assert analysis_events[0].data == {
+    assert analysis_events[-1].data == {
         "entry_id": "entry",
         "firmware_version": "v170",
         "protocol_version": 25,
@@ -168,9 +388,283 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
     with patch(
         "custom_components.matic_robot.firmware.ir.async_delete_issue"
     ) as resolved:
-        await tracker.async_record_snapshot("entry", _snapshot("v170"))
+        recovered = _snapshot("v170")
+        recovered["captured_at"] = "2026-07-20T00:30:00+00:00"
+        clock[0] = datetime(2026, 7, 20, 0, 30, tzinfo=UTC)
+        await tracker.async_record_snapshot("entry", recovered)
     resolved.assert_called_once()
     assert tracker.summary("entry")["compatibility_status"] == "compatible"
+
+
+async def test_first_failed_scan_is_pending_and_distinct_repeat_requires_attention(
+    hass,
+) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+
+    first = _snapshot("v169.0", status="error")
+    await tracker.async_record_snapshot("entry", first)
+    report = tracker.report("entry")
+    assert report["scan_status"] == "incomplete"
+    assert report["attention_required"] is False
+    assert report["findings"][0]["status"] == "first_observed"
+    assert report["findings"][0]["observation_count"] == 1
+    assert tracker.summary("entry")["compatibility_status"] == "pending"
+
+    # Replaying the same captured sample does not count as independent proof.
+    await tracker.async_record_snapshot("entry", first)
+    assert tracker.report("entry")["findings"][0]["observation_count"] == 1
+    assert tracker.report("entry")["attention_required"] is False
+
+    repeated = _snapshot("v169.0", status="error")
+    repeated["captured_at"] = "2026-07-20T00:15:00+00:00"
+    await tracker.async_record_snapshot("entry", repeated)
+    report = tracker.report("entry")
+    assert report["attention_required"] is True
+    assert report["findings"][0]["status"] == "observed_again"
+    assert report["findings"][0]["observation_count"] == 2
+    assert tracker.summary("entry")["compatibility_status"] == "regression"
+
+
+async def test_report_replay_and_notification_actions_are_revision_bound(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    bad = _snapshot(status="error")
+    await tracker.async_record_snapshot("entry", bad)
+    bad2 = _snapshot(status="error")
+    bad2["captured_at"] = "2026-07-20T00:15:00+00:00"
+    await tracker.async_record_snapshot("entry", bad2)
+    current = tracker.report("entry")
+    events = []
+    hass.bus.async_listen("matic_robot_firmware_report_updated", events.append)
+    tracker.replay_reports()
+    await hass.async_block_till_done()
+    assert events[-1].data == {
+        "entry_id": "entry",
+        "report_id": current["id"],
+        "revision": current["revision"],
+    }
+
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        return_value=datetime(2026, 7, 20, 1, tzinfo=UTC),
+    ):
+        await tracker.async_notification_action(
+            "entry", current["id"], current["revision"], "delivered"
+        )
+        await tracker.async_notification_action(
+            "entry", current["id"], current["revision"], "acknowledge"
+        )
+    assert tracker.report("entry")["delivered_revision"] == current["revision"]
+    assert tracker.report("entry")["acknowledged_revision"] == current["revision"]
+    assert tracker.report("entry")["notification_pending"] is False
+    with pytest.raises(ValueError, match="superseded"):
+        await tracker.async_notification_action(
+            "entry", current["id"], current["revision"] + 1, "acknowledge"
+        )
+    with pytest.raises(ValueError, match="Unknown"):
+        await tracker.async_notification_action(
+            "entry", current["id"], current["revision"], "other"
+        )
+
+
+async def test_scan_save_failure_is_atomic_and_report_receipt_persists(hass) -> None:
+    stored = {"robots": {"entry": {"history": [], "snapshot": None}}}
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=stored),
+        async_save=AsyncMock(side_effect=OSError("disk")),
+    )
+    await tracker.async_load()
+    before = tracker.summary("entry")
+    with pytest.raises(OSError, match="disk"):
+        await tracker.async_record_snapshot("entry", _snapshot())
+    assert tracker.summary("entry") == before
+
+    tracker._store.async_save.side_effect = None
+    await tracker.async_record_snapshot("entry", _snapshot())
+    await tracker.async_configure_investigator("entry", "researcher")
+    report = tracker.report("entry")
+    receipt = await tracker.async_claim_investigation(
+        "entry",
+        report["id"],
+        report["evidence_revision"],
+        report["routing_revision"],
+        "researcher",
+    )
+    assert tracker.report("entry")["investigation"]["status"] == "claimed"
+    assert "lease_hash" not in tracker.report("entry")["investigation"]
+    await tracker.async_complete_investigation(
+        "entry",
+        report["id"],
+        report["evidence_revision"],
+        report["routing_revision"],
+        "researcher",
+        receipt["token"],
+        "known_behavior",
+        "Synthetic review",
+        ["https://example.org/source"],
+    )
+    public = tracker.report("entry")
+    assert public["investigation"]["status"] == "complete"
+    assert public["investigation"]["summary"] == "Synthetic review"
+    assert tracker.report_history("entry") == []
+
+
+async def test_older_captured_sweep_cannot_roll_back_report(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    newer = _snapshot(status="error")
+    newer["captured_at"] = "2026-07-20T00:15:00+00:00"
+    await tracker.async_record_snapshot("entry", newer)
+    before = tracker.report("entry")
+    older = _snapshot(status="populated")
+    older["captured_at"] = "2026-07-20T00:00:00+00:00"
+    result = await tracker.async_record_snapshot("entry", older)
+    assert result.get("discarded") is True
+    assert tracker.report("entry") == before
+
+
+async def test_future_capture_is_discarded_and_clock_rollback_rebases_confirmations(
+    hass,
+) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    forward_now = datetime(2026, 7, 20, 12, tzinfo=UTC)
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        return_value=forward_now,
+    ):
+        baseline = _snapshot("v168.11")
+        baseline["captured_at"] = "2026-07-20T11:30:00+00:00"
+        await tracker.async_record_snapshot("entry", baseline)
+        first_failure = _snapshot("v168.11", status="error")
+        first_failure["captured_at"] = "2026-07-20T11:45:00+00:00"
+        await tracker.async_record_snapshot("entry", first_failure)
+        repeated_failure = _snapshot("v168.11", status="error")
+        repeated_failure["captured_at"] = "2026-07-20T12:00:00+00:00"
+        await tracker.async_record_snapshot("entry", repeated_failure)
+
+    before = tracker.report("entry")
+    assert before["attention_required"] is True
+    assert before["findings"][0]["status"] == "observed_again"
+    assert before["findings"][0]["observation_count"] == 2
+    prior_history_count = tracker.summary("entry")["snapshot_count"]
+
+    corrected_now = datetime(2026, 7, 20, 11, tzinfo=UTC)
+    robot = tracker._data["robots"]["entry"]
+    assert reports.scan_due(robot, corrected_now) is True
+    attempted_future = _snapshot("v168.11", status="error")
+    attempted_future["captured_at"] = "2026-07-20T11:01:00+00:00"
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        return_value=corrected_now,
+    ):
+        discarded = await tracker.async_record_snapshot("entry", attempted_future)
+        current = _snapshot("v168.11", status="error")
+        current["captured_at"] = corrected_now.isoformat()
+        accepted = await tracker.async_record_snapshot("entry", current)
+
+    assert discarded["discarded"] is True
+    assert accepted.get("discarded") is not True
+    robot = tracker._data["robots"]["entry"]
+    report = tracker.report("entry")
+    assert report["attention_required"] is True
+    assert report["findings"][0]["status"] == "observed_again"
+    assert report["findings"][0]["observation_count"] == 2
+    assert report["findings"][0]["last_confirmation_at"] == corrected_now.isoformat()
+    assert report["last_confirmation_at"] == corrected_now.isoformat()
+    assert report["scan_count"] == 0
+    assert report["failure_scan_count"] == 0
+    assert tracker.summary("entry")["snapshot_count"] == prior_history_count + 1
+    assert (
+        tracker._data["robots"]["entry"]["next_firmware_scan_at"]
+        == (corrected_now + timedelta(minutes=15)).isoformat()
+    )
+    robot["snapshot"]["captured_at"] = corrected_now.isoformat()
+    assert not reports.scan_due(robot, corrected_now + timedelta(minutes=5))
+    assert reports.scan_due(robot, corrected_now + timedelta(minutes=15))
+
+    confirmation = _snapshot("v168.11", status="error")
+    confirmation["captured_at"] = (corrected_now + timedelta(minutes=15)).isoformat()
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        return_value=corrected_now + timedelta(minutes=15),
+    ):
+        await tracker.async_record_snapshot("entry", confirmation)
+    assert tracker.report("entry")["findings"][0]["observation_count"] == 3
+
+
+@pytest.mark.parametrize("change", ["firmware", "protocol"])
+async def test_release_change_recovers_from_future_snapshot(hass, change: str) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    forward_now = datetime(2026, 7, 20, 12, tzinfo=UTC)
+    future = _snapshot("v168.11")
+    future["captured_at"] = forward_now.isoformat()
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        return_value=forward_now,
+    ):
+        await tracker.async_record_snapshot("entry", future)
+    previous_id = tracker.report("entry")["id"]
+
+    corrected_now = datetime(2026, 7, 20, 11, tzinfo=UTC)
+    current = _snapshot("v169.0" if change == "firmware" else "v168.11")
+    if change == "protocol":
+        current["protocol_version"] = 26
+    current["captured_at"] = corrected_now.isoformat()
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        return_value=corrected_now,
+    ):
+        result = await tracker.async_record_snapshot("entry", current)
+
+    assert result.get("discarded") is not True
+    report = tracker.report("entry")
+    assert report["id"] != previous_id
+    assert report["scan_count"] == 1
+    assert report["last_confirmation_at"] == corrected_now.isoformat()
+    assert tracker._data["robots"]["entry"]["snapshot"]["captured_at"] == (
+        corrected_now.isoformat()
+    )
+
+
+async def test_report_mutation_failure_and_recheck_floor(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(async_save=AsyncMock())
+    with pytest.raises(ValueError, match="not available"):
+        await tracker.async_configure_investigator("missing", "researcher")
+    now = datetime(2026, 7, 20, 1, tzinfo=UTC)
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow", return_value=now
+    ):
+        await tracker.async_record_snapshot("entry", _snapshot())
+        report = tracker.report("entry")
+        await tracker.async_notification_action(
+            "entry", report["id"], report["revision"], "recheck"
+        )
+    assert tracker.report("entry")["next_check_at"] == "2026-07-20T01:15:00+00:00"
+    tracker._store.async_save.side_effect = OSError("disk full")
+    before = tracker.report("entry")
+    with pytest.raises(OSError, match="disk full"):
+        await tracker.async_configure_investigator("entry", "researcher")
+    assert tracker.report("entry") == before
 
 
 async def test_removed_robots_forget_history_and_withdraw_repairs(hass) -> None:
@@ -211,6 +705,7 @@ async def test_wire_shape_candidates_stay_silent_and_compatible(hass) -> None:
         async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
     )
     await tracker.async_load()
+    assert await tracker.async_observe_version("entry", "v169.0", 25) is True
     events = []
     hass.bus.async_listen("matic_robot_firmware_analyzed", events.append)
     current = _snapshot("v169.0", wire_shapes=["1:2", "18:2", "18:2/17:2"])
@@ -260,8 +755,12 @@ def test_activity_dependent_population_is_not_availability_drift() -> None:
 
 
 async def test_protocol_metadata_arriving_after_firmware_triggers_resnapshot(
-    hass,
+    hass, monkeypatch
 ) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        lambda: datetime(2026, 7, 20, tzinfo=UTC),
+    )
     old_release = _snapshot("v168.11")
     staged_release = _snapshot("v169.9")
     staged_release["protocol_version"] = None
@@ -316,6 +815,35 @@ async def test_transient_protocol_omission_preserves_last_observation(hass) -> N
     tracker._store.async_save.assert_not_awaited()
 
 
+async def test_missing_firmware_version_preserves_release_and_report(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    await tracker.async_record_snapshot("entry", _snapshot("v169.9"))
+    baseline = _snapshot("v169.9", status="error")
+    baseline["captured_at"] = "2026-07-20T00:15:00+00:00"
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        return_value=datetime(2026, 7, 20, 0, 15, tzinfo=UTC),
+    ):
+        await tracker.async_record_snapshot("entry", baseline)
+
+    before = deepcopy(tracker._data)
+    saves_before = tracker._store.async_save.await_count
+    missing = _snapshot("v169.9", status="empty")
+    missing["firmware_version"] = None
+    missing["protocol_version"] = None
+    missing["captured_at"] = "2026-07-20T00:30:00+00:00"
+    result = await tracker.async_record_snapshot("entry", missing)
+
+    assert result["discarded"] is True
+    assert result["reason"] == "firmware_version_unavailable"
+    assert tracker._data == before
+    assert tracker._store.async_save.await_count == saves_before
+
+
 def test_snapshot_comparison_separates_availability_from_content() -> None:
     previous = _snapshot(value_hash="old")
     content = _compare_snapshots(previous, _snapshot(value_hash="new"))
@@ -346,7 +874,6 @@ def test_snapshot_comparison_separates_availability_from_content() -> None:
     assert structural_comparison["new_wire_shapes"] == {
         "current_version": ["18:2", "18:2/17:2"]
     }
-    assert _compatibility_status("pending", structural_comparison) == "compatible"
 
     removed_shape = _compare_snapshots(structural, previous)
     assert removed_shape["wire_shape_changed_endpoints"] == []
@@ -366,39 +893,6 @@ def test_snapshot_comparison_separates_availability_from_content() -> None:
         {"wire_shape": [1]},
     ]
     assert _compare_snapshots(previous, malformed)["new_wire_shapes"] == {}
-
-    assert _compatibility_status(None, {"baseline": True}) == "baseline"
-    assert (
-        _compatibility_status(
-            "pending",
-            {
-                "baseline": False,
-                "firmware_changed": True,
-                "changed_endpoints": ["zones"],
-            },
-        )
-        == "regression"
-    )
-    clean = {
-        "baseline": False,
-        "firmware_changed": True,
-        "changed_endpoints": [],
-    }
-    assert _compatibility_status("pending", clean) == "compatible"
-    protocol_only = {
-        "baseline": False,
-        "firmware_changed": False,
-        "protocol_changed": True,
-        "changed_endpoints": [],
-    }
-    assert _compatibility_status("pending", protocol_only) == "compatible"
-    unchanged = {
-        "baseline": False,
-        "firmware_changed": False,
-        "changed_endpoints": [],
-    }
-    assert _compatibility_status("compatible", unchanged) == "compatible"
-    assert _compatibility_status(None, unchanged) == "current"
 
 
 def test_analyzer_upgrade_does_not_create_wire_shape_candidates() -> None:
