@@ -31,6 +31,7 @@ from custom_components.matic_robot.client.commands import (
 )
 from custom_components.matic_robot.client.coverage_goals import (
     _MAX_COVERAGE_FIELDS_PER_MESSAGE,
+    _MAX_COVERAGE_FIELDS_PER_PLAN,
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
     coverage_readback_matches,
@@ -858,6 +859,45 @@ def test_coverage_field_limit_stops_before_materializing_excess_fields(
     # The outer container and group each contain one field; the dense goal
     # message constructs exactly the configured maximum, then stops.
     assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_MESSAGE + 2
+
+
+def test_coverage_plan_accepts_the_configured_goal_limit() -> None:
+    goal = _synthetic_goal()
+
+    signatures = coverage_plan_goal_signatures(_plan_for_goals(*([goal] * 4096)))
+
+    assert len(signatures) == 4096
+
+
+def test_coverage_plan_bounds_aggregate_field_allocations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materialized_fields = 0
+    original_field_factory = wire_module.WireField
+
+    def count_field_allocations(
+        number: int, wire_type: int, value: int | bytes
+    ) -> wire_module.WireField:
+        nonlocal materialized_fields
+        materialized_fields += 1
+        return original_field_factory(number, wire_type, value)
+
+    monkeypatch.setattr(wire_module, "WireField", count_field_allocations)
+    spec = (
+        _varint_field(1, 1)
+        + _varint_field(2, 0)
+        + _varint_field(4, 1)
+        + _varint_field(5, 0)
+        + _varint_field(6, 0) * 100
+    )
+    goal = _synthetic_goal(spec=spec)
+    payload = _plan_for_goals(*([goal] * 4096))
+    assert len(payload) <= 2 * 1024 * 1024
+
+    with pytest.raises(DecodeError, match="too many fields"):
+        coverage_plan_goal_signatures(payload)
+
+    assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_PLAN
 
 
 @pytest.mark.parametrize(

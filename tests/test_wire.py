@@ -10,6 +10,7 @@ from google.protobuf.message import DecodeError
 from custom_components.matic_robot.client.wire import (
     MAX_WIRE_SHAPE_BYTES,
     MAX_WIRE_SHAPE_FIELDS,
+    WireFieldBudget,
     decode_fields,
     first_bytes,
     first_varint,
@@ -71,6 +72,20 @@ def test_uuid_search_skips_non_message_and_invalid_nested_fields() -> None:
     )
 
     assert uuid_string(payload) == "01010101-0101-0101-0202-020202020202"
+
+
+def test_uuid_search_obeys_shared_field_limit() -> None:
+    with pytest.raises(DecodeError, match="field limit"):
+        uuid_string(b"\x08\x00" * 3, max_fields=2)
+    with pytest.raises(DecodeError, match="field limit"):
+        uuid_string(b"\x0a\x06" + b"\x08\x00" * 3, max_fields=2)
+
+
+def test_uuid_search_does_not_swallow_shared_budget_exhaustion() -> None:
+    budget = WireFieldBudget(remaining=1)
+
+    with pytest.raises(DecodeError, match="aggregate field budget"):
+        uuid_string(b"\x0a\x01\x00", field_budget=budget)
 
 
 def test_wire_shape_is_bounded_value_free_and_recurses_only_on_approved_paths() -> None:
