@@ -805,6 +805,8 @@ def test_coverage_goal_decoders_reject_unbounded_or_empty_shapes():
         coverage_command_goal_signatures(b"x" * (2 * 1024 * 1024 + 1))
     with pytest.raises(DecodeError, match="invalid goal count"):
         coverage_command_goal_signatures(_command_for_goals())
+    with pytest.raises(DecodeError, match="missing protobuf field 15"):
+        coverage_command_goal_signatures(b"")
     with pytest.raises(DecodeError, match="byte limit"):
         coverage_plan_goal_signatures(b"x" * (2 * 1024 * 1024 + 1))
     with pytest.raises(DecodeError, match="no observed"):
@@ -813,6 +815,13 @@ def test_coverage_goal_decoders_reject_unbounded_or_empty_shapes():
         coverage_plan_goal_signatures(_field(7, b""))
     with pytest.raises(DecodeError, match="list is empty"):
         coverage_plan_goal_signatures(_field(7, _field(1, b"")))
+
+
+def test_coverage_command_rejects_malformed_trailing_envelope_data():
+    with pytest.raises(DecodeError, match="truncated protobuf varint"):
+        coverage_command_goal_signatures(
+            _command_for_goals(_synthetic_goal()) + b"\x08\x80"
+        )
 
 
 def test_coverage_goal_decoders_reject_excessive_counts_and_fields():
@@ -861,6 +870,28 @@ def test_coverage_field_limit_stops_before_materializing_excess_fields(
     assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_MESSAGE + 2
 
 
+def test_coverage_command_field_limit_stops_before_materializing_excess_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materialized_fields = 0
+    original_field_factory = wire_module.WireField
+
+    def count_field_allocations(
+        number: int, wire_type: int, value: int | bytes
+    ) -> wire_module.WireField:
+        nonlocal materialized_fields
+        materialized_fields += 1
+        return original_field_factory(number, wire_type, value)
+
+    monkeypatch.setattr(wire_module, "WireField", count_field_allocations)
+    payload = _varint_field(1, 0) * (_MAX_COVERAGE_FIELDS_PER_MESSAGE + 1)
+
+    with pytest.raises(DecodeError, match="too many fields"):
+        coverage_command_goal_signatures(payload)
+
+    assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_MESSAGE
+
+
 def test_coverage_plan_accepts_the_configured_goal_limit() -> None:
     goal = _synthetic_goal()
 
@@ -869,7 +900,25 @@ def test_coverage_plan_accepts_the_configured_goal_limit() -> None:
     assert len(signatures) == 4096
 
 
-def test_coverage_plan_bounds_aggregate_field_allocations(
+def test_coverage_command_accepts_the_configured_goal_limit() -> None:
+    goal = _synthetic_goal()
+
+    signatures = coverage_command_goal_signatures(_command_for_goals(*([goal] * 4096)))
+
+    assert len(signatures) == 4096
+
+
+@pytest.mark.parametrize(
+    "parser,payload_builder",
+    [
+        (coverage_plan_goal_signatures, _plan_for_goals),
+        (coverage_command_goal_signatures, _command_for_goals),
+    ],
+    ids=("plan", "command"),
+)
+def test_coverage_decoders_bound_aggregate_field_allocations(
+    parser,
+    payload_builder,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     materialized_fields = 0
@@ -891,11 +940,11 @@ def test_coverage_plan_bounds_aggregate_field_allocations(
         + _varint_field(6, 0) * 100
     )
     goal = _synthetic_goal(spec=spec)
-    payload = _plan_for_goals(*([goal] * 4096))
+    payload = payload_builder(*([goal] * 4096))
     assert len(payload) <= 2 * 1024 * 1024
 
     with pytest.raises(DecodeError, match="too many fields"):
-        coverage_plan_goal_signatures(payload)
+        parser(payload)
 
     assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_PLAN
 

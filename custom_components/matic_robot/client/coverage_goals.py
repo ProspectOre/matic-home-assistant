@@ -12,7 +12,6 @@ from .wire import (
     WireFieldBudgetExceeded,
     WireFieldLimitExceeded,
     decode_fields,
-    first_bytes,
     uuid_string,
 )
 
@@ -66,7 +65,9 @@ def coverage_command_goal_signatures(
     if len(payload) > _MAX_COVERAGE_PLAN_BYTES:
         raise DecodeError("coverage command exceeds the byte limit")
     budget = WireFieldBudget(remaining=_MAX_COVERAGE_FIELDS_PER_PLAN)
-    command = first_bytes(first_bytes(first_bytes(payload, 15), 1), 3)
+    envelope = _first_bytes(payload, 15, budget)
+    request = _first_bytes(envelope, 1, budget)
+    command = _first_bytes(request, 3, budget)
     goal_containers = _bytes_fields(command, 5, budget)
     goals = tuple(
         goal
@@ -168,6 +169,21 @@ def _bytes_fields(
         and field.wire_type == 2
         and isinstance(field.value, bytes)
     )
+
+
+def _first_bytes(payload: bytes, number: int, budget: WireFieldBudget) -> bytes:
+    value: bytes | None = None
+    for field in _bounded_fields(payload, budget):
+        if (
+            value is None
+            and field.number == number
+            and field.wire_type == 2
+            and isinstance(field.value, bytes)
+        ):
+            value = field.value
+    if value is None:
+        raise DecodeError(f"missing protobuf field {number}")
+    return value
 
 
 def _single_bytes_field(fields: tuple[WireField, ...], number: int) -> bytes:
