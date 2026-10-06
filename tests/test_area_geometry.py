@@ -1,48 +1,50 @@
-"""Validation tests for the private drawn-area selector."""
+"""Validation tests for bounded private-area geometry."""
 
 import pytest
 import voluptuous as vol
 
-from custom_components.matic_robot.area_selector import (
+from custom_components.matic_robot.area_geometry import (
+    AreaGeometry,
     GeometryTooComplex,
-    MaticAreaSelector,
+    RoomGeometryIndex,
     _IndexedPolygon,
-    _RoomGeometryIndex,
 )
 
 
-def _selector() -> MaticAreaSelector:
-    return MaticAreaSelector(
-        {
-            "scene_url": "/api/matic_robot/slam_scene/0123456789abcdef",
-            "rooms": [
-                {
-                    "room_id": "office",
-                    "name": "Office",
-                    "boundary": [[0, 0], [3, 0], [3, 2], [0, 2]],
-                }
-            ],
-        }
+def _geometry() -> AreaGeometry:
+    return AreaGeometry(
+        [
+            {
+                "room_id": "office",
+                "name": "Office",
+                "boundary": [[0, 0], [3, 0], [3, 2], [0, 2]],
+            }
+        ]
     )
 
 
-def test_area_selector_preserves_private_geometry() -> None:
+def test_area_geometry_preserves_private_geometry() -> None:
     value = [{"x": 1, "y": 1.25, "radius": 0.35}]
-    assert _selector()(value) == [{"x": 1.0, "y": 1.25, "radius": 0.35}]
-    serialized = _selector().serialize()["selector"]["matic-area"]
-    assert serialized["rooms"][0]["name"] == "Office"
-    assert serialized["scene_url"] == ("/api/matic_robot/slam_scene/0123456789abcdef")
+    assert _geometry().validate(value) == [{"x": 1.0, "y": 1.25, "radius": 0.35}]
 
 
-def test_area_selector_rejects_an_external_scene_url() -> None:
-    """The editor can fetch only its private integration-owned scene route."""
-    with pytest.raises(vol.Invalid):
-        MaticAreaSelector(
+@pytest.mark.parametrize(
+    "rooms",
+    [
+        [{}],
+        [{"room_id": "room", "name": "Room", "boundary": [[0, 0], [1, 1]]}],
+        [
             {
-                "rooms": [],
-                "scene_url": "https://example.invalid/private-map",
+                "room_id": "room",
+                "name": "Room",
+                "boundary": [[0, 0, 1], [1, 1], [2, 2]],
             }
-        )
+        ],
+    ],
+)
+def test_area_geometry_rejects_malformed_room_context(rooms) -> None:
+    with pytest.raises(vol.Invalid):
+        AreaGeometry(rooms)
 
 
 @pytest.mark.parametrize(
@@ -56,14 +58,14 @@ def test_area_selector_rejects_an_external_scene_url() -> None:
         [{"x": 4, "y": 1, "radius": 0.3}],
     ],
 )
-def test_area_selector_rejects_invalid_geometry(value) -> None:
+def test_area_geometry_rejects_invalid_geometry(value) -> None:
     with pytest.raises(vol.Invalid):
-        _selector()(value)
+        _geometry().validate(value)
 
 
-def test_area_selector_accepts_room_boundary_points() -> None:
+def test_area_geometry_accepts_room_boundary_points() -> None:
     """A mark centered exactly on a mapped edge remains usable."""
-    assert _selector()([{"x": 0, "y": 1, "radius": 0.3}]) == [
+    assert _geometry().validate([{"x": 0, "y": 1, "radius": 0.3}]) == [
         {"x": 0.0, "y": 1.0, "radius": 0.3}
     ]
 
@@ -79,7 +81,7 @@ def test_indexed_room_geometry_matches_reference_polygon(tolerance: float) -> No
         [2.0, 2.0],
         [0.0, 2.0],
     ]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [{"room_id": "room", "name": "Room", "boundary": boundary}]
     )
     for x, y in (
@@ -91,14 +93,14 @@ def test_indexed_room_geometry_matches_reference_polygon(tolerance: float) -> No
         (3.005, 0.5),
     ):
         assert geometry.contains(x, y, tolerance) is (
-            MaticAreaSelector._point_in_or_near_polygon(x, y, boundary, tolerance)
+            AreaGeometry._point_in_or_near_polygon(x, y, boundary, tolerance)
         )
 
 
 def test_point_in_polygon_accepts_a_boundary_point() -> None:
     boundary = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]]
 
-    assert MaticAreaSelector._point_in_polygon(1.0, 0.0, boundary) is True
+    assert AreaGeometry._point_in_polygon(1.0, 0.0, boundary) is True
 
 
 def test_polygon_storage_does_not_expand_edges_across_vertical_buckets() -> None:
@@ -114,7 +116,7 @@ def test_polygon_storage_does_not_expand_edges_across_vertical_buckets() -> None
     assert (
         sum(map(len, polygon.edges_by_bucket.values())) <= polygon._MAX_EDGE_REFERENCES
     )
-    assert polygon.contains(1.0, 0.0, 0.0) is MaticAreaSelector._point_in_polygon(
+    assert polygon.contains(1.0, 0.0, 0.0) is AreaGeometry._point_in_polygon(
         1.0, 0.0, boundary
     )
 
@@ -131,7 +133,7 @@ def test_overloaded_index_preserves_comb_polygon_containment() -> None:
 
     assert polygon.overloaded is True
     assert polygon.contains(68.5, 5_000.0, 0.0) is True
-    assert polygon.contains(68.5, 5_000.0, 0.0) is MaticAreaSelector._point_in_polygon(
+    assert polygon.contains(68.5, 5_000.0, 0.0) is AreaGeometry._point_in_polygon(
         68.5, 5_000.0, boundary
     )
 
@@ -171,7 +173,7 @@ def test_room_index_charges_only_the_fallback_work_it_performs() -> None:
         x = float(tooth + 1)
         boundary.extend([[x, 10_000.0], [x, 0.0]])
     boundary.extend([[69.0, 0.0], [69.0, 10_000.0]])
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {"room_id": str(index), "name": "Room", "boundary": boundary}
             for index in range(2)
@@ -193,7 +195,7 @@ def test_room_index_checks_indexed_rooms_before_oversized_fallbacks() -> None:
         for index in range(_IndexedPolygon._MAX_FALLBACK_EDGES + 1)
     ]
     rectangle = [[120.0, -1.0], [130.0, -1.0], [130.0, 1.0], [120.0, 1.0]]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {"room_id": "oversized", "name": "Room", "boundary": oversized},
             {"room_id": "known", "name": "Room", "boundary": rectangle},
@@ -206,7 +208,7 @@ def test_room_index_checks_indexed_rooms_before_oversized_fallbacks() -> None:
 def test_room_index_budgets_indexed_candidate_references() -> None:
     boundary = [[float(index), 0.001 if index % 2 else 0.0] for index in range(4_096)]
     boundary.extend([[4_095.0, 1.0], [0.0, 1.0]])
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {
                 "room_id": "room",
@@ -249,14 +251,14 @@ def test_indexed_polygon_rejects_wide_bucket_span_over_fallback_edge_limit() -> 
 
 def test_room_query_budget_is_safe_for_synchronous_updates() -> None:
     """The aggregate cap cannot admit multi-million-edge event-loop work."""
-    assert _RoomGeometryIndex._MAX_QUERY_WORK <= 100_000
+    assert RoomGeometryIndex._MAX_QUERY_WORK <= 100_000
 
 
 def test_room_index_bounds_its_containment_cache(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(_RoomGeometryIndex, "_MAX_CONTAINMENT_CACHE_ENTRIES", 1)
-    geometry = _RoomGeometryIndex(
+    monkeypatch.setattr(RoomGeometryIndex, "_MAX_CONTAINMENT_CACHE_ENTRIES", 1)
+    geometry = RoomGeometryIndex(
         [
             {
                 "room_id": "room",
@@ -275,7 +277,7 @@ def test_room_index_caps_edge_references_across_the_floor_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cap = 600
-    monkeypatch.setattr(_RoomGeometryIndex, "_MAX_TOTAL_EDGE_REFERENCES", cap)
+    monkeypatch.setattr(RoomGeometryIndex, "_MAX_TOTAL_EDGE_REFERENCES", cap)
     rooms = [
         {
             "room_id": str(index),
@@ -290,7 +292,7 @@ def test_room_index_caps_edge_references_across_the_floor_plan(
         for index in range(3)
     ]
 
-    geometry = _RoomGeometryIndex(rooms)
+    geometry = RoomGeometryIndex(rooms)
     retained_references = sum(
         len(edges)
         for polygon in geometry.polygons
@@ -308,7 +310,7 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
     boundary = [
         [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(256)
     ]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {"room_id": str(index), "name": "Room", "boundary": boundary}
             for index in range(256)
@@ -338,8 +340,8 @@ def test_room_index_fair_fallback_does_not_depend_on_room_order() -> None:
         {"room_id": str(index), "name": "Room", "boundary": boundary}
         for index in range(256)
     ]
-    forward = _RoomGeometryIndex(rooms)
-    reverse = _RoomGeometryIndex(list(reversed(rooms)))
+    forward = RoomGeometryIndex(rooms)
+    reverse = RoomGeometryIndex(list(reversed(rooms)))
 
     assert forward.contains(120.5, 0.0) is True
     assert reverse.contains(120.5, 0.0) is True
@@ -353,7 +355,7 @@ def test_room_index_completes_supported_repeated_fallback_probes() -> None:
     containing = [point.copy() for point in outside]
     containing[129][1] = -5_000.0
     containing.extend([containing[-1].copy(), containing[-1].copy()])
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {"room_id": str(index), "name": "Room", "boundary": outside}
             for index in range(7)
@@ -373,7 +375,7 @@ def test_room_index_finds_late_supported_room_after_many_valid_probes() -> None:
     containing = [point.copy() for point in outside]
     containing[129][1] = -5_000.0
     containing.extend([containing[-1].copy(), containing[-1].copy()])
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {"room_id": str(index), "name": "Room", "boundary": outside}
             for index in range(255)
@@ -390,7 +392,7 @@ def test_room_index_reports_uncertainty_when_fallback_budget_is_exhausted() -> N
     outside = [
         [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(244)
     ]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {"room_id": str(index), "name": "Room", "boundary": outside}
             for index in range(255)
@@ -407,7 +409,7 @@ def test_room_index_skips_overloaded_polygon_outside_bounds() -> None:
     boundary = [
         [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(140)
     ]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [{"room_id": "room", "name": "Room", "boundary": boundary}]
     )
     remaining = geometry._query_work_remaining
@@ -420,7 +422,7 @@ def test_room_index_reports_exhausted_single_polygon_fallback_budget() -> None:
     boundary = [
         [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(256)
     ]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [{"room_id": "room", "name": "Room", "boundary": boundary}]
     )
     geometry._query_work_remaining = 1
@@ -429,33 +431,33 @@ def test_room_index_reports_exhausted_single_polygon_fallback_budget() -> None:
         geometry.contains(128.5, 0.0)
 
 
-def test_area_selector_rejects_geometry_budget_exhaustion() -> None:
-    selector = MaticAreaSelector(
-        {
-            "rooms": [
-                {
-                    "room_id": "room",
-                    "name": "Room",
-                    "boundary": [
-                        [float(index), -10_000.0 if index % 2 else 10_000.0]
-                        for index in range(256)
-                    ],
-                }
-            ]
-        }
+def test_area_geometry_rejects_geometry_budget_exhaustion() -> None:
+    area_geometry = AreaGeometry(
+        [
+            {
+                "room_id": "room",
+                "name": "Room",
+                "boundary": [
+                    [float(index), -10_000.0 if index % 2 else 10_000.0]
+                    for index in range(256)
+                ],
+            }
+        ]
     )
-    geometry = _RoomGeometryIndex(selector.config["rooms"])
-    geometry._query_work_remaining = 0
+    room_geometry = RoomGeometryIndex(area_geometry.rooms)
+    room_geometry._query_work_remaining = 0
 
     with pytest.raises(vol.Invalid, match="query budget exhausted"):
-        selector.validate([{"x": 128.5, "y": 0.0, "radius": 0.3}], geometry=geometry)
+        area_geometry.validate(
+            [{"x": 128.5, "y": 0.0, "radius": 0.3}], geometry=room_geometry
+        )
 
 
 def test_room_index_charges_overloaded_candidate_enumeration() -> None:
     boundary = [
         [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(140)
     ]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {"room_id": str(index), "name": "Room", "boundary": boundary}
             for index in range(3)
@@ -474,7 +476,7 @@ def test_room_index_does_not_reuse_budget_after_candidate_exhaustion() -> None:
     boundary = [
         [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(140)
     ]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [{"room_id": "room", "name": "Room", "boundary": boundary}]
     )
     geometry._query_work_remaining = 2
@@ -492,7 +494,7 @@ def test_room_index_rejects_polygon_over_fallback_cap_as_uncertain() -> None:
         [float(index), -10_000.0 if index % 2 else 10_000.0]
         for index in range(_IndexedPolygon._MAX_FALLBACK_EDGES + 1)
     ]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [{"room_id": "room", "name": "Room", "boundary": boundary}]
     )
     assert len(boundary) > _IndexedPolygon._MAX_FALLBACK_EDGES

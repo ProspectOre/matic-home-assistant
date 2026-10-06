@@ -11,14 +11,7 @@ const scripts = new Map([
     "/matic_icons.js",
     join(repositoryRoot, "custom_components", "matic_robot", "matic_icons.js"),
   ],
-  [
-    "/room-plan-editor-loader.js",
-    join(repositoryRoot, "custom_components", "matic_robot", "room_plan_editor_loader.js"),
-  ],
-  [
-    "/room-plan-editor.js",
-    join(repositoryRoot, "custom_components", "matic_robot", "room_plan_editor.js"),
-  ],
+
 ]);
 
 const server = createServer((request, response) => {

@@ -41,7 +41,7 @@ from .area_binding import (
     area_binding_status,
     binding_for_area,
 )
-from .area_selector import GeometryTooComplex
+from .area_geometry import GeometryTooComplex
 from .cadence import cadence_snapshot, normalize_cadence_policy
 from .cadence_accounting import (
     apply_verified_cadence as _apply_verified_cadence,
@@ -2463,6 +2463,8 @@ class CleaningPlanManager:
         async def commit(_lease: _MetadataLockLease) -> None:
             async with self._user_metadata_store_transaction(serial_number):
                 robot = self._robot(serial_number)
+                if plan_id is not None and plan_id not in robot["plans"]:
+                    raise KeyError(plan_id)
                 before = deepcopy(robot)
                 pending = _validated_native_reconciliation(
                     robot.get("pending_native_reconciliation")

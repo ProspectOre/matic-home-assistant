@@ -933,7 +933,7 @@ async def test_setup_registers_services_without_media_view() -> None:
 @pytest.mark.parametrize(
     "legacy_panel_api", [True, False], ids=["ha-2026.7-8", "ha-2026.9+"]
 )
-async def test_setup_registers_configuration_editor_when_frontend_is_loaded(
+async def test_setup_registers_map_studio_when_frontend_is_loaded(
     legacy_panel_api: bool,
 ) -> None:
     async def register_legacy_panel(
@@ -988,25 +988,18 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded(
     from custom_components.matic_robot.frontend import (
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
-        MANIFEST_VERSION,
         MATIC_ICONS_PATH,
         MATIC_MAP_PANEL_ELEMENT,
         MATIC_MAP_STUDIO_V4_PATH,
         MATIC_MAP_STUDIO_V4_ROOT_PATH,
-        ROOM_PLAN_EDITOR_BUNDLE_VERSION,
-        ROOM_PLAN_EDITOR_LOADER_PATH,
-        ROOM_PLAN_EDITOR_PATH,
-        ROOM_PLAN_EDITOR_ROOT_PATH,
     )
 
-    assert MANIFEST_VERSION in ROOM_PLAN_EDITOR_PATH
     assert hass.data[DATA_SLAM_SCENE_VIEW] in {
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     assert hass.data[DATA_SLAM_POSE_VIEW] in {
         call.args[0] for call in hass.http.register_view.call_args_list
     }
-    assert ROOM_PLAN_EDITOR_BUNDLE_VERSION in ROOM_PLAN_EDITOR_PATH
     registered_paths = {
         config.url_path
         for config in hass.http.async_register_static_paths.await_args.args[0]
@@ -1014,10 +1007,8 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded(
     assert MATIC_MAP_STUDIO_V4_ROOT_PATH in registered_paths
     assert MATIC_ICONS_PATH in registered_paths
     assert MATIC_ICONS_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
-    assert ROOM_PLAN_EDITOR_PATH in registered_paths
-    assert ROOM_PLAN_EDITOR_LOADER_PATH in registered_paths
-    assert ROOM_PLAN_EDITOR_LOADER_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
-    assert ROOM_PLAN_EDITOR_PATH not in hass.data[frontend.DATA_EXTRA_MODULE_URL]
+    assert registered_paths == {MATIC_MAP_STUDIO_V4_ROOT_PATH, MATIC_ICONS_PATH}
+    assert hass.data[frontend.DATA_EXTRA_MODULE_URL] == {MATIC_ICONS_PATH}
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
     safe_area_options = {} if legacy_panel_api else {"handle_safe_area": True}
     panel_registration.assert_awaited_once_with(
@@ -1040,7 +1031,6 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded(
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
     assert "classic_module_url" not in panel.config
-    assert ROOM_PLAN_EDITOR_ROOT_PATH in ROOM_PLAN_EDITOR_PATH
 
 
 @pytest.mark.parametrize("native_history_error", [False, True])

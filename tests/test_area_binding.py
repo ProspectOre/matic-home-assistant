@@ -38,9 +38,9 @@ from custom_components.matic_robot.area_binding import (
     translation_frame_bounds,
     translation_invariant_geometry_fingerprint,
 )
-from custom_components.matic_robot.area_selector import (
+from custom_components.matic_robot.area_geometry import (
     GeometryTooComplex,
-    _RoomGeometryIndex,
+    RoomGeometryIndex,
 )
 from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
 from custom_components.matic_robot.const import DOMAIN
@@ -1108,7 +1108,7 @@ def test_hash_only_signature_uses_indexed_occupancy_queries() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
     with patch.object(
-        area_binding_module.MaticAreaSelector,
+        area_binding_module.AreaGeometry,
         "_point_in_polygon",
         side_effect=AssertionError("legacy full-edge scan used"),
     ):
@@ -1208,7 +1208,7 @@ def test_scoped_binding_rejects_unexplained_probe_occupancy_change(
         area["map_binding"]["local_segments_mm"] == current_binding["local_segments_mm"]
     )
     assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
-    geometry = _RoomGeometryIndex(
+    geometry = RoomGeometryIndex(
         [
             {
                 "room_id": str(index),

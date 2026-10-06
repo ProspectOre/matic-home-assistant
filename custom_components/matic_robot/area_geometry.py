@@ -1,37 +1,28 @@
-"""Selector for drawing a private custom cleaning area on the local map."""
+"""Bounded room geometry and saved-area validation for Map Studio."""
 
 from __future__ import annotations
 
 import hashlib
 import math
-from typing import Any, NotRequired, TypedDict
+from typing import Any
 
 import voluptuous as vol
-from homeassistant.helpers.selector import (
-    SELECTORS,
-    Selector,
-    make_selector_config_schema,
-)
-
-
-class MaticAreaSelectorConfig(TypedDict):
-    """Configuration sent to the custom-area editor."""
-
-    rooms: list[dict[str, Any]]
-    scene_url: NotRequired[str]
 
 
 class GeometryTooComplex(ValueError):
     """The bounded fallback budget cannot prove containment."""
 
 
-POINT_SCHEMA = vol.ExactSequence((vol.Coerce(float), vol.Coerce(float)))
-ROOM_SCHEMA = vol.Schema(
+_POINT_SCHEMA = vol.ExactSequence((vol.Coerce(float), vol.Coerce(float)))
+_ROOM_SCHEMA = vol.Schema(
     {
         vol.Required("room_id"): str,
         vol.Required("name"): str,
-        vol.Required("boundary"): vol.All([POINT_SCHEMA], vol.Length(min=3)),
+        vol.Required("boundary"): vol.All([_POINT_SCHEMA], vol.Length(min=3)),
     }
+)
+_ROOMS_SCHEMA = vol.Schema(
+    {vol.Required("rooms"): [_ROOM_SCHEMA]}, extra=vol.PREVENT_EXTRA
 )
 
 
@@ -133,7 +124,7 @@ class _IndexedPolygon:
                 raise GeometryTooComplex(
                     "room geometry exceeds the fallback edge limit"
                 )
-            return MaticAreaSelector._point_in_or_near_polygon_with_work_limit(
+            return AreaGeometry._point_in_or_near_polygon_with_work_limit(
                 x, y, self.boundary, tolerance, work_limit
             )
 
@@ -144,7 +135,7 @@ class _IndexedPolygon:
                 raise GeometryTooComplex(
                     "room geometry exceeds the fallback edge limit"
                 )
-            return MaticAreaSelector._point_in_or_near_polygon_with_work_limit(
+            return AreaGeometry._point_in_or_near_polygon_with_work_limit(
                 x, y, self.boundary, tolerance, work_limit
             )
 
@@ -157,7 +148,7 @@ class _IndexedPolygon:
         edges = tuple(edge_values.values())
         for start, end in edges:
             charge_edge()
-            if MaticAreaSelector._point_on_segment(x, y, start, end):
+            if AreaGeometry._point_on_segment(x, y, start, end):
                 return True, work
         inside = False
         for previous, current in edges:
@@ -173,12 +164,12 @@ class _IndexedPolygon:
             return inside, work
         for start, end in edges:
             charge_edge()
-            if MaticAreaSelector._point_near_segment(x, y, start, end, tolerance):
+            if AreaGeometry._point_near_segment(x, y, start, end, tolerance):
                 return True, work
         return False, work
 
 
-class _RoomGeometryIndex:
+class RoomGeometryIndex:
     """Share bounded exact room lookups across custom-area validation."""
 
     # This work runs on Home Assistant's event loop when a floor plan update is
@@ -297,20 +288,12 @@ class _RoomGeometryIndex:
             raise
 
 
-@SELECTORS.register("matic-area")
-class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
-    """Validate bounded circles drawn over the current local floor plan."""
+class AreaGeometry:
+    """Validate bounded cleaning areas against mapped rooms."""
 
-    selector_type = "matic-area"
-    CONFIG_SCHEMA = make_selector_config_schema(
-        {
-            vol.Required("rooms"): [ROOM_SCHEMA],
-            vol.Optional("scene_url"): vol.All(
-                str,
-                vol.Match(r"^/api/matic_robot/slam_scene/[A-Za-z0-9]+$"),
-            ),
-        }
-    )
+    def __init__(self, rooms: list[dict[str, Any]]) -> None:
+        """Validate the same room records the former HA selector accepted."""
+        self.rooms = _ROOMS_SCHEMA({"rooms": rooms})["rooms"]
 
     @staticmethod
     def _point_on_segment(
@@ -435,16 +418,12 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
                 return True, work
         return False, work
 
-    def __call__(self, data: Any) -> list[dict[str, float]]:
-        """Validate and canonicalize drawn circles without exposing them."""
-        return self.validate(data)
-
     def validate(
         self,
         data: Any,
         *,
         center_tolerance: float = 0.0,
-        geometry: _RoomGeometryIndex | None = None,
+        geometry: RoomGeometryIndex | None = None,
     ) -> list[dict[str, float]]:
         """Validate circles with an optional saved-center boundary tolerance."""
         if not isinstance(data, list):
@@ -462,8 +441,8 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
             extra=vol.PREVENT_EXTRA,
         )
         circles: list[dict[str, float]] = []
-        rooms = self.config["rooms"]
-        geometry = geometry or _RoomGeometryIndex(rooms)
+        rooms = self.rooms
+        geometry = geometry or RoomGeometryIndex(rooms)
         for item in data:
             circle = dict(schema(item))
             if not all(math.isfinite(value) for value in circle.values()):

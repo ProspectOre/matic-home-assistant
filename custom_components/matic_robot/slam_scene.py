@@ -29,8 +29,8 @@ from .area_binding import (
     area_binding_status,
     binding_for_area,
 )
+from .area_geometry import AreaGeometry, RoomGeometryIndex
 from .area_outline import validate_outline
-from .area_selector import MaticAreaSelector, _RoomGeometryIndex
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
 from .client.floor_plan import resolve_robot_map_position, robot_location_source
@@ -919,13 +919,8 @@ class MaticSlamCatalogView(HomeAssistantView):
     url = CATALOG_API_URL
     name = "api:matic_robot:slam_entries"
 
-    def __init__(
-        self,
-        area_editor_url: str,
-        scene_view: MaticSlamSceneView | None = None,
-    ) -> None:
-        """Initialize the catalog with the private area-editor module route."""
-        self._area_editor_url = area_editor_url
+    def __init__(self, scene_view: MaticSlamSceneView | None = None) -> None:
+        """Initialize the catalog with its optional scene cache view."""
         self._scene_view = scene_view
 
     @require_admin
@@ -947,7 +942,6 @@ class MaticSlamCatalogView(HomeAssistantView):
             entries.append(
                 {
                     **projection,
-                    "area_editor_url": self._area_editor_url,
                     "cached_tiles": health.photo_tiles,
                     "structural_tiles": health.structure_tiles,
                     "overlapping_tiles": health.overlapping_tiles,
@@ -1016,10 +1010,10 @@ class MaticAreasView(HomeAssistantView):
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
             uses_indexed_binding = area_binding_needs_geometry_index(area)
             if uses_indexed_binding and room_geometry is None:
-                room_geometry = _RoomGeometryIndex(self._rooms(floor_plan))
+                room_geometry = RoomGeometryIndex(self._rooms(floor_plan))
             status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
             if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
-                room_geometry = _RoomGeometryIndex(self._rooms(floor_plan))
+                room_geometry = RoomGeometryIndex(self._rooms(floor_plan))
             can_rebind = area_binding_allows_review(
                 area,
                 floor_plan,
@@ -1101,7 +1095,7 @@ class MaticAreasView(HomeAssistantView):
             if not 1 <= len(name) <= 128:
                 raise ValueError
             rooms = self._rooms(floor_plan)
-            circles = MaticAreaSelector({"rooms": rooms})(body["circles"])
+            circles = AreaGeometry(rooms).validate(body["circles"])
             outline = validate_outline(body.get("outline"), circles)
             cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
             coverage_setting = CoverageSetting(str(body["coverage_setting"]))

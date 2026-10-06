@@ -21,7 +21,9 @@ The robot handles battery and water servicing as needed.
 [Mixed room missions](mixed-room-missions.md).
 
 A plan defines what to clean. Home Assistant automations decide when it runs.
-The integration's **Configure** flow also supports plan editing.
+Create and edit plans and custom areas in Map Studio. The integration's
+**Configure** flow keeps integration preferences and plan maintenance: choose
+an existing default plan or explicitly reset cleaning history.
 
 The 0.5 development branch adds optional [room schedules](room-schedules.md)
 for periodic mopping and coverage, with private or shared progress.
@@ -79,7 +81,8 @@ Coverage choices are **Quick**, **Optimal**, and **Heavy Duty**. Start the run
 from its summary; use the active cleaning controls to pause, resume, or stop.
 
 Home Assistant Areas can map to Matic rooms. Exact names and unique aliases
-match automatically; configure other matches in the integration's options.
+match automatically; manage other matches in the vacuum entity's cleaning-area
+settings.
 Mapped room names must be unique.
 
 ## Custom areas

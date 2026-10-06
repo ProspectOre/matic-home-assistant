@@ -18,6 +18,10 @@ use `require_admin`. The named handler tests below are in
 does not replace direct checks that mutation methods reject unauthorized users
 before reading their bodies or changing stored data.
 
+The catalog no longer advertises the removed Configure editor's
+`area_editor_url`. Map Studio remains the sole editing workspace; the retained
+routes, saved data, services, and administrator guards stay in place.
+
 | Retained route | Existing named assertions | Remaining endpoint evidence |
 |---|---|---|
 | GET `slam_scene/{entry}` | `test_scene_view_serves_and_etag_caches_compact_private_payload`; `test_scene_and_catalog_require_admin_and_loaded_catalog_entries`; `test_scene_view_returns_conflict_until_photo_pages_exist`; `test_scene_cache_retains_two_transport_revisions`; `test_scene_revision_advances_when_room_metadata_changes`; `test_scene_build_survives_a_cancelled_http_waiter` | The shared client deadline matrix covers scene header/body stalls and cancellation. Focused browser cases now reject truncated live and history scene bodies through the actual backend reader. Server cancellation proves a lost waiter does not cancel the shared build. |

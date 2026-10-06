@@ -235,9 +235,9 @@ def test_source_and_runtime_translations_stay_in_sync() -> None:
 
     assert translation == strings
     assert (INTEGRATION / "icons.json").exists()
+    assert (INTEGRATION / "matic_icons.js").exists()
     assert (INTEGRATION / "services.yaml").exists()
     assert not (INTEGRATION / "www").exists()
-    assert (INTEGRATION / "room_plan_editor.js").exists()
     studio_bundle = INTEGRATION / "map_studio_v4"
     assert (studio_bundle / "index.js").exists()
     workflow_chunks = studio_bundle / "chunks"

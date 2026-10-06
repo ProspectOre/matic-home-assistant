@@ -43,7 +43,7 @@ from .const import (
 )
 from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
-from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
+from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .managed_executor import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .migrations import async_migrate_entry
@@ -97,8 +97,8 @@ async def _async_recover_after_failed_unload(
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register integration-wide services and the plan editor."""
-    await async_register_room_plan_editor(hass)
+    """Register integration services and the Map Studio frontend."""
+    await async_register_frontend(hass)
     await async_register_services(hass)
     hass.data[DOMAIN][DATA_LLM_API] = async_register_matic_llm_api(hass)
     return True

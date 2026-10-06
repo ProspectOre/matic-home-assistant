@@ -109,6 +109,31 @@ def test_normalize_cadence_policy_rejects_one_shot_without_interval(
         )
 
 
+def test_disabling_cadence_discards_next_clean_flags_and_retains_intervals() -> None:
+    policy = normalize_cadence_policy(
+        {
+            "scope": "shared",
+            "mop_every_n": 3,
+            "coverage_every_n": 4,
+            "periodic_coverage_setting": "quick",
+            "do_mop_next": True,
+            "do_coverage_next": True,
+        },
+        cleaning_mode="vacuum",
+        coverage_setting="heavy_duty",
+        cadence_enabled=False,
+    )
+
+    assert policy == {
+        "scope": "shared",
+        "mop_every_n": 3,
+        "coverage_every_n": 4,
+        "periodic_coverage_setting": "quick",
+        "do_mop_next": False,
+        "do_coverage_next": False,
+    }
+
+
 def test_disabled_coverage_discards_the_editor_previous_setting() -> None:
     policy = normalize_cadence_policy(
         {"coverage_every_n": None, "periodic_coverage_setting": "standard"},

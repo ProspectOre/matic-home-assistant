@@ -2945,6 +2945,8 @@ async def test_plan_reset_ignores_old_shared_history_but_accepts_new_activity(
     study = _room("Study", "room-study")
     rooms = [kitchen, study]
     base = dt_util.utcnow() - timedelta(minutes=3)
+    await manager.async_save_plan("serial", "weekday", {"name": "Weekday"})
+    await manager.async_save_plan("serial", "weekend", {"name": "Weekend"})
 
     with patch("custom_components.matic_robot.plans.dt_util.utcnow", return_value=base):
         await manager.async_mark_started("serial", "weekday", kitchen)
@@ -2979,6 +2981,8 @@ async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
         "room": kitchen.name,
         "dispatched_at": dispatched_at.isoformat(),
     }
+    await manager.async_save_plan("serial", "away", {"name": "Away"})
+    await manager.async_save_plan("serial", "other", {"name": "Other"})
 
     await manager.async_mark_started("serial", "away", kitchen)
     await manager.async_mark_failed(
@@ -4971,6 +4975,74 @@ async def test_plan_validation_rejects_disabled_empty_unknown_and_missing(hass) 
                 "corrupt",
                 {"name": "Corrupt", "enabled": True, "rooms": rooms},
             )
+
+
+async def test_reset_history_revalidates_plan_after_metadata_wait(hass) -> None:
+    """A plan deleted at the metadata fence cannot receive a stale reset."""
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+    await manager.async_save_plan("serial", "selected", {"name": "Selected"})
+    await manager.async_select_plan("serial", "selected")
+
+    delete_write_started = asyncio.Event()
+    allow_delete_write = asyncio.Event()
+    original_save = manager._store.async_save
+    save_calls = 0
+
+    async def hold_delete_write(data: dict[str, Any]) -> None:
+        nonlocal save_calls
+        save_calls += 1
+        robot = data["robots"]["serial"]
+        if "selected" not in robot["plans"]:
+            delete_write_started.set()
+            await allow_delete_write.wait()
+        await original_save(data)
+
+    manager._store.async_save = hold_delete_write
+    delete = asyncio.create_task(manager.async_delete_plan("serial", "selected"))
+    reset = None
+    try:
+        await asyncio.wait_for(delete_write_started.wait(), timeout=2)
+        assert "selected" not in manager._robot("serial")["plans"]
+        assert manager.state_lock("serial").locked()
+
+        reset = asyncio.create_task(manager.async_reset_history("serial", "selected"))
+        for _ in range(20):
+            waiters = getattr(manager.state_lock("serial"), "_waiters", None)
+            if (
+                manager._metadata_admissions.get("serial") == 1
+                and waiters
+                and any(not waiter.done() for waiter in waiters)
+            ):
+                break
+            await asyncio.sleep(0)
+        assert manager._metadata_admissions.get("serial") == 1
+        assert waiters and any(not waiter.done() for waiter in waiters)
+
+        allow_delete_write.set()
+        await asyncio.wait_for(delete, timeout=3)
+        with pytest.raises(KeyError, match="selected"):
+            await asyncio.wait_for(reset, timeout=3)
+    finally:
+        allow_delete_write.set()
+        if not delete.done():
+            await asyncio.gather(delete, return_exceptions=True)
+        if reset is not None and not reset.done():
+            reset.cancel()
+            await asyncio.gather(reset, return_exceptions=True)
+
+    assert save_calls == 1
+    robot = manager._robot("serial")
+    assert robot["selected_plan"] is None
+    assert "selected" not in robot["plans"]
+    assert "selected" not in robot["rotation_resets"]
+
+    reloaded = CleaningPlanManager(hass)
+    await reloaded.async_load()
+    persisted = reloaded._robot("serial")
+    assert persisted["selected_plan"] is None
+    assert "selected" not in persisted["plans"]
+    assert "selected" not in persisted["rotation_resets"]
 
 
 def test_plan_preview_rejects_corrupt_room_records(hass) -> None:

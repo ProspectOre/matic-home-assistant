@@ -28,7 +28,7 @@ async def main() -> None:
         "homeassistant.components.panel_custom.async_register_panel",
         new_callable=AsyncMock,
     ) as register_panel:
-        await frontend.async_register_room_plan_editor(hass)
+        await frontend.async_register_frontend(hass)
     routes = hass.http.async_register_static_paths.call_args.args[0]
     print(
         json.dumps(

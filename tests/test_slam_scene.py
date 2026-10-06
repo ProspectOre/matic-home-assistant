@@ -23,7 +23,7 @@ from custom_components.matic_robot.area_binding import (
     binding_for_area,
     binding_for_floor_plan,
 )
-from custom_components.matic_robot.area_selector import _RoomGeometryIndex
+from custom_components.matic_robot.area_geometry import RoomGeometryIndex
 from custom_components.matic_robot.client.commands import CleaningMode, CoverageSetting
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
@@ -371,7 +371,7 @@ async def test_scene_generation_covers_both_multi_floor_transition_orders(
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     scene_view = MaticSlamSceneView()
-    catalog_view = MaticSlamCatalogView("/editor.js", scene_view)
+    catalog_view = MaticSlamCatalogView(scene_view)
 
     initial = json.loads((await catalog_view.get(_request(hass))).body)["entries"][0]
     assert initial["map_revision"] == 7
@@ -1093,15 +1093,11 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     with pytest.raises(Unauthorized):
         await MaticSlamSceneView().get(_request(hass, admin=False), "entry")
     with pytest.raises(Unauthorized):
-        await MaticSlamCatalogView("/matic_robot/test/room-plan-editor.js").get(
-            _request(hass, admin=False)
-        )
+        await MaticSlamCatalogView().get(_request(hass, admin=False))
     hass.config_entries.async_entries.assert_not_called()
 
     scene_view = MaticSlamSceneView()
-    response = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js", scene_view
-    ).get(_request(hass))
+    response = await MaticSlamCatalogView(scene_view).get(_request(hass))
 
     assert response.status == HTTPStatus.OK
     assert (
@@ -1118,7 +1114,6 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "history_url": f"/api/matic_robot/slam_history/{loaded.entry_id}",
                 "areas_url": f"/api/matic_robot/areas/{loaded.entry_id}",
                 "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
-                "area_editor_url": "/matic_robot/test/room-plan-editor.js",
                 "history_count": 0,
                 "history_floor_count": 0,
                 "map_revision": 7,
@@ -1170,9 +1165,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         "session_id": "private-session"
     }
     runtime.coordinator.data.telemetry.active_cleaning_session = True
-    blocked_response = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    blocked_response = await MaticSlamCatalogView().get(_request(hass))
     blocked_payload = json.loads(blocked_response.body)
     blocked_entry = blocked_payload["entries"][0]
     assert {
@@ -1194,9 +1187,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
 
     runtime.slam_map.mission_identity = None
     assert _map_session_key(runtime) is None
-    empty_identity = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    empty_identity = await MaticSlamCatalogView().get(_request(hass))
     empty_entry = json.loads(empty_identity.body)["entries"][0]
     assert empty_entry["history_count"] == 0
     assert empty_entry["map_floor_coherent"] is False
@@ -1206,9 +1197,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert empty_entry["map_floor_ordinal"] is None
 
     runtime.coordinator.data.floor_plan = None
-    empty_plan = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    empty_plan = await MaticSlamCatalogView().get(_request(hass))
     empty_plan_entry = json.loads(empty_plan.body)["entries"][0]
     assert empty_plan_entry["selected_floor_ordinal"] is None
     assert empty_plan_entry["map_floor_ordinal"] is None
@@ -1218,9 +1207,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     runtime.slam_map.health.photo_tiles = 0
     runtime.slam_map.health.structure_tiles = 0
     runtime.slam_map.health.bootstrap_state = "complete"
-    empty_bootstrap = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    empty_bootstrap = await MaticSlamCatalogView().get(_request(hass))
     assert (
         json.loads(empty_bootstrap.body)["entries"][0]["map_block_reason"]
         == "bootstrap_empty"
@@ -1230,9 +1217,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     runtime.slam_map.health.structure_tiles = 1
     runtime.slam_map.mission_identity = SlamMapIdentity("synthetic-other", 2)
     runtime.slam_map.live_session_verified = True
-    mismatched = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    mismatched = await MaticSlamCatalogView().get(_request(hass))
     assert (
         json.loads(mismatched.body)["entries"][0]["map_block_reason"]
         == "floor_plan_mismatch"
@@ -1254,7 +1239,7 @@ async def test_admin_catalog_projects_only_strict_live_transport_boolean(
 ) -> None:
     runtime = _runtime()
     loaded = _entry(runtime, options=options)
-    response = await MaticSlamCatalogView("/editor.js").get(_request(_hass(loaded)))
+    response = await MaticSlamCatalogView().get(_request(_hass(loaded)))
 
     entry = json.loads(response.body)["entries"][0]
     assert entry["live_workspace_transport_enabled"] is expected
@@ -1366,7 +1351,7 @@ async def test_area_workspace_does_not_index_geometry_without_saved_areas() -> N
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
-    with patch("custom_components.matic_robot.slam_scene._RoomGeometryIndex") as index:
+    with patch("custom_components.matic_robot.slam_scene.RoomGeometryIndex") as index:
         response = await view.get(_request(hass), "entry")
 
     assert response.status == HTTPStatus.OK
@@ -1399,8 +1384,8 @@ async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
     hass = _hass(_entry(runtime))
 
     with patch(
-        "custom_components.matic_robot.slam_scene._RoomGeometryIndex",
-        wraps=_RoomGeometryIndex,
+        "custom_components.matic_robot.slam_scene.RoomGeometryIndex",
+        wraps=RoomGeometryIndex,
     ) as index:
         response = await MaticAreasView().get(_request(hass), "entry")
 
