@@ -59,11 +59,9 @@ from .session_tracking import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# A sweep with this many failed endpoint reads right after an OTA is far more
-# likely a flaky reboot window than real drift; retry before recording it.
-SNAPSHOT_FAILURE_THRESHOLD = 8
+# Unexpected snapshot failures retain a RAM cooldown in addition to the
+# tracker's persisted normal discovery/recovery cadence.
 SNAPSHOT_RETRY_SECONDS = 900
-SNAPSHOT_MAX_ATTEMPTS = 3
 ERROR_CONFIRMATION_POLLS = 2
 # Limit robot-driven Cues fan-out while retaining the newest state received during
 # each interval. This bounds coordinator, event-bus, automation, and Recorder work.
@@ -139,7 +137,6 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._slow_refresh_due = 0.0
         self._force_full_refresh = False
         self._snapshot_versions_in_progress: set[str] = set()
-        self._snapshot_attempts: dict[str, int] = {}
         self._snapshot_retry_after = 0.0
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
@@ -398,6 +395,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                         self.config_entry.entry_id,
                         version,
                         telemetry.protocol_version,
+                        context=operational.activity.value,
                     )
                 ):
                     self._snapshot_versions_in_progress.add(version)
@@ -767,36 +765,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     ) -> None:
         """Persist one background snapshot without delaying normal state."""
         try:
+            self._snapshot_retry_after = monotonic() + SNAPSHOT_RETRY_SECONDS
             snapshot = await async_build_firmware_snapshot(self.client, state)
-            attempts = self._snapshot_attempts.get(version, 0) + 1
-            self._snapshot_attempts[version] = attempts
-            failed = int(snapshot["failed_endpoints"])
-            if (
-                failed >= SNAPSHOT_FAILURE_THRESHOLD
-                and attempts < SNAPSHOT_MAX_ATTEMPTS
-            ):
-                self._snapshot_retry_after = monotonic() + SNAPSHOT_RETRY_SECONDS
-                _LOGGER.warning(
-                    "Deferring the firmware endpoint snapshot for %s: %d of %d"
-                    " reads failed (attempt %d of %d); retrying later",
-                    version,
-                    failed,
-                    snapshot["endpoint_count"],
-                    attempts,
-                    SNAPSHOT_MAX_ATTEMPTS,
-                )
-                return
-            if failed >= SNAPSHOT_FAILURE_THRESHOLD:
-                _LOGGER.warning(
-                    "Recording a degraded firmware endpoint snapshot for %s"
-                    " after %d attempts: %d of %d reads failed",
-                    version,
-                    attempts,
-                    failed,
-                    snapshot["endpoint_count"],
-                )
             await tracker.async_record_snapshot(self.config_entry.entry_id, snapshot)
-            self._snapshot_attempts.pop(version, None)
         finally:
             self._snapshot_versions_in_progress.discard(version)
 
