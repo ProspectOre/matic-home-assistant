@@ -136,6 +136,15 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "The command was superseded before it could run"
             )
 
+    def _require_stop_request_generation(
+        self, serial_number: str, generation: int
+    ) -> None:
+        """Reject a direct request queued before a newer Stop decision."""
+        if self._plans.stop_request_generation(serial_number) != generation:
+            raise ServiceValidationError(
+                "The command was superseded before it could run"
+            )
+
     async def _async_command(self, command: UserCommand) -> None:
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
@@ -231,9 +240,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
         request_generation = self._plans.motion_generation(serial_number)
+        request_stop_generation = self._plans.stop_request_generation(serial_number)
         request_admission_epoch = self._plans.command_admission_epoch(serial_number)
         await self._async_ensure_stop_settled(serial_number)
         self._require_motion_generation(serial_number, request_generation)
+        if motion_token is None:
+            self._require_stop_request_generation(
+                serial_number, request_stop_generation
+            )
         self._plans.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
@@ -241,10 +255,20 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             self._plans.managed_command(serial_number, motion_token)
             if motion_token is not None
             else self._plans.external_motion(
-                serial_number, expected_generation=request_generation
+                serial_number,
+                expected_generation=request_generation,
+                expected_stop_generation=request_stop_generation,
             )
         )
         async with context as dispatch_generation:
+            if (
+                motion_token is None
+                and dispatch_generation is None
+                and self._plans.motion_generation(serial_number) == request_generation
+            ):
+                self._require_stop_request_generation(
+                    serial_number, request_stop_generation
+                )
             expected_generation = (
                 request_generation
                 if motion_token is not None or dispatch_generation is None
@@ -252,10 +276,18 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             )
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, expected_generation)
+            if motion_token is None:
+                self._require_stop_request_generation(
+                    serial_number, request_stop_generation
+                )
             floor_plan = self._current_floor_plan(command_floor_token)
 
             def require_current_dispatch() -> None:
                 self._require_motion_generation(serial_number, expected_generation)
+                if motion_token is None:
+                    self._require_stop_request_generation(
+                        serial_number, request_stop_generation
+                    )
                 self._current_floor_plan(command_floor_token)
                 if (
                     motion_token is not None

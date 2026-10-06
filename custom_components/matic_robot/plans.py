@@ -696,6 +696,7 @@ class CleaningPlanManager:
         self._finish_room_events: dict[str, asyncio.Event] = {}
         self._command_locks: dict[str, asyncio.Lock] = {}
         self._motion_generations: dict[str, int] = {}
+        self._stop_request_generations: dict[str, int] = {}
         self._managed_motion: dict[str, int] = {}
         self._run_tasks: dict[str, asyncio.Task[None]] = {}
         self._reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
@@ -1190,6 +1191,11 @@ class CleaningPlanManager:
         return self._motion_generations.get(serial_number, 0)
 
     @callback
+    def stop_request_generation(self, serial_number: str) -> int:
+        """Read the fence for direct motion queued before a Stop request."""
+        return self._stop_request_generations.get(serial_number, 0)
+
+    @callback
     def begin_managed_motion(self, serial_number: str) -> int:
         """Claim a generation token for one managed plan run."""
         self.require_command_admission(serial_number)
@@ -1539,7 +1545,11 @@ class CleaningPlanManager:
 
     @asynccontextmanager
     async def external_motion(
-        self, serial_number: str, *, expected_generation: int | None = None
+        self,
+        serial_number: str,
+        *,
+        expected_generation: int | None = None,
+        expected_stop_generation: int | None = None,
     ) -> AsyncIterator[int | None]:
         """Replace managed ownership only for an admitted, current command."""
         _admission, epoch = self._command_admission.get(
@@ -1551,6 +1561,10 @@ class CleaningPlanManager:
             if (
                 expected_generation is not None
                 and self.motion_generation(serial_number) != expected_generation
+            ) or (
+                expected_stop_generation is not None
+                and self.stop_request_generation(serial_number)
+                != expected_stop_generation
             ):
                 yield None
             else:
@@ -1627,6 +1641,9 @@ class CleaningPlanManager:
     @callback
     def request_stop(self, serial_number: str) -> PlanStopDecision:
         """Apply the active plan's immediate-or-after-room stop policy."""
+        self._stop_request_generations[serial_number] = (
+            self.stop_request_generation(serial_number) + 1
+        )
 
         def fence_new_motion() -> None:
             self._motion_generations[serial_number] = (

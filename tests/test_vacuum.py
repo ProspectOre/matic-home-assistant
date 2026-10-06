@@ -881,3 +881,62 @@ async def test_stop_supersedes_direct_room_clean_queued_for_command_lock(hass) -
     with pytest.raises(ServiceValidationError, match="superseded"):
         await task
     entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+
+
+async def test_after_room_stop_supersedes_queued_direct_room_clean(hass) -> None:
+    """A graceful Stop preserves its run while fencing an older direct clean."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    room = CleaningRoom("room-2", "Study", "vacuum", "quick")
+    run_id = "synthetic-managed-run"
+    token = manager.begin_managed_motion(serial_number)
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        run_id,
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=True,
+        finish_current_room_threshold=0,
+    )
+    await manager.async_mark_started(serial_number, "plan", room, run_id=run_id)
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    command_lock = manager.command_lock(serial_number)
+    await command_lock.acquire()
+    entity = vacuum.MaticVacuum(entry)
+    task = asyncio.create_task(
+        entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+    )
+    try:
+        for _ in range(30):
+            waiters = getattr(command_lock, "_waiters", None)
+            if waiters is not None and any(not waiter.done() for waiter in waiters):
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("Direct room clean never queued for the command lock")
+
+        decision = manager.request_stop(serial_number)
+        assert decision.behavior == "after_room"
+        assert manager.finish_room_event(serial_number).is_set()
+        assert not manager.cancellation_event(serial_number).is_set()
+
+        command_lock.release()
+        with pytest.raises(ServiceValidationError, match="superseded"):
+            await task
+
+        assert manager.managed_motion_is_current(serial_number, token)
+        entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+    finally:
+        if command_lock.locked():
+            command_lock.release()
+        if plan_lock.locked():
+            plan_lock.release()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

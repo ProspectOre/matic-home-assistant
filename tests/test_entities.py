@@ -245,6 +245,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         active_run_id=MagicMock(return_value=None),
         has_managed_task=MagicMock(return_value=False),
         motion_generation=MagicMock(return_value=0),
+        stop_request_generation=MagicMock(return_value=0),
         stop_pending=MagicMock(return_value=False),
         async_mark_stop_pending=AsyncMock(),
         async_clear_stop_pending=AsyncMock(),
