@@ -97,6 +97,9 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# Keep exact SHA-pinned canonical sources unchanged; line-length checks run upstream.
+".github/review-gate/native_codex_review.py" = ["E501"]
+".github/review-gate/issue_comment_receipts.py" = ["E501"]
 "custom_components/matic_robot/client/proto/*" = ["ALL"]
 "tests/*" = ["S101"]
 
