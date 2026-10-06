@@ -26,6 +26,7 @@ from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_FLOOR_ID,
     ATTR_LABEL_ID,
+    EVENT_HOMEASSISTANT_STARTED,
     STATE_UNAVAILABLE,
 )
 from homeassistant.core import (
@@ -362,6 +363,63 @@ async def async_register_services(hass: HomeAssistant) -> None:
     firmware_tracker = FirmwareTracker(hass)
     await firmware_tracker.async_load()
     hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = firmware_tracker
+    hass.bus.async_listen_once(
+        EVENT_HOMEASSISTANT_STARTED, lambda event: firmware_tracker.replay_reports()
+    )
+
+    async def async_firmware_investigator(call: ServiceCall) -> None:
+        """Change research routing without changing any robot behavior."""
+        entry = firmware_entry(call)
+        try:
+            await firmware_tracker.async_configure_investigator(
+                entry.entry_id, call.data["provider"]
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    async def async_firmware_notification(call: ServiceCall) -> None:
+        """Apply a revision-bound notification action from trusted HA code."""
+        entry = firmware_entry(call)
+        try:
+            await firmware_tracker.async_notification_action(
+                entry.entry_id,
+                call.data["report_id"],
+                call.data["revision"],
+                call.data["action"],
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    def firmware_entry(call: ServiceCall) -> ConfigEntry:
+        entity_ids = _resolve_loaded_matic_vacuums(hass, call)
+        if len(entity_ids) != 1:
+            raise ServiceValidationError(
+                "Firmware actions require exactly one Matic robot"
+            )
+        return _entry_for_entity(hass, entity_ids[0])
+
+    hass.services.async_register(
+        DOMAIN,
+        "firmware_investigator",
+        _require_matic_admin(hass, async_firmware_investigator),
+        schema=cv.make_entity_service_schema(
+            {vol.Required("provider"): vol.All(cv.string, vol.Length(min=1, max=48))}
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "firmware_notification",
+        _require_matic_control(hass, async_firmware_notification),
+        schema=cv.make_entity_service_schema(
+            {
+                vol.Required("report_id"): vol.All(
+                    cv.string, vol.Length(min=24, max=24)
+                ),
+                vol.Required("revision"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Required("action"): vol.In(("acknowledge", "delivered", "recheck")),
+            }
+        ),
+    )
 
     async def async_clean(call: ServiceCall) -> None:
         """Route the complete verified cleaning matrix to selected vacuums."""

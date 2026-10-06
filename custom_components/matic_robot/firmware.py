@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import secrets
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any, cast
@@ -13,6 +14,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from . import firmware_reports as reports
 from .client.api import MaticHermesClient
 from .client.endpoints import HERMES_ENDPOINTS, HermesEndpoint
 from .client.exceptions import MaticError
@@ -134,25 +136,22 @@ class FirmwareTracker:
             current = deepcopy(dict(snapshot))
             comparison = _compare_snapshots(previous, current)
             history = robot.setdefault("history", [])
-            release_comparison = comparison
-            if previous is not None and previous.get("firmware_version") == current.get(
-                "firmware_version"
-            ):
-                previous_release = next(
-                    (
-                        item
-                        for item in reversed(history)
-                        if item.get("firmware_version")
-                        != current.get("firmware_version")
-                    ),
-                    None,
-                )
-                if previous_release is not None:
-                    release_comparison = _compare_snapshots(previous_release, current)
+            baseline = reports.prepare_release(robot, current)
+            release_comparison = _compare_snapshots(baseline, current)
+            report_changed = reports.update_report(robot, current, dt_util.utcnow())
             robot["snapshot"] = current
             robot["compatibility_status"] = _compatibility_status(
                 robot.get("compatibility_status"), release_comparison
             )
+            report = robot["firmware_report"]
+            if report["failed_endpoints"]:
+                robot["compatibility_status"] = (
+                    "regression" if report["attention_required"] else "pending"
+                )
+            elif not baseline:
+                robot["compatibility_status"] = "baseline"
+            else:
+                robot["compatibility_status"] = "compatible"
             robot["last_comparison"] = {
                 "changed_endpoints": len(release_comparison["changed_endpoints"]),
                 "content_changed_endpoints": len(
@@ -173,43 +172,13 @@ class FirmwareTracker:
             del history[:-MAX_HISTORY]
             await self._store.async_save(self._data)
         self._notify(robot_id)
-        previous_version = previous.get("firmware_version") if previous else None
-        previous_protocol = previous.get("protocol_version") if previous else None
-        release_changed = bool(
-            release_comparison["firmware_changed"]
-            or release_comparison["protocol_changed"]
-        )
-        if release_changed and release_comparison["changed_endpoints"]:
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                self.issue_id(robot_id),
-                is_fixable=False,
-                is_persistent=True,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key="firmware_regression",
-                translation_placeholders={
-                    "previous": str(previous_version),
-                    "current": str(current.get("firmware_version")),
-                    "previous_protocol": (
-                        str(previous_protocol)
-                        if previous_protocol is not None
-                        else "unknown"
-                    ),
-                    "current_protocol": (
-                        str(current.get("protocol_version"))
-                        if current.get("protocol_version") is not None
-                        else "unknown"
-                    ),
-                    "count": str(len(release_comparison["changed_endpoints"])),
-                },
-            )
-        elif release_comparison["baseline"] or release_changed:
-            ir.async_delete_issue(self.hass, DOMAIN, self.issue_id(robot_id))
+        self._reconcile_repair(robot_id)
+        if report_changed:
+            self._publish_report(robot_id)
         snapshot_release_changed = bool(
             comparison["firmware_changed"] or comparison["protocol_changed"]
         )
-        if snapshot_release_changed:
+        if snapshot_release_changed or report_changed:
             self.hass.bus.async_fire(
                 EVENT_FIRMWARE_ANALYZED,
                 {
@@ -238,6 +207,166 @@ class FirmwareTracker:
             )
         return comparison
 
+    @callback
+    def _reconcile_repair(self, robot_id: str) -> None:
+        """Rebuild the current Repair from durable evidence after any restart."""
+        robot = self._data["robots"][robot_id]
+        report = robot.get("firmware_report") or {}
+        if report.get("attention_required"):
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                self.issue_id(robot_id),
+                is_fixable=False,
+                is_persistent=True,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key="firmware_regression",
+                translation_placeholders={
+                    "previous": str(report.get("previous_version") or "unknown"),
+                    "current": str(report.get("firmware_version")),
+                    "previous_protocol": str(
+                        report.get("previous_protocol") or "unknown"
+                    ),
+                    "current_protocol": str(
+                        report.get("protocol_version") or "unknown"
+                    ),
+                    "count": str(report["failed_endpoints"]),
+                },
+            )
+        else:
+            ir.async_delete_issue(self.hass, DOMAIN, self.issue_id(robot_id))
+
+    @callback
+    def replay_reports(self) -> None:
+        """Replay hints; consumers reconcile persisted IDs and revisions."""
+        for robot_id in self._data.get("robots", {}):
+            self._reconcile_repair(robot_id)
+            self._publish_report(robot_id)
+
+    @callback
+    def _publish_report(self, robot_id: str) -> None:
+        report = self.report(robot_id)
+        if report:
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_firmware_report_updated",
+                {
+                    "entry_id": robot_id,
+                    "report_id": report["id"],
+                    "revision": report["revision"],
+                },
+            )
+
+    def report(self, robot_id: str) -> dict[str, Any]:
+        """Return cached investigation evidence without reading the robot."""
+        return reports.public_report(self._data.get("robots", {}).get(robot_id, {}))
+
+    def report_history(self, robot_id: str) -> list[dict[str, Any]]:
+        """Return a bounded retained trail of superseded reports."""
+        return deepcopy(
+            self._data.get("robots", {}).get(robot_id, {}).get("report_history", [])
+        )
+
+    async def _async_update_report[Result](
+        self, robot_id: str, update: Callable[[dict[str, Any]], Result]
+    ) -> Result:
+        async with self._lock:
+            candidate = deepcopy(self._data)
+            robot = candidate.get("robots", {}).get(robot_id)
+            if robot is None:
+                raise ValueError("Firmware evidence is not available yet")
+            result = update(robot)
+            await self._store.async_save(candidate)
+            self._data = candidate
+        self._notify(robot_id)
+        self._publish_report(robot_id)
+        return result
+
+    async def async_configure_investigator(self, robot_id: str, provider: str) -> None:
+        """Select any investigator slug; existing leases become stale."""
+        await self._async_update_report(
+            robot_id, lambda robot: reports.configure_investigator(robot, provider)
+        )
+
+    async def async_claim_investigation(
+        self,
+        robot_id: str,
+        report_id: str,
+        evidence_revision: int,
+        routing_revision: int,
+        provider: str,
+    ) -> dict[str, Any]:
+        """Persist one expiring ownership receipt before returning its token."""
+        token = secrets.token_urlsafe(24)
+        return await self._async_update_report(
+            robot_id,
+            lambda robot: reports.claim_report(
+                robot,
+                report_id,
+                evidence_revision,
+                routing_revision,
+                provider,
+                token,
+                dt_util.utcnow(),
+            ),
+        )
+
+    async def async_complete_investigation(
+        self,
+        robot_id: str,
+        report_id: str,
+        evidence_revision: int,
+        routing_revision: int,
+        provider: str,
+        token: str,
+        disposition: str,
+        summary: str,
+        sources: list[str],
+    ) -> None:
+        """Store a bounded untrusted assessment, never robot capabilities."""
+        await self._async_update_report(
+            robot_id,
+            lambda robot: reports.complete_report(
+                robot,
+                report_id,
+                evidence_revision,
+                routing_revision,
+                provider,
+                token,
+                disposition,
+                summary,
+                sources,
+                dt_util.utcnow(),
+            ),
+        )
+
+    async def async_notification_action(
+        self, robot_id: str, report_id: str, revision: int, action: str
+    ) -> None:
+        """Acknowledge or mark delivery only for the exact current report."""
+
+        def update(robot: dict[str, Any]) -> None:
+            report = robot.get("firmware_report") or {}
+            if report.get("id") != report_id or report.get("revision") != revision:
+                raise ValueError("This firmware notification has been superseded")
+            if action not in ("acknowledge", "delivered", "recheck"):
+                raise ValueError("Unknown firmware notification action")
+            if action == "recheck":
+                # The coordinator owns bounded scans, including manual requests.
+                now = dt_util.utcnow()
+                last = dt_util.parse_datetime(report["last_checked_at"])
+                assert last is not None
+                due = max(now, last + reports.CONFIRMATION_INTERVAL)
+                robot["next_firmware_scan_at"] = due.isoformat()
+            else:
+                key = (
+                    "acknowledged_revision"
+                    if action == "acknowledge"
+                    else "delivered_revision"
+                )
+                report[key] = revision
+
+        await self._async_update_report(robot_id, update)
+
     def summary(self, robot_id: str) -> dict[str, Any]:
         """Return a payload-free summary suitable for diagnostics."""
         robot = self._data.get("robots", {}).get(robot_id, {})
@@ -265,15 +394,29 @@ class FirmwareTracker:
             "wire_shape_candidate_endpoints": comparison.get(
                 "wire_shape_candidate_endpoints", []
             ),
+            "firmware_report_revision": self.report(robot_id).get("revision", 0),
+            "firmware_report": self.report(robot_id),
         }
 
-    def needs_snapshot(self, robot_id: str, version: str, protocol: int | None) -> bool:
+    def needs_snapshot(
+        self,
+        robot_id: str,
+        version: str,
+        protocol: int | None,
+        *,
+        context: str | None = None,
+    ) -> bool:
         """Return whether this firmware/protocol pair lacks a completed snapshot."""
         snapshot = self._data.get("robots", {}).get(robot_id, {}).get("snapshot", {})
         return bool(
             snapshot.get("firmware_version") != version
             or (protocol is not None and snapshot.get("protocol_version") != protocol)
             or snapshot.get("analysis_version") != ANALYSIS_VERSION
+            or reports.scan_due(
+                self._data.get("robots", {}).get(robot_id, {}),
+                dt_util.utcnow(),
+                context,
+            )
         )
 
     @callback
@@ -515,6 +658,7 @@ async def async_build_firmware_snapshot(
         "analysis_version": ANALYSIS_VERSION,
         "captured_at": snapshot_timestamp(),
         "firmware_version": firmware_version,
+        "observation_context": state.operational.activity.value,
         "protocol_version": state.telemetry.protocol_version,
         "endpoint_count": len(endpoints),
         "populated_endpoints": sum(
