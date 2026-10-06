@@ -210,7 +210,10 @@ class RegularCommentTests(unittest.TestCase):
                 REVIEW_GATE_CONTEXT="review-gate",
             )
             result = subprocess.run(
-                ["bash"], input=prelude + classify, env=env, text=True,
+                ["bash"],
+                input=prelude + classify,
+                env=env,
+                text=True,
                 capture_output=True,
             )
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -260,7 +263,10 @@ class RegularCommentTests(unittest.TestCase):
                 GITHUB_SERVER_URL="https://github.com",
             )
             result = subprocess.run(
-                ["bash"], input=prelude + invalidate, env=env, text=True,
+                ["bash"],
+                input=prelude + invalidate,
+                env=env,
+                text=True,
                 capture_output=True,
             )
             return result, calls.read_text()
@@ -269,7 +275,7 @@ class RegularCommentTests(unittest.TestCase):
         return (
             "Codex Review: Didn't find any major issues. 🎉\n"
             f"**Reviewed commit:** `{footer}`\n"
-            "<details>\n<summary>ℹ️ About Codex in GitHub</summary>"
+            "<details>\n<summary>About Codex in GitHub</summary>"
         )
 
     def test_short_current_head_clean_result_does_not_self_invalidate(self):
