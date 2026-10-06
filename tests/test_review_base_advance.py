@@ -132,6 +132,7 @@ def _run_invalidation(
 
 def test_release_base_push_is_an_authorized_invalidation_trigger() -> None:
     condition = WORKFLOW["jobs"]["discover"]["if"]
+    assert "github.ref_type == 'branch'" in condition
     assert "github.repository == 'ProspectOre/matic-home-assistant'" in condition
     assert "github.ref_name == 'release/0.4'" in condition
 
