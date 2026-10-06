@@ -38,7 +38,7 @@ from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
     Room,
 )
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import DATA_FIRMWARE_TRACKER, DOMAIN
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION
 from custom_components.matic_robot.plans import (
     MAX_SAVED_PLANS_PER_ROBOT,
@@ -178,11 +178,13 @@ def _area_floor_plan(
     )
 
 
-async def _registered_services(hass, manager=None):
+async def _registered_services(hass, manager=None, *, is_running=False):
     services = SimpleNamespace(async_register=MagicMock(), async_call=AsyncMock())
     hass.services = services
-    if not hasattr(hass, "bus"):
-        hass.bus = SimpleNamespace(async_listen_once=MagicMock())
+    listen_once = MagicMock()
+    original_bus = getattr(hass, "bus", None)
+    hass.bus = SimpleNamespace(async_listen_once=listen_once)
+    hass.is_running = is_running
     replacement = manager or SimpleNamespace(async_load=AsyncMock())
     if manager is not None:
         replacement.async_load = AsyncMock()
@@ -193,6 +195,7 @@ async def _registered_services(hass, manager=None):
         ),
         async_configure_investigator=AsyncMock(),
         async_notification_action=AsyncMock(),
+        replay_reports=MagicMock(),
     )
     with (
         patch(
@@ -205,7 +208,33 @@ async def _registered_services(hass, manager=None):
         ),
     ):
         await async_register_services(hass)
+    if original_bus is not None:
+        hass.bus = original_bus
+    hass.data[DOMAIN]["test_firmware_listen_once"] = listen_once
     return services
+
+
+async def test_firmware_reports_replay_after_home_assistant_started(hass):
+    """Late-loaded integration immediately republishes persisted reports."""
+    await _registered_services(hass, is_running=True)
+
+    tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
+    tracker.replay_reports.assert_called_once_with()
+    hass.data[DOMAIN]["test_firmware_listen_once"].assert_not_called()
+
+
+async def test_firmware_reports_replay_waits_for_home_assistant_started(hass):
+    """Startup loads replay reports once the started event fires."""
+    await _registered_services(hass)
+
+    tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
+    tracker.replay_reports.assert_not_called()
+    listen_once = hass.data[DOMAIN]["test_firmware_listen_once"]
+    listen_once.assert_called_once()
+    event, callback = listen_once.call_args.args
+    assert event == "homeassistant_started"
+    callback(None)
+    tracker.replay_reports.assert_called_once_with()
 
 
 def _execution_call(hass) -> ServiceCall:

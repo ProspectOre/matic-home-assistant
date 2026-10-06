@@ -594,6 +594,8 @@ def claim_report(
         investigation["lease_expires_at"]
     ):
         raise ValueError("This evidence is already being investigated")
+    if investigation["status"] == "claimed":
+        _reset_investigation(report)
     report["investigation"] = {
         "status": "claimed",
         "provider": provider,

@@ -896,6 +896,7 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> 
 
 async def test_setup_registers_services_without_media_view() -> None:
     hass = SimpleNamespace(
+        is_running=False,
         http=SimpleNamespace(register_view=MagicMock()),
         bus=SimpleNamespace(
             async_listen=MagicMock(return_value=MagicMock()),
@@ -954,6 +955,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded(
 
     register_panel = panel_custom.async_register_panel
     hass = SimpleNamespace(
+        is_running=False,
         http=SimpleNamespace(
             register_view=MagicMock(), async_register_static_paths=AsyncMock()
         ),
