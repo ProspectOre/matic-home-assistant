@@ -929,7 +929,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
             return
         if decision.behavior == "after_room":
             return
-        entry.runtime_data.coordinator.async_discard_current_room()
+        if (
+            manager.motion_generation(serial_number) == expected_generation
+            and manager.stop_request_generation(serial_number)
+            == expected_stop_generation
+        ):
+            entry.runtime_data.coordinator.async_discard_current_room()
         with manager.managed_stop_dispatch(
             serial_number,
             expected_generation=expected_generation,

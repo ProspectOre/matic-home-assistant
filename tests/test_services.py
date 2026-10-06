@@ -1,6 +1,7 @@
 """Automation action coverage for room-native cleaning plans."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
@@ -1343,6 +1344,109 @@ async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
 
     assert manager.motion_generation(serial_number) == replacement_generation
     assert manager.cancellation_reason(serial_number) == "motion_replaced"
+    entry.runtime_data.coordinator.client.async_start_coverage.assert_awaited_once()
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> None:
+    """The Stop tracker discard must not cross a replacement generation."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from custom_components.matic_robot.session_tracking import CleaningSessionTracker
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id="run-id",
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    services = await _registered_services(hass, manager)
+    entry = entity_entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    tracker = CleaningSessionTracker()
+    entry.runtime_data.coordinator._session_tracker = tracker
+    entry.runtime_data.coordinator.async_discard_current_room = lambda: (
+        tracker.discard_current_room(now=dt_util.utcnow())
+    )
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+    stop_lock_released = asyncio.Event()
+    replacement_started = asyncio.Event()
+    original_external_command = manager.external_command
+
+    @asynccontextmanager
+    async def release_stop_lock_for_replacement(serial: str):
+        async with original_external_command(serial):
+            yield
+        stop_lock_released.set()
+        await replacement_started.wait()
+
+    async def route_return_to_base(_domain, _service, _data, **_kwargs) -> None:
+        await asyncio.create_task(entity.async_return_to_base())
+
+    with (
+        patch.object(manager, "external_command", release_stop_lock_for_replacement),
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, serial_number, {}),
+        ),
+    ):
+        services.async_call.side_effect = route_return_to_base
+        stop_task = asyncio.create_task(
+            _registered_handler(services, "stop_intelligent_cleaning")(stop)
+        )
+        try:
+            await asyncio.wait_for(stop_lock_released.wait(), timeout=1)
+            await entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+            tracker.update(
+                cleaning=True,
+                current_area="Study",
+                room_names=("Study",),
+                now=dt_util.utcnow(),
+            )
+            tracker.confirm_room_completed("Study")
+            replacement_started.set()
+            await stop_task
+        finally:
+            replacement_started.set()
+            if not stop_task.done():
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+            if plan_lock.locked():
+                plan_lock.release()
+
+    assert manager.cancellation_reason(serial_number) == "motion_replaced"
+    assert tracker._current_room == "Study"
+    assert tracker._active_started_at is not None
+    assert tracker._confirmed_rooms == {"Study"}
     entry.runtime_data.coordinator.client.async_start_coverage.assert_awaited_once()
     entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
 
