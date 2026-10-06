@@ -1095,6 +1095,7 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert compatibility.native_value == "baseline"
     assert compatibility.available is True
     assert compatibility.extra_state_attributes["endpoint_count"] == 40
+    assert "firmware_report" in compatibility._unrecorded_attributes
     assert [
         sensor.MaticStateSensor(entry, description).native_value
         for description in sensor.STATE_DESCRIPTIONS

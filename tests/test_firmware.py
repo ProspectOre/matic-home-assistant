@@ -127,8 +127,17 @@ async def test_firmware_changes_publish_only_after_persistence(
             assert [event.event_type for event in events] == [
                 "matic_robot_firmware_analyzed"
             ]
-            create.assert_called_once()
+            assert tracker.report("entry")["attention_required"] is False
+            assert tracker.summary("entry")["compatibility_status"] == "pending"
+            create.assert_not_called()
             listener.assert_called_once()
+            confirmation = _snapshot("v169.0", status="error")
+            confirmation["captured_at"] = "2026-07-20T00:15:00+00:00"
+            await tracker.async_record_snapshot("entry", confirmation)
+            assert tracker.report("entry")["attention_required"] is True
+            assert tracker.summary("entry")["compatibility_status"] == "regression"
+            create.assert_called_once()
+            assert listener.call_count == 2
         else:
             assert "entry" not in tracker._data["robots"]
             delete.assert_called_once()
