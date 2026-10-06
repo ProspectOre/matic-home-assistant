@@ -3800,6 +3800,95 @@ def test_action_target_resolution_accepts_loaded_matic_vacuum() -> None:
         assert _resolve_loaded_matic_vacuums(hass, call) == ["vacuum.test"]
 
 
+async def test_firmware_metadata_services_accept_offline_loaded_robot() -> None:
+    hass = SimpleNamespace(
+        data={},
+        auth=SimpleNamespace(
+            async_get_user=AsyncMock(return_value=SimpleNamespace(is_admin=True))
+        ),
+    )
+    services = await _registered_services(hass)
+    entity = SimpleNamespace(platform=DOMAIN, config_entry_id="entry")
+    registry = SimpleNamespace(async_get=MagicMock(return_value=entity))
+    entry = SimpleNamespace(state=ConfigEntryState.LOADED, entry_id="entry")
+    hass.config_entries = SimpleNamespace(async_get_entry=MagicMock(return_value=entry))
+    hass.states = SimpleNamespace(
+        get=MagicMock(return_value=SimpleNamespace(state="unavailable"))
+    )
+    referenced = SimpleNamespace(
+        referenced={"vacuum.test"}, indirectly_referenced=set()
+    )
+    investigator = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_investigator",
+        {"entity_id": ["vacuum.test"], "provider": "researcher"},
+        context=Context(user_id="admin"),
+    )
+    notification = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_notification",
+        {
+            "entity_id": ["vacuum.test"],
+            "report_id": "a" * 24,
+            "revision": 2,
+            "action": "acknowledge",
+        },
+        context=Context(user_id="admin"),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            return_value=referenced,
+        ),
+        patch(
+            "custom_components.matic_robot.services.er.async_get", return_value=registry
+        ),
+    ):
+        await _registered_handler(services, "firmware_investigator")(investigator)
+        await _registered_handler(services, "firmware_notification")(notification)
+
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    tracker.async_configure_investigator.assert_awaited_once_with("entry", "researcher")
+    tracker.async_notification_action.assert_awaited_once_with(
+        "entry", "a" * 24, 2, "acknowledge"
+    )
+
+
+async def test_physical_domain_service_still_rejects_offline_loaded_robot() -> None:
+    hass = SimpleNamespace(
+        data={},
+        services=SimpleNamespace(async_call=AsyncMock()),
+    )
+    services = await _registered_services(hass)
+    entity = SimpleNamespace(platform=DOMAIN, config_entry_id="entry")
+    registry = SimpleNamespace(async_get=MagicMock(return_value=entity))
+    entry = SimpleNamespace(state=ConfigEntryState.LOADED, entry_id="entry")
+    hass.config_entries = SimpleNamespace(async_get_entry=MagicMock(return_value=entry))
+    hass.states = SimpleNamespace(
+        get=MagicMock(return_value=SimpleNamespace(state="unavailable"))
+    )
+    referenced = SimpleNamespace(
+        referenced={"vacuum.test"}, indirectly_referenced=set()
+    )
+    call = ServiceCall(
+        hass, DOMAIN, "clean", {"entity_id": ["vacuum.test"], "ordered": False}
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            return_value=referenced,
+        ),
+        patch(
+            "custom_components.matic_robot.services.er.async_get", return_value=registry
+        ),
+        pytest.raises(ServiceValidationError, match="unavailable"),
+    ):
+        await _registered_handler(services, "clean")(call)
+    hass.services.async_call.assert_not_awaited()
+
+
 async def test_domain_service_rejects_unauthorized_direct_and_indirect_targets() -> (
     None
 ):
@@ -4190,7 +4279,13 @@ async def test_firmware_services_require_admin_and_one_robot() -> None:
         context=Context(user_id="non-admin"),
     )
     hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=False)
-    with pytest.raises(Unauthorized):
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one"],
+        ),
+        pytest.raises(Unauthorized),
+    ):
         await _registered_handler(services, "firmware_investigator")(call)
     tracker = hass.data[DOMAIN]["firmware_tracker"]
     tracker.async_configure_investigator.assert_not_awaited()

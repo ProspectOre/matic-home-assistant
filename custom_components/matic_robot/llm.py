@@ -295,6 +295,7 @@ class MaticGetFirmwareTool(_MaticTool):
             tracker = entry.runtime_data.firmware_tracker
             result = {
                 "robot": _entry_name(entry),
+                "entry_id": entry.entry_id,
                 "report": tracker.report(entry.entry_id),
             }
             if args["include_history"]:
@@ -327,8 +328,9 @@ class MaticClaimFirmwareInvestigationTool(_MaticTool):
     name = "MaticClaimFirmwareInvestigation"
     description = (
         "Claim a 30-minute firmware research lease for the configured investigator. "
-        "Use the exact report ID, evidence revision and routing revision returned by "
-        "MaticGetFirmware. Changes only research metadata; sends no robot commands. "
+        "Use the entry_id as robot selector and the exact report ID, evidence "
+        "revision and routing revision returned by MaticGetFirmware. Changes only "
+        "research metadata; sends no robot commands. "
         "Keep the returned token private and pass it only to the completion tool."
     )
     parameters = llm.Tool.parameters.extend(_FIRMWARE_CLAIM_FIELDS)
