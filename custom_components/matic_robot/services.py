@@ -928,13 +928,14 @@ async def async_register_services(hass: HomeAssistant) -> None:
         if decision.behavior == "after_room":
             return
         entry.runtime_data.coordinator.async_discard_current_room()
-        await hass.services.async_call(
-            VACUUM_DOMAIN,
-            "return_to_base",
-            {ATTR_ENTITY_ID: entity_id},
-            blocking=True,
-            context=call.context,
-        )
+        with manager.managed_stop_dispatch(serial_number):
+            await hass.services.async_call(
+                VACUUM_DOMAIN,
+                "return_to_base",
+                {ATTR_ENTITY_ID: entity_id},
+                blocking=True,
+                context=call.context,
+            )
 
     hass.services.async_register(
         DOMAIN,

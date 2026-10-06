@@ -458,6 +458,68 @@ async def test_entity_stop_persists_original_run_owner(hass, action):
     )
 
 
+@pytest.mark.parametrize(
+    ("action", "managed_stop_dispatch", "expected_reason"),
+    [
+        ("async_stop", True, "managed_stop"),
+        ("async_return_to_base", True, "managed_stop"),
+        ("async_return_to_base", False, "motion_replaced"),
+    ],
+)
+async def test_stop_dispatch_preserves_managed_stop_reason(
+    hass, action, managed_stop_dispatch, expected_reason
+) -> None:
+    """A dispatched STOP keeps the managed cancellation classification."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("kitchen", "Kitchen", "vacuum", "standard"),
+        run_id="run",
+    )
+    manager.begin_managed_motion(serial_number)
+    entity = vacuum.MaticVacuum(entry)
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    try:
+        manager.mark_managed_stop(serial_number)
+        if managed_stop_dispatch:
+            with manager.managed_stop_dispatch(serial_number):
+                await getattr(entity, action)()
+        else:
+            await getattr(entity, action)()
+    finally:
+        plan_lock.release()
+
+    assert manager.cancellation_reason(serial_number) == expected_reason
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
+
+
 async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> None:
     entry = _entry(idle=True)
     manager = CleaningPlanManager(hass)

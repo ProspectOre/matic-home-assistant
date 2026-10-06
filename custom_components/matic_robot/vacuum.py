@@ -422,7 +422,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             if decision.behavior == "after_room":
                 return
             self.coordinator.async_discard_current_room()
-            await self._plans.async_replace_managed_motion(serial_number)
+            with self._plans.managed_stop_dispatch(serial_number):
+                await self._plans.async_replace_managed_motion(serial_number)
             await self._async_dispatch_admitted_command(UserCommand.STOP, run_id=run_id)
         self._schedule_dock_after_stop(serial_number, run_id=run_id)
 

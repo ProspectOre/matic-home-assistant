@@ -1120,9 +1120,10 @@ async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> N
             "return_to_base",
             {"entity_id": "vacuum.test"},
         )
+        assert manager._managed_stop_dispatch.get() == serial_number
         assert kwargs["blocking"] is True
         assert kwargs["context"] is stop.context
-        await entity.async_return_to_base()
+        await asyncio.create_task(entity.async_return_to_base())
 
     with (
         patch.object(

@@ -13,11 +13,13 @@ from collections.abc import (
     Callable,
     Coroutine,
     Iterable,
+    Iterator,
     Mapping,
     MutableMapping,
     Sequence,
 )
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
@@ -721,6 +723,9 @@ class CleaningPlanManager:
         self._removed_robots: set[str] = set()
         self._robot_generations: dict[str, int] = {}
         self._cancellation_reasons: dict[str, str] = {}
+        self._managed_stop_dispatch: ContextVar[str | None] = ContextVar(
+            f"matic_managed_stop_dispatch_{id(self)}", default=None
+        )
         self._stop_fences: dict[str, _StopFence] = {}
         self._stop_fence_sequence = 0
         self._prepared_runs: dict[str, _PreparedRunReservation] = {}
@@ -1227,7 +1232,8 @@ class CleaningPlanManager:
         """Transfer motion ownership to an admitted independent command."""
         if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
             self.cancellation_event(serial_number).set()
-            self._cancellation_reasons[serial_number] = "motion_replaced"
+            if self._managed_stop_dispatch.get() != serial_number:
+                self._cancellation_reasons[serial_number] = "motion_replaced"
         self.cancel_reconciliation_tasks(serial_number)
         # Keep the settle countdown active, but revoke its persisted run owner:
         # replacement motion must not resume an obsolete dock watcher after a
@@ -1247,6 +1253,15 @@ class CleaningPlanManager:
         )
         self._managed_motion.pop(serial_number, None)
         return reconciliation_removed
+
+    @contextmanager
+    def managed_stop_dispatch(self, serial_number: str) -> Iterator[None]:
+        """Keep an admitted physical Stop classified as a managed stop."""
+        token = self._managed_stop_dispatch.set(serial_number)
+        try:
+            yield
+        finally:
+            self._managed_stop_dispatch.reset(token)
 
     async def async_replace_managed_motion(self, serial_number: str) -> int:
         """Persist replacement ownership before its independent command runs."""

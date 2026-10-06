@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -166,6 +166,11 @@ async def _motion_context(_serial: str, **_kwargs: object):
     yield 0
 
 
+@contextmanager
+def _managed_stop_dispatch_context(_serial: str):
+    yield
+
+
 @asynccontextmanager
 async def _managed_motion_context(_serial: str, _token: int):
     yield
@@ -256,6 +261,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
         external_command=MagicMock(side_effect=_motion_context),
         external_motion=MagicMock(side_effect=_motion_context),
+        managed_stop_dispatch=MagicMock(side_effect=_managed_stop_dispatch_context),
         managed_command=MagicMock(side_effect=_managed_motion_context),
     )
     firmware = SimpleNamespace(

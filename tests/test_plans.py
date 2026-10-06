@@ -769,7 +769,7 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
 
 
 async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
-    """A managed stop remains cancellation even if the room was low-charge suspended."""
+    """Physical STOP dispatch preserves the managed-stop history reason."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     room = _room("Kitchen", "room-kitchen")
@@ -781,7 +781,10 @@ async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
             "status": "suspended",
             "suspend_reason": "low_charge",
         }
-        manager._cancellation_reasons["serial"] = "managed_stop"
+        manager.mark_managed_stop("serial")
+        with manager.managed_stop_dispatch("serial"):
+            manager.replace_managed_motion("serial")
+        assert manager.cancellation_reason("serial") == "managed_stop"
         raise PlanCancelledError
 
     with patch(
