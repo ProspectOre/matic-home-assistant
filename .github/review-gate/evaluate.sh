@@ -3284,6 +3284,10 @@ if [[ "$historical_event_head" != true ]] && ! head_prefix_resolves; then
 fi
 refresh_review_timeline_watermark
 if [[ -n "$native_codex_receipt" ]]; then
+  # Unsupported comparisons never start a native invocation or orphan a hold.
+  # The existing GitHub paths can still evaluate diverged branches.
+  python3 -I "$native_codex_helper" check-comparison --objects "$native_codex_objects" \
+    --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" || exit 1
   # Shared hold: independent GitHub audits cannot republish success during live
   # review. Establish it before revoking the required gate so a failed revocation
   # or interruption leaves a durable hold for subsequent audits.

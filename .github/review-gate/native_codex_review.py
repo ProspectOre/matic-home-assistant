@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from itertools import chain
 from pathlib import Path
@@ -28,11 +29,41 @@ BACKENDS = {
     "openai_base_url": None,
     "chatgpt_base_url": "https://chatgpt.com/backend-api/",
 }
+GIT_READ_ENVIRONMENT = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_ATTR_NOSYSTEM": "1",
+    "GIT_NO_LAZY_FETCH": "1",
+    "GIT_ALLOW_PROTOCOL": "",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+PERMISSION_PROFILE = "native-review-gate"
+REVIEW_PERMISSIONS = {
+    "filesystem": {
+        ":root": "deny",
+        ":minimal": "read",
+        ":workspace_roots": {".": "read"},
+    },
+    "network": {"enabled": False},
+    "workspace_roots": {},
+}
 
 
 def require(condition, message):
     if not condition:
         raise ValueError(message)
+
+
+def permission_rules(value):
+    """Ignore null defaults while retaining every effective permission rule."""
+    if isinstance(value, dict):
+        return {
+            key: permission_rules(item)
+            for key, item in value.items()
+            if item is not None
+        }
+    return value
 
 
 def strict_json(raw):
@@ -57,7 +88,75 @@ def digest(value):
     return hashlib.sha256(raw).hexdigest()
 
 
+def git_environment():
+    env = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_")
+    }
+    env.update(GIT_READ_ENVIRONMENT)
+    return env
+
+
+@contextmanager
+def frozen_objects(objects, base, head):
+    """Copy only reachable Git objects; expose no checkout or source config."""
+    require(OID.fullmatch(base) and OID.fullmatch(head), "full commit OIDs required")
+    with tempfile.TemporaryDirectory(
+        prefix="native-review-objects-",
+        dir="/private/tmp" if sys.platform == "darwin" else "/tmp",
+    ) as directory:
+        frozen = Path(directory)
+        env = git_environment()
+        command = [
+            "/usr/bin/git", "--no-replace-objects", "--no-optional-locks",
+            "-c", "core.attributesFile=/dev/null",
+        ]
+        subprocess.run(
+            [*command, "init", "--bare", "--template=", "--quiet", str(frozen)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, check=True,
+        )
+        shallow = []
+        source_command = [*command, "-C", str(objects)]
+        if subprocess.check_output(
+            [*source_command, "rev-parse", "--is-shallow-repository"],
+            stderr=subprocess.PIPE, env=env,
+        ).strip() == b"true":
+            roots = subprocess.check_output(
+                [*source_command, "rev-list", "--max-parents=0", base, head],
+                stderr=subprocess.PIPE, env=env,
+            ).decode().splitlines()
+            for oid in roots:
+                require(OID.fullmatch(oid), "invalid shallow boundary identity")
+                commit = subprocess.check_output(
+                    [*source_command, "cat-file", "commit", oid],
+                    stderr=subprocess.PIPE, env=env,
+                )
+                if any(line.startswith(b"parent ")
+                       for line in commit.split(b"\n\n", 1)[0].splitlines()):
+                    shallow.append(oid)
+        with tempfile.TemporaryFile() as pack:
+            subprocess.run(
+                [*command, "-C", str(objects), "pack-objects", "--revs", "--stdout"],
+                input=(base + "\n" + head + "\n").encode(), stdout=pack,
+                stderr=subprocess.PIPE, env=env, check=True,
+            )
+            pack.seek(0)
+            subprocess.run(
+                [*command, "-C", str(frozen), "index-pack", "--stdin"],
+                stdin=pack, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                env=env, check=True,
+            )
+        if shallow:
+            (frozen / "shallow").write_text("\n".join(shallow) + "\n")
+        yield frozen
+
+
 def snapshot(objects, base, head):
+    # Local config and worktree attributes cannot alter the bound intended diff.
+    with frozen_objects(objects, base, head) as canonical:
+        return stored_snapshot(canonical, base, head)
+
+
+def stored_snapshot(objects, base, head):
     require(OID.fullmatch(base) and OID.fullmatch(head), "full commit OIDs required")
 
     def git(*args):
@@ -66,16 +165,14 @@ def snapshot(objects, base, head):
                 "/usr/bin/git",
                 "--no-replace-objects",
                 "--no-optional-locks",
+                "-c",
+                "core.attributesFile=/dev/null",
                 "-C",
                 str(objects),
                 *args,
             ],
             stderr=subprocess.PIPE,
-            env={
-                key: value
-                for key, value in os.environ.items()
-                if not key.startswith("GIT_")
-            },
+            env=git_environment(),
         )
 
     require(
@@ -128,6 +225,7 @@ def snapshot(objects, base, head):
     patch = git(
         "diff",
         "--binary",
+        "--full-index",
         "--no-ext-diff",
         "--no-textconv",
         "--no-renames",
@@ -153,17 +251,19 @@ def instructions(repo, number, objects, source):
         "Review the COMPLETE intended pull-request diff for concrete introduced "
         "correctness, security and regression defects. Do not modify anything, "
         "run candidate code, access credentials, use external services or merge. "
-        "Use /usr/bin/git --no-replace-objects --no-optional-locks -C "
+        "Use /usr/bin/git --no-replace-objects --no-optional-locks "
+        "-c core.attributesFile=/dev/null -C "
         + shlex.quote(str(objects))
         + (
-            " diff --binary --no-ext-diff --no-textconv --no-renames "
+            " diff --binary --full-index --no-ext-diff --no-textconv --no-renames "
             "--ignore-submodules=none --submodule=short "
         )
         + source["base"]
         + " "
         + source["head"]
         + ". Read immutable source with "
-        "/usr/bin/git --no-replace-objects --no-optional-locks -C "
+        "/usr/bin/git --no-replace-objects --no-optional-locks "
+        "-c core.attributesFile=/dev/null -C "
         + shlex.quote(str(objects))
         + " show "
         "<OID>:<path>, including relevant unchanged context. Review EVERY changed "
@@ -234,6 +334,10 @@ def native_binary():
 
 def transport_options(settings):
     require(
+        PERMISSION_PROFILE not in settings.get("permissions", {}),
+        "custom native review permission profile is forbidden",
+    )
+    require(
         not settings.get("model_providers", {}).get("openai"),
         "custom OpenAI provider configuration cannot authenticate this route",
     )
@@ -245,7 +349,6 @@ def transport_options(settings):
     options = [
         'forced_login_method="chatgpt"',
         'model_provider="openai"',
-        'sandbox_mode="read-only"',
         'approval_policy="never"',
         'web_search="disabled"',
         "features.apps=false",
@@ -256,6 +359,9 @@ def transport_options(settings):
         "notify=[]",
         'otel.exporter="none"',
         'otel.trace_exporter="none"',
+        'permissions.native-review-gate={filesystem={":root"="deny",'
+        '":minimal"="read",":workspace_roots"={"."="read"}},'
+        'network={enabled=false},workspace_roots={}}',
     ]
     # The built-in provider chooses the ChatGPT plan endpoint from this session.
     # Pinning an API base URL would incorrectly send its OAuth token to /v1.
@@ -290,6 +396,7 @@ class Server:
             for key, value in os.environ.items()
             if key in ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR", "SHELL")
         }
+        env.update(GIT_READ_ENVIRONMENT)
         env["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
         binary, self.binary_digest = native_binary()
         command = [str(binary), "app-server", "--stdio"]
@@ -317,7 +424,8 @@ class Server:
                         "name": "native_review_gate",
                         "title": "Native review gate",
                         "version": "1",
-                    }
+                    },
+                    "capabilities": {"experimentalApi": True},
                 },
             )
             self.send({"method": "initialized"})
@@ -327,6 +435,13 @@ class Server:
                 and all(effective.get(key) == value for key, value in BACKENDS.items()),
                 "native provider/backend readback does not match "
                 "the authenticated route",
+            )
+            require(
+                permission_rules(
+                    effective.get("permissions", {}).get(PERMISSION_PROFILE)
+                )
+                == REVIEW_PERMISSIONS,
+                "native review permission rules differ from the restricted profile",
             )
             account = self.call("account/read", {"refreshToken": False})
             require(
@@ -518,19 +633,32 @@ def delivery(receipt, source, result):
 
 
 def capture(server, objects, repo, number, base, head):
-    with tempfile.TemporaryDirectory(
-        prefix="native-review-",
-        dir="/private/tmp" if sys.platform == "darwin" else "/tmp",
-    ) as neutral:
+    original = snapshot(objects, base, head)
+    with frozen_objects(objects, base, head) as frozen:
         require(
-            not Path(neutral).resolve().is_relative_to(objects.resolve()),
-            "neutral review directory must be outside candidate source",
+            stored_snapshot(frozen, base, head) == original,
+            "frozen object store differs from intended source",
         )
-        return capture_in(server, objects, repo, number, base, head, Path(neutral))
+        with tempfile.TemporaryDirectory(
+            prefix="native-review-",
+            dir="/private/tmp" if sys.platform == "darwin" else "/tmp",
+        ) as neutral:
+            require(
+                not Path(neutral).resolve().is_relative_to(frozen.resolve()),
+                "neutral review directory must be outside candidate source",
+            )
+            receipt = capture_in(
+                server, frozen, repo, number, base, head, Path(neutral)
+            )
+        require(
+            receipt["before"] == original == snapshot(objects, base, head),
+            "original reviewed source changed during capture",
+        )
+        return receipt
 
 
 def capture_in(server, objects, repo, number, base, head, neutral):
-    before = snapshot(objects, base, head)
+    before = stored_snapshot(objects, base, head)
     prompt = instructions(repo, number, objects, before)
     # Never auto-load candidate AGENTS.md or repository-scoped client config.
     thread = server.call(
@@ -538,15 +666,17 @@ def capture_in(server, objects, repo, number, base, head, neutral):
         {
             "cwd": str(neutral),
             "approvalPolicy": "never",
-            "sandbox": "read-only",
+            "permissions": PERMISSION_PROFILE,
+            "runtimeWorkspaceRoots": [str(objects.resolve())],
             "ephemeral": False,
         },
     )
     require(
         thread.get("modelProvider") == "openai"
         and thread.get("approvalPolicy") == "never"
-        and thread.get("sandbox", {}).get("type") == "readOnly"
-        and thread["sandbox"].get("networkAccess") is False,
+        and thread.get("activePermissionProfile")
+        == {"id": PERMISSION_PROFILE, "extends": None}
+        and thread.get("runtimeWorkspaceRoots") == [str(objects.resolve())],
         "native review isolation unavailable",
     )
     thread_id = thread["thread"]["id"]
@@ -613,7 +743,7 @@ def capture_in(server, objects, repo, number, base, head, neutral):
         "result": result,
         "resultSHA256": digest(result),
         "before": before,
-        "after": snapshot(objects, base, head),
+        "after": stored_snapshot(objects, base, head),
         "instructionsSHA256": hashlib.sha256(prompt.encode()).hexdigest(),
         "provenanceSHA256": digest(
             {
@@ -633,7 +763,9 @@ def capture_in(server, objects, repo, number, base, head, neutral):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("capture", "check-source"))
+    parser.add_argument(
+        "command", choices=("capture", "check-comparison", "check-source")
+    )
     parser.add_argument("--objects", required=True, type=Path)
     parser.add_argument("--repo", required=True)
     parser.add_argument("--pr", required=True, type=int)
@@ -651,6 +783,10 @@ def main():
     require(
         args.objects.is_absolute(), "absolute immutable object database path required"
     )
+    if args.command == "check-comparison":
+        # Prerequisites only: no native session, receipt or verdict is created.
+        snapshot(args.objects, args.base, args.head)
+        return
     if args.command == "check-source":
         # Source consistency only: this mode never emits or authenticates a verdict.
         raw = sys.stdin.buffer.read(MAX_RESPONSE + 1)
