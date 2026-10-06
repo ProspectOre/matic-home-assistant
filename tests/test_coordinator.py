@@ -1215,7 +1215,9 @@ async def test_coordinator_records_observed_firmware(hass) -> None:
     tracker.async_observe_version.assert_awaited_once_with(
         "entry", "v168.11", 25, device_id=None
     )
-    tracker.needs_snapshot.assert_called_once_with("entry", "v168.11", 25)
+    tracker.needs_snapshot.assert_called_once_with(
+        "entry", "v168.11", 25, context="ready"
+    )
 
 
 async def test_coordinator_snapshots_each_new_firmware_once_in_background(hass) -> None:
@@ -1247,10 +1249,10 @@ async def test_coordinator_snapshots_each_new_firmware_once_in_background(hass) 
     build.assert_awaited_once()
     tracker.async_record_snapshot.assert_awaited_once_with("entry", snapshot)
     assert coordinator._snapshot_versions_in_progress == set()
-    assert coordinator._snapshot_attempts == {}
+    assert coordinator._snapshot_retry_after > 0
 
 
-async def test_transient_sweep_failures_defer_then_record_degraded(hass) -> None:
+async def test_snapshot_failure_cooldown_defers_retry(hass) -> None:
     client = _client()
     client.async_get_telemetry.return_value = RobotTelemetry(
         software_version="v168.11", protocol_version=25
@@ -1272,28 +1274,22 @@ async def test_transient_sweep_failures_defer_then_record_degraded(hass) -> None
     with patch(
         "custom_components.matic_robot.coordinator.async_build_firmware_snapshot",
         AsyncMock(return_value=snapshot),
-    ):
+    ) as build:
         await coordinator._async_update_data()
         await hass.async_block_till_done()
-        tracker.async_record_snapshot.assert_not_awaited()
-        assert coordinator._snapshot_attempts == {"v168.11": 1}
+        tracker.async_record_snapshot.assert_awaited_once_with("entry", snapshot)
+        assert coordinator._snapshot_retry_after > 0
 
         # The retry cooldown suppresses an immediate re-sweep.
         await coordinator._async_update_data()
         await hass.async_block_till_done()
-        assert coordinator._snapshot_attempts == {"v168.11": 1}
+        assert build.await_count == 1
 
         coordinator._snapshot_retry_after = 0.0
         await coordinator._async_update_data()
         await hass.async_block_till_done()
-        tracker.async_record_snapshot.assert_not_awaited()
-
-        coordinator._snapshot_retry_after = 0.0
-        await coordinator._async_update_data()
-        await hass.async_block_till_done()
-
-    tracker.async_record_snapshot.assert_awaited_once_with("entry", snapshot)
-    assert coordinator._snapshot_attempts == {}
+        assert build.await_count == 2
+    assert coordinator._snapshot_versions_in_progress == set()
 
 
 async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_failed(

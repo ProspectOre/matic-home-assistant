@@ -1,0 +1,148 @@
+blueprint:
+  name: Matic — Firmware intelligence
+  description: >-
+    Deliver durable firmware findings and research results. Quiet discovery
+    notifications include evidence links, bounded rechecks, and acknowledgement.
+    Reconciles pending delivery after restart. Research routing is configured
+    separately with Matic: Set firmware investigator.
+  domain: automation
+  source_url: https://github.com/ProspectOre/matic-home-assistant/blob/release/0.4/blueprints/automation/matic_robot/firmware_intelligence.yaml
+  input:
+    vacuum:
+      name: Matic vacuum
+      selector:
+        entity:
+          integration: matic_robot
+          domain: vacuum
+    firmware_sensor:
+      name: Firmware compatibility sensor
+      selector:
+        entity:
+          integration: matic_robot
+          domain: sensor
+    notify_service:
+      name: Mobile notification action
+      description: Your Companion app action, such as notify.mobile_app_my_phone.
+      selector:
+        text:
+    notification_namespace:
+      name: Home notification identifier
+      description: Use a different value for each Home Assistant server.
+      default: matic_firmware
+      selector:
+        text:
+
+mode: queued
+max: 10
+variables:
+  vacuum_entity: !input vacuum
+  firmware_sensor: !input firmware_sensor
+  namespace: !input notification_namespace
+  notify_service: !input notify_service
+  notification_key: "{{ namespace ~ '_' ~ vacuum_entity }}"
+
+triggers:
+  - trigger: state
+    entity_id: !input firmware_sensor
+    attribute: firmware_report_revision
+    id: report
+  - trigger: homeassistant
+    event: start
+    id: reconcile
+  - trigger: time_pattern
+    minutes: "/30"
+    id: reconcile
+  - trigger: event
+    event_type: mobile_app_notification_action
+    id: mobile
+
+actions:
+  - variables:
+      report: "{{ state_attr(firmware_sensor, 'firmware_report') or {} }}"
+  - condition: template
+    value_template: "{{ report.get('id') and report.get('revision', 0) > 0 }}"
+  - variables:
+      acknowledge_action: "{{ 'MATIC_FW_ACK|' ~ notification_key ~ '|' ~ report.id ~ '|' ~ report.revision }}"
+      recheck_action: "{{ 'MATIC_FW_CHECK|' ~ notification_key ~ '|' ~ report.id ~ '|' ~ report.revision }}"
+      mobile_action: "{{ trigger.event.data.get('action', '') if trigger.id == 'mobile' else '' }}"
+  - choose:
+      - conditions: "{{ mobile_action == acknowledge_action }}"
+        sequence:
+          - action: matic_robot.firmware_notification
+            target:
+              entity_id: !input vacuum
+            data:
+              report_id: "{{ report.id }}"
+              revision: "{{ report.revision }}"
+              action: acknowledge
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: "{{ notification_key }}"
+          - action: "{{ notify_service }}"
+            data:
+              message: clear_notification
+              data:
+                tag: "{{ notification_key }}"
+      - conditions: "{{ mobile_action == recheck_action }}"
+        sequence:
+          - action: matic_robot.firmware_notification
+            target:
+              entity_id: !input vacuum
+            data:
+              report_id: "{{ report.id }}"
+              revision: "{{ report.revision }}"
+              action: recheck
+      - conditions: "{{ trigger.id != 'mobile' and report.get('notification_pending', false) }}"
+        sequence:
+          - variables:
+              research: "{{ report.get('investigation', {}) }}"
+              new_fields: "{{ report.findings | selectattr('kind', 'eq', 'new_field') | list | count }}"
+              title: >-
+                {% if report.attention_required %}Matic firmware checks need attention
+                {% elif research.get('status') == 'complete' %}Matic firmware investigation complete
+                {% elif new_fields > 0 %}Matic — new protocol field observed
+                {% else %}Matic firmware reads recovered{% endif %}
+              message: >-
+                Firmware {{ report.firmware_version }}.
+                {{ report.reachable_endpoints }}/{{ report.endpoint_count }} endpoints responded.
+                {% if report.attention_required %}Repeated read failures need review.
+                {% elif new_fields > 0 %}{{ new_fields }} newly observed field(s); their meaning remains unverified.
+                {% else %}Read checks have recovered.{% endif %}
+                {% if research.get('status') == 'complete' %}
+                Research assessment: {{ research.summary }}
+                {% elif report.investigator != 'manual' %}
+                Investigation assigned to {{ report.investigator }}.
+                {% endif %}
+          - action: persistent_notification.create
+            data:
+              notification_id: "{{ notification_key }}"
+              title: "{{ title | trim }}"
+              message: >-
+                {{ message | replace(research.get('summary', ''), research.get('summary_markdown', '')) if research.get('status') == 'complete' else message }}
+
+                [View firmware evidence](/config/devices/device/{{ device_id(vacuum_entity) }})
+          - action: "{{ notify_service }}"
+            data:
+              title: "{{ title | trim }}"
+              message: "{{ message | trim | truncate(350, true) }}"
+              data:
+                tag: "{{ notification_key }}"
+                group: "{{ namespace }}"
+                url: "{{ 'entityId:' ~ firmware_sensor }}"
+                push:
+                  interruption-level: "{{ 'active' if report.attention_required else 'passive' }}"
+                actions:
+                  - action: URI
+                    title: View details
+                    uri: "{{ 'entityId:' ~ firmware_sensor }}"
+                  - action: "{{ recheck_action }}"
+                    title: Check again
+                  - action: "{{ acknowledge_action }}"
+                    title: Acknowledge
+          - action: matic_robot.firmware_notification
+            target:
+              entity_id: !input vacuum
+            data:
+              report_id: "{{ report.id }}"
+              revision: "{{ report.revision }}"
+              action: delivered

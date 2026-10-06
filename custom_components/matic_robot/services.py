@@ -330,7 +330,7 @@ def _require_matic_admin[ServiceResult](
     hass: HomeAssistant,
     handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
 ) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
-    """Require an administrator for read-only room-sequence previews."""
+    """Require an administrator for restricted previews and research routing."""
 
     @wraps(handler)
     async def async_authorized(call: ServiceCall) -> ServiceResult:
@@ -386,7 +386,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         except ValueError as err:
             raise ServiceValidationError(str(err)) from err
 
-    def firmware_entry(call: ServiceCall) -> ConfigEntry:
+    def firmware_entry(call: ServiceCall) -> ConfigEntry[Any]:
         entity_ids = _resolve_loaded_matic_vacuums(hass, call)
         if len(entity_ids) != 1:
             raise ServiceValidationError(

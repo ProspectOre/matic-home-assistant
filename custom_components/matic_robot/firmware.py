@@ -54,7 +54,7 @@ WIRE_SHAPE_CANDIDATE_EXCLUDED_ENDPOINTS = frozenset({"latest_pose"})
 
 
 class FirmwareTracker:
-    """Persist safe weekly snapshots and signal newly observed firmware."""
+    """Persist bounded firmware evidence, research ownership, and delivery state."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
@@ -81,9 +81,9 @@ class FirmwareTracker:
         if version is None:
             return False
         async with self._lock:
-            robot = self._data.get("robots", {}).get(robot_id, {})
-            previous = robot.get("observed_version")
-            previous_protocol = robot.get("observed_protocol")
+            existing = self._data.get("robots", {}).get(robot_id, {})
+            previous = existing.get("observed_version")
+            previous_protocol = existing.get("observed_protocol")
             if previous == version and previous_protocol == protocol:
                 return False
             if (
@@ -142,14 +142,16 @@ class FirmwareTracker:
             previous = robot.get("snapshot")
             current = deepcopy(dict(snapshot))
             comparison = _compare_snapshots(previous, current)
+            if previous and current.get("captured_at", "") < previous.get(
+                "captured_at", ""
+            ):
+                # A slower overlapping sweep must not roll evidence backward.
+                return {**comparison, "discarded": True}
             history = robot.setdefault("history", [])
             baseline = reports.prepare_release(robot, current)
             release_comparison = _compare_snapshots(baseline, current)
             report_changed = reports.update_report(robot, current, dt_util.utcnow())
             robot["snapshot"] = current
-            robot["compatibility_status"] = _compatibility_status(
-                robot.get("compatibility_status"), release_comparison
-            )
             report = robot["firmware_report"]
             if report["failed_endpoints"]:
                 robot["compatibility_status"] = (
@@ -567,20 +569,6 @@ def _compatibility_signature(endpoint: Mapping[str, Any] | None) -> tuple[Any, .
     )
 
 
-def _compatibility_status(current: str | None, comparison: Mapping[str, Any]) -> str:
-    """Translate one snapshot comparison into durable HA-facing health."""
-    if comparison["baseline"]:
-        return "baseline"
-    release_changed = bool(
-        comparison["firmware_changed"] or comparison.get("protocol_changed", False)
-    )
-    if release_changed and comparison["changed_endpoints"]:
-        return "regression"
-    if release_changed:
-        return "compatible"
-    return current or "current"
-
-
 def snapshot_timestamp() -> str:
     """Return one normalized timestamp for a persisted snapshot."""
     return dt_util.utcnow().isoformat()
@@ -636,6 +624,7 @@ async def async_build_firmware_snapshot(
     client: MaticHermesClient, state: RobotState
 ) -> dict[str, Any]:
     """Capture every known endpoint without retaining any payload bytes."""
+    captured_at = snapshot_timestamp()
     semaphore = asyncio.Semaphore(4)
     endpoints = await asyncio.gather(
         *(
@@ -658,7 +647,7 @@ async def async_build_firmware_snapshot(
     )
     return {
         "analysis_version": ANALYSIS_VERSION,
-        "captured_at": snapshot_timestamp(),
+        "captured_at": captured_at,
         "firmware_version": firmware_version,
         "observation_context": state.operational.activity.value,
         "protocol_version": state.telemetry.protocol_version,

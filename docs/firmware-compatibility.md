@@ -1,6 +1,7 @@
 # Firmware compatibility
 
-[Compatibility](acceptance-0.4.md) · [Protocol endpoints](firmware-endpoint-map.md)
+[Compatibility](acceptance-0.4.md) · [Protocol endpoints](firmware-endpoint-map.md) ·
+[Firmware intelligence](firmware-intelligence.md)
 
 Track robot updates in Home Assistant with automatic local endpoint comparisons
 and a firmware compatibility sensor. The table below records firmware and
@@ -20,17 +21,22 @@ workflows checked on real robots.
 
 After a firmware or protocol change, the integration compares a local snapshot
 of 40 allowlisted endpoints. **Firmware compatibility** shows the result.
-A Home Assistant Repair appears for endpoint availability or transport changes;
-ordinary content changes and new field shapes stay in diagnostics.
+A Home Assistant Repair appears for repeated endpoint read failures and clears
+after recovery. First failures stay pending. Newly observed field shapes retain
+unknown meaning; they never enable commands.
 
 Snapshots contain versions, status, counts, sizes, hashes, and value-free wire
 paths. They do not test pairing or cleaning controls. Run
 [`matic_robot.firmware_snapshot`](actions.md#firmware-snapshot) for a fresh
-comparison; the latest 52 snapshots are retained.
+comparison; the latest 52 snapshots are retained. A separate preceding good
+baseline and shape union survive that rolling history. Bounded periodic checks
+also detect later observations and recovery on unchanged firmware.
 
 Use `matic_robot_firmware_changed` for update notifications and
 `matic_robot_firmware_analyzed` for comparison results. Both identify the robot.
 See the [event reference](automation.md#events-and-observability).
+For durable notifications and a swappable research agent, use
+[Firmware intelligence](firmware-intelligence.md).
 
 ## Adding a firmware record
 
