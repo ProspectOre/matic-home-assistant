@@ -132,10 +132,12 @@ def _goal_signature(payload: bytes) -> CoverageGoalSignature:
 
 
 def _bounded_fields(payload: bytes) -> tuple[WireField, ...]:
-    fields = decode_fields(payload)
-    if len(fields) > _MAX_COVERAGE_FIELDS_PER_MESSAGE:
-        raise DecodeError("coverage message has too many fields")
-    return fields
+    try:
+        return decode_fields(payload, max_fields=_MAX_COVERAGE_FIELDS_PER_MESSAGE)
+    except DecodeError as err:
+        if str(err) == "protobuf message exceeds its field limit":
+            raise DecodeError("coverage message has too many fields") from err
+        raise
 
 
 def _bytes_fields(payload: bytes, number: int) -> tuple[bytes, ...]:

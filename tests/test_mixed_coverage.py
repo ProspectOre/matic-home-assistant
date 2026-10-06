@@ -13,6 +13,7 @@ from uuid import UUID
 import pytest
 from google.protobuf.message import DecodeError
 
+from custom_components.matic_robot.client import wire as wire_module
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.commands import (
     CleaningMode as Mode,
@@ -29,6 +30,7 @@ from custom_components.matic_robot.client.commands import (
     encode_mixed_coverage_commands as build_mixed_coverage_commands,
 )
 from custom_components.matic_robot.client.coverage_goals import (
+    _MAX_COVERAGE_FIELDS_PER_MESSAGE,
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
     coverage_readback_matches,
@@ -832,6 +834,30 @@ def test_coverage_goal_decoders_reject_excessive_counts_and_fields():
     too_many_fields = _field(7, _field(1, _varint_field(2, 0) * 4097))
     with pytest.raises(DecodeError, match="too many fields"):
         coverage_plan_goal_signatures(too_many_fields)
+
+
+def test_coverage_field_limit_stops_before_materializing_excess_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materialized_fields = 0
+    original_field_factory = wire_module.WireField
+
+    def count_field_allocations(
+        number: int, wire_type: int, value: int | bytes
+    ) -> wire_module.WireField:
+        nonlocal materialized_fields
+        materialized_fields += 1
+        return original_field_factory(number, wire_type, value)
+
+    monkeypatch.setattr(wire_module, "WireField", count_field_allocations)
+    too_many_fields = _field(7, _field(1, _varint_field(2, 0) * 4097))
+
+    with pytest.raises(DecodeError, match="too many fields"):
+        coverage_plan_goal_signatures(too_many_fields)
+
+    # The outer container and group each contain one field; the dense goal
+    # message constructs exactly the configured maximum, then stops.
+    assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_MESSAGE + 2
 
 
 @pytest.mark.parametrize(

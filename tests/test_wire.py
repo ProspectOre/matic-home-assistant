@@ -34,6 +34,12 @@ def test_decode_fields_enforces_optional_field_limit() -> None:
         decode_fields(b"\x08\x00" * 3, max_fields=2)
 
 
+def test_decode_fields_checks_limit_before_parsing_next_field() -> None:
+    payload = b"\x08\x00" * 2 + b"\x00"
+    with pytest.raises(DecodeError, match="field limit"):
+        decode_fields(payload, max_fields=2)
+
+
 def test_fixed_width_and_missing_field_errors() -> None:
     with pytest.raises(DecodeError, match="truncated protobuf value"):
         decode_fields(b"\x09\x00")

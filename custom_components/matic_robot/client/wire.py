@@ -39,6 +39,8 @@ def decode_fields(
     fields: list[WireField] = []
     offset = 0
     while offset < len(payload):
+        if max_fields is not None and len(fields) >= max_fields:
+            raise DecodeError("protobuf message exceeds its field limit")
         tag, offset = _decode_varint(payload, offset)
         number = tag >> 3
         wire_type = tag & 7
@@ -56,8 +58,6 @@ def decode_fields(
             value, offset = _take(payload, offset, 4)
         else:
             raise DecodeError(f"unsupported protobuf wire type {wire_type}")
-        if max_fields is not None and len(fields) >= max_fields:
-            raise DecodeError("protobuf message exceeds its field limit")
         fields.append(WireField(number, wire_type, value))
     return tuple(fields)
 
