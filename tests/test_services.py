@@ -1068,6 +1068,100 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
                 await asyncio.gather(task, return_exceptions=True)
 
 
+async def test_stop_service_waits_for_motion_replacement_persistence(hass) -> None:
+    """A Stop decision cannot split ownership replacement from its save."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    run_id = "run-id"
+    token = manager.begin_managed_motion("serial")
+    await manager.async_begin_run(
+        "serial",
+        "plan",
+        run_id,
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=True,
+        finish_current_room_threshold=0,
+    )
+    await manager.async_mark_started(
+        "serial",
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id=run_id,
+    )
+    plan_lock = manager.lock("serial")
+    await plan_lock.acquire()
+    services = await _registered_services(hass, manager)
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(async_discard_current_room=MagicMock())
+        )
+    )
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+    command_lock = manager.command_lock("serial")
+    await command_lock.acquire()
+    persistence_started = asyncio.Event()
+    release_persistence = asyncio.Event()
+
+    async def persist_replacement(*_args) -> None:
+        persistence_started.set()
+        await release_persistence.wait()
+
+    with (
+        patch.object(
+            manager,
+            "_async_persist_reconciliation_removal",
+            side_effect=persist_replacement,
+        ),
+        patch.object(manager, "request_stop", wraps=manager.request_stop) as request,
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, "serial", {}),
+        ),
+    ):
+        replacement = asyncio.create_task(
+            manager.async_replace_managed_motion("serial")
+        )
+        stop_task = None
+        try:
+            await persistence_started.wait()
+            stop_task = asyncio.create_task(
+                _registered_handler(services, "stop_intelligent_cleaning")(stop)
+            )
+            for _ in range(30):
+                waiters = getattr(command_lock, "_waiters", None)
+                if waiters is not None and any(not waiter.done() for waiter in waiters):
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("Stop service never queued behind motion persistence")
+
+            request.assert_not_called()
+            release_persistence.set()
+            await replacement
+            command_lock.release()
+            await stop_task
+
+            request.assert_called_once_with("serial")
+            assert not manager.managed_motion_is_current("serial", token)
+            assert manager.finish_room_event("serial").is_set()
+            assert not manager.cancellation_event("serial").is_set()
+            services.async_call.assert_not_awaited()
+        finally:
+            release_persistence.set()
+            if command_lock.locked():
+                command_lock.release()
+            if plan_lock.locked():
+                plan_lock.release()
+            for task in (replacement, stop_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+
 async def test_clean_area_translates_client_failure_without_protocol_details(
     hass,
 ) -> None:

@@ -918,8 +918,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
         entity_id, entry, serial_number, _room_map = _saved_plan_context(
             hass, call, require_rooms=False
         )
-        decision = manager.request_stop(serial_number)
-        await manager.async_checkpoint_stop_intent(serial_number, decision.behavior)
+        async with manager.external_command(serial_number):
+            decision = manager.request_stop(serial_number)
+            await manager.async_checkpoint_stop_intent(serial_number, decision.behavior)
         if decision.behavior == "not_running" and not call.data.get(
             "include_unmanaged"
         ):
