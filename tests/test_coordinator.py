@@ -834,7 +834,7 @@ async def test_coordinator_snapshots_each_new_firmware_once_in_background(hass) 
         software_version="v168.11", protocol_version=25
     )
     tracker = SimpleNamespace(
-        async_observe_version=AsyncMock(),
+        async_observe_version=AsyncMock(return_value=False),
         needs_snapshot=MagicMock(return_value=True),
         async_record_snapshot=AsyncMock(),
     )
@@ -872,7 +872,7 @@ async def test_new_firmware_identity_bypasses_snapshot_cooldown(
         software_version="v168.11", protocol_version=25
     )
     tracker = SimpleNamespace(
-        async_observe_version=AsyncMock(),
+        async_observe_version=AsyncMock(side_effect=[False, True]),
         needs_snapshot=MagicMock(return_value=True),
         async_record_snapshot=AsyncMock(),
     )
@@ -916,13 +916,64 @@ async def test_new_firmware_identity_bypasses_snapshot_cooldown(
     assert coordinator._snapshot_versions_in_progress == set()
 
 
+async def test_returning_to_firmware_identity_bypasses_old_cooldown(hass) -> None:
+    client = _client()
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        software_version="v168.11", protocol_version=25
+    )
+    tracker = SimpleNamespace(
+        async_observe_version=AsyncMock(side_effect=[False, True, True]),
+        needs_snapshot=MagicMock(return_value=True),
+        async_record_snapshot=AsyncMock(),
+    )
+    coordinator = MaticCoordinator(
+        hass, client, config_entry=_tracking_entry(), firmware_tracker=tracker
+    )
+    snapshots = []
+
+    async def build_snapshot(_client, state):
+        snapshot = {
+            "firmware_version": state.telemetry.software_version,
+            "protocol_version": state.telemetry.protocol_version,
+            "endpoint_count": 40,
+            "failed_endpoints": 40,
+        }
+        snapshots.append(snapshot)
+        return snapshot
+
+    with patch(
+        "custom_components.matic_robot.coordinator.async_build_firmware_snapshot",
+        AsyncMock(side_effect=build_snapshot),
+    ) as build:
+        for firmware_version, protocol_version in (
+            ("v168.11", 25),
+            ("v168.12", 26),
+            ("v168.11", 25),
+        ):
+            client.async_get_telemetry.return_value = RobotTelemetry(
+                software_version=firmware_version,
+                protocol_version=protocol_version,
+            )
+            coordinator._slow_refresh_due = 0.0
+            await coordinator._async_update_data()
+            await hass.async_block_till_done()
+
+    assert build.await_count == 3
+    assert [
+        (snapshot["firmware_version"], snapshot["protocol_version"])
+        for snapshot in snapshots
+    ] == [("v168.11", 25), ("v168.12", 26), ("v168.11", 25)]
+    assert tracker.async_record_snapshot.await_count == 3
+    assert coordinator._snapshot_retry_after[("v168.11", 25)] > 0
+
+
 async def test_snapshot_failure_cooldown_defers_retry(hass) -> None:
     client = _client()
     client.async_get_telemetry.return_value = RobotTelemetry(
         software_version="v168.11", protocol_version=25
     )
     tracker = SimpleNamespace(
-        async_observe_version=AsyncMock(),
+        async_observe_version=AsyncMock(return_value=False),
         needs_snapshot=MagicMock(return_value=True),
         async_record_snapshot=AsyncMock(),
     )
