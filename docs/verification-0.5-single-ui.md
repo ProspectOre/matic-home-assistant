@@ -23,7 +23,7 @@ retain manager ownership. Persistence failures remain visible. Reset confirmatio
 names the selected plan and explains the all-plans scope; unrelated preferences
 and saved plan settings remain unchanged.
 
-## Local qualification
+## Source qualification
 
 On October 5, 2026, the frozen candidate passed:
 
@@ -40,8 +40,15 @@ maintenance, admission races, failure propagation, inline guidance, and cadence
 disable behavior retain explicit regression contracts. The acceptance matrix's
 row identities remain unchanged.
 
-This is local source evidence. Fresh exact-candidate hosted checks, full native
-review and event acknowledgement, installed RC, device/accessibility, causal
-coverage credit, transport/resource, owner, and physical acceptance remain
-separate gates. The earlier desktop performance receipt applies only to its
-recorded source; this cleanup makes no new latency, FPS, or memory claim.
+The final head `f90c44d88f7cd3b90157d73349450debacb59c83` also passed hosted
+[Test](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37408206418),
+[Browser](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37408206387)
+(1,031 passes, one existing capability skip and bundle parity), and
+[Validate](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37408206451)
+(HACS/Hassfest). #207 merged as `338fd52f` through the owner's explicit one-off
+review exception, recorded in [the evidence matrix](acceptance-0.5.md).
+
+Installed RC, device/accessibility, causal coverage credit, transport/resource,
+owner and physical acceptance remain separate gates. The earlier desktop
+performance receipt applies only to its recorded source; this cleanup makes no
+new latency, FPS or memory claim.
