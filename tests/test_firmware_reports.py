@@ -1143,6 +1143,32 @@ def test_investigation_history_is_bounded_and_never_contains_lease_hashes() -> N
     assert all("claim-" not in repr(item) for item in history)
 
 
+def test_expired_claim_is_archived_before_reclaim_without_lease_secrets() -> None:
+    robot = start_robot()
+    reports.configure_investigator(robot, "researcher")
+    args = _lease_args(robot)
+    moment = NOW
+    tokens = []
+
+    for index in range(7):
+        token = f"expired-claim-{index}"
+        tokens.append(token)
+        reports.claim_report(robot, *args, token, moment)
+        moment += reports.LEASE_DURATION
+
+    history = robot["firmware_report"]["investigation_history"]
+    assert len(history) == 4
+    assert all(item["status"] == "claimed" for item in history)
+    assert all(item["provider"] == "researcher" for item in history)
+    assert all("lease_hash" not in item for item in history)
+    assert all(token not in repr(history) for token in tokens)
+
+    public = reports.public_report(robot)
+    assert "lease_hash" not in repr(public)
+    assert all(token not in repr(public) for token in tokens)
+    assert robot["firmware_report"]["investigation"]["status"] == "claimed"
+
+
 def test_shape_union_and_projection_are_capped() -> None:
     many_paths = [f"{index}:2" for index in range(1, 514)]
     projected = reports.shapes(snapshot(paths=many_paths))

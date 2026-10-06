@@ -363,9 +363,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
     firmware_tracker = FirmwareTracker(hass)
     await firmware_tracker.async_load()
     hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = firmware_tracker
-    hass.bus.async_listen_once(
-        EVENT_HOMEASSISTANT_STARTED, lambda event: firmware_tracker.replay_reports()
-    )
+    if hass.is_running:
+        firmware_tracker.replay_reports()
+    else:
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, lambda event: firmware_tracker.replay_reports()
+        )
 
     async def async_firmware_investigator(call: ServiceCall) -> None:
         """Change research routing without changing any robot behavior."""
