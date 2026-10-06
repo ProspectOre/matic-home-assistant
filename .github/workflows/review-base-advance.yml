@@ -13,7 +13,11 @@ permissions:
 jobs:
   discover:
     name: discover-targeting-prs
-    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
+    if: >-
+      github.event_name != 'push'
+      || github.ref_name == github.event.repository.default_branch
+      || (github.repository == 'ProspectOre/matic-home-assistant'
+        && github.ref_name == 'release/0.4')
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     outputs:
       matrix: ${{ steps.prs.outputs.matrix }}
@@ -22,7 +26,7 @@ jobs:
       - id: prs
         name: Find pull requests targeting the advanced branch
         env:
-          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_BRANCH: ${{ github.event_name == 'push' && github.ref_name || github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
@@ -78,7 +82,7 @@ jobs:
     steps:
       - name: Persist a base-change marker and revoke the required gate
         env:
-          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_BRANCH: ${{ github.event_name == 'push' && github.ref_name || github.event.repository.default_branch }}
           BASE_PUSHED_AT: ${{ github.event_name == 'push' && github.event.repository.pushed_at || '' }}
           EVENT_HEAD_SHA: ${{ matrix.event_head_sha }}
           EVENT_BASE_SHA: ${{ github.sha }}
