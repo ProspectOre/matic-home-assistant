@@ -44,7 +44,7 @@ variables:
 triggers:
   - trigger: state
     entity_id: !input firmware_sensor
-    attribute: firmware_report_revision
+    attribute: firmware_report
     id: report
   - trigger: homeassistant
     event: start

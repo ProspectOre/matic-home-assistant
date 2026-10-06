@@ -15,6 +15,7 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.script import Script
+from homeassistant.helpers.trigger import async_initialize_triggers
 from homeassistant.util.yaml import load_yaml
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -26,11 +27,17 @@ NOTIFY = "notify.mobile_app_test_phone"
 REPORT_ID = "0123456789abcdef01234567"
 
 
-def report(*, attention: bool = False, pending: bool = True) -> dict[str, Any]:
+def report(
+    *,
+    attention: bool = False,
+    pending: bool = True,
+    report_id: str = REPORT_ID,
+    revision: int = 7,
+) -> dict[str, Any]:
     """Return a synthetic bounded report suitable for the rendered templates."""
     return {
-        "id": REPORT_ID,
-        "revision": 7,
+        "id": report_id,
+        "revision": revision,
         "notification_pending": pending,
         "attention_required": attention,
         "firmware_version": "1.2.3-test",
@@ -46,7 +53,7 @@ def report(*, attention: bool = False, pending: bool = True) -> dict[str, Any]:
     }
 
 
-async def make_script(
+async def make_automation_config(
     hass: HomeAssistant,
     current_report: dict[str, Any] | None,
     *,
@@ -55,8 +62,8 @@ async def make_script(
     separate_devices: bool = False,
     register_sensor_device: bool = True,
     sensor_state: str = "needs_attention",
-) -> Script:
-    """Substitute real blueprint inputs and compile its action sequence in HA."""
+) -> dict[str, Any]:
+    """Substitute real inputs and validate the automation with Home Assistant."""
     device_registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
     vacuum_entry = MockConfigEntry(domain="matic_robot", data={}, options={})
@@ -120,7 +127,11 @@ async def make_script(
     config = await async_validate_config(
         hass, {"automation": [inputs.async_substitute()]}
     )
-    config = config["automation"][0]
+    return config["automation"][0]
+
+
+def script_from_config(hass: HomeAssistant, config: dict[str, Any]) -> Script:
+    """Create a script from the validated automation action sequence."""
     return Script(
         hass,
         config["actions"],
@@ -129,6 +140,16 @@ async def make_script(
         variables=config.get("variables"),
         script_mode=config.get("mode", "single"),
     )
+
+
+async def make_script(
+    hass: HomeAssistant,
+    current_report: dict[str, Any] | None,
+    **kwargs: Any,
+) -> Script:
+    """Substitute, validate, and compile the blueprint action sequence."""
+    config = await make_automation_config(hass, current_report, **kwargs)
+    return script_from_config(hass, config)
 
 
 async def install_services(
@@ -384,3 +405,82 @@ async def test_invalid_report_or_sensor_fails_closed_for_every_action(
     await run_script(script, trigger_id="mobile", action=ack)
     await run_script(script, trigger_id="mobile", action=recheck)
     assert calls == []
+
+
+async def test_report_identity_change_triggers_without_reconciliation(
+    hass: HomeAssistant,
+) -> None:
+    """A new report ID at the same revision fires without periodic reconciliation."""
+    calls = await install_services(hass, lambda _name, _data: None)
+    report_a = report(pending=False, report_id="aaaaaaaaaaaaaaaaaaaaaaaa", revision=1)
+    config = await make_automation_config(hass, report_a)
+    script = script_from_config(hass, config)
+    report_trigger = next(
+        item for item in config["triggers"] if item.get("id") == "report"
+    )
+    assert report_trigger["attribute"] == "firmware_report"
+    triggered: list[dict[str, Any]] = []
+
+    async def run_automation(
+        variables: dict[str, Any], context: Context | None = None
+    ) -> None:
+        triggered.append(variables)
+        await script.async_run(variables, context)
+
+    remove_trigger = await async_initialize_triggers(
+        hass,
+        [report_trigger],
+        run_automation,
+        "automation",
+        "Firmware identity trigger test",
+        lambda _level, _message, _exc_info=None: None,
+    )
+    assert remove_trigger is not None
+    try:
+        # Reapplying the same non-pending report is quiet.
+        hass.states.async_set(
+            SENSOR,
+            "needs_attention",
+            {"firmware_report": report_a, "firmware_report_revision": 1},
+        )
+        await hass.async_block_till_done()
+        assert calls == []
+        assert triggered == []
+
+        # Firmware/report identity changes from A to B while revision stays at 1.
+        report_b = report(
+            pending=True,
+            report_id="bbbbbbbbbbbbbbbbbbbbbbbb",
+            revision=1,
+        )
+        hass.states.async_set(
+            SENSOR,
+            "needs_attention",
+            {"firmware_report": report_b, "firmware_report_revision": 1},
+        )
+        await hass.async_block_till_done()
+        assert len(triggered) == 1
+        assert [name for name, _ in calls] == [
+            "persistent_notification.create",
+            NOTIFY,
+            "matic_robot.firmware_notification",
+        ]
+        assert calls[-1][1]["report_id"] == "bbbbbbbbbbbbbbbbbbbbbbbb"
+        assert calls[-1][1]["revision"] == 1
+
+        # Delivery updates the full report attribute; the pending guard suppresses it.
+        delivered_report_b = report(
+            pending=False,
+            report_id="bbbbbbbbbbbbbbbbbbbbbbbb",
+            revision=2,
+        )
+        hass.states.async_set(
+            SENSOR,
+            "needs_attention",
+            {"firmware_report": delivered_report_b, "firmware_report_revision": 2},
+        )
+        await hass.async_block_till_done()
+        assert len(triggered) == 2
+        assert len(calls) == 3
+    finally:
+        remove_trigger()
