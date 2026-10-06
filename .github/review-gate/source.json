@@ -1,10 +1,10 @@
 {
   "source": "ProspectOre/dev-workspace",
   "path": "scripts/review-gate/evaluate.sh",
-  "sha256": "1ec0240ccc53e1eaf32ecb5ba709cee1dae437519601549865a469325dcb3807",
+  "sha256": "d74df11abbb5dd3c61ad488e7498be4111405186229c611e6e09be8a9e7652dd",
   "dependencyClassifierSha256": "3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455",
   "reviewSectionsSha256": "3942cddafb8c19beb70af35a633cb809df5b360c5da584f6a9c6bc120aabb733",
-  "nativeCodexReviewSha256": "9a5013aa52b3fb556e29dffb241ff301a9c274034fc99c555b3cb56977c413e8",
+  "nativeCodexReviewSha256": "e455e0bed625bbc5942e28d71812ebc54f9fd868b0ab7fe4aff73d7e587eca95",
   "markdownRuntime": {
     "version": 1,
     "parser": "mistune",
@@ -24,11 +24,11 @@
     "version": 1,
     "workflow": "review-gate.yml",
     "ref": "refs/heads/main",
-    "sha256": "7b10690209783bd7f639741387b7d41358826ac3304dfcab33caae54b32ebac3",
+    "sha256": "c6a927ca013c6d5b079e9b7d817dd3d7e466fbcf78d4d8864a48b6bda199bd85",
     "completionWorkflow": "review-gate-capture-completion.yml",
     "completionSha256": "929cba1573057c12eb9f4662441938be01f10e99091c634b7591899931d55217"
   },
-  "issueCommentReceiptsSha256": "a855343df70b96ba7bd5cee10b651aa16d88a4b6c508e6c046b897acc35a471d",
+  "issueCommentReceiptsSha256": "eecfa47a7879df2aa4415fb6bb2487292f0af924018312bdf8d7ee1fbf9b72ec",
   "generated": true,
   "managedWorkflows": [
     ".github/workflows/review-fork-quarantine.yml",

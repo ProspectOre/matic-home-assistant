@@ -54,28 +54,103 @@ CLEAN_COMMENT_CAPTURE_LOG_LINE = re.compile(
 )
 
 
-# Classification inventory, not event receipts. Both bytesets were retrieved
-# from the authenticated ORIGINAL attempt and independently reviewed. Unknown
-# runs remain receipt blockers; a future native review never invents their origin.
-VERIFIED_LIFECYCLE_FAILURES = {
-    ("ProspectOre/matic-home-assistant", 37379947981): {
-        "pr": 206, "attempt": 1, "workflow": 334147100,
-        "file": "review-gate.yml", "job": 111999044324,
-        "head": "3a3d64173c327acfcea205b232aee07836c7d345",
-        "source": "156ae4bf7f0203436bb73301153ef44bc2b707da",
-        "workflowSHA256": (
-            "6d0bdd922bc0a39f34e43119113abd5af2e88885f85f090dedc05774768ba189"
-        ),
-        "logSHA256": "83e91c8a914451e2e559d79b9a83ce225dedbe4456858c28fc4140a984404147",
+# Classification inventories, not event receipts. Each workflow source and full
+# provider log was retrieved from the authenticated ORIGINAL attempt and reviewed.
+# Unknown runs remain receipt blockers; native review never invents their origin.
+def _lifecycle_record(pr, attempt, job, head, source, workflow_sha, log_sha,
+                      run_conclusion="failure", job_conclusion="failure",
+                      evaluation_conclusion="failure", kind="lifecycle-evaluation-failure"):
+    return {
+        "pr": pr, "attempt": attempt, "workflow": 334147100,
+        "file": "review-gate.yml", "job": job, "head": head,
+        "source": source, "workflowSHA256": workflow_sha, "logSHA256": log_sha,
         "actor": {"id": 54486432, "login": "ProspectOre", "type": "User"},
-        "repositoryID": 1303100344,
-    },
+        "repositoryID": 1303100344, "runConclusion": run_conclusion,
+        "jobConclusion": job_conclusion,
+        "evaluationConclusion": evaluation_conclusion, "kind": kind,
+    }
+
+
+VERIFIED_LIFECYCLE_FAILURES = {
+    ("ProspectOre/matic-home-assistant", 37379947981): _lifecycle_record(
+        206, 1, 111999044324, "3a3d64173c327acfcea205b232aee07836c7d345",
+        "156ae4bf7f0203436bb73301153ef44bc2b707da",
+        "6d0bdd922bc0a39f34e43119113abd5af2e88885f85f090dedc05774768ba189",
+        "83e91c8a914451e2e559d79b9a83ce225dedbe4456858c28fc4140a984404147"),
+    # Historical PR #216 evaluations failed closed on an earlier unacknowledged
+    # gate attempt. Their source, event head, job and complete log are immutable.
+    ("ProspectOre/matic-home-assistant", 37457617661): _lifecycle_record(
+        216, 1, 112248979548, "64c5e8cb1b7a281fe8c52ab73c420179a999116a",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "beeead5458ef3a8f6356fba3518870665c40a267b63c88c6722143cffedcd696"),
+    ("ProspectOre/matic-home-assistant", 37457682854): _lifecycle_record(
+        216, 1, 112249199251, "64c5e8cb1b7a281fe8c52ab73c420179a999116a",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "a4c87da807b47c544eb457fea96b5064b9e83e12d9751d62a7532287a1affcf9"),
+    ("ProspectOre/matic-home-assistant", 37476769699): _lifecycle_record(
+        216, 1, 112314094758, "a1fa6b778c9f8f1c4bc57d6b76368cbc87074946",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "58e7d7908f22c4091314d7c912a57ce52a491592718c3cea3d1d506cb53971b9"),
+    ("ProspectOre/matic-home-assistant", 37497498353): _lifecycle_record(
+        216, 2, 112388947083, "334d5248a1e4c1c0ec449411162736d8df4b63ca",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "c23b5cff75a0c6111ef8b5d40f3f09ba8c757f8ec37fb8c676645fb5cda2cceb"),
+    # These two runs ended as cancelled after their exact evaluator step failed.
+    ("ProspectOre/matic-home-assistant", 37512863225): _lifecycle_record(
+        216, 1, 112438232465, "92a304d8270af5b26c2b4f636ac0e22b7f7652a3",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "99061949f1295d587b47838b8f68c7cdb79cb78ef5f38e005acfcbdaf0805812",
+        run_conclusion="cancelled", job_conclusion="cancelled"),
+    ("ProspectOre/matic-home-assistant", 37513207721): _lifecycle_record(
+        216, 1, 112439406267, "92a304d8270af5b26c2b4f636ac0e22b7f7652a3",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "37854eedb586628d1eed955593d1e165ea3943fff0f5fbaef918984a08d0b1be",
+        run_conclusion="cancelled", job_conclusion="cancelled"),
+}
+
+VERIFIED_LIFECYCLE_INTERRUPTS = {
+    ("ProspectOre/matic-home-assistant", 37462820428): _lifecycle_record(
+        216, 1, 112266364950, "2770c2f0e63dc143a24a2943efa892f9960abb5e",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "39b7d10d452c1015a6454cc374df3be8d0d8e433e12929ca50eabaae37964529",
+        run_conclusion="cancelled", job_conclusion="cancelled",
+        evaluation_conclusion="cancelled", kind="lifecycle-evaluation-interruption"),
+    ("ProspectOre/matic-home-assistant", 37462843739): _lifecycle_record(
+        216, 1, 112266549038, "2770c2f0e63dc143a24a2943efa892f9960abb5e",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "fa3135a79d488a35c3bdc48cd8cb0312a6b1590efb4e649b6ef25170d084da22",
+        run_conclusion="cancelled", job_conclusion="cancelled",
+        evaluation_conclusion="cancelled", kind="lifecycle-evaluation-interruption"),
+    ("ProspectOre/matic-home-assistant", 37471647498): _lifecycle_record(
+        216, 1, 112296385324, "22381ebd3ca114afd0cb6a36fbe9688d78570275",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "9feb072d521f8f2ef6df84f1ef6fa1507ba3acac2fd4ff429f146ad388e725cb",
+        run_conclusion="cancelled", job_conclusion="cancelled",
+        evaluation_conclusion="cancelled", kind="lifecycle-evaluation-interruption"),
+    ("ProspectOre/matic-home-assistant", 37475416067): _lifecycle_record(
+        216, 1, 112309431464, "9ff59069733bea5ac5d2727a7516f000f2b05f56",
+        "06354e36550a0540e820fb2dfc6dbdce759e8175",
+        "f26962d3e1d0cf6250e63a873143b7156721dffd3f2f827c7c5dba65bdd2aa80",
+        "1c9a6ae72af0a0b203616d3cb1cf37d8c0a9002a9a7f3edd318ddaf25521ddeb",
+        run_conclusion="cancelled", job_conclusion="cancelled",
+        evaluation_conclusion="cancelled", kind="lifecycle-evaluation-interruption"),
 }
 
 
-def lifecycle_failure_observation(repo, number, run_id, workflow_id, workflow_file):
-    """Revalidate one inventoried failure; this is NEVER an event ACK or verdict."""
+def lifecycle_evaluation_observation(repo, number, run_id, workflow_id, workflow_file):
+    """Revalidate one exact gate evaluation; never an event ACK or verdict."""
     record = VERIFIED_LIFECYCLE_FAILURES.get((repo, run_id))
+    if record is None:
+        record = VERIFIED_LIFECYCLE_INTERRUPTS.get((repo, run_id))
     if record is None or (number, workflow_id, workflow_file) != (
         record["pr"], record["workflow"], record["file"]
     ):
@@ -87,7 +162,7 @@ def lifecycle_failure_observation(repo, number, run_id, workflow_id, workflow_fi
         "id": run_id, "run_attempt": attempt, "workflow_id": workflow_id,
         "path": f".github/workflows/{workflow_file}",
         "event": "pull_request_target", "head_sha": record["head"],
-        "status": "completed", "conclusion": "failure",
+        "status": "completed", "conclusion": record["runConclusion"],
         "display_title": (
             f'Review gate PR #{number} | policy-workflow-sha={record["source"]}'
         ),
@@ -112,7 +187,8 @@ def lifecycle_failure_observation(repo, number, run_id, workflow_id, workflow_fi
     job = jobs["jobs"][0]
     if not isinstance(job, dict) or any(job.get(key) != value for key, value in {
         "id": record["job"], "run_id": run_id, "run_attempt": attempt,
-        "head_sha": record["head"], "status": "completed", "conclusion": "failure",
+        "head_sha": record["head"], "status": "completed",
+        "conclusion": record["jobConclusion"],
         "name": (
             f'evaluate-review PR #{number} | policy-workflow-sha={record["source"]}'
         ),
@@ -128,7 +204,7 @@ def lifecycle_failure_observation(repo, number, run_id, workflow_id, workflow_fi
         ("Run set -euo pipefail", "skipped"),
         ("Run set -euo pipefail", "skipped"),
         ("Load pinned canonical review policy", "success"),
-        ("Evaluate exact-head regular review", "failure"),
+        ("Evaluate exact-head regular review", record["evaluationConclusion"]),
         ("Remove canonical policy temporary file", "success"),
         ("Complete job", "success"),
     ]
@@ -155,7 +231,7 @@ def lifecycle_failure_observation(repo, number, run_id, workflow_id, workflow_fi
     ):
         return None
     return {
-        "kind": "lifecycle-evaluation-failure", "state": "pending",
+        "kind": record["kind"], "state": "pending",
         "repo": repo, "pr": number, "run": run_id, "attempt": attempt,
         "workflow": workflow_id, "path": f".github/workflows/{workflow_file}",
         "eventClass": "pull_request_target", "originHead": record["head"],
@@ -163,6 +239,10 @@ def lifecycle_failure_observation(repo, number, run_id, workflow_id, workflow_fi
         "originLogSHA256": record["logSHA256"],
         "action": None, "originBase": None, "reviewAuthority": False,
     }
+
+
+# Keep the former internal name available to callers while rollout updates.
+lifecycle_failure_observation = lifecycle_evaluation_observation
 
 
 def workflow_run_path_matches(value, workflow_file, default_branch):
@@ -1348,18 +1428,21 @@ def main():
     parser.add_argument("--event-run-attempt", type=int)
     parser.add_argument("--attest-legacy-human-run", action="store_true")
     parser.add_argument("--attest-legacy-bot-run", action="store_true")
-    parser.add_argument("--observe-lifecycle-failure", type=int)
+    parser.add_argument(
+        "--observe-lifecycle-run", "--observe-lifecycle-failure",
+        dest="observe_lifecycle_run", type=int,
+    )
     parser.add_argument(
         "--workflow-file",
         default=os.environ.get("REVIEW_GATE_WORKFLOW_FILE", "review-gate.yml"),
     )
     args = parser.parse_args()
-    if args.observe_lifecycle_failure is not None:
+    if args.observe_lifecycle_run is not None:
         if args.native_workflow_id is None:
-            parser.error("--observe-lifecycle-failure requires --native-workflow-id")
+            parser.error("--observe-lifecycle-run requires --native-workflow-id")
         try:
-            observation = lifecycle_failure_observation(
-                args.repo, args.pr, args.observe_lifecycle_failure,
+            observation = lifecycle_evaluation_observation(
+                args.repo, args.pr, args.observe_lifecycle_run,
                 args.native_workflow_id, args.workflow_file,
             )
         except (OSError, ValueError, TypeError, subprocess.SubprocessError):

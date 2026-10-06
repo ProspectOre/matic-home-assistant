@@ -120,14 +120,15 @@ jobs:
             echo "Could not verify connector commit association; live PR head $live_head remains pending." >&2
             exit 1
           }
-          # The connector footer supplies only a pending hint. Prove its full
-          # OID belongs to this PR before classification; if that lookup fails
-          # or is malformed, keep it pending-only and abort.
+          # The connector footer supplies only a pending hint. Resolve the
+          # normal ten-character abbreviation uniquely, then prove its full
+          # OID belongs to this PR before classification. Neither form supplies
+          # a qualified review verdict.
           comment_heads="$(jq -r --arg pr "$EVENT_PR" '
             select(.issue.pull_request != null and (.issue.number | tostring) == $pr)
             | [.comment.body // "", .changes.body.from // ""]
             | [.[] | select(type == "string")
-              | scan("(?im)^[ ]{0,3}[*]{0,2}reviewed commit:[*]{0,2}[ \\t]*\\x60([0-9a-f]{40})\\x60[ \\t]*\\r?$")
+              | scan("(?im)^[ ]{0,3}[*]{0,2}reviewed commit:[*]{0,2}[ \\t]*\\x60([0-9a-f]{40}|[0-9a-f]{10})\\x60[ \\t]*\\r?$")
               | .[0] | ascii_downcase] | unique[]' "$GITHUB_EVENT_PATH")"
           resolve_live_pr_head() {
             local attempt pr_snapshot resolved_head
@@ -154,7 +155,16 @@ jobs:
               "Recording connector review delivery for PR #$EVENT_PR" || exit 1
           fi
           while IFS= read -r comment_head; do
-            [[ "$comment_head" =~ ^[0-9a-f]{40}$ ]] || continue
+            [[ "$comment_head" =~ ^([0-9a-f]{40}|[0-9a-f]{10})$ ]] || continue
+            if [[ "${#comment_head}" == 10 ]]; then
+              comment_prefix="$comment_head"
+              if ! comment_head="$(gh api "repos/$REPO/commits/$comment_prefix" \
+                  --jq '.sha | select(type == "string" and test("^[0-9a-f]{40}$"))')" \
+                  || [[ ! "$comment_head" =~ ^[0-9a-f]{40}$ \
+                    || "${comment_head:0:10}" != "$comment_prefix" ]]; then
+                hold_unverified_footer_association
+              fi
+            fi
             if ! association_pages="$(gh api "repos/$REPO/commits/$comment_head/pulls?per_page=100" \
                 --paginate --slurp)"; then
               hold_unverified_footer_association
@@ -186,8 +196,6 @@ jobs:
               associated$'\t'* )
                 associated_head="${association_result#*$'\t'}"
                 [[ "$associated_head" =~ ^[0-9a-f]{40}$ ]] || hold_unverified_footer_association
-                write_pending_gate_status "$comment_head" \
-                  "Bound connector delivery pending classification for PR #$EVENT_PR" || exit 1
                 # The commit-association response includes the PR's current
                 # head. If the direct PR read was transiently unavailable,
                 # use this independently validated full OID to hold that
@@ -199,6 +207,8 @@ jobs:
                       "Recording connector review delivery for PR #$EVENT_PR" || exit 1
                   fi
                 fi
+                write_pending_gate_status "$comment_head" \
+                  "Bound connector delivery pending classification for PR #$EVENT_PR" || exit 1
                 ;;
               not-associated) ;;
               *) hold_unverified_footer_association ;;
@@ -778,10 +788,10 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '1ec0240ccc53e1eaf32ecb5ba709cee1dae437519601549865a469325dcb3807'
+          EXPECTED_SHA256: 'd74df11abbb5dd3c61ad488e7498be4111405186229c611e6e09be8a9e7652dd'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
           EXPECTED_REVIEW_SECTIONS_SHA256: '3942cddafb8c19beb70af35a633cb809df5b360c5da584f6a9c6bc120aabb733'
-          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'a855343df70b96ba7bd5cee10b651aa16d88a4b6c508e6c046b897acc35a471d'
+          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'eecfa47a7879df2aa4415fb6bb2487292f0af924018312bdf8d7ee1fbf9b72ec'
         shell: bash
         run: |
           set -euo pipefail
