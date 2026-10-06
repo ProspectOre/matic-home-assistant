@@ -1249,7 +1249,63 @@ async def test_coordinator_snapshots_each_new_firmware_once_in_background(hass) 
     build.assert_awaited_once()
     tracker.async_record_snapshot.assert_awaited_once_with("entry", snapshot)
     assert coordinator._snapshot_versions_in_progress == set()
-    assert coordinator._snapshot_retry_after > 0
+    assert coordinator._snapshot_retry_after[("v168.11", 25)] > 0
+
+
+@pytest.mark.parametrize(
+    ("firmware_version", "protocol_version"),
+    [("v168.12", 26), ("v168.11", 26)],
+)
+async def test_new_firmware_identity_bypasses_snapshot_cooldown(
+    hass, firmware_version, protocol_version
+) -> None:
+    client = _client()
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        software_version="v168.11", protocol_version=25
+    )
+    tracker = SimpleNamespace(
+        async_observe_version=AsyncMock(),
+        needs_snapshot=MagicMock(return_value=True),
+        async_record_snapshot=AsyncMock(),
+    )
+    coordinator = MaticCoordinator(
+        hass, client, config_entry=_tracking_entry(), firmware_tracker=tracker
+    )
+    snapshots = []
+
+    async def build_snapshot(_client, state):
+        snapshot = {
+            "firmware_version": state.telemetry.software_version,
+            "protocol_version": state.telemetry.protocol_version,
+            "endpoint_count": 40,
+            "failed_endpoints": 40,
+        }
+        snapshots.append(snapshot)
+        return snapshot
+
+    with patch(
+        "custom_components.matic_robot.coordinator.async_build_firmware_snapshot",
+        AsyncMock(side_effect=build_snapshot),
+    ) as build:
+        await coordinator._async_update_data()
+        await hass.async_block_till_done()
+
+        # A same-identity retry is throttled, but the next firmware/protocol
+        # identity gets its initial snapshot immediately.
+        client.async_get_telemetry.return_value = RobotTelemetry(
+            software_version=firmware_version, protocol_version=protocol_version
+        )
+        coordinator._slow_refresh_due = 0.0
+        await coordinator._async_update_data()
+        await hass.async_block_till_done()
+
+    assert build.await_count == 2
+    assert [
+        (snapshot["firmware_version"], snapshot["protocol_version"])
+        for snapshot in snapshots
+    ] == [("v168.11", 25), (firmware_version, protocol_version)]
+    assert tracker.async_record_snapshot.await_count == 2
+    assert coordinator._snapshot_versions_in_progress == set()
 
 
 async def test_snapshot_failure_cooldown_defers_retry(hass) -> None:
@@ -1278,14 +1334,15 @@ async def test_snapshot_failure_cooldown_defers_retry(hass) -> None:
         await coordinator._async_update_data()
         await hass.async_block_till_done()
         tracker.async_record_snapshot.assert_awaited_once_with("entry", snapshot)
-        assert coordinator._snapshot_retry_after > 0
+        retry_key = ("v168.11", 25)
+        assert coordinator._snapshot_retry_after[retry_key] > 0
 
         # The retry cooldown suppresses an immediate re-sweep.
         await coordinator._async_update_data()
         await hass.async_block_till_done()
         assert build.await_count == 1
 
-        coordinator._snapshot_retry_after = 0.0
+        coordinator._snapshot_retry_after[retry_key] = 0.0
         await coordinator._async_update_data()
         await hass.async_block_till_done()
         assert build.await_count == 2
