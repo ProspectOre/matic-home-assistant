@@ -458,6 +458,68 @@ async def test_entity_stop_persists_original_run_owner(hass, action):
     )
 
 
+@pytest.mark.parametrize(
+    ("action", "managed_stop_dispatch", "expected_reason"),
+    [
+        ("async_stop", True, "managed_stop"),
+        ("async_return_to_base", True, "managed_stop"),
+        ("async_return_to_base", False, "motion_replaced"),
+    ],
+)
+async def test_stop_dispatch_preserves_managed_stop_reason(
+    hass, action, managed_stop_dispatch, expected_reason
+) -> None:
+    """A dispatched STOP keeps the managed cancellation classification."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("kitchen", "Kitchen", "vacuum", "standard"),
+        run_id="run",
+    )
+    manager.begin_managed_motion(serial_number)
+    entity = vacuum.MaticVacuum(entry)
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    try:
+        manager.mark_managed_stop(serial_number)
+        if managed_stop_dispatch:
+            with manager.managed_stop_dispatch(serial_number):
+                await getattr(entity, action)()
+        else:
+            await getattr(entity, action)()
+    finally:
+        plan_lock.release()
+
+    assert manager.cancellation_reason(serial_number) == expected_reason
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
+
+
 async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> None:
     entry = _entry(idle=True)
     manager = CleaningPlanManager(hass)
@@ -849,3 +911,103 @@ async def test_stop_cancels_undispatched_direct_motion(
     client = entry.runtime_data.coordinator.client
     client.async_start_coverage.assert_not_awaited()
     client.async_send_user_command.assert_not_awaited()
+
+
+async def test_stop_supersedes_direct_room_clean_queued_for_command_lock(hass) -> None:
+    """A queued direct room clean cannot replace a Stop issued while it waits."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    serial_number = "synthetic-serial"
+    lock = manager.command_lock(serial_number)
+    await lock.acquire()
+
+    task = asyncio.create_task(
+        entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+    )
+    for _ in range(30):
+        waiters = getattr(lock, "_waiters", None)
+        if waiters is not None and any(not waiter.done() for waiter in waiters):
+            break
+        await asyncio.sleep(0)
+    else:
+        lock.release()
+        await task
+        pytest.fail("Direct room clean never queued for the command lock")
+
+    manager.request_stop(serial_number)
+    lock.release()
+
+    with pytest.raises(ServiceValidationError, match="superseded"):
+        await task
+    entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+
+
+@pytest.mark.parametrize("command", ["clean_rooms", "resume", "return_home"])
+async def test_after_room_stop_supersedes_queued_direct_motion(
+    hass, command: str
+) -> None:
+    """A graceful Stop preserves its run and fences older direct motion."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    room = CleaningRoom("room-2", "Study", "vacuum", "quick")
+    run_id = "synthetic-managed-run"
+    token = manager.begin_managed_motion(serial_number)
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        run_id,
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=True,
+        finish_current_room_threshold=0,
+    )
+    await manager.async_mark_started(serial_number, "plan", room, run_id=run_id)
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    command_lock = manager.command_lock(serial_number)
+    await command_lock.acquire()
+    entity = vacuum.MaticVacuum(entry)
+    if command == "clean_rooms":
+        task = asyncio.create_task(
+            entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+        )
+    elif command == "resume":
+        task = asyncio.create_task(entity.async_send_command("resume"))
+    else:
+        task = asyncio.create_task(entity.async_return_to_base())
+    try:
+        for _ in range(30):
+            waiters = getattr(command_lock, "_waiters", None)
+            if waiters is not None and any(not waiter.done() for waiter in waiters):
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("Direct room clean never queued for the command lock")
+
+        decision = manager.request_stop(serial_number)
+        assert decision.behavior == "after_room"
+        assert manager.finish_room_event(serial_number).is_set()
+        assert not manager.cancellation_event(serial_number).is_set()
+
+        command_lock.release()
+        with pytest.raises(ServiceValidationError, match="superseded"):
+            await task
+
+        assert manager.managed_motion_is_current(serial_number, token)
+        entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+        entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+    finally:
+        if command_lock.locked():
+            command_lock.release()
+        if plan_lock.locked():
+            plan_lock.release()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

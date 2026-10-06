@@ -13,6 +13,7 @@ from uuid import UUID
 import pytest
 from google.protobuf.message import DecodeError
 
+from custom_components.matic_robot.client import wire as wire_module
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.commands import (
     CleaningMode as Mode,
@@ -29,6 +30,8 @@ from custom_components.matic_robot.client.commands import (
     encode_mixed_coverage_commands as build_mixed_coverage_commands,
 )
 from custom_components.matic_robot.client.coverage_goals import (
+    _MAX_COVERAGE_FIELDS_PER_MESSAGE,
+    _MAX_COVERAGE_FIELDS_PER_PLAN,
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
     coverage_readback_matches,
@@ -802,6 +805,8 @@ def test_coverage_goal_decoders_reject_unbounded_or_empty_shapes():
         coverage_command_goal_signatures(b"x" * (2 * 1024 * 1024 + 1))
     with pytest.raises(DecodeError, match="invalid goal count"):
         coverage_command_goal_signatures(_command_for_goals())
+    with pytest.raises(DecodeError, match="missing protobuf field 15"):
+        coverage_command_goal_signatures(b"")
     with pytest.raises(DecodeError, match="byte limit"):
         coverage_plan_goal_signatures(b"x" * (2 * 1024 * 1024 + 1))
     with pytest.raises(DecodeError, match="no observed"):
@@ -810,6 +815,13 @@ def test_coverage_goal_decoders_reject_unbounded_or_empty_shapes():
         coverage_plan_goal_signatures(_field(7, b""))
     with pytest.raises(DecodeError, match="list is empty"):
         coverage_plan_goal_signatures(_field(7, _field(1, b"")))
+
+
+def test_coverage_command_rejects_malformed_trailing_envelope_data():
+    with pytest.raises(DecodeError, match="truncated protobuf varint"):
+        coverage_command_goal_signatures(
+            _command_for_goals(_synthetic_goal()) + b"\x08\x80"
+        )
 
 
 def test_coverage_goal_decoders_reject_excessive_counts_and_fields():
@@ -832,6 +844,109 @@ def test_coverage_goal_decoders_reject_excessive_counts_and_fields():
     too_many_fields = _field(7, _field(1, _varint_field(2, 0) * 4097))
     with pytest.raises(DecodeError, match="too many fields"):
         coverage_plan_goal_signatures(too_many_fields)
+
+
+def test_coverage_field_limit_stops_before_materializing_excess_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materialized_fields = 0
+    original_field_factory = wire_module.WireField
+
+    def count_field_allocations(
+        number: int, wire_type: int, value: int | bytes
+    ) -> wire_module.WireField:
+        nonlocal materialized_fields
+        materialized_fields += 1
+        return original_field_factory(number, wire_type, value)
+
+    monkeypatch.setattr(wire_module, "WireField", count_field_allocations)
+    too_many_fields = _field(7, _field(1, _varint_field(2, 0) * 4097))
+
+    with pytest.raises(DecodeError, match="too many fields"):
+        coverage_plan_goal_signatures(too_many_fields)
+
+    # The outer container and group each contain one field; the dense goal
+    # message constructs exactly the configured maximum, then stops.
+    assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_MESSAGE + 2
+
+
+def test_coverage_command_field_limit_stops_before_materializing_excess_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materialized_fields = 0
+    original_field_factory = wire_module.WireField
+
+    def count_field_allocations(
+        number: int, wire_type: int, value: int | bytes
+    ) -> wire_module.WireField:
+        nonlocal materialized_fields
+        materialized_fields += 1
+        return original_field_factory(number, wire_type, value)
+
+    monkeypatch.setattr(wire_module, "WireField", count_field_allocations)
+    payload = _varint_field(1, 0) * (_MAX_COVERAGE_FIELDS_PER_MESSAGE + 1)
+
+    with pytest.raises(DecodeError, match="too many fields"):
+        coverage_command_goal_signatures(payload)
+
+    assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_MESSAGE
+
+
+def test_coverage_plan_accepts_the_configured_goal_limit() -> None:
+    goal = _synthetic_goal()
+
+    signatures = coverage_plan_goal_signatures(_plan_for_goals(*([goal] * 4096)))
+
+    assert len(signatures) == 4096
+
+
+def test_coverage_command_accepts_the_configured_goal_limit() -> None:
+    goal = _synthetic_goal()
+
+    signatures = coverage_command_goal_signatures(_command_for_goals(*([goal] * 4096)))
+
+    assert len(signatures) == 4096
+
+
+@pytest.mark.parametrize(
+    "parser,payload_builder",
+    [
+        (coverage_plan_goal_signatures, _plan_for_goals),
+        (coverage_command_goal_signatures, _command_for_goals),
+    ],
+    ids=("plan", "command"),
+)
+def test_coverage_decoders_bound_aggregate_field_allocations(
+    parser,
+    payload_builder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    materialized_fields = 0
+    original_field_factory = wire_module.WireField
+
+    def count_field_allocations(
+        number: int, wire_type: int, value: int | bytes
+    ) -> wire_module.WireField:
+        nonlocal materialized_fields
+        materialized_fields += 1
+        return original_field_factory(number, wire_type, value)
+
+    monkeypatch.setattr(wire_module, "WireField", count_field_allocations)
+    spec = (
+        _varint_field(1, 1)
+        + _varint_field(2, 0)
+        + _varint_field(4, 1)
+        + _varint_field(5, 0)
+        + _varint_field(6, 0) * 100
+    )
+    goal = _synthetic_goal(spec=spec)
+    payload = payload_builder(*([goal] * 4096))
+    assert len(payload) <= 2 * 1024 * 1024
+
+    with pytest.raises(DecodeError, match="too many fields"):
+        parser(payload)
+
+    assert materialized_fields == _MAX_COVERAGE_FIELDS_PER_PLAN
 
 
 @pytest.mark.parametrize(
@@ -1163,15 +1278,15 @@ async def test_mixed_update_readback_mismatch_stops_only_owned_session(
         )
         return coverage_plan_from_command(update, drop_goal_index=-2)
 
-    clock = iter((0.0, 9.0))
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", lambda: next(clock)
+        "custom_components.matic_robot.client.api._MIXED_COVERAGE_READBACK_TIMEOUT",
+        0.01,
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_property.side_effect = incomplete_readback
 
     with pytest.raises(
-        MaticError, match="did not retain all requested mixed coverage goals"
+        MaticError, match="Mixed coverage readback verification timed out"
     ):
         await client.async_start_mixed_coverage(**args)
 
@@ -1202,9 +1317,6 @@ async def test_mixed_update_waits_for_matching_readback(mixed_client, monkeypatc
         )
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", iter((0.0, 0.0)).__next__
-    )
-    monkeypatch.setattr(
         "custom_components.matic_robot.client.api.asyncio.sleep", AsyncMock()
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
@@ -1224,16 +1336,16 @@ async def test_mixed_update_malformed_readback_fails_closed(mixed_client, monkey
         reads += 1
         return b"" if reads <= 2 else identity
 
-    clock = iter((0.0, 9.0))
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", lambda: next(clock)
+        "custom_components.matic_robot.client.api._MIXED_COVERAGE_READBACK_TIMEOUT",
+        0.01,
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_property.side_effect = None
     client.async_get_property.return_value = b""
 
     with pytest.raises(
-        MaticError, match="did not retain all requested mixed coverage goals"
+        MaticError, match="Mixed coverage readback verification timed out"
     ):
         await client.async_start_mixed_coverage(**args)
 
@@ -1258,7 +1370,9 @@ async def test_mixed_update_readback_request_is_bounded(mixed_client, monkeypatc
 
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_property.side_effect = stalled_readback
-    with pytest.raises(TimeoutError):
+    with pytest.raises(
+        MaticError, match="Mixed coverage readback verification timed out"
+    ):
         await client.async_start_mixed_coverage(**args)
 
     args["prepare_stop"].assert_awaited_once()
@@ -1281,9 +1395,6 @@ async def test_mixed_update_does_not_stop_replacement_after_stale_readback(
             if call.kwargs["command_name"] == "UPDATE_COVERAGE"
         ),
         drop_goal_index=-2,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", iter((0.0, 0.0)).__next__
     )
 
     with pytest.raises(MaticError, match="changed during coverage readback"):

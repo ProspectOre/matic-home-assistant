@@ -85,3 +85,7 @@ Recent events keep low-volume room and terminal evidence separate from the
 [command and raw-state observation trail](activity-diagnostics.md), which can be
 queried independently when needed.
 Dust-bag observations are currently available through `MaticGetOperations` only.
+
+`MaticGetFirmware` reads the cached [firmware intelligence inbox](firmware-intelligence.md).
+Its claim and completion tools update research metadata only, with expiring
+ownership and no robot commands.

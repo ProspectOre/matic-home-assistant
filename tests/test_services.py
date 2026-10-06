@@ -1,6 +1,7 @@
 """Automation action coverage for room-native cleaning plans."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
@@ -40,7 +41,11 @@ from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
     Room,
 )
-from custom_components.matic_robot.const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
+from custom_components.matic_robot.const import (
+    DATA_FIRMWARE_TRACKER,
+    DOMAIN,
+    MAX_ROOM_SEQUENCE_SIZE,
+)
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION
 from custom_components.matic_robot.managed_executor import (
     PlanCancelledError,
@@ -279,17 +284,25 @@ def _area_floor_plan(
     )
 
 
-async def _registered_services(hass, manager=None):
+async def _registered_services(hass, manager=None, *, is_running=False):
     services = SimpleNamespace(async_register=MagicMock(), async_call=AsyncMock())
     hass.services = services
+    listen_once = MagicMock()
+    original_bus = getattr(hass, "bus", None)
+    hass.bus = SimpleNamespace(async_listen_once=listen_once)
+    hass.is_running = is_running
     replacement = manager or SimpleNamespace(async_load=AsyncMock())
     if manager is not None:
         replacement.async_load = AsyncMock()
     firmware = SimpleNamespace(
         async_load=AsyncMock(),
+        occurrence_generation=MagicMock(return_value=0),
         async_record_snapshot=AsyncMock(
             return_value={"baseline": True, "changed_endpoints": []}
         ),
+        async_configure_investigator=AsyncMock(),
+        async_notification_action=AsyncMock(),
+        replay_reports=MagicMock(),
     )
     with (
         patch(
@@ -302,6 +315,9 @@ async def _registered_services(hass, manager=None):
         ),
     ):
         await async_register_services(hass)
+    if original_bus is not None:
+        hass.bus = original_bus
+    hass.data[DOMAIN]["test_firmware_listen_once"] = listen_once
     return services
 
 
@@ -970,6 +986,571 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
     assert manager.managed_motion_is_current("serial", managed_token) is True
     client.async_start_custom_coverage.assert_not_awaited()
     coordinator.async_request_refresh.assert_not_awaited()
+
+
+async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
+    hass,
+) -> None:
+    """A custom-area request queued before graceful Stop cannot replace its run."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor = _area_floor_plan()
+    await manager.async_save_area(
+        "serial",
+        "litter_box",
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": "Litter box",
+            "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+            "map_binding": binding_for_floor_plan(floor),
+        },
+    )
+    room = CleaningRoom("room-2", "Study", "vacuum", "quick")
+    managed_token = manager.begin_managed_motion("serial")
+    await manager.async_begin_run(
+        "serial",
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=True,
+        finish_current_room_threshold=0,
+    )
+    await manager.async_mark_started("serial", "plan", room, run_id="run-id")
+    plan_lock = manager.lock("serial")
+    await plan_lock.acquire()
+    command_lock = manager.command_lock("serial")
+    await command_lock.acquire()
+    services = await _registered_services(hass, manager)
+    client = SimpleNamespace(
+        async_start_custom_coverage=AsyncMock(),
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
+    )
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor),
+        async_request_refresh=AsyncMock(),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_area",
+        CLEAN_AREA_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "area": "Litter box"}),
+    )
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
+    ):
+        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
+        try:
+            for _ in range(30):
+                waiters = getattr(command_lock, "_waiters", None)
+                if waiters is not None and any(not waiter.done() for waiter in waiters):
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("Custom-area clean never queued for the command lock")
+
+            decision = manager.request_stop("serial")
+            assert decision.behavior == "after_room"
+            assert manager.finish_room_event("serial").is_set()
+            assert not manager.cancellation_event("serial").is_set()
+
+            command_lock.release()
+            with pytest.raises(ServiceValidationError, match="superseded"):
+                await task
+
+            assert manager.managed_motion_is_current("serial", managed_token)
+            client.async_start_custom_coverage.assert_not_awaited()
+            coordinator.async_request_refresh.assert_not_awaited()
+        finally:
+            if command_lock.locked():
+                command_lock.release()
+            if plan_lock.locked():
+                plan_lock.release()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> None:
+    """A Stop after replacement must not honor a stale plan's after-room rule."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    run_id = "run-id"
+    token = manager.begin_managed_motion(serial_number)
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        run_id,
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=True,
+        finish_current_room_threshold=0,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id=run_id,
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    services = await _registered_services(hass, manager)
+    entry = entity_entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+    command_lock = manager.command_lock(serial_number)
+    await command_lock.acquire()
+    persistence_started = asyncio.Event()
+    release_persistence = asyncio.Event()
+
+    async def persist_replacement(*_args) -> None:
+        persistence_started.set()
+        await release_persistence.wait()
+
+    async def route_return_to_base(domain, service, data, **kwargs) -> None:
+        assert (domain, service, data) == (
+            "vacuum",
+            "return_to_base",
+            {"entity_id": "vacuum.test"},
+        )
+        dispatch = manager._managed_stop_dispatch.get()
+        assert dispatch is not None and dispatch[0] == serial_number
+        assert kwargs["blocking"] is True
+        assert kwargs["context"] is stop.context
+        await asyncio.create_task(entity.async_return_to_base())
+
+    with (
+        patch.object(
+            manager,
+            "_async_persist_reconciliation_removal",
+            side_effect=persist_replacement,
+        ),
+        patch.object(manager, "request_stop", wraps=manager.request_stop) as request,
+        patch.object(entity, "_schedule_dock_after_stop"),
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, serial_number, {}),
+        ),
+    ):
+        services.async_call.side_effect = route_return_to_base
+        replacement = asyncio.create_task(
+            manager.async_replace_managed_motion(serial_number)
+        )
+        stop_task = None
+        try:
+            await persistence_started.wait()
+            stop_task = asyncio.create_task(
+                _registered_handler(services, "stop_intelligent_cleaning")(stop)
+            )
+            for _ in range(30):
+                waiters = getattr(command_lock, "_waiters", None)
+                if waiters is not None and any(not waiter.done() for waiter in waiters):
+                    break
+                await asyncio.sleep(0)
+            else:
+                pytest.fail("Stop service never queued behind motion persistence")
+
+            request.assert_not_called()
+            release_persistence.set()
+            await replacement
+            command_lock.release()
+            await stop_task
+
+            request.assert_called_once_with(serial_number)
+            assert not manager.managed_motion_is_current(serial_number, token)
+            assert manager.cancellation_reason(serial_number) == "motion_replaced"
+            assert not manager.finish_room_event(serial_number).is_set()
+            assert manager.cancellation_event(serial_number).is_set()
+            services.async_call.assert_awaited_once_with(
+                "vacuum",
+                "return_to_base",
+                {"entity_id": "vacuum.test"},
+                blocking=True,
+                context=stop.context,
+            )
+            entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+                UserCommand.STOP
+            )
+        finally:
+            release_persistence.set()
+            if command_lock.locked():
+                command_lock.release()
+            if plan_lock.locked():
+                plan_lock.release()
+            for task in (replacement, stop_task):
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_stop_service_preserves_managed_stop_reason_for_return_to_base(
+    hass,
+) -> None:
+    """The Stop service keeps its reason across HA's nested service task."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id="run-id",
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    services = await _registered_services(hass, manager)
+    entry = entity_entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+
+    async def route_return_to_base(_domain, _service, _data, **_kwargs) -> None:
+        await asyncio.create_task(entity.async_return_to_base())
+
+    try:
+        with (
+            patch.object(entity, "_schedule_dock_after_stop"),
+            patch(
+                "custom_components.matic_robot.services._saved_plan_context",
+                return_value=("vacuum.test", entry, serial_number, {}),
+            ),
+        ):
+            services.async_call.side_effect = route_return_to_base
+            await _registered_handler(services, "stop_intelligent_cleaning")(stop)
+    finally:
+        if plan_lock.locked():
+            plan_lock.release()
+
+    assert manager.cancellation_reason(serial_number) == "managed_stop"
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
+
+
+async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
+    hass,
+) -> None:
+    """A delayed Stop Return Home cannot stop motion admitted after its request."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id="run-id",
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    # A direct replacement is admitted after Stop records its request, while
+    # the nested Return Home service is deliberately paused.
+    services = await _registered_services(hass, manager)
+    entry = entity_entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+    nested_service_started = asyncio.Event()
+    release_nested_service = asyncio.Event()
+
+    async def route_return_to_base(_domain, _service, _data, **_kwargs) -> None:
+        nested_service_started.set()
+        await release_nested_service.wait()
+        await asyncio.create_task(entity.async_return_to_base())
+
+    with (
+        patch.object(entity, "_schedule_dock_after_stop"),
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, serial_number, {}),
+        ),
+    ):
+        services.async_call.side_effect = route_return_to_base
+        stop_task = asyncio.create_task(
+            _registered_handler(services, "stop_intelligent_cleaning")(stop)
+        )
+        try:
+            await asyncio.wait_for(nested_service_started.wait(), timeout=1)
+            await entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+            replacement_generation = manager.motion_generation(serial_number)
+            release_nested_service.set()
+            await stop_task
+        finally:
+            release_nested_service.set()
+            if not stop_task.done():
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+            if plan_lock.locked():
+                plan_lock.release()
+
+    assert manager.motion_generation(serial_number) == replacement_generation
+    assert manager.cancellation_reason(serial_number) == "motion_replaced"
+    entry.runtime_data.coordinator.client.async_start_coverage.assert_awaited_once()
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_stop_service_blocks_resume_until_stop_dispatch(hass) -> None:
+    """A paused task cannot resume between Stop acceptance and physical STOP."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id="run-id",
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    services = await _registered_services(hass, manager)
+    entry = entity_entry(paused=True)
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def route_return_to_base(_domain, _service, _data, **_kwargs) -> None:
+        dispatch_started.set()
+        await release_dispatch.wait()
+        await asyncio.create_task(entity.async_return_to_base())
+
+    try:
+        with (
+            patch.object(entity, "_schedule_dock_after_stop"),
+            patch(
+                "custom_components.matic_robot.services._saved_plan_context",
+                return_value=("vacuum.test", entry, serial_number, {}),
+            ),
+        ):
+            services.async_call.side_effect = route_return_to_base
+            stop_task = asyncio.create_task(
+                _registered_handler(services, "stop_intelligent_cleaning")(stop)
+            )
+            try:
+                await asyncio.wait_for(dispatch_started.wait(), timeout=1)
+                assert manager.stop_dispatch_pending(serial_number)
+                with pytest.raises(ServiceValidationError) as error:
+                    await entity.async_start()
+                assert error.value.translation_key == "robot_stop_pending"
+                release_dispatch.set()
+                await stop_task
+            finally:
+                release_dispatch.set()
+                if not stop_task.done():
+                    stop_task.cancel()
+                    await asyncio.gather(stop_task, return_exceptions=True)
+    finally:
+        if plan_lock.locked():
+            plan_lock.release()
+
+    assert not manager.stop_dispatch_pending(serial_number)
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
+
+
+async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> None:
+    """The Stop tracker discard must not cross a replacement generation."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from custom_components.matic_robot.session_tracking import CleaningSessionTracker
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id="run-id",
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    services = await _registered_services(hass, manager)
+    entry = entity_entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    tracker = CleaningSessionTracker()
+    entry.runtime_data.coordinator._session_tracker = tracker
+    entry.runtime_data.coordinator.async_discard_current_room = lambda: (
+        tracker.discard_current_room(now=dt_util.utcnow())
+    )
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+    stop_lock_released = asyncio.Event()
+    replacement_started = asyncio.Event()
+    original_external_command = manager.external_command
+
+    @asynccontextmanager
+    async def release_stop_lock_for_replacement(serial: str):
+        async with original_external_command(serial):
+            yield
+        stop_lock_released.set()
+        await replacement_started.wait()
+
+    async def route_return_to_base(_domain, _service, _data, **_kwargs) -> None:
+        await asyncio.create_task(entity.async_return_to_base())
+
+    with (
+        patch.object(manager, "external_command", release_stop_lock_for_replacement),
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, serial_number, {}),
+        ),
+    ):
+        services.async_call.side_effect = route_return_to_base
+        stop_task = asyncio.create_task(
+            _registered_handler(services, "stop_intelligent_cleaning")(stop)
+        )
+        try:
+            await asyncio.wait_for(stop_lock_released.wait(), timeout=1)
+            await entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+            tracker.update(
+                cleaning=True,
+                current_area="Study",
+                room_names=("Study",),
+                now=dt_util.utcnow(),
+            )
+            tracker.confirm_room_completed("Study")
+            replacement_started.set()
+            await stop_task
+        finally:
+            replacement_started.set()
+            if not stop_task.done():
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+            if plan_lock.locked():
+                plan_lock.release()
+
+    assert manager.cancellation_reason(serial_number) == "motion_replaced"
+    assert tracker._current_room == "Study"
+    assert tracker._active_started_at is not None
+    assert tracker._confirmed_rooms == {"Study"}
+    entry.runtime_data.coordinator.client.async_start_coverage.assert_awaited_once()
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
 
 
 async def test_clean_area_translates_client_failure_without_protocol_details(
@@ -3796,6 +4377,95 @@ def test_action_target_resolution_accepts_loaded_matic_vacuum() -> None:
         assert _resolve_loaded_matic_vacuums(hass, call) == ["vacuum.test"]
 
 
+async def test_firmware_metadata_services_accept_offline_loaded_robot() -> None:
+    hass = SimpleNamespace(
+        data={},
+        auth=SimpleNamespace(
+            async_get_user=AsyncMock(return_value=SimpleNamespace(is_admin=True))
+        ),
+    )
+    services = await _registered_services(hass)
+    entity = SimpleNamespace(platform=DOMAIN, config_entry_id="entry")
+    registry = SimpleNamespace(async_get=MagicMock(return_value=entity))
+    entry = SimpleNamespace(state=ConfigEntryState.LOADED, entry_id="entry")
+    hass.config_entries = SimpleNamespace(async_get_entry=MagicMock(return_value=entry))
+    hass.states = SimpleNamespace(
+        get=MagicMock(return_value=SimpleNamespace(state="unavailable"))
+    )
+    referenced = SimpleNamespace(
+        referenced={"vacuum.test"}, indirectly_referenced=set()
+    )
+    investigator = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_investigator",
+        {"entity_id": ["vacuum.test"], "provider": "researcher"},
+        context=Context(user_id="admin"),
+    )
+    notification = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_notification",
+        {
+            "entity_id": ["vacuum.test"],
+            "report_id": "a" * 24,
+            "revision": 2,
+            "action": "acknowledge",
+        },
+        context=Context(user_id="admin"),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            return_value=referenced,
+        ),
+        patch(
+            "custom_components.matic_robot.services.er.async_get", return_value=registry
+        ),
+    ):
+        await _registered_handler(services, "firmware_investigator")(investigator)
+        await _registered_handler(services, "firmware_notification")(notification)
+
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    tracker.async_configure_investigator.assert_awaited_once_with("entry", "researcher")
+    tracker.async_notification_action.assert_awaited_once_with(
+        "entry", "a" * 24, 2, "acknowledge"
+    )
+
+
+async def test_physical_domain_service_still_rejects_offline_loaded_robot() -> None:
+    hass = SimpleNamespace(
+        data={},
+        services=SimpleNamespace(async_call=AsyncMock()),
+    )
+    services = await _registered_services(hass)
+    entity = SimpleNamespace(platform=DOMAIN, config_entry_id="entry")
+    registry = SimpleNamespace(async_get=MagicMock(return_value=entity))
+    entry = SimpleNamespace(state=ConfigEntryState.LOADED, entry_id="entry")
+    hass.config_entries = SimpleNamespace(async_get_entry=MagicMock(return_value=entry))
+    hass.states = SimpleNamespace(
+        get=MagicMock(return_value=SimpleNamespace(state="unavailable"))
+    )
+    referenced = SimpleNamespace(
+        referenced={"vacuum.test"}, indirectly_referenced=set()
+    )
+    call = ServiceCall(
+        hass, DOMAIN, "clean", {"entity_id": ["vacuum.test"], "ordered": False}
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            return_value=referenced,
+        ),
+        patch(
+            "custom_components.matic_robot.services.er.async_get", return_value=registry
+        ),
+        pytest.raises(ServiceValidationError, match="unavailable"),
+    ):
+        await _registered_handler(services, "clean")(call)
+    hass.services.async_call.assert_not_awaited()
+
+
 async def test_domain_service_rejects_unauthorized_direct_and_indirect_targets() -> (
     None
 ):
@@ -4076,7 +4746,9 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
     client = SimpleNamespace(async_inspect_endpoint=AsyncMock(side_effect=inspect))
     state = SimpleNamespace(
         telemetry=SimpleNamespace(software_version="v168.11", protocol_version=25),
-        operational=SimpleNamespace(software_version="fallback"),
+        operational=SimpleNamespace(
+            software_version="fallback", activity=SimpleNamespace(value="cleaning")
+        ),
     )
     entry = SimpleNamespace(
         entry_id="entry",
@@ -4108,6 +4780,7 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
 
     assert response["endpoint_count"] == len(HERMES_ENDPOINTS)
     assert response["analysis_version"] == ANALYSIS_VERSION
+    assert response["observation_context"] == "cleaning"
     assert response["populated_endpoints"] == len(HERMES_ENDPOINTS) - 2
     assert response["empty_endpoints"] == 1
     assert response["failed_endpoints"] == 1
@@ -4118,6 +4791,159 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
     assert "synthetic failure" not in repr(response)
     tracker = hass.data[DOMAIN]["firmware_tracker"]
     tracker.async_record_snapshot.assert_awaited_once()
+    tracker.occurrence_generation.assert_called_once_with("entry")
+    assert tracker.async_record_snapshot.await_args.kwargs == {
+        "occurrence_generation": 0
+    }
+
+
+async def test_firmware_admin_services_resolve_one_robot_and_wrap_tracker_errors() -> (
+    None
+):
+    hass = SimpleNamespace(data={}, auth=SimpleNamespace(async_get_user=AsyncMock()))
+    services = await _registered_services(hass)
+    first_entry = SimpleNamespace(entry_id="entry-one")
+    second_entry = SimpleNamespace(entry_id="entry-two")
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    investigator_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_investigator",
+        {"entity_id": ["vacuum.one"], "provider": "researcher"},
+        context=Context(user_id="admin"),
+    )
+    notification_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_notification",
+        {
+            "entity_id": ["vacuum.two"],
+            "report_id": "a" * 24,
+            "revision": 7,
+            "action": "acknowledge",
+        },
+        context=Context(user_id="admin"),
+    )
+    hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            side_effect=[["vacuum.one"], ["vacuum.two"]],
+        ) as resolve,
+        patch(
+            "custom_components.matic_robot.services._entry_for_entity",
+            side_effect=[first_entry, second_entry],
+        ) as entry_for_entity,
+    ):
+        await _registered_handler(services, "firmware_investigator")(investigator_call)
+        await _registered_handler(services, "firmware_notification")(notification_call)
+
+    assert resolve.call_count == 2
+    assert entry_for_entity.call_args_list[-2].args == (hass, "vacuum.one")
+    assert entry_for_entity.call_args_list[-1].args == (hass, "vacuum.two")
+    tracker.async_configure_investigator.assert_awaited_once_with(
+        "entry-one", "researcher"
+    )
+    tracker.async_notification_action.assert_awaited_once_with(
+        "entry-two", "a" * 24, 7, "acknowledge"
+    )
+
+
+async def test_firmware_services_require_admin_and_one_robot() -> None:
+    hass = SimpleNamespace(data={}, auth=SimpleNamespace(async_get_user=AsyncMock()))
+    services = await _registered_services(hass)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_investigator",
+        {"entity_id": ["vacuum.one"], "provider": "researcher"},
+        context=Context(user_id="non-admin"),
+    )
+    hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=False)
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one"],
+        ),
+        pytest.raises(Unauthorized),
+    ):
+        await _registered_handler(services, "firmware_investigator")(call)
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    tracker.async_configure_investigator.assert_not_awaited()
+
+    hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one", "vacuum.two"],
+        ),
+        pytest.raises(ServiceValidationError, match="exactly one"),
+    ):
+        await _registered_handler(services, "firmware_investigator")(call)
+    notification = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_notification",
+        {
+            "entity_id": ["vacuum.one", "vacuum.two"],
+            "report_id": "a" * 24,
+            "revision": 1,
+            "action": "delivered",
+        },
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one", "vacuum.two"],
+        ),
+        pytest.raises(ServiceValidationError, match="exactly one"),
+    ):
+        await _registered_handler(services, "firmware_notification")(notification)
+
+
+@pytest.mark.parametrize(
+    ("service", "method", "call_data"),
+    [
+        (
+            "firmware_investigator",
+            "async_configure_investigator",
+            {"entity_id": ["vacuum.one"], "provider": "researcher"},
+        ),
+        (
+            "firmware_notification",
+            "async_notification_action",
+            {
+                "entity_id": ["vacuum.one"],
+                "report_id": "a" * 24,
+                "revision": 3,
+                "action": "recheck",
+            },
+        ),
+    ],
+)
+async def test_firmware_services_translate_tracker_value_errors(
+    service, method, call_data
+) -> None:
+    hass = SimpleNamespace(data={}, auth=SimpleNamespace(async_get_user=AsyncMock()))
+    services = await _registered_services(hass)
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    getattr(tracker, method).side_effect = ValueError("stale firmware request")
+    hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
+    call = ServiceCall(
+        hass, DOMAIN, service, call_data, context=Context(user_id="admin")
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one"],
+        ),
+        patch(
+            "custom_components.matic_robot.services._entry_for_entity",
+            return_value=SimpleNamespace(entry_id="entry-one"),
+        ),
+        pytest.raises(ServiceValidationError, match="stale firmware request"),
+    ):
+        await _registered_handler(services, service)(call)
 
 
 async def test_firmware_snapshot_requires_exactly_one_robot() -> None:
@@ -5380,3 +6206,26 @@ async def test_plan_reference_services_report_unavailable_metadata(service_name,
 
     assert manager.plan("serial", "home")["name"] == "Original"
     assert persisted == [original_persisted]
+
+
+async def test_firmware_reports_replay_after_home_assistant_started(hass):
+    """Late-loaded integration immediately republishes persisted reports."""
+    await _registered_services(hass, is_running=True)
+
+    tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
+    tracker.replay_reports.assert_called_once_with()
+    hass.data[DOMAIN]["test_firmware_listen_once"].assert_not_called()
+
+
+async def test_firmware_reports_replay_waits_for_home_assistant_started(hass):
+    """Startup loads replay reports once the started event fires."""
+    await _registered_services(hass)
+
+    tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
+    tracker.replay_reports.assert_not_called()
+    listen_once = hass.data[DOMAIN]["test_firmware_listen_once"]
+    listen_once.assert_called_once()
+    event, callback = listen_once.call_args.args
+    assert event == "homeassistant_started"
+    callback(None)
+    tracker.replay_reports.assert_called_once_with()

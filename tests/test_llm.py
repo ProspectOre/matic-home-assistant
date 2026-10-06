@@ -34,6 +34,7 @@ from custom_components.matic_robot.llm import (
     MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES,
     MAX_RECENT_EVENTS,
     MaticGetActivityTool,
+    MaticGetFirmwareTool,
     MaticGetNativeHistoryTool,
     MaticGetOperationsTool,
     MaticGetPlanTool,
@@ -163,7 +164,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     hass = _hass(_entry())
     api = MaticOperationsAPI(hass)
     api.async_start()
-    assert hass.bus.async_listen.call_count == 14
+    assert hass.bus.async_listen.call_count == 15
 
     event_callback = hass.bus.async_listen.call_args_list[0].args[1]
     event_callback(
@@ -329,6 +330,9 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "MaticGetNativeHistory",
         "MaticGetRecentEvents",
         "MaticGetActivity",
+        "MaticGetFirmware",
+        "MaticClaimFirmwareInvestigation",
+        "MaticCompleteFirmwareInvestigation",
     ]
     assert all(tool.integration == DOMAIN for tool in instance.tools)
     assert all(
@@ -339,7 +343,145 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     with patch("custom_components.matic_robot.llm.llm.async_register_api") as register:
         registered = async_register_matic_llm_api(hass)
     register.assert_called_once_with(hass, registered)
-    assert hass.bus.async_listen.call_count == 28
+    assert hass.bus.async_listen.call_count == 30
+
+
+async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
+    entry = _entry()
+    second_entry = _entry(name="Synthetic Robot", entry_id="entry-two")
+    cached_report = {
+        "id": "a" * 24,
+        "revision": 3,
+        "observation_contexts": ["cleaning"],
+    }
+    tracker = SimpleNamespace(
+        report=MagicMock(return_value=cached_report),
+        report_history=MagicMock(return_value=[cached_report]),
+    )
+    entry.runtime_data.firmware_tracker = tracker
+    second_tracker = SimpleNamespace(
+        report=MagicMock(return_value={"id": "b" * 24}),
+        report_history=MagicMock(return_value=[]),
+    )
+    second_entry.runtime_data.firmware_tracker = second_tracker
+    hass = _hass(entry, second_entry)
+    tool = MaticGetFirmwareTool(MaticOperationsAPI(hass))
+
+    result = await tool.async_call(
+        hass,
+        llm.ToolInput(tool.name, {"robot": "entry-one", "include_history": True}),
+        _context(),
+    )
+
+    assert result == {
+        "read_only": True,
+        "robots": [
+            {
+                "robot": "Synthetic Robot",
+                "entry_id": "entry-one",
+                "report": cached_report,
+                "history": [cached_report],
+            }
+        ],
+    }
+    tracker.report.assert_called_once_with("entry-one")
+    tracker.report_history.assert_called_once_with("entry-one")
+    entry.runtime_data.client.async_get_cleaning_session_records.assert_not_awaited()
+
+    all_robots = await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    assert [robot["robot"] for robot in all_robots["robots"]] == [
+        "Synthetic Robot",
+        "Synthetic Robot",
+    ]
+    assert [robot["entry_id"] for robot in all_robots["robots"]] == [
+        "entry-one",
+        "entry-two",
+    ]
+    assert all("history" not in robot for robot in all_robots["robots"])
+    tracker.report_history.assert_called_once_with("entry-one")
+    second_tracker.report_history.assert_not_called()
+
+
+async def test_firmware_research_tool_requires_current_admin() -> None:
+    hass = _hass(_entry(), user=SimpleNamespace(is_admin=False))
+    tool = MaticGetFirmwareTool(MaticOperationsAPI(hass))
+    with pytest.raises(HomeAssistantError, match="Administrator"):
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+
+    no_user = _context(None)
+    with pytest.raises(HomeAssistantError, match="Administrator"):
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), no_user)
+
+    removed_user = _context("deleted-user")
+    hass.auth.async_get_user.return_value = None
+    with pytest.raises(HomeAssistantError, match="Administrator"):
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), removed_user)
+    hass.auth.async_get_user.assert_awaited_with("deleted-user")
+
+
+async def test_firmware_claim_and_complete_tools_bind_args_and_errors() -> None:
+    from custom_components.matic_robot.llm import (
+        MaticClaimFirmwareInvestigationTool,
+        MaticCompleteFirmwareInvestigationTool,
+    )
+
+    entry = _entry()
+    tracker = SimpleNamespace(
+        async_claim_investigation=AsyncMock(return_value={"token": "synthetic-token"}),
+        async_complete_investigation=AsyncMock(),
+    )
+    entry.runtime_data.firmware_tracker = tracker
+    hass = _hass(entry)
+    claim = MaticClaimFirmwareInvestigationTool(MaticOperationsAPI(hass))
+    claim_args = {
+        "robot": "entry-one",
+        "report_id": "a" * 24,
+        "evidence_revision": 4,
+        "routing_revision": 2,
+        "provider": "researcher",
+    }
+    assert await claim.async_call(
+        hass, llm.ToolInput(claim.name, claim_args), _context()
+    ) == {"token": "synthetic-token"}
+    tracker.async_claim_investigation.assert_awaited_once_with(
+        "entry-one",
+        report_id="a" * 24,
+        evidence_revision=4,
+        routing_revision=2,
+        provider="researcher",
+    )
+
+    complete = MaticCompleteFirmwareInvestigationTool(MaticOperationsAPI(hass))
+    complete_args = {
+        **claim_args,
+        "token": "synthetic-token-1234",
+        "disposition": "needs_evidence",
+        "summary": "Synthetic bounded assessment",
+        "sources": ["https://example.invalid/source"],
+    }
+    assert await complete.async_call(
+        hass, llm.ToolInput(complete.name, complete_args), _context()
+    ) == {"recorded": True, "robot_control_changed": False}
+    tracker.async_complete_investigation.assert_awaited_once_with(
+        "entry-one",
+        report_id="a" * 24,
+        evidence_revision=4,
+        routing_revision=2,
+        provider="researcher",
+        token="synthetic-token-1234",
+        disposition="needs_evidence",
+        summary="Synthetic bounded assessment",
+        sources=["https://example.invalid/source"],
+    )
+
+    tracker.async_claim_investigation.side_effect = ValueError("stale claim")
+    with pytest.raises(HomeAssistantError, match="stale claim"):
+        await claim.async_call(hass, llm.ToolInput(claim.name, claim_args), _context())
+    tracker.async_complete_investigation.side_effect = ValueError("expired claim")
+    with pytest.raises(HomeAssistantError, match="expired claim"):
+        await complete.async_call(
+            hass, llm.ToolInput(complete.name, complete_args), _context()
+        )
 
 
 async def test_operations_and_robot_resolution() -> None:
