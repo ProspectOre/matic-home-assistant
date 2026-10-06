@@ -42,11 +42,11 @@ on:
         required: false
         type: string
 
-# State-changing PR events share a per-PR lock. Each native or signed capture
-# must finish independently so later activity cannot cancel durable event history.
+# Keep workflow runs alive so synchronize observations can be recorded even if
+# a later PR event supersedes their evaluation job.
 concurrency:
-  group: ${{ inputs.audit == true && format('review-gate-audit-{0}', inputs.pull_request) || (inputs.review_capture_id != '' || github.event_name == 'issue_comment') && format('review-gate-event-{0}', github.run_id) || format('review-gate-{0}', github.event.pull_request.number || inputs.pull_request || github.ref) }}
-  cancel-in-progress: ${{ inputs.audit == true || (inputs.review_capture_id == '' && github.event_name != 'issue_comment') }}
+  group: ${{ format('review-gate-workflow-{0}', github.run_id) }}
+  cancel-in-progress: false
 
 permissions:
   actions: write
@@ -56,15 +56,62 @@ permissions:
   statuses: write
 
 jobs:
+  observe-head:
+    name: "observe-head PR #${{ github.event.pull_request.number }} | head=${{ github.event.pull_request.head.sha }} | at=${{ github.event.pull_request.updated_at }}"
+    if: github.event_name == 'pull_request_target' && github.event.action == 'synchronize'
+    concurrency:
+      group: ${{ format('review-head-observation-{0}', github.event.pull_request.number) }}
+      cancel-in-progress: false
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Record authenticated synchronize event
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          [[ "$GITHUB_EVENT_NAME" == pull_request_target
+            && "$EVENT_ACTION" == synchronize
+            && "$EVENT_PR_NUMBER" =~ ^[1-9][0-9]*$
+            && "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$
+            && "$GITHUB_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          observed_at="$(jq -er --arg head "$EVENT_HEAD_SHA" --argjson pr "$EVENT_PR_NUMBER" '
+            select(.action == "synchronize"
+              and .pull_request.number == $pr
+              and .pull_request.head.sha == $head)
+            | .pull_request.updated_at
+            | select(type == "string"
+              and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
+          ' "$GITHUB_EVENT_PATH")"
+          gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent \
+            -f state=success \
+            -f context="review-head-observation/pr-$EVENT_PR_NUMBER" \
+            -f description="Trusted head observation PR #$EVENT_PR_NUMBER head $EVENT_HEAD_SHA at $observed_at" \
+            -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/$GITHUB_RUN_ID"
+
   evaluate:
     name: "evaluate-review PR #${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request || 'unknown' }} | policy-workflow-sha=${{ github.workflow_sha }}"
+    # Synchronize evaluation waits for its durable observation. Other event
+    # runs skip their observer and re-use observations from completed runs.
+    needs: observe-head
     if: >-
-      github.event_name == 'workflow_dispatch'
-      || github.event.pull_request.number != null
-      || (github.event.issue.pull_request != null
-        && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
-        && github.event.comment.user.id == 199175422
-        && github.event.comment.user.type == 'Bot')
+      always()
+      && (
+        github.event_name == 'workflow_dispatch'
+        || github.event.pull_request.number != null
+        || (github.event.issue.pull_request != null
+          && github.event.comment.user.login == 'chatgpt-codex-connector[bot]'
+          && github.event.comment.user.id == 199175422
+          && github.event.comment.user.type == 'Bot')
+      )
+    concurrency:
+      group: ${{ inputs.audit == true && format('review-gate-audit-{0}', inputs.pull_request) || (inputs.review_capture_id != '' || github.event_name == 'issue_comment') && format('review-gate-event-{0}', github.run_id) || format('review-gate-{0}', github.event.pull_request.number || inputs.pull_request || github.ref) }}
+      cancel-in-progress: ${{ inputs.audit == true || (inputs.review_capture_id == '' && github.event_name != 'issue_comment') }}
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     environment: review-event-relay
     steps:
@@ -75,7 +122,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.issue.number }}
           POLICY_REF: ${{ github.workflow_sha }}
-          EXPECTED_REVIEW_SECTIONS_SHA256: '3942cddafb8c19beb70af35a633cb809df5b360c5da584f6a9c6bc120aabb733'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '27a45240800c41400e7e82cd0a8b453377f6f9b3b02f49eb27a6e16cc45a598b'
         shell: bash
         run: |
           set -euo pipefail
@@ -171,7 +218,9 @@ jobs:
             # the footer still cannot classify or qualify the review.
             if [[ -z "$live_head" ]]; then
               write_pending_gate_status "$comment_head" \
-                "Recording unverified connector review delivery for PR #$EVENT_PR" || exit 1
+                "Recording unverified connector review delivery for PR #$EVENT_PR" || true
+              # A failed hint must not prevent association from recovering and
+              # strictly holding the actual live head before historical writes.
             fi
             if ! association_pages="$(gh api "repos/$REPO/commits/$comment_head/pulls?per_page=100" \
                 --paginate --slurp)"; then
@@ -796,9 +845,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'd74df11abbb5dd3c61ad488e7498be4111405186229c611e6e09be8a9e7652dd'
+          EXPECTED_SHA256: 'b0028b499ec47a18e88c58d62f0e98d9c140a922eb024799bf5c8822ce40c7c5'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '3942cddafb8c19beb70af35a633cb809df5b360c5da584f6a9c6bc120aabb733'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '27a45240800c41400e7e82cd0a8b453377f6f9b3b02f49eb27a6e16cc45a598b'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'eecfa47a7879df2aa4415fb6bb2487292f0af924018312bdf8d7ee1fbf9b72ec'
         shell: bash
         run: |
@@ -974,6 +1023,7 @@ jobs:
           INPUT_PR: ${{ inputs.pull_request }}
           EVENT_PR_NUMBER: ${{ steps.signal-relay-event.outputs.pr || github.event.pull_request.number || github.event.issue.number }}
           EVENT_NAME: ${{ inputs.review_event_name || github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
           FORWARDED_EVENT_PATH: ${{ steps.signal-relay-event.outputs.event_path }}
           REVIEW_CAPTURE_ID: ${{ steps.signal-relay-event.outputs.capture_id }}
           REVIEW_CAPTURE_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head }}
@@ -1003,6 +1053,8 @@ jobs:
           SECURITY_REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
         shell: bash
         run: |
+          set -euo pipefail
+          unset REVIEW_HEAD_OBSERVED_AT
           if [[ -n "$FORWARDED_EVENT_PATH" ]]; then export GITHUB_EVENT_PATH="$FORWARDED_EVENT_PATH"; fi
           bash "$CANONICAL_REVIEW_GATE"
           if [[ -n "$REVIEW_CAPTURE_ID" ]]; then

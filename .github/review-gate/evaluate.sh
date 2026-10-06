@@ -473,6 +473,84 @@ read_pr_snapshot() {
   return 1
 }
 
+trusted_matic_head_observation_at() {
+  local candidate_sha="$1" workflow_id statuses candidates candidate
+  local context run_prefix timestamp target_url run_id run_json run_epoch jobs_json
+  local best_at="" best_epoch=-1 best_run_id=0
+  [[ "$candidate_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  context="review-head-observation/pr-$pr_number"
+  run_prefix="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/"
+  workflow_id="$(gh api "repos/$REPO/actions/workflows/review-gate.yml" --jq '.id')" || return 1
+  [[ "$workflow_id" =~ ^[1-9][0-9]*$ ]] || return 1
+  statuses="$(gh api "repos/$REPO/commits/$candidate_sha/statuses?per_page=100" --paginate --slurp)" || return 1
+  candidates="$(jq -c --arg context "$context" --arg run_prefix "$run_prefix" '
+    if type != "array" or any(.[]; type != "array") then
+      error("Invalid trusted head-observation status pages")
+    else
+      [ .[][]?
+        | select(.context == $context and .state == "success")
+        | select(.creator.login == "github-actions[bot]" and .creator.type == "Bot" and .creator.id == 41898282)
+        | select((.target_url // "") | startswith($run_prefix))
+        | select((.description // "") | test(
+          "^Trusted head observation PR #[1-9][0-9]* head [0-9a-f]{40} at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z$"))
+      ] | sort_by([(.created_at // ""), (.id // 0)]) | reverse | .[]
+    end
+  ' <<< "$statuses")" || return 1
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    timestamp="$(jq -er --arg pr "$pr_number" --arg head "$candidate_sha" '
+      .description
+      | capture("^Trusted head observation PR #(?<pr>[1-9][0-9]*) head (?<head>[0-9a-f]{40}) at (?<at>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?Z)$") as $observation
+      | select($observation.pr == $pr and $observation.head == $head)
+      | $observation.at
+    ' <<< "$candidate")" || continue
+    target_url="$(jq -r '.target_url // empty' <<< "$candidate")" || continue
+    [[ "$target_url" == "$run_prefix"* ]] || continue
+    run_id="${target_url#"$run_prefix"}"
+    [[ "$run_id" =~ ^[1-9][0-9]*$ && "$target_url" == "$run_prefix$run_id" ]] || continue
+    run_json="$(gh api "repos/$REPO/actions/runs/$run_id" 2>/dev/null)" || continue
+    if ! jq -e --arg run "$run_id" --arg workflow "$workflow_id" \
+      --arg repo "$REPO" --arg pr "$pr_number" --arg head "$candidate_sha" \
+      --arg target "$target_url" --arg default "$DEFAULT_BRANCH" '
+        (.id | tostring) == $run
+        and (.workflow_id | tostring) == $workflow
+        and (.path == ".github/workflows/review-gate.yml"
+          or .path == (".github/workflows/review-gate.yml@" + $default)
+          or .path == ".github/workflows/review-gate.yml@release/0.4")
+        and .event == "pull_request_target"
+        and .repository.full_name == $repo
+        and .html_url == $target
+        and (.pull_requests | type) == "array"
+      ' <<< "$run_json" >/dev/null; then
+      continue
+    fi
+    jq -e --arg pr "$pr_number" --arg head "$candidate_sha" '
+      .pull_requests == [] or any(.pull_requests[];
+        (.number | tostring) == $pr and .head.sha == $head)
+    ' <<< "$run_json" >/dev/null || continue
+    # Association does not prove a synchronize event. Always require the
+    # completed job's server-rendered original PR, full head and event time;
+    # a caller-controlled status URL or timestamp cannot supply that proof.
+    jobs_json="$(gh api "repos/$REPO/actions/runs/$run_id/jobs?filter=latest&per_page=100" --paginate --slurp)" || continue
+    jq -e --arg run "$run_id" \
+      --arg name "observe-head PR #$pr_number | head=$candidate_sha | at=$timestamp" '
+      type == "array" and length > 0
+      and all(.[]; (.jobs | type) == "array")
+      and ([.[].jobs[] | select((.run_id | tostring) == $run and .name == $name
+        and .status == "completed" and .conclusion == "success")] | length) == 1
+    ' <<< "$jobs_json" >/dev/null || continue
+    run_epoch="$(jq -er '(.created_at // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601' \
+      <<< "$run_json")" || continue
+    [[ "$run_epoch" =~ ^[0-9]+$ ]] || continue
+    if (( run_epoch > best_epoch || (run_epoch == best_epoch && run_id > best_run_id) )); then
+      best_at="$timestamp"
+      best_epoch="$run_epoch"
+      best_run_id="$run_id"
+    fi
+  done <<< "$candidates"
+  printf '%s' "$best_at"
+}
+
 pr_snapshot="$(read_pr_snapshot)"
 IFS=$'\t' read -r head_sha pr_opened_at base_sha base_ref is_draft pr_node_id auto_merge_enabled pr_state pr_author_login head_repo pr_created_at <<< "$pr_snapshot"
 if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
@@ -482,6 +560,21 @@ fi
 pr_opened_at="$(normalize_timestamp "$pr_opened_at")"
 pr_created_at="$(normalize_timestamp "$pr_created_at")"
 pr_current_head_sha="$head_sha"
+if [[ "$REPO" == "ProspectOre/matic-home-assistant" \
+  && "${GITHUB_ACTIONS:-false}" == true ]]; then
+  # Ignore transient adapter values in Actions. Only an immutable status
+  # linked to this PR/head's authenticated synchronize run can recover a
+  # post-retarget head observation; absence remains a hold when needed below.
+  head_observed_at="$(trusted_matic_head_observation_at "$head_sha")" || {
+    echo "Could not verify the persisted Matic synchronize observation." >&2
+    exit 1
+  }
+  head_observed_at="$(normalize_timestamp "$head_observed_at")" || exit 1
+  evidence_after="$finding_after"
+  if [[ -n "$head_observed_at" && "$head_observed_at" > "$evidence_after" ]]; then
+    evidence_after="$head_observed_at"
+  fi
+fi
 if [[ -n "$expected_base_sha" && "$base_sha" != "$expected_base_sha" ]]; then
   echo "The pull request base does not match EXPECTED_BASE_SHA; it remains pending."
   gate_pending
@@ -644,6 +737,50 @@ head_prefix_resolves() {
   local resolved
   resolved="$(gh api "repos/$REPO/commits/$head_prefix" --jq '.sha')" || return 1
   [[ "$resolved" == "$head_sha" ]]
+}
+
+clean_short_head_resolves() {
+  local commits history
+  head_prefix_resolves || return 1
+  commits="$(gh api "repos/$REPO/pulls/$pr_number/commits?per_page=100" --paginate --slurp)" || return 1
+  # Include force-pushed-away heads: the live commit list alone cannot
+  # distinguish a delayed review of another commit with the same prefix.
+  # shellcheck disable=SC2016 # GraphQL expands these variables.
+  history="$(gh api graphql --paginate --slurp \
+    -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F pr="$pr_number" \
+    -f query='query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
+      repository(owner:$owner,name:$name) { nameWithOwner pullRequest(number:$pr) {
+        number timelineItems(first:100,after:$endCursor,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT]) {
+          nodes { __typename ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } }
+          pageInfo { hasNextPage endCursor }
+        }
+      } }
+    }')" || return 1
+  jq -en --arg repo "$REPO" --argjson pr "$pr_number" --arg head "$head_sha" --arg prefix "$head_prefix" \
+    --argjson commits "$commits" --argjson history "$history" '
+    if ($commits | type) != "array" or ($commits | length) == 0
+        or any($commits[]; type != "array")
+        or any($commits[][]; (.sha | type) != "string" or ((.sha | test("^[0-9a-f]{40}$")) | not))
+        or ($history | type) != "array" or ($history | length) == 0
+        or any($history[]; ((.errors // []) | length) != 0
+          or .data.repository.nameWithOwner != $repo or .data.repository.pullRequest.number != $pr)
+      then false else
+        [$history[] | .data.repository.pullRequest.timelineItems] as $pages
+        | if any($pages[]; (.nodes | type) != "array" or (.pageInfo.hasNextPage | type) != "boolean"
+            or (.pageInfo.hasNextPage and ((.pageInfo.endCursor | type) != "string"))
+            or any(.nodes[]; .__typename != "HeadRefForcePushedEvent"
+              or ((.beforeCommit.oid | type) != "string") or ((.afterCommit.oid | type) != "string")
+              or ((.beforeCommit.oid | test("^[0-9a-f]{40}$")) | not)
+              or ((.afterCommit.oid | test("^[0-9a-f]{40}$")) | not)))
+          or $pages[-1].pageInfo.hasNextPage != false
+          or any($pages[:-1][]; .pageInfo.hasNextPage != true)
+          or (([$pages[] | select(.pageInfo.hasNextPage) | .pageInfo.endCursor] | unique | length)
+            != ([$pages[] | select(.pageInfo.hasNextPage)] | length))
+          then false else
+            ([$commits[][] | .sha] + [$pages[].nodes[] | .beforeCommit.oid, .afterCommit.oid])
+            | map(select(startswith($prefix))) | unique | . == [$head]
+          end
+      end' >/dev/null
 }
 
 base_change_marker_exists() {
@@ -825,7 +962,8 @@ active_security_findings() {
 # can never satisfy the required regular-review verdict.
 regular_evidence() {
   local issue_comment_receipts_script="${ISSUE_COMMENT_RECEIPTS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/issue_comment_receipts.py}"
-  local review_records issue_comment_records issue_comment_pages issue_comment_receipt_data
+  local review_records issue_comment_records issue_comment_pages issue_comment_receipt_data issue_comment_sections
+  local short_clean_head_verified=false
   local prior_creation_receipt=false prior_body_receipt=false prior_body_hash_receipt=false
   local prior_has_creation_receipt=false
   local eligible_comment_run_id="" eligible_comment_id="" eligible_comment_run_attempt=""
@@ -1003,11 +1141,19 @@ regular_evidence() {
     fi
     issue_comment_pages="$(jq -c '.comments' <<< "$issue_comment_receipt_data")"
   fi
-  issue_comment_records="$(printf '%s' "$issue_comment_pages" \
+  issue_comment_sections="$(printf '%s' "$issue_comment_pages" \
       | jq -c '[.[] | map(select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot"))]' \
-      | python3 "$section_classifier" --records \
+      | python3 "$section_classifier" --records)"
+  if jq -e --arg prefix "$head_prefix" 'any(.[][] | .review_gate_sections[];
+      .reviewed_ref == $prefix and .regular_clean == true and .regular_adverse != true
+      and .security_finding != true and .parser_ambiguous != true)' <<< "$issue_comment_sections" >/dev/null \
+      && clean_short_head_resolves; then
+    short_clean_head_verified=true
+  fi
+  issue_comment_records="$(printf '%s' "$issue_comment_sections" \
       | jq -c --slurpfile prior_input <(printf '%s' "$prior_record") \
           --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
+          --argjson short_clean_head_verified "$short_clean_head_verified" \
           --argjson require_creation_receipt "${REQUIRE_CLEAN_ISSUE_COMMENT_RECEIPT:-false}" \
           --argjson prior_creation_receipt "$prior_creation_receipt" \
           --argjson prior_has_creation_receipt "$prior_has_creation_receipt" \
@@ -1104,13 +1250,14 @@ regular_evidence() {
            | select($section.availability != true)
            # Unsupported HTML cannot authenticate mutable footer scope.
            | select($section.parser_ambiguous or $section.target_ref == $head or $section.target_ref == $prefix or (($section.regular_adverse or $section.security_finding) and $section.target_ref == "__unbound__"))
-           # A creation receipt authenticates delivery, not which colliding
-           # commit an abbreviated footer meant. Require reviewed full-SHA proof.
+           # A creation receipt authenticates delivery. Short footers additionally
+           # require unique full-OID resolution across live and force-pushed heads.
            # Insufficient scope makes a finding-free clean candidate unverified;
            # it must not manufacture retained substantive finding history.
            | (($section.regular_clean == true or ($body | strict_stock_clean_issue_comment_envelope))
               and $section.regular_adverse != true and $section.security_finding != true) as $clean_candidate
-           | ($clean_candidate and $section.reviewed_ref == $head) as $clean_envelope
+           | ($clean_candidate and ($section.reviewed_ref == $head
+              or ($section.reviewed_ref == $prefix and $short_clean_head_verified))) as $clean_envelope
            | ($clean_envelope and ($body | test("(?is)<details>"))) as $footer_clean
            | (.review_gate_creation_receipt == true or (($require_creation_receipt | not) and $footer_clean)) as $clean_proof
            | {at: (.updated_at // .created_at),
@@ -1867,6 +2014,7 @@ requires_timeline_freshness() {
   [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true \
     || "$REPO" == "ProspectOre/matic-home-assistant" ]]
 }
+
 
 # A pre-policy or manually armed pull request must be made manual-only
 # before this gate evaluates it. This mutation only disables auto-merge.

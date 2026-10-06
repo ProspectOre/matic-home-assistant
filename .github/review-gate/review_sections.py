@@ -7091,16 +7091,23 @@ def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool
         # authority must retain the code barrier, including in raw HTML blocks.
         chunks = []
         position = 0
+        adjusted_blocks = []
+        offset_delta = 0
         for first, last in raw_blocks:
             chunks.append(source[position:first])
-            chunks.append(_visible_html(
+            visible = _visible_html(
                 source[first:last], mask_attributes=True,
                 preserve_inline_markup=True, preserve_block_markup=True,
                 preserve_markup_lines=True, preserve_markdown_comments=True,
-            ))
+            )
+            chunks.append(visible)
+            adjusted_blocks.append((first + offset_delta, first + offset_delta + len(visible)))
+            offset_delta += len(visible) - (last - first)
             position = last
         chunks.append(source[position:])
         source = "".join(chunks)
+        # Keep each original raw block's ownership after tags shorten its text.
+        raw_blocks = adjusted_blocks
         projection = _priority_projection(source)
     raw_block_starts = [start for start, _ in raw_blocks]
     raw_block_ends = [end for _, end in raw_blocks]
