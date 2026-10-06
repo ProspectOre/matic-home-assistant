@@ -1,11 +1,11 @@
 # Mixed-room readback diagnostic candidate
 
-Version `0.4.8.dev1` is a local diagnostic candidate based on `v0.4.7` for
+Version `0.4.8rc1` is a diagnostic prerelease based on `v0.4.7` for
 [issue #218](https://github.com/ProspectOre/matic-home-assistant/issues/218).
 It adds bounded, redacted readback diagnostics and preserves a specific timeout
 error. It does not fix or establish the cause of the reported mixed-room abort.
 The eight-second bound, goal matching, ownership checks, and recovery behavior
-remain in place. This is not a published HACS version or an accepted release.
+remain in place. This is an investigation build, not a stable release or a verified fix.
 
 ## Before installing
 
@@ -16,13 +16,19 @@ versions. Back up Home Assistant and keep a separate copy of the complete
 installed `custom_components/matic_robot` directory outside that directory.
 Preserve the supplied archive checksum and per-file manifest for verification.
 
+## HACS installation
+
+Enable beta/prerelease versions for Matic, choose `v0.4.8-rc1` in Redownload,
+and restart Home Assistant. Confirm the integration reports `0.4.8rc1`.
+Do not select the separate 0.5 prerelease for this diagnostic test.
+
 ## Manual installation
 
 The ZIP contains a single top-level `matic_robot/` directory. Replace the existing
 `config/custom_components/matic_robot/` directory with it; do not nest a second
 `matic_robot` directory or merge it with leftover files from another version.
 Do not change the integration's configuration, credentials, plans, or schedules.
-Restart Home Assistant and verify the loaded integration reports `0.4.8.dev1`.
+Restart Home Assistant and verify the loaded integration reports `0.4.8rc1`.
 Confirm normal startup and map readiness before arranging the diagnostic run.
 
 ## Collect the comparison
