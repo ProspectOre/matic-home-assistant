@@ -5785,19 +5785,20 @@ def _empty_comment_priority_source(source):
 
 def _may_contain_rendered_report_link(source):
     """Cheap conservative prefilter; the Markdown AST remains authoritative."""
-    candidate = html.unescape(source)
-    variants = (
-        re.sub(r"<!--.*?-->|<[^>]*>", "", candidate, flags=re.S),
-        re.sub(r"<!--.*?-->|<[^>]*>", " ", candidate, flags=re.S),
-    )
-    for variant in variants:
-        folded = re.sub(r"[*_~`\\]", "", variant).casefold()
-        # HTML tags can splice one word and break the next. Substring checks
-        # intentionally over-approximate; the Markdown AST decides whether a
-        # rendered report link exists.
-        if all(word in folded for word in ("view", "security", "finding", "report")):
-            return True
-    return False
+    if "[" not in source:
+        return False
+    # Do not delete source while prefiltering: escaped text, code spans and
+    # comments can all contain delimiters. A subsequence can over-approximate
+    # markup-split labels; only the Markdown AST can confirm an actual link.
+    folded = html.unescape(source).casefold()
+    position = 0
+    for word in ("view", "security", "finding", "report"):
+        for character in word:
+            position = folded.find(character, position)
+            if position < 0:
+                return False
+            position += 1
+    return True
 
 
 def _rendered_report_link(tokens, *, literal_only=False):
