@@ -633,6 +633,36 @@ def test_claim_self_recovers_an_impossible_future_claim() -> None:
         )
 
 
+def test_claim_waits_for_a_fresh_snapshot_then_rebases_report_anchors() -> None:
+    robot = start_robot()
+    reports.configure_investigator(robot, "researcher")
+    args = _lease_args(robot)
+    future = NOW + timedelta(hours=2)
+    robot["snapshot"] = snapshot(captured=future)
+    robot["firmware_report"]["last_checked_at"] = future.isoformat()
+    before = deepcopy(robot)
+
+    with pytest.raises(ValueError, match="fresh firmware snapshot"):
+        reports.claim_report(robot, *args, "blocked-lease", NOW)
+    assert robot == before
+    assert robot["firmware_report"]["investigation"] == {"status": "pending"}
+
+    robot["snapshot"] = snapshot(captured=NOW)
+    replacement = reports.claim_report(robot, *args, "current-lease", NOW)
+    assert not reports.has_future_anchor(robot, NOW)
+    assert robot["firmware_report"]["last_checked_at"] == NOW.isoformat()
+    reports.complete_report(
+        robot,
+        *args,
+        replacement["token"],
+        "needs_evidence",
+        "The current claim can be completed.",
+        [],
+        NOW + timedelta(seconds=1),
+    )
+    assert robot["firmware_report"]["investigation"]["status"] == "complete"
+
+
 def test_normal_future_lease_expiry_is_not_clock_skew() -> None:
     robot = start_robot()
     reports.configure_investigator(robot, "researcher")
