@@ -883,8 +883,11 @@ async def test_stop_supersedes_direct_room_clean_queued_for_command_lock(hass) -
     entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
 
 
-async def test_after_room_stop_supersedes_queued_direct_room_clean(hass) -> None:
-    """A graceful Stop preserves its run while fencing an older direct clean."""
+@pytest.mark.parametrize("command", ["clean_rooms", "resume", "return_home"])
+async def test_after_room_stop_supersedes_queued_direct_motion(
+    hass, command: str
+) -> None:
+    """A graceful Stop preserves its run and fences older direct motion."""
     entry = _entry(idle=True)
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -909,9 +912,14 @@ async def test_after_room_stop_supersedes_queued_direct_room_clean(hass) -> None
     command_lock = manager.command_lock(serial_number)
     await command_lock.acquire()
     entity = vacuum.MaticVacuum(entry)
-    task = asyncio.create_task(
-        entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
-    )
+    if command == "clean_rooms":
+        task = asyncio.create_task(
+            entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+        )
+    elif command == "resume":
+        task = asyncio.create_task(entity.async_send_command("resume"))
+    else:
+        task = asyncio.create_task(entity.async_return_to_base())
     try:
         for _ in range(30):
             waiters = getattr(command_lock, "_waiters", None)
@@ -932,6 +940,7 @@ async def test_after_room_stop_supersedes_queued_direct_room_clean(hass) -> None
 
         assert manager.managed_motion_is_current(serial_number, token)
         entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+        entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
     finally:
         if command_lock.locked():
             command_lock.release()

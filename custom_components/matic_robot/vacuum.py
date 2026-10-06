@@ -149,6 +149,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
         generation = self._plans.motion_generation(serial_number)
+        stop_request_generation = self._plans.stop_request_generation(serial_number)
         admission_epoch = self._plans.command_admission_epoch(serial_number)
         self._plans.require_command_admission(serial_number)
         await self._async_ensure_stop_settled(serial_number)
@@ -158,6 +159,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         async with self._plans.external_command(serial_number):
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, generation)
+            self._require_stop_request_generation(
+                serial_number, stop_request_generation
+            )
             await self._async_dispatch_admitted_command(command, run_id=None)
 
     async def _async_dispatch_admitted_command(
@@ -438,7 +442,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             or (bool(operational.error_codes) and not operational.is_charging)
             or (operational.low_charge and operational.is_charging)
         )
-        async with self._plans.external_motion(serial_number):
+        stop_request_generation = self._plans.stop_request_generation(serial_number)
+        async with self._plans.external_motion(
+            serial_number,
+            expected_stop_generation=stop_request_generation,
+        ):
+            self._require_stop_request_generation(
+                serial_number, stop_request_generation
+            )
             if stop_before_dock:
                 # STOP is the OEM final-return command, and DOCK sent while the
                 # task still runs is reinterpreted as recharge-and-resume, so
