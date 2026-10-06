@@ -93,7 +93,7 @@ rejected. Public edits fail visibly instead of acknowledging an unchanged plan o
 The executor uses one bounded leg observer across checkpoint and room-metadata
 writes. It retains room, pause/resume, and terminal transitions during those awaits,
 rechecks native ownership before room effects, and removes its listener on exit.
-Stop/history regressions use synthetic state transitions; they do not establish physical acceptance. Product head `a9f5e4dcc957850e0f7f30bcc66bdb83f2f22b16` passes hosted [Test 37375038495](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37375038495) (3,905 tests, 16,771 statements, 100% coverage, quality/privacy/package gates), [Browser 37375038517](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37375038517) (1,058 cases, one named Firefox capability skip, bundle parity), and [Validate 37375038592](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37375038592) (HACS/Hassfest). The preceding head's hosted-runner acquisition failures are historical and establish no source result.
+Stop/history regressions use synthetic state transitions; they do not establish physical acceptance. Historical head `a9f5e4d` passed Test (3,905/16,771 statements at 100%), Browser (1,058/one Firefox capability skip, bundle parity) and Validate (HACS/Hassfest). Those checks apply only to that source snapshot.
 
 Review identified duplicate pause observations and lost resume evidence during
 slow persistence. Each queued suspension now retains its own resume evidence.
@@ -109,16 +109,11 @@ cancellation retains precedence, including during reader cleanup. Tests reproduc
 both faults before repair and cover missing/wrong rooms, valid later resumption,
 repeated faults, overflow, blocked readers, and cancellation races.
 
-Review `5420174821` identified an admission gap before the first teardown await.
-The repair fences queued requests by epoch, drains accepted lock owners, and permits
-only current-token managed STOP cleanup. Tests cover reopen, rejected-owner preservation,
-accepted drain, native preflight, and late matching dock evidence after metadata shutdown.
-The frozen repair passes 3,905 tests, 100% coverage (16,771 statements), static checks,
-and privacy. The matching hosted checks above pass. Independent source review found
-no remaining issue. The provider's [finding-free response](https://github.com/ProspectOre/matic-home-assistant/pull/207#issuecomment-6003257337)
-uses only an abbreviated commit; historical event acknowledgements also remain
-unverified. Supported exact-comparison review reconciliation is required, without
-an override or duplicate request. No runtime acceptance is inferred.
+Review `5420174821` identified an admission gap before teardown's first await. The
+earlier lifecycle repair epoch-fences queued requests and limits managed STOP
+cleanup to its current token. At `2b5e8d6`, Stop admits one command-lock lease and
+captures its run ID before awaiting persistence. Tests cover reopen, rejected owners, accepted drain,
+native preflight, and late dock evidence. Test [37391804179](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37391804179) passed 3,919 tests/16,789 statements at 100%, static/privacy/package/fresh-import; Browser [37391804151](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37391804151) passed 1,063 cases, one existing skip and bundle parity; Validate [37391804438](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37391804438) passed HACS/Hassfest. Stop finding `4190010910` was fixed in [reply `4190132080`](https://github.com/ProspectOre/matic-home-assistant/pull/207#discussion_r4190132080). Finding-free ordinary comment [`6006115263`](https://github.com/ProspectOre/matic-home-assistant/pull/207#issuecomment-6006115263) uses only a short OID and is not exact-head qualification. Gate [37392306320](https://github.com/ProspectOre/matic-home-assistant/actions/runs/37392306320) remains blocked on historical event acknowledgement. No override, merge, or runtime acceptance is inferred.
 
 ## Late cadence identity
 

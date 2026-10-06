@@ -1,69 +1,54 @@
-# Runtime-contract candidate: desktop measurement
+# Paired headed desktop receipt
 
-Measured October 5, 2026 at 09:46 PDT against clean product source
-`d9310fd75139302b8d00bd7ff20f943c043313dc`. This refresh qualifies the
-packaged synthetic desktop journey only. It does not qualify an installed RC,
-mobile devices, sustained resources, or live transport.
+Measured October 5, 2026 at 5:06 PM PDT (October 6, 00:06 UTC) against clean product source
+`2b5e8d6ead987e126752a13a8d0024abec8af8a5`. This qualifies only the packaged,
+synthetic desktop journey; it does not establish installed, mobile, sustained
+resource, GPU/FPS, or live-transport performance.
 
 ## Method and identity
 
-Command: `node scripts/measure_map_studio_performance.mjs v0.4.5 --headed`.
-The committed bundle was measured without rebuilding. The unchanged schema-5
-collector runs three AB/BA/AB pairs, with fresh contexts and the same 100-input
-journey in each sample: 60 view switches, five plan loops, and ten room-list
-loops after workflow warm-up. All 100 interactions were reported in each run.
-
-Headed Chromium 151.0.7922.34 ran on Apple M4/macOS arm64, 10 logical CPUs,
-1280×900/DPR 1, unthrottled loopback, no-store assets, and no tracing. External
-requests were blocked. No other local build/test process was found at preflight;
-other host activity was uncontrolled. Per-sample host load remains in the private
-receipt. Both builds used the same four-room, 5,300-point synthetic scene.
+The checkout-local physical lockfile assets were rebuilt with
+`npm run build:map-studio-v4`, then verified byte-identical to tracked hashes
+before measurement. The resulting bundle was measured in headed Chromium 151 on
+Apple M4/macOS arm64, 1280×900/DPR 1, unthrottled loopback and no-store assets.
+Three AB/BA/AB pairs used fresh contexts and the same four-room, 5,300-point
+synthetic scene. Each sample recorded 100 inputs: 60 view switches, five plan
+loops and ten room-list loops after workflow warm-up. No tracing was enabled.
 
 | Input | SHA-256 or commit |
 |---|---|
 | v0.4.5 control | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Control bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate bundle | `f4659af917a4c4f53b626157566c2ec618cac4935b0483ebdee369faeee39262` |
+| Candidate bundle | `79535d0aca5d275e49497533f20565947202b73e693f521f48ab11747c66c084` |
 | Collector | `882e2814c6f9a6527f640d5cdaa10ff09582d3c5e421ca14320d2e13a3bc747d` |
 | Common scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
-## Observed results
+## Results
 
-| Measure | v0.4.5 | Candidate | Inherited gate |
+| Measure | v0.4.5 | Candidate | Gate |
 |---|---:|---:|---:|
-| Complete registered startup, gzip estimate | Unmeasured | 90,671 bytes | ≤92,160 bytes |
-| Added lazy workflow, gzip estimate | 0 bytes | 11,905 bytes | ≤30,720 bytes |
-| Input p95, three runs | 56 / 56 / 56 ms | 56 / 56 / 56 ms | ≤100 ms |
-| Maximum input, three runs | 56 / 56 / 56 ms | 56 / 56 / 56 ms | Reported |
-| Tasks over 50 ms, three runs | 0 / 0 / 0 | 0 / 0 / 0 | No routine task over 50 ms |
+| Complete registered startup gzip estimate | Not measured | 90,778 bytes | ≤92,160 bytes |
+| Added lazy workflow gzip estimate | 0 bytes | 11,905 bytes | ≤30,720 bytes |
+| Input p95, three runs | 56/56/56 ms | 56/56/56 ms | ≤100 ms |
+| Tasks over 50 ms, three runs | 0/0/0 | 0/0/0 | No routine task over 50 ms |
 
-Startup includes 88,628 bytes of production panel JavaScript and 2,043 bytes
-of HA-registered extra modules. The review-only harness is reported separately.
-These are level-9 gzip estimates from requested files; the build-graph estimates
-use different compression/accounting and should not be substituted for this
-complete-registration total. The historical control lacks host-wide byte
-accounting. No input-speed improvement over the control is demonstrated.
+The candidate startup includes 88,735 bytes of panel JavaScript and 2,043 bytes
+of HA-registered modules. The 4,598-byte review-only harness is separate. These
+are level-9 gzip estimates; the loopback server sends uncompressed JavaScript.
+The baseline is panel-only and has no host-wide byte total. The equal p95 does
+not demonstrate an input-speed improvement.
 
-Event Timing retains the 16 ms threshold, native quantization, and conservative
-imputation for unreported interactions. These observations are a lab proxy,
-not field INP; [lab and field measurements serve different purposes](https://web.dev/articles/vitals).
-The earlier unexplained input outlier and traced compositor waits remain
-recorded in [prior diagnostics](performance-0.5-diagnostics.md).
+## Limits
 
-## Limits and remaining qualification
+The run took 48.85 seconds. A 100 ms sampler measured a peak owned process-tree
+RSS of 929,972,224 bytes; all owned processes exited, tracked hashes were
+unchanged and the temporary test-Python `.venv` symlink was removed. This short sampled
+peak is not sustained-memory proof and may miss short-lived descendants.
+Post-journey heap samples do not establish retention bounds.
 
-The run finished in 46.8 seconds and closed its browser and local server.
-Temporary dependency links were removed, and no Chromium process remained.
-The external controller's process-group memory counter omitted detached browser
-descendants; it is not used as aggregate RSS or browser-resource proof.
-Post-journey JavaScript heap snapshots likewise do not establish retention bounds.
-
-This harness does not parameterize larger scenes, measure parsing/decompression
-under load, track physical presentation FPS, or exercise live HA traffic and
-recovery. Sustained CPU/heap/GPU, actual Android/iOS touch and safe areas, native
-zoom/assistive technology, and installed transport fault/fallback evidence remain
-open. The earlier large-scene diagnostics used different code and methods.
-
-Live transport remains default-OFF. Proposed 1 s status, 3 s resynchronization,
-and 70% request-reduction targets remain unqualified. The authoritative release
-dispositions are in the [acceptance matrix](acceptance-0.5.md).
+The synthetic run does not measure larger-scene parsing/decompression, physical
+presentation FPS, mobile interaction, live HA traffic or recovery. Sustained
+CPU/heap/GPU, installed behavior, device/accessibility, and live transport
+qualification remain open. Live transport remains default-OFF; proposed status,
+resynchronization and request-reduction targets are unqualified. See the
+[acceptance matrix](acceptance-0.5.md) for release gates.
