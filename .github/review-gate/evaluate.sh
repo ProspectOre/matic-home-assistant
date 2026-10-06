@@ -2791,20 +2791,21 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
       *) settled_gate_ids+="${settled_gate_ids:+$'\n'}$candidate_id" ;;
     esac
   }
-  retain_native_lifecycle_failure() {
-    local candidate_id="$1" observation attempt origin_head context description trusted_pending
+  retain_native_lifecycle_observation() {
+    local candidate_id="$1" observation attempt origin_head context description trusted_pending kind
     # Classification alone grants nothing. Only the LOCAL fresh-review path may
     # defer this lifecycle evaluation; all real event receipts still apply.
     [[ -n "$native_codex_receipt" && -z "${GITHUB_RUN_ID:-}" \
         && "${GITHUB_ACTIONS:-}" != true ]] || return 1
     if ! observation="$(python3 "$issue_comment_receipts_script" \
         --repo "$REPO" --head "$head_sha" --pr "$pr_number" \
-        --observe-lifecycle-failure "$candidate_id" --native-workflow-id "$gate_id" \
+        --observe-lifecycle-run "$candidate_id" --native-workflow-id "$gate_id" \
         --workflow-file "$gate_file")"; then
       return 1
     fi
     jq -e --arg id "$candidate_id" --arg pr "$pr_number" --arg repo "$REPO" --arg head "$head_sha" '
-      .kind == "lifecycle-evaluation-failure" and .state == "pending"
+      (.kind == "lifecycle-evaluation-failure"
+        or .kind == "lifecycle-evaluation-interruption") and .state == "pending"
       and .reviewAuthority == false and (.run | tostring) == $id
       and (.pr | tostring) == $pr and .repo == $repo
       and (.attempt | type == "number" and . > 0 and . == floor)
@@ -2815,8 +2816,18 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     ' <<< "$observation" >/dev/null || return 1
     attempt="$(jq -r '.attempt' <<< "$observation")" || return 1
     origin_head="$(jq -r '.originHead' <<< "$observation")" || return 1
-    context="review-lifecycle-failure/$candidate_id/$attempt"
-    description="Lifecycle failure PR #$pr_number; run $candidate_id/$attempt; origin $origin_head; no review ACK"
+    kind="$(jq -r '.kind' <<< "$observation")" || return 1
+    case "$kind" in
+      lifecycle-evaluation-failure)
+        context="review-lifecycle-failure/$candidate_id/$attempt"
+        description="Lifecycle failure PR #$pr_number; run $candidate_id/$attempt; origin $origin_head; no review ACK"
+        ;;
+      lifecycle-evaluation-interruption)
+        context="review-lifecycle-interruption/$candidate_id/$attempt"
+        description="Lifecycle interruption PR #$pr_number; run $candidate_id/$attempt; origin $origin_head; no review ACK"
+        ;;
+      *) return 1 ;;
+    esac
     trusted_pending="$(jq -e --arg context "$context" --arg description "$description" '
       [.[][] | select(.context == $context
         and .creator.login == "github-actions[bot]"
@@ -2833,7 +2844,7 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     case $'\n'"$settled_gate_ids"$'\n' in *$'\n'"$candidate_id"$'\n'*) ;;
       *) settled_gate_ids+="${settled_gate_ids:+$'\n'}$candidate_id" ;;
     esac
-    echo "Retained lifecycle evaluation failure $candidate_id/$attempt; fresh native qualification remains required." >&2
+    echo "Retained $kind $candidate_id/$attempt; fresh native qualification remains required." >&2
   }
   track_completed_gate_run() {
     local candidate_id="$1" attestation_result
@@ -3042,7 +3053,7 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
                 settlement_description="Gate run $active_id skipped event work for PR #$pr_number on head $head_sha"
               elif ! jq -e '.conclusion == "success"' <<< "$known_snapshot" >/dev/null; then
                 if jq -e '.event == "pull_request_target"' <<< "$known_snapshot" >/dev/null \
-                    && retain_native_lifecycle_failure "$active_id"; then
+                    && retain_native_lifecycle_observation "$active_id"; then
                   continue
                 fi
                 if ! jq -e '.event == "issue_comment"' <<< "$known_snapshot" >/dev/null ||
@@ -3420,6 +3431,9 @@ if [[ -n "$native_codex_receipt" ]]; then
   # Unsupported comparisons never start a native invocation or orphan a hold.
   # The existing GitHub paths can still evaluate diverged branches.
   python3 -I "$native_codex_helper" check-comparison --objects "$native_codex_objects" \
+    --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" || exit 1
+  # Reject unsupported installed protocols before creating an attempt hold.
+  python3 -I "$native_codex_helper" check-protocol --objects "$native_codex_objects" \
     --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" || exit 1
   # Shared hold: independent GitHub audits cannot republish success during live
   # review. Establish it before revoking the required gate so a failed revocation
