@@ -5792,8 +5792,10 @@ def _may_contain_rendered_report_link(source):
     )
     for variant in variants:
         folded = re.sub(r"[*_~`\\]", "", variant).casefold()
-        if all(re.search(rf"\b{word}\b", folded)
-               for word in ("view", "security", "finding", "report")):
+        # HTML tags can splice one word and break the next. Substring checks
+        # intentionally over-approximate; the Markdown AST decides whether a
+        # rendered report link exists.
+        if all(word in folded for word in ("view", "security", "finding", "report")):
             return True
     return False
 

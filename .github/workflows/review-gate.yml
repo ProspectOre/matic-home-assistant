@@ -75,7 +75,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_PR: ${{ github.event.issue.number }}
           POLICY_REF: ${{ github.workflow_sha }}
-          EXPECTED_REVIEW_SECTIONS_SHA256: '0ff46c9da3bfadf0a4d5d0334fed43a350256b9c46fa2f06073747f7d634a0b7'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'eafe50462cb232359cf2f617fcda75090292c78f4fe972b6966eb53d3fd58dde'
         shell: bash
         run: |
           set -euo pipefail
@@ -107,39 +107,84 @@ jobs:
             echo "Unable to publish pending review-gate status on $target_head after three attempts." >&2
             return 1
           }
-          # Revoke an independently associated full event head before the live
-          # PR lookup can fail. Footer text supplies a pending-only hint, never
-          # a verdict or receipt; GitHub must associate it with this exact PR.
+          hold_unverified_footer_association() {
+            echo "Could not verify connector commit association; live PR head $live_head remains pending." >&2
+            exit 1
+          }
+          # The connector footer supplies only a pending hint. Prove its full
+          # OID belongs to this PR before classification; if that lookup fails
+          # or is malformed, keep it pending-only and abort.
           comment_heads="$(jq -r --arg pr "$EVENT_PR" '
             select(.issue.pull_request != null and (.issue.number | tostring) == $pr)
             | [.comment.body // "", .changes.body.from // ""]
             | [.[] | select(type == "string")
               | scan("(?im)^[ ]{0,3}[*]{0,2}reviewed commit:[*]{0,2}[ \\t]*\\x60([0-9a-f]{40})\\x60[ \\t]*\\r?$")
               | .[0] | ascii_downcase] | unique[]' "$GITHUB_EVENT_PATH")"
+          resolve_live_pr_head() {
+            local attempt pr_snapshot resolved_head
+            for attempt in 1 2 3; do
+              if pr_snapshot="$(gh api "repos/$REPO/pulls/$EVENT_PR")" \
+                  && resolved_head="$(jq -er '.head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' <<< "$pr_snapshot")" \
+                  && [[ "$resolved_head" =~ ^[0-9a-f]{40}$ ]]; then
+                live_head="$resolved_head"
+                return 0
+              fi
+              resolved_head=""
+              [[ "$attempt" != 3 ]] || break
+              sleep "$attempt"
+            done
+            live_head=""
+            return 1
+          }
+          live_head=""
+          resolve_live_pr_head || true
+          # Hold the actual PR candidate before the fallible footer association
+          # lookup, which may refer to an older commit or return malformed data.
+          if [[ -n "$live_head" ]]; then
+            write_pending_gate_status "$live_head" \
+              "Recording connector review delivery for PR #$EVENT_PR" || exit 1
+          fi
           while IFS= read -r comment_head; do
             [[ "$comment_head" =~ ^[0-9a-f]{40}$ ]] || continue
-            if gh api "repos/$REPO/commits/$comment_head/pulls?per_page=100" --paginate --slurp \
-                | jq -e --arg repo "$REPO" --argjson pr "$EVENT_PR" '
-                    if type != "array" or any(.[]; type != "array") then
-                      error("Invalid commit-associated PR pages")
-                    else any(.[][]; .number == $pr and .base.repo.full_name == $repo) end' >/dev/null; then
-              write_pending_gate_status "$comment_head" \
-                "Bound connector delivery pending classification for PR #$EVENT_PR" || exit 1
+            if ! association_pages="$(gh api "repos/$REPO/commits/$comment_head/pulls?per_page=100" \
+                --paginate --slurp)"; then
+              [[ -n "$live_head" ]] || {
+                echo "Could not verify connector association and could not resolve a safe live PR status target." >&2
+                exit 1
+              }
+              hold_unverified_footer_association
             fi
+            if ! association_result="$(jq -r --arg repo "$REPO" --argjson pr "$EVENT_PR" '
+                if type != "array" or any(.[]; type != "array") then
+                  error("Invalid commit-associated PR pages")
+                elif any(.[][]; type != "object" or (.number | type != "number")
+                    or (.base.repo.full_name | type != "string")) then
+                  error("Invalid commit-associated PR entry")
+                elif any(.[][]; .number == $pr and .base.repo.full_name == $repo) then
+                  "associated"
+                else
+                  "not-associated"
+                end' <<< "$association_pages")"; then
+              [[ -n "$live_head" ]] || {
+                echo "Could not verify connector association and could not resolve a safe live PR status target." >&2
+                exit 1
+              }
+              hold_unverified_footer_association
+            fi
+            case "$association_result" in
+              associated)
+                write_pending_gate_status "$comment_head" \
+                  "Bound connector delivery pending classification for PR #$EVENT_PR" || exit 1
+                ;;
+              not-associated) ;;
+              *) hold_unverified_footer_association ;;
+            esac
           done <<< "$comment_heads"
-          live_head=""
-          for attempt in 1 2 3; do
-            if pr_snapshot="$(gh api "repos/$REPO/pulls/$EVENT_PR")" \
-                && live_head="$(jq -er '.head.sha | select(type == "string" and test("^[0-9a-f]{40}$"))' <<< "$pr_snapshot")" \
-                && [[ "$live_head" =~ ^[0-9a-f]{40}$ ]]; then break; fi
-            live_head=""
-            [[ "$attempt" != 3 ]] || exit 1
-            sleep "$attempt"
-          done
-          # Revoke a prior green result before fallible parser or association
-          # reads. Neutral deliveries can be reconciled by the evaluator.
-          write_pending_gate_status "$live_head" \
-            "Recording connector review delivery for PR #$EVENT_PR" || exit 1
+          if [[ -z "$live_head" ]]; then
+            resolve_live_pr_head || exit 1
+            write_pending_gate_status "$live_head" \
+              "Recording connector review delivery for PR #$EVENT_PR" || exit 1
+          fi
           fail_closed_load() {
             local reason="$1"
             write_pending_gate_status "$live_head" \
@@ -711,7 +756,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_SHA256: '1ec0240ccc53e1eaf32ecb5ba709cee1dae437519601549865a469325dcb3807'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_REVIEW_SECTIONS_SHA256: '0ff46c9da3bfadf0a4d5d0334fed43a350256b9c46fa2f06073747f7d634a0b7'
+          EXPECTED_REVIEW_SECTIONS_SHA256: 'eafe50462cb232359cf2f617fcda75090292c78f4fe972b6966eb53d3fd58dde'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'a855343df70b96ba7bd5cee10b651aa16d88a4b6c508e6c046b897acc35a471d'
         shell: bash
         run: |
