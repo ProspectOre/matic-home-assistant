@@ -5811,7 +5811,9 @@ def _rendered_report_link(tokens, *, literal_only=False):
                 code_depth = max(0, code_depth - 1) if tag.group(1) else code_depth + 1
         if (kind == "link" and not code_depth and not token.get("_review_url")
                 and (not literal_only or token.get("_literal_report_link"))):
-            rendered = _markdown_text(token.get("children", ()), diagnostic_comments=True)
+            rendered = _markdown_text(
+                token.get("children", ()), diagnostic_comments=True
+            )
             label = " ".join(rendered.split()).casefold()
             if label == "view security finding report":
                 return True
@@ -6587,7 +6589,7 @@ def _details_code_masked_source(text):
         raw = source[first:last]
         # Keep nested raw HTML blocks, including literal backticks in divs.
         clean = _without_inline_code(raw)
-        def composed_priority(piece, first=first):
+        def composed_priority(piece, first=first, raw=raw):
             # Both a priority and the report-link label require an ASCII P.
             # Keep entity spellings eligible before any visibility/code masks;
             # image-only regions otherwise need no inline AST construction.
