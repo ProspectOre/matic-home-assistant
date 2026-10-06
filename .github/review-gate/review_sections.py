@@ -5786,13 +5786,16 @@ def _empty_comment_priority_source(source):
 def _may_contain_rendered_report_link(source):
     """Cheap conservative prefilter; the Markdown AST remains authoritative."""
     candidate = html.unescape(source)
-    candidate = re.sub(r"<!--.*?-->|<[^>]*>", "", candidate, flags=re.S)
-    candidate = re.sub(r"[*_~`\\]", "", candidate)
-    folded = candidate.casefold()
-    return all(
-        re.search(rf"\b{word}\b", folded)
-        for word in ("view", "security", "finding", "report")
+    variants = (
+        re.sub(r"<!--.*?-->|<[^>]*>", "", candidate, flags=re.S),
+        re.sub(r"<!--.*?-->|<[^>]*>", " ", candidate, flags=re.S),
     )
+    for variant in variants:
+        folded = re.sub(r"[*_~`\\]", "", variant).casefold()
+        if all(re.search(rf"\b{word}\b", folded)
+               for word in ("view", "security", "finding", "report")):
+            return True
+    return False
 
 
 def _rendered_report_link(tokens, *, literal_only=False):
