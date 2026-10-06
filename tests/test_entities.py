@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -162,8 +162,13 @@ def _floor_plan() -> FloorPlan:
 
 
 @asynccontextmanager
-async def _motion_context(_serial: str):
+async def _motion_context(_serial: str, **_kwargs: object):
     yield 0
+
+
+@contextmanager
+def _managed_stop_dispatch_context(_serial: str):
+    yield
 
 
 @asynccontextmanager
@@ -245,6 +250,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         active_run_id=MagicMock(return_value=None),
         has_managed_task=MagicMock(return_value=False),
         motion_generation=MagicMock(return_value=0),
+        stop_request_generation=MagicMock(return_value=0),
         stop_pending=MagicMock(return_value=False),
         async_mark_stop_pending=AsyncMock(),
         async_clear_stop_pending=AsyncMock(),
@@ -255,6 +261,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
         external_command=MagicMock(side_effect=_motion_context),
         external_motion=MagicMock(side_effect=_motion_context),
+        managed_stop_dispatch=MagicMock(side_effect=_managed_stop_dispatch_context),
         managed_command=MagicMock(side_effect=_managed_motion_context),
     )
     firmware = SimpleNamespace(
