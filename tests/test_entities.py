@@ -241,6 +241,8 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         cancel=MagicMock(return_value=True),
         request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
         async_checkpoint_stop_intent=AsyncMock(),
+        async_replace_managed_motion=AsyncMock(),
+        active_run_id=MagicMock(return_value=None),
         has_managed_task=MagicMock(return_value=False),
         motion_generation=MagicMock(return_value=0),
         stop_pending=MagicMock(return_value=False),
@@ -1858,7 +1860,9 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     # A user stop or dock ends the managed plan instead of letting the
     # runner treat the docked robot as a finished room and continue.
     assert plans.request_stop.call_count == 1
-    assert plans.external_motion.call_count == 2
+    assert plans.external_command.call_count == 2
+    assert plans.external_motion.call_count == 1
+    plans.async_replace_managed_motion.assert_awaited_once_with("synthetic-serial")
 
     await entity.async_clean_segments(["room-2"])
     coverage_call = coordinator.client.async_start_coverage.await_args

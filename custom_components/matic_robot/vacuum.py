@@ -136,40 +136,30 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "The command was superseded before it could run"
             )
 
-    async def _async_command(
-        self, command: UserCommand, *, replace_plan: bool = False
-    ) -> None:
+    async def _async_command(self, command: UserCommand) -> None:
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
-        active_run_id = getattr(self._plans, "active_run_id", None)
-        run_id = (
-            active_run_id(serial_number)
-            if command is UserCommand.STOP and callable(active_run_id)
-            else None
-        )
         generation = self._plans.motion_generation(serial_number)
         admission_epoch = self._plans.command_admission_epoch(serial_number)
         self._plans.require_command_admission(serial_number)
-        if command is not UserCommand.STOP:
-            await self._async_ensure_stop_settled(serial_number)
-            self._plans.require_command_admission(
-                serial_number, expected_epoch=admission_epoch
-            )
-        context = (
-            self._plans.external_motion(serial_number)
-            if replace_plan
-            else self._plans.external_command(serial_number)
+        await self._async_ensure_stop_settled(serial_number)
+        self._plans.require_command_admission(
+            serial_number, expected_epoch=admission_epoch
         )
-        async with context:
-            if command is not UserCommand.STOP:
-                await self._async_ensure_stop_settled(serial_number)
-                self._require_motion_generation(serial_number, generation)
-            await self.coordinator.client.async_send_user_command(command)
-            if command is UserCommand.STOP:
-                await self._plans.async_mark_stop_pending(serial_number, run_id=run_id)
-            await self.coordinator.async_request_refresh()
+        async with self._plans.external_command(serial_number):
+            await self._async_ensure_stop_settled(serial_number)
+            self._require_motion_generation(serial_number, generation)
+            await self._async_dispatch_admitted_command(command, run_id=None)
+
+    async def _async_dispatch_admitted_command(
+        self, command: UserCommand, *, run_id: str | None
+    ) -> None:
+        """Dispatch a command while the caller owns its command-lock lease."""
+        serial_number = self.coordinator.data.info.serial_number
+        await self.coordinator.client.async_send_user_command(command)
         if command is UserCommand.STOP:
-            self._schedule_dock_after_stop(serial_number, run_id=run_id)
+            await self._plans.async_mark_stop_pending(serial_number, run_id=run_id)
+        await self.coordinator.async_request_refresh()
 
     async def _async_ensure_stop_settled(self, serial_number: str) -> None:
         """Reject new motion while the firmware's graceful STOP is counting down."""
@@ -381,14 +371,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def async_stop(self, **kwargs: object) -> None:
         """Stop now or finish the active room according to the plan policy."""
-        decision = self._plans.request_stop(self.coordinator.data.info.serial_number)
-        await self._plans.async_checkpoint_stop_intent(
-            self.coordinator.data.info.serial_number, decision.behavior
-        )
-        if decision.behavior == "after_room":
-            return
-        self.coordinator.async_discard_current_room()
-        await self._async_command(UserCommand.STOP, replace_plan=True)
+        serial_number = self.coordinator.data.info.serial_number
+        run_id: str | None = None
+        async with self._plans.external_command(serial_number):
+            active_run_id = getattr(self._plans, "active_run_id", None)
+            run_id = active_run_id(serial_number) if callable(active_run_id) else None
+            decision = self._plans.request_stop(serial_number)
+            await self._plans.async_checkpoint_stop_intent(
+                serial_number, decision.behavior
+            )
+            if decision.behavior == "after_room":
+                return
+            self.coordinator.async_discard_current_room()
+            await self._plans.async_replace_managed_motion(serial_number)
+            await self._async_dispatch_admitted_command(UserCommand.STOP, run_id=run_id)
+        self._schedule_dock_after_stop(serial_number, run_id=run_id)
 
     async def async_return_to_base(self, **kwargs: object) -> None:
         """Send the robot to its dock and end any task driving it."""
