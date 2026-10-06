@@ -1227,7 +1227,7 @@ class CleaningPlanManager:
         """Transfer motion ownership to an admitted independent command."""
         if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
             self.cancellation_event(serial_number).set()
-            self._cancellation_reasons.setdefault(serial_number, "motion_replaced")
+            self._cancellation_reasons[serial_number] = "motion_replaced"
         self.cancel_reconciliation_tasks(serial_number)
         # Keep the settle countdown active, but revoke its persisted run owner:
         # replacement motion must not resume an obsolete dock watcher after a

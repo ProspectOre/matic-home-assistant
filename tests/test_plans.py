@@ -4558,6 +4558,13 @@ async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> N
         assert not manager.cancellation_event("serial").is_set()
         assert manager.motion_generation("serial") == motion_token
 
+        # Replacement supersedes a graceful-stop reason while the old executor
+        # still holds its lock and persisted plan snapshot.
+        manager.mark_managed_stop("serial")
+        await manager.async_replace_managed_motion("serial")
+        assert manager.cancellation_reason("serial") == "motion_replaced"
+        assert manager.request_stop("serial").behavior == "immediate"
+
         changed = CleaningRoom("room-kitchen", "Kitchen", "mop", "standard")
         await manager.async_mark_started("serial", "away", changed)
         changed_record = manager.snapshot("serial")["plan_history"]["away"]["rooms"][
