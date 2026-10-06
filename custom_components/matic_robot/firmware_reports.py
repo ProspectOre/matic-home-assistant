@@ -12,6 +12,7 @@ import html
 import ipaddress
 import json
 import re
+import secrets
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -89,7 +90,40 @@ def prepare_release(
         if previous := robot.get("snapshot"):
             _advance_release(robot, previous)
     _advance_release(robot, current)
+    # Legacy reports used a key-derived ID. Keep their current ID during an
+    # in-place storage upgrade; subsequent release occurrences get fresh IDs.
+    release = robot["release_evidence"]
+    current_report = robot.get("firmware_report") or {}
+    current_identity = identity(current_report) if current_report else None
+    if (
+        current_report
+        and current_identity is not None
+        and "report_id" not in release
+        and current_identity[0] == release["key"][0]
+        and current_identity[2] == release["key"][2]
+        and current_identity[1] in (None, release["key"][1])
+    ):
+        legacy_id = current_report["id"]
+        retained_ids = {item.get("id") for item in robot.get("report_history", [])}
+        release["report_id"] = (
+            _new_report_id(robot) if legacy_id in retained_ids else legacy_id
+        )
     return cast(dict[str, Any] | None, robot["release_evidence"].get("baseline"))
+
+
+def _new_report_id(robot: dict[str, Any]) -> str:
+    """Mint an opaque ID unique among this robot's retained report occurrences."""
+    used: set[str] = set()
+    reports = [robot.get("firmware_report") or {}, *(robot.get("report_history") or [])]
+    for report in reports:
+        if isinstance(report.get("id"), str):
+            used.add(report["id"])
+    if release_id := (robot.get("release_evidence") or {}).get("report_id"):
+        used.add(release_id)
+    candidate = secrets.token_hex(12)
+    while candidate in used:
+        candidate = secrets.token_hex(12)
+    return candidate
 
 
 def _advance_release(robot: dict[str, Any], snapshot: dict[str, Any]) -> None:
@@ -118,8 +152,18 @@ def _advance_release(robot: dict[str, Any], snapshot: dict[str, Any]) -> None:
             if release
             else {}
         )
+        if (
+            release is not None
+            and previous_good
+            and previous_good.get("firmware_version") == release["key"][0]
+            and previous_good.get("protocol_version") is None
+            and release["key"][1] is not None
+        ):
+            previous_good = deepcopy(previous_good)
+            previous_good["protocol_version"] = release["key"][1]
         robot["release_evidence"] = release = {
             "key": key,
+            "report_id": _new_report_id(robot),
             "baseline": deepcopy(previous_good),
             "baseline_shapes": deepcopy(previous_shapes),
             "seen_shapes": {},
@@ -128,7 +172,10 @@ def _advance_release(robot: dict[str, Any], snapshot: dict[str, Any]) -> None:
         }
     _merge_shapes(release["seen_shapes"], shapes(snapshot))
     if not snapshot.get("failed_endpoints") and snapshot.get("endpoint_count"):
-        release["last_good"] = deepcopy(snapshot)
+        stored_snapshot = deepcopy(snapshot)
+        if stored_snapshot.get("protocol_version") is None and key[1] is not None:
+            stored_snapshot["protocol_version"] = key[1]
+        release["last_good"] = stored_snapshot
 
 
 def update_report(
@@ -136,7 +183,7 @@ def update_report(
 ) -> bool:
     """Reconcile a single scan; return whether meaningful evidence changed."""
     release = robot["release_evidence"]
-    report_id = digest(release["key"])
+    report_id = release["report_id"]
     report = robot.get("firmware_report")
     if report is None or report["id"] != report_id:
         if report is not None:
@@ -162,18 +209,34 @@ def update_report(
             "investigation": {"status": "pending"},
         }
     old_signature = _evidence_signature(report)
+    report["firmware_version"] = release["key"][0]
+    report["protocol_version"] = release["key"][1]
+    report["analysis_version"] = release["key"][2]
     sampled_at = snapshot.get("captured_at") or now.isoformat()
-    fresh_sample = report.get("last_sample_at") != sampled_at
+    sample_time = datetime.fromisoformat(sampled_at)
+    distinct_sample = report.get("last_sample_at") != sampled_at
+    last_confirmation = report.get("last_confirmation_at")
+    if last_confirmation is None and report.get("last_sample_at"):
+        # Upgrade old reports conservatively from their latest known sample.
+        last_confirmation = report["last_sample_at"]
+        report["last_confirmation_at"] = last_confirmation
+    accepted_sample = distinct_sample and (
+        last_confirmation is None
+        or sample_time
+        >= datetime.fromisoformat(last_confirmation) + CONFIRMATION_INTERVAL
+    )
     report["last_sample_at"] = sampled_at
     report["last_checked_at"] = now.isoformat()
-    report["scan_count"] += int(fresh_sample)
+    if accepted_sample:
+        report["last_confirmation_at"] = sampled_at
+        report["scan_count"] += 1
     report["endpoint_count"] = snapshot.get("endpoint_count", 0)
     report["failed_endpoints"] = snapshot.get("failed_endpoints", 0)
     report["reachable_endpoints"] = snapshot.get(
         "populated_endpoints", 0
     ) + snapshot.get("empty_endpoints", 0)
     context = snapshot.get("observation_context")
-    if context in _CONTEXTS:
+    if accepted_sample and context in _CONTEXTS:
         release["contexts"] = sorted(set(release["contexts"]) | {context})
     report["observation_contexts"] = list(release["contexts"])
     findings = report["findings"]
@@ -186,7 +249,14 @@ def update_report(
                 continue
             for path in sorted(set(paths) - set(release["baseline_shapes"][endpoint])):
                 _observe_finding(
-                    findings, report_id, "new_field", endpoint, path, now, fresh_sample
+                    findings,
+                    report_id,
+                    "new_field",
+                    endpoint,
+                    path,
+                    now,
+                    sample_time,
+                    accepted_sample,
                 )
     failing = {
         endpoint["name"]
@@ -202,7 +272,14 @@ def update_report(
     }
     for endpoint in sorted(failing):
         _observe_finding(
-            findings, report_id, "read_failure", endpoint, None, now, fresh_sample
+            findings,
+            report_id,
+            "read_failure",
+            endpoint,
+            None,
+            now,
+            sample_time,
+            accepted_sample,
         )
     for finding in findings.values():
         if finding["kind"] == "read_failure" and finding["endpoint"] in responding:
@@ -224,15 +301,17 @@ def update_report(
         report["revision"] += 1
         report["evidence_revision"] += 1
         _reset_investigation(report)
+    if not failing:
+        report["failure_scan_count"] = 0
+    elif accepted_sample:
+        report["failure_scan_count"] = report.get("failure_scan_count", 0) + 1
     delay = DISCOVERY_INTERVAL
     if report["scan_count"] < MAX_CONFIRMATION_SCANS or (
         failing and report.get("failure_scan_count", 0) < MAX_CONFIRMATION_SCANS
     ):
         delay = CONFIRMATION_INTERVAL
-    report["failure_scan_count"] = (
-        report.get("failure_scan_count", 0) + 1 if failing else 0
-    )
-    robot["next_firmware_scan_at"] = (now + delay).isoformat()
+    anchor = datetime.fromisoformat(report["last_confirmation_at"])
+    robot["next_firmware_scan_at"] = (anchor + delay).isoformat()
     return changed
 
 
@@ -243,7 +322,8 @@ def _observe_finding(
     endpoint: str,
     path: str | None,
     now: datetime,
-    fresh: bool,
+    sample_time: datetime,
+    accepted_sample: bool,
 ) -> None:
     key = digest([report_id, kind, endpoint, path])
     finding = findings.get(key)
@@ -260,15 +340,28 @@ def _observe_finding(
             "endpoint": endpoint,
             "path": path,
             "status": "first_observed",
-            "first_seen_at": now.isoformat(),
-            "observation_count": 0,
-            "consecutive_observations": 0,
+            "first_seen_at": sample_time.isoformat(),
+            "observation_count": 1,
+            "consecutive_observations": 1,
+            "last_confirmation_at": sample_time.isoformat(),
             "meaning": "unknown",
             "supported_capability": False,
         }
-    if fresh:
+    elif finding["status"] == "recovered":
+        finding["observation_count"] += 1
+        finding["consecutive_observations"] = 1
+        finding["last_confirmation_at"] = sample_time.isoformat()
+    elif (
+        accepted_sample
+        and sample_time
+        >= datetime.fromisoformat(
+            finding.get("last_confirmation_at", finding["first_seen_at"])
+        )
+        + CONFIRMATION_INTERVAL
+    ):
         finding["observation_count"] += 1
         finding["consecutive_observations"] += 1
+        finding["last_confirmation_at"] = sample_time.isoformat()
     finding["last_seen_at"] = now.isoformat()
     finding["status"] = (
         "observed_again"
@@ -281,6 +374,12 @@ def _observe_finding(
 def _evidence_signature(report: dict[str, Any]) -> str:
     return digest(
         [
+            report.get("firmware_version"),
+            report.get("protocol_version"),
+            report.get("analysis_version"),
+            report.get("previous_version"),
+            report.get("previous_protocol"),
+            report.get("baseline_available"),
             report.get("scan_status"),
             [(key, item["status"]) for key, item in sorted(report["findings"].items())],
         ]
@@ -293,7 +392,7 @@ def scan_due(robot: dict[str, Any], now: datetime, context: str | None = None) -
     if due is None or now >= datetime.fromisoformat(due):
         return True
     report = robot.get("firmware_report") or {}
-    last = report.get("last_checked_at")
+    last = report.get("last_confirmation_at")
     return bool(
         context in _CONTEXTS
         and context not in report.get("observation_contexts", [])
