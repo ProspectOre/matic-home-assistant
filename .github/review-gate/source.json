@@ -24,7 +24,7 @@
     "version": 1,
     "workflow": "review-gate.yml",
     "ref": "refs/heads/main",
-    "sha256": "477d720beaa88ef31694767a1447d1a59c67c35937596ec5a62836af6aec5a39",
+    "sha256": "36996ed414d1066da07865caafd7a0ba851955f0eaaf2d1ea06a183e967537fc",
     "completionWorkflow": "review-gate-capture-completion.yml",
     "completionSha256": "929cba1573057c12eb9f4662441938be01f10e99091c634b7591899931d55217"
   },

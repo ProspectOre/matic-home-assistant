@@ -108,6 +108,15 @@ jobs:
             return 1
           }
           hold_unverified_footer_association() {
+            if [[ -z "$live_head" ]]; then
+              if resolve_live_pr_head; then
+                write_pending_gate_status "$live_head" \
+                  "Recording unverified connector review delivery for PR #$EVENT_PR" || exit 1
+              else
+                echo "Could not verify connector commit association or resolve a safe live PR status target." >&2
+                exit 1
+              fi
+            fi
             echo "Could not verify connector commit association; live PR head $live_head remains pending." >&2
             exit 1
           }
@@ -148,10 +157,6 @@ jobs:
             [[ "$comment_head" =~ ^[0-9a-f]{40}$ ]] || continue
             if ! association_pages="$(gh api "repos/$REPO/commits/$comment_head/pulls?per_page=100" \
                 --paginate --slurp)"; then
-              [[ -n "$live_head" ]] || {
-                echo "Could not verify connector association and could not resolve a safe live PR status target." >&2
-                exit 1
-              }
               hold_unverified_footer_association
             fi
             if ! association_result="$(jq -r --arg repo "$REPO" --argjson pr "$EVENT_PR" '
@@ -160,21 +165,40 @@ jobs:
                 elif any(.[][]; type != "object" or (.number | type != "number")
                     or (.base.repo.full_name | type != "string")) then
                   error("Invalid commit-associated PR entry")
-                elif any(.[][]; .number == $pr and .base.repo.full_name == $repo) then
-                  "associated"
                 else
-                  "not-associated"
+                  [.[][] | select(.number == $pr and .base.repo.full_name == $repo)
+                    | .head.sha] as $heads
+                  | if ($heads | length) == 0 then
+                      "not-associated"
+                    elif any($heads[]; if type == "string" then
+                        (test("^[0-9a-f]{40}$") | not)
+                      else true end) then
+                      error("Invalid associated pull-request head")
+                    elif ($heads | unique | length) != 1 then
+                      error("Conflicting associated pull-request heads")
+                    else
+                      "associated\t" + $heads[0]
+                    end
                 end' <<< "$association_pages")"; then
-              [[ -n "$live_head" ]] || {
-                echo "Could not verify connector association and could not resolve a safe live PR status target." >&2
-                exit 1
-              }
               hold_unverified_footer_association
             fi
             case "$association_result" in
-              associated)
+              associated$'\t'* )
+                associated_head="${association_result#*$'\t'}"
+                [[ "$associated_head" =~ ^[0-9a-f]{40}$ ]] || hold_unverified_footer_association
                 write_pending_gate_status "$comment_head" \
                   "Bound connector delivery pending classification for PR #$EVENT_PR" || exit 1
+                # The commit-association response includes the PR's current
+                # head. If the direct PR read was transiently unavailable,
+                # use this independently validated full OID to hold that
+                # candidate before classifying an older footer.
+                if [[ -z "$live_head" || "$live_head" != "$associated_head" ]]; then
+                  live_head="$associated_head"
+                  if [[ "$comment_head" != "$associated_head" ]]; then
+                    write_pending_gate_status "$live_head" \
+                      "Recording connector review delivery for PR #$EVENT_PR" || exit 1
+                  fi
+                fi
                 ;;
               not-associated) ;;
               *) hold_unverified_footer_association ;;
