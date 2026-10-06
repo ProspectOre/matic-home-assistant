@@ -849,3 +849,35 @@ async def test_stop_cancels_undispatched_direct_motion(
     client = entry.runtime_data.coordinator.client
     client.async_start_coverage.assert_not_awaited()
     client.async_send_user_command.assert_not_awaited()
+
+
+async def test_stop_supersedes_direct_room_clean_queued_for_command_lock(hass) -> None:
+    """A queued direct room clean cannot replace a Stop issued while it waits."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    serial_number = "synthetic-serial"
+    lock = manager.command_lock(serial_number)
+    await lock.acquire()
+
+    task = asyncio.create_task(
+        entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+    )
+    for _ in range(30):
+        waiters = getattr(lock, "_waiters", None)
+        if waiters is not None and any(not waiter.done() for waiter in waiters):
+            break
+        await asyncio.sleep(0)
+    else:
+        lock.release()
+        await task
+        pytest.fail("Direct room clean never queued for the command lock")
+
+    manager.request_stop(serial_number)
+    lock.release()
+
+    with pytest.raises(ServiceValidationError, match="superseded"):
+        await task
+    entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()

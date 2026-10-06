@@ -162,7 +162,7 @@ def _floor_plan() -> FloorPlan:
 
 
 @asynccontextmanager
-async def _motion_context(_serial: str):
+async def _motion_context(_serial: str, **_kwargs: object):
     yield 0
 
 

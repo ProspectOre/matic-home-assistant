@@ -1538,20 +1538,28 @@ class CleaningPlanManager:
         )
 
     @asynccontextmanager
-    async def external_motion(self, serial_number: str) -> AsyncIterator[int]:
-        """Replace managed ownership only after external command admission."""
+    async def external_motion(
+        self, serial_number: str, *, expected_generation: int | None = None
+    ) -> AsyncIterator[int | None]:
+        """Replace managed ownership only for an admitted, current command."""
         _admission, epoch = self._command_admission.get(
             serial_number, _OPEN_COMMAND_ADMISSION
         )
         self.require_command_admission(serial_number, expected_epoch=epoch)
         async with self.command_lock(serial_number):
             self.require_command_admission(serial_number, expected_epoch=epoch)
-            reconciliation_removed = self.replace_managed_motion(serial_number)
-            generation = self.motion_generation(serial_number)
-            await self._async_persist_reconciliation_removal(
-                serial_number, reconciliation_removed
-            )
-            yield generation
+            if (
+                expected_generation is not None
+                and self.motion_generation(serial_number) != expected_generation
+            ):
+                yield None
+            else:
+                reconciliation_removed = self.replace_managed_motion(serial_number)
+                generation = self.motion_generation(serial_number)
+                await self._async_persist_reconciliation_removal(
+                    serial_number, reconciliation_removed
+                )
+                yield generation
 
     @asynccontextmanager
     async def managed_command(

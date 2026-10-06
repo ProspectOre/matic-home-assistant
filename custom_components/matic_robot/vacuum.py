@@ -240,13 +240,16 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         context = (
             self._plans.managed_command(serial_number, motion_token)
             if motion_token is not None
-            else self._plans.external_motion(serial_number)
+            else self._plans.external_motion(
+                serial_number, expected_generation=request_generation
+            )
         )
         async with context as dispatch_generation:
             expected_generation = (
-                request_generation if motion_token is not None else dispatch_generation
+                request_generation
+                if motion_token is not None or dispatch_generation is None
+                else dispatch_generation
             )
-            self._require_motion_generation(serial_number, expected_generation)
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, expected_generation)
             floor_plan = self._current_floor_plan(command_floor_token)
