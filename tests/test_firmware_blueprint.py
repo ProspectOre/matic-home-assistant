@@ -12,8 +12,11 @@ from homeassistant.components.automation.config import (
 from homeassistant.components.blueprint.const import CONF_BLUEPRINT, CONF_USE_BLUEPRINT
 from homeassistant.components.blueprint.models import Blueprint, BlueprintInputs
 from homeassistant.core import Context, HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.script import Script
 from homeassistant.util.yaml import load_yaml
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 ROOT = Path(__file__).parents[1]
 BLUEPRINT_PATH = ROOT / "blueprints/automation/matic_robot/firmware_intelligence.yaml"
@@ -45,9 +48,49 @@ def report(*, attention: bool = False, pending: bool = True) -> dict[str, Any]:
 
 async def make_script(
     hass: HomeAssistant,
-    current_report: dict[str, Any],
+    current_report: dict[str, Any] | None,
+    *,
+    vacuum_entity: str = VACUUM,
+    firmware_sensor: str = SENSOR,
+    separate_devices: bool = False,
+    register_sensor_device: bool = True,
+    sensor_state: str = "needs_attention",
 ) -> Script:
     """Substitute real blueprint inputs and compile its action sequence in HA."""
+    device_registry = dr.async_get(hass)
+    entity_registry = er.async_get(hass)
+    vacuum_entry = MockConfigEntry(domain="matic_robot", data={}, options={})
+    vacuum_entry.add_to_hass(hass)
+    vacuum_device = device_registry.async_get_or_create(
+        config_entry_id=vacuum_entry.entry_id,
+        identifiers={("matic_robot", vacuum_entity)},
+        name="Synthetic vacuum device",
+    )
+    if separate_devices:
+        sensor_entry = MockConfigEntry(domain="matic_robot", data={}, options={})
+        sensor_entry.add_to_hass(hass)
+        sensor_device = device_registry.async_get_or_create(
+            config_entry_id=sensor_entry.entry_id,
+            identifiers={("matic_robot", firmware_sensor)},
+            name="Synthetic sensor device",
+        )
+    else:
+        sensor_device = vacuum_device
+    entity_registry.async_get_or_create(
+        "vacuum",
+        "matic_robot",
+        vacuum_entity,
+        suggested_object_id=vacuum_entity.split(".", 1)[1],
+        device_id=vacuum_device.id,
+    )
+    if register_sensor_device:
+        entity_registry.async_get_or_create(
+            "sensor",
+            "matic_robot",
+            firmware_sensor,
+            suggested_object_id=firmware_sensor.split(".", 1)[1],
+            device_id=sensor_device.id,
+        )
     content = load_yaml(BLUEPRINT_PATH)
     blueprint = Blueprint(
         content,
@@ -62,16 +105,18 @@ async def make_script(
             CONF_USE_BLUEPRINT: {
                 "path": str(BLUEPRINT_PATH),
                 "input": {
-                    "vacuum": VACUUM,
-                    "firmware_sensor": SENSOR,
+                    "vacuum": vacuum_entity,
+                    "firmware_sensor": firmware_sensor,
                     "notify_service": NOTIFY,
                 },
             },
         },
     )
-    hass.states.async_set(
-        SENSOR, "needs_attention", {"firmware_report": current_report}
-    )
+    attributes: dict[str, Any] = {}
+    if current_report is not None:
+        attributes["firmware_report"] = current_report
+        attributes["firmware_report_revision"] = current_report.get("revision", 0)
+    hass.states.async_set(firmware_sensor, sensor_state, attributes)
     config = await async_validate_config(
         hass, {"automation": [inputs.async_substitute()]}
     )
@@ -272,4 +317,70 @@ async def test_nonactionable_report_is_quiet(hass: HomeAssistant) -> None:
     calls = await install_services(hass, lambda _name, _data: None)
     script = await make_script(hass, report(pending=False))
     await run_script(script, trigger_id="reconcile")
+    assert calls == []
+
+
+async def test_offline_sensor_on_selected_vacuum_device_still_reconciles(
+    hass: HomeAssistant,
+) -> None:
+    """An unavailable sensor retains its valid report and remains actionable."""
+    calls = await install_services(hass, lambda _name, _data: None)
+    script = await make_script(hass, report(), sensor_state="unavailable")
+    await run_script(script, trigger_id="reconcile")
+
+    assert calls[-1][0] == "matic_robot.firmware_notification"
+    assert calls[-1][1]["action"] == "delivered"
+
+
+async def test_mismatched_robot_pair_with_identical_report_is_rejected(
+    hass: HomeAssistant,
+) -> None:
+    """A matching report id/revision cannot authorize a different robot's sensor."""
+    calls = await install_services(hass, lambda _name, _data: None)
+    selected_report = report()
+    script = await make_script(
+        hass,
+        selected_report,
+        firmware_sensor="sensor.matic_other_firmware_compatibility",
+        separate_devices=True,
+    )
+    ack = f"MATIC_FW_ACK|matic_firmware_{VACUUM}|{REPORT_ID}|7"
+    recheck = f"MATIC_FW_CHECK|matic_firmware_{VACUUM}|{REPORT_ID}|7"
+
+    await run_script(script, trigger_id="reconcile")
+    await run_script(script, trigger_id="mobile", action=ack)
+    await run_script(script, trigger_id="mobile", action=recheck)
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("current_report", "register_sensor_device", "firmware_sensor"),
+    [
+        (None, True, SENSOR),
+        (report(), False, SENSOR),
+        ({"id": "bad", "revision": 7, "notification_pending": True}, True, SENSOR),
+        (None, True, "sensor.matic_unrelated"),
+    ],
+    ids=("missing-report", "missing-device", "malformed-report", "wrong-sensor"),
+)
+async def test_invalid_report_or_sensor_fails_closed_for_every_action(
+    hass: HomeAssistant,
+    current_report: dict[str, Any] | None,
+    register_sensor_device: bool,
+    firmware_sensor: str,
+) -> None:
+    """Missing, malformed, or unassociated report data cannot notify or mutate."""
+    calls = await install_services(hass, lambda _name, _data: None)
+    script = await make_script(
+        hass,
+        current_report,
+        firmware_sensor=firmware_sensor,
+        register_sensor_device=register_sensor_device,
+    )
+    ack = f"MATIC_FW_ACK|matic_firmware_{VACUUM}|{REPORT_ID}|7"
+    recheck = f"MATIC_FW_CHECK|matic_firmware_{VACUUM}|{REPORT_ID}|7"
+
+    await run_script(script, trigger_id="reconcile")
+    await run_script(script, trigger_id="mobile", action=ack)
+    await run_script(script, trigger_id="mobile", action=recheck)
     assert calls == []

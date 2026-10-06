@@ -58,9 +58,21 @@ triggers:
 
 actions:
   - variables:
-      report: "{{ state_attr(firmware_sensor, 'firmware_report') or {} }}"
+      vacuum_device: "{{ device_id(vacuum_entity) }}"
+      sensor_device: "{{ device_id(firmware_sensor) }}"
+      report_attribute: "{{ state_attr(firmware_sensor, 'firmware_report') }}"
+      report_revision_attribute: "{{ state_attr(firmware_sensor, 'firmware_report_revision') }}"
+      report: "{{ report_attribute if report_attribute is mapping else {} }}"
   - condition: template
-    value_template: "{{ report.get('id') and report.get('revision', 0) > 0 }}"
+    value_template: >-
+      {{ vacuum_device is not none
+         and sensor_device is not none
+         and vacuum_device == sensor_device
+         and report_attribute is mapping
+         and report.get('id', '') is string
+         and (report.get('id', '') | length) == 24
+         and (report.get('revision', 0) | int(0)) > 0
+         and (report.get('revision', 0) | int(0)) == (report_revision_attribute | int(0)) }}
   - variables:
       acknowledge_action: "{{ 'MATIC_FW_ACK|' ~ notification_key ~ '|' ~ report.id ~ '|' ~ report.revision }}"
       recheck_action: "{{ 'MATIC_FW_CHECK|' ~ notification_key ~ '|' ~ report.id ~ '|' ~ report.revision }}"

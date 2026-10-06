@@ -337,7 +337,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
 
 async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
     entry = _entry()
-    second_entry = _entry(name="Second Robot", entry_id="entry-two")
+    second_entry = _entry(name="Synthetic Robot", entry_id="entry-two")
     cached_report = {
         "id": "a" * 24,
         "revision": 3,
@@ -367,6 +367,7 @@ async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
         "robots": [
             {
                 "robot": "Synthetic Robot",
+                "entry_id": "entry-one",
                 "report": cached_report,
                 "history": [cached_report],
             }
@@ -379,7 +380,11 @@ async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
     all_robots = await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
     assert [robot["robot"] for robot in all_robots["robots"]] == [
         "Synthetic Robot",
-        "Second Robot",
+        "Synthetic Robot",
+    ]
+    assert [robot["entry_id"] for robot in all_robots["robots"]] == [
+        "entry-one",
+        "entry-two",
     ]
     assert all("history" not in robot for robot in all_robots["robots"])
     tracker.report_history.assert_called_once_with("entry-one")

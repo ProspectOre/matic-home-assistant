@@ -81,7 +81,8 @@ does not narrow the underlying HA administrator credential.
 
 1. Poll the cached inbox with deterministic code. Stay quiet if the configured
    provider differs, research is complete, or another live claim owns the report.
-2. Claim the exact current identifiers before starting model work. Keep the token
+2. Use the returned `entry_id` as the robot selector, so duplicate display names
+   cannot misroute research. Claim the exact current identifiers before model work. Keep the token
    private. A changed report, provider switch or expired lease rejects the result.
 3. Compare retained observations with official firmware notes, vendor support
    documentation and relevant integration source. Separate published claims,
