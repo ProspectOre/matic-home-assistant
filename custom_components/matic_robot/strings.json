@@ -992,7 +992,7 @@
       "message": "The cleaning task changed during setup. Check the robot status, then try again."
     },
     "robot_stop_pending": {
-      "message": "Matic is completing its OEM stop countdown; wait until it docks."
+      "message": "Matic is stopping; wait until it docks before resuming."
     },
     "robot_command_failed": {
       "message": "The robot could not complete the requested command."

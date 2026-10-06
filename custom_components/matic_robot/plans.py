@@ -700,6 +700,7 @@ class CleaningPlanManager:
         self._motion_generations: dict[str, int] = {}
         self._stop_request_generations: dict[str, int] = {}
         self._managed_motion: dict[str, int] = {}
+        self._stop_dispatch_reservations: dict[str, tuple[int, int]] = {}
         self._run_tasks: dict[str, asyncio.Task[None]] = {}
         self._reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._dock_reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
@@ -1287,6 +1288,38 @@ class CleaningPlanManager:
             return None
         return dispatch[1], dispatch[2]
 
+    @callback
+    def reserve_stop_dispatch(
+        self,
+        serial_number: str,
+        *,
+        expected_generation: int,
+        expected_stop_generation: int,
+    ) -> None:
+        """Block RESUME until this accepted Stop reaches its dispatch path."""
+        self._stop_dispatch_reservations[serial_number] = (
+            expected_generation,
+            expected_stop_generation,
+        )
+
+    @callback
+    def release_stop_dispatch(
+        self,
+        serial_number: str,
+        *,
+        expected_generation: int,
+        expected_stop_generation: int,
+    ) -> None:
+        """Release only the reservation owned by this Stop request."""
+        expected = (expected_generation, expected_stop_generation)
+        if self._stop_dispatch_reservations.get(serial_number) == expected:
+            self._stop_dispatch_reservations.pop(serial_number, None)
+
+    @callback
+    def stop_dispatch_pending(self, serial_number: str) -> bool:
+        """Return whether an accepted Stop is still crossing the HA service boundary."""
+        return serial_number in self._stop_dispatch_reservations
+
     async def async_replace_managed_motion(self, serial_number: str) -> int:
         """Persist replacement ownership before its independent command runs."""
         reconciliation_removed = self.replace_managed_motion(serial_number)
@@ -1565,6 +1598,7 @@ class CleaningPlanManager:
         def forget_runtime_state(_removed: bool) -> None:
             self._listeners.pop(serial_number, None)
             self._stop_fences.pop(serial_number, None)
+            self._stop_dispatch_reservations.pop(serial_number, None)
             self._reconciliation_removal_pending.discard(serial_number)
             self._prepared_runs.pop(serial_number, None)
             self._pending_cadence_mutations.pop(serial_number, None)

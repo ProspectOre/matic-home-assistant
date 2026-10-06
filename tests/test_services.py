@@ -1348,6 +1348,93 @@ async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
     entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
 
 
+async def test_stop_service_blocks_resume_until_stop_dispatch(hass) -> None:
+    """A paused task cannot resume between Stop acceptance and physical STOP."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id="run-id",
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    services = await _registered_services(hass, manager)
+    entry = entity_entry(paused=True)
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+    dispatch_started = asyncio.Event()
+    release_dispatch = asyncio.Event()
+
+    async def route_return_to_base(_domain, _service, _data, **_kwargs) -> None:
+        dispatch_started.set()
+        await release_dispatch.wait()
+        await asyncio.create_task(entity.async_return_to_base())
+
+    try:
+        with (
+            patch.object(entity, "_schedule_dock_after_stop"),
+            patch(
+                "custom_components.matic_robot.services._saved_plan_context",
+                return_value=("vacuum.test", entry, serial_number, {}),
+            ),
+        ):
+            services.async_call.side_effect = route_return_to_base
+            stop_task = asyncio.create_task(
+                _registered_handler(services, "stop_intelligent_cleaning")(stop)
+            )
+            try:
+                await asyncio.wait_for(dispatch_started.wait(), timeout=1)
+                assert manager.stop_dispatch_pending(serial_number)
+                with pytest.raises(ServiceValidationError) as error:
+                    await entity.async_start()
+                assert error.value.translation_key == "robot_stop_pending"
+                release_dispatch.set()
+                await stop_task
+            finally:
+                release_dispatch.set()
+                if not stop_task.done():
+                    stop_task.cancel()
+                    await asyncio.gather(stop_task, return_exceptions=True)
+    finally:
+        if plan_lock.locked():
+            plan_lock.release()
+
+    assert not manager.stop_dispatch_pending(serial_number)
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
+
+
 async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> None:
     """The Stop tracker discard must not cross a replacement generation."""
     from custom_components.matic_robot import vacuum as vacuum_platform

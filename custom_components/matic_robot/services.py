@@ -918,16 +918,23 @@ async def async_register_services(hass: HomeAssistant) -> None:
         entity_id, entry, serial_number, _room_map = _saved_plan_context(
             hass, call, require_rooms=False
         )
+        will_dispatch = False
         async with manager.external_command(serial_number):
             decision = manager.request_stop(serial_number)
             await manager.async_checkpoint_stop_intent(serial_number, decision.behavior)
             expected_generation = manager.motion_generation(serial_number)
             expected_stop_generation = manager.stop_request_generation(serial_number)
-        if decision.behavior == "not_running" and not call.data.get(
-            "include_unmanaged"
-        ):
-            return
-        if decision.behavior == "after_room":
+            will_dispatch = decision.behavior != "after_room" and (
+                decision.behavior != "not_running"
+                or bool(call.data.get("include_unmanaged"))
+            )
+            if will_dispatch:
+                manager.reserve_stop_dispatch(
+                    serial_number,
+                    expected_generation=expected_generation,
+                    expected_stop_generation=expected_stop_generation,
+                )
+        if not will_dispatch:
             return
         if (
             manager.motion_generation(serial_number) == expected_generation
@@ -935,17 +942,24 @@ async def async_register_services(hass: HomeAssistant) -> None:
             == expected_stop_generation
         ):
             entry.runtime_data.coordinator.async_discard_current_room()
-        with manager.managed_stop_dispatch(
-            serial_number,
-            expected_generation=expected_generation,
-            expected_stop_generation=expected_stop_generation,
-        ):
-            await hass.services.async_call(
-                VACUUM_DOMAIN,
-                "return_to_base",
-                {ATTR_ENTITY_ID: entity_id},
-                blocking=True,
-                context=call.context,
+        try:
+            with manager.managed_stop_dispatch(
+                serial_number,
+                expected_generation=expected_generation,
+                expected_stop_generation=expected_stop_generation,
+            ):
+                await hass.services.async_call(
+                    VACUUM_DOMAIN,
+                    "return_to_base",
+                    {ATTR_ENTITY_ID: entity_id},
+                    blocking=True,
+                    context=call.context,
+                )
+        finally:
+            manager.release_stop_dispatch(
+                serial_number,
+                expected_generation=expected_generation,
+                expected_stop_generation=expected_stop_generation,
             )
 
     hass.services.async_register(

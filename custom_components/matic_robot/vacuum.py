@@ -145,9 +145,20 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "The command was superseded before it could run"
             )
 
+    def _require_no_pending_stop_dispatch(self, serial_number: str) -> None:
+        """Keep RESUME out of the gap between Stop acceptance and dispatch."""
+        pending = getattr(self._plans, "stop_dispatch_pending", None)
+        if callable(pending) and pending(serial_number) is True:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="robot_stop_pending",
+            )
+
     async def _async_command(self, command: UserCommand) -> None:
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
+        if command is UserCommand.RESUME:
+            self._require_no_pending_stop_dispatch(serial_number)
         generation = self._plans.motion_generation(serial_number)
         stop_request_generation = self._plans.stop_request_generation(serial_number)
         admission_epoch = self._plans.command_admission_epoch(serial_number)
@@ -157,6 +168,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             serial_number, expected_epoch=admission_epoch
         )
         async with self._plans.external_command(serial_number):
+            if command is UserCommand.RESUME:
+                self._require_no_pending_stop_dispatch(serial_number)
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, generation)
             self._require_stop_request_generation(

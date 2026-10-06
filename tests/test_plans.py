@@ -734,6 +734,30 @@ async def test_immediate_stop_records_managed_stop_reason(hass) -> None:
         manager.lock("serial").release()
 
 
+def test_stop_dispatch_reservation_is_generation_scoped(hass) -> None:
+    """An older Stop cannot release a reservation created by a newer Stop."""
+    manager = CleaningPlanManager(hass)
+    assert not manager.stop_dispatch_pending("serial")
+
+    manager.reserve_stop_dispatch(
+        "serial", expected_generation=1, expected_stop_generation=1
+    )
+    assert manager.stop_dispatch_pending("serial")
+
+    manager.reserve_stop_dispatch(
+        "serial", expected_generation=2, expected_stop_generation=2
+    )
+    manager.release_stop_dispatch(
+        "serial", expected_generation=1, expected_stop_generation=1
+    )
+    assert manager.stop_dispatch_pending("serial")
+
+    manager.release_stop_dispatch(
+        "serial", expected_generation=2, expected_stop_generation=2
+    )
+    assert not manager.stop_dispatch_pending("serial")
+
+
 async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
     """A low-charge pause is distinguishable from a user cancellation."""
     manager = CleaningPlanManager(hass)
