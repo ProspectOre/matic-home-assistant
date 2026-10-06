@@ -165,5 +165,145 @@ class NativeReviewRouterTests(unittest.TestCase):
         self.assertIn("workflow run review-gate.yml", calls)
 
 
+class RegularCommentTests(unittest.TestCase):
+    def scripts(self):
+        workflow = (ROOT / ".github/workflows/review-regular-comment.yml").read_text()
+        classify = workflow.split("      - id: classify\n", 1)[1]
+        classify = textwrap.dedent(
+            classify.split("        run: |\n", 1)[1].split("\n  bind-request:", 1)[0]
+        )
+        invalidate = workflow.split(
+            "      - name: Revoke the regular gate under its per-PR lock\n", 1
+        )[1]
+        invalidate = textwrap.dedent(invalidate.split("        run: |\n", 1)[1])
+        return classify, invalidate
+
+    def run_classifier(self, body):
+        classify, _ = self.scripts()
+        pull = {"head": {"sha": HEAD}, "base": {"sha": "b" * 40}}
+        prelude = """gh() {
+          printf '%s\\n' "$*" >> "$CALLS"
+          case "$*" in
+            *'/pulls/7'*) printf '%s' "$PULL" ;;
+          esac
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "calls"
+            output = Path(tmp) / "output"
+            env = dict(
+                os.environ,
+                CALLS=str(calls),
+                GITHUB_OUTPUT=str(output),
+                PULL=json.dumps(pull),
+                EVENT_COMMENT_AUTHOR="chatgpt-codex-connector[bot]",
+                EVENT_COMMENT_BODY=body,
+                EVENT_COMMENT_CREATED_AT=AT,
+                EVENT_COMMENT_ID="99",
+                EVENT_ACTION="created",
+                EVENT_PREVIOUS_COMMENT_BODY="",
+                GH_TOKEN="test",
+                PR_NUMBER="7",
+                REPO="acme/repo",
+                REVIEW_BOT_EVENT_LOGIN="chatgpt-codex-connector[bot]",
+                REVIEW_COMMENT_CONTEXT="review-gate-regular-comment",
+                REVIEW_GATE_CONTEXT="review-gate",
+            )
+            result = subprocess.run(
+                ["bash"], input=prelude + classify, env=env, text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            values = dict(
+                line.split("=", 1) for line in output.read_text().splitlines()
+            )
+            return values
+
+    def run_invalidator(self, body, clean):
+        _, invalidate = self.scripts()
+        comment = {
+            "user": {"login": "chatgpt-codex-connector[bot]"},
+            "body": body,
+            "updated_at": AT,
+        }
+        prelude = """gh() {
+          printf '%s\\n' "$*" >> "$CALLS"
+          case "$*" in
+            *'/issues/comments/99'*) printf '%s' "$COMMENT" ;;
+            *'workflow run review-gate.yml'*) ;;
+            *'contents/.github/workflows/review-gate.yml'*) ;;
+          esac
+        }
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = Path(tmp) / "calls"
+            env = dict(
+                os.environ,
+                CALLS=str(calls),
+                COMMENT=json.dumps(comment),
+                CLEAN=clean,
+                EVENT_ACTION="created",
+                EVENT_COMMENT_AUTHOR="chatgpt-codex-connector[bot]",
+                EVENT_COMMENT_BODY=body,
+                EVENT_COMMENT_CREATED_AT=AT,
+                EVENT_COMMENT_ID="99",
+                EVENT_COMMENT_UPDATED_AT=AT,
+                GH_TOKEN="test",
+                HEAD_SHA=HEAD,
+                PR_NUMBER="7",
+                REPO="acme/repo",
+                REVIEW_BOT_EVENT_LOGIN="chatgpt-codex-connector[bot]",
+                REVIEW_COMMENT_CONTEXT="review-gate-regular-comment",
+                REVIEW_GATE_CONTEXT="review-gate",
+                WORKFLOW_REF="main",
+                GITHUB_RUN_ID="999",
+                GITHUB_SERVER_URL="https://github.com",
+            )
+            result = subprocess.run(
+                ["bash"], input=prelude + invalidate, env=env, text=True,
+                capture_output=True,
+            )
+            return result, calls.read_text()
+
+    def clean_body(self, footer):
+        return (
+            "Codex Review: Didn't find any major issues. 🎉\n"
+            f"**Reviewed commit:** `{footer}`\n"
+            "<details>\n<summary>ℹ️ About Codex in GitHub</summary>"
+        )
+
+    def test_short_current_head_clean_result_does_not_self_invalidate(self):
+        body = self.clean_body(HEAD[:10])
+        outputs = self.run_classifier(body)
+        self.assertEqual(outputs["regular"], "true")
+        self.assertEqual(outputs["clean"], "true")
+        result, calls = self.run_invalidator(body, outputs["clean"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("context=review-gate ", calls)
+        self.assertNotIn("context=review-gate-regular-comment", calls)
+
+    def test_full_current_head_clean_result_remains_supported(self):
+        outputs = self.run_classifier(self.clean_body(HEAD))
+        self.assertEqual(outputs["regular"], "true")
+        self.assertEqual(outputs["clean"], "true")
+
+    def test_current_head_finding_still_invalidates(self):
+        body = (
+            "Codex Review: Found a problem.\n[P1] Reproducible regression.\n"
+            f"**Reviewed commit:** `{HEAD[:10]}`"
+        )
+        outputs = self.run_classifier(body)
+        self.assertEqual(outputs["regular"], "true")
+        self.assertEqual(outputs["clean"], "false")
+        result, calls = self.run_invalidator(body, outputs["clean"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("context=review-gate-regular-comment", calls)
+
+    def test_clean_result_for_different_head_is_not_current(self):
+        outputs = self.run_classifier(self.clean_body("c" * 10))
+        self.assertEqual(outputs["regular"], "false")
+        self.assertEqual(outputs["clean"], "false")
+
+
 if __name__ == "__main__":
     unittest.main()
