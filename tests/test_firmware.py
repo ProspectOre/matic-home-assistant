@@ -90,6 +90,35 @@ async def test_tracker_loads_observes_and_signals_version_changes(hass) -> None:
     }
 
 
+async def test_invalid_occurrence_generation_fails_closed_and_recovers(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(
+            return_value={
+                "robots": {
+                    "entry": {
+                        "observed_version": "v168.11",
+                        "observed_protocol": 25,
+                        "occurrence_generation": True,
+                    }
+                }
+            }
+        ),
+        async_save=AsyncMock(),
+    )
+    await tracker.async_load()
+
+    assert tracker.occurrence_generation("entry") == 0
+    invalid_capture = await tracker.async_record_snapshot(
+        "entry", _snapshot("v168.11"), occurrence_generation=True
+    )
+    assert invalid_capture["discarded"] is True
+    assert invalid_capture["reason"] == "snapshot_generation_invalid"
+
+    assert await tracker.async_observe_version("entry", "v168.12", 25) is True
+    assert tracker.occurrence_generation("entry") == 1
+
+
 async def test_snapshot_pending_survives_failed_release_and_rollback(
     hass, monkeypatch
 ) -> None:
@@ -117,6 +146,7 @@ async def test_snapshot_pending_survives_failed_release_and_rollback(
 
     assert await tracker.async_observe_version("entry", "v168.11", 25) is False
     await tracker.async_record_snapshot("entry", _snapshot("v168.11"))
+    first_occurrence_generation = tracker.occurrence_generation("entry")
     assert "snapshot_pending" not in tracker._data["robots"]["entry"]
     assert "occurrence_pending" not in tracker._data["robots"]["entry"]
     assert tracker.needs_snapshot("entry", "v168.11", 25) is False
@@ -136,6 +166,18 @@ async def test_snapshot_pending_survives_failed_release_and_rollback(
     # old A snapshot cannot satisfy this newly observed occurrence.
     assert await tracker.async_observe_version("entry", "v168.11", 25) is True
     assert tracker.needs_snapshot("entry", "v168.11", 25) is True
+
+    stale_aba = _snapshot("v168.11")
+    stale_aba_result = await tracker.async_record_snapshot(
+        "entry",
+        stale_aba,
+        occurrence_generation=first_occurrence_generation,
+    )
+    assert stale_aba_result["discarded"] is True
+    assert stale_aba_result["reason"] == "snapshot_occurrence_superseded"
+    assert tracker.occurrence_generation("entry") == first_occurrence_generation + 2
+    assert tracker._data["robots"]["entry"]["occurrence_pending"] is True
+    assert tracker.report("entry")["id"] == original_report_id
 
     mismatched = _snapshot("v168.11")
     mismatched["protocol_version"] = 26
@@ -159,6 +201,7 @@ async def test_snapshot_pending_survives_failed_release_and_rollback(
     reloaded = FirmwareTracker(hass)
     reloaded._store = store
     await reloaded.async_load()
+    assert reloaded.occurrence_generation("entry") == first_occurrence_generation + 2
     assert reloaded.needs_snapshot("entry", "v168.11", 25) is True
     await reloaded.async_record_snapshot("entry", rollback)
     assert "snapshot_pending" not in reloaded._data["robots"]["entry"]

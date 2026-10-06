@@ -1140,9 +1140,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
         entry = _entry_for_entity(hass, entity_ids[0])
         state = entry.runtime_data.coordinator.data
+        occurrence_generation = firmware_tracker.occurrence_generation(entry.entry_id)
         snapshot = await async_build_firmware_snapshot(entry.runtime_data.client, state)
         comparison = await firmware_tracker.async_record_snapshot(
-            entry.entry_id, snapshot
+            entry.entry_id,
+            snapshot,
+            occurrence_generation=occurrence_generation,
         )
         return {**snapshot, "comparison": comparison}
 

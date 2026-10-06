@@ -339,10 +339,18 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                         )
                     ):
                         self._snapshot_versions_in_progress.add(snapshot_identity)
+                        occurrence_generation = (
+                            self.firmware_tracker.occurrence_generation(
+                                self.config_entry.entry_id
+                            )
+                        )
                         self.config_entry.async_create_background_task(
                             self.hass,
                             self._async_capture_firmware_snapshot(
-                                self.firmware_tracker, state, version
+                                self.firmware_tracker,
+                                state,
+                                version,
+                                occurrence_generation,
                             ),
                             f"{DOMAIN} firmware snapshot",
                         )
@@ -639,6 +647,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         tracker: FirmwareTracker,
         state: RobotState,
         version: str,
+        occurrence_generation: int,
     ) -> None:
         """Persist one background snapshot without delaying normal state."""
         snapshot_identity = (version, state.telemetry.protocol_version)
@@ -647,7 +656,18 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 monotonic() + SNAPSHOT_RETRY_SECONDS
             )
             snapshot = await async_build_firmware_snapshot(self.client, state)
-            await tracker.async_record_snapshot(self.config_entry.entry_id, snapshot)
+            comparison = await tracker.async_record_snapshot(
+                self.config_entry.entry_id,
+                snapshot,
+                occurrence_generation=occurrence_generation,
+            )
+            if comparison.get("reason") in {
+                "snapshot_occurrence_superseded",
+                "snapshot_superseded",
+            }:
+                # A capture from an obsolete occurrence should be retried on the
+                # next coordinator poll instead of waiting out its old cooldown.
+                self._snapshot_retry_after.pop(snapshot_identity, None)
         finally:
             self._snapshot_versions_in_progress.discard(snapshot_identity)
 
