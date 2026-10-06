@@ -1228,7 +1228,8 @@ async def test_coordinator_snapshots_each_new_firmware_once_in_background(hass) 
     tracker = SimpleNamespace(
         async_observe_version=AsyncMock(return_value=False),
         needs_snapshot=MagicMock(return_value=True),
-        async_record_snapshot=AsyncMock(),
+        occurrence_generation=MagicMock(return_value=7),
+        async_record_snapshot=AsyncMock(return_value={}),
     )
     coordinator = MaticCoordinator(
         hass, client, config_entry=_tracking_entry(), firmware_tracker=tracker
@@ -1247,7 +1248,9 @@ async def test_coordinator_snapshots_each_new_firmware_once_in_background(hass) 
         await hass.async_block_till_done()
 
     build.assert_awaited_once()
-    tracker.async_record_snapshot.assert_awaited_once_with("entry", snapshot)
+    tracker.async_record_snapshot.assert_awaited_once_with(
+        "entry", snapshot, occurrence_generation=7
+    )
     assert coordinator._snapshot_versions_in_progress == set()
     assert coordinator._snapshot_retry_after[("v168.11", 25)] > 0
 
@@ -1266,7 +1269,8 @@ async def test_new_firmware_identity_bypasses_snapshot_cooldown(
     tracker = SimpleNamespace(
         async_observe_version=AsyncMock(side_effect=[False, True]),
         needs_snapshot=MagicMock(return_value=True),
-        async_record_snapshot=AsyncMock(),
+        occurrence_generation=MagicMock(side_effect=[0, 1]),
+        async_record_snapshot=AsyncMock(return_value={}),
     )
     coordinator = MaticCoordinator(
         hass, client, config_entry=_tracking_entry(), firmware_tracker=tracker
@@ -1316,7 +1320,8 @@ async def test_returning_to_firmware_identity_bypasses_old_cooldown(hass) -> Non
     tracker = SimpleNamespace(
         async_observe_version=AsyncMock(side_effect=[False, True, True]),
         needs_snapshot=MagicMock(return_value=True),
-        async_record_snapshot=AsyncMock(),
+        occurrence_generation=MagicMock(side_effect=[0, 1, 2]),
+        async_record_snapshot=AsyncMock(return_value={}),
     )
     coordinator = MaticCoordinator(
         hass, client, config_entry=_tracking_entry(), firmware_tracker=tracker
@@ -1367,7 +1372,8 @@ async def test_snapshot_failure_cooldown_defers_retry(hass) -> None:
     tracker = SimpleNamespace(
         async_observe_version=AsyncMock(return_value=False),
         needs_snapshot=MagicMock(return_value=True),
-        async_record_snapshot=AsyncMock(),
+        occurrence_generation=MagicMock(return_value=0),
+        async_record_snapshot=AsyncMock(return_value={}),
     )
     coordinator = MaticCoordinator(
         hass, client, config_entry=_tracking_entry(), firmware_tracker=tracker
@@ -1384,7 +1390,9 @@ async def test_snapshot_failure_cooldown_defers_retry(hass) -> None:
     ) as build:
         await coordinator._async_update_data()
         await hass.async_block_till_done()
-        tracker.async_record_snapshot.assert_awaited_once_with("entry", snapshot)
+        tracker.async_record_snapshot.assert_awaited_once_with(
+            "entry", snapshot, occurrence_generation=0
+        )
         retry_key = ("v168.11", 25)
         assert coordinator._snapshot_retry_after[retry_key] > 0
 
@@ -1398,6 +1406,37 @@ async def test_snapshot_failure_cooldown_defers_retry(hass) -> None:
         await hass.async_block_till_done()
         assert build.await_count == 2
     assert coordinator._snapshot_versions_in_progress == set()
+
+
+async def test_superseded_snapshot_clears_its_retry_cooldown(hass) -> None:
+    client = _client()
+    state = await _coordinator(hass, client)._async_update_data()
+    tracker = SimpleNamespace(
+        async_record_snapshot=AsyncMock(
+            return_value={
+                "discarded": True,
+                "reason": "snapshot_occurrence_superseded",
+            }
+        )
+    )
+    coordinator = MaticCoordinator(
+        hass, client, config_entry=_tracking_entry(), firmware_tracker=tracker
+    )
+    snapshot_identity = ("v168.11", 25)
+    coordinator._snapshot_retry_after[snapshot_identity] = 100.0
+
+    with patch(
+        "custom_components.matic_robot.coordinator.async_build_firmware_snapshot",
+        AsyncMock(return_value={"firmware_version": "v168.11"}),
+    ):
+        await coordinator._async_capture_firmware_snapshot(
+            tracker, state, "v168.11", occurrence_generation=0
+        )
+
+    tracker.async_record_snapshot.assert_awaited_once_with(
+        "entry", {"firmware_version": "v168.11"}, occurrence_generation=0
+    )
+    assert snapshot_identity not in coordinator._snapshot_retry_after
 
 
 async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_failed(

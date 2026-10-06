@@ -295,6 +295,7 @@ async def _registered_services(hass, manager=None, *, is_running=False):
         replacement.async_load = AsyncMock()
     firmware = SimpleNamespace(
         async_load=AsyncMock(),
+        occurrence_generation=MagicMock(return_value=0),
         async_record_snapshot=AsyncMock(
             return_value={"baseline": True, "changed_endpoints": []}
         ),
@@ -4224,6 +4225,10 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
     assert "synthetic failure" not in repr(response)
     tracker = hass.data[DOMAIN]["firmware_tracker"]
     tracker.async_record_snapshot.assert_awaited_once()
+    tracker.occurrence_generation.assert_called_once_with("entry")
+    assert tracker.async_record_snapshot.await_args.kwargs == {
+        "occurrence_generation": 0
+    }
 
 
 async def test_firmware_admin_services_resolve_one_robot_and_wrap_tracker_errors() -> (

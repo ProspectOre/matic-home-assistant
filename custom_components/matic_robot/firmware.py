@@ -69,6 +69,21 @@ class FirmwareTracker:
         """Load prior firmware observations."""
         self._data = await self._store.async_load() or {"robots": {}}
 
+    def occurrence_generation(self, robot_id: str) -> int:
+        """Return the durable generation for this robot's observed release."""
+        generation = (
+            self._data.get("robots", {})
+            .get(robot_id, {})
+            .get("occurrence_generation", 0)
+        )
+        if (
+            isinstance(generation, int)
+            and not isinstance(generation, bool)
+            and generation >= 0
+        ):
+            return generation
+        return 0
+
     async def async_observe_version(
         self,
         robot_id: str,
@@ -120,6 +135,14 @@ class FirmwareTracker:
             # that release's previous occurrence.
             robot["snapshot_pending"] = True
             if new_occurrence:
+                generation = robot.get("occurrence_generation", 0)
+                if (
+                    not isinstance(generation, int)
+                    or isinstance(generation, bool)
+                    or generation < 0
+                ):
+                    generation = 0
+                robot["occurrence_generation"] = generation + 1
                 robot["occurrence_pending"] = True
             await self._store.async_save(candidate)
             self._data = candidate
@@ -152,7 +175,11 @@ class FirmwareTracker:
         ir.async_delete_issue(self.hass, DOMAIN, self.issue_id(robot_id))
 
     async def async_record_snapshot(
-        self, robot_id: str, snapshot: Mapping[str, Any]
+        self,
+        robot_id: str,
+        snapshot: Mapping[str, Any],
+        *,
+        occurrence_generation: int | None = None,
     ) -> dict[str, Any]:
         """Persist one safe snapshot and return its comparison with the prior one."""
         async with self._lock:
@@ -169,6 +196,25 @@ class FirmwareTracker:
                     **comparison,
                     "discarded": True,
                     "reason": "firmware_version_unavailable",
+                }
+            current_generation = self.occurrence_generation(robot_id)
+            if occurrence_generation is None:
+                occurrence_generation = current_generation
+            if (
+                not isinstance(occurrence_generation, int)
+                or isinstance(occurrence_generation, bool)
+                or occurrence_generation < 0
+            ):
+                return {
+                    **comparison,
+                    "discarded": True,
+                    "reason": "snapshot_generation_invalid",
+                }
+            if occurrence_generation != current_generation:
+                return {
+                    **comparison,
+                    "discarded": True,
+                    "reason": "snapshot_occurrence_superseded",
                 }
             observed_version = robot.get("observed_version")
             observed_protocol = robot.get("observed_protocol")
