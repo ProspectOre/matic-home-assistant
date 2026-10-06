@@ -40,6 +40,8 @@ Recheck the route if repository visibility or runner configuration changes.
 
 Hosted CI does not replace exact-head review, manual merge, approved RC
 installation, runtime verification, physical acceptance, or release permission.
+For the supported maintenance branch and trusted workflow installation path, see
+[Maintenance reviews](docs/maintenance-reviews.md).
 
 ## Changes and pull requests
 
