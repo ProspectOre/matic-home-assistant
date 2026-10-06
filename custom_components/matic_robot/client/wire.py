@@ -24,21 +24,48 @@ class WireField:
     value: int | bytes
 
 
+@dataclass(slots=True)
+class WireFieldBudget:
+    """Mutable allocation budget shared across related wire messages."""
+
+    remaining: int
+
+
+class WireFieldLimitExceeded(DecodeError):
+    """A protobuf message contains more fields than its local limit."""
+
+
+class WireFieldBudgetExceeded(DecodeError):
+    """Related protobuf messages exceeded their shared field budget."""
+
+
 class _WireShapeLimitError(Exception):
     """Signal that a structural fingerprint exceeded its public bounds."""
 
 
 def decode_fields(
-    payload: bytes, *, max_fields: int | None = None
+    payload: bytes,
+    *,
+    max_fields: int | None = None,
+    field_budget: WireFieldBudget | None = None,
 ) -> tuple[WireField, ...]:
     """Decode a protobuf message without requiring its private schema.
 
     When ``max_fields`` is supplied, reject field-dense untrusted messages
-    before constructing more than that many ``WireField`` objects.
+    before parsing more than that many fields. A shared ``field_budget`` can
+    additionally bound allocations across a group of nested messages.
     """
     fields: list[WireField] = []
     offset = 0
     while offset < len(payload):
+        if max_fields is not None and len(fields) >= max_fields:
+            raise WireFieldLimitExceeded("protobuf message exceeds its field limit")
+        if field_budget is not None:
+            if field_budget.remaining <= 0:
+                raise WireFieldBudgetExceeded(
+                    "protobuf messages exceed their aggregate field budget"
+                )
+            field_budget.remaining -= 1
         tag, offset = _decode_varint(payload, offset)
         number = tag >> 3
         wire_type = tag & 7
@@ -56,8 +83,6 @@ def decode_fields(
             value, offset = _take(payload, offset, 4)
         else:
             raise DecodeError(f"unsupported protobuf wire type {wire_type}")
-        if max_fields is not None and len(fields) >= max_fields:
-            raise DecodeError("protobuf message exceeds its field limit")
         fields.append(WireField(number, wire_type, value))
     return tuple(fields)
 
@@ -176,9 +201,15 @@ def point(payload: bytes) -> tuple[float, float]:
     return coordinates[1], coordinates[2]
 
 
-def uuid_string(payload: bytes, *, max_depth: int = 4) -> str:
+def uuid_string(
+    payload: bytes,
+    *,
+    max_depth: int = 4,
+    max_fields: int | None = None,
+    field_budget: WireFieldBudget | None = None,
+) -> str:
     """Decode Matic's nested two-fixed64 UUID representation."""
-    fields = decode_fields(payload)
+    fields = decode_fields(payload, max_fields=max_fields, field_budget=field_budget)
     high = next(
         (
             field.value
@@ -209,7 +240,14 @@ def uuid_string(payload: bytes, *, max_depth: int = 4) -> str:
             if field.wire_type != 2 or not isinstance(field.value, bytes):
                 continue
             try:
-                return uuid_string(field.value, max_depth=max_depth - 1)
+                return uuid_string(
+                    field.value,
+                    max_depth=max_depth - 1,
+                    max_fields=max_fields,
+                    field_budget=field_budget,
+                )
+            except WireFieldBudgetExceeded, WireFieldLimitExceeded:
+                raise
             except DecodeError:
                 continue
     raise DecodeError("invalid Matic UUID")

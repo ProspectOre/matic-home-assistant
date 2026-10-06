@@ -734,6 +734,30 @@ async def test_immediate_stop_records_managed_stop_reason(hass) -> None:
         manager.lock("serial").release()
 
 
+def test_stop_dispatch_reservation_is_generation_scoped(hass) -> None:
+    """An older Stop cannot release a reservation created by a newer Stop."""
+    manager = CleaningPlanManager(hass)
+    assert not manager.stop_dispatch_pending("serial")
+
+    manager.reserve_stop_dispatch(
+        "serial", expected_generation=1, expected_stop_generation=1
+    )
+    assert manager.stop_dispatch_pending("serial")
+
+    manager.reserve_stop_dispatch(
+        "serial", expected_generation=2, expected_stop_generation=2
+    )
+    manager.release_stop_dispatch(
+        "serial", expected_generation=1, expected_stop_generation=1
+    )
+    assert manager.stop_dispatch_pending("serial")
+
+    manager.release_stop_dispatch(
+        "serial", expected_generation=2, expected_stop_generation=2
+    )
+    assert not manager.stop_dispatch_pending("serial")
+
+
 async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
     """A low-charge pause is distinguishable from a user cancellation."""
     manager = CleaningPlanManager(hass)
@@ -769,7 +793,7 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
 
 
 async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
-    """A managed stop remains cancellation even if the room was low-charge suspended."""
+    """Physical STOP dispatch preserves the managed-stop history reason."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     room = _room("Kitchen", "room-kitchen")
@@ -781,7 +805,10 @@ async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
             "status": "suspended",
             "suspend_reason": "low_charge",
         }
-        manager._cancellation_reasons["serial"] = "managed_stop"
+        manager.mark_managed_stop("serial")
+        with manager.managed_stop_dispatch("serial"):
+            manager.replace_managed_motion("serial")
+        assert manager.cancellation_reason("serial") == "managed_stop"
         raise PlanCancelledError
 
     with patch(
@@ -4557,6 +4584,13 @@ async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> N
         assert manager.finish_room_event("serial").is_set()
         assert not manager.cancellation_event("serial").is_set()
         assert manager.motion_generation("serial") == motion_token
+
+        # Replacement supersedes a graceful-stop reason while the old executor
+        # still holds its lock and persisted plan snapshot.
+        manager.mark_managed_stop("serial")
+        await manager.async_replace_managed_motion("serial")
+        assert manager.cancellation_reason("serial") == "motion_replaced"
+        assert manager.request_stop("serial").behavior == "immediate"
 
         changed = CleaningRoom("room-kitchen", "Kitchen", "mop", "standard")
         await manager.async_mark_started("serial", "away", changed)

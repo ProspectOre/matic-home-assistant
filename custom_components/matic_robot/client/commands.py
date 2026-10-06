@@ -207,11 +207,14 @@ def encode_mixed_coverage_commands(
     )
     session_id = session_id or command_id_factory()
     initial_command_id = command_id_factory()
-    initial_ids = iter((*goal_ids, initial_command_id))
+    # START can begin under one mode/setting only. Keep it scoped to the first
+    # room until the exact session is observed; the subsequent UPDATE carries
+    # the complete ordered, per-room goals.
+    initial_ids = iter((*goal_ids[:initial_count], initial_command_id))
     initial = encode_coverage_command(
         mission_id=mission_id,
         partition_id=partition_id,
-        region_ids=region_ids,
+        region_ids=region_ids[:1],
         cleaning_mode=modes[0],
         coverage_setting=settings[0],
         ordered=True,

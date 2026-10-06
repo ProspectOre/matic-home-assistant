@@ -896,6 +896,7 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> 
 
 async def test_setup_registers_services_without_media_view() -> None:
     hass = SimpleNamespace(
+        is_running=False,
         http=SimpleNamespace(register_view=MagicMock()),
         bus=SimpleNamespace(
             async_listen=MagicMock(return_value=MagicMock()),
@@ -924,7 +925,7 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 20
+    assert hass.services.async_register.call_count == 22
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
@@ -954,6 +955,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
 
     register_panel = panel_custom.async_register_panel
     hass = SimpleNamespace(
+        is_running=False,
         http=SimpleNamespace(
             register_view=MagicMock(), async_register_static_paths=AsyncMock()
         ),
@@ -1027,7 +1029,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
     assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
-    assert hass.services.async_register.call_count == 20
+    assert hass.services.async_register.call_count == 22
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
     assert "classic_module_url" not in panel.config

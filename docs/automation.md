@@ -13,6 +13,7 @@ Replace example entity IDs with those shown on your robot's device page.
 - [Quiet-hours cleaning](../blueprints/automation/matic_robot/quiet_hours.yaml)
 - [Pet-aware cleaning](../blueprints/automation/matic_robot/pet_aware.yaml)
 - [Scheduled intelligent cleaning](../blueprints/automation/matic_robot/room_rotation.yaml)
+- [Firmware intelligence](../blueprints/automation/matic_robot/firmware_intelligence.yaml)
 
 The away blueprint rechecks presence after its settle period and starts only
 when Matic is docked or idle.
@@ -118,6 +119,7 @@ before automating the switch.
 | `matic_robot_cleaning_finished` | A newly ended native session, with times, duration, room results, and robot identifiers |
 | `matic_robot_firmware_changed` | A new firmware/protocol pair, with previous values and robot identifiers |
 | `matic_robot_firmware_analyzed` | Endpoint comparison counts and new wire paths |
+| `matic_robot_firmware_report_updated` | Durable report ID and revision; reread the firmware inbox before acting |
 | `matic_robot_cues` | Voice, intent, gesture, or following transition |
 
 `cleaning_finished` depends on native history being available. Startup history
