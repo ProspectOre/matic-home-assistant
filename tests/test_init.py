@@ -898,7 +898,9 @@ async def test_setup_registers_services_without_media_view() -> None:
     hass = SimpleNamespace(
         http=SimpleNamespace(register_view=MagicMock()),
         bus=SimpleNamespace(
-            async_listen=MagicMock(return_value=MagicMock()), async_fire=MagicMock()
+            async_listen=MagicMock(return_value=MagicMock()),
+            async_listen_once=MagicMock(return_value=MagicMock()),
+            async_fire=MagicMock(),
         ),
         services=SimpleNamespace(async_register=MagicMock()),
         data={},
@@ -922,7 +924,7 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 18
+    assert hass.services.async_register.call_count == 20
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
@@ -958,6 +960,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded(
         bus=SimpleNamespace(
             async_fire=MagicMock(),
             async_listen=MagicMock(return_value=MagicMock()),
+            async_listen_once=MagicMock(return_value=MagicMock()),
         ),
         services=SimpleNamespace(async_register=MagicMock()),
         data={frontend.DATA_EXTRA_MODULE_URL: set()},
@@ -1028,7 +1031,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded(
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
     assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
-    assert hass.services.async_register.call_count == 18
+    assert hass.services.async_register.call_count == 20
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
 

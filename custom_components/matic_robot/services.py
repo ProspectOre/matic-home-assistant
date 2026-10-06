@@ -356,6 +356,23 @@ def _require_matic_control[ServiceResult](
     return async_authorized
 
 
+def _require_matic_admin[ServiceResult](
+    hass: HomeAssistant,
+    handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
+) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
+    """Require an authenticated administrator to change investigator routing."""
+
+    @wraps(handler)
+    async def authorized(call: ServiceCall) -> ServiceResult:
+        user_id = call.context.user_id
+        user = await hass.auth.async_get_user(user_id) if user_id else None
+        if user is None or not user.is_admin:
+            raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+        return await handler(call)
+
+    return authorized
+
+
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register actions before any config entry is loaded."""
 
@@ -390,7 +407,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         except ValueError as err:
             raise ServiceValidationError(str(err)) from err
 
-    def firmware_entry(call: ServiceCall) -> ConfigEntry:
+    def firmware_entry(call: ServiceCall) -> ConfigEntry[Any]:
         entity_ids = _resolve_loaded_matic_vacuums(hass, call)
         if len(entity_ids) != 1:
             raise ServiceValidationError(

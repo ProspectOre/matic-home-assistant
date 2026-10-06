@@ -181,6 +181,8 @@ def _area_floor_plan(
 async def _registered_services(hass, manager=None):
     services = SimpleNamespace(async_register=MagicMock(), async_call=AsyncMock())
     hass.services = services
+    if not hasattr(hass, "bus"):
+        hass.bus = SimpleNamespace(async_listen_once=MagicMock())
     replacement = manager or SimpleNamespace(async_load=AsyncMock())
     if manager is not None:
         replacement.async_load = AsyncMock()
@@ -189,6 +191,8 @@ async def _registered_services(hass, manager=None):
         async_record_snapshot=AsyncMock(
             return_value={"baseline": True, "changed_endpoints": []}
         ),
+        async_configure_investigator=AsyncMock(),
+        async_notification_action=AsyncMock(),
     )
     with (
         patch(
@@ -1840,7 +1844,9 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
     client = SimpleNamespace(async_inspect_endpoint=AsyncMock(side_effect=inspect))
     state = SimpleNamespace(
         telemetry=SimpleNamespace(software_version="v168.11", protocol_version=25),
-        operational=SimpleNamespace(software_version="fallback"),
+        operational=SimpleNamespace(
+            software_version="fallback", activity=SimpleNamespace(value="cleaning")
+        ),
     )
     entry = SimpleNamespace(
         entry_id="entry",
@@ -1872,6 +1878,7 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
 
     assert response["endpoint_count"] == len(HERMES_ENDPOINTS)
     assert response["analysis_version"] == ANALYSIS_VERSION
+    assert response["observation_context"] == "cleaning"
     assert response["populated_endpoints"] == len(HERMES_ENDPOINTS) - 2
     assert response["empty_endpoints"] == 1
     assert response["failed_endpoints"] == 1
@@ -1882,6 +1889,149 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
     assert "synthetic failure" not in repr(response)
     tracker = hass.data[DOMAIN]["firmware_tracker"]
     tracker.async_record_snapshot.assert_awaited_once()
+
+
+async def test_firmware_admin_services_resolve_one_robot_and_wrap_tracker_errors() -> (
+    None
+):
+    hass = SimpleNamespace(data={}, auth=SimpleNamespace(async_get_user=AsyncMock()))
+    services = await _registered_services(hass)
+    first_entry = SimpleNamespace(entry_id="entry-one")
+    second_entry = SimpleNamespace(entry_id="entry-two")
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    investigator_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_investigator",
+        {"entity_id": ["vacuum.one"], "provider": "researcher"},
+        context=Context(user_id="admin"),
+    )
+    notification_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_notification",
+        {
+            "entity_id": ["vacuum.two"],
+            "report_id": "a" * 24,
+            "revision": 7,
+            "action": "acknowledge",
+        },
+        context=Context(user_id="admin"),
+    )
+    hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            side_effect=[["vacuum.one"], ["vacuum.two"]],
+        ) as resolve,
+        patch(
+            "custom_components.matic_robot.services._entry_for_entity",
+            side_effect=[first_entry, second_entry],
+        ) as entry_for_entity,
+    ):
+        await _registered_handler(services, "firmware_investigator")(investigator_call)
+        await _registered_handler(services, "firmware_notification")(notification_call)
+
+    assert resolve.call_count == 2
+    assert entry_for_entity.call_args_list[-2].args == (hass, "vacuum.one")
+    assert entry_for_entity.call_args_list[-1].args == (hass, "vacuum.two")
+    tracker.async_configure_investigator.assert_awaited_once_with(
+        "entry-one", "researcher"
+    )
+    tracker.async_notification_action.assert_awaited_once_with(
+        "entry-two", "a" * 24, 7, "acknowledge"
+    )
+
+
+async def test_firmware_services_require_admin_and_one_robot() -> None:
+    hass = SimpleNamespace(data={}, auth=SimpleNamespace(async_get_user=AsyncMock()))
+    services = await _registered_services(hass)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_investigator",
+        {"entity_id": ["vacuum.one"], "provider": "researcher"},
+        context=Context(user_id="non-admin"),
+    )
+    hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=False)
+    with pytest.raises(Unauthorized):
+        await _registered_handler(services, "firmware_investigator")(call)
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    tracker.async_configure_investigator.assert_not_awaited()
+
+    hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one", "vacuum.two"],
+        ),
+        pytest.raises(ServiceValidationError, match="exactly one"),
+    ):
+        await _registered_handler(services, "firmware_investigator")(call)
+    notification = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_notification",
+        {
+            "entity_id": ["vacuum.one", "vacuum.two"],
+            "report_id": "a" * 24,
+            "revision": 1,
+            "action": "delivered",
+        },
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one", "vacuum.two"],
+        ),
+        pytest.raises(ServiceValidationError, match="exactly one"),
+    ):
+        await _registered_handler(services, "firmware_notification")(notification)
+
+
+@pytest.mark.parametrize(
+    ("service", "method", "call_data"),
+    [
+        (
+            "firmware_investigator",
+            "async_configure_investigator",
+            {"entity_id": ["vacuum.one"], "provider": "researcher"},
+        ),
+        (
+            "firmware_notification",
+            "async_notification_action",
+            {
+                "entity_id": ["vacuum.one"],
+                "report_id": "a" * 24,
+                "revision": 3,
+                "action": "recheck",
+            },
+        ),
+    ],
+)
+async def test_firmware_services_translate_tracker_value_errors(
+    service, method, call_data
+) -> None:
+    hass = SimpleNamespace(data={}, auth=SimpleNamespace(async_get_user=AsyncMock()))
+    services = await _registered_services(hass)
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    getattr(tracker, method).side_effect = ValueError("stale firmware request")
+    hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
+    call = ServiceCall(
+        hass, DOMAIN, service, call_data, context=Context(user_id="admin")
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one"],
+        ),
+        patch(
+            "custom_components.matic_robot.services._entry_for_entity",
+            return_value=SimpleNamespace(entry_id="entry-one"),
+        ),
+        pytest.raises(ServiceValidationError, match="stale firmware request"),
+    ):
+        await _registered_handler(services, service)(call)
 
 
 async def test_firmware_snapshot_requires_exactly_one_robot() -> None:

@@ -7,7 +7,7 @@ import hashlib
 import secrets
 from collections.abc import Callable, Mapping
 from copy import deepcopy
-from typing import Any, cast
+from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
@@ -54,7 +54,7 @@ WIRE_SHAPE_CANDIDATE_EXCLUDED_ENDPOINTS = frozenset({"latest_pose"})
 
 
 class FirmwareTracker:
-    """Persist safe weekly snapshots and signal newly observed firmware."""
+    """Persist bounded firmware evidence, research ownership, and delivery state."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
@@ -81,9 +81,9 @@ class FirmwareTracker:
         if version is None:
             return False
         async with self._lock:
-            robot = self._robot(robot_id)
-            previous = robot.get("observed_version")
-            previous_protocol = robot.get("observed_protocol")
+            existing = self._data.get("robots", {}).get(robot_id, {})
+            previous = existing.get("observed_version")
+            previous_protocol = existing.get("observed_protocol")
             if previous == version and previous_protocol == protocol:
                 return False
             if (
@@ -97,10 +97,13 @@ class FirmwareTracker:
                 and previous_protocol is None
                 and protocol is not None
             )
+            candidate = deepcopy(self._data)
+            robot = candidate.setdefault("robots", {}).setdefault(robot_id, {})
             robot["observed_version"] = version
             robot["observed_protocol"] = protocol
             robot["compatibility_status"] = "pending"
-            await self._store.async_save(self._data)
+            await self._store.async_save(candidate)
+            self._data = candidate
         self._notify(robot_id)
         if previous is None or metadata_completed:
             return False
@@ -121,9 +124,11 @@ class FirmwareTracker:
     async def async_remove_robot(self, robot_id: str) -> None:
         """Forget a removed entry's snapshots and withdraw its repair."""
         async with self._lock:
-            if self._data.get("robots", {}).pop(robot_id, None) is None:
+            candidate = deepcopy(self._data)
+            if candidate.get("robots", {}).pop(robot_id, None) is None:
                 return
-            await self._store.async_save(self._data)
+            await self._store.async_save(candidate)
+            self._data = candidate
         ir.async_delete_issue(self.hass, DOMAIN, self.issue_id(robot_id))
 
     async def async_record_snapshot(
@@ -131,18 +136,21 @@ class FirmwareTracker:
     ) -> dict[str, Any]:
         """Persist one safe snapshot and return its comparison with the prior one."""
         async with self._lock:
-            robot = self._robot(robot_id)
+            candidate = deepcopy(self._data)
+            robot = candidate.setdefault("robots", {}).setdefault(robot_id, {})
             previous = robot.get("snapshot")
             current = deepcopy(dict(snapshot))
             comparison = _compare_snapshots(previous, current)
+            if previous and current.get("captured_at", "") < previous.get(
+                "captured_at", ""
+            ):
+                # A slower overlapping sweep must not roll evidence backward.
+                return {**comparison, "discarded": True}
             history = robot.setdefault("history", [])
             baseline = reports.prepare_release(robot, current)
             release_comparison = _compare_snapshots(baseline, current)
             report_changed = reports.update_report(robot, current, dt_util.utcnow())
             robot["snapshot"] = current
-            robot["compatibility_status"] = _compatibility_status(
-                robot.get("compatibility_status"), release_comparison
-            )
             report = robot["firmware_report"]
             if report["failed_endpoints"]:
                 robot["compatibility_status"] = (
@@ -170,7 +178,8 @@ class FirmwareTracker:
             }
             history.append(current)
             del history[:-MAX_HISTORY]
-            await self._store.async_save(self._data)
+            await self._store.async_save(candidate)
+            self._data = candidate
         self._notify(robot_id)
         self._reconcile_repair(robot_id)
         if report_changed:
@@ -439,12 +448,6 @@ class FirmwareTracker:
         digest = hashlib.sha256(robot_id.encode()).hexdigest()[:12]
         return f"firmware_changed_{digest}"
 
-    def _robot(self, robot_id: str) -> dict[str, Any]:
-        return cast(
-            dict[str, Any],
-            self._data.setdefault("robots", {}).setdefault(robot_id, {}),
-        )
-
     @callback
     def _notify(self, robot_id: str) -> None:
         for listener in list(self._listeners.get(robot_id, set())):
@@ -565,20 +568,6 @@ def _compatibility_signature(endpoint: Mapping[str, Any] | None) -> tuple[Any, .
     )
 
 
-def _compatibility_status(current: str | None, comparison: Mapping[str, Any]) -> str:
-    """Translate one snapshot comparison into durable HA-facing health."""
-    if comparison["baseline"]:
-        return "baseline"
-    release_changed = bool(
-        comparison["firmware_changed"] or comparison.get("protocol_changed", False)
-    )
-    if release_changed and comparison["changed_endpoints"]:
-        return "regression"
-    if release_changed:
-        return "compatible"
-    return current or "current"
-
-
 def snapshot_timestamp() -> str:
     """Return one normalized timestamp for a persisted snapshot."""
     return dt_util.utcnow().isoformat()
@@ -634,6 +623,7 @@ async def async_build_firmware_snapshot(
     client: MaticHermesClient, state: RobotState
 ) -> dict[str, Any]:
     """Capture every known endpoint without retaining any payload bytes."""
+    captured_at = snapshot_timestamp()
     semaphore = asyncio.Semaphore(4)
     endpoints = await asyncio.gather(
         *(
@@ -656,7 +646,7 @@ async def async_build_firmware_snapshot(
     )
     return {
         "analysis_version": ANALYSIS_VERSION,
-        "captured_at": snapshot_timestamp(),
+        "captured_at": captured_at,
         "firmware_version": firmware_version,
         "observation_context": state.operational.activity.value,
         "protocol_version": state.telemetry.protocol_version,

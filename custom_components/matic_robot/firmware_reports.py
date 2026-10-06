@@ -7,16 +7,20 @@ can never promote a field to a supported command or alter robot permissions.
 from __future__ import annotations
 
 import hashlib
+import hmac
+import html
+import ipaddress
 import json
 import re
 from copy import deepcopy
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 from .client.endpoints import HERMES_ENDPOINT_NAMES
 
 MAX_FINDINGS = 128
+MAX_FIELD_FINDINGS = MAX_FINDINGS - len(HERMES_ENDPOINT_NAMES)
 MAX_REPORT_HISTORY = 8
 CONFIRMATION_INTERVAL = timedelta(minutes=15)
 DISCOVERY_INTERVAL = timedelta(hours=6)
@@ -85,7 +89,7 @@ def prepare_release(
         if previous := robot.get("snapshot"):
             _advance_release(robot, previous)
     _advance_release(robot, current)
-    return robot["release_evidence"].get("baseline")
+    return cast(dict[str, Any] | None, robot["release_evidence"].get("baseline"))
 
 
 def _advance_release(robot: dict[str, Any], snapshot: dict[str, Any]) -> None:
@@ -94,14 +98,30 @@ def _advance_release(robot: dict[str, Any], snapshot: dict[str, Any]) -> None:
     # A temporarily missing protocol is missing evidence, not another release.
     if release and key[0] == release["key"][0] and key[1] is None:
         key[1] = release["key"][1]
+    if (
+        release
+        and key[0] == release["key"][0]
+        and key[2] == release["key"][2]
+        and release["key"][1] is None
+    ):
+        # Completing version metadata must not replace the preceding release's
+        # baseline with this release's own first sample.
+        release["key"] = key
     if release is None or release["key"] != key:
-        previous_good = release.get("last_good") if release else None
+        previous_good = (
+            release.get("last_good") or release.get("baseline") if release else None
+        )
+        previous_shapes = (
+            release["seen_shapes"]
+            if release and release.get("last_good")
+            else release.get("baseline_shapes", {})
+            if release
+            else {}
+        )
         robot["release_evidence"] = release = {
             "key": key,
             "baseline": deepcopy(previous_good),
-            "baseline_shapes": deepcopy(release.get("seen_shapes", {}))
-            if previous_good
-            else {},
+            "baseline_shapes": deepcopy(previous_shapes),
             "seen_shapes": {},
             "last_good": None,
             "contexts": [],
@@ -194,7 +214,11 @@ def update_report(
         item["kind"] == "read_failure" and item["status"] == "observed_again"
         for item in findings.values()
     )
-    report["finding_limit_reached"] = len(findings) >= MAX_FINDINGS
+    report["finding_limit_reached"] = (
+        len(findings) >= MAX_FINDINGS
+        or sum(item["kind"] == "new_field" for item in findings.values())
+        >= MAX_FIELD_FINDINGS
+    )
     changed = old_signature != _evidence_signature(report)
     if changed:
         report["revision"] += 1
@@ -224,7 +248,11 @@ def _observe_finding(
     key = digest([report_id, kind, endpoint, path])
     finding = findings.get(key)
     if finding is None:
-        if len(findings) >= MAX_FINDINGS:
+        if len(findings) >= MAX_FINDINGS or (
+            kind == "new_field"
+            and sum(item["kind"] == "new_field" for item in findings.values())
+            >= MAX_FIELD_FINDINGS
+        ):
             return
         finding = findings[key] = {
             "id": key,
@@ -281,13 +309,30 @@ def public_report(robot: dict[str, Any]) -> dict[str, Any]:
         return {}
     investigation = report["investigation"]
     investigation.pop("lease_hash", None)
+    if "summary" in investigation:
+        investigation["summary_markdown"] = re.sub(
+            r"([\\`*_{}\[\]()#+.!|~\-])",
+            r"\\\1",
+            html.escape(investigation["summary"], quote=False),
+        )
     report["findings"] = list(report["findings"].values())
     report["investigator"] = robot.get("investigator", "manual")
     report["routing_revision"] = robot.get("routing_revision", 0)
     report["next_check_at"] = robot.get("next_firmware_scan_at")
-    report["notification_pending"] = report["revision"] > max(
-        report["delivered_revision"], report["acknowledged_revision"]
-    ) and bool(report["findings"])
+    actionable = any(
+        item["kind"] == "new_field"
+        or item["status"] == "observed_again"
+        or (item["status"] == "recovered" and item["observation_count"] >= 2)
+        for item in report["findings"]
+    ) or investigation.get("disposition") in (
+        "integration_opportunity",
+        "compatibility_issue",
+    )
+    report["notification_pending"] = (
+        report["revision"]
+        > max(report["delivered_revision"], report["acknowledged_revision"])
+        and actionable
+    )
     report["research_is_untrusted"] = True
     return report
 
@@ -368,10 +413,13 @@ def complete_report(
         robot, report_id, evidence_revision, routing_revision, provider
     )
     investigation = report["investigation"]
-    if investigation.get("lease_hash") != digest(
-        token
-    ) or now >= datetime.fromisoformat(investigation["lease_expires_at"]):
+    if (
+        investigation.get("status") != "claimed"
+        or not hmac.compare_digest(investigation.get("lease_hash", ""), digest(token))
+        or now >= datetime.fromisoformat(investigation["lease_expires_at"])
+    ):
         raise ValueError("The investigation lease is missing, expired, or superseded")
+    summary = re.sub(r"[\x00-\x08\x0b-\x1f\x7f\u202a-\u202e\u2066-\u2069]", "", summary)
     if (
         disposition not in ASSESSMENTS
         or not summary.strip()
@@ -380,13 +428,20 @@ def complete_report(
     ):
         raise ValueError("Provide a bounded assessment and at most five source URLs")
     for source in sources:
-        parsed = urlsplit(source)
+        try:
+            parsed = urlsplit(source)
+            host = (parsed.hostname or "").lower().rstrip(".")
+            port = parsed.port
+        except ValueError as err:
+            raise ValueError("Research sources must be valid HTTPS URLs") from err
         if (
             len(source) > 512
             or parsed.scheme != "https"
             or not parsed.hostname
             or parsed.username
             or parsed.password
+            or port not in (None, 443)
+            or not _public_source_host(host)
         ):
             raise ValueError(
                 "Research sources must be public HTTPS URLs without credentials"
@@ -400,6 +455,20 @@ def complete_report(
         "sources": list(sources),
     }
     report["revision"] += 1
+
+
+def _public_source_host(host: str) -> bool:
+    """Reject explicit local destinations without making a DNS/network request."""
+    try:
+        return ipaddress.ip_address(host).is_global
+    except ValueError:
+        return bool(
+            "." in host
+            and not host.endswith(
+                (".local", ".localhost", ".internal", ".lan", ".home")
+            )
+            and re.fullmatch(r"[a-z0-9.-]+", host)
+        )
 
 
 def _current_report(

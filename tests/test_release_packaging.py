@@ -28,7 +28,7 @@ def test_release_versions_and_links_are_consistent() -> None:
     hacs = json.loads((ROOT / "hacs.json").read_text())
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
 
-    assert manifest["version"] == "0.4.7"
+    assert manifest["version"] == "0.4.8"
     assert project["version"] == manifest["version"]
     assert hacs["homeassistant"] == "2026.7.0"
     assert manifest["documentation"].startswith("https://github.com/")
@@ -705,7 +705,7 @@ def test_native_automation_blueprints_are_importable() -> None:
         (ROOT / "blueprints" / "automation" / "matic_robot").glob("*.yaml")
     )
 
-    assert len(blueprints) == 4
+    assert len(blueprints) == 5
     for path in blueprints:
         content = load_yaml(path)
         blueprint = Blueprint(
