@@ -1189,6 +1189,76 @@ async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> N
                     await asyncio.gather(task, return_exceptions=True)
 
 
+async def test_stop_service_preserves_managed_stop_reason_for_return_to_base(
+    hass,
+) -> None:
+    """The Stop service keeps its reason across HA's nested service task."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id="run-id",
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    services = await _registered_services(hass, manager)
+    entry = entity_entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+
+    async def route_return_to_base(_domain, _service, _data, **_kwargs) -> None:
+        await asyncio.create_task(entity.async_return_to_base())
+
+    try:
+        with (
+            patch.object(entity, "_schedule_dock_after_stop"),
+            patch(
+                "custom_components.matic_robot.services._saved_plan_context",
+                return_value=("vacuum.test", entry, serial_number, {}),
+            ),
+        ):
+            services.async_call.side_effect = route_return_to_base
+            await _registered_handler(services, "stop_intelligent_cleaning")(stop)
+    finally:
+        if plan_lock.locked():
+            plan_lock.release()
+
+    assert manager.cancellation_reason(serial_number) == "managed_stop"
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
+
+
 async def test_clean_area_translates_client_failure_without_protocol_details(
     hass,
 ) -> None:
