@@ -43,7 +43,7 @@ from .const import (
 )
 from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
-from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
+from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .managed_executor import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .migrations import async_migrate_entry
@@ -97,8 +97,8 @@ async def _async_recover_after_failed_unload(
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register integration-wide services and the plan editor."""
-    await async_register_room_plan_editor(hass)
+    """Register integration services and the Map Studio frontend."""
+    await async_register_frontend(hass)
     await async_register_services(hass)
     hass.data[DOMAIN][DATA_LLM_API] = async_register_matic_llm_api(hass)
     return True
@@ -649,6 +649,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
     # HA can reload an enabled entry again during startup (for example after
     # discovery updates its endpoint). Losing this observer is not a Stop.
     preserve_run = entry.disabled_by is None
+    entry.runtime_data.cleaning_plans.begin_command_teardown(
+        str(entry.data[CONF_SERIAL_NUMBER])
+    )
     await entry.runtime_data.cleaning_plans.async_cancel_and_wait(
         str(entry.data[CONF_SERIAL_NUMBER]),
         preserve_run=preserve_run,
@@ -657,7 +660,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         await entry.runtime_data.cleaning_plans.async_retire_recovery(
             str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
         )
+    await entry.runtime_data.cleaning_plans.async_close_command_admission_and_wait(
+        str(entry.data[CONF_SERIAL_NUMBER])
+    )
+    await entry.runtime_data.cleaning_plans.async_close_metadata_admission_and_wait(
+        str(entry.data[CONF_SERIAL_NUMBER])
+    )
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok:
+        entry.runtime_data.cleaning_plans.reopen_metadata_admission(
+            str(entry.data[CONF_SERIAL_NUMBER])
+        )
     if not unload_ok and preserve_run and not getattr(hass, "is_stopping", False):
         recovery_reader = getattr(
             entry.runtime_data.cleaning_plans, "recovery_run", None

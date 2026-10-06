@@ -1,4 +1,4 @@
-"""Register the cleaning-plan editor and optional local map workspace."""
+"""Register the administrator-only local Map Studio frontend."""
 
 from __future__ import annotations
 
@@ -26,8 +26,7 @@ from .slam_scene import (
 )
 from .workspace_socket import async_register as async_register_workspace_socket
 
-# Include both the packaged version and the editor content in the cache-buster.
-# Both are loaded once at import time, off the event loop.
+# Keep the custom icons cache-busted by both integration and asset versions.
 MANIFEST_VERSION = json.loads(
     Path(__file__).with_name("manifest.json").read_text(encoding="utf-8")
 )["version"]
@@ -35,20 +34,6 @@ MATIC_ICONS_VERSION = sha256(
     Path(__file__).with_name("matic_icons.js").read_bytes()
 ).hexdigest()[:12]
 MATIC_ICONS_PATH = f"/matic_robot/{MANIFEST_VERSION}-{MATIC_ICONS_VERSION}/icons.js"
-# Loader and implementation are one cache boundary: the loader's relative
-# import must never combine files from different releases.
-ROOM_PLAN_EDITOR_BUNDLE_VERSION = sha256(
-    Path(__file__).with_name("room_plan_editor_loader.js").read_bytes()
-    + b"\0"
-    + Path(__file__).with_name("room_plan_editor.js").read_bytes()
-).hexdigest()[:12]
-ROOM_PLAN_EDITOR_ROOT_PATH = (
-    f"/matic_robot/{MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_BUNDLE_VERSION}"
-)
-ROOM_PLAN_EDITOR_PATH = f"{ROOM_PLAN_EDITOR_ROOT_PATH}/room-plan-editor.js"
-ROOM_PLAN_EDITOR_LOADER_PATH = (
-    f"{ROOM_PLAN_EDITOR_ROOT_PATH}/room-plan-editor-loader.js"
-)
 
 
 def _tree_version(path: Path) -> str:
@@ -90,25 +75,17 @@ def clear_slam_scene_cache(hass: HomeAssistant, entry_id: str) -> None:
         pose_view.clear_entry(entry_id)
 
 
-async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
-    """Serve and load the room editor used by integration config flows."""
+async def async_register_frontend(hass: HomeAssistant) -> None:
+    """Serve the local Map Studio frontend and its private data views."""
     if "workspace_socket" not in hass.data.get(__package__, {}):
         await async_register_workspace_socket(hass)
     if frontend.DATA_EXTRA_MODULE_URL not in hass.data:
         return
-    path = Path(__file__).with_name("room_plan_editor.js")
-    loader_path = Path(__file__).with_name("room_plan_editor_loader.js")
     await hass.http.async_register_static_paths(
         [
             StaticPathConfig(
                 MATIC_ICONS_PATH,
                 str(Path(__file__).with_name("matic_icons.js")),
-                cache_headers=True,
-            ),
-            StaticPathConfig(ROOM_PLAN_EDITOR_PATH, str(path), cache_headers=True),
-            StaticPathConfig(
-                ROOM_PLAN_EDITOR_LOADER_PATH,
-                str(loader_path),
                 cache_headers=True,
             ),
             StaticPathConfig(
@@ -127,12 +104,11 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     hass.http.register_view(pose_view)
     hass.http.register_view(MaticSlamHistoryView)
     hass.http.register_view(MaticSlamHistorySceneView)
-    hass.http.register_view(MaticSlamCatalogView(ROOM_PLAN_EDITOR_PATH, scene_view))
+    hass.http.register_view(MaticSlamCatalogView(scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
-    frontend.add_extra_js_url(hass, ROOM_PLAN_EDITOR_LOADER_PATH)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)
-    # Keep panel_custom optional for config flows and headless installations.
+    # Keep panel_custom optional for headless installations.
     from homeassistant.components.panel_custom import async_register_panel
 
     if "matic-map" not in hass.data.get(frontend.DATA_PANELS, {}):

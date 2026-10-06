@@ -1840,6 +1840,41 @@ async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
     )
 
 
+async def test_start_coverage_rechecks_owner_after_native_preflight() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._async_require_idle_native_session = AsyncMock(return_value=b"identity")
+    client._async_send_user_payload = AsyncMock()
+    order: list[str] = []
+
+    async def preflight() -> bytes:
+        order.append("preflight")
+        return b"identity"
+
+    client._async_require_idle_native_session.side_effect = preflight
+
+    def require_current() -> None:
+        order.append("admission")
+        raise RuntimeError("command admission closed")
+
+    with pytest.raises(RuntimeError, match="command admission closed"):
+        await client.async_start_coverage(
+            FloorPlan(
+                1,
+                "00000000-0000-0000-0000-000000000001",
+                b"partition",
+                (),
+            ),
+            ["00000000-0000-0000-0000-000000000002"],
+            cleaning_mode=CleaningMode.BOTH,
+            coverage_setting=CoverageSetting.STANDARD,
+            require_settings_readback=True,
+            require_current=require_current,
+        )
+
+    assert order == ["preflight", "admission"]
+    client._async_send_user_payload.assert_not_awaited()
+
+
 def _operational_state_for_codes(*codes, error_codes=()):
     return RobotOperationalState(
         battery_percentage=None,

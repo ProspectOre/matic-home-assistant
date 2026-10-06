@@ -1262,6 +1262,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         ordered: bool = False,
         require_settings_readback: bool = False,
         session_id: UUID | None = None,
+        require_current: Callable[[], None] | None = None,
     ) -> None:
         """Start an exact normal-coverage command for local room IDs."""
         if not require_settings_readback and session_id is not None:
@@ -1281,6 +1282,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             baseline_identity = await self._async_require_idle_native_session()
         else:
             baseline_identity = None
+        if require_current is not None:
+            require_current()
         await self._async_send_user_payload(payload, command_name="START_COVERAGE")
         if require_settings_readback:
             assert baseline_identity is not None

@@ -23,7 +23,7 @@ from custom_components.matic_robot.area_binding import (
     binding_for_area,
     binding_for_floor_plan,
 )
-from custom_components.matic_robot.area_selector import _RoomGeometryIndex
+from custom_components.matic_robot.area_geometry import RoomGeometryIndex
 from custom_components.matic_robot.client.commands import CleaningMode, CoverageSetting
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
@@ -33,10 +33,14 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.client.slam_map import decode_slam_tile
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import (
+    CONF_LIVE_WORKSPACE_TRANSPORT,
+    DOMAIN,
+)
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
+    MetadataAdmissionClosedError,
     RoomSequenceLimitError,
     plan_floor_token,
     room_cadence_identity,
@@ -287,9 +291,14 @@ def _entry(
     domain: str = DOMAIN,
     state=ConfigEntryState.LOADED,
     entry_id: str = "entry",
+    options: dict[str, object] | None = None,
 ):
     return SimpleNamespace(
-        domain=domain, state=state, runtime_data=runtime, entry_id=entry_id
+        domain=domain,
+        state=state,
+        runtime_data=runtime,
+        entry_id=entry_id,
+        options={} if options is None else options,
     )
 
 
@@ -362,7 +371,7 @@ async def test_scene_generation_covers_both_multi_floor_transition_orders(
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     scene_view = MaticSlamSceneView()
-    catalog_view = MaticSlamCatalogView("/editor.js", scene_view)
+    catalog_view = MaticSlamCatalogView(scene_view)
 
     initial = json.loads((await catalog_view.get(_request(hass))).body)["entries"][0]
     assert initial["map_revision"] == 7
@@ -946,6 +955,54 @@ async def test_pose_view_coalesces_concurrent_live_reads_and_rechecks_runtime() 
     replacement.client.async_get_pose.assert_awaited_once()
 
 
+async def test_pose_view_cancellation_releases_waiter_for_next_live_read() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamPoseView()
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+    attempts = 0
+
+    async def read_pose():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                raise
+        return RobotPose(0.2, 0.3, 0.0)
+
+    runtime.client.async_get_pose.side_effect = read_pose
+    first = asyncio.create_task(view.get(_request(hass), "entry"))
+    second = None
+    try:
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        second = asyncio.create_task(view.get(_request(hass), "entry"))
+        await asyncio.sleep(0)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        assert first_cancelled.is_set()
+
+        second_response = await asyncio.wait_for(second, timeout=1)
+        assert second_response.status == HTTPStatus.OK
+    finally:
+        for task in (first, second):
+            if task is None:
+                continue
+            if not task.done():
+                task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+    assert attempts == 2
+
+
 async def test_pose_view_discards_result_if_entry_unloads_during_read() -> None:
     runtime = _runtime()
     entry = _entry(runtime)
@@ -1022,7 +1079,7 @@ async def test_pose_view_hides_missing_entry_and_requires_admin() -> None:
 
 async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> None:
     runtime = _runtime()
-    loaded = _entry(runtime)
+    loaded = _entry(runtime, options={CONF_LIVE_WORKSPACE_TRANSPORT: True})
     unloaded = _entry(
         _runtime(), state=ConfigEntryState.NOT_LOADED, entry_id="unloaded"
     )
@@ -1036,14 +1093,11 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     with pytest.raises(Unauthorized):
         await MaticSlamSceneView().get(_request(hass, admin=False), "entry")
     with pytest.raises(Unauthorized):
-        await MaticSlamCatalogView("/matic_robot/test/room-plan-editor.js").get(
-            _request(hass, admin=False)
-        )
+        await MaticSlamCatalogView().get(_request(hass, admin=False))
+    hass.config_entries.async_entries.assert_not_called()
 
     scene_view = MaticSlamSceneView()
-    response = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js", scene_view
-    ).get(_request(hass))
+    response = await MaticSlamCatalogView(scene_view).get(_request(hass))
 
     assert response.status == HTTPStatus.OK
     assert (
@@ -1053,13 +1107,13 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         "entries": [
             {
                 "entry_id": loaded.entry_id,
+                "live_workspace_transport_enabled": True,
                 "scene_url": f"/api/matic_robot/slam_scene/{loaded.entry_id}",
                 "delta_url": f"/api/matic_robot/slam_delta/{loaded.entry_id}",
                 "pose_url": f"/api/matic_robot/slam_pose/{loaded.entry_id}",
                 "history_url": f"/api/matic_robot/slam_history/{loaded.entry_id}",
                 "areas_url": f"/api/matic_robot/areas/{loaded.entry_id}",
                 "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
-                "area_editor_url": "/matic_robot/test/room-plan-editor.js",
                 "history_count": 0,
                 "history_floor_count": 0,
                 "map_revision": 7,
@@ -1111,9 +1165,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         "session_id": "private-session"
     }
     runtime.coordinator.data.telemetry.active_cleaning_session = True
-    blocked_response = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    blocked_response = await MaticSlamCatalogView().get(_request(hass))
     blocked_payload = json.loads(blocked_response.body)
     blocked_entry = blocked_payload["entries"][0]
     assert {
@@ -1135,9 +1187,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
 
     runtime.slam_map.mission_identity = None
     assert _map_session_key(runtime) is None
-    empty_identity = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    empty_identity = await MaticSlamCatalogView().get(_request(hass))
     empty_entry = json.loads(empty_identity.body)["entries"][0]
     assert empty_entry["history_count"] == 0
     assert empty_entry["map_floor_coherent"] is False
@@ -1147,9 +1197,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert empty_entry["map_floor_ordinal"] is None
 
     runtime.coordinator.data.floor_plan = None
-    empty_plan = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    empty_plan = await MaticSlamCatalogView().get(_request(hass))
     empty_plan_entry = json.loads(empty_plan.body)["entries"][0]
     assert empty_plan_entry["selected_floor_ordinal"] is None
     assert empty_plan_entry["map_floor_ordinal"] is None
@@ -1159,9 +1207,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     runtime.slam_map.health.photo_tiles = 0
     runtime.slam_map.health.structure_tiles = 0
     runtime.slam_map.health.bootstrap_state = "complete"
-    empty_bootstrap = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    empty_bootstrap = await MaticSlamCatalogView().get(_request(hass))
     assert (
         json.loads(empty_bootstrap.body)["entries"][0]["map_block_reason"]
         == "bootstrap_empty"
@@ -1171,13 +1217,32 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     runtime.slam_map.health.structure_tiles = 1
     runtime.slam_map.mission_identity = SlamMapIdentity("synthetic-other", 2)
     runtime.slam_map.live_session_verified = True
-    mismatched = await MaticSlamCatalogView(
-        "/matic_robot/test/room-plan-editor.js"
-    ).get(_request(hass))
+    mismatched = await MaticSlamCatalogView().get(_request(hass))
     assert (
         json.loads(mismatched.body)["entries"][0]["map_block_reason"]
         == "floor_plan_mismatch"
     )
+
+
+@pytest.mark.parametrize(
+    ("options", "expected"),
+    [
+        ({}, False),
+        ({CONF_LIVE_WORKSPACE_TRANSPORT: True}, True),
+        ({CONF_LIVE_WORKSPACE_TRANSPORT: False}, False),
+        ({CONF_LIVE_WORKSPACE_TRANSPORT: "true"}, False),
+        ({CONF_LIVE_WORKSPACE_TRANSPORT: 1}, False),
+    ],
+)
+async def test_admin_catalog_projects_only_strict_live_transport_boolean(
+    options: dict[str, object], expected: bool
+) -> None:
+    runtime = _runtime()
+    loaded = _entry(runtime, options=options)
+    response = await MaticSlamCatalogView().get(_request(_hass(loaded)))
+
+    entry = json.loads(response.body)["entries"][0]
+    assert entry["live_workspace_transport_enabled"] is expected
 
 
 async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
@@ -1286,7 +1351,7 @@ async def test_area_workspace_does_not_index_geometry_without_saved_areas() -> N
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
-    with patch("custom_components.matic_robot.slam_scene._RoomGeometryIndex") as index:
+    with patch("custom_components.matic_robot.slam_scene.RoomGeometryIndex") as index:
         response = await view.get(_request(hass), "entry")
 
     assert response.status == HTTPStatus.OK
@@ -1319,8 +1384,8 @@ async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
     hass = _hass(_entry(runtime))
 
     with patch(
-        "custom_components.matic_robot.slam_scene._RoomGeometryIndex",
-        wraps=_RoomGeometryIndex,
+        "custom_components.matic_robot.slam_scene.RoomGeometryIndex",
+        wraps=RoomGeometryIndex,
     ) as index:
         response = await MaticAreasView().get(_request(hass), "entry")
 
@@ -1902,6 +1967,113 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
     )
 
 
+@pytest.mark.parametrize("operation", ("save", "delete"))
+async def test_area_workspace_reports_metadata_admission_closed(operation) -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticAreasView()
+    runtime.cleaning_plans.areas.return_value = (
+        {"under_table": {"name": "Under table"}} if operation == "delete" else {}
+    )
+    runtime.cleaning_plans.async_save_area.side_effect = MetadataAdmissionClosedError(
+        "Matic metadata is unavailable during unload"
+    )
+    runtime.cleaning_plans.async_delete_area.side_effect = MetadataAdmissionClosedError(
+        "Matic metadata is unavailable during unload"
+    )
+    values = {
+        "name": "Under table",
+        "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+        "cleaning_mode": "vacuum_and_mop",
+        "coverage_setting": "standard",
+    }
+
+    if operation == "save":
+        response = await view.post(_json_request(hass, "POST", values), "entry")
+        runtime.cleaning_plans.async_save_area.assert_awaited_once()
+        runtime.cleaning_plans.async_delete_area.assert_not_awaited()
+    else:
+        response = await view.delete(
+            _request(hass, path="/?area_id=under_table"), "entry"
+        )
+        runtime.cleaning_plans.async_delete_area.assert_awaited_once_with(
+            "synthetic-serial", "under_table"
+        )
+        runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+    assert response.status == HTTPStatus.SERVICE_UNAVAILABLE
+    assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
+
+
+async def test_area_mutations_require_admin_before_body_or_store_access() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticAreasView()
+    request = _json_request(hass, "POST", {})
+    request["hass_user"] = SimpleNamespace(is_admin=False)
+    request.json = AsyncMock()
+
+    with pytest.raises(Unauthorized):
+        await view.post(request, "entry")
+
+    request.json.assert_not_awaited()
+    runtime.cleaning_plans.areas.assert_not_called()
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+    with pytest.raises(Unauthorized):
+        await view.delete(
+            _request(hass, admin=False, path="/?area_id=under_table"), "entry"
+        )
+
+    runtime.cleaning_plans.areas.assert_not_called()
+    runtime.cleaning_plans.async_delete_area.assert_not_awaited()
+
+
+async def test_area_post_cancellation_during_body_read_does_not_reach_store() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    request = _json_request(
+        hass,
+        "POST",
+        {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": CoverageSetting.OPTIMAL.value,
+        },
+    )
+    body_started = asyncio.Event()
+    body_cancelled = asyncio.Event()
+
+    async def wait_for_body(**_kwargs):
+        body_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            body_cancelled.set()
+            raise
+
+    request.json = AsyncMock(side_effect=wait_for_body)
+    waiting = asyncio.create_task(MaticAreasView().post(request, "entry"))
+    try:
+        await asyncio.wait_for(body_started.wait(), timeout=1)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        if not waiting.done():
+            waiting.cancel()
+        try:
+            await waiting
+        except asyncio.CancelledError:
+            pass
+
+    assert body_cancelled.is_set()
+    request.json.assert_awaited_once_with(loads=json.loads)
+    runtime.cleaning_plans.areas.assert_not_called()
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+
 async def test_area_workspace_rejects_floor_change_during_request_body_read() -> None:
     """A body authored for one floor cannot be rebound to a later selection."""
     runtime = _runtime()
@@ -2263,6 +2435,59 @@ async def test_delta_view_waits_bounds_query_and_handles_unload() -> None:
     ).status == HTTPStatus.NOT_FOUND
 
 
+async def test_delta_view_cancellation_removes_long_poll_listeners() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    scene_view = MaticSlamSceneView()
+    initial = await scene_view.get(_request(hass), "entry")
+    assert initial.headers["X-Matic-Revision"] == "7"
+
+    subscribed = asyncio.Event()
+    map_listeners = set()
+    coordinator_listeners = set()
+
+    def subscribe_map(listener):
+        map_listeners.add(listener)
+
+        def remove() -> None:
+            map_listeners.discard(listener)
+
+        return remove
+
+    def subscribe_coordinator(listener):
+        coordinator_listeners.add(listener)
+        subscribed.set()
+
+        def remove() -> None:
+            coordinator_listeners.discard(listener)
+
+        return remove
+
+    runtime.slam_map.async_add_listener.side_effect = subscribe_map
+    runtime.coordinator.async_add_listener.side_effect = subscribe_coordinator
+    waiting = asyncio.create_task(
+        MaticSlamDeltaView(scene_view).get(_request(hass, path="/?since=7"), "entry")
+    )
+    try:
+        await asyncio.wait_for(subscribed.wait(), timeout=1)
+        assert len(map_listeners) == 1
+        assert len(coordinator_listeners) == 1
+
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        if not waiting.done():
+            waiting.cancel()
+        try:
+            await waiting
+        except asyncio.CancelledError:
+            pass
+
+    assert map_listeners == set()
+    assert coordinator_listeners == set()
+
+
 async def test_delta_view_wakes_when_only_the_floor_plan_changes() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
@@ -2374,6 +2599,51 @@ async def test_delta_view_rejects_entry_unload_after_wakeup() -> None:
     )
 
     assert response.status == HTTPStatus.NOT_FOUND
+
+
+async def test_history_scene_cancellation_propagates_to_store_read() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    mission_token = runtime.slam_map.mission_identity.mission_token
+    assert mission_token is not None
+    snapshot = SimpleNamespace(
+        snapshot_id="0123456789abcdef01234567",
+        mission_token=mission_token,
+    )
+    runtime.slam_history.catalog.return_value = (snapshot,)
+    read_started = asyncio.Event()
+    read_cancelled = asyncio.Event()
+
+    async def wait_for_scene(*_args, **_kwargs):
+        read_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            read_cancelled.set()
+            raise
+
+    runtime.slam_history.async_scene.side_effect = wait_for_scene
+    waiting = asyncio.create_task(
+        MaticSlamHistorySceneView().get(_request(hass), "entry", snapshot.snapshot_id)
+    )
+    try:
+        await asyncio.wait_for(read_started.wait(), timeout=1)
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+    finally:
+        if not waiting.done():
+            waiting.cancel()
+        try:
+            await waiting
+        except asyncio.CancelledError:
+            pass
+
+    assert read_cancelled.is_set()
+    runtime.slam_history.async_scene.assert_awaited_once_with(
+        snapshot.snapshot_id,
+        mission_token=snapshot.mission_token,
+    )
 
 
 async def test_history_views_list_serve_hide_and_require_admin() -> None:

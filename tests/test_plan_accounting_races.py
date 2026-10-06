@@ -8,7 +8,13 @@ from unittest.mock import AsyncMock
 
 from homeassistant.util import dt as dt_util
 
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
+from custom_components.matic_robot.client.models import FloorPlan, Room
+from custom_components.matic_robot.plans import (
+    CleaningPlanManager,
+    CleaningRoom,
+    plan_floor_token,
+    room_cadence_identity,
+)
 
 
 async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
@@ -18,6 +24,13 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
+    floor_plan = FloorPlan(
+        7,
+        "partition-proto",
+        b"partition-wire",
+        (Room(room.room_id, room.name, "room-proto", b"room-wire", ()),),
+    )
+    identity = room_cadence_identity(floor_plan, room.room_id)
     await manager.async_save_plan(
         "synthetic-robot",
         "home",
@@ -36,13 +49,17 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
                 }
             ],
         },
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={room.room_id: identity},
     )
     _effective_rooms, cadence = manager.resolve_cadence(
         "synthetic-robot",
         "home",
         [CleaningRoom(room.room_id, room.name, "vacuum", "standard")],
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={room.room_id: identity},
     )
-    cadence_state = cadence[room.room_id]
+    cadence_state = {**cadence[room.room_id], "identity": identity}
     assert cadence_state["mop_due"] is False
 
     await manager.async_begin_run(
@@ -89,19 +106,19 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
             reconcile_save_entered.set()
             await release_reconcile_save.wait()
 
-    manager._store.async_save = save
-
-    original_save_and_notify = manager._async_save_and_notify
-
-    async def observe_run_writes(serial_number: str) -> None:
-        last_run = manager._robot(serial_number)["last_run"]
-        if last_run.get("run_id") == "run-old" and last_run.get("ended_at"):
+    async def observe_store_write(data) -> None:
+        last_run = data["robots"]["synthetic-robot"]["last_run"]
+        if (
+            save_count > 0
+            and last_run.get("run_id") == "run-old"
+            and last_run.get("ended_at")
+        ):
             finish_write_entered.set()
-        if last_run.get("run_id") == "run-new":
+        if save_count > 0 and last_run.get("run_id") == "run-new":
             next_start_write_entered.set()
-        await original_save_and_notify(serial_number)
+        await save(data)
 
-    manager._async_save_and_notify = observe_run_writes
+    manager._store.async_save = observe_store_write
 
     async def reconcile() -> bool:
         return await manager.async_mark_native_completed(
@@ -111,10 +128,12 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
             dispatched_at=dispatched_at,
             completed_at=dt_util.utcnow().isoformat(),
             duration_seconds=30,
+            room_identity=identity,
         )
 
     first_reconciliation = asyncio.create_task(reconcile())
     await asyncio.wait_for(reconcile_save_entered.wait(), timeout=1)
+    reconciled_last_run = deepcopy(manager._robot("synthetic-robot")["last_run"])
 
     duplicate_reconciliation = asyncio.create_task(reconcile())
     # The plan-write lock owns both reconciliation attempts. A duplicate must
@@ -126,12 +145,10 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
             "synthetic-robot", "run-old", "failed", "late_finish", 0
         )
     )
-    await asyncio.wait_for(finish_write_entered.wait(), timeout=1)
-    assert manager._robot("synthetic-robot")["last_run"].get("ended_at")
 
     # Starting the next run while the old reconciliation write is blocked
-    # exercises the intended transaction boundary: the room credit commits
-    # before the new run identity is persisted.
+    # queues behind the same state/store admission fence. Neither finish nor
+    # the next run may mutate the live root until reconciliation settles.
     next_start = asyncio.create_task(
         manager.async_begin_run(
             "synthetic-robot",
@@ -142,14 +159,30 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
             service="test",
         )
     )
-    await asyncio.wait_for(next_start_write_entered.wait(), timeout=1)
-    assert manager._robot("synthetic-robot")["last_run"]["run_id"] == "run-new"
+    try:
+        await asyncio.sleep(0)
+        assert not finish_write_entered.is_set()
+        assert not next_start_write_entered.is_set()
+        assert manager._robot("synthetic-robot")["last_run"] == reconciled_last_run
+    finally:
+        release_reconcile_save.set()
+        await asyncio.wait_for(
+            asyncio.gather(
+                first_reconciliation,
+                duplicate_reconciliation,
+                finish,
+                next_start,
+                return_exceptions=True,
+            ),
+            timeout=1,
+        )
 
-    release_reconcile_save.set()
     assert await asyncio.wait_for(first_reconciliation, timeout=1) is True
     assert await asyncio.wait_for(duplicate_reconciliation, timeout=1) is False
     assert await asyncio.wait_for(finish, timeout=1) is True
-    await asyncio.wait_for(next_start, timeout=1)
+    assert await asyncio.wait_for(next_start, timeout=1) is None
+    assert finish_write_entered.is_set()
+    assert next_start_write_entered.is_set()
 
     robot = manager._robot("synthetic-robot")
     assert robot["rooms"][room.room_id]["completed_runs"] == 1

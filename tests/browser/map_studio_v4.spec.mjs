@@ -90,7 +90,7 @@ async function snapshot(page) {
 
 // Synthetic PointerEvents are not "active pointers", so the capture calls the
 // shell and gesture controller make throw NotFoundError and abort the handler
-// half-way. Same shim ui.spec.mjs uses for v0.3.
+// half-way.
 async function shimPointerCapture(page) {
   await page.addInitScript(() => {
     Element.prototype.setPointerCapture = () => {};

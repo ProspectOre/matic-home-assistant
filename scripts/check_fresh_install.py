@@ -35,7 +35,8 @@ translation = json.loads((root / "translations" / "en.json").read_text())
 required = (
     root / "brand" / "icon.png",
     root / "client" / "matic_intermediate_ca.pem",
-    root / "room_plan_editor.js",
+    root / "matic_icons.js",
+    root / "map_studio_v4" / "index.js",
     root / "services.yaml",
 )
 if manifest["domain"] != "matic_robot":

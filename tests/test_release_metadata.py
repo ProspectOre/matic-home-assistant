@@ -254,7 +254,7 @@ def test_options_flow_titles_do_not_require_description_placeholders() -> None:
 
 
 def test_every_options_flow_field_has_inline_guidance() -> None:
-    """Keep the plan studio understandable without outside documentation."""
+    """Keep native maintenance forms understandable without outside documentation."""
     for filename in ("strings.json", "translations/en.json"):
         translations = json.loads((INTEGRATION / filename).read_text())
         for step_name, step in translations["options"]["step"].items():
@@ -279,24 +279,25 @@ def test_plan_ui_uses_clear_scheduler_language() -> None:
         assert all(term not in rendered for term in forbidden)
 
 
-def test_plan_editor_is_a_single_room_matrix() -> None:
-    """Keep per-room inclusion, mode, and coverage together on one form."""
+def test_options_flow_directs_editing_to_the_single_map_workspace() -> None:
+    """Native settings must not advertise a competing plan or Area editor."""
     for filename in ("strings.json", "translations/en.json"):
         translations = json.loads((INTEGRATION / filename).read_text())
         steps = translations["options"]["step"]
-        assert "configure_plan_room" not in steps
-        assert "configure_added_room" not in steps
-        assert "rooms" not in steps["add_plan"]["data"]
-        assert "all settings save together" in steps["add_plan"]["description"]
-        assert "Every room starts off" in steps["add_plan"]["description"]
-        assert "default to Vacuum and Optimal" in steps["add_plan"]["description"]
-        assert "run_behavior" in steps["add_plan"]["data"]
-        assert "room_editor" in steps["add_plan"]["data"]
-        behavior = steps["add_plan"]["data_description"]["run_behavior"]
-        room_order = steps["add_plan"]["data_description"]["room_editor"]
-        assert "short runs" in behavior
-        assert "from top to bottom" in behavior
-        assert "exact order for Run all" in room_order
+        assert set(steps) == {
+            "init",
+            "default_plan",
+            "reset_history",
+            "confirm_reset_history",
+            "workspace_transport",
+        }
+        assert "Map Studio at /matic-map" in steps["init"]["description"]
+        assert "actions that do not name a plan" in steps["default_plan"]["description"]
+        assert "{plan_name}" in steps["confirm_reset_history"]["description"]
+        assert (
+            "Saved plans and their settings remain"
+            in steps["confirm_reset_history"]["description"]
+        )
 
 
 def test_action_metadata_matches_the_room_native_public_api() -> None:
@@ -333,10 +334,10 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert "without a new code" not in pairing
 
         options = translations["options"]
-        assert "Default plan:" in options["step"]["init"]["description"]
+        assert "choose the default plan" in options["step"]["init"]["description"]
         assert (
             "Reset history for every plan"
-            == options["step"]["reset_history"]["data"]["all_plans"]
+            == options["step"]["confirm_reset_history"]["data"]["all_plans"]
         )
 
         entities = translations["entity"]["binary_sensor"]

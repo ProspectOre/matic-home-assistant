@@ -7,7 +7,7 @@ plans keep their fixed settings until you enable a room schedule.
 
 ## Choose the work and interval
 
-Open a saved plan in Map Studio or the integration's **Configure** flow.
+Open a saved plan in Map Studio.
 For each room, you can independently enable:
 
 - Mopping: vacuum normally, then vacuum and mop every N verified cleans.

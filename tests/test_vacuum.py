@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.matic_robot import vacuum
 from custom_components.matic_robot.client.commands import UserCommand
@@ -524,11 +524,23 @@ async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
     lock = manager.command_lock("synthetic-serial")
     await lock.acquire()
 
+    async def wait_for_queued_commands(count: int) -> None:
+        for _ in range(30):
+            waiters = getattr(lock, "_waiters", None)
+            if (
+                waiters is not None
+                and sum(not waiter.done() for waiter in waiters) >= count
+            ):
+                return
+            await asyncio.sleep(0)
+        pytest.fail(f"{count} commands did not reach the command lock")
+
     stop_task = asyncio.create_task(entity.async_stop())
-    await asyncio.sleep(0)
+    await wait_for_queued_commands(1)
     clean_task = asyncio.create_task(entity.async_start())
+    await wait_for_queued_commands(2)
     pause_task = asyncio.create_task(entity.async_pause())
-    await asyncio.sleep(0)
+    await wait_for_queued_commands(3)
     lock.release()
 
     await stop_task
@@ -542,6 +554,268 @@ async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
         item.args[0] for item in client.async_send_user_command.await_args_list
     ] == [UserCommand.STOP]
     client.async_start_coverage.assert_not_awaited()
+
+
+async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None:
+    """An admitted policy decision and checkpoint finish across teardown."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    checkpoint_started = asyncio.Event()
+    release_checkpoint = asyncio.Event()
+    entered_send = asyncio.Event()
+    release_send = asyncio.Event()
+    client = entry.runtime_data.coordinator.client
+    checkpoint = manager.async_checkpoint_stop_intent
+
+    async def delayed_checkpoint(serial_number: str, behavior: str) -> None:
+        checkpoint_started.set()
+        await release_checkpoint.wait()
+        await checkpoint(serial_number, behavior)
+
+    manager.async_checkpoint_stop_intent = delayed_checkpoint
+
+    async def delayed_send(command: UserCommand) -> None:
+        assert command is UserCommand.STOP
+        entered_send.set()
+        await release_send.wait()
+
+    client.async_send_user_command.side_effect = delayed_send
+    stop = asyncio.create_task(entity.async_stop())
+    close: asyncio.Task[None] | None = None
+    try:
+        await checkpoint_started.wait()
+        manager.begin_command_teardown("synthetic-serial")
+        release_checkpoint.set()
+        await entered_send.wait()
+        close = asyncio.create_task(
+            manager.async_close_command_admission_and_wait("synthetic-serial")
+        )
+        await asyncio.sleep(0)
+        assert not close.done()
+
+        release_send.set()
+        await stop
+        await close
+        assert manager.stop_pending("synthetic-serial")
+        assert manager.command_admission_open("synthetic-serial") is False
+        with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+            await entity._async_command(UserCommand.PAUSE)
+        assert [
+            call.args[0] for call in client.async_send_user_command.call_args_list
+        ] == [UserCommand.STOP]
+    finally:
+        release_checkpoint.set()
+        release_send.set()
+        pending = [stop]
+        if close is not None:
+            pending.append(close)
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
+async def test_stop_retains_run_id_when_run_finishes_during_checkpoint(hass) -> None:
+    """The accepted Stop owns its run correlation across checkpoint waits."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("kitchen", "Kitchen", "vacuum", "standard"),
+        run_id="run",
+    )
+    entity = vacuum.MaticVacuum(entry)
+    entity.entity_id = "vacuum.test"
+    entity.hass = hass
+    checkpoint = manager.async_checkpoint_stop_intent
+    checkpoint_started = asyncio.Event()
+    release_checkpoint = asyncio.Event()
+
+    async def delayed_checkpoint(serial: str, behavior: str) -> None:
+        checkpoint_started.set()
+        await release_checkpoint.wait()
+        await checkpoint(serial, behavior)
+
+    manager.async_checkpoint_stop_intent = delayed_checkpoint
+    with patch.object(vacuum, "schedule_dock_after_stop") as schedule_dock:
+        stop = asyncio.create_task(entity.async_stop())
+        try:
+            await checkpoint_started.wait()
+            assert manager.active_run_id(serial_number) == "run"
+            assert await manager.async_finish_run(
+                serial_number,
+                "run",
+                "cancelled",
+                "managed_stop",
+                0,
+                cause="managed_cancellation",
+            )
+            assert manager.active_run_id(serial_number) is None
+            release_checkpoint.set()
+            await stop
+        finally:
+            release_checkpoint.set()
+            if not stop.done():
+                await asyncio.gather(stop, return_exceptions=True)
+
+    assert manager.pending_stop_run_id(serial_number) == "run"
+    schedule_dock.assert_called_once()
+    assert schedule_dock.call_args.kwargs["run_id"] == "run"
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
+
+
+async def test_late_stop_after_teardown_does_not_mutate_managed_run(hass) -> None:
+    """A rejected late Stop cannot alter the run it is meant to preserve."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+    generation = manager.motion_generation(serial_number)
+    cancellation = manager.cancellation_event(serial_number)
+    assert not cancellation.is_set()
+    manager.begin_command_teardown(serial_number)
+    checkpoint = AsyncMock()
+    manager.async_checkpoint_stop_intent = checkpoint
+
+    with patch.object(
+        manager, "request_stop", wraps=manager.request_stop
+    ) as request_stop:
+        with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+            await entity.async_stop()
+
+    request_stop.assert_not_called()
+    assert manager.motion_generation(serial_number) == generation
+    assert manager.managed_motion_is_current(serial_number, token)
+    assert not cancellation.is_set()
+    checkpoint.assert_not_awaited()
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_after_room_stop_keeps_managed_owner(hass) -> None:
+    """The graceful policy checkpoints intent without replacing the active run."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+    decision = SimpleNamespace(behavior="after_room")
+
+    with (
+        patch.object(manager, "request_stop", return_value=decision) as request_stop,
+        patch.object(
+            manager, "async_checkpoint_stop_intent", new_callable=AsyncMock
+        ) as checkpoint,
+    ):
+        await entity.async_stop()
+
+    request_stop.assert_called_once_with(serial_number)
+    checkpoint.assert_awaited_once_with(serial_number, "after_room")
+    assert manager.managed_motion_is_current(serial_number, token)
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_queued_stop_rechecks_teardown_before_stop_policy(hass) -> None:
+    """A Stop queued before teardown is rejected before changing plan state."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    serial_number = "synthetic-serial"
+    lock = manager.command_lock(serial_number)
+    await lock.acquire()
+
+    async def wait_for_command_waiter() -> None:
+        for _ in range(30):
+            waiters = getattr(lock, "_waiters", None)
+            if waiters is not None and any(not waiter.done() for waiter in waiters):
+                return
+            await asyncio.sleep(0)
+        pytest.fail("Stop did not reach the command lock")
+
+    with patch.object(
+        manager, "request_stop", wraps=manager.request_stop
+    ) as request_stop:
+        stop = asyncio.create_task(entity.async_stop())
+        try:
+            await wait_for_command_waiter()
+            generation = manager.motion_generation(serial_number)
+            manager.begin_command_teardown(serial_number)
+        finally:
+            lock.release()
+        with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+            await stop
+
+    request_stop.assert_not_called()
+    assert manager.motion_generation(serial_number) == generation
+    assert not manager.cancellation_event(serial_number).is_set()
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_admitted_coverage_finishes_after_teardown_fence(hass) -> None:
+    """Teardown drains an external command admitted before the fence."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    client = entry.runtime_data.coordinator.client
+    preflight_started = asyncio.Event()
+    release_preflight = asyncio.Event()
+
+    async def delayed_preflight(*_args, **kwargs) -> None:
+        preflight_started.set()
+        await release_preflight.wait()
+        kwargs["require_current"]()
+
+    client.async_start_coverage.side_effect = delayed_preflight
+    start = asyncio.create_task(entity.async_start())
+    try:
+        await asyncio.wait_for(preflight_started.wait(), timeout=3)
+        manager.begin_command_teardown("synthetic-serial")
+        release_preflight.set()
+        await start
+    finally:
+        release_preflight.set()
+        if not start.done():
+            await asyncio.gather(start, return_exceptions=True)
+
+    client.async_start_coverage.assert_awaited_once()
+    entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once()
+
+
+async def test_command_admission_closure_rejects_late_managed_dispatch(hass) -> None:
+    """A managed task that reaches command admission after unload cannot dispatch."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    token = manager.begin_managed_motion("synthetic-serial")
+    await manager.async_close_command_admission_and_wait("synthetic-serial")
+    dispatch = AsyncMock()
+
+    with pytest.raises(HomeAssistantError, match="unavailable during unload"):
+        async with manager.managed_command("synthetic-serial", token):
+            await dispatch()
+
+    dispatch.assert_not_awaited()
 
 
 @pytest.mark.parametrize("command", ["resume", "clean_all"])

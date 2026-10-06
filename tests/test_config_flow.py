@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import socket
 from base64 import b64encode
-from dataclasses import replace
 from ipaddress import ip_address
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -17,11 +16,6 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from zeroconf import ServiceStateChange
 
 from custom_components.matic_robot import config_flow as flow_module
-from custom_components.matic_robot.area_binding import (
-    AREA_SCHEMA_VERSION,
-    binding_for_area,
-    binding_for_floor_plan,
-)
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
@@ -34,8 +28,14 @@ from custom_components.matic_robot.config_flow import (
     _async_select_discovery_host,
     _preferred_discovery_host,
 )
-from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.const import (
+    CONF_LIVE_WORKSPACE_TRANSPORT,
+    DOMAIN,
+)
+from custom_components.matic_robot.plans import (
+    CleaningPlanManager,
+    MetadataAdmissionClosedError,
+)
 
 PAIRING_CONFIRMED = {"pairing_mode_enabled": True}
 
@@ -991,7 +991,7 @@ async def test_removing_flow_cancels_pairing_tasks_and_passkey() -> None:
     assert passkey_exchange._passkey.cancelled()
 
 
-async def _options_entry(hass):
+async def _options_entry(hass, *, options: dict[str, object] | None = None):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(
         async_load=AsyncMock(return_value=None), async_save=AsyncMock()
@@ -1027,7 +1027,9 @@ async def _options_entry(hass):
             "return_to_base": True,
         },
     )
-    entry = MockConfigEntry(domain=DOMAIN, data={}, options={})
+    entry = MockConfigEntry(
+        domain=DOMAIN, data={}, options={} if options is None else options
+    )
     entry.runtime_data = SimpleNamespace(
         coordinator=SimpleNamespace(
             data=SimpleNamespace(
@@ -1052,13 +1054,111 @@ async def test_options_flow_aborts_when_entry_is_not_loaded(hass) -> None:
     assert result["reason"] == "entry_not_loaded"
 
 
-async def test_options_flow_opens_when_entry_is_loaded(hass) -> None:
+@pytest.mark.parametrize(
+    ("step", "payload"),
+    [
+        ("init", None),
+        ("finish", None),
+        ("default_plan", {"plan": "whole_home"}),
+        ("reset_history", {"plan": "whole_home"}),
+        ("confirm_reset_history", {"all_plans": False}),
+        ("workspace_transport", {CONF_LIVE_WORKSPACE_TRANSPORT: True}),
+    ],
+)
+async def test_options_flow_guards_each_action_when_entry_unloads(
+    hass, monkeypatch, step, payload
+) -> None:
+    entry, manager = await _options_entry(hass, options={"keep": "value"})
+    entry.mock_state(hass, config_entries.ConfigEntryState.NOT_LOADED)
+    flow = _direct_options_flow(hass, entry)
+    flow._reset_plan_id = "whole_home"
+    select_plan = AsyncMock()
+    reset_history = AsyncMock()
+    monkeypatch.setattr(manager, "async_select_plan", select_plan)
+    monkeypatch.setattr(manager, "async_reset_history", reset_history)
+
+    result = await getattr(flow, f"async_step_{step}")(payload)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+    select_plan.assert_not_awaited()
+    reset_history.assert_not_awaited()
+    assert dict(entry.options) == {"keep": "value"}
+
+
+async def test_options_flow_keeps_only_native_settings_and_maintenance(hass) -> None:
     entry, _manager = await _options_entry(hass)
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
+    assert result["menu_options"] == [
+        "default_plan",
+        "reset_history",
+        "workspace_transport",
+        "finish",
+    ]
+
+
+async def test_options_flow_finish_preserves_existing_preferences(hass) -> None:
+    entry, _manager = await _options_entry(
+        hass, options={"existing_option": "preserved"}
+    )
+
+    result = await _start_options_step(hass, entry, "finish")
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {"existing_option": "preserved"}
+
+
+async def test_live_workspace_transport_option_defaults_off_and_is_reversible(
+    hass,
+) -> None:
+    entry, _manager = await _options_entry(
+        hass, options={"existing_option": "preserved"}
+    )
+
+    form = await _start_options_step(hass, entry, "workspace_transport")
+
+    assert form["step_id"] == "workspace_transport"
+    assert _form_defaults(form) == {CONF_LIVE_WORKSPACE_TRANSPORT: False}
+    enabled = await hass.config_entries.options.async_configure(
+        form["flow_id"], {CONF_LIVE_WORKSPACE_TRANSPORT: True}
+    )
+    assert enabled["type"] is FlowResultType.CREATE_ENTRY
+    assert enabled["data"] == {
+        "existing_option": "preserved",
+        CONF_LIVE_WORKSPACE_TRANSPORT: True,
+    }
+
+    persisted_entry, _manager = await _options_entry(hass, options=dict(entry.options))
+    form = await _start_options_step(hass, persisted_entry, "workspace_transport")
+    assert _form_defaults(form) == {CONF_LIVE_WORKSPACE_TRANSPORT: True}
+    disabled = await hass.config_entries.options.async_configure(
+        form["flow_id"], {CONF_LIVE_WORKSPACE_TRANSPORT: False}
+    )
+    assert disabled["type"] is FlowResultType.CREATE_ENTRY
+    assert disabled["data"] == {
+        "existing_option": "preserved",
+        CONF_LIVE_WORKSPACE_TRANSPORT: False,
+    }
+
+
+@pytest.mark.parametrize("malformed", ["true", 1, None])
+async def test_live_workspace_transport_rejects_malformed_values(
+    hass, malformed
+) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    result = await flow.async_step_workspace_transport(
+        {CONF_LIVE_WORKSPACE_TRANSPORT: malformed}
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_workspace_transport"}
+    assert _form_defaults(result) == {CONF_LIVE_WORKSPACE_TRANSPORT: False}
 
 
 def _direct_options_flow(hass, entry) -> MaticRobotOptionsFlow:
@@ -1085,1220 +1185,307 @@ async def _start_options_step(hass, entry, step: str):
     )
 
 
-async def _select_menu_step(hass, result, step: str):
-    assert result["type"] is FlowResultType.MENU
-    return await hass.config_entries.options.async_configure(
-        result["flow_id"], {"next_step_id": step}
-    )
-
-
-def _room_rows(
-    *rooms: tuple[str, bool, str, str],
-) -> list[dict[str, object]]:
-    return [
+async def _add_second_plan(manager: CleaningPlanManager) -> None:
+    await manager.async_save_plan(
+        "synthetic-serial",
+        "second_plan",
         {
-            "room_id": room_id,
-            "included": included,
-            "cleaning_mode": mode,
-            "coverage_setting": coverage,
-        }
-        for room_id, included, mode, coverage in rooms
-    ]
-
-
-def _cadence_rows(*rows: dict[str, object]) -> list[dict[str, object]]:
-    """Build the options-flow cadence object-selector value."""
-    return [dict(row) for row in rows]
-
-
-async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -> None:
-    entry, manager = await _options_entry(hass)
-
-    result = await _start_options_step(hass, entry, "add_plan")
-    assert result["type"] is FlowResultType.FORM
-    assert [marker.schema for marker in result["data_schema"].schema] == [
-        "name",
-        "run_behavior",
-        "room_editor",
-        "cadence_editor",
-        "finish_current_room",
-        "finish_current_room_threshold",
-        "return_to_base",
-    ]
-    cadence_marker = list(result["data_schema"].schema)[3]
-    cadence_selector = result["data_schema"].schema[cadence_marker]
-    assert cadence_selector.config["fields"]["scope"]["label"] == "Schedule scope"
-    assert (
-        cadence_selector.config["fields"]["scope"]["selector"].config["translation_key"]
-        == "cadence_scope"
-    )
-    assert cadence_selector.config["fields"]["mop_every_n"]["label"] == (
-        "Mop every N verified cleans"
-    )
-    room_marker = list(result["data_schema"].schema)[2]
-    assert room_marker.default() == [
-        {
-            "room_id": "room-1",
-            "included": False,
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        },
-        {
-            "room_id": "room-2",
-            "included": False,
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        },
-    ]
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Away cleaning",
-            "run_behavior": "intelligent",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum_and_mop", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "finish_current_room": True,
-            "finish_current_room_threshold": 50,
+            "name": "Second plan",
+            "enabled": True,
+            "run_behavior": "ordered",
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
             "return_to_base": True,
         },
     )
-    assert result["type"] is FlowResultType.MENU
-    assert result["step_id"] == "plan_menu"
-    assert manager.plan("synthetic-serial", "away_cleaning")["rooms"] == [
-        {
-            "room_id": "room-1",
-            "cleaning_mode": "vacuum_and_mop",
-            "coverage_setting": "standard",
-        }
-    ]
-    assert manager.plan("synthetic-serial", "away_cleaning")["room_order"] == [
-        "room-1",
-        "room-2",
-    ]
-    assert (
-        manager.plan("synthetic-serial", "away_cleaning")[
-            "finish_current_room_threshold"
-        ]
-        == 50
-    )
 
-    result = await _select_menu_step(hass, result, "edit_plan")
-    assert [marker.schema for marker in result["data_schema"].schema] == [
-        "name",
-        "run_behavior",
-        "room_editor",
-        "cadence_editor",
-        "enabled",
-        "finish_current_room",
-        "finish_current_room_threshold",
-        "return_to_base",
-    ]
-    assert list(result["data_schema"].schema)[2].default()[0]["room_id"] == "room-1"
+
+async def test_options_flow_sets_existing_plan_as_default(hass) -> None:
+    entry, manager = await _options_entry(hass, options={"keep": "value"})
+    await _add_second_plan(manager)
+
+    form = await _start_options_step(hass, entry, "default_plan")
+    assert form["step_id"] == "default_plan"
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Away rooms",
-            "run_behavior": "ordered",
-            "room_editor": _room_rows(
-                ("room-2", True, "mop", "quick"),
-                ("room-1", False, "vacuum", "standard"),
-            ),
-            "enabled": True,
-            "finish_current_room": True,
-            "finish_current_room_threshold": 75,
-            "return_to_base": False,
-        },
+        form["flow_id"], {"plan": "second_plan"}
     )
-    assert result["type"] is FlowResultType.MENU
-    updated = manager.plan("synthetic-serial", "away_cleaning")
-    assert updated["return_to_base"] is False
-    assert updated["run_behavior"] == "ordered"
-    assert updated["finish_current_room"] is True
-    assert updated["finish_current_room_threshold"] == 75
-    assert updated["room_order"] == ["room-2", "room-1"]
-    assert updated["rooms"] == [
-        {
-            "room_id": "room-2",
-            "cleaning_mode": "mop",
-            "coverage_setting": "quick",
-        }
-    ]
 
-    result = await _select_menu_step(hass, result, "preview_plan")
-    assert "Study" in result["description_placeholders"]["next_rooms"]
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
-
-    result = await _select_menu_step(hass, result, "change_plan")
-    assert result["step_id"] == "manage_plan"
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"plan": "away_cleaning"}
-    )
-    assert result["step_id"] == "plan_menu"
-
-    result = await _select_menu_step(hass, result, "reset_history")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"all_plans": False}
-    )
-    assert result["type"] is FlowResultType.MENU
-
-    result = await _select_menu_step(hass, result, "delete_plan")
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
-    assert result["type"] is FlowResultType.MENU
-    assert "away_cleaning" not in manager.plans("synthetic-serial")
-
-    result = await _select_menu_step(hass, result, "finish")
     assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"] == {"keep": "value"}
+    assert manager.snapshot("synthetic-serial")["selected_plan"] == "second_plan"
 
 
-async def test_options_flow_persists_normalized_room_cadence(hass) -> None:
+async def test_options_flow_rejects_default_plan_removed_during_selection(hass) -> None:
     entry, manager = await _options_entry(hass)
-
-    result = await _start_options_step(hass, entry, "add_plan")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Cadence plan",
-            "run_behavior": "ordered",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "cadence_editor": _cadence_rows(
-                {
-                    "room_id": "room-1",
-                    "enabled": True,
-                    "scope": "shared",
-                    "mop_every_n": 3,
-                    "coverage_every_n": 4,
-                    "periodic_coverage_setting": "heavy_duty",
-                    "do_mop_next": True,
-                    "do_coverage_next": False,
-                }
-            ),
-            "return_to_base": True,
-        },
-    )
-
-    assert result["type"] is FlowResultType.MENU
-    room = manager.plan("synthetic-serial", "cadence_plan")["rooms"][0]
-    assert room["cadence"] == {
-        "scope": "shared",
-        "mop_every_n": 3,
-        "coverage_every_n": 4,
-        "periodic_coverage_setting": "heavy_duty",
-        "do_mop_next": True,
-        "do_coverage_next": False,
-    }
-    assert manager._robot("synthetic-serial")["shared_room_cadence"]["room-1"][
-        "policy"
-    ] == {
-        "mop_every_n": 3,
-        "coverage_every_n": 4,
-        "periodic_coverage_setting": "heavy_duty",
-        "do_mop_next": True,
-        "do_coverage_next": False,
-    }
-
-    result = await _select_menu_step(hass, result, "edit_plan")
-    defaults = _form_defaults(result)
-    assert defaults["cadence_editor"] == [
-        {
-            "room_id": "room-1",
-            "enabled": True,
-            "scope": "shared",
-            "mop_every_n": 3,
-            "coverage_every_n": 4,
-            "periodic_coverage_setting": "heavy_duty",
-            "do_mop_next": True,
-            "do_coverage_next": False,
-        }
-    ]
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            **defaults,
-            "name": "Cadence plan",
-            "run_behavior": "ordered",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "cadence_editor": _cadence_rows(
-                {
-                    "room_id": "room-1",
-                    "enabled": False,
-                    "scope": "shared",
-                    "do_mop_next": True,
-                    "do_coverage_next": True,
-                }
-            ),
-            "enabled": True,
-            "return_to_base": True,
-        },
-    )
-    assert result["type"] is FlowResultType.MENU
-    assert manager.plan("synthetic-serial", "cadence_plan")["rooms"][0]["cadence"] == {
-        "scope": "shared",
-        "mop_every_n": None,
-        "coverage_every_n": None,
-        "periodic_coverage_setting": None,
-        "do_mop_next": False,
-        "do_coverage_next": False,
-    }
-
-
-async def test_options_flow_omits_malformed_legacy_cadence_from_defaults(hass) -> None:
-    entry, _manager = await _options_entry(hass)
+    await _add_second_plan(manager)
     flow = _direct_options_flow(hass, entry)
+    manager._robot("synthetic-serial")["plans"].pop("whole_home")
 
-    assert (
-        flow._cadence_editor_value(
-            {
-                "rooms": [
-                    {
-                        "room_id": "room-1",
-                        "cleaning_mode": "vacuum",
-                        "coverage_setting": "standard",
-                        "cadence": {"mop_every_n": 3, "do_mop_next": "true"},
-                    }
-                ]
-            }
-        )
-        == []
-    )
-
-
-@pytest.mark.parametrize("enabled", [True, False])
-async def test_options_flow_rejects_malformed_one_shot_cadence_flag(
-    hass, enabled: bool
-) -> None:
-    entry, _manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-
-    with pytest.raises(ValueError, match="do_mop_next must be a boolean"):
-        flow._rooms_from_editor(
-            {
-                "room_editor": _room_rows(
-                    ("room-1", True, "vacuum", "standard"),
-                    ("room-2", False, "vacuum", "standard"),
-                ),
-                "cadence_editor": _cadence_rows(
-                    {
-                        "room_id": "room-1",
-                        "enabled": enabled,
-                        "scope": "plan",
-                        "mop_every_n": 3,
-                        "do_mop_next": "true",
-                    }
-                ),
-            }
-        )
-
-
-async def test_options_flow_rejects_duplicate_cadence_rows_and_coerces_numbers(
-    hass,
-) -> None:
-    entry, _manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-    room_editor = _room_rows(
-        ("room-1", True, "vacuum", "standard"),
-        ("room-2", False, "vacuum", "standard"),
-    )
-    duplicate = _cadence_rows(
-        {"room_id": "room-1", "enabled": True, "scope": "plan"},
-        {"room_id": "room-1", "enabled": True, "scope": "plan"},
-    )
-    with pytest.raises(ValueError, match="each room once"):
-        flow._rooms_from_editor(
-            {"room_editor": room_editor, "cadence_editor": duplicate}
-        )
-
-    rooms = flow._rooms_from_editor(
-        {
-            "room_editor": room_editor,
-            "cadence_editor": _cadence_rows(
-                {
-                    "room_id": "room-1",
-                    "enabled": True,
-                    "scope": "plan",
-                    "mop_every_n": 3.0,
-                    "coverage_every_n": 4.0,
-                    "periodic_coverage_setting": "standard",
-                }
-            ),
-        }
-    )
-    assert rooms[0]["cadence"]["mop_every_n"] == 3
-    assert rooms[0]["cadence"]["coverage_every_n"] == 4
-
-    with pytest.raises(ValueError, match="must be an object"):
-        flow._rooms_from_editor(
-            {"room_editor": room_editor, "cadence_editor": ["invalid"]}
-        )
-
-
-async def test_options_flow_recovers_from_invalid_cadence_rows(hass) -> None:
-    entry, _manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-    common = {
-        "name": "Invalid cadence",
-        "run_behavior": "intelligent",
-        "room_editor": _room_rows(
-            ("room-1", True, "vacuum", "standard"),
-            ("room-2", False, "vacuum", "standard"),
-        ),
-        "cadence_editor": ["invalid"],
-        "return_to_base": True,
-    }
-
-    result = await flow.async_step_add_plan(common)
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "invalid_plan"}
-
-    flow._plan_id = "whole_home"
-    result = await flow.async_step_edit_plan(
-        {
-            **common,
-            "name": "Whole home",
-            "enabled": True,
-        }
-    )
-    assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "invalid_plan"}
-
-
-@pytest.mark.parametrize("step", ["add_plan", "edit_plan"])
-async def test_options_flow_reports_room_limit_and_preserves_plan(
-    hass, step: str
-) -> None:
-    entry, manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-    if step == "edit_plan":
-        flow._plan_id = "whole_home"
-    room_editor = [
-        {
-            "room_id": f"room-{index}",
-            "included": True,
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        }
-        for index in range(1, 102)
-    ]
-    user_input = {
-        "name": "Too many rooms",
-        "run_behavior": "intelligent",
-        "room_editor": room_editor,
-        "return_to_base": True,
-        "enabled": True,
-    }
-
-    result = await getattr(flow, f"async_step_{step}")(user_input)
+    result = await flow.async_step_default_plan({"plan": "whole_home"})
 
     assert result["type"] is FlowResultType.FORM
-    assert result["errors"] == {"base": "room_sequence_limit"}
-    assert len(manager.plan("synthetic-serial", "whole_home")["rooms"]) == 2
-    assert "too_many_rooms" not in manager.plans("synthetic-serial")
+    assert result["errors"] == {"base": "plan_unavailable"}
 
 
-async def test_options_flow_rejects_empty_rooms_and_duplicate_plan(hass) -> None:
+@pytest.mark.parametrize("step", ["default_plan", "reset_history"])
+async def test_options_flow_recovers_from_stale_plan_input(hass, step) -> None:
     entry, _manager = await _options_entry(hass)
-    result = await _start_options_step(hass, entry, "add_plan")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Empty plan",
-            "run_behavior": "intelligent",
-            "room_editor": _room_rows(
-                ("room-1", False, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "return_to_base": True,
-        },
-    )
-    assert result["errors"]["base"] == "no_rooms"
-
-    result = await _start_options_step(hass, entry, "add_plan")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Whole home",
-            "run_behavior": "intelligent",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "return_to_base": True,
-        },
-    )
-    assert result["errors"]["name"] == "duplicate_plan"
-
-
-async def test_options_flow_reports_saved_plan_limit(hass, monkeypatch) -> None:
-    entry, _manager = await _options_entry(hass)
-    monkeypatch.setattr(flow_module, "MAX_SAVED_PLANS_PER_ROBOT", 1)
-    result = await _start_options_step(hass, entry, "add_plan")
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Another plan",
-            "run_behavior": "intelligent",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "return_to_base": True,
-        },
-    )
-
-    assert result["errors"]["base"] == "plan_limit_reached"
-
-
-async def test_options_flow_draws_edits_and_deletes_custom_area(hass) -> None:
-    entry, manager = await _options_entry(hass)
-    result = await _start_options_step(hass, entry, "manage_areas")
-    assert result["step_id"] == "add_area"
-    area_marker = list(result["data_schema"].schema)[1]
-    area_selector = result["data_schema"].schema[area_marker]
-    assert area_selector.config["scene_url"] == (
-        f"/api/matic_robot/slam_scene/{entry.entry_id}"
-    )
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Litter box",
-            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        },
-    )
-    assert result["step_id"] == "area_menu"
-    saved = manager.area("synthetic-serial", "Litter box")
-    assert saved["circles"] == [{"x": 0.5, "y": 0.5, "radius": 0.35}]
-    assert saved["schema_version"] == AREA_SCHEMA_VERSION
-    assert saved["map_binding"] == binding_for_area(
-        entry.runtime_data.coordinator.data.floor_plan, saved["circles"]
-    )
-
-    result = await _select_menu_step(hass, result, "edit_area")
-    assert _form_defaults(result)["area_editor"] == [
-        {"x": 0.5, "y": 0.5, "radius": 0.35}
-    ]
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Litter station",
-            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
-            "cleaning_mode": "vacuum_and_mop",
-            "coverage_setting": "quick",
-        },
-    )
-    assert manager.area("synthetic-serial", "litter_box")["name"] == ("Litter station")
-
-    result = await _select_menu_step(hass, result, "delete_area")
-    assert result["step_id"] == "delete_area"
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
-    assert result["step_id"] == "add_area"
-    assert manager.areas("synthetic-serial") == {}
-
-
-async def test_custom_area_editor_blocks_map_changes_and_rebinds_after_redraw(
-    hass,
-) -> None:
-    entry, manager = await _options_entry(hass)
-    result = await _start_options_step(hass, entry, "manage_areas")
-    original = entry.runtime_data.coordinator.data.floor_plan
-    entry.runtime_data.coordinator.data.floor_plan = replace(original, mission_id=2)
-    values = {
-        "name": "Table",
-        "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-        "cleaning_mode": "vacuum",
-        "coverage_setting": "standard",
-    }
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], values
-    )
-
-    assert result["step_id"] == "add_area"
-    assert result["errors"] == {"base": "area_map_changed"}
-    defaults = _form_defaults(result)
-    assert defaults["name"] == "Table"
-    assert defaults["cleaning_mode"] == "vacuum"
-    assert defaults["coverage_setting"] == "standard"
-    assert defaults["area_editor"] == []
-    assert manager.areas("synthetic-serial") == {}
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], values
-    )
-    assert result["step_id"] == "area_menu"
-    assert manager.area("synthetic-serial", "table")["map_binding"] == (
-        binding_for_area(
-            entry.runtime_data.coordinator.data.floor_plan,
-            manager.area("synthetic-serial", "table")["circles"],
-        )
-    )
-
-
-async def test_custom_area_add_reports_geometry_budget_exhaustion(
-    hass, monkeypatch
-) -> None:
-    entry, manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-    await flow.async_step_add_area()
-    monkeypatch.setattr(
-        flow_module,
-        "binding_for_area",
-        MagicMock(side_effect=ValueError("geometry budget exhausted")),
-    )
-
-    result = await flow.async_step_add_area(
-        {
-            "name": "Litter box",
-            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        }
-    )
-
-    assert result["step_id"] == "add_area"
-    assert result["errors"] == {"base": "area_geometry_too_complex"}
-    assert manager.areas("synthetic-serial") == {}
-
-
-async def test_custom_area_edit_reports_geometry_budget_exhaustion(
-    hass, monkeypatch
-) -> None:
-    entry, manager = await _options_entry(hass)
-    floor_plan = entry.runtime_data.coordinator.data.floor_plan
-    await manager.async_save_area(
-        "synthetic-serial",
-        "litter_box",
-        {
-            "schema_version": AREA_SCHEMA_VERSION,
-            "name": "Litter box",
-            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-            "map_binding": binding_for_floor_plan(floor_plan),
-        },
-    )
-    flow = _direct_options_flow(hass, entry)
-    flow._area_id = "litter_box"
-    await flow.async_step_edit_area()
-    monkeypatch.setattr(
-        flow_module,
-        "binding_for_area",
-        MagicMock(side_effect=ValueError("geometry budget exhausted")),
-    )
-
-    result = await flow.async_step_edit_area(
-        {
-            "name": "Litter box",
-            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        }
-    )
-
-    assert result["step_id"] == "edit_area"
-    assert result["errors"] == {"base": "area_geometry_too_complex"}
-    assert manager.area("synthetic-serial", "litter_box")["circles"] == [
-        {"x": 0.5, "y": 0.5, "radius": 0.35}
-    ]
-
-
-async def test_custom_area_editor_requires_a_live_drawable_map(hass) -> None:
-    entry, manager = await _options_entry(hass)
-    entry.runtime_data.coordinator.data.floor_plan = None
-
-    result = await _start_options_step(hass, entry, "manage_areas")
-
-    assert result["step_id"] == "add_area"
-    assert result["errors"] == {"base": "room_plan_unavailable"}
-    assert result["data_schema"].schema == {}
-    assert result["description_placeholders"] == {"area_status": "Map unavailable"}
-    assert manager.areas("synthetic-serial") == {}
-
-    entry.runtime_data.coordinator.data.floor_plan = FloorPlan(
-        1, "partition", b"partition", ()
-    )
-    flow = _direct_options_flow(hass, entry)
-    invalid = await flow.async_step_add_area()
-    assert invalid["errors"] == {"base": "room_plan_unavailable"}
-    assert invalid["data_schema"].schema == {}
-
-
-async def test_custom_area_editor_blocks_when_map_disappears_before_submit(
-    hass,
-) -> None:
-    entry, manager = await _options_entry(hass)
-    result = await _start_options_step(hass, entry, "manage_areas")
-    entry.runtime_data.coordinator.data.floor_plan = None
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Table",
-            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        },
-    )
-
-    assert result["errors"] == {"base": "room_plan_unavailable"}
-    assert result["data_schema"].schema == {}
-    assert manager.areas("synthetic-serial") == {}
-
-
-async def test_custom_area_add_segment_limit_is_validation_error(
-    hass, monkeypatch
-) -> None:
-    entry, manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-    await flow.async_step_add_area()
-    monkeypatch.setattr(
-        flow_module,
-        "binding_for_area",
-        MagicMock(side_effect=ValueError("too many local floor-plan segments")),
-    )
-
-    result = await flow.async_step_add_area(
-        {
-            "name": "Table",
-            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        }
-    )
-
-    assert result["step_id"] == "add_area"
-    assert result["errors"] == {"base": "area_geometry_too_complex"}
-    assert manager.areas("synthetic-serial") == {}
-
-
-async def test_custom_area_edit_segment_limit_is_validation_error(
-    hass, monkeypatch
-) -> None:
-    entry, manager = await _options_entry(hass)
-    await manager.async_save_area(
-        "synthetic-serial",
-        "table",
-        {
-            "schema_version": AREA_SCHEMA_VERSION,
-            "name": "Table",
-            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-            "map_binding": binding_for_floor_plan(
-                entry.runtime_data.coordinator.data.floor_plan
-            ),
-        },
-    )
-    flow = _direct_options_flow(hass, entry)
-    flow._area_id = "table"
-    await flow.async_step_edit_area()
-    monkeypatch.setattr(
-        flow_module,
-        "binding_for_area",
-        MagicMock(side_effect=ValueError("too many local floor-plan segments")),
-    )
-
-    result = await flow.async_step_edit_area(
-        {
-            "name": "Table",
-            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        }
-    )
-
-    assert result["step_id"] == "edit_area"
-    assert result["errors"] == {"base": "area_geometry_too_complex"}
-    assert manager.area("synthetic-serial", "table")["name"] == "Table"
-
-
-async def test_legacy_area_is_labeled_and_must_be_redrawn_on_current_map(hass) -> None:
-    entry, manager = await _options_entry(hass)
-    await manager.async_save_area(
-        "synthetic-serial",
-        "litter_box",
-        {
-            "name": "Litter box",
-            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum_and_mop",
-            "coverage_setting": "quick",
-        },
-    )
-    flow = _direct_options_flow(hass, entry)
-    assert flow._area_options() == [{"value": "litter_box", "label": "⚠ Litter box"}]
-    flow._area_id = "litter_box"
-
-    menu = await flow.async_step_area_menu()
-    assert menu["description_placeholders"] == {
-        "area_name": "Litter box",
-        "area_status": "Redraw required",
-    }
-    form = await flow.async_step_edit_area()
-    defaults = _form_defaults(form)
-    assert defaults == {
-        "name": "Litter box",
-        "area_editor": [],
-        "cleaning_mode": "vacuum_and_mop",
-        "coverage_setting": "quick",
-    }
-    assert form["description_placeholders"] == {"area_status": "Redraw required"}
-
-    result = await flow.async_step_edit_area(
-        {
-            "name": "Litter box",
-            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
-            "cleaning_mode": "vacuum_and_mop",
-            "coverage_setting": "quick",
-        }
-    )
-    assert result["step_id"] == "area_menu"
-    saved = manager.area("synthetic-serial", "litter_box")
-    assert saved["circles"] == [{"x": 0.6, "y": 0.5, "radius": 0.4}]
-    assert saved["schema_version"] == AREA_SCHEMA_VERSION
-    assert saved["map_binding"] == binding_for_area(
-        entry.runtime_data.coordinator.data.floor_plan, saved["circles"]
-    )
-
-
-async def test_geometry_changed_area_can_be_confirmed_without_redrawing(hass) -> None:
-    entry, manager = await _options_entry(hass)
-    floor_plan = entry.runtime_data.coordinator.data.floor_plan
-    saved_floor_plan = replace(
-        floor_plan,
-        rooms=(
-            replace(
-                floor_plan.rooms[0],
-                boundary=((0.01, 0.0), *floor_plan.rooms[0].boundary[1:]),
-            ),
-        ),
-    )
-    circles = [{"x": 0.5, "y": 0.5, "radius": 0.35}]
-    await manager.async_save_area(
-        "synthetic-serial",
-        "litter_box",
-        {
-            "schema_version": AREA_SCHEMA_VERSION,
-            "name": "Litter box",
-            "circles": circles,
-            "cleaning_mode": "vacuum_and_mop",
-            "coverage_setting": "quick",
-            "map_binding": binding_for_floor_plan(saved_floor_plan),
-        },
-    )
-    flow = _direct_options_flow(hass, entry)
-    flow._area_id = "litter_box"
-
-    form = await flow.async_step_edit_area()
-
-    assert _form_defaults(form)["area_editor"] == circles
-    result = await flow.async_step_edit_area(
-        {
-            "name": "Litter box",
-            "area_editor": circles,
-            "cleaning_mode": "vacuum_and_mop",
-            "coverage_setting": "quick",
-        }
-    )
-    assert result["step_id"] == "area_menu"
-    saved = manager.area("synthetic-serial", "litter_box")
-    assert saved["map_binding"] == binding_for_area(floor_plan, circles)
-
-
-@pytest.mark.parametrize(
-    ("replacement", "error"),
-    [
-        (None, "room_plan_unavailable"),
-        ("changed", "area_map_changed"),
-    ],
-)
-async def test_custom_area_edit_rechecks_map_before_overwriting_saved_geometry(
-    hass, replacement, error
-) -> None:
-    entry, manager = await _options_entry(hass)
-    floor_plan = entry.runtime_data.coordinator.data.floor_plan
-    original = {
-        "schema_version": AREA_SCHEMA_VERSION,
-        "name": "Litter box",
-        "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-        "cleaning_mode": "vacuum",
-        "coverage_setting": "standard",
-        "map_binding": binding_for_floor_plan(floor_plan),
-    }
-    await manager.async_save_area("synthetic-serial", "litter_box", original)
-    flow = _direct_options_flow(hass, entry)
-    flow._area_id = "litter_box"
-    await flow.async_step_edit_area()
-    entry.runtime_data.coordinator.data.floor_plan = (
-        None if replacement is None else replace(floor_plan, mission_id=2)
-    )
-
-    result = await flow.async_step_edit_area(
-        {
-            "name": "Changed name",
-            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
-            "cleaning_mode": "vacuum_and_mop",
-            "coverage_setting": "quick",
-        }
-    )
-
-    assert result["errors"] == {"base": error}
-    assert manager.area("synthetic-serial", "litter_box") == {
-        "id": "litter_box",
-        **original,
-    }
-
-
-async def test_options_flow_rejects_duplicate_custom_area_name(hass) -> None:
-    entry, manager = await _options_entry(hass)
-    await manager.async_save_area(
-        "synthetic-serial",
-        "litter_box",
-        {
-            "name": "Litter box",
-            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        },
-    )
-    result = await _start_options_step(hass, entry, "manage_areas")
-    result = await _select_menu_step(hass, result, "add_area")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Litter box",
-            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        },
-    )
-    assert result["errors"]["name"] == "duplicate_area"
-
-
-async def test_custom_area_flow_chooser_and_missing_context_recover(hass) -> None:
-    entry, manager = await _options_entry(hass)
-    await manager.async_save_area(
-        "synthetic-serial",
-        "litter_box",
-        {
-            "name": "Litter box",
-            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
-            "cleaning_mode": "vacuum",
-            "coverage_setting": "standard",
-        },
-    )
     flow = _direct_options_flow(hass, entry)
 
-    chooser = await flow.async_step_choose_area()
-    assert chooser["step_id"] == "choose_area"
-    menu = await flow.async_step_choose_area({"area": "litter_box"})
-    assert menu["step_id"] == "area_menu"
+    result = await getattr(flow, f"async_step_{step}")({"plan": "removed-plan"})
 
-    for step in (
-        flow.async_step_area_menu,
-        flow.async_step_edit_area,
-        flow.async_step_delete_area,
-    ):
-        flow._area_id = None
-        recovered = await step()
-        assert recovered["step_id"] == "choose_area"
-
-
-async def test_options_flow_guides_selection_switching_and_safe_delete(hass) -> None:
-    entry, manager = await _options_entry(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["description_placeholders"] == {
-        "area_count": "0",
-        "plan_count": "1",
-        "room_count": "2",
-        "selected_plan": "Whole home",
-    }
-
-    result = await _select_menu_step(hass, result, "manage_plan")
-    # A single saved plan needs no chooser: it is scoped automatically.
-    assert result["step_id"] == "plan_menu"
-    assert result["description_placeholders"]["plan_room_count"] == "2"
-    assert "change_plan" not in result["menu_options"]
-
-    result = await _select_menu_step(hass, result, "select_plan")
-    assert manager.snapshot("synthetic-serial")["selected_plan"] == ("whole_home")
-
-    result = await _select_menu_step(hass, result, "delete_plan")
     assert result["type"] is FlowResultType.FORM
-    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
-    # Drawn areas remain available even when no room plan exists.
+    assert result["step_id"] == step
+    assert result["errors"] == {"base": "plan_unavailable"}
+    assert _form_defaults(result)["plan"] == "whole_home"
+
+
+@pytest.mark.parametrize("step", ["default_plan", "reset_history"])
+async def test_options_flow_returns_to_settings_when_no_plans_exist(hass, step) -> None:
+    entry, manager = await _options_entry(hass, options={"keep": "value"})
+    manager._robot("synthetic-serial")["plans"].clear()
+    flow = _direct_options_flow(hass, entry)
+
+    result = await getattr(flow, f"async_step_{step}")()
+
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert manager.plans("synthetic-serial") == {}
+    assert result["menu_options"] == ["workspace_transport", "finish"]
+    assert result["description_placeholders"]["plan_count"] == "0"
+    assert dict(entry.options) == {"keep": "value"}
 
 
-async def test_options_flow_handles_missing_live_floor_plan(hass) -> None:
-    entry, _manager = await _options_entry(hass)
-    entry.runtime_data.coordinator.data.floor_plan = None
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["description_placeholders"]["room_count"] == "0"
-
-
-async def test_options_flow_cadence_bindings_require_a_verified_floor(hass) -> None:
-    entry, _manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-
-    entry.runtime_data.coordinator.data.floor_plan = None
-    assert flow._room_cadence_bindings() == (None, {})
-
-    entry.runtime_data.coordinator.data.floor_plan = FloorPlan(
-        mission_id=1,
-        partition_protocol_id="partition",
-        partition_id_wire=b"partition",
-        rooms=(Room("room-1", "Kitchen", "one", b"one", ((0, 0), (1, 1))),),
-    )
-    entry.runtime_data.slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False)
-    )
-    assert flow._room_cadence_bindings() == (None, {})
-
-    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
-    floor_token, room_identities = flow._room_cadence_bindings()
-    assert floor_token
-    assert set(room_identities) == {"room-1"}
-
-
-async def test_options_flow_keeps_add_draft_when_shared_cadence_floor_is_stale(
-    hass,
+async def test_options_flow_refreshes_default_choices_after_manager_keyerror(
+    hass, monkeypatch
 ) -> None:
     entry, manager = await _options_entry(hass)
-    entry.runtime_data.slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False)
-    )
-    before = manager.plans("synthetic-serial")
+    await _add_second_plan(manager)
+    flow = _direct_options_flow(hass, entry)
 
-    result = await _start_options_step(hass, entry, "add_plan")
-    submitted = {
-        "name": "Shared plan",
-        "run_behavior": "ordered",
-        "room_editor": _room_rows(
-            ("room-1", True, "vacuum", "standard"),
-            ("room-2", False, "vacuum", "standard"),
-        ),
-        "cadence_editor": _cadence_rows(
-            {
-                "room_id": "room-1",
-                "enabled": True,
-                "scope": "shared",
-                "mop_every_n": 3,
-            }
-        ),
-        "return_to_base": True,
+    async def deleted_during_admission(_serial_number, plan_id):
+        manager._robot("synthetic-serial")["plans"].pop(plan_id)
+        raise KeyError(plan_id)
+
+    monkeypatch.setattr(manager, "async_select_plan", deleted_during_admission)
+    result = await flow.async_step_default_plan({"plan": "whole_home"})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "default_plan"
+    assert result["errors"] == {"base": "plan_unavailable"}
+    assert _form_defaults(result)["plan"] == "second_plan"
+
+
+@pytest.mark.parametrize("all_plans", [False, True])
+async def test_options_flow_confirms_named_plan_history_reset_scope(
+    hass, all_plans
+) -> None:
+    entry, manager = await _options_entry(hass)
+    await _add_second_plan(manager)
+    manager._robot("synthetic-serial")["rotations"] = {
+        "whole_home": {"rooms": {"room-1": {}}},
+        "second_plan": {"rooms": {"room-1": {}}},
     }
 
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], submitted
+    choose = await _start_options_step(hass, entry, "reset_history")
+    confirmation = await hass.config_entries.options.async_configure(
+        choose["flow_id"], {"plan": "whole_home"}
     )
+    assert confirmation["step_id"] == "confirm_reset_history"
+    assert confirmation["description_placeholders"] == {"plan_name": "Whole home"}
+    assert _form_defaults(confirmation) == {"all_plans": False}
 
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "add_plan"
-    assert result["errors"] == {"base": "cadence_requires_verified_floor"}
-    assert manager.plans("synthetic-serial") == before
+    result = await hass.config_entries.options.async_configure(
+        confirmation["flow_id"], {"all_plans": all_plans}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    remaining = manager.snapshot("synthetic-serial")["plan_history"]
+    assert set(remaining) == (set() if all_plans else {"second_plan"})
 
 
-async def test_options_flow_keeps_edit_draft_when_shared_cadence_floor_is_stale(
-    hass,
+@pytest.mark.parametrize("malformed", ["true", 1, None])
+async def test_options_flow_rejects_malformed_history_reset_scope(
+    hass, malformed
 ) -> None:
     entry, manager = await _options_entry(hass)
-    result = await _start_options_step(hass, entry, "add_plan")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Shared plan",
-            "run_behavior": "ordered",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "cadence_editor": _cadence_rows(
-                {
-                    "room_id": "room-1",
-                    "enabled": True,
-                    "scope": "shared",
-                    "mop_every_n": 3,
-                }
-            ),
-            "return_to_base": True,
-        },
-    )
-    result = await _select_menu_step(hass, result, "edit_plan")
-    defaults = _form_defaults(result)
-    entry.runtime_data.slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False)
-    )
-    before = manager.plan("synthetic-serial", "shared_plan")
+    flow = _direct_options_flow(hass, entry)
+    flow._reset_plan_id = "whole_home"
+    history_before = manager.snapshot("synthetic-serial")["plan_history"]
 
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            **defaults,
-            "name": "Shared plan renamed",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "cadence_editor": _cadence_rows(
-                {
-                    "room_id": "room-1",
-                    "enabled": True,
-                    "scope": "shared",
-                    "mop_every_n": 4,
-                }
-            ),
-            "enabled": True,
-            "return_to_base": True,
-        },
-    )
+    result = await flow.async_step_confirm_reset_history({"all_plans": malformed})
 
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "edit_plan"
-    assert result["errors"] == {"base": "cadence_requires_verified_floor"}
-    assert manager.plan("synthetic-serial", "shared_plan") == before
+    assert result["step_id"] == "confirm_reset_history"
+    assert result["errors"] == {"base": "invalid_reset_scope"}
+    assert result["description_placeholders"] == {"plan_name": "Whole home"}
+    assert manager.snapshot("synthetic-serial")["plan_history"] == history_before
 
 
-async def test_options_flow_allows_unchanged_bound_edit_when_floor_is_stale(
-    hass,
+async def test_options_flow_refreshes_reset_choices_after_manager_keyerror(
+    hass, monkeypatch
 ) -> None:
     entry, manager = await _options_entry(hass)
-    result = await _start_options_step(hass, entry, "add_plan")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            "name": "Shared plan",
-            "run_behavior": "ordered",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "cadence_editor": _cadence_rows(
-                {
-                    "room_id": "room-1",
-                    "enabled": True,
-                    "scope": "shared",
-                    "mop_every_n": 3,
-                }
-            ),
-            "return_to_base": True,
-        },
-    )
-    result = await _select_menu_step(hass, result, "edit_plan")
-    defaults = _form_defaults(result)
-    entry.runtime_data.slam_map = SimpleNamespace(
-        floor_plan_is_current=MagicMock(return_value=False)
-    )
+    await _add_second_plan(manager)
+    flow = _direct_options_flow(hass, entry)
+    flow._reset_plan_id = "whole_home"
 
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"],
-        {
-            **defaults,
-            "name": "Shared plan renamed",
-            "room_editor": _room_rows(
-                ("room-1", True, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "cadence_editor": _cadence_rows(
-                {
-                    "room_id": "room-1",
-                    "enabled": True,
-                    "scope": "shared",
-                    "mop_every_n": 3,
-                }
-            ),
-            "enabled": True,
-            "return_to_base": True,
-        },
-    )
+    async def deleted_during_reset(_serial_number, plan_id):
+        assert plan_id == "whole_home"
+        manager._robot("synthetic-serial")["plans"].pop(plan_id)
+        raise KeyError(plan_id)
+
+    monkeypatch.setattr(manager, "async_reset_history", deleted_during_reset)
+    result = await flow.async_step_confirm_reset_history({"all_plans": False})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reset_history"
+    assert result["errors"] == {"base": "plan_unavailable"}
+    assert _form_defaults(result)["plan"] == "second_plan"
+    assert flow._reset_plan_id is None
+
+
+@pytest.mark.parametrize("step", ["default_plan", "confirm_reset_history"])
+async def test_options_flow_returns_to_settings_if_raced_plan_was_last(
+    hass, monkeypatch, step
+) -> None:
+    entry, manager = await _options_entry(hass, options={"keep": "value"})
+    flow = _direct_options_flow(hass, entry)
+    if step == "confirm_reset_history":
+        flow._reset_plan_id = "whole_home"
+
+    async def deleted_during_commit(_serial_number, plan_id):
+        manager._robot("synthetic-serial")["plans"].pop(plan_id)
+        raise KeyError(plan_id)
+
+    method = "async_select_plan" if step == "default_plan" else "async_reset_history"
+    monkeypatch.setattr(manager, method, deleted_during_commit)
+    payload = {"plan": "whole_home"} if step == "default_plan" else {"all_plans": False}
+    result = await getattr(flow, f"async_step_{step}")(payload)
 
     assert result["type"] is FlowResultType.MENU
-    assert manager.plan("synthetic-serial", "shared_plan")["name"] == (
-        "Shared plan renamed"
-    )
+    assert result["step_id"] == "init"
+    assert result["menu_options"] == ["workspace_transport", "finish"]
+    assert result["description_placeholders"]["plan_count"] == "0"
+    assert flow._reset_plan_id is None
+    assert dict(entry.options) == {"keep": "value"}
 
 
-async def test_options_flow_disambiguates_duplicate_room_names(hass) -> None:
-    entry, _manager = await _options_entry(hass)
-    entry.runtime_data.coordinator.data.floor_plan = FloorPlan(
-        mission_id=1,
-        partition_protocol_id="partition",
-        partition_id_wire=b"partition",
-        rooms=(
-            Room("room-111111", "Bedroom", "one", b"one", ((0, 0), (1, 1))),
-            Room("room-222222", "Bedroom", "two", b"two", ((1, 1), (2, 2))),
-        ),
-    )
+async def test_options_flow_returns_to_settings_when_reset_plan_disappears(
+    hass,
+) -> None:
+    entry, manager = await _options_entry(hass)
     flow = _direct_options_flow(hass, entry)
+    flow._reset_plan_id = "whole_home"
+    manager._robot("synthetic-serial")["plans"].clear()
 
-    rows = flow._room_editor_value()
+    result = await flow.async_step_confirm_reset_history()
 
-    assert [row["room_id"] for row in rows] == ["room-111111", "room-222222"]
-    schema = flow._plan_editor_schema({})
-    editor = list(schema.schema)[2].default()
-    assert editor == rows
-
-
-async def test_options_flow_missing_plan_context_returns_to_chooser(hass) -> None:
-    entry, _manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-
-    assert flow._plan_summary() == {}
-    for step in (
-        flow.async_step_plan_menu,
-        flow.async_step_edit_plan,
-        flow.async_step_delete_plan,
-        flow.async_step_select_plan,
-        flow.async_step_preview_plan,
-        flow.async_step_reset_history,
-    ):
-        flow._plan_id = None
-        result = await step()
-        # The single saved plan is scoped automatically, so every step
-        # recovers to the action menu instead of performing anything.
-        assert result["step_id"] == "plan_menu"
-    assert "whole_home" in _manager.plans("synthetic-serial")
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
+    assert result["menu_options"] == ["workspace_transport", "finish"]
+    assert flow._reset_plan_id is None
 
 
-async def test_options_flow_edit_and_preview_errors_remain_recoverable(
+async def test_options_flow_handles_manager_unloading_during_default_change(
     hass, monkeypatch
 ) -> None:
     entry, manager = await _options_entry(hass)
     flow = _direct_options_flow(hass, entry)
-    flow._plan_id = "whole_home"
 
-    edit = await flow.async_step_edit_plan(
-        {
-            "name": "Whole home",
-            "run_behavior": "intelligent",
-            "room_editor": _room_rows(
-                ("room-1", False, "vacuum", "standard"),
-                ("room-2", False, "vacuum", "standard"),
-            ),
-            "enabled": True,
-            "return_to_base": True,
-        }
-    )
-    monkeypatch.setattr(
-        manager, "preview", MagicMock(side_effect=ValueError("bad plan"))
-    )
-    preview = await flow.async_step_preview_plan()
+    async def closing(*args):
+        raise MetadataAdmissionClosedError("unloading")
 
-    assert edit["errors"] == {"base": "no_rooms"}
-    assert preview["errors"] == {"base": "invalid_plan"}
-    assert preview["description_placeholders"]["next_rooms"] == "bad plan"
+    monkeypatch.setattr(manager, "async_select_plan", closing)
+    result = await flow.async_step_default_plan({"plan": "whole_home"})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+
+
+async def test_options_flow_handles_manager_unloading_during_history_reset(
+    hass, monkeypatch
+) -> None:
+    entry, manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+    flow._reset_plan_id = "whole_home"
+
+    async def closing(*args):
+        raise MetadataAdmissionClosedError("unloading")
+
+    monkeypatch.setattr(manager, "async_reset_history", closing)
+    result = await flow.async_step_confirm_reset_history({"all_plans": False})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+
+
+@pytest.mark.parametrize("step", ["default_plan", "confirm_reset_history"])
+async def test_options_flow_aborts_if_entry_unloads_after_manager_write(
+    hass, monkeypatch, step
+) -> None:
+    entry, manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    async def unload_after_write(*args):
+        entry.mock_state(hass, config_entries.ConfigEntryState.NOT_LOADED)
+
+    method = "async_select_plan" if step == "default_plan" else "async_reset_history"
+    monkeypatch.setattr(manager, method, unload_after_write)
+    if step == "confirm_reset_history":
+        flow._reset_plan_id = "whole_home"
+    payload = {"plan": "whole_home"} if step == "default_plan" else {"all_plans": False}
+
+    result = await getattr(flow, f"async_step_{step}")(payload)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+
+
+@pytest.mark.parametrize("step", ["default_plan", "confirm_reset_history"])
+async def test_options_flow_aborts_on_raced_plan_removal_during_unload(
+    hass, monkeypatch, step
+) -> None:
+    entry, manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    async def remove_while_unloading(*args):
+        entry.mock_state(hass, config_entries.ConfigEntryState.NOT_LOADED)
+        raise KeyError("whole_home")
+
+    method = "async_select_plan" if step == "default_plan" else "async_reset_history"
+    monkeypatch.setattr(manager, method, remove_while_unloading)
+    if step == "confirm_reset_history":
+        flow._reset_plan_id = "whole_home"
+    payload = {"plan": "whole_home"} if step == "default_plan" else {"all_plans": False}
+
+    result = await getattr(flow, f"async_step_{step}")(payload)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+
+
+@pytest.mark.parametrize("step", ["default_plan", "confirm_reset_history"])
+async def test_options_flow_propagates_manager_persistence_failures(
+    hass, monkeypatch, step
+) -> None:
+    entry, manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    async def fail_to_persist(*args):
+        raise OSError("store failed")
+
+    method = "async_select_plan" if step == "default_plan" else "async_reset_history"
+    monkeypatch.setattr(manager, method, fail_to_persist)
+    if step == "confirm_reset_history":
+        flow._reset_plan_id = "whole_home"
+    payload = {"plan": "whole_home"} if step == "default_plan" else {"all_plans": False}
+
+    with pytest.raises(OSError, match="store failed"):
+        await getattr(flow, f"async_step_{step}")(payload)
 
 
 async def test_pairing_code_shows_progress_while_a_new_code_is_prepared(hass) -> None:

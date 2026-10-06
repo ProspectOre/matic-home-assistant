@@ -197,10 +197,14 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
         checkpoint["entity_id"], "docked" if reason == "low_charge" else "paused"
     )
 
-    async def wait_resume(*args):
+    async def wait_resume(*args, **kwargs):
         active = manager.snapshot("serial")["active_plan"]
         assert active["status"] == "suspended" and active["suspend_reason"] == reason
         assert 0 < args[2] <= 100
+        if multi:
+            assert isinstance(kwargs["resume_event"], asyncio.Event)
+        else:
+            assert "resume_event" not in kwargs
         hass.set_state(CoreState.stopping)
         raise asyncio.CancelledError
 

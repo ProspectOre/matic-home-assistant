@@ -60,6 +60,7 @@ from custom_components.matic_robot.plans import (
     MAX_SAVED_PLANS_PER_ROBOT,
     CleaningPlanManager,
     CleaningRoom,
+    MetadataAdmissionClosedError,
     RoomSequenceLimitError,
     SavedPlanLimitError,
     plan_floor_token,
@@ -862,12 +863,12 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
     replace_started = asyncio.Event()
     release_replace = asyncio.Event()
-    original_replace = manager.async_replace_managed_motion
+    original_persist = manager._async_persist_reconciliation_removal
 
-    async def delayed_replace(serial_number: str) -> None:
+    async def delayed_persist(serial_number: str, removed: bool) -> None:
         replace_started.set()
         await release_replace.wait()
-        await original_replace(serial_number)
+        await original_persist(serial_number, removed)
 
     with (
         patch(
@@ -876,8 +877,8 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
         ),
         patch.object(
             manager,
-            "async_replace_managed_motion",
-            side_effect=delayed_replace,
+            "_async_persist_reconciliation_removal",
+            side_effect=delayed_persist,
         ),
     ):
         task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
@@ -5238,3 +5239,144 @@ def test_entry_lookup_returns_loaded_entry_and_rejects_stale_references() -> Non
         hass.config_entries.async_get_entry.return_value = None
         with pytest.raises(ServiceValidationError, match="unavailable"):
             _entry_for_entity(hass, "vacuum.test")
+
+
+async def test_plan_save_service_rejects_write_queued_when_unload_closes_admission(
+    hass,
+) -> None:
+    """A waiting edit fails visibly instead of acknowledging stale plan data."""
+    manager = CleaningPlanManager(hass)
+    persisted: list[dict] = []
+
+    async def save(data: dict) -> None:
+        persisted.append(deepcopy(data))
+
+    manager._store = SimpleNamespace(async_save=save)
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Original",
+            "rooms": [
+                {
+                    "room_id": "room-kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+        },
+    )
+    original_persisted = deepcopy(persisted[-1])
+    services = await _registered_services(hass, manager)
+    context = (
+        "vacuum.test",
+        SimpleNamespace(),
+        "serial",
+        {"room-kitchen": "Kitchen"},
+    )
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan",
+        SAVE_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan_id": "home",
+                "name": "Replacement",
+                "rooms": [
+                    {
+                        "room": "Kitchen",
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "standard",
+                    }
+                ],
+            }
+        ),
+    )
+    plan_write_lock = manager.plan_write_lock("serial")
+    await plan_write_lock.acquire()
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._plan_cadence_bindings",
+            return_value=(None, {}),
+        ),
+    ):
+        request = asyncio.create_task(_registered_handler(services, "save_plan")(call))
+        try:
+            for _ in range(20):
+                if manager._metadata_admissions.get("serial"):
+                    break
+                await asyncio.sleep(0)
+            assert manager._metadata_admissions.get("serial") == 1
+            closing = asyncio.create_task(
+                manager.async_close_metadata_admission_and_wait("serial")
+            )
+            await asyncio.sleep(0)
+            assert "serial" in manager._metadata_admission_closed
+            plan_write_lock.release()
+            with pytest.raises(MetadataAdmissionClosedError):
+                await request
+            await closing
+        finally:
+            if plan_write_lock.locked():
+                plan_write_lock.release()
+            if not request.done():
+                await asyncio.gather(request, return_exceptions=True)
+
+    assert manager.plan("serial", "home")["name"] == "Original"
+    assert persisted == [original_persisted]
+
+
+@pytest.mark.parametrize("service_name", ("delete_plan", "select_plan"))
+async def test_plan_reference_services_report_unavailable_metadata(service_name, hass):
+    manager = CleaningPlanManager(hass)
+    persisted: list[dict] = []
+
+    async def save(data: dict) -> None:
+        persisted.append(deepcopy(data))
+
+    manager._store = SimpleNamespace(async_save=save)
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Original",
+            "rooms": [
+                {
+                    "room_id": "room-kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+        },
+    )
+    original_persisted = deepcopy(persisted[-1])
+    services = await _registered_services(hass, manager)
+    context = (
+        "vacuum.test",
+        SimpleNamespace(),
+        "serial",
+        {"room-kitchen": "Kitchen"},
+    )
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        service_name,
+        PLAN_REFERENCE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "home"}),
+    )
+    await manager.async_close_metadata_admission_and_wait("serial")
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(MetadataAdmissionClosedError),
+    ):
+        await _registered_handler(services, service_name)(call)
+
+    assert manager.plan("serial", "home")["name"] == "Original"
+    assert persisted == [original_persisted]

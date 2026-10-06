@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Any
 
-from .area_selector import MaticAreaSelector
+from .area_geometry import AreaGeometry
 
 
 def _distance(p: list[float], a: list[float], b: list[float]) -> float:
@@ -65,7 +65,7 @@ def validate_outline(
         raise ValueError("area outline is too small")
     for circle in circles:
         p = [circle["x"], circle["y"]]
-        if not MaticAreaSelector._point_in_polygon(p[0], p[1], points) or any(
+        if not AreaGeometry._point_in_polygon(p[0], p[1], points) or any(
             _distance(p, a, b) + 0.000001 < circle["radius"] for a, b in edges
         ):
             raise ValueError("area coverage exceeds its outline")

@@ -20,11 +20,26 @@ python -m venv .venv
 .venv/bin/python scripts/check_public_tree.py
 ```
 
-For Map Studio changes, run `npm ci`, `npm run build:map-studio-v4`, and
-`npm run test:browser`. Commit the rebuilt bundle with its source.
+For Map Studio changes, use Node.js 24, matching CI. Run `npm ci` in the
+checkout, then `npm run build:map-studio-v4` and `npm run test:browser`.
+Do not share a symlinked `node_modules` directory across worktrees; module
+resolution can change the generated chunks. Commit the rebuilt bundle with its source.
 
 Python 3.14's unparenthesized multiple exception types are intentional project
 style. Keep runtime traffic local and use Home Assistant's asynchronous APIs.
+
+## CI routing
+
+Matic is a public repository. Test, Browser, and Validate run on standard
+GitHub-hosted `ubuntu-latest` runners, which are
+[free for public repositories](https://docs.github.com/en/billing/concepts/product-billing/github-actions).
+Use the existing hosted workflows; private-repository paid-minute limits and
+missing self-hosted runners do not block this route. A local Linux VM is not a
+prerequisite. Larger runners and storage/cache allowances have separate billing.
+Recheck the route if repository visibility or runner configuration changes.
+
+Hosted CI does not replace exact-head review, manual merge, approved RC
+installation, runtime verification, physical acceptance, or release permission.
 
 ## Changes and pull requests
 

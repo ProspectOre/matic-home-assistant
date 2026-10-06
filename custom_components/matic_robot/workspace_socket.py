@@ -534,7 +534,12 @@ class WorkspaceSocket:
             from .slam_scene import catalog_entry_projection
 
             scene_view = self.hass.data.get(DATA_SLAM_SCENE_VIEW)
-            entry_projection = catalog_entry_projection(entry_id, runtime, scene_view)
+            entry_projection = catalog_entry_projection(
+                entry_id,
+                runtime,
+                scene_view,
+                options=getattr(entry, "options", None),
+            )
         if available:
             status = {"state": "ready", "reason": None, "retryable": False}
         elif state_available:

@@ -1,6 +1,6 @@
 # Matic 0.5 authority contract
 
-Status: implementation contract; evidence: `acceptance-0.5.md`. Baseline: public stable `v0.4.6` at `52166df`. Binding inputs: the Matic Map Studio Roadmap, architecture
+Status: implementation contract; evidence: `acceptance-0.5.md`. Baseline: public stable `v0.4.7`. Binding inputs: the Matic Map Studio Roadmap, architecture
 authority, and full 2026-08-29 independent review; historical status and release counts are refreshed in the evidence matrix. Scope: integration ownership and lifecycle,
 map-first operation, reliable live updates, explainable cleaning, independent room cadence. Owner refinement (2026-09-27): Map Studio v4 is the sole workspace UI. Remove
 Classic, its switch and saved frontend choice; preserve HA-native configuration forms and safe map/view preferences.
@@ -53,7 +53,9 @@ withholds them until verification returns. Stop uses the selected, connected HA 
 | Coherence machine | Verified entry/floor/map identity and resource admission | Presentation or rendering |
 | Cleaning policy | Rotation, cadence, effective settings, explanations | Native dispatch or completion proof |
 | Managed executor | Dispatch, ownership, stop settlement, restart recovery | A second completion ledger |
+| Command admission | Manager-owned phase and epoch; reject new/queued commands during teardown and drain accepted lock owners | Revoke an accepted external operation midway through ownership transfer |
 | Completion accounting | Native verified outcomes and exactly-once credit | UI-derived completion |
+| Planning persistence | Mutation admission before shared-state edits, owned commit/rollback, lifecycle draining and post-commit notification | Request cancellation or observer failures changing a committed outcome |
 | Firmware tracker | Serialized committed observations; publish after persistence succeeds | Advancing read state or emitting events after a failed save |
 | HA/HTTP/WebSocket adapters | Authorized bounded projections and invalidation | Independent business rules |
 
@@ -92,9 +94,9 @@ The administrator-only v1 workspace contract contains a versioned snapshot and s
 - authenticated REST for large scenes, deltas, and history, with the REST adapter retained through 0.5.x.
   Polling fallback preserves authorization, generation admission, and command guards.
 
-Delivery is staged: (A) baseline/budgets, (B) snapshot contract, (C) reversible adapter with visible-state parity and v1 fallback, (D) live notifications and default
-switchover only after reconnect/queue/resource evidence. Workflows and diagnostics are lazy-loaded. An unrelated HA state update must trigger no map fetch, workspace commit,
-or render work.
+Delivery is staged: (A) baseline/budgets, (B) snapshot contract, (C) reversible adapter with visible-state parity and v1 fallback. A default-off per-entry HA option permits
+administrator qualification; the shared authorized catalog projection is its sole frontend authority. (D) Default switchover requires reconnect/queue/resource evidence.
+Workflows and diagnostics are lazy-loaded. An unrelated HA state update must trigger no map fetch, workspace commit, or render work.
 
 ## Cadence and accounting contract
 
@@ -117,7 +119,7 @@ history.
 Effective mode and coverage are resolved before mixed mission grouping and are persisted, with policy identity and cadence snapshot, before dispatch. Manual and saved-plan
 starts consume the authoritative preview, bound to identity, order, settings, and progress by a fingerprint revalidated after preparation awaits. Stop policy belongs to the
 frozen run. Only a unique, verified managed room completion advances progress. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to
-match before comparing goals. Hermes exposes no verified `coverage_plan` generation, so matching goal values are only a consistency guard, not causal proof of the dispatched
+match before comparing goals. The supported `coverage_plan` read model has no verified generation/receipt marker, so matching goal values are only a consistency guard, not causal proof of the dispatched
 settings. They never clear periodic coverage; due work remains due until a verified per-run settings signal exists. Persisted legacy proof flags are ignored. Partial,
 interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate, or ambiguous floor/name evidence does not. Keep the bounded 64-key completion
 receipt dedupe independent of the Activity journal. Dispatch markers freeze the requested mode/coverage; live and startup reconciliation share one recorder. Completion proof is independent of settings-qualified duration estimates; changed or unknown settings invalidate prior samples. A due rule stays due until
@@ -145,5 +147,4 @@ Physical acceptance is separate and requires explicit authorization for a bounde
 preflight and post-run evidence, verify STOP/DOCK settlement, and retain cleanup receipts. Never infer motion/completion from screenshots, Activity, transient state, CI, or
 UI.
 
-Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement; reconsider mutation only if 0.4/0.5 evidence shows
-HA services cannot solve a stale-write or workflow limitation.
+Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement; reconsider mutation only if 0.4/0.5 evidence shows HA services cannot solve a stale-write or workflow limitation.

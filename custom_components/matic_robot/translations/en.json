@@ -511,183 +511,62 @@
   },
   "options": {
     "abort": {
-      "entry_not_loaded": "The robot must be online to manage cleaning plans. Open Configure again once it reconnects."
+      "entry_not_loaded": "Reconnect the robot before changing its settings."
     },
     "error": {
-      "confirmation_required": "Check the confirmation box to continue.",
-      "duplicate_plan": "Use a unique plan name with at least one letter or number.",
-      "duplicate_area": "Use a unique area name with at least one letter or number.",
-      "invalid_area": "Draw at least one mark on the map before saving.",
-      "invalid_plan": "This plan cannot run with its current settings or room map.",
-      "cadence_requires_verified_floor": "Shared room schedules require the verified live floor. Recheck the map, then save again.",
-      "room_sequence_limit": "Keep the plan at or below 100 rooms. Remove rooms, then save again.",
-      "plan_limit_reached": "Delete an existing plan before creating another one.",
-      "no_rooms": "Turn on at least one room.",
-      "room_plan_unavailable": "The live room map must be available before you can draw or save an area.",
-      "area_map_changed": "The map changed while the editor was open. Previous marks were cleared; redraw the area on the current map.",
-      "area_geometry_too_complex": "This area exceeds the safe geometry-checking limit. Try fewer marks or redraw it in a simpler part of the map."
+      "invalid_workspace_transport": "Choose on or off for live workspace updates.",
+      "plan_unavailable": "That saved plan is no longer available. Choose another plan.",
+      "invalid_reset_scope": "Choose whether to reset one plan or every plan."
     },
     "step": {
       "init": {
-        "title": "Cleaning plans",
-        "description": "Reusable room plans and drawn areas for dashboards and automations. Default plan: {selected_plan}. Saved plans: {plan_count}. Saved areas: {area_count}.",
+        "title": "Matic settings",
+        "description": "Edit saved plans and Areas in Map Studio at /matic-map. These settings let you choose the default plan, reset cleaning history, or enable live workspace updates. Saved plans: {plan_count}.",
         "menu_options": {
-          "manage_plan": "Manage a plan",
-          "add_plan": "Create a plan",
-          "manage_areas": "Custom cleaning areas",
+          "default_plan": "Choose the default plan",
+          "reset_history": "Reset cleaning history",
+          "workspace_transport": "Live workspace updates",
           "finish": "Done"
         }
       },
-      "manage_areas": {
-        "title": "Custom cleaning areas",
-        "description": "Saved areas: {area_count}. Draw a small area once, then use its name in automations.",
-        "menu_options": {
-          "choose_area": "Manage an area",
-          "add_area": "Draw a new area",
-          "finish": "Done"
-        }
-      },
-      "choose_area": {
-        "title": "Choose a custom area",
+      "default_plan": {
+        "title": "Choose the default plan",
+        "description": "Choose an existing plan. It becomes the saved default for actions that do not name a plan.",
         "data": {
-          "area": "Area"
+          "plan": "Default plan"
         },
         "data_description": {
-          "area": "Choose the saved area to edit or delete."
+          "plan": "Used by actions and entities when they do not name a plan."
         }
       },
-      "area_menu": {
-        "title": "Manage custom area",
-        "description": "{area_name} — map status: {area_status}.",
-        "menu_options": {
-          "edit_area": "Edit area",
-          "delete_area": "Delete area",
-          "manage_areas": "Back to custom areas",
-          "finish": "Done"
-        }
-      },
-      "add_area": {
-        "title": "Draw a custom cleaning area",
-        "description": "Map status: {area_status}. Draw only where Matic should clean. The map and coordinates stay inside Home Assistant.",
-        "data": {
-          "name": "Area name",
-          "area_editor": "Area",
-          "cleaning_mode": "Cleaning mode",
-          "coverage_setting": "Coverage"
-        },
-        "data_description": {
-          "name": "For example, Litter box or Kitchen table.",
-          "area_editor": "Drag over the map to paint the cleaning area. Overlapping marks form one task.",
-          "cleaning_mode": "Saved default for this area; an automation can override it.",
-          "coverage_setting": "Saved default for this area; an automation can override it."
-        }
-      },
-      "edit_area": {
-        "title": "Edit custom cleaning area",
-        "description": "Map status: {area_status}. Changes apply after you save. If the map changed, redraw the area before saving.",
-        "data": {
-          "name": "Area name",
-          "area_editor": "Area",
-          "cleaning_mode": "Cleaning mode",
-          "coverage_setting": "Coverage"
-        },
-        "data_description": {
-          "name": "The exact name used by dashboards and automations.",
-          "area_editor": "Drag over the map to replace or extend the saved cleaning area.",
-          "cleaning_mode": "Saved default for this area; an automation can override it.",
-          "coverage_setting": "Saved default for this area; an automation can override it."
-        }
-      },
-      "delete_area": {
-        "title": "Delete custom area",
-        "description": "Submitting permanently deletes {area_name}."
-      },
-      "manage_plan": {
-        "title": "Choose a plan",
-        "description": "Default plan: {selected_plan}.",
+      "reset_history": {
+        "title": "Reset cleaning history",
+        "description": "Choose a saved plan to review its rotation history reset. The next screen asks you to confirm the reset scope.",
         "data": {
           "plan": "Plan"
         },
         "data_description": {
-          "plan": "The default plan is marked in the list."
+          "plan": "Choose the plan whose rotation history you want to reset."
         }
       },
-      "plan_menu": {
-        "title": "Manage plan",
-        "description": "{plan_name} — rooms in plan: {plan_room_count}.",
-        "menu_options": {
-          "edit_plan": "Edit plan",
-          "preview_plan": "Preview next run",
-          "select_plan": "Set as default",
-          "reset_history": "Reset cleaning history",
-          "delete_plan": "Delete plan",
-          "change_plan": "Switch plan",
-          "finish": "Done"
-        }
-      },
-      "add_plan": {
-        "title": "Create a cleaning plan",
-        "description": "Name the plan, pick how it runs, then turn on any of the robot's {room_count} rooms — all settings save together on this screen. Every room starts off; included rooms default to Vacuum and Optimal. Optional room schedules can be private to this plan or shared by participating plans. A new shared schedule starts at zero; joining an existing one adopts its progress. Changing to a new private schedule starts fresh. N=3 applies on the third verified clean.",
-        "data": {
-          "name": "Plan name",
-          "run_behavior": "Cleaning order",
-          "room_editor": "Rooms",
-          "cadence_editor": "Optional room schedules",
-          "finish_current_room": "Finish the current room when stopping",
-          "finish_current_room_threshold": "Finish-room progress threshold",
-          "return_to_base": "Return to dock when finished"
-        },
-        "data_description": {
-          "name": "Shown in dashboards and automations — for example Away, Weekdays, or Deep clean.",
-          "run_behavior": "Intelligent rotation starts with the room least recently confirmed as the current cleaning area, so one unfinished room cannot monopolize short runs. Rejected commands and lingering prior-room state do not change priority. Saved order always runs from top to bottom.",
-          "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
-          "cadence_editor": "Intervals are 1–100 verified cleans. Mopping cadence vacuums normally and adds vacuum plus mop when due. Coverage cadence requests the selected coverage when due. This integration cannot currently verify the coverage used for each clean. Once due, the selected coverage is requested on later cleans. Disable the rule to pause it. Resetting progress delays the next request only when the interval is greater than 1. Partial, failed, stopped, and unverified work does not advance progress.",
-          "finish_current_room": "When enabled, stopping the plan may let the active room finish, but never starts the next room.",
-          "finish_current_room_threshold": "Estimated progress uses successful managed runs of this room with the same settings. Below this percentage the room stops immediately; at or above it the room finishes. Until a duration is learned, the room finishes. Set 0% to always finish.",
-          "return_to_base": "Dock the robot after the plan finishes."
-        }
-      },
-      "edit_plan": {
-        "title": "Edit cleaning plan",
-        "description": "Changes apply when you save. Plan keeps progress private to this plan. Shared for this room is used by participating plans; creating one starts at zero and joining an existing one adopts its progress. Changing to a new private schedule starts fresh. N=3 applies on the third verified clean.",
-        "data": {
-          "name": "Plan name",
-          "run_behavior": "Cleaning order",
-          "room_editor": "Rooms",
-          "cadence_editor": "Optional room schedules",
-          "enabled": "Plan enabled",
-          "finish_current_room": "Finish the current room when stopping",
-          "finish_current_room_threshold": "Finish-room progress threshold",
-          "return_to_base": "Return to dock when finished"
-        },
-        "data_description": {
-          "name": "Shown in dashboards, automations, and plan management.",
-          "run_behavior": "Intelligent rotation starts with the room least recently confirmed as the current cleaning area, so one unfinished room cannot monopolize short runs. Rejected commands and lingering prior-room state do not change priority. Saved order always runs from top to bottom.",
-          "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
-          "cadence_editor": "Intervals are 1–100 verified cleans. Mopping cadence vacuums normally and adds vacuum plus mop when due. Coverage cadence requests the selected coverage when due. This integration cannot currently verify the coverage used for each clean. Once due, the selected coverage is requested on later cleans. Disable the rule to pause it. Resetting progress delays the next request only when the interval is greater than 1. Partial, failed, stopped, and unverified work does not advance progress.",
-          "enabled": "Disabled plans stay saved but cannot start.",
-          "finish_current_room": "When enabled, stopping the plan may let the active room finish, but never starts the next room.",
-          "finish_current_room_threshold": "Estimated progress uses successful managed runs of this room with the same settings. Below this percentage the room stops immediately; at or above it the room finishes. Until a duration is learned, the room finishes. Set 0% to always finish.",
-          "return_to_base": "Dock the robot after the plan finishes."
-        }
-      },
-      "delete_plan": {
-        "title": "Delete plan",
-        "description": "Submitting permanently deletes {plan_name}. Other plans keep their history."
-      },
-      "preview_plan": {
-        "title": "Preview next run",
-        "description": "{plan_name} will clean: {next_rooms}. Nothing is changed.",
-        "data": {}
-      },
-      "reset_history": {
-        "title": "Reset cleaning history",
-        "description": "Submitting clears which rooms {plan_name} has completed. Plans and room settings are kept; affected rooms are treated as never cleaned.",
+      "confirm_reset_history": {
+        "title": "Confirm cleaning history reset",
+        "description": "Submitting clears rotation history for {plan_name}. Saved plans and their settings remain. Turn on the option below to reset history for every plan.",
         "data": {
           "all_plans": "Reset history for every plan"
         },
         "data_description": {
-          "all_plans": "Off resets only this plan."
+          "all_plans": "Off resets only {plan_name}. On resets all plan rotation history."
+        }
+      },
+      "workspace_transport": {
+        "title": "Live workspace updates",
+        "description": "Allow the administrator-only Map Studio to receive live updates from Home Assistant. This is disabled by default, does not control the robot, and can be turned off at any time.",
+        "data": {
+          "live_workspace_transport": "Enable live workspace updates"
+        },
+        "data_description": {
+          "live_workspace_transport": "Reversible per-robot setting. Server-side administrator checks remain required for every workspace request."
         }
       }
     }

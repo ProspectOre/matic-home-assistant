@@ -14,7 +14,7 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
-from .area_selector import GeometryTooComplex, MaticAreaSelector, _RoomGeometryIndex
+from .area_geometry import AreaGeometry, GeometryTooComplex, RoomGeometryIndex
 from .client.floor_plan import MAX_FLOOR_PLAN_BOUNDARY_POINTS
 from .client.models import FloorPlan
 from .const import DOMAIN
@@ -188,9 +188,9 @@ def async_sync_custom_area_issue(
     return stale_count
 
 
-def _room_geometry_index(floor_plan: FloorPlan) -> _RoomGeometryIndex:
+def _room_geometry_index(floor_plan: FloorPlan) -> RoomGeometryIndex:
     """Build one bounded index lazily for a callback's area scan."""
-    return _RoomGeometryIndex(
+    return RoomGeometryIndex(
         [
             {
                 "room_id": room.id,
@@ -367,7 +367,7 @@ def _translation_room_anchors(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> list[dict[str, Any]]:
     """Persist frame anchors only for rooms containing saved circle centers."""
     if len(floor_plan.rooms) > _MAX_TRANSLATION_ROOM_ANCHORS:
@@ -380,7 +380,7 @@ def _translation_room_anchors(
         }
         for room in floor_plan.rooms
     ]
-    room_geometry = room_geometry or _RoomGeometryIndex(rooms)
+    room_geometry = room_geometry or RoomGeometryIndex(rooms)
     circle_keys_by_room: dict[int, set[str]] = {}
     association_count = 0
     for circle in circles:
@@ -430,7 +430,7 @@ def binding_for_area(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> MapBinding:
     """Bind an area to its map identity and nearby room geometry."""
     room_geometry = room_geometry or _room_geometry_index(floor_plan)
@@ -501,7 +501,7 @@ def _legacy_hash_only_area_geometry_fingerprint(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> str:
     """Reproduce the persisted hash-only v2 signature for safe migration."""
     room_geometry = room_geometry or _room_geometry_index(floor_plan)
@@ -572,7 +572,7 @@ def _hash_only_area_geometry_fingerprint(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> str:
     """Keep the v2 helper name bound to its original serialization."""
     return _legacy_hash_only_area_geometry_fingerprint(
@@ -589,7 +589,7 @@ def _bounded_hash_only_area_geometry_fingerprint(
     circles: Sequence[Mapping[str, Any]],
     *,
     center_tolerance: float = 0.0,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> str:
     """Return the per-circle union-scoped v4 hash-only geometry signature."""
     room_geometry = room_geometry or _room_geometry_index(floor_plan)
@@ -666,7 +666,7 @@ def _area_geometry_components(
     circles: Sequence[Mapping[str, Any]],
     *,
     center_tolerance: float = 0.0,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> _LocalGeometry:
     """Return canonical private area shape, occupancy, and nearby segments."""
     room_geometry = room_geometry or _room_geometry_index(floor_plan)
@@ -838,7 +838,7 @@ def area_binding_status(
     area: Mapping[str, Any],
     floor_plan: FloorPlan,
     *,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> AreaBindingStatus:
     """Compare one saved area with the current floor plan without guessing."""
     schema_version = area.get("schema_version")
@@ -1054,7 +1054,7 @@ def area_binding_allows_review(
     floor_plan: FloorPlan,
     *,
     status: AreaBindingStatus | None = None,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
     circles_already_validated: bool = False,
 ) -> bool:
     """Return whether stale coordinates can be shown for local confirmation."""
@@ -1302,7 +1302,7 @@ def _local_segment_correspondence(
     current: Sequence[_LocalSegment],
     shape: _AreaShape,
     *,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> tuple[_SegmentMatch, ...] | None:
     """Find a tolerant one-to-one match for all semantically local segments.
 
@@ -1408,7 +1408,7 @@ def _local_segment_correspondence(
 
 
 def _segment_matching_work_charger(
-    room_geometry: _RoomGeometryIndex | None,
+    room_geometry: RoomGeometryIndex | None,
 ) -> Callable[[int], None]:
     """Bound matching work locally and charge the shared request budget."""
     remaining = _MAX_LOCAL_SEGMENT_MATCH_WORK
@@ -1442,7 +1442,7 @@ def _occupancy_changes_are_explained(
     circles: Sequence[Mapping[str, Any]],
     segment_matches: Sequence[_SegmentMatch] | None = None,
     *,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> bool:
     """Return whether every changed probe is explained by a moving wall pair."""
     charge_work = _segment_matching_work_charger(room_geometry)
@@ -1893,7 +1893,7 @@ def _validate_area_circles(
     circles: Sequence[Mapping[str, Any]],
     *,
     center_tolerance: float = 0.0,
-    room_geometry: _RoomGeometryIndex | None = None,
+    room_geometry: RoomGeometryIndex | None = None,
 ) -> list[dict[str, float]]:
     """Validate saved circles against the mapped floor without exposing them."""
     rooms = [
@@ -1905,7 +1905,7 @@ def _validate_area_circles(
         for room in floor_plan.rooms
     ]
     try:
-        return MaticAreaSelector({"rooms": rooms}).validate(
+        return AreaGeometry(rooms).validate(
             circles,
             center_tolerance=center_tolerance,
             geometry=room_geometry,

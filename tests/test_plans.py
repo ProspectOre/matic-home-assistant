@@ -69,6 +69,7 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
+    MetadataAdmissionClosedError,
     PlanStopDecision,
     SavedPlanLimitError,
     _compatible_duration_history,
@@ -187,13 +188,15 @@ async def test_late_plan_save_cannot_recreate_robot_during_removal(hass) -> None
     late_save = asyncio.create_task(
         manager.async_save_plan("removed", "late", {"name": "Late"})
     )
-    await asyncio.sleep(0)
-    assert not late_save.done()
-    assert "removed" not in manager._data["robots"]
-
-    release_save.set()
+    try:
+        await asyncio.sleep(0)
+        assert late_save.done()
+        with pytest.raises(MetadataAdmissionClosedError):
+            await late_save
+        assert "removed" not in manager._data["robots"]
+    finally:
+        release_save.set()
     await removal
-    await late_save
 
     assert "removed" not in manager._data["robots"]
     assert save_count == 1
@@ -1181,19 +1184,26 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
     events = []
     for event in ("room_started", "room_ended_unverified", "plan_finished"):
         hass.bus.async_listen(f"{DOMAIN}_{event}", events.append)
-    observations = 0
+    mark_resumed = manager.async_mark_resumed
 
-    async def native_outcome(*args, **kwargs):
-        nonlocal observations
-        observations += 1
-        if observations == 1:
-            return RoomRunOutcome.ROOM_CHANGED, rooms[1]
+    async def mark_resumed_with_terminal_state(
+        serial_number: str, plan_id: str, room: CleaningRoom
+    ) -> None:
+        await mark_resumed(serial_number, plan_id, room)
+        if room.room_id != rooms[1].room_id:
+            return
         if terminal == "stop":
-            manager.cancel("serial")
-            raise PlanCancelledError
-        if terminal == "interrupted":
-            raise RoomInterruptedError("synthetic interruption")
-        raise MaticError("synthetic failure")
+            manager.cancel(serial_number)
+        else:
+            hass.states.async_set(
+                "vacuum.matic", "docked" if terminal == "interrupted" else "error"
+            )
+
+    async def begin_observing_next_room(*_args, **_kwargs) -> float:
+        hass.states.async_set(
+            "vacuum.matic", "cleaning", {"current_area": rooms[1].name}
+        )
+        return 30
 
     with (
         nullcontext() if terminal == "stop" else pytest.raises(ServiceValidationError),
@@ -1202,19 +1212,37 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_leg_outcome",
-            side_effect=native_outcome,
+            "custom_components.matic_robot.managed_executor._async_completion_budget",
+            side_effect=begin_observing_next_room,
+        ),
+        patch.object(
+            manager, "async_mark_resumed", side_effect=mark_resumed_with_terminal_state
+        ),
+        patch(
+            "custom_components.matic_robot.managed_executor.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
+            0,
         ),
     ):
-        await _async_execute_rooms(
-            hass,
-            _call(hass),
-            manager,
-            "vacuum.matic",
-            "serial",
-            rooms,
-            session_history=AsyncMock(return_value=()),
+        execution = asyncio.create_task(
+            _async_execute_rooms(
+                hass,
+                _call(hass),
+                manager,
+                "vacuum.matic",
+                "serial",
+                rooms,
+                active_session=(
+                    AsyncMock(return_value=None) if terminal == "interrupted" else None
+                ),
+                session_history=AsyncMock(return_value=()),
+            )
         )
+        try:
+            await asyncio.wait_for(asyncio.shield(execution), timeout=8)
+        finally:
+            if not execution.done():
+                execution.cancel()
+                await asyncio.wait({execution}, timeout=1)
     await hass.async_block_till_done()
     snapshot = manager.snapshot("serial")
     records = snapshot["plan_history"]["away"]["rooms"]
@@ -2917,6 +2945,8 @@ async def test_plan_reset_ignores_old_shared_history_but_accepts_new_activity(
     study = _room("Study", "room-study")
     rooms = [kitchen, study]
     base = dt_util.utcnow() - timedelta(minutes=3)
+    await manager.async_save_plan("serial", "weekday", {"name": "Weekday"})
+    await manager.async_save_plan("serial", "weekend", {"name": "Weekend"})
 
     with patch("custom_components.matic_robot.plans.dt_util.utcnow", return_value=base):
         await manager.async_mark_started("serial", "weekday", kitchen)
@@ -2951,6 +2981,8 @@ async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
         "room": kitchen.name,
         "dispatched_at": dispatched_at.isoformat(),
     }
+    await manager.async_save_plan("serial", "away", {"name": "Away"})
+    await manager.async_save_plan("serial", "other", {"name": "Other"})
 
     await manager.async_mark_started("serial", "away", kitchen)
     await manager.async_mark_failed(
@@ -3640,7 +3672,14 @@ async def test_pending_native_stop_completion_is_reconciled_on_history_import(
             raise error_type("synthetic reconciliation save")
 
         manager._store.async_save.side_effect = fail_save
-        with pytest.raises(error_type, match="synthetic reconciliation save"):
+        expected_error = pytest.raises(error_type)
+        if save_failure != "cancelled":
+            expected_error = pytest.raises(
+                error_type, match="synthetic reconciliation save"
+            )
+        # An owned task crosses asyncio.shield, which may discard the message
+        # attached to a Store-originated CancelledError while preserving type.
+        with expected_error:
             await manager.async_import_native_history("serial", floor_plan, [record])
         await hass.async_block_till_done()
         assert events == []
@@ -4936,6 +4975,74 @@ async def test_plan_validation_rejects_disabled_empty_unknown_and_missing(hass) 
                 "corrupt",
                 {"name": "Corrupt", "enabled": True, "rooms": rooms},
             )
+
+
+async def test_reset_history_revalidates_plan_after_metadata_wait(hass) -> None:
+    """A plan deleted at the metadata fence cannot receive a stale reset."""
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+    await manager.async_save_plan("serial", "selected", {"name": "Selected"})
+    await manager.async_select_plan("serial", "selected")
+
+    delete_write_started = asyncio.Event()
+    allow_delete_write = asyncio.Event()
+    original_save = manager._store.async_save
+    save_calls = 0
+
+    async def hold_delete_write(data: dict[str, Any]) -> None:
+        nonlocal save_calls
+        save_calls += 1
+        robot = data["robots"]["serial"]
+        if "selected" not in robot["plans"]:
+            delete_write_started.set()
+            await allow_delete_write.wait()
+        await original_save(data)
+
+    manager._store.async_save = hold_delete_write
+    delete = asyncio.create_task(manager.async_delete_plan("serial", "selected"))
+    reset = None
+    try:
+        await asyncio.wait_for(delete_write_started.wait(), timeout=2)
+        assert "selected" not in manager._robot("serial")["plans"]
+        assert manager.state_lock("serial").locked()
+
+        reset = asyncio.create_task(manager.async_reset_history("serial", "selected"))
+        for _ in range(20):
+            waiters = getattr(manager.state_lock("serial"), "_waiters", None)
+            if (
+                manager._metadata_admissions.get("serial") == 1
+                and waiters
+                and any(not waiter.done() for waiter in waiters)
+            ):
+                break
+            await asyncio.sleep(0)
+        assert manager._metadata_admissions.get("serial") == 1
+        assert waiters and any(not waiter.done() for waiter in waiters)
+
+        allow_delete_write.set()
+        await asyncio.wait_for(delete, timeout=3)
+        with pytest.raises(KeyError, match="selected"):
+            await asyncio.wait_for(reset, timeout=3)
+    finally:
+        allow_delete_write.set()
+        if not delete.done():
+            await asyncio.gather(delete, return_exceptions=True)
+        if reset is not None and not reset.done():
+            reset.cancel()
+            await asyncio.gather(reset, return_exceptions=True)
+
+    assert save_calls == 1
+    robot = manager._robot("serial")
+    assert robot["selected_plan"] is None
+    assert "selected" not in robot["plans"]
+    assert "selected" not in robot["rotation_resets"]
+
+    reloaded = CleaningPlanManager(hass)
+    await reloaded.async_load()
+    persisted = reloaded._robot("serial")
+    assert persisted["selected_plan"] is None
+    assert "selected" not in persisted["plans"]
+    assert "selected" not in persisted["rotation_resets"]
 
 
 def test_plan_preview_rejects_corrupt_room_records(hass) -> None:
@@ -9659,24 +9766,23 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
 
     hass.services.async_register("vacuum", "send_command", send_command)
-    outcomes = iter(
-        [
-            (RoomRunOutcome.ROOM_CHANGED, rooms[1]),
-            (RoomRunOutcome.ROOM_CHANGED, rooms[0]),
-            (RoomRunOutcome.ROOM_CHANGED, rooms[1]),
-            (RoomRunOutcome.HANDOFF_CANDIDATE, None),
-        ]
-    )
 
-    async def next_outcome(*args, **kwargs):
-        outcome = next(outcomes)
-        if outcome[0] is RoomRunOutcome.HANDOFF_CANDIDATE:
+    async def begin_room_observations(*_args, **_kwargs):
+        async def change_rooms() -> None:
+            for room in (rooms[1], rooms[0], rooms[1]):
+                hass.states.async_set(
+                    "vacuum.matic", "cleaning", {"current_area": room.name}
+                )
+                await asyncio.sleep(0)
             hass.states.async_set("vacuum.matic", "returning")
-        return outcome
+
+        transitions = asyncio.create_task(change_rooms())
+        await transitions
+        return 30
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor._async_wait_for_leg_outcome",
-        next_outcome,
+        "custom_components.matic_robot.managed_executor._async_completion_budget",
+        begin_room_observations,
     )
     reads = 0
 
@@ -9722,19 +9828,24 @@ async def test_terminal_history_has_its_own_budget(
 
     hass.services.async_register("vacuum", "send_command", send_command)
 
-    async def terminal(*args, **kwargs):
+    async def terminal_room(*args, **kwargs):
         hass.states.async_set("vacuum.matic", "returning")
-        if multi_room:
-            return RoomRunOutcome.HANDOFF_CANDIDATE, None
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
-    waiter = (
-        "custom_components.matic_robot.managed_executor._async_wait_for_leg_outcome"
-        if multi_room
-        else "custom_components.matic_robot.managed_executor."
-        "_async_wait_for_room_outcome"
-    )
-    monkeypatch.setattr(waiter, terminal)
+    async def terminal_leg(*_args, **_kwargs):
+        hass.states.async_set("vacuum.matic", "returning")
+        return 0.02
+
+    if multi_room:
+        monkeypatch.setattr(
+            "custom_components.matic_robot.managed_executor._async_completion_budget",
+            terminal_leg,
+        )
+    else:
+        monkeypatch.setattr(
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
+            terminal_room,
+        )
     reads = 0
 
     async def history():

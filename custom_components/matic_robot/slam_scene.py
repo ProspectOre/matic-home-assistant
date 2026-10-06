@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
@@ -28,16 +29,17 @@ from .area_binding import (
     area_binding_status,
     binding_for_area,
 )
+from .area_geometry import AreaGeometry, RoomGeometryIndex
 from .area_outline import validate_outline
-from .area_selector import MaticAreaSelector, _RoomGeometryIndex
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
 from .client.floor_plan import resolve_robot_map_position, robot_location_source
 from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
 from .client.slam_map import decode_slam_tile, encode_slam_scene
-from .const import DOMAIN
+from .const import CONF_LIVE_WORKSPACE_TRANSPORT, DOMAIN
 from .plans import (
     CleaningRoom,
+    MetadataAdmissionClosedError,
     RoomSequenceLimitError,
     leg_groups,
     plan_floor_token,
@@ -133,6 +135,8 @@ def catalog_entry_projection(
     entry_id: str,
     runtime: MaticRuntimeData,
     scene_view: MaticSlamSceneView | None = None,
+    *,
+    options: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Project the bounded catalog row shared by REST and workspace snapshots."""
     health = runtime.slam_map.health
@@ -179,6 +183,9 @@ def catalog_entry_projection(
     telemetry = getattr(runtime.coordinator.data, "telemetry", None)
     return {
         "entry_id": entry_id,
+        "live_workspace_transport_enabled": (
+            options is not None and options.get(CONF_LIVE_WORKSPACE_TRANSPORT) is True
+        ),
         "scene_url": scene_api_url(entry_id),
         "delta_url": delta_api_url(entry_id),
         "pose_url": pose_api_url(entry_id),
@@ -912,13 +919,8 @@ class MaticSlamCatalogView(HomeAssistantView):
     url = CATALOG_API_URL
     name = "api:matic_robot:slam_entries"
 
-    def __init__(
-        self,
-        area_editor_url: str,
-        scene_view: MaticSlamSceneView | None = None,
-    ) -> None:
-        """Initialize the catalog with the private area-editor module route."""
-        self._area_editor_url = area_editor_url
+    def __init__(self, scene_view: MaticSlamSceneView | None = None) -> None:
+        """Initialize the catalog with its optional scene cache view."""
         self._scene_view = scene_view
 
     @require_admin
@@ -932,12 +934,14 @@ class MaticSlamCatalogView(HomeAssistantView):
                 continue
             health = runtime.slam_map.health
             projection = catalog_entry_projection(
-                entry.entry_id, runtime, self._scene_view
+                entry.entry_id,
+                runtime,
+                self._scene_view,
+                options=getattr(entry, "options", None),
             )
             entries.append(
                 {
                     **projection,
-                    "area_editor_url": self._area_editor_url,
                     "cached_tiles": health.photo_tiles,
                     "structural_tiles": health.structure_tiles,
                     "overlapping_tiles": health.overlapping_tiles,
@@ -1006,10 +1010,10 @@ class MaticAreasView(HomeAssistantView):
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
             uses_indexed_binding = area_binding_needs_geometry_index(area)
             if uses_indexed_binding and room_geometry is None:
-                room_geometry = _RoomGeometryIndex(self._rooms(floor_plan))
+                room_geometry = RoomGeometryIndex(self._rooms(floor_plan))
             status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
             if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
-                room_geometry = _RoomGeometryIndex(self._rooms(floor_plan))
+                room_geometry = RoomGeometryIndex(self._rooms(floor_plan))
             can_rebind = area_binding_allows_review(
                 area,
                 floor_plan,
@@ -1091,7 +1095,7 @@ class MaticAreasView(HomeAssistantView):
             if not 1 <= len(name) <= 128:
                 raise ValueError
             rooms = self._rooms(floor_plan)
-            circles = MaticAreaSelector({"rooms": rooms})(body["circles"])
+            circles = AreaGeometry(rooms).validate(body["circles"])
             outline = validate_outline(body.get("outline"), circles)
             cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
             coverage_setting = CoverageSetting(str(body["coverage_setting"]))
@@ -1122,19 +1126,25 @@ class MaticAreasView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
             )
-        await runtime.cleaning_plans.async_save_area(
-            serial_number,
-            area_id,
-            {
-                "schema_version": AREA_SCHEMA_VERSION,
-                "name": name,
-                "circles": circles,
-                **({"outline": outline} if outline is not None else {}),
-                "cleaning_mode": cleaning_mode.value,
-                "coverage_setting": coverage_setting.value,
-                "map_binding": binding,
-            },
-        )
+        try:
+            await runtime.cleaning_plans.async_save_area(
+                serial_number,
+                area_id,
+                {
+                    "schema_version": AREA_SCHEMA_VERSION,
+                    "name": name,
+                    "circles": circles,
+                    **({"outline": outline} if outline is not None else {}),
+                    "cleaning_mode": cleaning_mode.value,
+                    "coverage_setting": coverage_setting.value,
+                    "map_binding": binding,
+                },
+            )
+        except MetadataAdmissionClosedError:
+            return web.Response(
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+                headers=PRIVATE_NO_STORE_HEADERS,
+            )
         return self.json(
             {"id": area_id},
             headers=PRIVATE_NO_STORE_HEADERS,
@@ -1155,7 +1165,13 @@ class MaticAreasView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        await runtime.cleaning_plans.async_delete_area(serial_number, area_id)
+        try:
+            await runtime.cleaning_plans.async_delete_area(serial_number, area_id)
+        except MetadataAdmissionClosedError:
+            return web.Response(
+                status=HTTPStatus.SERVICE_UNAVAILABLE,
+                headers=PRIVATE_NO_STORE_HEADERS,
+            )
         return web.Response(
             status=HTTPStatus.NO_CONTENT, headers=PRIVATE_NO_STORE_HEADERS
         )

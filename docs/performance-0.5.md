@@ -10,8 +10,8 @@ RC9 has separate untraced headed and headless receipts; the production bundle fi
 The audit corrected startup accounting: the earlier 80,712-byte estimate
 counted only v4 and omitted 61,269 bytes of globally registered editor,
 classic-panel, and icon modules. That 141,981-byte total exceeded 90 KiB.
-Classic and its switch are removed; the HA Configure selector implementation
-loads on demand. Clear selection commits once instead of once per room.
+RC9 removed Classic and its switch; its Configure editor loaded on demand.
+Current 0.5 source removes that remaining editor and global loader; the RC9 measurements below remain historical. Clear selection commits once instead of once per room.
 Earlier RC4 input results do not qualify this disconnect-admission repair.
 
 ## Method

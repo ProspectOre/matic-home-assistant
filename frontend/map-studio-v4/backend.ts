@@ -25,6 +25,12 @@ import {
   type SceneModel,
 } from "./backend-contracts";
 import { SceneParser } from "./scene-parser";
+import {
+  BackendRequestDiagnosticsStore,
+  type BackendRequestDiagnostics,
+  type BackendRequestOperation,
+  type BackendRequestOutcome,
+} from "./request-diagnostics";
 
 const REQUEST_TIMEOUTS = {
   catalog: 10_000,
@@ -107,10 +113,19 @@ export class MaticBackend {
   readonly #parser = new SceneParser();
   readonly #roomPreviewWireInFlight = new WeakMap<object, Promise<void>>();
   readonly #serviceWaits = new Set<() => void>();
+  readonly #requestDiagnostics = new BackendRequestDiagnosticsStore();
   #disposed = false;
 
   constructor(getHass: () => HassLike | undefined) {
     this.#getHass = getHass;
+  }
+
+  /**
+   * Returns a frozen aggregate of operations admitted to #request and already settled.
+   * Durations include consume/body decoding; transforms after #request resolves are excluded.
+   */
+  requestDiagnostics(): BackendRequestDiagnostics {
+    return this.#requestDiagnostics.snapshot();
   }
 
   async #readBody(
@@ -155,6 +170,7 @@ export class MaticBackend {
   }
 
   async #request<T>(
+    operation: BackendRequestOperation,
     path: string,
     init: RequestInit,
     timeoutMs: number,
@@ -163,6 +179,8 @@ export class MaticBackend {
   ): Promise<T> {
     if (!isPrivatePath(path)) throw new BackendError("invalid-private-path");
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const started = performance.now();
+    let outcome: BackendRequestOutcome = "failed";
     const controller = new AbortController();
     let rejectAbort: (reason: DOMException) => void = () => {};
     const interrupted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
@@ -211,24 +229,34 @@ export class MaticBackend {
       // Keep the deadline alive through body consumption and decoding, not
       // merely until response headers arrive. Cancellation also settles when
       // a host wrapper fails to propagate the supplied fetch signal.
-      return await Promise.race([execute(), interrupted]);
+      const result = await Promise.race([execute(), interrupted]);
+      outcome = "completed";
+      return result;
     } catch (error) {
-      if (timedOut && !signal?.aborted) throw new BackendError("request-timeout");
-      if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+      if (timedOut && !signal?.aborted) {
+        outcome = "timedOut";
+        throw new BackendError("request-timeout");
+      }
+      if (controller.signal.aborted) {
+        outcome = "aborted";
+        throw new DOMException("Aborted", "AbortError");
+      }
       throw error;
     } finally {
       window.clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);
+      this.#requestDiagnostics.record(operation, outcome, performance.now() - started);
     }
   }
 
   async #json(
+    operation: BackendRequestOperation,
     path: string,
     timeoutMs: number,
     signal?: AbortSignal,
     init: RequestInit = {},
   ): Promise<unknown> {
-    return this.#request(path, {
+    return this.#request(operation, path, {
       ...init,
       headers: {
         Accept: "application/json",
@@ -251,7 +279,7 @@ export class MaticBackend {
   }
 
   async catalog(signal?: AbortSignal): Promise<readonly MapEntry[]> {
-    return parseCatalog(await this.#json(CATALOG_URL, REQUEST_TIMEOUTS.catalog, signal));
+    return parseCatalog(await this.#json("catalog", CATALOG_URL, REQUEST_TIMEOUTS.catalog, signal));
   }
 
   async scene(
@@ -265,7 +293,7 @@ export class MaticBackend {
     const headers = new Headers({ Accept: "application/vnd.matic.slam-scene" });
     if (source === "live") headers.set("X-Matic-Prefer-Cached", "1");
     if (etag) headers.set("If-None-Match", etag);
-    return this.#request(path, { headers }, REQUEST_TIMEOUTS.scene, signal, async (response, operationSignal) => {
+    return this.#request("scene", path, { headers }, REQUEST_TIMEOUTS.scene, signal, async (response, operationSignal) => {
       const revision = responseRevision(response, expectedRevision);
       const floorCoherent = floorHeader(response, expectedFloorCoherent);
       if (response.status === 304) {
@@ -302,6 +330,7 @@ export class MaticBackend {
   ): Promise<SceneResponse> {
     const separator = path.includes("?") ? "&" : "?";
     return this.#request(
+      "sceneDelta",
       `${path}${separator}since=${encodeURIComponent(base.revision)}`,
       { headers: { Accept: "application/vnd.matic.slam-delta, application/vnd.matic.slam-scene" } },
       REQUEST_TIMEOUTS.delta,
@@ -369,19 +398,19 @@ export class MaticBackend {
   }
 
   async pose(path: string, signal?: AbortSignal): Promise<PoseModel> {
-    return parsePose(await this.#json(path, REQUEST_TIMEOUTS.pose, signal));
+    return parsePose(await this.#json("pose", path, REQUEST_TIMEOUTS.pose, signal));
   }
 
   async history(path: string, signal?: AbortSignal): Promise<HistoryCatalog> {
-    return parseHistoryCatalog(await this.#json(path, REQUEST_TIMEOUTS.history, signal));
+    return parseHistoryCatalog(await this.#json("history", path, REQUEST_TIMEOUTS.history, signal));
   }
 
   async plans(path: string, signal?: AbortSignal): Promise<PlansCatalog> {
-    return parsePlansCatalog(await this.#json(path, REQUEST_TIMEOUTS.workflow, signal));
+    return parsePlansCatalog(await this.#json("plans", path, REQUEST_TIMEOUTS.workflow, signal));
   }
 
   async areas(path: string, signal?: AbortSignal): Promise<AreasCatalog> {
-    return parseAreasCatalog(await this.#json(path, REQUEST_TIMEOUTS.workflow, signal));
+    return parseAreasCatalog(await this.#json("areas", path, REQUEST_TIMEOUTS.workflow, signal));
   }
 
   async previewRoomSequence(
@@ -513,7 +542,7 @@ export class MaticBackend {
     },
     signal?: AbortSignal,
   ): Promise<string> {
-    const payload = await this.#json(path, REQUEST_TIMEOUTS.mutation, signal, {
+    const payload = await this.#json("areaSave", path, REQUEST_TIMEOUTS.mutation, signal, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -533,6 +562,7 @@ export class MaticBackend {
 
   async deleteArea(path: string, areaId: string, signal?: AbortSignal): Promise<void> {
     await this.#request(
+      "areaDelete",
       `${path}?area_id=${encodeURIComponent(areaId)}`,
       { method: "DELETE", headers: { Accept: "application/json" } },
       REQUEST_TIMEOUTS.mutation,
@@ -582,6 +612,7 @@ export class MaticBackend {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#requestDiagnostics.dispose();
     for (const cancelWait of this.#serviceWaits) cancelWait();
     this.#serviceWaits.clear();
     this.#parser.dispose();
