@@ -582,14 +582,12 @@ def claim_report(
     report = _current_report(
         robot, report_id, evidence_revision, routing_revision, provider
     )
+    if is_future_timestamp((robot.get("snapshot") or {}).get("captured_at"), now):
+        raise ValueError("A fresh firmware snapshot is required before investigation")
+    rebase_future_anchors(robot, now)
     investigation = report["investigation"]
     if investigation["status"] == "complete":
         raise ValueError("This evidence already has a completed investigation")
-    if investigation["status"] == "claimed" and is_future_timestamp(
-        investigation.get("claimed_at"), now
-    ):
-        _reset_investigation(report)
-        investigation = report["investigation"]
     if investigation["status"] == "claimed" and now < datetime.fromisoformat(
         investigation["lease_expires_at"]
     ):
