@@ -881,3 +881,32 @@ def test_unreadable_version_is_not_reported_as_a_release_change() -> None:
     protocol_bump = _snapshot("v172.12")
     protocol_bump["protocol_version"] = 26
     assert _compare_snapshots(known, protocol_bump)["protocol_changed"] is True
+
+
+async def test_missing_firmware_version_preserves_release_and_report(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=None), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    await tracker.async_record_snapshot("entry", _snapshot("v169.9"))
+    baseline = _snapshot("v169.9", status="error")
+    baseline["captured_at"] = "2026-07-20T00:15:00+00:00"
+    with patch(
+        "custom_components.matic_robot.firmware.dt_util.utcnow",
+        return_value=datetime(2026, 7, 20, 0, 15, tzinfo=UTC),
+    ):
+        await tracker.async_record_snapshot("entry", baseline)
+
+    before = deepcopy(tracker._data)
+    saves_before = tracker._store.async_save.await_count
+    missing = _snapshot("v169.9", status="empty")
+    missing["firmware_version"] = None
+    missing["protocol_version"] = None
+    missing["captured_at"] = "2026-07-20T00:30:00+00:00"
+    result = await tracker.async_record_snapshot("entry", missing)
+
+    assert result["discarded"] is True
+    assert result["reason"] == "firmware_version_unavailable"
+    assert tracker._data == before
+    assert tracker._store.async_save.await_count == saves_before

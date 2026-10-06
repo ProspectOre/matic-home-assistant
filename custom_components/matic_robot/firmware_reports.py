@@ -73,10 +73,15 @@ def has_future_anchor(robot: dict[str, Any], now: datetime) -> bool:
         )
     ):
         return True
-    return any(
+    if any(
         is_future_timestamp(finding.get(key), now)
         for finding in report.get("findings", {}).values()
         for key in ("first_seen_at", "last_confirmation_at")
+    ):
+        return True
+    investigation = report.get("investigation") or {}
+    return investigation.get("status") == "claimed" and is_future_timestamp(
+        investigation.get("claimed_at"), now
     )
 
 
@@ -86,7 +91,8 @@ def rebase_future_anchors(robot: dict[str, Any], now: datetime) -> bool:
         return False
     if report := robot.get("firmware_report"):
         anchor = now.isoformat()
-        report["first_seen_at"] = anchor
+        if is_future_timestamp(report.get("first_seen_at"), now):
+            report["first_seen_at"] = anchor
         report["last_confirmation_at"] = anchor
         report["last_checked_at"] = anchor
         report["last_sample_at"] = anchor
@@ -95,7 +101,14 @@ def rebase_future_anchors(robot: dict[str, Any], now: datetime) -> bool:
         for finding in report.get("findings", {}).values():
             if is_future_timestamp(finding.get("first_seen_at"), now):
                 finding["first_seen_at"] = anchor
-            finding["last_confirmation_at"] = anchor
+            if is_future_timestamp(finding.get("last_confirmation_at"), now):
+                finding["last_confirmation_at"] = anchor
+        investigation = report.get("investigation") or {}
+        # Once any persisted observation proves the wall clock moved behind
+        # recorded evidence, an active lease may have expired under the old
+        # clock even when its claim time itself is not in the future.
+        if investigation.get("status") == "claimed":
+            _reset_investigation(report)
     if is_future_timestamp(robot.get("next_firmware_scan_at"), now):
         robot["next_firmware_scan_at"] = now.isoformat()
     return True
@@ -137,6 +150,11 @@ def _merge_shapes(target: dict[str, list[str]], source: dict[str, list[str]]) ->
         target[name] = sorted(set(target.get(name, [])) | set(paths))[:512]
 
 
+def _has_firmware_version(snapshot: dict[str, Any]) -> bool:
+    version = snapshot.get("firmware_version")
+    return isinstance(version, str) and bool(version.strip())
+
+
 def prepare_release(
     robot: dict[str, Any], current: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -149,10 +167,13 @@ def prepare_release(
             _advance_release(robot, old)
         if previous := robot.get("snapshot"):
             _advance_release(robot, previous)
-    _advance_release(robot, current)
+    if _has_firmware_version(current):
+        _advance_release(robot, current)
     # Legacy reports used a key-derived ID. Keep their current ID during an
     # in-place storage upgrade; subsequent release occurrences get fresh IDs.
-    release = robot["release_evidence"]
+    release = robot.get("release_evidence")
+    if release is None:
+        return None
     current_report = robot.get("firmware_report") or {}
     current_identity = identity(current_report) if current_report else None
     if (
@@ -187,6 +208,8 @@ def _new_report_id(robot: dict[str, Any]) -> str:
 
 
 def _advance_release(robot: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    if not _has_firmware_version(snapshot):
+        return
     release = robot.get("release_evidence")
     key = identity(snapshot)
     # A temporarily missing protocol is missing evidence, not another release.
@@ -242,6 +265,8 @@ def update_report(
     robot: dict[str, Any], snapshot: dict[str, Any], now: datetime
 ) -> bool:
     """Reconcile a single scan; return whether meaningful evidence changed."""
+    if not _has_firmware_version(snapshot) or not robot.get("release_evidence"):
+        return False
     rebase_future_anchors(robot, now)
     release = robot["release_evidence"]
     report_id = release["report_id"]
@@ -543,6 +568,11 @@ def claim_report(
     investigation = report["investigation"]
     if investigation["status"] == "complete":
         raise ValueError("This evidence already has a completed investigation")
+    if investigation["status"] == "claimed" and is_future_timestamp(
+        investigation.get("claimed_at"), now
+    ):
+        _reset_investigation(report)
+        investigation = report["investigation"]
     if investigation["status"] == "claimed" and now < datetime.fromisoformat(
         investigation["lease_expires_at"]
     ):
@@ -579,6 +609,9 @@ def complete_report(
     investigation = report["investigation"]
     if (
         investigation.get("status") != "claimed"
+        or has_future_anchor(robot, now)
+        or _parse_time(investigation.get("claimed_at")) is None
+        or is_future_timestamp(investigation.get("claimed_at"), now)
         or not hmac.compare_digest(investigation.get("lease_hash", ""), digest(token))
         or now >= datetime.fromisoformat(investigation["lease_expires_at"])
     ):
