@@ -381,7 +381,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             self._async_fire_session_finished(state, version)
             state = await self._async_track_cleaning_session(state)
             if self.firmware_tracker is not None:
-                await self.firmware_tracker.async_observe_version(
+                version_changed = await self.firmware_tracker.async_observe_version(
                     self.config_entry.entry_id,
                     version,
                     telemetry.protocol_version,
@@ -391,8 +391,11 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     snapshot_identity = (version, telemetry.protocol_version)
                     if (
                         snapshot_identity not in self._snapshot_versions_in_progress
-                        and monotonic()
-                        >= self._snapshot_retry_after.get(snapshot_identity, 0.0)
+                        and (
+                            version_changed
+                            or monotonic()
+                            >= self._snapshot_retry_after.get(snapshot_identity, 0.0)
+                        )
                         and self.firmware_tracker.needs_snapshot(
                             self.config_entry.entry_id,
                             version,
