@@ -443,11 +443,33 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             or (bool(operational.error_codes) and not operational.is_charging)
             or (operational.low_charge and operational.is_charging)
         )
-        stop_request_generation = self._plans.stop_request_generation(serial_number)
+        managed_stop_generations = getattr(
+            self._plans, "managed_stop_dispatch_generations", None
+        )
+        expected_generations = (
+            managed_stop_generations(serial_number)
+            if callable(managed_stop_generations)
+            else None
+        )
+        expected_generation = (
+            expected_generations[0] if expected_generations is not None else None
+        )
+        stop_request_generation = (
+            expected_generations[1]
+            if expected_generations is not None
+            else self._plans.stop_request_generation(serial_number)
+        )
         async with self._plans.external_motion(
             serial_number,
+            expected_generation=expected_generation,
             expected_stop_generation=stop_request_generation,
-        ):
+        ) as generation:
+            if generation is None:
+                if expected_generations is None:
+                    self._require_stop_request_generation(
+                        serial_number, stop_request_generation
+                    )
+                return
             self._require_stop_request_generation(
                 serial_number, stop_request_generation
             )

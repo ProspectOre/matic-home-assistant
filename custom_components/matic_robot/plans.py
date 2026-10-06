@@ -723,9 +723,9 @@ class CleaningPlanManager:
         self._removed_robots: set[str] = set()
         self._robot_generations: dict[str, int] = {}
         self._cancellation_reasons: dict[str, str] = {}
-        self._managed_stop_dispatch: ContextVar[str | None] = ContextVar(
-            f"matic_managed_stop_dispatch_{id(self)}", default=None
-        )
+        self._managed_stop_dispatch: ContextVar[
+            tuple[str, int | None, int | None] | None
+        ] = ContextVar(f"matic_managed_stop_dispatch_{id(self)}", default=None)
         self._stop_fences: dict[str, _StopFence] = {}
         self._stop_fence_sequence = 0
         self._prepared_runs: dict[str, _PreparedRunReservation] = {}
@@ -1232,7 +1232,8 @@ class CleaningPlanManager:
         """Transfer motion ownership to an admitted independent command."""
         if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
             self.cancellation_event(serial_number).set()
-            if self._managed_stop_dispatch.get() != serial_number:
+            dispatch = self._managed_stop_dispatch.get()
+            if dispatch is None or dispatch[0] != serial_number:
                 self._cancellation_reasons[serial_number] = "motion_replaced"
         self.cancel_reconciliation_tasks(serial_number)
         # Keep the settle countdown active, but revoke its persisted run owner:
@@ -1255,13 +1256,36 @@ class CleaningPlanManager:
         return reconciliation_removed
 
     @contextmanager
-    def managed_stop_dispatch(self, serial_number: str) -> Iterator[None]:
-        """Keep an admitted physical Stop classified as a managed stop."""
-        token = self._managed_stop_dispatch.set(serial_number)
+    def managed_stop_dispatch(
+        self,
+        serial_number: str,
+        *,
+        expected_generation: int | None = None,
+        expected_stop_generation: int | None = None,
+    ) -> Iterator[None]:
+        """Keep an admitted physical Stop scoped to its original owner."""
+        token = self._managed_stop_dispatch.set(
+            (serial_number, expected_generation, expected_stop_generation)
+        )
         try:
             yield
         finally:
             self._managed_stop_dispatch.reset(token)
+
+    @callback
+    def managed_stop_dispatch_generations(
+        self, serial_number: str
+    ) -> tuple[int, int] | None:
+        """Return the expected generations for this task's managed Stop."""
+        dispatch = self._managed_stop_dispatch.get()
+        if (
+            dispatch is None
+            or dispatch[0] != serial_number
+            or dispatch[1] is None
+            or dispatch[2] is None
+        ):
+            return None
+        return dispatch[1], dispatch[2]
 
     async def async_replace_managed_motion(self, serial_number: str) -> int:
         """Persist replacement ownership before its independent command runs."""

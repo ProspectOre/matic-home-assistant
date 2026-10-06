@@ -1120,7 +1120,8 @@ async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> N
             "return_to_base",
             {"entity_id": "vacuum.test"},
         )
-        assert manager._managed_stop_dispatch.get() == serial_number
+        dispatch = manager._managed_stop_dispatch.get()
+        assert dispatch is not None and dispatch[0] == serial_number
         assert kwargs["blocking"] is True
         assert kwargs["context"] is stop.context
         await asyncio.create_task(entity.async_return_to_base())
@@ -1257,6 +1258,93 @@ async def test_stop_service_preserves_managed_stop_reason_for_return_to_base(
     entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
         UserCommand.STOP
     )
+
+
+async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
+    hass,
+) -> None:
+    """A delayed Stop Return Home cannot stop motion admitted after its request."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        serial_number,
+        "plan",
+        {
+            "name": "Plan",
+            "enabled": True,
+            "finish_current_room": False,
+            "rooms": [],
+        },
+    )
+    await manager.async_begin_run(
+        serial_number,
+        "plan",
+        "run-id",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+        finish_current_room=False,
+    )
+    await manager.async_mark_started(
+        serial_number,
+        "plan",
+        CleaningRoom("room-2", "Study", "vacuum", "quick"),
+        run_id="run-id",
+    )
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    # A direct replacement is admitted after Stop records its request, while
+    # the nested Return Home service is deliberately paused.
+    services = await _registered_services(hass, manager)
+    entry = entity_entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
+    stop = ServiceCall(
+        hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
+    )
+    nested_service_started = asyncio.Event()
+    release_nested_service = asyncio.Event()
+
+    async def route_return_to_base(_domain, _service, _data, **_kwargs) -> None:
+        nested_service_started.set()
+        await release_nested_service.wait()
+        await asyncio.create_task(entity.async_return_to_base())
+
+    with (
+        patch.object(entity, "_schedule_dock_after_stop"),
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, serial_number, {}),
+        ),
+    ):
+        services.async_call.side_effect = route_return_to_base
+        stop_task = asyncio.create_task(
+            _registered_handler(services, "stop_intelligent_cleaning")(stop)
+        )
+        try:
+            await asyncio.wait_for(nested_service_started.wait(), timeout=1)
+            await entity.async_send_command("clean_rooms", {"rooms": ["Study"]})
+            replacement_generation = manager.motion_generation(serial_number)
+            release_nested_service.set()
+            await stop_task
+        finally:
+            release_nested_service.set()
+            if not stop_task.done():
+                stop_task.cancel()
+                await asyncio.gather(stop_task, return_exceptions=True)
+            if plan_lock.locked():
+                plan_lock.release()
+
+    assert manager.motion_generation(serial_number) == replacement_generation
+    assert manager.cancellation_reason(serial_number) == "motion_replaced"
+    entry.runtime_data.coordinator.client.async_start_coverage.assert_awaited_once()
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
 
 
 async def test_clean_area_translates_client_failure_without_protocol_details(
