@@ -78,7 +78,7 @@ class FirmwareTracker:
         device_id: str | None = None,
     ) -> bool:
         """Record a version and create a repair only when it changes."""
-        if version is None:
+        if not isinstance(version, str) or not version.strip():
             return False
         async with self._lock:
             existing = self._data.get("robots", {}).get(robot_id, {})
@@ -97,11 +97,30 @@ class FirmwareTracker:
                 and previous_protocol is None
                 and protocol is not None
             )
+            new_occurrence = bool(
+                isinstance(previous, str)
+                and previous.strip()
+                and (
+                    previous != version
+                    or (
+                        previous_protocol is not None
+                        and protocol is not None
+                        and previous_protocol != protocol
+                    )
+                )
+            )
             candidate = deepcopy(self._data)
             robot = candidate.setdefault("robots", {}).setdefault(robot_id, {})
             robot["observed_version"] = version
             robot["observed_protocol"] = protocol
             robot["compatibility_status"] = "pending"
+            # Keep an observation-backed occurrence pending until a matching
+            # snapshot is durably recorded. A later rollback to an older
+            # release must still be scanned even when history already contains
+            # that release's previous occurrence.
+            robot["snapshot_pending"] = True
+            if new_occurrence:
+                robot["occurrence_pending"] = True
             await self._store.async_save(candidate)
             self._data = candidate
         self._notify(robot_id)
@@ -150,6 +169,37 @@ class FirmwareTracker:
                     "discarded": True,
                     "reason": "firmware_version_unavailable",
                 }
+            observed_version = robot.get("observed_version")
+            observed_protocol = robot.get("observed_protocol")
+            if (
+                isinstance(observed_version, str)
+                and observed_version.strip()
+                and observed_version != version
+            ):
+                return {
+                    **comparison,
+                    "discarded": True,
+                    "reason": "snapshot_superseded",
+                }
+            if (
+                observed_version == version
+                and observed_protocol is not None
+                and current.get("protocol_version") is not None
+                and current.get("protocol_version") != observed_protocol
+            ):
+                return {
+                    **comparison,
+                    "discarded": True,
+                    "reason": "snapshot_superseded",
+                }
+            if (
+                observed_version == version
+                and observed_protocol is not None
+                and current.get("protocol_version") is None
+            ):
+                # A transiently absent protocol reading must not erase the
+                # last authenticated identity or keep the release pending.
+                current["protocol_version"] = observed_protocol
             now = dt_util.utcnow()
             current_is_future = reports.is_future_timestamp(
                 current.get("captured_at"), now
@@ -166,10 +216,20 @@ class FirmwareTracker:
                 # A slower overlapping sweep must not roll evidence backward.
                 return {**comparison, "discarded": True}
             history = robot.setdefault("history", [])
-            baseline = reports.prepare_release(robot, current)
+            force_new_occurrence = bool(
+                observed_version == version and robot.get("occurrence_pending")
+            )
+            baseline = reports.prepare_release(
+                robot,
+                current,
+                force_new_occurrence=force_new_occurrence,
+            )
             release_comparison = _compare_snapshots(baseline, current)
             report_changed = reports.update_report(robot, current, now)
             robot["snapshot"] = current
+            if observed_version == version:
+                robot.pop("snapshot_pending", None)
+                robot.pop("occurrence_pending", None)
             report = robot["firmware_report"]
             if report["failed_endpoints"]:
                 robot["compatibility_status"] = (
@@ -435,9 +495,14 @@ class FirmwareTracker:
         context: str | None = None,
     ) -> bool:
         """Return whether this firmware/protocol pair lacks a completed snapshot."""
+        if not isinstance(version, str) or not version.strip():
+            return False
         snapshot = self._data.get("robots", {}).get(robot_id, {}).get("snapshot", {})
+        robot = self._data.get("robots", {}).get(robot_id, {})
         return bool(
-            snapshot.get("firmware_version") != version
+            robot.get("snapshot_pending")
+            or robot.get("occurrence_pending")
+            or snapshot.get("firmware_version") != version
             or (protocol is not None and snapshot.get("protocol_version") != protocol)
             or snapshot.get("analysis_version") != ANALYSIS_VERSION
             or reports.scan_due(

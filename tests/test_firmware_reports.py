@@ -99,6 +99,25 @@ def test_release_baseline_survives_history_eviction_and_shape_union() -> None:
     assert new_field["status"] == "observed_again"
 
 
+def test_prepare_release_can_force_a_new_same_identity_occurrence() -> None:
+    robot = start_robot()
+    prior_release = deepcopy(robot["release_evidence"])
+    prior_report_id = robot["firmware_report"]["id"]
+    current = snapshot("v1", captured=NOW + timedelta(minutes=1))
+
+    reports.prepare_release(robot, current, force_new_occurrence=True)
+    new_release = robot["release_evidence"]
+
+    assert new_release["key"] == prior_release["key"]
+    assert new_release["report_id"] != prior_report_id
+    assert new_release["baseline"] == prior_release["last_good"]
+    assert new_release["baseline_shapes"] == prior_release["seen_shapes"]
+
+    reports.update_report(robot, current, NOW + timedelta(minutes=1))
+    assert robot["firmware_report"]["id"] == new_release["report_id"]
+    assert robot["report_history"][-1]["id"] == prior_report_id
+
+
 def test_identity_includes_protocol_and_analyzer_versions() -> None:
     assert reports.identity(snapshot()) == ["v1", 7, "a1"]
     assert reports.identity(snapshot(protocol=8)) != reports.identity(snapshot())
@@ -213,11 +232,53 @@ def test_early_recovery_resets_failure_budget_before_a_new_failure() -> None:
     reports.update_report(robot, recurring, recurrence_at)
     assert item["status"] == "first_observed"
     assert item["consecutive_observations"] == 1
+    assert item["observation_count"] == 1
     assert report["failure_scan_count"] == 0
     assert (
         robot["next_firmware_scan_at"]
         == (first_failure_at + reports.CONFIRMATION_INTERVAL).isoformat()
     )
+
+    recovered_again = snapshot(
+        status="empty", captured=first_failure_at + timedelta(minutes=3)
+    )
+    reports.prepare_release(robot, recovered_again)
+    reports.update_report(
+        robot, recovered_again, first_failure_at + timedelta(minutes=3)
+    )
+    assert item["status"] == "recovered"
+    assert item["observation_count"] == 1
+    assert reports.public_report(robot)["notification_pending"] is False
+
+
+def test_spaced_recurrence_counts_and_remains_actionable_after_recovery() -> None:
+    robot = start_robot()
+    first_failure_at = NOW + reports.CONFIRMATION_INTERVAL
+    failed = snapshot(status="error", captured=first_failure_at)
+    reports.prepare_release(robot, failed)
+    reports.update_report(robot, failed, first_failure_at)
+    item = finding(robot, "read_failure", "current_version")
+
+    recovered_at = first_failure_at + timedelta(minutes=1)
+    recovered = snapshot(status="empty", captured=recovered_at)
+    reports.prepare_release(robot, recovered)
+    reports.update_report(robot, recovered, recovered_at)
+    assert item["status"] == "recovered"
+    assert item["observation_count"] == 1
+
+    recurrence_at = first_failure_at + reports.CONFIRMATION_INTERVAL
+    recurring = snapshot(status="error", captured=recurrence_at)
+    reports.prepare_release(robot, recurring)
+    reports.update_report(robot, recurring, recurrence_at)
+    assert item["observation_count"] == 2
+    assert item["last_confirmation_at"] == recurrence_at.isoformat()
+
+    recovered_again_at = recurrence_at + timedelta(minutes=1)
+    recovered_again = snapshot(status="empty", captured=recovered_again_at)
+    reports.prepare_release(robot, recovered_again)
+    reports.update_report(robot, recovered_again, recovered_again_at)
+    assert item["status"] == "recovered"
+    assert reports.public_report(robot)["notification_pending"] is True
 
 
 def test_missing_baseline_endpoint_does_not_create_false_new_field() -> None:
