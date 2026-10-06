@@ -165,6 +165,14 @@ jobs:
                 hold_unverified_footer_association
               fi
             fi
+            # If GitHub cannot resolve the live PR, revoke any exact-head
+            # success named by this authenticated connector delivery before
+            # the fallible association lookup. This is pending-only evidence;
+            # the footer still cannot classify or qualify the review.
+            if [[ -z "$live_head" ]]; then
+              write_pending_gate_status "$comment_head" \
+                "Recording unverified connector review delivery for PR #$EVENT_PR" || exit 1
+            fi
             if ! association_pages="$(gh api "repos/$REPO/commits/$comment_head/pulls?per_page=100" \
                 --paginate --slurp)"; then
               hold_unverified_footer_association
