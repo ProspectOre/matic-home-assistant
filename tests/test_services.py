@@ -1068,14 +1068,18 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
                 await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_stop_service_waits_for_motion_replacement_persistence(hass) -> None:
-    """A Stop decision cannot split ownership replacement from its save."""
+async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> None:
+    """A Stop after replacement must not honor a stale plan's after-room rule."""
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    serial_number = "synthetic-serial"
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     run_id = "run-id"
-    token = manager.begin_managed_motion("serial")
+    token = manager.begin_managed_motion(serial_number)
     await manager.async_begin_run(
-        "serial",
+        serial_number,
         "plan",
         run_id,
         1,
@@ -1085,23 +1089,23 @@ async def test_stop_service_waits_for_motion_replacement_persistence(hass) -> No
         finish_current_room_threshold=0,
     )
     await manager.async_mark_started(
-        "serial",
+        serial_number,
         "plan",
         CleaningRoom("room-2", "Study", "vacuum", "quick"),
         run_id=run_id,
     )
-    plan_lock = manager.lock("serial")
+    plan_lock = manager.lock(serial_number)
     await plan_lock.acquire()
     services = await _registered_services(hass, manager)
-    entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(async_discard_current_room=MagicMock())
-        )
-    )
+    entry = entity_entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum_platform.MaticVacuum(entry)
+    entity.hass = hass
+    entity.entity_id = "vacuum.test"
     stop = ServiceCall(
         hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
     )
-    command_lock = manager.command_lock("serial")
+    command_lock = manager.command_lock(serial_number)
     await command_lock.acquire()
     persistence_started = asyncio.Event()
     release_persistence = asyncio.Event()
@@ -1110,6 +1114,16 @@ async def test_stop_service_waits_for_motion_replacement_persistence(hass) -> No
         persistence_started.set()
         await release_persistence.wait()
 
+    async def route_return_to_base(domain, service, data, **kwargs) -> None:
+        assert (domain, service, data) == (
+            "vacuum",
+            "return_to_base",
+            {"entity_id": "vacuum.test"},
+        )
+        assert kwargs["blocking"] is True
+        assert kwargs["context"] is stop.context
+        await entity.async_return_to_base()
+
     with (
         patch.object(
             manager,
@@ -1117,13 +1131,15 @@ async def test_stop_service_waits_for_motion_replacement_persistence(hass) -> No
             side_effect=persist_replacement,
         ),
         patch.object(manager, "request_stop", wraps=manager.request_stop) as request,
+        patch.object(entity, "_schedule_dock_after_stop"),
         patch(
             "custom_components.matic_robot.services._saved_plan_context",
-            return_value=("vacuum.test", entry, "serial", {}),
+            return_value=("vacuum.test", entry, serial_number, {}),
         ),
     ):
+        services.async_call.side_effect = route_return_to_base
         replacement = asyncio.create_task(
-            manager.async_replace_managed_motion("serial")
+            manager.async_replace_managed_motion(serial_number)
         )
         stop_task = None
         try:
@@ -1145,11 +1161,21 @@ async def test_stop_service_waits_for_motion_replacement_persistence(hass) -> No
             command_lock.release()
             await stop_task
 
-            request.assert_called_once_with("serial")
-            assert not manager.managed_motion_is_current("serial", token)
-            assert manager.finish_room_event("serial").is_set()
-            assert not manager.cancellation_event("serial").is_set()
-            services.async_call.assert_not_awaited()
+            request.assert_called_once_with(serial_number)
+            assert not manager.managed_motion_is_current(serial_number, token)
+            assert manager.cancellation_reason(serial_number) == "motion_replaced"
+            assert not manager.finish_room_event(serial_number).is_set()
+            assert manager.cancellation_event(serial_number).is_set()
+            services.async_call.assert_awaited_once_with(
+                "vacuum",
+                "return_to_base",
+                {"entity_id": "vacuum.test"},
+                blocking=True,
+                context=stop.context,
+            )
+            entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+                UserCommand.STOP
+            )
         finally:
             release_persistence.set()
             if command_lock.locked():

@@ -1668,6 +1668,14 @@ class CleaningPlanManager:
             self.cancel(serial_number)
             self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate")
+        if self._cancellation_reasons.get(serial_number) == "motion_replaced":
+            # An external command may already have replaced this persisted
+            # plan's owner while its executor is still unwinding. In that
+            # interval the active-plan snapshot is stale: honoring its
+            # after-room policy would return without stopping the new owner.
+            fence_new_motion()
+            self.cancel(serial_number)
+            return PlanStopDecision("immediate")
         frozen_policy = active if _has_frozen_stop_policy(active) else None
         last_run = robot.get("last_run")
         checkpoint = (
