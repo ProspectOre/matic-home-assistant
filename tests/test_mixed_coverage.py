@@ -1278,15 +1278,15 @@ async def test_mixed_update_readback_mismatch_stops_only_owned_session(
         )
         return coverage_plan_from_command(update, drop_goal_index=-2)
 
-    clock = iter((0.0, 9.0))
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", lambda: next(clock)
+        "custom_components.matic_robot.client.api._MIXED_COVERAGE_READBACK_TIMEOUT",
+        0.01,
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_property.side_effect = incomplete_readback
 
     with pytest.raises(
-        MaticError, match="did not retain all requested mixed coverage goals"
+        MaticError, match="Mixed coverage readback verification timed out"
     ):
         await client.async_start_mixed_coverage(**args)
 
@@ -1317,9 +1317,6 @@ async def test_mixed_update_waits_for_matching_readback(mixed_client, monkeypatc
         )
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", iter((0.0, 0.0)).__next__
-    )
-    monkeypatch.setattr(
         "custom_components.matic_robot.client.api.asyncio.sleep", AsyncMock()
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
@@ -1339,16 +1336,16 @@ async def test_mixed_update_malformed_readback_fails_closed(mixed_client, monkey
         reads += 1
         return b"" if reads <= 2 else identity
 
-    clock = iter((0.0, 9.0))
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", lambda: next(clock)
+        "custom_components.matic_robot.client.api._MIXED_COVERAGE_READBACK_TIMEOUT",
+        0.01,
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_property.side_effect = None
     client.async_get_property.return_value = b""
 
     with pytest.raises(
-        MaticError, match="did not retain all requested mixed coverage goals"
+        MaticError, match="Mixed coverage readback verification timed out"
     ):
         await client.async_start_mixed_coverage(**args)
 
@@ -1373,7 +1370,9 @@ async def test_mixed_update_readback_request_is_bounded(mixed_client, monkeypatc
 
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_property.side_effect = stalled_readback
-    with pytest.raises(TimeoutError):
+    with pytest.raises(
+        MaticError, match="Mixed coverage readback verification timed out"
+    ):
         await client.async_start_mixed_coverage(**args)
 
     args["prepare_stop"].assert_awaited_once()
@@ -1396,9 +1395,6 @@ async def test_mixed_update_does_not_stop_replacement_after_stale_readback(
             if call.kwargs["command_name"] == "UPDATE_COVERAGE"
         ),
         drop_goal_index=-2,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", iter((0.0, 0.0)).__next__
     )
 
     with pytest.raises(MaticError, match="changed during coverage readback"):

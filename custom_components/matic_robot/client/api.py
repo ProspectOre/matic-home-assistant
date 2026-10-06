@@ -137,7 +137,52 @@ _CLEANING_SESSION_MAX_FIELDS = 1024
 _CLEANING_SESSION_MAX_ROOMS = 256
 _MIXED_COVERAGE_READBACK_TIMEOUT = 8.0
 _MIXED_COVERAGE_READBACK_INTERVAL = 0.5
+_MIXED_READBACK_DELTA_LIMIT = 32
 _TRANSPORT_ERRORS = (OSError, StreamTerminatedError, ProtocolError, H2Error)
+
+
+def _log_mixed_readback_timeout(
+    expected: Counter[tuple[str, int, int, int, int]],
+    actual: Counter[tuple[str, int, int, int, int]] | None,
+    *,
+    stage: str,
+    malformed: bool,
+) -> None:
+    """Describe bounded goal differences using attempt-local room ordinals."""
+    if not _LOGGER.isEnabledFor(logging.DEBUG):
+        return
+    observed = actual if actual is not None else Counter()
+    rooms: dict[str, int] = {}
+    for region, *_ in (*expected, *observed):
+        if region not in rooms:
+            rooms[region] = len(rooms) + 1
+
+    def delta(
+        goals: Counter[tuple[str, int, int, int, int]],
+    ) -> list[tuple[int, int, int, int, int, int]]:
+        return [
+            (rooms[region], setting, floor, mode, behavior, count)
+            for (region, setting, floor, mode, behavior), count in list(goals.items())[
+                :_MIXED_READBACK_DELTA_LIMIT
+            ]
+        ]
+
+    missing = expected - observed
+    unexpected = observed - expected
+    _LOGGER.debug(
+        "Mixed coverage readback timed out: stage=%s sample=%s "
+        "expected_count=%s actual_count=%s "
+        "missing=%s missing_omitted=%s unexpected=%s unexpected_omitted=%s; "
+        "goal tuples=(room_ordinal, setting, floor, mode, behavior, count)",
+        stage,
+        "malformed" if malformed else "unobserved" if actual is None else "observed",
+        expected.total(),
+        actual.total() if actual is not None else None,
+        delta(missing),
+        max(0, len(missing) - _MIXED_READBACK_DELTA_LIMIT),
+        delta(unexpected),
+        max(0, len(unexpected) - _MIXED_READBACK_DELTA_LIMIT),
+    )
 
 
 def _floor_command_identity(floor: FloorPlan) -> tuple[object, ...]:
@@ -1446,19 +1491,27 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         expected_identity: bytes,
     ) -> None:
         """Require the acknowledged update to appear intact in the live plan."""
-        deadline = monotonic() + _MIXED_COVERAGE_READBACK_TIMEOUT
-        async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
-            while True:
-                require_current()
-                try:
-                    actual_goals = Counter(
-                        coverage_plan_goal_signatures(
-                            await self.async_get_property("coverage_plan")
+        timeout = asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT)
+        actual_goals: Counter[tuple[str, int, int, int, int]] | None = None
+        malformed = False
+        stage = "coverage_plan"
+        try:
+            async with timeout:
+                while True:
+                    require_current()
+                    stage = "coverage_plan"
+                    try:
+                        actual_goals = Counter(
+                            coverage_plan_goal_signatures(
+                                await self.async_get_property("coverage_plan")
+                            )
                         )
-                    )
-                except DecodeError:
-                    actual_goals = Counter()
-                if coverage_readback_matches(expected_goals, actual_goals):
+                        malformed = False
+                    except DecodeError:
+                        actual_goals = Counter()
+                        malformed = True
+                    matched = coverage_readback_matches(expected_goals, actual_goals)
+                    stage = "session_identity"
                     if (
                         await self.async_get_cleaning_session_identity()
                         != expected_identity
@@ -1466,17 +1519,17 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                         raise MaticError(
                             "Native mission changed during coverage readback"
                         )
-                    return
-                if monotonic() >= deadline:
-                    raise MaticError(
-                        "Robot did not retain all requested mixed coverage goals"
-                    )
-                if (
-                    await self.async_get_cleaning_session_identity()
-                    != expected_identity
-                ):
-                    raise MaticError("Native mission changed during coverage readback")
-                await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
+                    if matched:
+                        return
+                    stage = "poll_interval"
+                    await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
+        except TimeoutError as err:
+            if not timeout.expired():
+                raise
+            _log_mixed_readback_timeout(
+                expected_goals, actual_goals, stage=stage, malformed=malformed
+            )
+            raise MaticError("Mixed coverage readback verification timed out") from err
 
     async def _async_wait_for_coverage_readback(
         self,
