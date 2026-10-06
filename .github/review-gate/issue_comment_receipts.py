@@ -54,6 +54,117 @@ CLEAN_COMMENT_CAPTURE_LOG_LINE = re.compile(
 )
 
 
+# Classification inventory, not event receipts. Both bytesets were retrieved
+# from the authenticated ORIGINAL attempt and independently reviewed. Unknown
+# runs remain receipt blockers; a future native review never invents their origin.
+VERIFIED_LIFECYCLE_FAILURES = {
+    ("ProspectOre/matic-home-assistant", 37379947981): {
+        "pr": 206, "attempt": 1, "workflow": 334147100,
+        "file": "review-gate.yml", "job": 111999044324,
+        "head": "3a3d64173c327acfcea205b232aee07836c7d345",
+        "source": "156ae4bf7f0203436bb73301153ef44bc2b707da",
+        "workflowSHA256": (
+            "6d0bdd922bc0a39f34e43119113abd5af2e88885f85f090dedc05774768ba189"
+        ),
+        "logSHA256": "83e91c8a914451e2e559d79b9a83ce225dedbe4456858c28fc4140a984404147",
+        "actor": {"id": 54486432, "login": "ProspectOre", "type": "User"},
+        "repositoryID": 1303100344,
+    },
+}
+
+
+def lifecycle_failure_observation(repo, number, run_id, workflow_id, workflow_file):
+    """Revalidate one inventoried failure; this is NEVER an event ACK or verdict."""
+    record = VERIFIED_LIFECYCLE_FAILURES.get((repo, run_id))
+    if record is None or (number, workflow_id, workflow_file) != (
+        record["pr"], record["workflow"], record["file"]
+    ):
+        return None
+    attempt = record["attempt"]
+    endpoint = f"repos/{repo}/actions/runs/{run_id}/attempts/{attempt}"
+    run = api(endpoint)
+    if not isinstance(run, dict) or any(run.get(key) != value for key, value in {
+        "id": run_id, "run_attempt": attempt, "workflow_id": workflow_id,
+        "path": f".github/workflows/{workflow_file}",
+        "event": "pull_request_target", "head_sha": record["head"],
+        "status": "completed", "conclusion": "failure",
+        "display_title": (
+            f'Review gate PR #{number} | policy-workflow-sha={record["source"]}'
+        ),
+    }.items()):
+        return None
+    actor = run.get("actor")
+    if not isinstance(actor, dict) or any(actor.get(key) != value
+           for key, value in record["actor"].items()):
+        return None
+    for key in ("repository", "head_repository"):
+        identity = run.get(key)
+        if not isinstance(identity, dict) or identity.get("full_name") != repo or (
+            identity.get("id") != record["repositoryID"]
+        ):
+            return None
+    # Nested PR head/base fields are mutable projections and are not consumed.
+    jobs = api(endpoint + "/jobs?per_page=100")
+    if not isinstance(jobs, dict) or jobs.get("total_count") != 1 or (
+        not isinstance(jobs.get("jobs"), list) or len(jobs["jobs"]) != 1
+    ):
+        return None
+    job = jobs["jobs"][0]
+    if not isinstance(job, dict) or any(job.get(key) != value for key, value in {
+        "id": record["job"], "run_id": run_id, "run_attempt": attempt,
+        "head_sha": record["head"], "status": "completed", "conclusion": "failure",
+        "name": (
+            f'evaluate-review PR #{number} | policy-workflow-sha={record["source"]}'
+        ),
+        "labels": ["ubuntu-latest"],
+    }.items()):
+        return None
+    if not re.fullmatch(r"GitHub Actions [0-9]+", job.get("runner_name", "")):
+        return None
+    steps = job.get("steps")
+    expected_steps = [
+        ("Set up job", "success"),
+        ("Run set -euo pipefail", "skipped"),
+        ("Run set -euo pipefail", "skipped"),
+        ("Run set -euo pipefail", "skipped"),
+        ("Load pinned canonical review policy", "success"),
+        ("Evaluate exact-head regular review", "failure"),
+        ("Remove canonical policy temporary file", "success"),
+        ("Complete job", "success"),
+    ]
+    if not isinstance(steps, list) or len(steps) != len(expected_steps) or any(
+        not isinstance(step, dict) or step.get("number") != index
+        or step.get("status") != "completed"
+        or (step.get("name"), step.get("conclusion")) != expected
+        for index, step in enumerate(steps, 1)
+        for expected in (expected_steps[index - 1],)
+    ):
+        return None
+    source = legacy_workflow_source(repo, workflow_file, record["source"])
+    if source is None or (
+        hashlib.sha256(source.encode()).hexdigest() != record["workflowSHA256"]
+    ):
+        return None
+    logs = subprocess.run(
+        [os.environ.get("REVIEW_GATE_GH") or "gh", "run", "view", str(run_id),
+         "--repo", repo, "--attempt", str(attempt), "--log"],
+        capture_output=True, check=False, timeout=60,
+    )
+    if logs.returncode or (
+        hashlib.sha256(logs.stdout).hexdigest() != record["logSHA256"]
+    ):
+        return None
+    return {
+        "kind": "lifecycle-evaluation-failure", "state": "pending",
+        "repo": repo, "pr": number, "run": run_id, "attempt": attempt,
+        "workflow": workflow_id, "path": f".github/workflows/{workflow_file}",
+        "eventClass": "pull_request_target", "originHead": record["head"],
+        "workflowSource": record["source"], "workflowSHA256": record["workflowSHA256"],
+        "originLogSHA256": record["logSHA256"],
+        "action": None, "originBase": None, "reviewAuthority": False,
+    }
+
+
 def workflow_run_path_matches(value, workflow_file, default_branch):
     """Accept only the bare path or its trusted default-branch qualifier."""
     expected = f".github/workflows/{workflow_file}"
@@ -1237,11 +1348,30 @@ def main():
     parser.add_argument("--event-run-attempt", type=int)
     parser.add_argument("--attest-legacy-human-run", action="store_true")
     parser.add_argument("--attest-legacy-bot-run", action="store_true")
+    parser.add_argument("--observe-lifecycle-failure", type=int)
     parser.add_argument(
         "--workflow-file",
         default=os.environ.get("REVIEW_GATE_WORKFLOW_FILE", "review-gate.yml"),
     )
     args = parser.parse_args()
+    if args.observe_lifecycle_failure is not None:
+        if args.native_workflow_id is None:
+            parser.error("--observe-lifecycle-failure requires --native-workflow-id")
+        try:
+            observation = lifecycle_failure_observation(
+                args.repo, args.pr, args.observe_lifecycle_failure,
+                args.native_workflow_id, args.workflow_file,
+            )
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            return 2
+        if observation is None:
+            return 3
+        if not re.fullmatch(r"[0-9a-f]{40}", args.head):
+            return 2
+        # This head requests fresh qualification; it is not the event's origin.
+        observation["qualificationHead"] = args.head
+        print(json.dumps(observation, sort_keys=True))
+        return 0
     if args.attest_legacy_human_run:
         try:
             payload = json.load(sys.stdin)

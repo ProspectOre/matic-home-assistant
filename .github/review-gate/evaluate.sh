@@ -13,8 +13,6 @@ native_codex_objects="${NATIVE_CODEX_REVIEW_OBJECTS:-}"
 native_codex_helper="$(dirname "${BASH_SOURCE[0]}")/native_codex_review.py"
 native_codex_delivery=""
 native_quiescence_started_at=""
-matic_base_transition_seen=false
-timeline_head_stale=false
 if [[ -n "$native_codex_receipt" || -n "$native_codex_objects" ]]; then
   if [[ "${GITHUB_ACTIONS:-false}" == true || -n "${GITHUB_RUN_ID:-}" || "$evidence_only" == true || -z "$native_codex_receipt" || -z "$native_codex_objects" ]]; then
     echo "Native Codex qualification requires the local live transport, durable status writes and immutable object database." >&2
@@ -64,6 +62,7 @@ gate_pending() {
 
 finding_after="${REVIEW_FINDING_AFTER:-}"
 head_observed_at="${REVIEW_HEAD_OBSERVED_AT:-}"
+timeline_base_requires_binding=false
 expected_base_sha="${EXPECTED_BASE_SHA:-}"
 # The canonical reviewer is the Codex connector.  Adapters may carry legacy
 # provider variables, but they cannot broaden the accepted reviewer identity.
@@ -651,6 +650,7 @@ base_change_marker_exists() {
   # Native review deliveries identify the head, but not the reviewed base or
   # originating request. A later delivery can still belong to an in-flight
   # pre-invalidation request. Submission time and ancestry cannot recover it.
+  [[ "$timeline_base_requires_binding" == true ]] && return 0
   local statuses
   statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)" || exit 1
   printf '%s\n' "$statuses" \
@@ -1068,8 +1068,8 @@ regular_evidence() {
           def known_codex_footer:
             test("(?is)\\A<details>[[:space:]]*<summary>[[:space:]]*(?:ℹ️[[:space:]]*)?about[[:space:]]+codex[[:space:]]+in[[:space:]]+github[[:space:]]*</summary>[[:space:]]*<br[[:space:]]*/?>[[:space:]]*\\[your team has set up codex to review pull requests in this repo\\]\\(https://chatgpt\\.com/codex/cloud/settings/general\\)\\.[[:space:]]*reviews are triggered when you[[:space:]]*-[[:space:]]*open a pull request for review[[:space:]]*-[[:space:]]*mark a draft as ready[[:space:]]*-[[:space:]]*comment \\\"@codex review\\\"\\.[[:space:]]*if codex has suggestions, it will comment; otherwise it will react with (?:👍|:\\+1:)\\.[[:space:]]*codex can also answer questions or update the pr\\.[[:space:]]*try commenting \\\"@codex address that feedback\\\"\\.[[:space:]]*</details>[[:space:]]*$");
           def stock_clean_issue_comment_body:
-            test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
-            or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*$");
+            test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + ($head + "|[0-9a-f]{10}") + "\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
+            or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + ($head + "|[0-9a-f]{10}") + "\\x60[[:space:]]*$");
           def stock_clean_issue_comment_envelope:
             if coordinator_request then
               (capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
@@ -1638,14 +1638,6 @@ require_clean_regular_snapshot() {
   finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
   regular_finding_count="$(jq '.regular_findings | length' <<< "$gate_snapshot")"
   security_finding_count="$(jq -r '.security_finding_count' <<< "$gate_snapshot")"
-  if [[ "$matic_base_transition_seen" == true ]]; then
-    hold_matic_retargeted_pr || true
-    return 0
-  fi
-  if [[ "$timeline_head_stale" == true ]]; then
-    hold_timeline_head_stale || true
-    return 0
-  fi
   if [[ "$regular_finding_count" -gt 0 ]]; then
     local origin
     history_statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)"
@@ -1873,57 +1865,7 @@ supported_base_ref() {
 
 requires_timeline_freshness() {
   [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true \
-    || ( "$REPO" == "ProspectOre/matic-home-assistant" && "$base_ref" == "release/0.4" ) ]]
-}
-
-is_matic_repository() {
-  [[ "$REPO" == "ProspectOre/matic-home-assistant" ]]
-}
-
-refresh_review_timeline_watermark() {
-  if requires_timeline_freshness || is_matic_repository; then
-    local timeline_events timeline_base_at timeline_retarget_at timeline_force_push_at
-    timeline_events="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp)"
-    timeline_base_at="$(jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' <<< "$timeline_events" | latest_timestamp)"
-    timeline_retarget_at="$(jq -r '[.[][] | select(.event == "base_ref_changed") | (.updated_at // .created_at)]' <<< "$timeline_events" | latest_timestamp)"
-    timeline_force_push_at="$(jq -r '[.[][] | select(.event == "base_ref_force_pushed") | (.updated_at // .created_at)]' <<< "$timeline_events" | latest_timestamp)"
-    timeline_base_at="$(normalize_timestamp "$timeline_base_at")"
-    timeline_retarget_at="$(normalize_timestamp "$timeline_retarget_at")"
-    timeline_force_push_at="$(normalize_timestamp "$timeline_force_push_at")"
-    if is_matic_repository && { [[ -n "$timeline_retarget_at" ]] || { [[ "$base_ref" == "release/0.4" ]] && [[ -n "$timeline_force_push_at" ]]; }; }; then
-      # GitHub's native review evidence binds to the head, not to the base or
-      # the request that produced it. Timeline timestamps therefore cannot
-      # safely qualify a late in-flight review after a retarget or a release
-      # base rewrite. Require a fresh PR so the transition is absent from its
-      # authenticated history.
-      matic_base_transition_seen=true
-    fi
-    if requires_timeline_freshness \
-      && [[ -n "$timeline_base_at" && -n "$head_observed_at" \
-        && "$timeline_base_at" > "$head_observed_at" ]]; then
-      timeline_head_stale=true
-    fi
-    if requires_timeline_freshness \
-      && [[ "$timeline_base_at" > "$evidence_after" ]]; then
-      evidence_after="$timeline_base_at"
-    fi
-  fi
-}
-
-hold_matic_retargeted_pr() {
-  [[ "$matic_base_transition_seen" == true ]] || return 1
-  stamp_review_gate pending "Base changed; create a new PR targeting the chosen branch"
-  echo "This PR has base-change history. Close it and create a new PR targeting the chosen branch; reopening this PR does not clear its history."
-  gate_pending
-  return 0
-}
-
-hold_timeline_head_stale() {
-  [[ "$timeline_head_stale" == true ]] || return 1
-  stamp_review_gate pending "Base changed after head observation; push a fresh head before evaluation"
-  echo "A base change occurred after the authenticated head observation; push a fresh head before review."
-  gate_pending
-  return 0
+    || "$REPO" == "ProspectOre/matic-home-assistant" ]]
 }
 
 # A pre-policy or manually armed pull request must be made manual-only
@@ -1962,12 +1904,23 @@ if [[ "${REQUIRE_CURRENT_BASE:-false}" == true \
   fi
 fi
 
-# A base retarget, or a force-pushed release base, invalidates the reviewed comparison.
+# A base retarget or force-push invalidates the reviewed comparison.
 # Evidence-only runs cannot persist a marker on the contributor head, so
 # reconstruct that invalidation from the authenticated timeline.
-refresh_review_timeline_watermark
-hold_matic_retargeted_pr || true
-hold_timeline_head_stale || true
+if requires_timeline_freshness; then
+  timeline_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
+    | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)" || exit 1
+  timeline_base_at="$(normalize_timestamp "$timeline_base_at")"
+  if [[ -n "$timeline_base_at" && -z "$head_observed_at" ]]; then
+    # A later submission may still belong to an in-flight old-base request.
+    # Require authenticated current-base native evidence or an observed new head.
+    timeline_base_requires_binding=true
+    if [[ "$timeline_base_at" > "$evidence_after" ]]; then evidence_after="$timeline_base_at"; fi
+  elif [[ -n "$timeline_base_at" && ( "$timeline_base_at" > "$head_observed_at" || "$timeline_base_at" == "$head_observed_at" ) ]]; then
+    stamp_review_gate pending "Base changed after head observation; push a fresh head before evaluation"
+    gate_pending
+  fi
+fi
 
 # A retarget event carries persistent base invalidation even when the head did
 # not change. Ignore stale deliveries for other heads or unrelated title edits.
@@ -2460,6 +2413,34 @@ wait_for_active_review_events() {
     [[ "$id" =~ ^[1-9][0-9]*$ ]] || return 1
     printf '%s' "$id"
   }
+  is_review_sensor_snapshot() {
+    jq -e --arg workflow "$sensor_id" --arg head "$head_sha" '
+      (.workflow_id | tostring) == $workflow and .head_sha == $head
+      and (.event == "pull_request_review" or .event == "pull_request_review_comment")
+    ' <<< "$1" >/dev/null
+  }
+  validate_sensor_census() {
+    jq -e --arg gate "$gate_id" --arg sensor "$sensor_id" '
+      type == "object" and (.workflow_runs | type) == "array"
+      and all(.workflow_runs[]?;
+        (.event | type) == "string" and
+        (.event as $event |
+          (if $gate == $sensor then
+            ["pull_request_review", "pull_request_review_comment", "pull_request_target", "issue_comment", "workflow_dispatch", "workflow_run", "schedule"]
+           else ["pull_request_review", "pull_request_review_comment"] end)
+          | index($event) != null))
+    ' <<< "$1" >/dev/null
+  }
+  is_aliased_lifecycle_snapshot() {
+    [[ "$gate_id" == "$sensor_id" ]] || return 1
+    jq -e --arg workflow "$gate_id" --arg head "$head_sha" --arg pr "$pr_number" '
+      (.workflow_id | tostring) == $workflow and .head_sha == $head
+      and .event == "pull_request_target"
+      and (.id | type == "number" and . > 0 and . == floor)
+      and (.pull_requests | type == "array" and length > 0)
+      and all(.pull_requests[]; .number == ($pr | tonumber))
+    ' <<< "$1" >/dev/null
+  }
   append_completed_sensor_run() {
     local candidate_id="$1"
     [[ "$candidate_id" =~ ^[1-9][0-9]*$ ]] || return 0
@@ -2810,6 +2791,50 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
       *) settled_gate_ids+="${settled_gate_ids:+$'\n'}$candidate_id" ;;
     esac
   }
+  retain_native_lifecycle_failure() {
+    local candidate_id="$1" observation attempt origin_head context description trusted_pending
+    # Classification alone grants nothing. Only the LOCAL fresh-review path may
+    # defer this lifecycle evaluation; all real event receipts still apply.
+    [[ -n "$native_codex_receipt" && -z "${GITHUB_RUN_ID:-}" \
+        && "${GITHUB_ACTIONS:-}" != true ]] || return 1
+    if ! observation="$(python3 "$issue_comment_receipts_script" \
+        --repo "$REPO" --head "$head_sha" --pr "$pr_number" \
+        --observe-lifecycle-failure "$candidate_id" --native-workflow-id "$gate_id" \
+        --workflow-file "$gate_file")"; then
+      return 1
+    fi
+    jq -e --arg id "$candidate_id" --arg pr "$pr_number" --arg repo "$REPO" --arg head "$head_sha" '
+      .kind == "lifecycle-evaluation-failure" and .state == "pending"
+      and .reviewAuthority == false and (.run | tostring) == $id
+      and (.pr | tostring) == $pr and .repo == $repo
+      and (.attempt | type == "number" and . > 0 and . == floor)
+      and .eventClass == "pull_request_target"
+      and .qualificationHead == $head
+      and (.originHead | type == "string" and test("^[0-9a-f]{40}$"))
+      and .action == null and .originBase == null
+    ' <<< "$observation" >/dev/null || return 1
+    attempt="$(jq -r '.attempt' <<< "$observation")" || return 1
+    origin_head="$(jq -r '.originHead' <<< "$observation")" || return 1
+    context="review-lifecycle-failure/$candidate_id/$attempt"
+    description="Lifecycle failure PR #$pr_number; run $candidate_id/$attempt; origin $origin_head; no review ACK"
+    trusted_pending="$(jq -e --arg context "$context" --arg description "$description" '
+      [.[][] | select(.context == $context
+        and .creator.login == "github-actions[bot]"
+        and .creator.type == "Bot" and .creator.id == 41898282)]
+      | max_by([(.created_at // .updated_at // ""), (.id // 0)]) // {}
+      | .state == "pending" and .description == $description
+    ' <<< "$source_statuses" >/dev/null && echo true || echo false)"
+    if [[ "$trusted_pending" != true ]]; then
+      stamp_status "$context" pending "$description" >/dev/null || return 1
+    fi
+    # Keep the old observation pending, and revalidate provider proof on every
+    # invocation. Nothing here records capture or settles historical review work.
+    gate_observed_ids="$(printf '%s\n' "$gate_observed_ids" | awk -v id="$candidate_id" '$0 != id')"
+    case $'\n'"$settled_gate_ids"$'\n' in *$'\n'"$candidate_id"$'\n'*) ;;
+      *) settled_gate_ids+="${settled_gate_ids:+$'\n'}$candidate_id" ;;
+    esac
+    echo "Retained lifecycle evaluation failure $candidate_id/$attempt; fresh native qualification remains required." >&2
+  }
   track_completed_gate_run() {
     local candidate_id="$1" attestation_result
     [[ "$candidate_id" =~ ^[1-9][0-9]*$ ]] || return 1
@@ -2932,6 +2957,17 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
         echo "A durably observed gate run no longer matches its trusted workflow; refusing to clear the gate." >&2
         return 2
       fi
+      if sensor_observation_pending "$active_id" && ! is_review_sensor_snapshot "$known_snapshot"; then
+        if ! is_aliased_lifecycle_snapshot "$known_snapshot"; then
+          echo "A persisted sensor has no authenticated review-event type; refusing capture settlement." >&2
+          return 2
+        fi
+        # Keep the historical false sensor marker unchanged. The authenticated
+        # lifecycle run still owes its independent gate evaluation; no review
+        # event, capture receipt or acknowledgement is manufactured here.
+        sensor_observed_ids="$(printf '%s\n' "$sensor_observed_ids" | awk -v id="$active_id" '$0 != id')"
+        persist_gate_observation "$active_id" || return 2
+      fi
       if sensor_observation_pending "$active_id" && ! jq -e --arg workflow "$sensor_id" --arg head "$head_sha" \
           '(.workflow_id | tostring) == $workflow and .head_sha == $head' <<< "$known_snapshot" >/dev/null; then
         echo "A durably observed review sensor no longer matches its trusted workflow and exact head; refusing to clear the gate." >&2
@@ -2987,7 +3023,9 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
           if jq -e --arg workflow "$sensor_id" --arg head "$head_sha" \
               '(.workflow_id | tostring) == $workflow and .head_sha == $head' \
               <<< "$known_snapshot" >/dev/null; then
-            persist_sensor_observation "$active_id" || return 2
+            if is_review_sensor_snapshot "$known_snapshot"; then
+              persist_sensor_observation "$active_id" || return 2
+            fi
           fi
           ;;
         completed)
@@ -3003,6 +3041,10 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
               if jq -e '.conclusion == "skipped"' <<< "$known_snapshot" >/dev/null; then
                 settlement_description="Gate run $active_id skipped event work for PR #$pr_number on head $head_sha"
               elif ! jq -e '.conclusion == "success"' <<< "$known_snapshot" >/dev/null; then
+                if jq -e '.event == "pull_request_target"' <<< "$known_snapshot" >/dev/null \
+                    && retain_native_lifecycle_failure "$active_id"; then
+                  continue
+                fi
                 if ! jq -e '.event == "issue_comment"' <<< "$known_snapshot" >/dev/null ||
                    ! python3 "$issue_comment_receipts_script" --repo "$REPO" --head "$head_sha" \
                        --pr "$pr_number" --native-run-id "$active_id" --native-workflow-id "$gate_id" \
@@ -3031,7 +3073,9 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
                 or any(.pull_requests[]?; .number == ($pr_number | tonumber))
                 or ((.pull_requests // [] | length) == 0))
             ' <<< "$known_snapshot" >/dev/null; then
-            append_completed_sensor_run "$active_id"
+            if is_review_sensor_snapshot "$known_snapshot"; then
+              append_completed_sensor_run "$active_id"
+            fi
           elif sensor_observation_pending "$active_id"; then
             echo "A durably observed review sensor no longer matches its trusted workflow and exact head; refusing to clear the gate." >&2
             return 2
@@ -3047,11 +3091,15 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
     done <<< "$known_active_ids"
     scan_workflow_events() {
       local workflow_id="$1" title="$2" events="$3" collect_completed="${4:-false}"
-      local event_name run_status run_snapshot page_runs completed_runs saturated include_untargeted_active match_head_sha attestation_result
+      local event_name run_status run_snapshot page_runs completed_runs saturated include_untargeted_active match_head_sha attestation_result census_key active_event
       include_untargeted_active="${5:-false}"
       match_head_sha="${6:-false}"
+      census_key="$workflow_id"
+      if [[ "$gate_id" == "$sensor_id" && "$collect_completed" == true ]]; then
+        census_key="$workflow_id:sensor"
+      fi
       case "$initial_census_ids" in
-        *" $workflow_id "*) ;;
+        *" $census_key "*) ;;
         *)
         for run_status in requested waiting pending queued in_progress; do
           run_snapshot="$(gh api \
@@ -3059,6 +3107,9 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
               echo "Could not prove review-event run quiescence; refusing to clear the gate." >&2
               return 1
           }
+          if [[ "$collect_completed" == true ]]; then
+            validate_sensor_census "$run_snapshot" || return 1
+          fi
           saturated="$(jq -r '(.total_count // (.workflow_runs | length)) > 100' <<< "$run_snapshot")" || return 1
           if [[ "$saturated" == true ]]; then
             echo "More than 100 active runs match a review-event status; refusing to clear the gate from a truncated snapshot." >&2
@@ -3066,7 +3117,7 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
           fi
           page_runs="$(jq -r --arg title "$title" --arg pr_number "$pr_number" --arg current "$current_run_id" \
             --arg events "$events" --arg include_untargeted "$include_untargeted_active" \
-            --arg head "$head_sha" --arg match_head "$match_head_sha" '
+            --arg head "$head_sha" --arg match_head "$match_head_sha" --arg sensor_scan "$collect_completed" '
             .workflow_runs[]?
             | select(((.pull_requests // []) | length) == 0
               or any(.pull_requests[]?; .number == ($pr_number | tonumber)))
@@ -3079,10 +3130,11 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
                 and ((.pull_requests // []) | length) == 0
                 and (.event as $event | ($events | split(" ") | index($event)) != null)))
             | select((.id | tostring) != $current)
-            | [(.id | tostring), (.head_sha // "")]
+            | select($sensor_scan != "true" or .event == "pull_request_review" or .event == "pull_request_review_comment")
+            | [(.id | tostring), (.head_sha // ""), (.event // "")]
             | @tsv
           ' <<< "$run_snapshot")" || return 1
-          while IFS=$'\t' read -r active_id active_head; do
+          while IFS=$'\t' read -r active_id active_head active_event; do
             [[ "$active_id" =~ ^[1-9][0-9]*$ ]] || continue
             if [[ "$workflow_id" == "$gate_id" ]]; then
               if is_attested_non_connector_issue_comment_gate_run "$active_id"; then
@@ -3108,7 +3160,8 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
               fi
             fi
             case "$active_runs"$'\n' in *$'\n'"$active_id"$'\n'*) continue ;; esac
-            if [[ "$workflow_id" == "$sensor_id" && "$active_head" == "$head_sha" ]]; then
+            if [[ "$workflow_id" == "$sensor_id" && "$active_head" == "$head_sha"
+                && ( "$active_event" == pull_request_review || "$active_event" == pull_request_review_comment ) ]]; then
               persist_sensor_observation "$active_id" || return 1
             fi
             if [[ "$workflow_id" == "$gate_id" ]]; then
@@ -3118,13 +3171,16 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
             next_known_ids+="${next_known_ids:+$'\n'}$active_id"
           done <<< "$page_runs"
         done
-        initial_census_ids+="$workflow_id "
+        initial_census_ids+="$census_key "
         if [[ "$collect_completed" == true ]]; then
           run_snapshot="$(gh api \
             "repos/$REPO/actions/workflows/$workflow_id/runs?status=completed&head_sha=$head_sha&per_page=100")" || {
               echo "Could not prove completed review-event capture state; refusing to clear the gate." >&2
               return 1
           }
+          if [[ "$collect_completed" == true ]]; then
+            validate_sensor_census "$run_snapshot" || return 1
+          fi
           saturated="$(jq -r '(.total_count // (.workflow_runs | length)) > 100' <<< "$run_snapshot")" || return 1
           if [[ "$saturated" == true ]]; then
             echo "More than 100 completed sensor runs match this head; refusing to clear the gate from a truncated snapshot." >&2
@@ -3133,6 +3189,7 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
           completed_runs="$(jq -r --arg title "$title" --arg pr_number "$pr_number" \
             --arg head "$head_sha" --arg pr_opened_at "$pr_opened_at" '
             .workflow_runs[]?
+            | select(.event == "pull_request_review" or .event == "pull_request_review_comment")
             | select(((.pull_requests // []) | length) == 0
               or any(.pull_requests[]?; .number == ($pr_number | tonumber)))
             | select((.display_title // "") == $title
@@ -3154,6 +3211,9 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
             echo "Could not prove review-event run quiescence; refusing to clear the gate." >&2
             return 1
         }
+        if [[ "$collect_completed" == true ]]; then
+          validate_sensor_census "$run_snapshot" || return 1
+        fi
         saturated="$(jq -r '(.total_count // (.workflow_runs | length)) > 100' <<< "$run_snapshot")" || return 1
         if [[ "$saturated" == true ]]; then
           echo "More than 100 recent runs match a review-event workflow; refusing to clear the gate from a truncated snapshot." >&2
@@ -3161,7 +3221,7 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
         fi
         page_runs="$(jq -r --arg title "$title" --arg pr_number "$pr_number" --arg current "$current_run_id" \
           --arg events "$events" --arg include_untargeted "$include_untargeted_active" \
-          --arg head "$head_sha" --arg match_head "$match_head_sha" '
+          --arg head "$head_sha" --arg match_head "$match_head_sha" --arg sensor_scan "$collect_completed" '
           .workflow_runs[]?
           | select(((.pull_requests // []) | length) == 0
             or any(.pull_requests[]?; .number == ($pr_number | tonumber)))
@@ -3176,10 +3236,11 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
           | select((.id | tostring) != $current)
           | select(.status as $status
               | ["requested", "waiting", "pending", "queued", "in_progress"] | index($status) != null)
-          | [(.id | tostring), (.head_sha // "")]
+          | select($sensor_scan != "true" or .event == "pull_request_review" or .event == "pull_request_review_comment")
+          | [(.id | tostring), (.head_sha // ""), (.event // "")]
           | @tsv
         ' <<< "$run_snapshot")" || return 1
-        while IFS=$'\t' read -r active_id active_head; do
+        while IFS=$'\t' read -r active_id active_head active_event; do
           [[ "$active_id" =~ ^[1-9][0-9]*$ ]] || continue
           if [[ "$workflow_id" == "$gate_id" ]]; then
             if is_attested_non_connector_issue_comment_gate_run "$active_id"; then
@@ -3205,7 +3266,8 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
             fi
           fi
           case "$active_runs"$'\n' in *$'\n'"$active_id"$'\n'*) continue ;; esac
-          if [[ "$workflow_id" == "$sensor_id" && "$active_head" == "$head_sha" ]]; then
+          if [[ "$workflow_id" == "$sensor_id" && "$active_head" == "$head_sha"
+                && ( "$active_event" == pull_request_review || "$active_event" == pull_request_review_comment ) ]]; then
             persist_sensor_observation "$active_id" || return 1
           fi
           if [[ "$workflow_id" == "$gate_id" ]]; then
@@ -3239,6 +3301,7 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
               and .created_at >= $pr_opened_at
               and ((.pull_requests // []) | length) == 0))
             | select(.status == "completed" and .head_sha == $head)
+            | select(.event == "pull_request_review" or .event == "pull_request_review_comment")
             | .id
           ' <<< "$run_snapshot")" || return 1
           while IFS= read -r completed_sensor_id; do
@@ -3329,6 +3392,21 @@ elif (( quiescence_result == 1 )); then
   gate_pending
 fi
 
+# Requests schedule work; only findings, comparison changes, or withdrawn
+# evidence invalidate a completed review.
+refresh_review_timeline_watermark() {
+  if requires_timeline_freshness; then
+    local latest_base_at
+    latest_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
+      | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)"
+    latest_base_at="$(normalize_timestamp "$latest_base_at")"
+    if [[ -n "$latest_base_at" && ( -z "$head_observed_at" || "$latest_base_at" > "$head_observed_at" || "$latest_base_at" == "$head_observed_at" ) ]]; then
+      timeline_base_requires_binding=true
+    fi
+    if [[ "$latest_base_at" > "$evidence_after" ]]; then evidence_after="$latest_base_at"; fi
+  fi
+}
+
 # The event head was revoked before its first API read. Revoke the
 # resolved head as well for manual dispatches and stale event payloads.
 stamp_review_gate pending "Evaluating the regular review on $head_prefix"
@@ -3338,8 +3416,6 @@ if [[ "$historical_event_head" != true ]] && ! head_prefix_resolves; then
   gate_pending
 fi
 refresh_review_timeline_watermark
-hold_matic_retargeted_pr || true
-hold_timeline_head_stale || true
 if [[ -n "$native_codex_receipt" ]]; then
   # Unsupported comparisons never start a native invocation or orphan a hold.
   # The existing GitHub paths can still evaluate diverged branches.
@@ -3420,8 +3496,6 @@ if ! supported_base_ref "$final_base_ref" || [[ "$final_base_ref" != "$base_ref"
   gate_pending
 fi
 refresh_review_timeline_watermark
-hold_matic_retargeted_pr || true
-hold_timeline_head_stale || true
 final_gate_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$final_gate_snapshot"
 
@@ -3482,8 +3556,6 @@ fi
 stamp_review_gate success "Clean regular review for $head_prefix; evidence $evidence_marker"
 trap 'stamp_review_gate pending "Review state could not be revalidated after publication"; exit 1' ERR
 refresh_review_timeline_watermark
-hold_matic_retargeted_pr || true
-hold_timeline_head_stale || true
 post_success_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$post_success_snapshot"
 post_snapshot="$(read_pr_snapshot)"

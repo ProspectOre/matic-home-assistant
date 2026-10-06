@@ -98,7 +98,7 @@ def git_environment():
 
 @contextmanager
 def frozen_objects(objects, base, head):
-    """Copy only reachable Git objects; expose no checkout or source config."""
+    """Copy only both bound snapshots; expose no history or source config."""
     require(OID.fullmatch(base) and OID.fullmatch(head), "full commit OIDs required")
     with tempfile.TemporaryDirectory(
         prefix="native-review-objects-",
@@ -114,29 +114,31 @@ def frozen_objects(objects, base, head):
             [*command, "init", "--bare", "--template=", "--quiet", str(frozen)],
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=env, check=True,
         )
-        shallow = []
         source_command = [*command, "-C", str(objects)]
-        if subprocess.check_output(
-            [*source_command, "rev-parse", "--is-shallow-repository"],
-            stderr=subprocess.PIPE, env=env,
-        ).strip() == b"true":
-            roots = subprocess.check_output(
-                [*source_command, "rev-list", "--max-parents=0", base, head],
+        allowed = {base, head}
+        for ref in (base, head):
+            tree = subprocess.check_output(
+                [*source_command, "rev-parse", ref + "^{tree}"],
                 stderr=subprocess.PIPE, env=env,
-            ).decode().splitlines()
-            for oid in roots:
-                require(OID.fullmatch(oid), "invalid shallow boundary identity")
-                commit = subprocess.check_output(
-                    [*source_command, "cat-file", "commit", oid],
-                    stderr=subprocess.PIPE, env=env,
-                )
-                if any(line.startswith(b"parent ")
-                       for line in commit.split(b"\n\n", 1)[0].splitlines()):
-                    shallow.append(oid)
+            ).decode().strip()
+            require(OID.fullmatch(tree), "invalid snapshot tree identity")
+            allowed.add(tree)
+            entries = subprocess.check_output(
+                [*source_command, "ls-tree", "-r", "-t", "-z", ref],
+                stderr=subprocess.PIPE, env=env,
+            ).split(b"\0")[:-1]
+            for entry in entries:
+                metadata = entry.split(b"\t", 1)[0].decode()
+                mode, kind, oid = metadata.split()
+                require(OID.fullmatch(oid), "invalid snapshot object identity")
+                if mode == "160000" and kind == "commit":
+                    continue  # Gitlinks identify external objects, not source history.
+                require(kind in {"tree", "blob"}, "invalid snapshot object type")
+                allowed.add(oid)
         with tempfile.TemporaryFile() as pack:
             subprocess.run(
-                [*command, "-C", str(objects), "pack-objects", "--revs", "--stdout"],
-                input=(base + "\n" + head + "\n").encode(), stdout=pack,
+                [*command, "-C", str(objects), "pack-objects", "--stdout"],
+                input=("\n".join(sorted(allowed)) + "\n").encode(), stdout=pack,
                 stderr=subprocess.PIPE, env=env, check=True,
             )
             pack.seek(0)
@@ -145,12 +147,26 @@ def frozen_objects(objects, base, head):
                 stdin=pack, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                 env=env, check=True,
             )
-        if shallow:
-            (frozen / "shallow").write_text("\n".join(shallow) + "\n")
+        actual = subprocess.check_output(
+            [*command, "-C", str(frozen), "cat-file", "--batch-all-objects",
+             "--batch-check=%(objectname)"], stderr=subprocess.PIPE, env=env,
+        ).decode().splitlines()
+        require(set(actual) == allowed, "frozen store contains unexpected objects")
+        # Preserve raw commit OIDs while stopping every parent traversal.
+        (frozen / "shallow").write_text("\n".join(sorted({base, head})) + "\n")
         yield frozen
 
 
 def snapshot(objects, base, head):
+    require(OID.fullmatch(base) and OID.fullmatch(head), "full commit OIDs required")
+    # Prove containment in the original source, before cutting historical parents.
+    subprocess.run(
+        ["/usr/bin/git", "--no-replace-objects", "--no-optional-locks",
+         "-c", "core.attributesFile=/dev/null", "-C", str(objects),
+         "merge-base", "--is-ancestor", base, head],
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+        env=git_environment(), check=True,
+    )
     # Local config and worktree attributes cannot alter the bound intended diff.
     with frozen_objects(objects, base, head) as canonical:
         return stored_snapshot(canonical, base, head)
@@ -180,7 +196,6 @@ def stored_snapshot(objects, base, head):
         and git("rev-parse", head + "^{commit}").decode().strip() == head,
         "commit identity mismatch",
     )
-    git("merge-base", "--is-ancestor", base, head)
     paths = (
         git(
             "diff",
@@ -660,6 +675,15 @@ def capture(server, objects, repo, number, base, head):
 def capture_in(server, objects, repo, number, base, head, neutral):
     before = stored_snapshot(objects, base, head)
     prompt = instructions(repo, number, objects, before)
+    return capture_verified_scope(
+        server, objects, repo, number, before, prompt, neutral,
+        lambda: stored_snapshot(objects, base, head), delivery,
+    )
+
+
+def capture_verified_scope(server, objects, repo, number, before, prompt, neutral,
+                           read_snapshot, validate_delivery):
+    """Fresh native transport for a caller's separately verified immutable scope."""
     # Never auto-load candidate AGENTS.md or repository-scoped client config.
     thread = server.call(
         "thread/start",
@@ -743,7 +767,7 @@ def capture_in(server, objects, repo, number, base, head, neutral):
         "result": result,
         "resultSHA256": digest(result),
         "before": before,
-        "after": stored_snapshot(objects, base, head),
+        "after": read_snapshot(),
         "instructionsSHA256": hashlib.sha256(prompt.encode()).hexdigest(),
         "provenanceSHA256": digest(
             {
@@ -757,7 +781,7 @@ def capture_in(server, objects, repo, number, base, head, neutral):
         "streamedCompletion": completion,
         "completedAt": completed_at(turn),
     }
-    delivery(receipt, receipt["after"], result)
+    validate_delivery(receipt, receipt["after"], result)
     return receipt
 
 

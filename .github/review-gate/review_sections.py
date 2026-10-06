@@ -5783,6 +5783,18 @@ def _empty_comment_priority_source(source):
     return False
 
 
+def _may_contain_rendered_report_link(source):
+    """Cheap conservative prefilter; the Markdown AST remains authoritative."""
+    candidate = html.unescape(source)
+    candidate = re.sub(r"<!--.*?-->|<[^>]*>", "", candidate, flags=re.S)
+    candidate = re.sub(r"[*_~`\\]", "", candidate)
+    folded = candidate.casefold()
+    return all(
+        re.search(rf"\b{word}\b", folded)
+        for word in ("view", "security", "finding", "report")
+    )
+
+
 def _rendered_report_link(tokens, *, literal_only=False):
     pending = list(reversed(tokens))
     code_depth = 0
@@ -5799,7 +5811,7 @@ def _rendered_report_link(tokens, *, literal_only=False):
                 code_depth = max(0, code_depth - 1) if tag.group(1) else code_depth + 1
         if (kind == "link" and not code_depth and not token.get("_review_url")
                 and (not literal_only or token.get("_literal_report_link"))):
-            rendered = _markdown_text(token.get("children", ()))
+            rendered = _markdown_text(token.get("children", ()), diagnostic_comments=True)
             label = " ".join(rendered.split()).casefold()
             if label == "view security finding report":
                 return True
@@ -6057,7 +6069,7 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
     heading_nodes = []
     report_link_rows = set()
     literal_report_rows = set()
-    has_report_candidate = "report" in source.casefold()
+    report_link_candidate = _may_contain_rendered_report_link(text)
     for index, line in enumerate(source_rows):
         if "<!--" in line and _empty_comment_priority_source(line):
             composed = re.sub(r"<!--[ \t]*-->", "", line)
@@ -6246,7 +6258,7 @@ def _parse_markdown_document(text, mistune, *, diagnostic_bare=False):
     for token_index, token in enumerate(tokens):
         position = token.get("_review_start", 0)
         first = bisect_right(starts, position) - 1
-        if has_report_candidate and _rendered_report_link([token]):
+        if report_link_candidate and _rendered_report_link([token]):
             report_link_rows.add(first)
             if _rendered_report_link([token], literal_only=True):
                 literal_report_rows.add(first)
@@ -6590,7 +6602,8 @@ def _details_code_masked_source(text):
             tokens = md.inline(original_visible, env)
             visible = _markdown_text(tokens)
             visible_priorities = Counter(_PRIORITY_CANDIDATE.findall(visible))
-            if _rendered_report_link(tokens):
+            if (_may_contain_rendered_report_link(raw)
+                    and _rendered_report_link(tokens)):
                 unknown.add(bisect_right(starts, first) - 1)
                 return piece
             # The comparisons below can only subtract from this counter.
@@ -6828,16 +6841,29 @@ def _raw_html_partial_code_projection(source, *, preserve_markup_lines=True):
     return _markdown_text(tokens, raw_html_entities=True)
 
 
+def _raw_html_priority_inventory(source):
+    """Count priority labels visible in a raw-HTML projection."""
+    normalized = _DEFAULT_IGNORABLE.sub("", source)
+    inventory = Counter(
+        "bracket:" + match.group().casefold()
+        for match in re.finditer(r"\[(?:P[0-3]|[0-3]P)\]", normalized, re.I)
+    )
+    for row in _markdown_lines(normalized):
+        match = re.match(BARE_PRIORITY_PREFIX + r"(?:P[0-3]|[0-3]P)\b", row, re.I)
+        if match:
+            label = re.search(r"(?:P[0-3]|[0-3]P)\b", match.group(), re.I)
+            inventory["bare:" + label.group().casefold()] += 1
+    return inventory
+
+
 @lru_cache(maxsize=8)
 def _security_raw_block_priority_uncertain(text):
-    """Keep unowned raw HTML priorities after a completed clean result pending."""
+    """Keep partial code priorities and unowned clean-result tails pending."""
     source = _mask_markdown_link_metadata(_without_inline_code(_actual_metadata(text)))
     blocks = _html_block_spans(source)
     if not blocks:
         return False
     boundary = _completed_clean_boundary(source, "security")
-    if boundary is None:
-        return False
     # Details bodies and summaries can contain real Markdown code spans.
     # Require a priority in the original structured rendered view first.
     structured_priority = any(
@@ -6846,8 +6872,8 @@ def _security_raw_block_priority_uncertain(text):
     )
     # Parsed lists, quotes and tables outside raw blocks already have physical
     # per-unit ownership. Do not reclassify those units from container prefixes.
-    fragment = "\n".join(source[max(start, boundary):end]
-                         for start, end in blocks if end > boundary)
+    fragment = "\n".join(source[max(start, boundary or 0):end]
+                         for start, end in blocks if end > (boundary or 0))
     visible = _visible_html(
         fragment, mask_attributes=True, decode_entities=True,
         strip_inline_markup=True,
@@ -6859,7 +6885,11 @@ def _security_raw_block_priority_uncertain(text):
                 or re.search(r"(?im)^[^\S\r\n]*P[0-3]\b", partial_code)
                 or any(_unicode_priority_uncertain(row)
                        for row in _markdown_lines(partial_code))):
-            return True
+            if (_raw_html_priority_inventory(partial_code)
+                    - _raw_html_priority_inventory(visible)):
+                return True
+    if boundary is None:
+        return False
     if not structured_priority:
         return False
     candidates = [
@@ -7006,8 +7036,8 @@ def _security_priority_uncertain(kind: str, text: str, finding: bool, projection
 
 @lru_cache(maxsize=8)
 def _nested_regular_marker_uncertain(kind, text):
-    """Keep unsupported HTML marker ownership pending after a clean result."""
-    if (kind not in ("regular", "unheaded")
+    """Keep unsupported HTML marker ownership pending in review results."""
+    if (kind not in ("regular", "unheaded", "security")
             or "codex-security-review-finding" not in text.casefold()):
         return False
     source = _without_inline_code(_actual_metadata(
@@ -7016,7 +7046,7 @@ def _nested_regular_marker_uncertain(kind, text):
     visible = _visible_html(source, preserve_source_offsets=True)
     if not SECURITY_MARKER_COMMENT.search(visible):
         return False
-    boundary = _completed_clean_boundary(source, "regular")
+    boundary = 0 if kind == "security" else _completed_clean_boundary(source, "regular")
     if boundary is None:
         return False
     # Inspect actual complete tags once; attribute text is not markup. A
@@ -7048,6 +7078,22 @@ def _security_facts(kind: str, section: str, projection: str = "") -> tuple[bool
     # Raw HTML blocks render emphasis literally. Normalize only Markdown
     # regions and retain offsets used by report links and summary ranges.
     raw_blocks = _html_block_spans(source)
+    if raw_blocks and HTML_INLINE_CODE_OPEN.search(source):
+        # Diagnostic rendering may join partly code-owned priorities. Finding
+        # authority must retain the code barrier, including in raw HTML blocks.
+        chunks = []
+        position = 0
+        for first, last in raw_blocks:
+            chunks.append(source[position:first])
+            chunks.append(_visible_html(
+                source[first:last], mask_attributes=True,
+                preserve_inline_markup=True, preserve_block_markup=True,
+                preserve_markup_lines=True, preserve_markdown_comments=True,
+            ))
+            position = last
+        chunks.append(source[position:])
+        source = "".join(chunks)
+        projection = _priority_projection(source)
     raw_block_starts = [start for start, _ in raw_blocks]
     raw_block_ends = [end for _, end in raw_blocks]
     visible_summaries: list[tuple[int, int]] = []
@@ -7423,7 +7469,8 @@ def _classify_body(body: str) -> dict[str, Any]:
         priority_uncertain = _security_priority_uncertain(
             kind, text, security_finding, projection
         )
-        priority_uncertain |= _nested_regular_marker_uncertain(kind, text)
+        if kind != "security" or not security_finding:
+            priority_uncertain |= _nested_regular_marker_uncertain(kind, text)
         # Supported rendered links diagnose compositions outside the legacy
         # literal report-link protocol; they cannot manufacture source authority.
         if kind == "security" and not SECURITY_REPORT_LINK.search(text):
