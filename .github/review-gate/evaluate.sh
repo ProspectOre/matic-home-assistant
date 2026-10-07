@@ -740,7 +740,7 @@ head_prefix_resolves() {
 }
 
 clean_short_head_resolves() {
-  local commits history
+  local commits history require_monotonic="${1:-false}"
   head_prefix_resolves || return 1
   commits="$(gh api "repos/$REPO/pulls/$pr_number/commits?per_page=100" --paginate --slurp)" || return 1
   # Include force-pushed-away heads: the live commit list alone cannot
@@ -750,13 +750,14 @@ clean_short_head_resolves() {
     -f owner="${REPO%%/*}" -f name="${REPO#*/}" -F pr="$pr_number" \
     -f query='query($owner:String!, $name:String!, $pr:Int!, $endCursor:String) {
       repository(owner:$owner,name:$name) { nameWithOwner pullRequest(number:$pr) {
-        number timelineItems(first:100,after:$endCursor,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT]) {
+        number timelineItems(first:100,after:$endCursor,itemTypes:[HEAD_REF_FORCE_PUSHED_EVENT,HEAD_REF_DELETED_EVENT,HEAD_REF_RESTORED_EVENT]) {
           nodes { __typename ... on HeadRefForcePushedEvent { beforeCommit { oid } afterCommit { oid } } }
           pageInfo { hasNextPage endCursor }
         }
       } }
     }')" || return 1
   jq -en --arg repo "$REPO" --argjson pr "$pr_number" --arg head "$head_sha" --arg prefix "$head_prefix" \
+    --argjson require_monotonic "$require_monotonic" \
     --argjson commits "$commits" --argjson history "$history" '
     if ($commits | type) != "array" or ($commits | length) == 0
         or any($commits[]; type != "array")
@@ -768,17 +769,21 @@ clean_short_head_resolves() {
         [$history[] | .data.repository.pullRequest.timelineItems] as $pages
         | if any($pages[]; (.nodes | type) != "array" or (.pageInfo.hasNextPage | type) != "boolean"
             or (.pageInfo.hasNextPage and ((.pageInfo.endCursor | type) != "string"))
-            or any(.nodes[]; .__typename != "HeadRefForcePushedEvent"
-              or ((.beforeCommit.oid | type) != "string") or ((.afterCommit.oid | type) != "string")
-              or ((.beforeCommit.oid | test("^[0-9a-f]{40}$")) | not)
-              or ((.afterCommit.oid | test("^[0-9a-f]{40}$")) | not)))
+            or any(.nodes[];
+              if .__typename == "HeadRefForcePushedEvent" then
+                ((.beforeCommit.oid | type) != "string") or ((.afterCommit.oid | type) != "string")
+                or ((.beforeCommit.oid | test("^[0-9a-f]{40}$")) | not)
+                or ((.afterCommit.oid | test("^[0-9a-f]{40}$")) | not)
+              else .__typename != "HeadRefDeletedEvent" and .__typename != "HeadRefRestoredEvent" end))
           or $pages[-1].pageInfo.hasNextPage != false
           or any($pages[:-1][]; .pageInfo.hasNextPage != true)
           or (([$pages[] | select(.pageInfo.hasNextPage) | .pageInfo.endCursor] | unique | length)
             != ([$pages[] | select(.pageInfo.hasNextPage)] | length))
           then false else
-            ([$commits[][] | .sha] + [$pages[].nodes[] | .beforeCommit.oid, .afterCommit.oid])
-            | map(select(startswith($prefix))) | unique | . == [$head]
+            (([$commits[][] | .sha] + [$pages[].nodes[] | select(.__typename == "HeadRefForcePushedEvent")
+                | .beforeCommit.oid, .afterCommit.oid])
+              | map(select(startswith($prefix))) | unique | . == [$head])
+            and (($require_monotonic | not) or ([$pages[].nodes[]] | length) == 0)
           end
       end' >/dev/null
 }
@@ -2067,6 +2072,11 @@ if requires_timeline_freshness; then
   elif [[ -n "$timeline_base_at" && ( "$timeline_base_at" > "$head_observed_at" || "$timeline_base_at" == "$head_observed_at" ) ]]; then
     stamp_review_gate pending "Base changed after head observation; push a fresh head before evaluation"
     gate_pending
+  elif [[ -n "$timeline_base_at" ]] && ! clean_short_head_resolves true; then
+    # A force-pushed or restored PR can reinstall a previously reviewed OID. Its later
+    # synchronize timestamp cannot bind a delayed review to the new base.
+    # Only a fresh full-current-base native comparison can recover this lane.
+    timeline_base_requires_binding=true
   fi
 fi
 
@@ -3560,6 +3570,8 @@ refresh_review_timeline_watermark() {
       | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)"
     latest_base_at="$(normalize_timestamp "$latest_base_at")"
     if [[ -n "$latest_base_at" && ( -z "$head_observed_at" || "$latest_base_at" > "$head_observed_at" || "$latest_base_at" == "$head_observed_at" ) ]]; then
+      timeline_base_requires_binding=true
+    elif [[ -n "$latest_base_at" ]] && ! clean_short_head_resolves true; then
       timeline_base_requires_binding=true
     fi
     if [[ "$latest_base_at" > "$evidence_after" ]]; then evidence_after="$latest_base_at"; fi
