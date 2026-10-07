@@ -25,9 +25,26 @@ handles battery, water, and other servicing as needed.
 Firmware can omit mop behavior 3 from the retained coverage goals in each
 mop-enabled room. Readback accepts that omission separately for each room only
 when the other three mop behaviors remain present exactly once at the requested
-coverage setting. Every vacuum goal and every other room, setting, floor, mode,
-and behavior must still match; extra or duplicated goals remain a failure.
+coverage setting. When the native double-pass override is enabled, firmware can
+also replace each complete Standard or Quick mop group with setting 3. The
+integration requires an enabled-state read on both sides of a fresh plan read
+before accepting that override. Off, unknown, or malformed state cannot qualify
+it. Partial group rewrites fail; every vacuum goal and every other room, floor,
+mode, and behavior must still match. Extra or duplicated goals remain a failure.
 This readback rule does not grant cleaning completion credit.
+
+The native switch uses field 1's empty-message arm for off and field 2's arm for
+on. Earlier integration versions reversed both display and write semantics.
+Bounded tests on firmware v178.8 with app 1.175.1 verified the native toggle,
+corrected setter, Standard with double-pass off/on, and Quick with it on. Each
+run ended with verified Stop settlement and docking. These observations qualify
+current state and retained goals, not an atomic snapshot or completed cleaning.
+The corrected standalone client also accepted a live Standard combined-mode
+readback that strict matching rejected; this was not an installed-HA acceptance
+run or a completed cleaning cycle.
+Heavy Duty separately retained vacuum setting 3 and mop setting 4 with the
+override both off and on; that mapping remains outside this normalization and
+requires separate qualification.
 
 Mixed readback verification has one eight-second deadline. Expiry reports a
 specific verification error, including when the deadline interrupts a request or

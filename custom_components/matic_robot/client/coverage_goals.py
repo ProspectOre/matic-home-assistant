@@ -28,14 +28,48 @@ type CoverageGoalSignature = tuple[str, int, int, int, int]
 def coverage_readback_matches(
     expected: Counter[CoverageGoalSignature],
     actual: Counter[CoverageGoalSignature],
+    *,
+    deep_mop_enabled: bool = False,
 ) -> bool:
-    """Allow the observed mop behavior-three omission independently per room.
+    """Accept only the observed per-room mop readback transformations.
 
-    This applies to managed normal and mixed coverage readback. Each affected
-    room must retain exactly its other three mop behaviors at the requested
-    setting. All vacuum goals and every other signature remain exact; an
-    omission in one room cannot compensate for another room's goals.
+    With a freshly confirmed native double-pass override, Standard and Quick
+    mop goals can retain setting 3. Each complete mop group must transform
+    together. Heavy Duty and vacuum settings are never normalized here.
+    The optional behavior-three omission remains independent per room.
     """
+    if _matches_with_mop_omission(expected, actual):
+        return True
+    if not deep_mop_enabled:
+        return False
+
+    normalized = expected.copy()
+    mop_groups: dict[str, Counter[CoverageGoalSignature]] = {}
+    for goal, count in expected.items():
+        if goal[3] == 1:
+            mop_groups.setdefault(goal[0], Counter())[goal] = count
+    for region, goals in mop_groups.items():
+        settings = {goal[1] for goal in goals}
+        if len(settings) != 1:
+            return False
+        setting = next(iter(settings))
+        if setting not in (1, 2):
+            continue
+        complete = Counter(
+            {(region, setting, 0, 1, behavior): 1 for behavior in range(4)}
+        )
+        if goals != complete:
+            return False
+        normalized.subtract(complete)
+        normalized.update({(region, 3, 0, 1, behavior): 1 for behavior in range(4)})
+    return _matches_with_mop_omission(+normalized, actual)
+
+
+def _matches_with_mop_omission(
+    expected: Counter[CoverageGoalSignature],
+    actual: Counter[CoverageGoalSignature],
+) -> bool:
+    """Keep every signature exact except the observed optional mop behavior."""
     if not expected:
         return False
     if actual == expected:
