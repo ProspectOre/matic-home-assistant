@@ -696,6 +696,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
             ),
+            coverage_verifier=getattr(
+                entry.runtime_data.client, "async_confirm_coverage_receipt", None
+            ),
             confirm_room_completed=(
                 entry.runtime_data.coordinator.async_confirm_room_completed
             ),
@@ -838,6 +841,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 ),
                 session_identity=(
                     entry.runtime_data.client.async_get_cleaning_session_identity
+                ),
+                coverage_verifier=getattr(
+                    entry.runtime_data.client, "async_confirm_coverage_receipt", None
                 ),
                 confirm_room_completed=(
                     entry.runtime_data.coordinator.async_confirm_room_completed

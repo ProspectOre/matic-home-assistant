@@ -126,6 +126,7 @@ def apply_verified_cadence(
     *,
     current_identity: str | None = None,
     validate_current_identity: bool = False,
+    verified_coverage: str | None = None,
 ) -> bool:
     """Credit a managed completion; coverage stays due without causal proof."""
     if (
@@ -175,8 +176,7 @@ def apply_verified_cadence(
         cadence_state,
         progress if isinstance(progress, Mapping) else None,
         verified_mode=room.cleaning_mode,
-        # The current protocol cannot causally bind coverage_plan to this run.
-        verified_coverage=None,
+        verified_coverage=verified_coverage,
     )
     if scope == "shared":
         schedule["progress"] = next_progress
@@ -188,4 +188,10 @@ def apply_verified_cadence(
             and room.cleaning_mode == "vacuum_and_mop"
         ):
             policy["do_mop_next"] = False
+        if (
+            cadence_state.get("coverage_due") is True
+            and verified_coverage is not None
+            and verified_coverage == cadence_state.get("periodic_coverage_setting")
+        ):
+            policy["do_coverage_next"] = False
     return True

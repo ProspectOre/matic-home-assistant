@@ -314,6 +314,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         "Managed coverage was stopped before dispatch"
                     )
 
+            receipt = None
+            receipt_run_id = self._plans.active_run_id(serial_number)
             if room_coverage is not None:
                 assert room_modes is not None
 
@@ -358,7 +360,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         )
 
                 try:
-                    await self.coordinator.client.async_start_mixed_coverage(
+                    receipt = await self.coordinator.client.async_start_mixed_coverage(
                         floor_plan,
                         [room.protocol_id for room in rooms],
                         room_coverage,
@@ -389,7 +391,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 mode = cleaning_mode or self.coordinator.cleaning_mode
                 setting = coverage_setting or self.coordinator.coverage_setting
                 if motion_token is not None:
-                    await self.coordinator.client.async_start_coverage(
+                    receipt = await self.coordinator.client.async_start_coverage(
                         floor_plan,
                         command_rooms,
                         cleaning_mode=mode,
@@ -408,6 +410,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         ordered=ordered,
                         require_current=require_current_dispatch,
                     )
+            if (
+                receipt is not None
+                and motion_token is not None
+                and receipt_run_id is not None
+                and managed_session_id is not None
+            ):
+                require_current_dispatch()
+                await self._plans.async_checkpoint_coverage_receipt(
+                    serial_number,
+                    receipt_run_id,
+                    receipt,
+                    floor_plan=floor_plan,
+                    room_ids=[room.id for room in rooms],
+                    session_id=managed_session_id,
+                )
             await self.coordinator.async_request_refresh()
 
     async def async_start(self, **kwargs: object) -> None:

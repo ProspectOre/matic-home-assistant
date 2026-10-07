@@ -42,10 +42,15 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from .client.commands import UserCommand
+from .client.coverage_receipts import CoverageVerifier, native_session_hash
 from .client.exceptions import CoverageGuardError, MaticError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
+from .coverage_accounting import (
+    async_confirm_completed_coverage,
+    coverage_evidence_from_storage,
+)
 from .native_completion import match_single_room_completions
 from .plans import (
     OEM_STOP_RECONCILIATION_SECONDS as OEM_STOP_RECONCILIATION_SECONDS,
@@ -444,6 +449,7 @@ async def _async_run_room(
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    coverage_verifier: CoverageVerifier | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -468,6 +474,7 @@ async def _async_run_room(
     if first_start:
         hass.bus.async_fire(f"{DOMAIN}_room_started", event_data, context=call.context)
     completion_verified = False
+    completion_sessions: list[str] = []
     dispatch_attempted = False
     room_started = False
     dispatch: _PreparedRoomDispatch | None = prepared_dispatch
@@ -624,6 +631,7 @@ async def _async_run_room(
                                 hass=hass,
                                 entity_id=entity_id,
                                 cancel_event=cancel_event,
+                                on_verified_session=completion_sessions.append,
                             )
                             break
                         if session_resolution is None:
@@ -798,6 +806,7 @@ async def _async_run_room(
                 session_history,
                 confirm_room_completed,
                 call.context,
+                coverage_verifier=coverage_verifier,
             )
         hass.bus.async_fire(
             f"{DOMAIN}_room_interrupted",
@@ -867,6 +876,7 @@ async def _async_run_room(
                 session_history,
                 confirm_room_completed,
                 call.context,
+                coverage_verifier=coverage_verifier,
             )
         hass.bus.async_fire(
             f"{DOMAIN}_room_failed",
@@ -904,8 +914,25 @@ async def _async_run_room(
         raise
 
     if completion_verified:
+        verified_coverage = await async_confirm_completed_coverage(
+            manager.coverage_receipt(serial_number, run_id),
+            completion_sessions[-1] if completion_sessions else None,
+            coverage_verifier,
+        )
         if not await manager.async_mark_completed(
-            serial_number, call.data["plan_id"], room, run_id=run_id
+            serial_number,
+            call.data["plan_id"],
+            room,
+            run_id=run_id,
+            verified_coverage_receipt=verified_coverage,
+            completion_is_current=lambda: (
+                (cancel_event is None or not cancel_event.is_set())
+                and (
+                    motion_token is None
+                    or manager.managed_motion_is_current(serial_number, motion_token)
+                )
+                and (floor_is_current is None or floor_is_current())
+            ),
         ):
             raise PlanCancelledError(
                 "Run ownership changed before room completion could be credited"
@@ -970,6 +997,7 @@ async def _async_run_leg(
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
     wait_for_leg_outcome: LegOutcomeWaiter | None = None,
+    coverage_verifier: CoverageVerifier | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1009,6 +1037,7 @@ async def _async_run_leg(
             recovered_suspend_reason=recovered_suspend_reason,
             expected_dispatch_identity=expected_dispatch_identity,
             expected_dispatch_history=expected_dispatch_history,
+            coverage_verifier=coverage_verifier,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1046,6 +1075,7 @@ async def _async_run_leg(
     dispatch_attempted = False
     stop_sent = False
     evidence: dict[str, tuple[str, int]] | None = None
+    completion_sessions: list[str] = []
     dispatch: _PreparedRoomDispatch | None = prepared_dispatch
     native_identity: bytes | None = None
     managed_user_command = _guard_native_commands(
@@ -1264,6 +1294,7 @@ async def _async_run_leg(
                             hass=hass,
                             entity_id=entity_id,
                             cancel_event=cancel_event,
+                            on_verified_session=completion_sessions.append,
                         )
                         break
                     if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
@@ -1473,6 +1504,11 @@ async def _async_run_leg(
             room_observer.close()
 
     credited = evidence or {}
+    verified_coverage = await async_confirm_completed_coverage(
+        manager.coverage_receipt(serial_number, run_id),
+        completion_sessions[-1] if completion_sessions else None,
+        coverage_verifier,
+    )
     for room in leg:
         if room.room_id in credited:
             completed_at, duration_seconds = credited[room.room_id]
@@ -1483,6 +1519,17 @@ async def _async_run_leg(
                 run_id=run_id,
                 completed_at=completed_at,
                 duration_seconds=duration_seconds,
+                verified_coverage_receipt=verified_coverage,
+                completion_is_current=lambda: (
+                    (cancel_event is None or not cancel_event.is_set())
+                    and (
+                        motion_token is None
+                        or manager.managed_motion_is_current(
+                            serial_number, motion_token
+                        )
+                    )
+                    and (floor_is_current is None or floor_is_current())
+                ),
             )
             if not accepted:
                 raise PlanCancelledError(
@@ -1543,6 +1590,7 @@ async def _async_verify_leg_completion(
     attempts: int = SESSION_HISTORY_ATTEMPTS,
     allow_active_cleaning: bool = False,
     timeout_seconds: float | None = None,
+    on_verified_session: Callable[[str], None] | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
 
@@ -1637,7 +1685,7 @@ async def _async_verify_leg_completion(
                     # Keep polling the same record until complete or the bounded window
                     # expires; never combine evidence from different physical sessions.
                     if len(evidence) == len(targets):
-                        return evidence
+                        break
                 if len(matches) > 1:
                     return None
                 if attempt + 1 < attempts:
@@ -1651,7 +1699,10 @@ async def _async_verify_leg_completion(
                             continue
                         raise PlanCancelledError
     except TimeoutError:
-        return evidence
+        pass
+    if evidence and matched_key is not None and on_verified_session is not None:
+        if session_hash := native_session_hash(matched_key):
+            on_verified_session(session_hash)
     return evidence
 
 
@@ -1977,6 +2028,7 @@ async def _async_verify_room_completion(
     cancel_event: asyncio.Event | None = None,
     attempts: int = SESSION_HISTORY_ATTEMPTS,
     allow_active_cleaning: bool = False,
+    on_verified_session: Callable[[str], None] | None = None,
 ) -> bool:
     """Require one new, completed, overlapping native single-room record."""
     if reader is None or baseline is None:
@@ -2014,6 +2066,9 @@ async def _async_verify_room_completion(
                     now=now,
                 )
                 if len(matches) == 1:
+                    if on_verified_session is not None:
+                        if session_hash := native_session_hash(matches[0].record.key):
+                            on_verified_session(session_hash)
                     return True
                 if len(matches) > 1:
                     return False
@@ -2385,6 +2440,7 @@ def _schedule_native_reconciliation(
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
     confirm_room_completed: Callable[[str], None] | None,
     context: Context | None,
+    coverage_verifier: CoverageVerifier | None = None,
 ) -> None:
     """Start a lifecycle-bound watcher for a native session finishing after STOP."""
     if reconciliation is None:
@@ -2409,6 +2465,7 @@ def _schedule_native_reconciliation(
             session_history,
             confirm_room_completed,
             context,
+            coverage_verifier=coverage_verifier,
         )
     else:
         watcher = _async_expire_native_reconciliation(
@@ -2440,6 +2497,7 @@ async def _async_reconcile_native_stop(
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]],
     confirm_room_completed: Callable[[str], None] | None,
     context: Context | None,
+    coverage_verifier: CoverageVerifier | None = None,
 ) -> None:
     """Reconcile one late native completion without issuing another motion command.
 
@@ -2473,6 +2531,15 @@ async def _async_reconcile_native_stop(
         )
         if match is not None:
             record, duration = match
+            pending = manager.pending_native_reconciliation(serial_number)
+            coverage_evidence = coverage_evidence_from_storage(
+                pending.get("coverage_evidence") if pending is not None else None
+            )
+            verified_coverage = await async_confirm_completed_coverage(
+                coverage_evidence.receipt if coverage_evidence is not None else None,
+                native_session_hash(record.key),
+                coverage_verifier,
+            )
             try:
                 current_room_identity = current_room_cadence_identity(
                     hass, entity_id, room.room_id
@@ -2487,6 +2554,7 @@ async def _async_reconcile_native_stop(
                 completed_at=record.session.ended_at,
                 duration_seconds=duration,
                 room_identity=current_room_identity,
+                verified_coverage_receipt=verified_coverage,
             )
             if completed:
                 if confirm_room_completed is not None:
@@ -3062,6 +3130,7 @@ async def _async_execute_rooms_reserved(
     wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     _prepared_run_id: str,
     validate_prepared_run: Callable[[], None] | None = None,
+    coverage_verifier: CoverageVerifier | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
@@ -3389,6 +3458,7 @@ async def _async_execute_rooms_reserved(
                         else None
                     ),
                     wait_for_leg_outcome=wait_for_leg_outcome,
+                    coverage_verifier=coverage_verifier,
                 )
                 expected_dispatch_identity = None
                 if not completion_verified:
@@ -3810,6 +3880,7 @@ async def _async_execute_rooms(
     handoff_expected_identity: bytes | None = None,
     wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     validate_prepared_run: Callable[[], None] | None = None,
+    coverage_verifier: CoverageVerifier | None = None,
 ) -> None:
     """Reserve queued cadence synchronously, then execute the prepared run."""
     manager.require_command_admission(serial_number)
@@ -3879,6 +3950,7 @@ async def _async_execute_rooms(
             wait_for_leg_outcome=wait_for_leg_outcome,
             _prepared_run_id=run_id,
             validate_prepared_run=validate_prepared_run,
+            coverage_verifier=coverage_verifier,
         )
     finally:
         manager.release_prepared_run(serial_number, run_id)

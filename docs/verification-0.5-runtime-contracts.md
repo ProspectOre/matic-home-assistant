@@ -136,10 +136,14 @@ required. These contracts do not supply causal coverage-setting or physical evid
 
 ## Coverage evidence boundary
 
-Current supported reads do not causally bind retained `coverage_plan` goals to dispatch.
-The active-session UUID supplies task identity; stable reads supply consistency only.
-Native history's `AreaModeSummary` field 6 is not qualified: neither its enum meaning nor
-record-to-dispatch attribution is established by supported synthetic fixtures. Credit
-requires a verified robot receipt linking effective room settings to dispatch, or a
-verified per-run history setting and attribution contract. Guessing either violates the
-protocol boundary. Coverage remains due; this gap is not an approved scope deferral.
+Goal values alone do not authorize coverage cadence. The generated native session and
+all eight echoed vacuum-goal UUIDs per room now form a bounded, hash-only dispatch receipt.
+The manager owns its floor/room/leg binding. Completion must select the same canonical
+native history session and freshly confirm the retained goal IDs and settings while
+inactive, with floor/session guards and a second plan sample. Normal, restart and late
+history paths share this rule; missing or changed evidence leaves coverage due while
+otherwise verified room completion remains valid. Native history field 6 is not interpreted.
+
+These are sampled observations, not an atomic protocol marker or a guarantee against
+settings changes between samples. Synthetic tests qualify ownership, matching, rollback
+and deduplication; installed completion and private/shared cadence acceptance remain open.

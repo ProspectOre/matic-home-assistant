@@ -21,10 +21,10 @@ For each room, you can independently enable:
 Intervals range from 1 to 100. A new interval of 3 applies periodic work on
 the third qualifying clean. If both rules are due, that clean includes both.
 **Do on next clean** requests the selected work without resetting progress.
-Verified mopping clears its next-clean request. Coverage remains due until the
-robot confirms which coverage setting it applied for that run; that signal is
-not currently available, so periodic coverage may be requested again on later
-cleans. A completed-looking run alone does not clear it.
+Verified mopping clears its next-clean request. Periodic vacuum coverage is
+credited only when the robot confirms the requested goals at dispatch and again
+after the same native session completes. Missing or changed setting evidence
+keeps coverage due. A completed-looking run alone does not clear it.
 
 ## Choose where progress is shared
 
