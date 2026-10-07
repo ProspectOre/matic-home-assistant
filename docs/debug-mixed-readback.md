@@ -9,6 +9,9 @@ remain in place. This is an investigation build, not a stable release or a verif
 
 ## Before installing
 
+This candidate is for 0.4.x installations. Do not downgrade a 0.5 prerelease: its
+newer saved-plan storage is incompatible with 0.4.x.
+
 Use the candidate only after its source review and required checks are complete.
 Confirm that the robot is docked and idle, with no cleaning task, automation, or
 script about to start it. Record the installed integration and robot firmware
