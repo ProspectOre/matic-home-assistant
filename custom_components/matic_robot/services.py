@@ -20,6 +20,7 @@ from homeassistant.const import (
     ATTR_ENTITY_ID,
     ATTR_FLOOR_ID,
     ATTR_LABEL_ID,
+    EVENT_HOMEASSISTANT_STARTED,
     STATE_UNAVAILABLE,
 )
 from homeassistant.core import (
@@ -302,6 +303,8 @@ FIRMWARE_SNAPSHOT_SCHEMA = cv.make_entity_service_schema({})
 def _require_matic_control[ServiceResult](
     hass: HomeAssistant,
     handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
+    *,
+    allow_unavailable: bool = False,
 ) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
     """Apply Home Assistant's entity-control policy to a domain service."""
 
@@ -313,7 +316,9 @@ def _require_matic_control[ServiceResult](
             if user is None:
                 raise UnknownUser(context=call.context)
             if not user.is_admin:
-                for entity_id in _resolve_loaded_matic_vacuums(hass, call):
+                for entity_id in _resolve_loaded_matic_vacuums(
+                    hass, call, require_available=not allow_unavailable
+                ):
                     if not user.permissions.check_entity(entity_id, POLICY_CONTROL):
                         raise Unauthorized(
                             context=call.context,
@@ -329,7 +334,7 @@ def _require_matic_admin[ServiceResult](
     hass: HomeAssistant,
     handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
 ) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
-    """Require an administrator for read-only room-sequence previews."""
+    """Require an administrator for restricted previews and research routing."""
 
     @wraps(handler)
     async def async_authorized(call: ServiceCall) -> ServiceResult:
@@ -358,6 +363,68 @@ async def async_register_services(hass: HomeAssistant) -> None:
     firmware_tracker = FirmwareTracker(hass)
     await firmware_tracker.async_load()
     hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = firmware_tracker
+    if hass.is_running:
+        firmware_tracker.replay_reports()
+    else:
+        hass.bus.async_listen_once(
+            EVENT_HOMEASSISTANT_STARTED, lambda event: firmware_tracker.replay_reports()
+        )
+
+    async def async_firmware_investigator(call: ServiceCall) -> None:
+        """Change research routing without changing any robot behavior."""
+        entry = firmware_entry(call)
+        try:
+            await firmware_tracker.async_configure_investigator(
+                entry.entry_id, call.data["provider"]
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    async def async_firmware_notification(call: ServiceCall) -> None:
+        """Apply a revision-bound notification action from trusted HA code."""
+        entry = firmware_entry(call)
+        try:
+            await firmware_tracker.async_notification_action(
+                entry.entry_id,
+                call.data["report_id"],
+                call.data["revision"],
+                call.data["action"],
+            )
+        except ValueError as err:
+            raise ServiceValidationError(str(err)) from err
+
+    def firmware_entry(call: ServiceCall) -> ConfigEntry[Any]:
+        entity_ids = _resolve_loaded_matic_vacuums(hass, call, require_available=False)
+        if len(entity_ids) != 1:
+            raise ServiceValidationError(
+                "Firmware actions require exactly one Matic robot"
+            )
+        return _entry_for_entity(hass, entity_ids[0])
+
+    hass.services.async_register(
+        DOMAIN,
+        "firmware_investigator",
+        _require_matic_admin(hass, async_firmware_investigator),
+        schema=cv.make_entity_service_schema(
+            {vol.Required("provider"): vol.All(cv.string, vol.Length(min=1, max=48))}
+        ),
+    )
+    hass.services.async_register(
+        DOMAIN,
+        "firmware_notification",
+        _require_matic_control(
+            hass, async_firmware_notification, allow_unavailable=True
+        ),
+        schema=cv.make_entity_service_schema(
+            {
+                vol.Required("report_id"): vol.All(
+                    cv.string, vol.Length(min=24, max=24)
+                ),
+                vol.Required("revision"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+                vol.Required("action"): vol.In(("acknowledge", "delivered", "recheck")),
+            }
+        ),
+    )
 
     async def async_clean(call: ServiceCall) -> None:
         """Route the complete verified cleaning matrix to selected vacuums."""
@@ -409,13 +476,22 @@ async def async_register_services(hass: HomeAssistant) -> None:
             hass, call, require_current_floor=True
         )
         request_generation = manager.motion_generation(serial_number)
+        request_stop_generation = manager.stop_request_generation(serial_number)
         request_admission_epoch = manager.command_admission_epoch(serial_number)
         manager.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
 
-        def require_generation(expected: int) -> None:
-            if manager.motion_generation(serial_number) != expected:
+        def require_current_request(expected_motion_generation: int) -> None:
+            if manager.motion_generation(serial_number) != expected_motion_generation:
+                raise _validation_error(
+                    "The cleaning request was superseded before it could start",
+                    "robot_command_failed",
+                )
+            if (
+                manager.stop_request_generation(serial_number)
+                != request_stop_generation
+            ):
                 raise _validation_error(
                     "The cleaning request was superseded before it could start",
                     "robot_command_failed",
@@ -428,7 +504,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             entity_id,
             entry.runtime_data.client.async_get_active_cleaning_session_state,
         )
-        require_generation(request_generation)
+        require_current_request(request_generation)
         manager.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
@@ -448,7 +524,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async with manager.external_command(serial_number):
-            require_generation(request_generation)
+            require_current_request(request_generation)
             await _ensure_stop_settled(
                 hass,
                 manager,
@@ -456,7 +532,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 entity_id,
                 entry.runtime_data.client.async_get_active_cleaning_session_state,
             )
-            require_generation(request_generation)
+            require_current_request(request_generation)
             try:
                 current_area = manager.area(serial_number, call.data["area"])
             except KeyError as err:
@@ -472,9 +548,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 call.data.get("cleaning_mode"),
                 call.data.get("coverage_setting"),
             )
-            require_generation(request_generation)
+            require_current_request(request_generation)
             generation = await manager.async_replace_managed_motion(serial_number)
-            require_generation(generation)
+            require_current_request(generation)
             floor_plan = _current_floor_plan(entry)
             floor_plan, circles, mode, coverage = _validated_area_command(
                 current_area,
@@ -909,22 +985,49 @@ async def async_register_services(hass: HomeAssistant) -> None:
         entity_id, entry, serial_number, _room_map = _saved_plan_context(
             hass, call, require_rooms=False
         )
-        decision = manager.request_stop(serial_number)
-        await manager.async_checkpoint_stop_intent(serial_number, decision.behavior)
-        if decision.behavior == "not_running" and not call.data.get(
-            "include_unmanaged"
+        will_dispatch = False
+        async with manager.external_command(serial_number):
+            decision = manager.request_stop(serial_number)
+            await manager.async_checkpoint_stop_intent(serial_number, decision.behavior)
+            expected_generation = manager.motion_generation(serial_number)
+            expected_stop_generation = manager.stop_request_generation(serial_number)
+            will_dispatch = decision.behavior != "after_room" and (
+                decision.behavior != "not_running"
+                or bool(call.data.get("include_unmanaged"))
+            )
+            if will_dispatch:
+                manager.reserve_stop_dispatch(
+                    serial_number,
+                    expected_generation=expected_generation,
+                    expected_stop_generation=expected_stop_generation,
+                )
+        if not will_dispatch:
+            return
+        if (
+            manager.motion_generation(serial_number) == expected_generation
+            and manager.stop_request_generation(serial_number)
+            == expected_stop_generation
         ):
-            return
-        if decision.behavior == "after_room":
-            return
-        entry.runtime_data.coordinator.async_discard_current_room()
-        await hass.services.async_call(
-            VACUUM_DOMAIN,
-            "return_to_base",
-            {ATTR_ENTITY_ID: entity_id},
-            blocking=True,
-            context=call.context,
-        )
+            entry.runtime_data.coordinator.async_discard_current_room()
+        try:
+            with manager.managed_stop_dispatch(
+                serial_number,
+                expected_generation=expected_generation,
+                expected_stop_generation=expected_stop_generation,
+            ):
+                await hass.services.async_call(
+                    VACUUM_DOMAIN,
+                    "return_to_base",
+                    {ATTR_ENTITY_ID: entity_id},
+                    blocking=True,
+                    context=call.context,
+                )
+        finally:
+            manager.release_stop_dispatch(
+                serial_number,
+                expected_generation=expected_generation,
+                expected_stop_generation=expected_stop_generation,
+            )
 
     hass.services.async_register(
         DOMAIN,
@@ -1287,9 +1390,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
         entry = _entry_for_entity(hass, entity_ids[0])
         state = entry.runtime_data.coordinator.data
+        occurrence_generation = firmware_tracker.occurrence_generation(entry.entry_id)
         snapshot = await async_build_firmware_snapshot(entry.runtime_data.client, state)
         comparison = await firmware_tracker.async_record_snapshot(
-            entry.entry_id, snapshot
+            entry.entry_id,
+            snapshot,
+            occurrence_generation=occurrence_generation,
         )
         return {**snapshot, "comparison": comparison}
 
@@ -1524,7 +1630,9 @@ def _invalid_room_position(position: int, room_count: int) -> ServiceValidationE
     )
 
 
-def _resolve_loaded_matic_vacuums(hass: HomeAssistant, call: ServiceCall) -> list[str]:
+def _resolve_loaded_matic_vacuums(
+    hass: HomeAssistant, call: ServiceCall, *, require_available: bool = True
+) -> list[str]:
     """Resolve every target form and reject missing or unloaded robots."""
     selection = target.TargetSelection(
         {key: call.data[key] for key in TARGET_KEYS if key in call.data}
@@ -1550,8 +1658,10 @@ def _resolve_loaded_matic_vacuums(hass: HomeAssistant, call: ServiceCall) -> lis
         if (
             entry is None
             or entry.state is not ConfigEntryState.LOADED
-            or state is None
-            or state.state == STATE_UNAVAILABLE
+            or (
+                require_available
+                and (state is None or state.state == STATE_UNAVAILABLE)
+            )
         ):
             raise ServiceValidationError(
                 "The selected Matic robot is unavailable",

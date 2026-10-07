@@ -13,11 +13,13 @@ from collections.abc import (
     Callable,
     Coroutine,
     Iterable,
+    Iterator,
     Mapping,
     MutableMapping,
     Sequence,
 )
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
@@ -696,7 +698,9 @@ class CleaningPlanManager:
         self._finish_room_events: dict[str, asyncio.Event] = {}
         self._command_locks: dict[str, asyncio.Lock] = {}
         self._motion_generations: dict[str, int] = {}
+        self._stop_request_generations: dict[str, int] = {}
         self._managed_motion: dict[str, int] = {}
+        self._stop_dispatch_reservations: dict[str, tuple[int, int]] = {}
         self._run_tasks: dict[str, asyncio.Task[None]] = {}
         self._reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._dock_reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
@@ -720,6 +724,9 @@ class CleaningPlanManager:
         self._removed_robots: set[str] = set()
         self._robot_generations: dict[str, int] = {}
         self._cancellation_reasons: dict[str, str] = {}
+        self._managed_stop_dispatch: ContextVar[
+            tuple[str, int | None, int | None] | None
+        ] = ContextVar(f"matic_managed_stop_dispatch_{id(self)}", default=None)
         self._stop_fences: dict[str, _StopFence] = {}
         self._stop_fence_sequence = 0
         self._prepared_runs: dict[str, _PreparedRunReservation] = {}
@@ -1190,6 +1197,11 @@ class CleaningPlanManager:
         return self._motion_generations.get(serial_number, 0)
 
     @callback
+    def stop_request_generation(self, serial_number: str) -> int:
+        """Read the fence for direct motion queued before a Stop request."""
+        return self._stop_request_generations.get(serial_number, 0)
+
+    @callback
     def begin_managed_motion(self, serial_number: str) -> int:
         """Claim a generation token for one managed plan run."""
         self.require_command_admission(serial_number)
@@ -1221,7 +1233,9 @@ class CleaningPlanManager:
         """Transfer motion ownership to an admitted independent command."""
         if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
             self.cancellation_event(serial_number).set()
-            self._cancellation_reasons.setdefault(serial_number, "motion_replaced")
+            dispatch = self._managed_stop_dispatch.get()
+            if dispatch is None or dispatch[0] != serial_number:
+                self._cancellation_reasons[serial_number] = "motion_replaced"
         self.cancel_reconciliation_tasks(serial_number)
         # Keep the settle countdown active, but revoke its persisted run owner:
         # replacement motion must not resume an obsolete dock watcher after a
@@ -1241,6 +1255,70 @@ class CleaningPlanManager:
         )
         self._managed_motion.pop(serial_number, None)
         return reconciliation_removed
+
+    @contextmanager
+    def managed_stop_dispatch(
+        self,
+        serial_number: str,
+        *,
+        expected_generation: int | None = None,
+        expected_stop_generation: int | None = None,
+    ) -> Iterator[None]:
+        """Keep an admitted physical Stop scoped to its original owner."""
+        token = self._managed_stop_dispatch.set(
+            (serial_number, expected_generation, expected_stop_generation)
+        )
+        try:
+            yield
+        finally:
+            self._managed_stop_dispatch.reset(token)
+
+    @callback
+    def managed_stop_dispatch_generations(
+        self, serial_number: str
+    ) -> tuple[int, int] | None:
+        """Return the expected generations for this task's managed Stop."""
+        dispatch = self._managed_stop_dispatch.get()
+        if (
+            dispatch is None
+            or dispatch[0] != serial_number
+            or dispatch[1] is None
+            or dispatch[2] is None
+        ):
+            return None
+        return dispatch[1], dispatch[2]
+
+    @callback
+    def reserve_stop_dispatch(
+        self,
+        serial_number: str,
+        *,
+        expected_generation: int,
+        expected_stop_generation: int,
+    ) -> None:
+        """Block RESUME until this accepted Stop reaches its dispatch path."""
+        self._stop_dispatch_reservations[serial_number] = (
+            expected_generation,
+            expected_stop_generation,
+        )
+
+    @callback
+    def release_stop_dispatch(
+        self,
+        serial_number: str,
+        *,
+        expected_generation: int,
+        expected_stop_generation: int,
+    ) -> None:
+        """Release only the reservation owned by this Stop request."""
+        expected = (expected_generation, expected_stop_generation)
+        if self._stop_dispatch_reservations.get(serial_number) == expected:
+            self._stop_dispatch_reservations.pop(serial_number, None)
+
+    @callback
+    def stop_dispatch_pending(self, serial_number: str) -> bool:
+        """Return whether an accepted Stop is still crossing the HA service boundary."""
+        return serial_number in self._stop_dispatch_reservations
 
     async def async_replace_managed_motion(self, serial_number: str) -> int:
         """Persist replacement ownership before its independent command runs."""
@@ -1520,6 +1598,7 @@ class CleaningPlanManager:
         def forget_runtime_state(_removed: bool) -> None:
             self._listeners.pop(serial_number, None)
             self._stop_fences.pop(serial_number, None)
+            self._stop_dispatch_reservations.pop(serial_number, None)
             self._reconciliation_removal_pending.discard(serial_number)
             self._prepared_runs.pop(serial_number, None)
             self._pending_cadence_mutations.pop(serial_number, None)
@@ -1538,20 +1617,36 @@ class CleaningPlanManager:
         )
 
     @asynccontextmanager
-    async def external_motion(self, serial_number: str) -> AsyncIterator[int]:
-        """Replace managed ownership only after external command admission."""
+    async def external_motion(
+        self,
+        serial_number: str,
+        *,
+        expected_generation: int | None = None,
+        expected_stop_generation: int | None = None,
+    ) -> AsyncIterator[int | None]:
+        """Replace managed ownership only for an admitted, current command."""
         _admission, epoch = self._command_admission.get(
             serial_number, _OPEN_COMMAND_ADMISSION
         )
         self.require_command_admission(serial_number, expected_epoch=epoch)
         async with self.command_lock(serial_number):
             self.require_command_admission(serial_number, expected_epoch=epoch)
-            reconciliation_removed = self.replace_managed_motion(serial_number)
-            generation = self.motion_generation(serial_number)
-            await self._async_persist_reconciliation_removal(
-                serial_number, reconciliation_removed
-            )
-            yield generation
+            if (
+                expected_generation is not None
+                and self.motion_generation(serial_number) != expected_generation
+            ) or (
+                expected_stop_generation is not None
+                and self.stop_request_generation(serial_number)
+                != expected_stop_generation
+            ):
+                yield None
+            else:
+                reconciliation_removed = self.replace_managed_motion(serial_number)
+                generation = self.motion_generation(serial_number)
+                await self._async_persist_reconciliation_removal(
+                    serial_number, reconciliation_removed
+                )
+                yield generation
 
     @asynccontextmanager
     async def managed_command(
@@ -1619,6 +1714,9 @@ class CleaningPlanManager:
     @callback
     def request_stop(self, serial_number: str) -> PlanStopDecision:
         """Apply the active plan's immediate-or-after-room stop policy."""
+        self._stop_request_generations[serial_number] = (
+            self.stop_request_generation(serial_number) + 1
+        )
 
         def fence_new_motion() -> None:
             self._motion_generations[serial_number] = (
@@ -1642,6 +1740,14 @@ class CleaningPlanManager:
             fence_new_motion()
             self.cancel(serial_number)
             self._cancellation_reasons.setdefault(serial_number, "managed_stop")
+            return PlanStopDecision("immediate")
+        if self._cancellation_reasons.get(serial_number) == "motion_replaced":
+            # An external command may already have replaced this persisted
+            # plan's owner while its executor is still unwinding. In that
+            # interval the active-plan snapshot is stale: honoring its
+            # after-room policy would return without stopping the new owner.
+            fence_new_motion()
+            self.cancel(serial_number)
             return PlanStopDecision("immediate")
         frozen_policy = active if _has_frozen_stop_policy(active) else None
         last_run = robot.get("last_run")

@@ -136,10 +136,31 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "The command was superseded before it could run"
             )
 
+    def _require_stop_request_generation(
+        self, serial_number: str, generation: int
+    ) -> None:
+        """Reject a direct request queued before a newer Stop decision."""
+        if self._plans.stop_request_generation(serial_number) != generation:
+            raise ServiceValidationError(
+                "The command was superseded before it could run"
+            )
+
+    def _require_no_pending_stop_dispatch(self, serial_number: str) -> None:
+        """Keep RESUME out of the gap between Stop acceptance and dispatch."""
+        pending = getattr(self._plans, "stop_dispatch_pending", None)
+        if callable(pending) and pending(serial_number) is True:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="robot_stop_pending",
+            )
+
     async def _async_command(self, command: UserCommand) -> None:
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
+        if command is UserCommand.RESUME:
+            self._require_no_pending_stop_dispatch(serial_number)
         generation = self._plans.motion_generation(serial_number)
+        stop_request_generation = self._plans.stop_request_generation(serial_number)
         admission_epoch = self._plans.command_admission_epoch(serial_number)
         self._plans.require_command_admission(serial_number)
         await self._async_ensure_stop_settled(serial_number)
@@ -147,8 +168,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             serial_number, expected_epoch=admission_epoch
         )
         async with self._plans.external_command(serial_number):
+            if command is UserCommand.RESUME:
+                self._require_no_pending_stop_dispatch(serial_number)
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, generation)
+            self._require_stop_request_generation(
+                serial_number, stop_request_generation
+            )
             await self._async_dispatch_admitted_command(command, run_id=None)
 
     async def _async_dispatch_admitted_command(
@@ -231,28 +257,54 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
         request_generation = self._plans.motion_generation(serial_number)
+        request_stop_generation = self._plans.stop_request_generation(serial_number)
         request_admission_epoch = self._plans.command_admission_epoch(serial_number)
         await self._async_ensure_stop_settled(serial_number)
         self._require_motion_generation(serial_number, request_generation)
+        if motion_token is None:
+            self._require_stop_request_generation(
+                serial_number, request_stop_generation
+            )
         self._plans.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
         context = (
             self._plans.managed_command(serial_number, motion_token)
             if motion_token is not None
-            else self._plans.external_motion(serial_number)
+            else self._plans.external_motion(
+                serial_number,
+                expected_generation=request_generation,
+                expected_stop_generation=request_stop_generation,
+            )
         )
         async with context as dispatch_generation:
+            if (
+                motion_token is None
+                and dispatch_generation is None
+                and self._plans.motion_generation(serial_number) == request_generation
+            ):
+                self._require_stop_request_generation(
+                    serial_number, request_stop_generation
+                )
             expected_generation = (
-                request_generation if motion_token is not None else dispatch_generation
+                request_generation
+                if motion_token is not None or dispatch_generation is None
+                else dispatch_generation
             )
-            self._require_motion_generation(serial_number, expected_generation)
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, expected_generation)
+            if motion_token is None:
+                self._require_stop_request_generation(
+                    serial_number, request_stop_generation
+                )
             floor_plan = self._current_floor_plan(command_floor_token)
 
             def require_current_dispatch() -> None:
                 self._require_motion_generation(serial_number, expected_generation)
+                if motion_token is None:
+                    self._require_stop_request_generation(
+                        serial_number, request_stop_generation
+                    )
                 self._current_floor_plan(command_floor_token)
                 if (
                     motion_token is not None
@@ -383,7 +435,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             if decision.behavior == "after_room":
                 return
             self.coordinator.async_discard_current_room()
-            await self._plans.async_replace_managed_motion(serial_number)
+            with self._plans.managed_stop_dispatch(serial_number):
+                await self._plans.async_replace_managed_motion(serial_number)
             await self._async_dispatch_admitted_command(UserCommand.STOP, run_id=run_id)
         self._schedule_dock_after_stop(serial_number, run_id=run_id)
 
@@ -403,7 +456,36 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             or (bool(operational.error_codes) and not operational.is_charging)
             or (operational.low_charge and operational.is_charging)
         )
-        async with self._plans.external_motion(serial_number):
+        managed_stop_generations = getattr(
+            self._plans, "managed_stop_dispatch_generations", None
+        )
+        expected_generations = (
+            managed_stop_generations(serial_number)
+            if callable(managed_stop_generations)
+            else None
+        )
+        expected_generation = (
+            expected_generations[0] if expected_generations is not None else None
+        )
+        stop_request_generation = (
+            expected_generations[1]
+            if expected_generations is not None
+            else self._plans.stop_request_generation(serial_number)
+        )
+        async with self._plans.external_motion(
+            serial_number,
+            expected_generation=expected_generation,
+            expected_stop_generation=stop_request_generation,
+        ) as generation:
+            if generation is None:
+                if expected_generations is None:
+                    self._require_stop_request_generation(
+                        serial_number, stop_request_generation
+                    )
+                return
+            self._require_stop_request_generation(
+                serial_number, stop_request_generation
+            )
             if stop_before_dock:
                 # STOP is the OEM final-return command, and DOCK sent while the
                 # task still runs is reinterpreted as recharge-and-resume, so

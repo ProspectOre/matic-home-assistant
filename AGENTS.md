@@ -2,7 +2,7 @@
 
 ## Review contract
 
-Every candidate, including dependency changes, requires a clean exact-head Codex review through `/Users/alec/Dev/.worktrees/canonical-review-gate/scripts/review-gate/control.py`; use report or a dry-run request by default and apply only an eligible request. Keep runtime, physical, release, and human approval gates separate.
+Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Every candidate requires an authentic complete Codex review bound to its exact head and intended base, meaningful required CI, finding dispositions and a designated-owner manual merge. Use the existing request coordinator to avoid duplicate requests; it is not merge authority. The bespoke custom status gate is retired by owner approval. Preserve historical review gaps and keep runtime, physical, release and human approval boundaries separate.
 
 ## Apple tool capabilities
 

@@ -29,6 +29,19 @@ coverage setting. Every vacuum goal and every other room, setting, floor, mode,
 and behavior must still match; extra or duplicated goals remain a failure.
 This readback rule does not grant cleaning completion credit.
 
+Mixed readback verification has one eight-second deadline. Expiry reports a
+specific verification error, including when the deadline interrupts a request or
+the polling sleep. With DEBUG logging enabled for
+`custom_components.matic_robot.client.api`, expiry also records the interrupted
+stage, the latest sample's status and goal counts, and missing/unexpected goal
+tuples. Each tuple contains `(room_ordinal, setting, floor, mode, behavior, count)`;
+room ordinals follow the outgoing plan's order and are local to that attempt.
+Unexpected rooms receive subsequent ordinals. Each delta is limited to 32 entries
+with an omitted-entry count. UUIDs, room names, session identifiers, and raw
+payloads are not included. A missing or malformed sample is identified explicitly.
+These diagnostics describe the last completed sample; they do not establish the
+physical cause of a mismatch or change the readback acceptance rules.
+
 The configuration regression matrix covers all 729 three-room combinations of
 the three cleaning modes and three coverage settings, including every subset of
 rooms with the observed omission. Actual client tests cover all 81 two-room
