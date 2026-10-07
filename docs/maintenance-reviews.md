@@ -20,6 +20,9 @@ request for an unchanged comparison instead of posting duplicates.
 Run Test, Browser and Validate through the configured public GitHub-hosted route.
 Retain all required contexts and native branch protections except the explicitly
 removed custom `review-gate` context. Never enable automatic merge or force pushes.
+Before retiring an automatic-merge sweep, verify repository auto-merge is disabled
+and every open PR has no queued auto-merge request; disarm any existing requests
+and verify again before deleting the sweep. Record the complete inventory on the PR.
 
 Immediately before manual merge, the designated owner rechecks head, base, review,
 findings, required checks and native protections. Changed inputs invalidate the
