@@ -121,9 +121,11 @@ class WorkspaceSocket:
         if self._closed:
             return
         self._closed = True
-        for entry_subscriptions in self._subscriptions.values():
+        for entry_id, entry_subscriptions in tuple(self._subscriptions.items()):
             for connection, msg_id in tuple(entry_subscriptions.items()):
-                connection.send_event(msg_id, _resync_event("restart"))
+                self._send_subscription_event(
+                    entry_id, connection, msg_id, _resync_event("restart")
+                )
                 connection.subscriptions.pop(msg_id, None)
         for connection, cursors in tuple(self._snapshots.items()):
             for entry_id in tuple(cursors):
@@ -183,7 +185,12 @@ class WorkspaceSocket:
             for connection, msg_id in tuple(
                 self._subscriptions.get(entry_id, {}).items()
             ):
-                connection.send_event(msg_id, _resync_event("entry_removed"))
+                self._send_subscription_event(
+                    entry_id,
+                    connection,
+                    msg_id,
+                    _resync_event("entry_removed"),
+                )
         self._close_entry_sources(entry_id)
         self._clear_entry(entry_id)
 
@@ -423,7 +430,20 @@ class WorkspaceSocket:
         }
         self._history.setdefault(entry_id, deque(maxlen=QUEUE_LIMIT)).append(message)
         for connection, msg_id in tuple(self._subscriptions.get(entry_id, {}).items()):
-            connection.send_event(msg_id, message)
+            self._send_subscription_event(entry_id, connection, msg_id, message)
+
+    def _send_subscription_event(
+        self,
+        entry_id: str,
+        connection: ActiveConnection,
+        msg_id: int,
+        event: dict[str, Any],
+    ) -> None:
+        """Recheck administrator authority before delivering a workspace event."""
+        if connection.user is None or not connection.user.is_admin:
+            self._remove_subscription(connection, entry_id, unregister=True)
+            return
+        connection.send_event(msg_id, event)
 
     @staticmethod
     def _serial_number(coordinator: Any) -> str | None:
@@ -825,7 +845,7 @@ def websocket_subscribe(
         },
     )
     for event in replay:
-        connection.send_event(msg["id"], event)
+        manager._send_subscription_event(msg["entry_id"], connection, msg["id"], event)
 
 
 async def async_register(hass: HomeAssistant) -> WorkspaceSocket:
