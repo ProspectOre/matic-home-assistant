@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, call, patch
 
 import pytest
 from homeassistant.components import frontend, panel_custom
@@ -1257,7 +1257,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.async_import_native_history.assert_not_awaited()
     else:
         plans.async_import_native_history.assert_awaited_once_with(
-            "synthetic-serial", None, ()
+            "synthetic-serial",
+            None,
+            (),
+            coverage_verifier=client.async_confirm_coverage_receipt,
+            current_floor_plan=ANY,
         )
     hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
         entry, PLATFORMS
@@ -1952,8 +1956,18 @@ async def test_finished_session_records_where_the_robot_worked(hass) -> None:
     hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
     await hass.async_block_till_done()
     plans.async_import_native_history.assert_awaited_once_with(
-        "serial", "floor-plan", ("record",)
+        "serial",
+        "floor-plan",
+        ("record",),
+        coverage_verifier=None,
+        current_floor_plan=ANY,
     )
+    floor_reader = plans.async_import_native_history.await_args.kwargs[
+        "current_floor_plan"
+    ]
+    assert floor_reader() == "floor-plan"
+    coordinator.data.floor_plan = "replacement-floor"
+    assert floor_reader() == "replacement-floor"
 
 
 async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
@@ -2008,5 +2022,10 @@ async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> Non
     await hass.async_block_till_done()
 
     plans.async_import_native_history.assert_awaited_once_with(
-        "serial", "floor-plan", ("record",), generation=1
+        "serial",
+        "floor-plan",
+        ("record",),
+        generation=1,
+        coverage_verifier=None,
+        current_floor_plan=ANY,
     )

@@ -6207,6 +6207,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
     order: list[str] = []
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        coverage_receipt=MagicMock(return_value=None),
         async_mark_completed=AsyncMock(
             side_effect=lambda *_args, **_kwargs: (
                 order.append("manager_commit") or ownership_current
@@ -6523,6 +6524,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
     next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        coverage_receipt=MagicMock(return_value=None),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -6620,6 +6622,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
 def _leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         async_mark_started=AsyncMock(),
+        coverage_receipt=MagicMock(return_value=None),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -7450,6 +7453,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     if real_store:
         await manager.async_load()
         manager.async_mark_completed = AsyncMock(wraps=manager.async_mark_completed)
+    motion_token = manager.begin_managed_motion("serial") if real_store else 7
     if reject_second_credit:
         manager.async_mark_completed = AsyncMock(side_effect=[True, False])
     commands = []
@@ -7507,7 +7511,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
                 refresh=AsyncMock(),
                 session_history=history,
                 managed_user_command=sender,
-                motion_token=7,
+                motion_token=motion_token,
             )
         completed = False
     else:
@@ -7521,7 +7525,7 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
             refresh=AsyncMock(),
             session_history=history,
             managed_user_command=sender,
-            motion_token=7,
+            motion_token=motion_token,
         )
     await hass.async_block_till_done()
 
@@ -7734,6 +7738,7 @@ async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:
     next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        coverage_receipt=MagicMock(return_value=None),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -9668,6 +9673,7 @@ async def test_leg_handles_unknown_and_resumed_native_session(
 ):
     manager = CleaningPlanManager(hass)
     await manager.async_load()
+    motion_token = manager.begin_managed_motion("serial")
     reads = 0
     resolutions = 0
 
@@ -9715,7 +9721,7 @@ async def test_leg_handles_unknown_and_resumed_native_session(
         active_session=AsyncMock(),
         session_history=history,
         managed_user_command=sender,
-        motion_token=7,
+        motion_token=motion_token,
     )
     if resumes:
         assert await run is True
@@ -9727,7 +9733,7 @@ async def test_leg_handles_unknown_and_resumed_native_session(
             await run
         assert manager.snapshot("serial")["completed_runs"] == 0
         assert manager.snapshot("serial")["interrupted_runs"] == 1
-        sender.assert_awaited_once_with(7, UserCommand.STOP)
+        sender.assert_awaited_once_with(motion_token, UserCommand.STOP)
     assert manager.snapshot("serial")["active_plan"] is None
 
 

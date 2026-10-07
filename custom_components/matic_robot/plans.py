@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from statistics import median
 from time import monotonic
 from typing import Any, Literal, TypeVar, cast, override
+from uuid import UUID
 
 from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
@@ -59,6 +60,13 @@ from .cadence_accounting import (
     validated_cadence_snapshots as _validated_cadence_snapshots,
 )
 from .client.commands import CleaningMode, CoverageSetting
+from .client.coverage_receipts import (
+    CoverageReceipt,
+    CoverageVerifier,
+    coverage_floor_hash,
+    coverage_region_hash,
+    native_session_hash,
+)
 from .client.models import CleaningSessionRecord, FloorPlan, Room
 from .const import (
     DATA_PLAN_MANAGER,
@@ -66,6 +74,12 @@ from .const import (
     EVENT_PLAN_DOCKED,
     MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
     MAX_ROOM_SEQUENCE_SIZE,
+)
+from .coverage_accounting import (
+    CoverageEvidence,
+    async_confirm_completed_coverage,
+    coverage_evidence_from_storage,
+    verified_room_coverage,
 )
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
@@ -1888,11 +1902,38 @@ class CleaningPlanManager:
         records: Iterable[CleaningSessionRecord],
         *,
         generation: int | None = None,
+        coverage_verifier: CoverageVerifier | None = None,
+        current_floor_plan: Callable[[], FloorPlan | None] | None = None,
     ) -> bool:
         """Import native activity and reconcile only the matching pending room."""
         if floor_plan is None:
             return False
         entry_generation = self.robot_generation(serial_number)
+        proof_generation = self.motion_generation(serial_number)
+        records = tuple(records)
+        proof_pending = self.pending_native_reconciliation(serial_number)
+        verified_coverage = None
+        if proof_pending is not None:
+            evidence = coverage_evidence_from_storage(
+                proof_pending.get("coverage_evidence")
+            )
+            if evidence is not None:
+                matches = match_single_room_completions(
+                    records,
+                    room_name=proof_pending["room"],
+                    cleaning_mode=proof_pending.get("cleaning_mode"),
+                    dispatched_at=cast(
+                        datetime, dt_util.parse_datetime(proof_pending["dispatched_at"])
+                    ),
+                    now=dt_util.utcnow(),
+                    legacy_policy="room_list",
+                )
+                if len(matches) == 1:
+                    verified_coverage = await async_confirm_completed_coverage(
+                        evidence.receipt,
+                        native_session_hash(matches[0].record.key),
+                        coverage_verifier,
+                    )
         reconciled: list[dict[str, Any]] = []
 
         async def commit(lease: _MetadataLockLease) -> bool:
@@ -1915,6 +1956,14 @@ class CleaningPlanManager:
                     records,
                     generation=generation,
                     reconciled=reconciled,
+                    verified_coverage_receipt=verified_coverage
+                    if proof_generation == motion_generation
+                    and self.pending_native_reconciliation(serial_number)
+                    == proof_pending
+                    and current_floor_plan is not None
+                    and (current_floor := current_floor_plan()) is not None
+                    and plan_floor_token(current_floor) == plan_floor_token(floor_plan)
+                    else None,
                 )
 
         def after_commit(changed: bool) -> None:
@@ -1961,6 +2010,7 @@ class CleaningPlanManager:
         *,
         generation: int | None,
         reconciled: list[dict[str, Any]],
+        verified_coverage_receipt: CoverageReceipt | None = None,
     ) -> bool:
         """Import and reconcile native history under the plan-write lock."""
         robot = self._robot(serial_number)
@@ -1969,7 +2019,11 @@ class CleaningPlanManager:
         changed = _import_native_room_activity(robot, floor_plan, records)
         changed = (
             _reconcile_pending_native_history(
-                robot, floor_plan, records, on_reconciled=reconciled.append
+                robot,
+                floor_plan,
+                records,
+                on_reconciled=reconciled.append,
+                verified_coverage_receipt=verified_coverage_receipt,
             )
             or changed
         )
@@ -3495,6 +3549,35 @@ class CleaningPlanManager:
                     return False
                 existing = last_run.get("recovery_checkpoint", {})
                 normalized_checkpoint = deepcopy(checkpoint)
+                # Only the receipt writer may introduce evidence. Executor
+                # snapshots can preserve it for the same accepted leg, but
+                # cannot carry it into a new dispatch or a different floor.
+                normalized_checkpoint.pop("coverage_evidence", None)
+                evidence = coverage_evidence_from_storage(
+                    existing.get("coverage_evidence")
+                )
+                if (
+                    evidence is not None
+                    and normalized_checkpoint.get("phase")
+                    in {"starting", "accepted", "verifying"}
+                    and all(
+                        normalized_checkpoint.get(key) == existing.get(key)
+                        for key in ("floor_token", "leg_index", "rooms")
+                    )
+                    and (
+                        existing.get("phase") == "dispatching"
+                        or all(
+                            existing.get(key) is None
+                            or normalized_checkpoint.get(key) == existing.get(key)
+                            for key in (
+                                "dispatched_at",
+                                "native_identity_hash",
+                                "history_baseline",
+                            )
+                        )
+                    )
+                ):
+                    normalized_checkpoint["coverage_evidence"] = evidence.as_storage()
                 cadence_by_room = _validated_cadence_snapshots(
                     normalized_checkpoint.get("cadence_by_room")
                 )
@@ -3528,6 +3611,112 @@ class CleaningPlanManager:
             commit,
             after_commit=notify_if_changed,
         )
+
+    async def async_checkpoint_coverage_receipt(
+        self,
+        serial_number: str,
+        run_id: str,
+        receipt: CoverageReceipt,
+        *,
+        floor_plan: FloorPlan,
+        room_ids: Sequence[str],
+        session_id: UUID,
+    ) -> bool:
+        """Persist a verified dispatch only within its exact owned queue leg."""
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._store_lock:
+                robot = self._robot(serial_number)
+                run = robot.get("last_run")
+                checkpoint = (
+                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
+                )
+                if (
+                    not isinstance(run, dict)
+                    or run.get("run_id") != run_id
+                    or run.get("outcome") != "running"
+                    or not isinstance(checkpoint, dict)
+                    or checkpoint.get("phase") != "dispatching"
+                    or checkpoint.get("floor_token") != plan_floor_token(floor_plan)
+                    or receipt.floor_hash != coverage_floor_hash(floor_plan)
+                    or receipt.session_hash
+                    != hashlib.sha256(str(session_id).encode("ascii")).hexdigest()
+                ):
+                    return False
+                raw_rooms = checkpoint.get("rooms")
+                index = checkpoint.get("leg_index")
+                if (
+                    not isinstance(raw_rooms, list)
+                    or not raw_rooms
+                    or len(raw_rooms) > MAX_ROOM_SEQUENCE_SIZE
+                    or type(index) is not int
+                    or index < 0
+                ):
+                    return False
+                try:
+                    legs = leg_groups(
+                        [CleaningRoom(**value) for value in raw_rooms],
+                        mixed_settings=checkpoint.get("mixed_settings") is True,
+                        preserve_legacy_settings=checkpoint.get("mixed_settings")
+                        is not True,
+                    )
+                except TypeError:
+                    return False
+                if index >= len(legs) or list(room_ids) != [
+                    room.room_id for room in legs[index]
+                ]:
+                    return False
+                native_rooms = {room.id: room for room in floor_plan.rooms}
+                bindings = []
+                settings = {}
+                for room in legs[index]:
+                    if room.cleaning_mode not in {"vacuum", "vacuum_and_mop"}:
+                        continue
+                    if room.room_id not in native_rooms:
+                        return False
+                    region = coverage_region_hash(
+                        native_rooms[room.room_id].protocol_id
+                    )
+                    bindings.append((room.room_id, region))
+                    settings[region] = room.coverage_setting
+                if settings != {
+                    room.region_hash: room.coverage_setting.value
+                    for room in receipt.rooms
+                }:
+                    return False
+                evidence = CoverageEvidence(receipt, tuple(sorted(bindings)))
+                if coverage_evidence_from_storage(evidence.as_storage()) is None:
+                    return False
+                before = deepcopy(robot)
+                checkpoint["coverage_evidence"] = evidence.as_storage()
+                await self._async_save_with_rollback(serial_number, before)
+                return True
+
+        return bool(
+            await self._async_run_owned_metadata(
+                serial_number, commit, reject_on_admission_close=True
+            )
+        )
+
+    def coverage_receipt(
+        self, serial_number: str, run_id: str | None
+    ) -> CoverageReceipt | None:
+        """Read the current run's bounded receipt without exposing native IDs."""
+        run = self._robot(serial_number).get("last_run")
+        if (
+            run_id is None
+            or not isinstance(run, dict)
+            or run.get("run_id") != run_id
+            or run.get("outcome") != "running"
+        ):
+            return None
+        checkpoint = run.get("recovery_checkpoint")
+        evidence = coverage_evidence_from_storage(
+            checkpoint.get("coverage_evidence")
+            if isinstance(checkpoint, dict)
+            else None
+        )
+        return evidence.receipt if evidence is not None else None
 
     async def async_checkpoint_mixed_session(
         self, serial_number: str, run_id: str, session_identity_hash: str
@@ -3995,6 +4184,8 @@ class CleaningPlanManager:
         run_id: str | None = None,
         completed_at: str | None = None,
         duration_seconds: int | None = None,
+        verified_coverage_receipt: CoverageReceipt | None = None,
+        completion_is_current: Callable[[], bool] | None = None,
     ) -> bool:
         """Advance room history only after the room finishes.
 
@@ -4005,6 +4196,8 @@ class CleaningPlanManager:
 
         async def commit(_lease: _MetadataLockLease) -> bool:
             async with self._store_lock:
+                if completion_is_current is not None and not completion_is_current():
+                    return False
                 return await self._async_mark_completed(
                     serial_number,
                     plan_id,
@@ -4012,6 +4205,7 @@ class CleaningPlanManager:
                     run_id=run_id,
                     completed_at=completed_at,
                     duration_seconds=duration_seconds,
+                    verified_coverage_receipt=verified_coverage_receipt,
                 )
 
         def notify_if_changed(changed: bool) -> None:
@@ -4035,6 +4229,7 @@ class CleaningPlanManager:
         run_id: str | None = None,
         completed_at: str | None = None,
         duration_seconds: int | None = None,
+        verified_coverage_receipt: CoverageReceipt | None = None,
     ) -> bool:
         """Credit verified completion while owning the plan-write transaction."""
         now_value = dt_util.utcnow()
@@ -4111,7 +4306,24 @@ class CleaningPlanManager:
             if isinstance(cadence_by_room, Mapping)
             else None
         )
-        _apply_verified_cadence(robot, plan_id, room, cadence_state)
+        _apply_verified_cadence(
+            robot,
+            plan_id,
+            room,
+            cadence_state,
+            verified_coverage=verified_room_coverage(
+                checkpoint.get("coverage_evidence")
+                if isinstance(checkpoint, dict)
+                else None,
+                verified_coverage_receipt,
+                room.room_id,
+                room.cleaning_mode,
+                room.coverage_setting,
+                cadence_state,
+            )
+            if run_id is not None
+            else None,
+        )
         if (
             isinstance(last_run, dict)
             and last_run.get("outcome") == "running"
@@ -4194,6 +4406,7 @@ class CleaningPlanManager:
         completed_at: str | None = None,
         duration_seconds: int | None = None,
         room_identity: str | None = None,
+        verified_coverage_receipt: CoverageReceipt | None = None,
     ) -> bool:
         """Credit a native completion that arrived after managed cleanup.
 
@@ -4215,6 +4428,7 @@ class CleaningPlanManager:
                     completed_at=completed_at,
                     duration_seconds=duration_seconds,
                     room_identity=room_identity,
+                    verified_coverage_receipt=verified_coverage_receipt,
                     changed=lambda: _set_true(),
                 )
 
@@ -4244,6 +4458,7 @@ class CleaningPlanManager:
         completed_at: str | None = None,
         duration_seconds: int | None = None,
         room_identity: str | None = None,
+        verified_coverage_receipt: CoverageReceipt | None = None,
         changed: Callable[[], None] | None = None,
     ) -> bool:
         """Reconcile late completion while owning the plan-write transaction."""
@@ -4296,6 +4511,14 @@ class CleaningPlanManager:
                 pending.get("cadence_state"),
                 current_identity=room_identity,
                 validate_current_identity=True,
+                verified_coverage=verified_room_coverage(
+                    pending.get("coverage_evidence"),
+                    verified_coverage_receipt,
+                    room.room_id,
+                    room_settings.cleaning_mode,
+                    room_settings.coverage_setting,
+                    pending.get("cadence_state"),
+                ),
             )
         _repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
@@ -5374,6 +5597,9 @@ def _validated_native_reconciliation(
     cadence_state = _validated_cadence_snapshot(value.get("cadence_state"))
     if cadence_state is not None:
         result["cadence_state"] = cadence_state
+    evidence = coverage_evidence_from_storage(value.get("coverage_evidence"))
+    if evidence is not None and room_id in dict(evidence.room_regions):
+        result["coverage_evidence"] = evidence.as_storage()
     return result
 
 
@@ -5423,6 +5649,11 @@ def _attach_cadence_state(robot: dict[str, Any], pending: dict[str, Any]) -> Non
     cadence_state = _validated_cadence_snapshot(state)
     if cadence_state is not None:
         pending["cadence_state"] = cadence_state
+    evidence = coverage_evidence_from_storage(
+        checkpoint.get("coverage_evidence") if isinstance(checkpoint, dict) else None
+    )
+    if evidence is not None and pending["room_id"] in dict(evidence.room_regions):
+        pending["coverage_evidence"] = evidence.as_storage()
 
 
 def _native_reconciliation_key(pending: Mapping[str, Any]) -> str:
@@ -5491,6 +5722,7 @@ def _reconcile_pending_native_history(
     records: Iterable[CleaningSessionRecord],
     *,
     on_reconciled: Callable[[dict[str, Any]], None] | None = None,
+    verified_coverage_receipt: CoverageReceipt | None = None,
 ) -> bool:
     """Apply exactly one retained native completion to a pending plan room."""
     pending = _validated_native_reconciliation(
@@ -5555,6 +5787,18 @@ def _reconcile_pending_native_history(
             cadence_state,
             current_identity=current_identity,
             validate_current_identity=True,
+            verified_coverage=verified_room_coverage(
+                pending.get("coverage_evidence"),
+                verified_coverage_receipt
+                if verified_coverage_receipt is not None
+                and native_session_hash(matches[0].record.key)
+                == verified_coverage_receipt.session_hash
+                else None,
+                room.id,
+                room_settings.cleaning_mode,
+                room_settings.coverage_setting,
+                cadence_state,
+            ),
         )
     _repair_native_reconciled_run(robot, pending, pending["plan_id"])
     robot.pop("pending_native_reconciliation", None)

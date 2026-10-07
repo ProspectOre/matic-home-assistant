@@ -105,8 +105,8 @@ Plan-scoped progress advances only from that plan's verified managed completion.
 managed runs by default; existing untracked service calls never change it. Existing plans remain unchanged until cadence is edited on. A newly enabled schedule starts at zero;
 joining adopts existing shared progress; leaving shared scope starts plan-scoped progress at zero; interval changes preserve count; disable pauses; reset is explicit; new or
 newly private progress starts at zero. Each interval is an integer from 1 through 100. **Do on next clean** requests that rule on the next qualifying run. Due work stays due
-until its modes and settings are verified. Mopping has verified mode evidence; coverage lacks causal per-run setting evidence, so due coverage may be requested again on later
-cleans. Explain shared schedule joins and fresh private schedules before save; N=3 is due on clean three. Mopping and coverage have separate reset actions. Reserve every
+until its modes and settings are verified. Mopping requires native mode evidence; vacuum coverage additionally requires a dispatch receipt and matching retained goals after
+that same native session completes. Missing or changed evidence keeps coverage due. Explain shared schedule joins and fresh private schedules before save; N=3 is due on clean three. Mopping and coverage have separate reset actions. Reserve every
 queued room's affected schedule before the first execution await; block its edit or reset through execution or pending native reconciliation, and restore reservations during
 recovery. Unrelated schedules remain available. Bind progress to verified robot/floor/room identity, preserve it across room renames, and never transfer it across an ambiguous
 identity change.
@@ -119,8 +119,9 @@ history.
 Effective mode and coverage are resolved before mixed mission grouping and are persisted, with policy identity and cadence snapshot, before dispatch. Manual and saved-plan
 starts consume the authoritative preview, bound to identity, order, settings, and progress by a fingerprint revalidated after preparation awaits. Stop policy belongs to the
 frozen run. Only a unique, verified managed room completion advances progress. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to
-match before comparing goals. The supported `coverage_plan` read model has no verified generation/receipt marker, so matching goal values are only a consistency guard, not causal proof of the dispatched
-settings. They never clear periodic coverage; due work remains due until a verified per-run settings signal exists. Persisted legacy proof flags are ignored. Partial,
+match before comparing goals. A bounded receipt requires the echoed generated session and every vacuum-goal UUID plus its setting; the manager binds it to the owned leg and
+floor/room identities. Credit also requires the uniquely matched native history session, inactive state, the same floor, and matching vacuum goals in two fresh completion samples.
+This proves observed dispatch/completion consistency, not an atomic snapshot or unchanged settings between observations. Legacy flags and malformed receipts never grant credit. Partial,
 interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate, or ambiguous floor/name evidence does not. Keep the bounded 64-key completion
 receipt dedupe independent of the Activity journal. Dispatch markers freeze the requested mode/coverage; live and startup reconciliation share one recorder. Completion proof is independent of settings-qualified duration estimates; changed or unknown settings invalidate prior samples. A due rule stays due until
 its own evidence passes. A Map Studio one-off room run is ephemeral and never creates a saved plan. It applies existing shared schedules by default; an explicit settings
@@ -144,7 +145,6 @@ install/readback, runtime recovery, and physical evidence on the same accepted c
 owner interaction and language acceptance is a separate gate. Each gate is independent; none is implied by another.
 
 Physical acceptance is separate and requires explicit authorization for a bounded run. Preserve rollback/fingerprints, stop automations/scripts, use administrator MCP/native
-preflight and post-run evidence, verify STOP/DOCK settlement, and retain cleanup receipts. Never infer motion/completion from screenshots, Activity, transient state, CI, or
-UI.
+preflight and post-run evidence, verify STOP/DOCK settlement, and retain cleanup receipts. Never infer motion/completion from screenshots, Activity, transient state, CI, or UI.
 
 Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement; reconsider mutation only if 0.4/0.5 evidence shows HA services cannot solve a stale-write or workflow limitation.

@@ -20,6 +20,7 @@ from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
+from .coverage_accounting import async_confirm_completed_coverage
 from .managed_executor import (
     LEG_HANDOFF_TIMEOUT_SECONDS,
     _async_execute_rooms,
@@ -444,6 +445,9 @@ async def async_recover_managed_run(
                     runtime.client.async_get_cleaning_session_records, strict=True
                 ),
                 session_identity=runtime.client.async_get_cleaning_session_identity,
+                coverage_verifier=getattr(
+                    runtime.client, "async_confirm_coverage_receipt", None
+                ),
                 confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
                 managed_user_command=command,
                 floor_is_current=floor_is_current,
@@ -513,6 +517,7 @@ async def async_recover_managed_run(
                     raise HomeAssistantError("Completion recovery was superseded")
                 return records
 
+            completion_sessions: list[str] = []
             evidence = await _async_verify_leg_completion(
                 read_history,
                 baseline,
@@ -522,7 +527,20 @@ async def async_recover_managed_run(
                 entity_id=entity_id,
                 cancel_event=cancel,
                 timeout_seconds=remaining,
+                on_verified_session=completion_sessions.append,
             )
+            verified_coverage = await async_confirm_completed_coverage(
+                manager.coverage_receipt(serial_number, run["run_id"]),
+                completion_sessions[-1] if completion_sessions else None,
+                getattr(runtime.client, "async_confirm_coverage_receipt", None),
+            )
+            if (
+                cancel.is_set()
+                or manager.motion_generation(serial_number) != generation
+                or not floor_is_current()
+            ):
+                reason = "restart_recovery_superseded"
+                return
             completed_ids = set(checkpoint.get("completed_room_ids", []))
             for room in leg:
                 if (
@@ -538,9 +556,16 @@ async def async_recover_managed_run(
                         run_id=run.get("run_id"),
                         completed_at=completed_at,
                         duration_seconds=duration,
+                        verified_coverage_receipt=verified_coverage,
+                        completion_is_current=lambda: (
+                            not cancel.is_set()
+                            and manager.motion_generation(serial_number) == generation
+                            and floor_is_current()
+                        ),
                     )
                     if not accepted:
-                        continue
+                        reason = "restart_recovery_superseded"
+                        return
                     completed_ids.add(room.room_id)
                     checkpoint["completed_room_ids"] = list(completed_ids)
                     runtime.coordinator.async_confirm_room_completed(room.name)
@@ -578,6 +603,9 @@ async def async_recover_managed_run(
                 runtime.client.async_get_cleaning_session_records, strict=True
             ),
             session_identity=runtime.client.async_get_cleaning_session_identity,
+            coverage_verifier=getattr(
+                runtime.client, "async_confirm_coverage_receipt", None
+            ),
             confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
             managed_user_command=command,
             floor_is_current=floor_is_current,

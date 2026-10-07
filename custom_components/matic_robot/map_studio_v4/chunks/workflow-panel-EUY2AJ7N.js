@@ -176,7 +176,7 @@ line-height: var(--ms-lh-snug);
           <label class="plan-option"><input type="checkbox" aria-label=${this.#e("v4_cadence_do_mop_next_named","Do vacuum and mop on the next clean for {room}",{room:t})} .checked=${i.doMopNext} ?disabled=${!i.mopEveryN} @change=${b=>this.#a(s,{doMopNext:x(b)})}><span class="plan-option-copy"><strong>${this.#e("v4_cadence_do_mop_next","Do vacuum and mop on the next clean")}</strong></span></label>
           <label class="plan-option"><input type="checkbox" aria-label=${this.#e("v4_cadence_do_coverage_next_named","Use periodic vacuum coverage on the next clean for {room}",{room:t})} .checked=${i.doCoverageNext} ?disabled=${!i.coverageEveryN||e.cleaningMode==="mop"} @change=${b=>this.#a(s,{doCoverageNext:x(b)})}><span class="plan-option-copy"><strong>${this.#e("v4_cadence_do_coverage_next","Use periodic vacuum coverage on the next clean")}</strong></span></label>
         </div>
-        ${i.coverageEveryN?o`<p class="subtle">${this.#e("v4_cadence_coverage_proof_pending","This integration cannot currently verify the coverage used for each clean. Once due, the selected coverage is requested on later cleans. Disable the rule to pause it. Resetting progress delays the next request only when the interval is greater than 1.")}</p>`:d}
+        ${i.coverageEveryN?o`<p class="subtle">${this.#e("v4_cadence_coverage_verification_hint","Periodic coverage is credited only after the robot confirms the requested vacuum coverage and completed clean. If those settings cannot be verified, coverage stays due for the next clean.")}</p>`:d}
         <p class="subtle" aria-live="polite">${this.#h(i,l,e.cadenceReasons)}</p>
         ${a.id&&(i.mopEveryN||i.coverageEveryN||m||v)?o`
           <div class="toolbar">

@@ -43,6 +43,13 @@ from .coverage_goals import (
     coverage_plan_goal_signatures,
     coverage_readback_matches,
 )
+from .coverage_receipts import (
+    CoverageReceipt,
+    coverage_floor_hash,
+    make_coverage_receipt,
+    native_session_hash,
+    receipt_matches_plan,
+)
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
     AuthenticationRequiredError,
@@ -1304,7 +1311,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_settings_readback: bool = False,
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
-    ) -> None:
+    ) -> CoverageReceipt | None:
         """Start an exact normal-coverage command for local room IDs."""
         if not require_settings_readback and session_id is not None:
             raise MaticError("An untracked coverage command cannot own a session ID")
@@ -1329,12 +1336,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         if require_settings_readback:
             assert baseline_identity is not None
             assert session_id is not None
-            await self._async_wait_for_coverage_readback(
+            return await self._async_wait_for_coverage_readback(
                 Counter(coverage_command_goal_signatures(payload)),
                 floor_plan,
                 pre_dispatch_identity=baseline_identity,
                 expected_session_id=str(session_id),
+                command_payload=payload,
             )
+        return None
 
     async def async_start_mixed_coverage(
         self,
@@ -1351,7 +1360,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         on_recovery_stop_transmitted: Callable[[], None] | None = None,
         checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
         session_id: UUID | None = None,
-    ) -> None:
+    ) -> CoverageReceipt | None:
         """Start then update only our accepted, still-current native mission.
 
         There is no retry/replay of either write. A partial dispatch failure
@@ -1427,10 +1436,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 )
                 if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed after coverage update")
-                await self._async_wait_for_mixed_coverage_readback(
+                return await self._async_wait_for_mixed_coverage_readback(
                     expected_goals,
                     require_current=require_current,
                     expected_identity=identity,
+                    command_payload=commands.update,
+                    floor_plan=floor_plan,
+                    expected_session_id=commands.session_id,
                 )
         except Exception, asyncio.CancelledError:
             # Reconnection/read failure must not turn into an unowned STOP.
@@ -1485,16 +1497,35 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         *,
         require_current: Callable[[], None],
         expected_identity: bytes,
-    ) -> None:
+        command_payload: bytes | None = None,
+        floor_plan: FloorPlan | None = None,
+        expected_session_id: str | None = None,
+    ) -> CoverageReceipt | None:
         """Require the acknowledged update to appear intact in the live plan."""
         timeout = asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT)
         actual_goals: Counter[tuple[str, int, int, int, int]] | None = None
         malformed = False
         stage = "coverage_plan"
+        receipt: CoverageReceipt | None = None
 
         def note_stage(value: str) -> None:
             nonlocal stage
             stage = value
+
+        def capture_plan(plan: bytes, deep: bool) -> None:
+            nonlocal receipt
+            if (
+                command_payload is not None
+                and floor_plan is not None
+                and expected_session_id is not None
+            ):
+                receipt = make_coverage_receipt(
+                    command_payload,
+                    plan,
+                    floor_plan,
+                    expected_session_id,
+                    deep_mop_enabled=deep,
+                )
 
         try:
             async with timeout:
@@ -1506,7 +1537,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                             actual_goals,
                             matched,
                         ) = await self._async_read_coverage_readback(
-                            expected_goals, note_stage=note_stage
+                            expected_goals,
+                            capture_plan=capture_plan,
+                            note_stage=note_stage,
                         )
                         malformed = False
                     except DecodeError:
@@ -1522,7 +1555,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                             "Native mission changed during coverage readback"
                         )
                     if matched:
-                        return
+                        return (
+                            receipt
+                            if receipt is not None
+                            and native_session_hash(expected_identity, active=True)
+                            == receipt.session_hash
+                            else None
+                        )
                     stage = "poll_interval"
                     await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
         except TimeoutError as err:
@@ -1537,6 +1576,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self,
         expected_goals: Counter[tuple[str, int, int, int, int]],
         *,
+        capture_plan: Callable[[bytes, bool], None] | None = None,
         note_stage: Callable[[str], None] | None = None,
     ) -> tuple[Counter[tuple[str, int, int, int, int]], bool]:
         """Qualify an override with current native state around a fresh plan.
@@ -1551,10 +1591,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 note_stage(stage)
             return await self.async_get_property(name)
 
-        actual_goals = Counter(
-            coverage_plan_goal_signatures(await read("coverage_plan", "coverage_plan"))
-        )
+        plan = await read("coverage_plan", "coverage_plan")
+        actual_goals = Counter(coverage_plan_goal_signatures(plan))
         if coverage_readback_matches(expected_goals, actual_goals):
+            if capture_plan is not None:
+                capture_plan(plan, False)
             return actual_goals, True
         if not coverage_readback_matches(
             expected_goals, actual_goals, deep_mop_enabled=True
@@ -1567,12 +1608,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             is not True
         ):
             return actual_goals, False
-        actual_goals = Counter(
-            coverage_plan_goal_signatures(
-                await read("coverage_plan", "coverage_plan_confirm")
-            )
-        )
+        plan = await read("coverage_plan", "coverage_plan_confirm")
+        actual_goals = Counter(coverage_plan_goal_signatures(plan))
         if coverage_readback_matches(expected_goals, actual_goals):
+            if capture_plan is not None:
+                capture_plan(plan, False)
             return actual_goals, True
         if not coverage_readback_matches(
             expected_goals, actual_goals, deep_mop_enabled=True
@@ -1584,9 +1624,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             )
             is True
         )
-        return actual_goals, deep_mop_enabled and coverage_readback_matches(
+        matched = deep_mop_enabled and coverage_readback_matches(
             expected_goals, actual_goals, deep_mop_enabled=True
         )
+        if matched and capture_plan is not None:
+            capture_plan(plan, True)
+        return actual_goals, matched
 
     async def _async_wait_for_coverage_readback(
         self,
@@ -1595,17 +1638,29 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         *,
         pre_dispatch_identity: bytes,
         expected_session_id: str,
-    ) -> None:
+        command_payload: bytes | None = None,
+    ) -> CoverageReceipt | None:
         """Require the generated session and observe matching active-goal values.
 
-        The coverage plan has no verified generation marker. Correlate it only
-        after the active-session key matches the UUID encoded in field 6 of the
-        dispatched command, then verify that identity remains stable around
-        the goal and floor reads. This proves dispatch attribution and observed
-        value consistency, not an atomic plan-generation snapshot.
+        Exact goal UUID echoes additionally produce a dispatch receipt. This
+        receipt alone cannot grant cadence credit: completion must match this
+        session and the same retained vacuum goals must be observed again.
         """
         deadline = monotonic() + _MIXED_COVERAGE_READBACK_TIMEOUT
         observed_identity: bytes | None = None
+        receipt: CoverageReceipt | None = None
+
+        def capture_plan(plan: bytes, deep: bool) -> None:
+            nonlocal receipt
+            if command_payload is not None:
+                receipt = make_coverage_receipt(
+                    command_payload,
+                    plan,
+                    floor_plan,
+                    expected_session_id,
+                    deep_mop_enabled=deep,
+                )
+
         async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
             while True:
                 identity = await self.async_get_cleaning_session_identity()
@@ -1632,7 +1687,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     if active is True:
                         try:
                             _, matched = await self._async_read_coverage_readback(
-                                expected_goals
+                                expected_goals, capture_plan=capture_plan
                             )
                         except DecodeError:
                             matched = False
@@ -1677,13 +1732,68 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                                 raise MaticError(
                                     "Native mission changed during coverage readback"
                                 )
-                            return
+                            return (
+                                receipt
+                                if receipt is not None
+                                and native_session_hash(identity, active=True)
+                                == receipt.session_hash
+                                else None
+                            )
                 if monotonic() >= deadline:
                     raise MaticError(
                         "Robot did not report requested settings with the "
                         "dispatched active session"
                     )
                 await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
+
+    async def async_confirm_coverage_receipt(
+        self, receipt: CoverageReceipt, completion_session_hash: str
+    ) -> bool:
+        """Re-observe exact vacuum goals after that native session completed.
+
+        A cleared inactive session is allowed only because the unique retained
+        goal IDs and matched history key independently bind the same dispatch.
+        Unavailable or changed evidence withholds cadence credit; it does not
+        invalidate otherwise verified native cleaning completion.
+        """
+        if receipt.session_hash != completion_session_hash:
+            return False
+        try:
+            async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
+                identity = await self.async_get_cleaning_session_identity()
+                if identity is None or (
+                    identity
+                    and native_session_hash(identity, active=True)
+                    != receipt.session_hash
+                ):
+                    return False
+                if await self.async_get_active_cleaning_session_state() is not False:
+                    return False
+                if (
+                    coverage_floor_hash(await self.async_get_floor_plan())
+                    != receipt.floor_hash
+                ):
+                    return False
+                plan = await self.async_get_property("coverage_plan")
+                if not receipt_matches_plan(receipt, plan):
+                    return False
+                if (
+                    coverage_floor_hash(await self.async_get_floor_plan())
+                    != receipt.floor_hash
+                ):
+                    return False
+                if await self.async_get_active_cleaning_session_state() is not False:
+                    return False
+                if await self.async_get_cleaning_session_identity() != identity:
+                    return False
+                # A second fresh sample catches same-session edits during the
+                # floor/activity checks. The protocol has no atomic generation
+                # marker, so this establishes observed consistency only.
+                return receipt_matches_plan(
+                    receipt, await self.async_get_property("coverage_plan")
+                )
+        except MaticError, DecodeError, TimeoutError:
+            return False
 
     async def async_start_custom_coverage(
         self,

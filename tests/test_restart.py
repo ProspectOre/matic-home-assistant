@@ -1261,7 +1261,7 @@ async def test_restart_does_not_confirm_native_history_after_ownership_changes(
         await async_recover_managed_run(hass, entry, "serial")
 
     verify.assert_awaited_once()
-    assert manager.async_mark_completed.await_count == len(rooms)
+    assert manager.async_mark_completed.await_count == 1
     assert all(
         call.kwargs["run_id"] == "run"
         for call in manager.async_mark_completed.await_args_list

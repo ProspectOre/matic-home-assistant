@@ -218,7 +218,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 else {}
             )
             await plans.async_import_native_history(
-                serial_number, coordinator.data.floor_plan, native_history, **kwargs
+                serial_number,
+                coordinator.data.floor_plan,
+                native_history,
+                coverage_verifier=getattr(
+                    client, "async_confirm_coverage_receipt", None
+                ),
+                current_floor_plan=lambda: coordinator.data.floor_plan,
+                **kwargs,
             )
         slam_map = SlamMapStore(hass, entry.entry_id)
         await slam_map.async_load()
@@ -553,7 +560,12 @@ def _register_native_history_sync(
             return
         kwargs = {} if generation is None else {"generation": generation}
         await plans.async_import_native_history(
-            serial_number, coordinator.data.floor_plan, records, **kwargs
+            serial_number,
+            coordinator.data.floor_plan,
+            records,
+            coverage_verifier=getattr(client, "async_confirm_coverage_receipt", None),
+            current_floor_plan=lambda: coordinator.data.floor_plan,
+            **kwargs,
         )
 
     entry.async_on_unload(hass.bus.async_listen(EVENT_CLEANING_FINISHED, _async_sync))
@@ -629,6 +641,10 @@ async def _async_resume_native_reconciliation(
                         serial_number,
                         coordinator.data.floor_plan,
                         native_history,
+                        coverage_verifier=getattr(
+                            client, "async_confirm_coverage_receipt", None
+                        ),
+                        current_floor_plan=lambda: coordinator.data.floor_plan,
                         **kwargs,
                     )
 
