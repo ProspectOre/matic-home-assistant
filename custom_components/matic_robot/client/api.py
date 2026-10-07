@@ -672,12 +672,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             # prior sequence is acknowledged. The last decodable client state
             # therefore represents the currently displayed mission.
             mission_state = mission_states[-1]
-            coverage_ids = {plan.mission_id for plan in floor_plans}
-            canonical_ids = {floor.mission_id for floor in mission_state.mapped_floors}
-            if not canonical_ids or not canonical_ids.issubset(coverage_ids):
-                raise DecodeError(
-                    "coverage plan and canonical floor identities disagree"
-                )
+            # An unfinished inactive map may have no coverage partition. Only
+            # the verified selected floor must have exactly one usable plan.
             if expected_mission_id is None:
                 active_floor = mission_state.active_floor
                 if active_floor is None:
