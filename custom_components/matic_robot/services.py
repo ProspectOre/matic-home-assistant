@@ -75,6 +75,7 @@ from .plans import (
     ManagedMotionReplacedError,
     SavedPlanLimitError,
     async_get_plan_manager,
+    effective_room_settings,
     leg_groups,
     normalize_run_provenance,
     plan_floor_token,
@@ -1183,7 +1184,7 @@ async def _async_dispatch_leg_command(
     }
     if motion_token is not None:
         params[PLAN_MOTION_TOKEN] = motion_token
-    if len({(room.cleaning_mode, room.coverage_setting) for room in leg}) > 1:
+    if len({effective_room_settings(room) for room in leg}) > 1:
         params["room_coverage"] = [room.coverage_setting for room in leg]
         params["room_modes"] = [room.cleaning_mode for room in leg]
     if floor_token is not None:
@@ -3770,6 +3771,10 @@ async def _async_execute_rooms(
                 chosen,
                 mixed_settings=durable
                 and (recovery is None or checkpoint.get("mixed_settings") is True),
+                preserve_legacy_settings=(
+                    recovery is not None
+                    and checkpoint.get("mixed_settings") is not True
+                ),
             )
             begin_run = getattr(manager, "async_begin_run", None)
             if (

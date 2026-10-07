@@ -267,7 +267,9 @@ async def async_recover_managed_run(
             reason = "all_rooms_verified"
             return
         legs = leg_groups(
-            rooms, mixed_settings=checkpoint.get("mixed_settings") is True
+            rooms,
+            mixed_settings=checkpoint.get("mixed_settings") is True,
+            preserve_legacy_settings=checkpoint.get("mixed_settings") is not True,
         )
         leg_index = checkpoint.get("leg_index")
         if (

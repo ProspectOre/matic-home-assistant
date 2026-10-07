@@ -2,11 +2,11 @@
 
 [Cleaning guide](cleaning.md#saved-plans) · [Restart recovery](restart-recovery.md)
 
-Managed plans preserve each room's cleaning mode and coverage setting inside
+Managed plans preserve each room's cleaning mode and vacuum coverage setting inside
 one ordered native mission. A settings change no longer requires the integration
 to finish one mission at the dock before starting the next.
 
-For example, a plan can vacuum one room on Quick and mop the next on Optimal
+For example, a plan can vacuum one room on Quick and mop the next
 without an integration-imposed dock visit between settings. The robot still
 handles battery, water, and other servicing as needed.
 
@@ -25,9 +25,32 @@ handles battery, water, and other servicing as needed.
 Firmware can omit mop behavior 3 from the retained coverage goals in each
 mop-enabled room. Readback accepts that omission separately for each room only
 when the other three mop behaviors remain present exactly once at the requested
-coverage setting. Every vacuum goal and every other room, setting, floor, mode,
-and behavior must still match; extra or duplicated goals remain a failure.
+setting. Vacuum strength applies only to vacuum goals: Quick requests 2,
+Optimal requests 1, and Heavy Duty requests 0. The native app requests Standard
+(1) for mop goals at every vacuum strength. The integration follows that same
+rule for room, mixed-room, and custom-area commands while preserving saved
+vacuum choices. Heavy Duty vacuum groups can retain setting 3 instead of 0.
+When the native double-pass override is enabled, firmware can also replace each
+complete Standard mop group with setting 3. The
+integration requires an enabled-state read on both sides of a fresh plan read
+before accepting that override. Off, unknown, or malformed state cannot qualify
+it. Partial group rewrites fail; every room, floor, mode, and behavior must still
+match, including all eight Heavy Duty vacuum siblings. Extra or duplicated goals
+remain a failure. Mop setting 4 is not an accepted transformation.
 This readback rule does not grant cleaning completion credit.
+
+The native switch uses field 1's empty-message arm for off and field 2's arm for
+on. Earlier integration versions reversed both display and write semantics.
+Native-app comparisons on firmware v178.8 with app 1.175.1 established the
+toggle semantics and Standard/Heavy Duty combined-mode retained settings.
+A static trace of the installed app's serializer independently established
+Standard mop encoding. New expected spec bytes are synthetic assertions of
+that traced contract; they are not presented as native-generated fixtures.
+The corrected standalone client accepted all 18 combinations of three modes,
+three vacuum strengths, and double-pass off/on in bounded tests. Every case
+verified Stop settlement and docking, and restored the original override.
+These observations qualify current state and retained goals. They do not
+establish completed cleaning or acceptance of an installed HA candidate.
 
 Mixed readback verification has one eight-second deadline. Expiry reports a
 specific verification error, including when the deadline interrupts a request or

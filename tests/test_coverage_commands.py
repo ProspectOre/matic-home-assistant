@@ -119,6 +119,52 @@ def test_heavy_duty_custom_vacuum_matches_official_encoder_byte_for_byte() -> No
     )
 
 
+@pytest.mark.parametrize("kind", ("rooms", "custom"))
+@pytest.mark.parametrize("mode", CleaningMode)
+@pytest.mark.parametrize(
+    "setting,value",
+    (
+        (CoverageSetting.QUICK, 2),
+        (CoverageSetting.STANDARD, 1),
+        (CoverageSetting.HEAVY_DUTY, 0),
+    ),
+)
+def test_vacuum_strength_never_changes_native_standard_mop_specs(
+    kind, mode, setting, value
+):
+    """Independent spec-byte contract from the native app serializer trace.
+
+    These are synthetic expected bytes, not new native-generated fixtures.
+    Existing official fixtures separately bind the surrounding wire shape.
+    """
+    if kind == "rooms":
+        payload = encode_coverage_command(
+            mission_id=42,
+            partition_id=PARTITION_ID,
+            region_ids=[REGION_ID],
+            cleaning_mode=mode,
+            coverage_setting=setting,
+        )
+    else:
+        payload = encode_custom_coverage_command(
+            mission_id=42,
+            circles=((0.0, 0.0, 0.4),),
+            cleaning_mode=mode,
+            coverage_setting=setting,
+        )
+    goals = bytes_fields(first_bytes(_coverage(payload), 5), 2)
+    specs = [first_bytes(first_bytes(goal, 6), 3) for goal in goals]
+    vacuum = [
+        bytes((8, value, 16, floor, 32, 0, 40, behavior))
+        for floor in (0, 1)
+        for behavior in range(4)
+    ]
+    mop = [bytes.fromhex(f"08011000200128{behavior:02x}") for behavior in range(4)]
+    assert specs == (vacuum if mode != CleaningMode.MOP else []) + (
+        mop if mode != CleaningMode.VACUUM else []
+    )
+
+
 @pytest.mark.parametrize(
     ("mode", "expected_goals"),
     [

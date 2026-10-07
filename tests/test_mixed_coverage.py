@@ -79,7 +79,7 @@ def _deterministic_mixed_commands(**kwargs):
     )
 
 
-def _synthetic_goal(spec=None, *, duplicate_round=False):
+def _synthetic_goal(spec=None, *, duplicate_round=False, region_id=ROOMS[0]):
     if spec is None:
         spec = (
             _varint_field(1, 1)
@@ -94,7 +94,7 @@ def _synthetic_goal(spec=None, *, duplicate_round=False):
     target = (
         _field(1, _field(1, _wrapped_uuid(PARTITION)))
         + _field(2, _field(1, b""))
-        + _field(3, _field(3, _field(2, _wrapped_uuid(ROOMS[0]))))
+        + _field(3, _field(3, _field(2, _wrapped_uuid(region_id))))
     )
     encoded = _field(6, round_key) + _field(7, target)
     return encoded + (_field(6, round_key) if duplicate_round else b"")
@@ -172,9 +172,10 @@ def test_all_mode_setting_pairs_preserve_first_room(mode1, mode2, setting1, sett
     assert b(initial, 6) == b(update, 6)
     for goal in after[count[mode1] :]:
         spec = b(b(goal, 6), 3)
-        assert (
-            v(spec, 1)
-            == {Setting.QUICK: 2, Setting.OPTIMAL: 1, Setting.HEAVY_DUTY: 0}[setting2]
+        assert v(spec, 1) == (
+            1
+            if v(spec, 4) == 1
+            else {Setting.QUICK: 2, Setting.OPTIMAL: 1, Setting.HEAVY_DUTY: 0}[setting2]
         )
         assert v(spec, 4) in (
             {0, 1} if mode2 == Mode.BOTH else {0} if mode2 == Mode.VACUUM else {1}
@@ -362,7 +363,9 @@ def test_mixed_groups_keep_legacy_recovery_boundaries():
         CleaningRoom("three", "Three", "vacuum_and_mop", "heavy_duty"),
     ]
     assert leg_groups(rooms, mixed_settings=True) == [rooms]
-    assert leg_groups(rooms, mixed_settings=False) == [[r] for r in rooms]
+    assert leg_groups(rooms, mixed_settings=False, preserve_legacy_settings=True) == [
+        [r] for r in rooms
+    ]
 
 
 @pytest.fixture
@@ -1087,7 +1090,11 @@ async def test_runner_passes_each_rooms_mode_and_setting(
     assert params["ordered"] is True
     assert params["cleaning_mode"] == mode1.value
     assert params["coverage"] == setting1.value
-    if (mode1, setting1) == (mode2, setting2):
+    effective_settings = {
+        (mode, Setting.STANDARD if mode is Mode.MOP else setting)
+        for mode, setting in ((mode1, setting1), (mode2, setting2))
+    }
+    if len(effective_settings) == 1:
         assert "room_modes" not in params
         assert "room_coverage" not in params
     else:
