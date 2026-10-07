@@ -37,6 +37,7 @@ from .area_binding import (
     binding_for_area,
 )
 from .area_selector import GeometryTooComplex
+from .client.commands import CleaningMode, CoverageSetting
 from .client.models import CleaningSessionRecord, FloorPlan, Room
 from .const import DATA_PLAN_MANAGER, DOMAIN, EVENT_PLAN_DOCKED
 
@@ -115,6 +116,21 @@ class CleaningRoom:
     coverage_setting: str
 
 
+def effective_room_settings(room: CleaningRoom) -> tuple[str, str]:
+    """Return settings that affect the goals emitted for one room.
+
+    Mop goals always use the standard goal setting; retain the stored value on
+    ``CleaningRoom`` while excluding that unused vacuum preference from
+    mission grouping and mixed-dispatch decisions.
+    """
+    return (
+        room.cleaning_mode,
+        CoverageSetting.STANDARD.value
+        if room.cleaning_mode == CleaningMode.MOP.value
+        else room.coverage_setting,
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class _RotationCandidate:
     """One room's trusted rotation key and explainable selection metadata."""
@@ -162,23 +178,28 @@ def plan_floor_token(floor_plan: FloorPlan) -> str:
 
 
 def leg_groups(
-    rooms: Sequence[CleaningRoom], *, mixed_settings: bool = False
+    rooms: Sequence[CleaningRoom],
+    *,
+    mixed_settings: bool = False,
+    preserve_legacy_settings: bool = False,
 ) -> list[list[CleaningRoom]]:
     """Group consecutive rooms that can share one native mission.
 
-    Per-room goals keep settings transitions inside one native mission.
-    Firmware owns any required resource servicing. Old checkpoints retain
-    their original settings-boundary grouping during restart recovery.
+    Per-room goals keep effective settings transitions inside one native
+    mission. Firmware owns any required resource servicing. Old checkpoints
+    retain their original stored-setting boundaries during restart recovery.
     """
+
+    def group_key(room: CleaningRoom) -> tuple[str, str]:
+        if preserve_legacy_settings:
+            return room.cleaning_mode, room.coverage_setting
+        return effective_room_settings(room)
+
     groups: list[list[CleaningRoom]] = []
     for room in rooms:
         previous = groups[-1][-1] if groups else None
         if previous is not None and (
-            mixed_settings
-            or (
-                previous.cleaning_mode == room.cleaning_mode
-                and previous.coverage_setting == room.coverage_setting
-            )
+            mixed_settings or group_key(previous) == group_key(room)
         ):
             groups[-1].append(room)
         else:

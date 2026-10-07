@@ -1206,6 +1206,25 @@ def test_leg_groups_split_only_on_settings_changes() -> None:
     assert leg_groups([]) == []
 
 
+def test_leg_groups_ignore_unused_mop_coverage_settings() -> None:
+    mop_quick = CleaningRoom("mop-a", "Mop A", "mop", "quick")
+    mop_heavy = CleaningRoom("mop-b", "Mop B", "mop", "heavy_duty")
+    vacuum_quick = CleaningRoom("vac-a", "Vacuum A", "vacuum", "quick")
+    vacuum_heavy = CleaningRoom("vac-b", "Vacuum B", "vacuum", "heavy_duty")
+    both_heavy = CleaningRoom("both", "Both", "vacuum_and_mop", "heavy_duty")
+
+    assert leg_groups([mop_quick, mop_heavy]) == [[mop_quick, mop_heavy]]
+    assert leg_groups([mop_quick, mop_heavy], preserve_legacy_settings=True) == [
+        [mop_quick],
+        [mop_heavy],
+    ]
+    assert leg_groups([vacuum_quick, vacuum_heavy]) == [
+        [vacuum_quick],
+        [vacuum_heavy],
+    ]
+    assert leg_groups([mop_quick, both_heavy]) == [[mop_quick], [both_heavy]]
+
+
 async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
     captured = []
 

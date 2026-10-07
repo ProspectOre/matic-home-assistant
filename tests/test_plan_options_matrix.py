@@ -21,6 +21,7 @@ from custom_components.matic_robot.services import RoomRunOutcome, _async_execut
 LAYOUTS = (
     (("mop", "quick"), ("mop", "standard"), ("mop", "heavy_duty")),
     (("vacuum_and_mop", "standard"),) * 3,
+    (("vacuum", "quick"), ("vacuum", "heavy_duty")),
     (
         ("vacuum_and_mop", "quick"),
         ("vacuum", "quick"),
@@ -86,7 +87,14 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
         assert params["ordered"] is True
         assert params["cleaning_mode"] == expected[0].cleaning_mode
         assert params["coverage"] == expected[0].coverage_setting
-        if len(set(layout)) > 1:
+        effective_settings = {
+            (
+                r.cleaning_mode,
+                "standard" if r.cleaning_mode == "mop" else r.coverage_setting,
+            )
+            for r in expected
+        }
+        if len(effective_settings) > 1:
             assert params["room_modes"] == [r.cleaning_mode for r in expected]
             assert params["room_coverage"] == [r.coverage_setting for r in expected]
         else:

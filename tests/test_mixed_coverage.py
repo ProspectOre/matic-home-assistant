@@ -363,7 +363,9 @@ def test_mixed_groups_keep_legacy_recovery_boundaries():
         CleaningRoom("three", "Three", "vacuum_and_mop", "heavy_duty"),
     ]
     assert leg_groups(rooms, mixed_settings=True) == [rooms]
-    assert leg_groups(rooms, mixed_settings=False) == [[r] for r in rooms]
+    assert leg_groups(rooms, mixed_settings=False, preserve_legacy_settings=True) == [
+        [r] for r in rooms
+    ]
 
 
 @pytest.fixture
@@ -1088,7 +1090,11 @@ async def test_runner_passes_each_rooms_mode_and_setting(
     assert params["ordered"] is True
     assert params["cleaning_mode"] == mode1.value
     assert params["coverage"] == setting1.value
-    if (mode1, setting1) == (mode2, setting2):
+    effective_settings = {
+        (mode, Setting.STANDARD if mode is Mode.MOP else setting)
+        for mode, setting in ((mode1, setting1), (mode2, setting2))
+    }
+    if len(effective_settings) == 1:
         assert "room_modes" not in params
         assert "room_coverage" not in params
     else:
