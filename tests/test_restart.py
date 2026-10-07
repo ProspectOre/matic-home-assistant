@@ -739,7 +739,9 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
         patch(
             "custom_components.matic_robot.managed_executor.leg_groups",
             side_effect=lambda rooms, **kwargs: leg_groups(
-                rooms, mixed_settings=history_state == "available"
+                rooms,
+                mixed_settings=history_state == "available",
+                preserve_legacy_settings=kwargs.get("preserve_legacy_settings", False),
             ),
         ),
     ):
