@@ -3126,17 +3126,6 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
         echo "A durably observed gate run no longer matches its trusted workflow; refusing to clear the gate." >&2
         return 2
       fi
-      if sensor_observation_pending "$active_id" && ! is_review_sensor_snapshot "$known_snapshot"; then
-        if ! is_aliased_lifecycle_snapshot "$known_snapshot"; then
-          echo "A persisted sensor has no authenticated review-event type; refusing capture settlement." >&2
-          return 2
-        fi
-        # Keep the historical false sensor marker unchanged. The authenticated
-        # lifecycle run still owes its independent gate evaluation; no review
-        # event, capture receipt or acknowledgement is manufactured here.
-        sensor_observed_ids="$(printf '%s\n' "$sensor_observed_ids" | awk -v id="$active_id" '$0 != id')"
-        persist_gate_observation "$active_id" || return 2
-      fi
       if sensor_observation_pending "$active_id" && ! jq -e --arg workflow "$sensor_id" --arg head "$head_sha" \
           '(.workflow_id | tostring) == $workflow and .head_sha == $head' <<< "$known_snapshot" >/dev/null; then
         echo "A durably observed review sensor no longer matches its trusted workflow and exact head; refusing to clear the gate." >&2
@@ -3151,7 +3140,9 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
           and (.pull_requests | type) == "array" and (.pull_requests | length) > 0
           and all(.pull_requests[]; .number != ($pr | tonumber))
         ' <<< "$known_snapshot" >/dev/null; then
-        # This settles only a false observation, never capture or review evidence.
+        # Positive foreign PR association retires a false observation before
+        # classifying aliased gate/sensor event types. Identity and sensor head
+        # checks above still apply; this supplies no capture or review evidence.
         if gate_observation_pending "$active_id"; then
           stamp_status "review-gate-event-observed/$pr_number/$active_id" success \
             "Foreign gate run $active_id; no event receipt for PR #$pr_number on head $head_sha" >/dev/null || return 2
@@ -3163,6 +3154,17 @@ print(value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
           sensor_observed_ids="$(printf '%s\n' "$sensor_observed_ids" | awk -v id="$active_id" '$0 != id')"
         fi
         continue
+      fi
+      if sensor_observation_pending "$active_id" && ! is_review_sensor_snapshot "$known_snapshot"; then
+        if ! is_aliased_lifecycle_snapshot "$known_snapshot"; then
+          echo "A persisted sensor has no authenticated review-event type; refusing capture settlement." >&2
+          return 2
+        fi
+        # Keep the historical false sensor marker unchanged. The authenticated
+        # lifecycle run still owes its independent gate evaluation; no review
+        # event, capture receipt or acknowledgement is manufactured here.
+        sensor_observed_ids="$(printf '%s\n' "$sensor_observed_ids" | awk -v id="$active_id" '$0 != id')"
+        persist_gate_observation "$active_id" || return 2
       fi
       if gate_observation_pending "$active_id" && [[ "$known_workflow" == "$gate_id" ]] && \
           jq -e '(.pull_requests | length) == 0' <<< "$known_snapshot" >/dev/null; then
