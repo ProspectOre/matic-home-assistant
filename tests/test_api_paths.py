@@ -1460,7 +1460,10 @@ async def test_numeric_floor_labels_preserve_identity_rejections(monkeypatch, mi
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.decode_floor_plans", lambda _: plans
     )
-    active = _labeled_floor(84, 6 if mismatch == "label_variant" else 5)
+    active = _labeled_floor(
+        126 if mismatch == "coverage" else 84,
+        6 if mismatch == "label_variant" else 5,
+    )
     canonical = (
         _labeled_floor(126 if mismatch == "coverage" else 42, 5),
         _labeled_floor(84, 5),
@@ -1546,6 +1549,44 @@ async def test_multi_floor_read_ignores_unreferenced_coverage_partitions(
     assert selected.mission_id == 42
     assert selected.floor_label == "Main"
     assert selected.mapped_floors == (active_floor,)
+
+
+@pytest.mark.parametrize("expected_mission_id", [None, 42, 126])
+async def test_multi_floor_read_scopes_missing_coverage_to_selected_floor(
+    monkeypatch, expected_mission_id
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    plans = (
+        FloorPlan(42, "first", b"first", ()),
+        FloorPlan(84, "second", b"second", ()),
+    )
+    floors = tuple(_labeled_floor(mission, 5) for mission in (42, 84, 126))
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(
+                b"current", _mission_client_state(active=floors[0], canonical=floors)
+            ),
+        )
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans", lambda _: plans
+    )
+
+    if expected_mission_id == 126:
+        with pytest.raises(CannotConnectError, match="malformed floor plan"):
+            await client.async_get_floor_plan(expected_mission_id=expected_mission_id)
+    else:
+        selected = await client.async_get_floor_plan(
+            expected_mission_id=expected_mission_id
+        )
+        assert selected.mission_id == 42
+        assert selected.partition_id_wire == plans[0].partition_id_wire
+        assert tuple(floor.mission_id for floor in selected.mapped_floors) == (
+            42,
+            84,
+            126,
+        )
 
 
 async def test_multi_floor_read_prefers_verified_live_map_mission(
@@ -1641,13 +1682,13 @@ async def test_single_floor_read_needs_no_mission_catalog(monkeypatch) -> None:
         (
             (HermesCollectionEntry(b"", b"state"),),
             MissionClientState(
-                MappedFloor(42, "Main", "1" * 64),
+                MappedFloor(126, "Other", "3" * 64),
                 (
                     MappedFloor(42, "Main", "1" * 64),
                     MappedFloor(126, "Other", "3" * 64),
                 ),
             ),
-            "canonical floor identities disagree",
+            "does not identify one coverage floor",
         ),
         (
             (HermesCollectionEntry(b"", b"state"),),
