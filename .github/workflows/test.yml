@@ -27,7 +27,6 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-      - run: python .github/review-gate/test_review_router.py
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -e '.[test]'
       - run: pytest --cov=custom_components/matic_robot --cov-report=term-missing

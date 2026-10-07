@@ -78,10 +78,6 @@ show_missing = true
 target-version = "py314"
 line-length = 88
 
-[tool.ruff.format]
-# Canonical generated policy is owned upstream; do not reformat its pinned bytes.
-exclude = [".github/review-gate/*.py"]
-
 [tool.ruff.lint]
 select = [
   "ASYNC",
@@ -97,10 +93,6 @@ select = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-# Keep exact SHA-pinned canonical sources unchanged; line-length checks run upstream.
-".github/review-gate/native_codex_review.py" = ["E501"]
-".github/review-gate/issue_comment_receipts.py" = ["E501"]
-".github/review-gate/review_sections.py" = ["E501"]
 "custom_components/matic_robot/client/proto/*" = ["ALL"]
 "tests/*" = ["S101"]
 

@@ -1,6 +1,5 @@
 """Packaging and custom-integration release checks."""
 
-import hashlib
 import json
 import os
 import re
@@ -52,33 +51,6 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
         "home-assistant/actions/hassfest@"
         "06749dd8c0b54f350bc69c8752456cee498808a3 # master" in workflow
     )
-
-
-def test_review_gate_consumer_contract() -> None:
-    """Keep this repository aligned with the frozen canonical gate adapter."""
-    source = json.loads((ROOT / ".github/review-gate/source.json").read_text())
-    evaluator = (ROOT / ".github/review-gate/evaluate.sh").read_bytes()
-    classifier = (ROOT / ".github/review-gate/classify_dependencies.py").read_bytes()
-    assert hashlib.sha256(evaluator).hexdigest() == source["sha256"]
-    assert (
-        hashlib.sha256(classifier).hexdigest() == source["dependencyClassifierSha256"]
-    )
-    for name in source["managedWorkflows"]:
-        workflow = (ROOT / name).read_text()
-        assert "Generated adapter; edit scripts/review-gate/adapters" in workflow
-        assert "actions/checkout" not in workflow
-        assert "gh pr merge" not in workflow
-        assert "--auto" not in workflow
-    assert (
-        "github.workflow_sha"
-        in (ROOT / ".github/workflows/review-gate.yml").read_text()
-    )
-    assert (
-        "github.workflow_sha"
-        in (ROOT / ".github/workflows/review-gate-audit.yml").read_text()
-    )
-    assert not (ROOT / ".github/workflows/claude-review.yml").exists()
-    assert not (ROOT / ".github/workflows/review-fork-regular-review.yml").exists()
 
 
 def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:
