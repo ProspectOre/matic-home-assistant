@@ -7,7 +7,9 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from homeassistant.auth.const import GROUP_ID_ADMIN, GROUP_ID_USER
 from homeassistant.components.websocket_api.commands import handle_unsubscribe_events
+from homeassistant.components.websocket_api.connection import ActiveConnection
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.exceptions import ConfigEntryAuthFailed, Unauthorized
@@ -885,6 +887,35 @@ def test_unloaded_entry_and_subscribe_request_authorization() -> None:
             connection,
             {"id": 10, "entry_id": "entry-a", "version": 1},
         )
+
+
+@pytest.mark.asyncio
+async def test_admin_demotion_removes_workspace_subscription_before_delivery(
+    hass,
+) -> None:
+    """A live connection stops receiving workspace events after admin demotion."""
+    user = await hass.auth.async_create_system_user(
+        "synthetic-workspace-user", group_ids=[GROUP_ID_ADMIN]
+    )
+    assert user.is_admin
+
+    hass.data.setdefault("websocket_api", {})
+    send_message = MagicMock()
+    connection = ActiveConnection(
+        MagicMock(), hass, send_message, user, refresh_token=None, remote=None
+    )
+    manager = WorkspaceSocket(_Hass([_entry("entry-a")]))
+    manager.subscribe(connection, "entry-a", 11)
+
+    await hass.auth.async_update_user(user, group_ids=[GROUP_ID_USER])
+
+    assert connection.user is user
+    assert not connection.user.is_admin
+    manager._invalidate("entry-a", ["robot_state"])
+
+    send_message.assert_not_called()
+    assert not manager._subscriptions
+    assert 11 not in connection.subscriptions
 
 
 def test_websocket_subscribe_returns_handshake_and_replays_snapshot_gap() -> None:
