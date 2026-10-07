@@ -419,6 +419,33 @@ async def test_firmware_research_tool_requires_current_admin() -> None:
     hass.auth.async_get_user.assert_awaited_with("deleted-user")
 
 
+@pytest.mark.parametrize(
+    "tool_name",
+    [
+        "MaticGetOperations",
+        "MaticGetPlan",
+        "MaticGetNativeHistory",
+        "MaticGetRecentEvents",
+        "MaticGetActivity",
+    ],
+)
+async def test_retained_operations_tools_recheck_admin_after_demotion(
+    tool_name: str,
+) -> None:
+    hass = _hass(_entry())
+    hass.auth.async_get_user.side_effect = [
+        SimpleNamespace(is_admin=True),
+        SimpleNamespace(is_admin=False),
+    ]
+    instance = await MaticOperationsAPI(hass).async_get_api_instance(_context())
+    tool = next(tool for tool in instance.tools if tool.name == tool_name)
+
+    with pytest.raises(HomeAssistantError, match="Administrator"):
+        await tool.async_call(hass, llm.ToolInput(tool_name, {}), _context())
+
+    assert hass.auth.async_get_user.await_count == 2
+
+
 async def test_firmware_claim_and_complete_tools_bind_args_and_errors() -> None:
     from custom_components.matic_robot.llm import (
         MaticClaimFirmwareInvestigationTool,

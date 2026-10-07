@@ -284,7 +284,7 @@ class MaticGetFirmwareTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
         args = self.parameters(tool_input.tool_args)
-        await _require_firmware_research_admin(hass, llm_context)
+        await _require_current_admin(hass, llm_context)
         entries = (
             [_resolve_entry(hass, args["robot"])]
             if args.get("robot")
@@ -313,9 +313,7 @@ _FIRMWARE_CLAIM_FIELDS = {
 }
 
 
-async def _require_firmware_research_admin(
-    hass: HomeAssistant, context: llm.LLMContext
-) -> None:
+async def _require_current_admin(hass: HomeAssistant, context: llm.LLMContext) -> None:
     user_id = context.context.user_id if context.context else None
     user = await hass.auth.async_get_user(user_id) if user_id else None
     if user is None or not user.is_admin:
@@ -343,7 +341,7 @@ class MaticClaimFirmwareInvestigationTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
         args = self.parameters(tool_input.tool_args)
-        await _require_firmware_research_admin(hass, llm_context)
+        await _require_current_admin(hass, llm_context)
         entry = _resolve_entry(hass, args.pop("robot", None))
         try:
             result = (
@@ -387,7 +385,7 @@ class MaticCompleteFirmwareInvestigationTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
         args = self.parameters(tool_input.tool_args)
-        await _require_firmware_research_admin(hass, llm_context)
+        await _require_current_admin(hass, llm_context)
         entry = _resolve_entry(hass, args.pop("robot", None))
         try:
             await entry.runtime_data.firmware_tracker.async_complete_investigation(
@@ -416,6 +414,7 @@ class MaticGetOperationsTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
         """Return a bounded operational summary for each loaded robot."""
+        await _require_current_admin(hass, llm_context)
         entries = _loaded_entries(hass)
         return {
             "read_only": True,
@@ -447,6 +446,7 @@ class MaticGetPlanTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
         """Return one plan's next-run leg boundary contract."""
+        await _require_current_admin(hass, llm_context)
         args = self.parameters(tool_input.tool_args)
         entry = _resolve_entry(hass, args.get("robot"))
         runtime = entry.runtime_data
@@ -617,6 +617,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
         """Read and sanitize recent native session records."""
+        await _require_current_admin(hass, llm_context)
         args = self.parameters(tool_input.tool_args)
         entry = _resolve_entry(hass, args.get("robot"))
         try:
@@ -767,6 +768,7 @@ class MaticGetRecentEventsTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
         """Return newest events first without querying recorder storage."""
+        await _require_current_admin(hass, llm_context)
         args = self.parameters(tool_input.tool_args)
         source = (
             self.api.recent_events
@@ -827,6 +829,7 @@ class MaticGetActivityTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
         """Return a detached page and the full available observation window."""
+        await _require_current_admin(hass, llm_context)
         args = self.parameters(tool_input.tool_args)
         entry = _resolve_entry(hass, args.get("robot"))
         observations = [
