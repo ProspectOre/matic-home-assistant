@@ -756,11 +756,16 @@ clean_short_head_resolves() {
         }
       } }
     }')" || return 1
-  jq -en --arg repo "$REPO" --argjson pr "$pr_number" --arg head "$head_sha" --arg prefix "$head_prefix" \
-    --argjson require_monotonic "$require_monotonic" \
-    --argjson commits "$commits" --argjson history "$history" '
-    if ($commits | type) != "array" or ($commits | length) == 0
+  # Complete inventories can exceed the platform's per-argument size limit.
+  # Stream exactly two JSON values; preserve every record for validation.
+  printf '%s\n' "$commits" "$history" \
+    | jq -es --arg repo "$REPO" --argjson pr "$pr_number" --arg head "$head_sha" --arg prefix "$head_prefix" \
+      --argjson require_monotonic "$require_monotonic" '
+    if length != 2 then false else
+    .[0] as $commits | .[1] as $history
+    | if ($commits | type) != "array" or ($commits | length) == 0
         or any($commits[]; type != "array")
+        or ([$commits[][]] | length) == 0
         or any($commits[][]; (.sha | type) != "string" or ((.sha | test("^[0-9a-f]{40}$")) | not))
         or ($history | type) != "array" or ($history | length) == 0
         or any($history[]; ((.errors // []) | length) != 0
@@ -785,7 +790,7 @@ clean_short_head_resolves() {
               | map(select(startswith($prefix))) | unique | . == [$head])
             and (($require_monotonic | not) or ([$pages[].nodes[]] | length) == 0)
           end
-      end' >/dev/null
+      end end' >/dev/null
 }
 
 base_change_marker_exists() {
@@ -1703,7 +1708,10 @@ read_gate_snapshot() (
     python3 -I "$native_codex_helper" check-source --objects "$native_codex_objects" \
       --repo "$REPO" --pr "$pr_number" --head "$head_sha" --base "$base_sha" \
       <<< "$native_codex_delivery" || exit 1
-    evidence="$(jq --argjson native "$native_codex_delivery" '.deliveries += [$native]' <<< "$evidence")"
+    evidence="$(printf '%s\n' "$evidence" "$native_codex_delivery" | jq -ces '
+      if length != 2 then error("invalid native snapshot inputs") else
+        .[0] as $evidence | .[1] as $native | $evidence | .deliveries += [$native]
+      end')"
   fi
   deliveries="$(jq -c '.deliveries' <<< "$evidence")"
   reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
@@ -1763,13 +1771,13 @@ read_gate_snapshot() (
   finding_count="$(jq '[.[].active_count] | add // 0' <<< "$thread_summary")"
   security_findings="$(active_security_findings)"
   security_finding_count="$(jq '[.[] | select(.uncertain != true)] | length' <<< "$security_findings")"
-  printf '%s\n%s\n%s\n' "$deliveries" "$thread_summary" "$security_findings" \
+  printf '%s\n' "$deliveries" "$thread_summary" "$security_findings" "$verdict" \
     | jq -cs \
-    --argjson verdict "$verdict" \
     --argjson finding_count "$finding_count" \
     --argjson security_finding_count "$security_finding_count" \
     --arg latest_finding_at "$latest_finding_at" \
-    '.[0] as $deliveries | .[1] as $thread_summary | .[2] as $security_findings
+    'if length != 4 then error("invalid review snapshot inputs") else
+    .[0] as $deliveries | .[1] as $thread_summary | .[2] as $security_findings | .[3] as $verdict
     | {deliveries: $deliveries,
       regular_findings: (([$deliveries[] | select((.clean | not) and .neutral != true and .unverified != true and .dismissed != true) | {source: (if .source == "issue_comment" then "issue-comment" else .source end), id: (.id | sub("^issue-comment-"; ""))}] + [$thread_summary[] | select(.total_count > 0) | {source:"review", id:.id}]) | unique),
       verdict: $verdict,
@@ -1778,7 +1786,7 @@ read_gate_snapshot() (
       security_uncertainty_count: ([$security_findings[] | select(.uncertain == true)] | length),
       security_unknown_scope_count: ([$security_findings[] | select(.scope_unknown == true)] | length),
       security_findings: $security_findings,
-      latest_finding_at: $latest_finding_at}'
+      latest_finding_at: $latest_finding_at} end'
 )
 
 require_clean_regular_snapshot() {
