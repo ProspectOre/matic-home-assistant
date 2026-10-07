@@ -1430,18 +1430,15 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     require_current()
                     stage = "coverage_plan"
                     try:
-                        actual_goals = Counter(
-                            coverage_plan_goal_signatures(
-                                await self.async_get_property("coverage_plan")
-                            )
-                        )
+                        (
+                            actual_goals,
+                            matched,
+                        ) = await self._async_read_coverage_readback(expected_goals)
                         malformed = False
                     except DecodeError:
                         actual_goals = Counter()
                         malformed = True
-                    matched = mixed_coverage_readback_matches(
-                        expected_goals, actual_goals
-                    )
+                        matched = False
                     stage = "session_identity"
                     if (
                         await self.async_get_cleaning_session_identity()
@@ -1461,6 +1458,48 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 expected_goals, actual_goals, stage=stage, malformed=malformed
             )
             raise MaticError("Mixed coverage readback verification timed out") from err
+
+    async def _async_read_coverage_readback(
+        self, expected_goals: Counter[tuple[str, int, int, int, int]]
+    ) -> tuple[Counter[tuple[str, int, int, int, int]], bool]:
+        """Qualify an override with current native state around a fresh plan.
+
+        This is observed current-state consistency, not proof that the global
+        override was enabled at dispatch or an atomic property snapshot.
+        The caller must still verify native session and ownership guards.
+        """
+        actual_goals = Counter(
+            coverage_plan_goal_signatures(
+                await self.async_get_property("coverage_plan")
+            )
+        )
+        if mixed_coverage_readback_matches(expected_goals, actual_goals):
+            return actual_goals, True
+        if not mixed_coverage_readback_matches(
+            expected_goals, actual_goals, deep_mop_enabled=True
+        ):
+            return actual_goals, False
+        if (
+            _decode_deep_mop_state(
+                await self.async_get_property("deep_mop_override_setting_state")
+            )
+            is not True
+        ):
+            return actual_goals, False
+        actual_goals = Counter(
+            coverage_plan_goal_signatures(
+                await self.async_get_property("coverage_plan")
+            )
+        )
+        deep_mop_enabled = (
+            _decode_deep_mop_state(
+                await self.async_get_property("deep_mop_override_setting_state")
+            )
+            is True
+        )
+        return actual_goals, deep_mop_enabled and mixed_coverage_readback_matches(
+            expected_goals, actual_goals, deep_mop_enabled=True
+        )
 
     async def async_start_custom_coverage(
         self,
@@ -1496,7 +1535,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Set the verified double-pass mopping override."""
         await self._async_send_channel_payload(
             "deep_mop_override_setting_command",
-            b"\x0a\x00" if enabled else b"\x12\x00",
+            b"\x12\x00" if enabled else b"\x0a\x00",
         )
 
     async def async_set_water_flow(self, factor: float) -> None:
@@ -1907,16 +1946,17 @@ def _decode_binary_state(payload: object) -> bool | None:
 
 
 def _decode_deep_mop_state(payload: object) -> bool | None:
-    """Decode the verified DeepMopOverrideSetting oneof."""
+    """Decode the native app's observed disabled/enabled empty-message arms.
+
+    Field 1 is disabled; field 2 enables double-pass mopping. Accept only the
+    complete observed encodings so ambiguous or malformed state cannot qualify
+    a firmware coverage-setting override.
+    """
     if not isinstance(payload, bytes):
         return None
-    try:
-        fields = decode_fields(payload)
-    except DecodeError:
-        return None
-    if any(field.number == 1 and field.wire_type == 2 for field in fields):
+    if payload == b"\x12\x00":
         return True
-    if any(field.number == 2 and field.wire_type == 2 for field in fields):
+    if payload == b"\x0a\x00":
         return False
     return None
 

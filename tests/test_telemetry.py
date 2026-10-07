@@ -36,8 +36,8 @@ def test_decode_safe_telemetry_fixtures() -> None:
     assert _decode_current_version(version) == ("v200.1", "stable", 25, True)
     assert _decode_binary_state(b"\x08\x01") is True
     assert _decode_binary_state(b"tombstone-value!") is False
-    assert _decode_deep_mop_state(b"\x0a\x00") is True
-    assert _decode_deep_mop_state(b"\x12\x00") is False
+    assert _decode_deep_mop_state(b"\x0a\x00") is False
+    assert _decode_deep_mop_state(b"\x12\x00") is True
     assert _decode_presence_state(b"tombstone-value!") is False
     assert _decode_presence_state(b"\x0a\x00") is True
     assert _decode_water_flow_factor(b"\x0a\x05\x0d" + struct.pack("<f", 1.4)) == 1.4
@@ -84,6 +84,21 @@ def test_decode_optional_telemetry_handles_defaults_and_unknowns() -> None:
     assert _decode_update_state(b"\x3a\x00") is None
     assert _decode_timezone(b"tombstone-value!") is None
     assert _decode_wifi_status(b"\x08\x63")[0] == "unknown"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b"",
+        b"\x0a\x00\x12\x00",
+        b"\x12\x00\x0a\x00",
+        b"\x12\x00\x12\x00",
+        b"\x12\x02\x08\x01",
+        b"\x10\x01",
+    ),
+)
+def test_double_pass_rejects_ambiguous_or_unobserved_state(payload) -> None:
+    assert _decode_deep_mop_state(payload) is None
 
 
 async def test_active_cleaning_session_reads_only_presence() -> None:
@@ -167,7 +182,7 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
         "update_state": b"\x0a\x00",
         "voice_enabled_state": b"disabled-setting",
         "matter_pairing_state": b"disabled-setting",
-        "deep_mop_override_setting_state": b"\x12\x00",
+        "deep_mop_override_setting_state": b"\x0a\x00",
         "water_flow_override_state": b"\x0a\x05\x0d" + struct.pack("<f", 1.0),
         "time_zone": b"\x0a\x0b\x12\x09Etc/UTC+1",
         "wifi_status": b"\x08\x03\x22\x0cprivate-ssid",
@@ -210,8 +225,8 @@ async def test_verified_setting_payloads_and_bounds() -> None:
     assert client._async_send_channel_payload.await_args_list == [
         call("child_lock_enabled_command", b"\x08\x01"),
         call("petwaste_enabled_command", b"\x08\x00"),
-        call("deep_mop_override_setting_command", b"\x0a\x00"),
         call("deep_mop_override_setting_command", b"\x12\x00"),
+        call("deep_mop_override_setting_command", b"\x0a\x00"),
         call("water_flow_override_command", b"\x0a\x05\x0d" + struct.pack("<f", 1.4)),
     ]
 
