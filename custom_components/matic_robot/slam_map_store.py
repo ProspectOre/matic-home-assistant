@@ -326,6 +326,8 @@ class SlamMapStore:
         if live_session_confirmed:
             self._cancel_candidate_refresh_retry()
         if not changed and not identity_changed and not live_session_confirmed:
+            if self._enforce_bounds():
+                self._content_changed()
             return
         self._content_changed(
             topology_changed=(
@@ -1061,7 +1063,7 @@ class SlamMapStore:
         # documented API, so a later config-entry removal cannot be resurrected.
         await self._store.async_save(data)
 
-    def _enforce_bounds(self) -> None:
+    def _enforce_bounds(self) -> bool:
         dropped_photo, dropped_structure = _enforce_collection_bounds(
             self._entries,
             self._structure_entries,
@@ -1082,6 +1084,7 @@ class SlamMapStore:
             self._structure_content_digests.keys() - self._structure_entries.keys()
         ):
             self._structure_content_digests.pop(key)
+        return bool(dropped_photo or dropped_structure)
 
     def _record_invalid(self) -> None:
         self._invalid_tiles = _increment(self._invalid_tiles)

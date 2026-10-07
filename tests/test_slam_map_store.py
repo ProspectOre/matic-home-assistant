@@ -936,6 +936,34 @@ async def test_slam_map_store_validates_integrated_cache_on_load(hass) -> None:
     assert bounded.health.dropped_structure_tiles == 1
 
 
+async def test_unchanged_raw_tile_replacement_cannot_exceed_cache_byte_limit(
+    hass,
+) -> None:
+    store = SlamMapStore(hass, "bounded-unchanged-raw-replacement")
+    entry = synthetic_slam_entry()
+    replacement = HermesCollectionEntry(
+        entry.key,
+        entry.value + b"\xf2\x01\x32" + b"x" * 50,
+    )
+    byte_limit = len(entry.key) + len(entry.value) + 10
+    await store.async_load()
+
+    with (
+        patch(
+            "custom_components.matic_robot.slam_map_store.MAX_STORED_BYTES", byte_limit
+        ),
+        patch("custom_components.matic_robot.slam_map_store.SAVE_DELAY_SECONDS", 0),
+    ):
+        await store.async_add(entry)
+        await store.async_add(replacement)
+
+    assert (
+        sum(len(item.key) + len(item.value) for item in store.entries()) <= byte_limit
+    )
+    assert store.tile_count == 0
+    assert store.health.truncated is True
+
+
 async def test_slam_map_store_structure_promotes_mission_and_enforces_bounds(
     hass,
 ) -> None:
