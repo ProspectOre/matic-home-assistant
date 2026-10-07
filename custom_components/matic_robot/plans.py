@@ -44,7 +44,11 @@ from .area_binding import (
     binding_for_area,
 )
 from .area_geometry import GeometryTooComplex
-from .cadence import cadence_snapshot, normalize_cadence_policy
+from .cadence import (
+    CoverageCadenceRequiresVacuumError,
+    cadence_snapshot,
+    normalize_cadence_policy,
+)
 from .cadence_accounting import (
     apply_verified_cadence as _apply_verified_cadence,
 )
@@ -2257,8 +2261,19 @@ class CleaningPlanManager:
                     if old_policy is not None
                     else None
                 )
+            except CoverageCadenceRequiresVacuumError:
+                # Keep the previous shared-policy comparison meaningful when
+                # repairing only the room's incompatible cleaning mode.
+                normalized_old_policy = normalize_cadence_policy(
+                    old_policy,
+                    cleaning_mode="vacuum",
+                    coverage_setting=str(inherited.get("coverage_setting", "standard")),
+                )
             except ValueError:
                 normalized_old_policy = None
+            # An omitted field must not silently discard an inherited policy
+            # that is inapplicable to the selected mode. Explicitly clear it
+            # or choose a compatible mode before saving the plan.
             cadence_value = room.get("cadence", normalized_old_policy)
             if cadence_value is not None:
                 policy = normalize_cadence_policy(
@@ -2977,8 +2992,18 @@ class CleaningPlanManager:
             )
         except ValueError as err:
             message = str(err)
+            if isinstance(err, CoverageCadenceRequiresVacuumError):
+                # Preserve this otherwise valid policy in the editor so it
+                # can be cleared or used after switching to a vacuum mode.
+                policy = normalize_cadence_policy(
+                    stored_policy,
+                    cleaning_mode="vacuum",
+                    coverage_setting=room.coverage_setting,
+                )
             reason = (
-                "identity_changed"
+                "coverage_requires_vacuum"
+                if isinstance(err, CoverageCadenceRequiresVacuumError)
+                else "identity_changed"
                 if "different map" in message
                 else "shared_schedule_unavailable"
                 if "unavailable" in message

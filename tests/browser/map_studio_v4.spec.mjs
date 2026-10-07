@@ -3630,7 +3630,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(cadenceSettings.first().locator("summary")).toHaveText("Room schedule for Kitchen");
     await cadenceSettings.first().locator("summary").click();
     await expect(cadenceSettings.first().getByLabel(/Vacuum and mop interval for .* from 1 to 100/)).toHaveAttribute("min", "1");
-    await expect(cadenceSettings.first().getByLabel(/Periodic coverage interval for .* from 1 to 100/)).toHaveAttribute("max", "100");
+    await expect(cadenceSettings.first().getByLabel(/Periodic vacuum coverage interval for .* from 1 to 100/)).toHaveAttribute("max", "100");
     // Completion options now FOLLOW the room list: choose what to clean first,
     // then how the run should end.
     await expect(inspector.getByRole("heading", { name: "When a run ends", level: 3 })).toBeVisible();
@@ -3677,8 +3677,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       await expect(cadence.getByText("This integration cannot currently verify the coverage used for each clean. Once due, the selected coverage is requested on later cleans. Disable the rule to pause it. Resetting progress delays the next request only when the interval is greater than 1.")).toBeVisible();
       const scope = cadence.getByLabel("Schedule scope for Kitchen");
       const mopInterval = cadence.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100");
-      const coverageInterval = cadence.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100");
-      const coverage = cadence.getByLabel("Periodic coverage setting for Kitchen");
+      const coverageInterval = cadence.getByLabel("Periodic vacuum coverage interval for Kitchen, from 1 to 100");
+      const coverage = cadence.getByLabel("Periodic vacuum coverage setting for Kitchen");
       const layout = await cadence.locator(".cadence-fields").evaluate((settings) => {
         const bounds = settings.getBoundingClientRect();
         const fields = [...settings.querySelectorAll("input[type=number], select")].map((control) => {
@@ -4645,9 +4645,17 @@ test.describe("Map Studio v0.4 foundation", () => {
     await inspector.getByRole("checkbox", { name: "Kitchen" }).check();
     await expect(inspector.getByLabel(/^Cleaning system for /)).toBeVisible();
     await expect(inspector.getByLabel(/^Cleaning system for /)).toHaveValue("vacuum");
-    const mode = inspector.getByLabel(/^Cleaning mode for /);
+    const mode = inspector.getByLabel(/^Vacuum coverage for /);
     await expect(mode).toHaveValue("standard");
     await expect(mode.locator("option")).toHaveText(["Quick", "Optimal", "Heavy Duty"]);
+    await mode.selectOption("heavy_duty");
+    const cleaningSystem = inspector.getByLabel(/^Cleaning system for /);
+    await cleaningSystem.selectOption("mop");
+    await expect(mode).toBeDisabled();
+    await expect(inspector.getByText("Vacuum coverage applies only when vacuuming.", { exact: false })).toBeVisible();
+    await cleaningSystem.selectOption("vacuum_and_mop");
+    await expect(mode).toBeEnabled();
+    await expect(mode).toHaveValue("heavy_duty");
   });
 
   test("selects a requested robot deterministically", async ({ page }) => {

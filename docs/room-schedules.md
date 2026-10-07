@@ -11,8 +11,12 @@ Open a saved plan in Map Studio.
 For each room, you can independently enable:
 
 - Mopping: vacuum normally, then vacuum and mop every N verified cleans.
-- Coverage: use the normal coverage, then the chosen periodic coverage every
-  N verified cleans. Quick, Optimal, and Heavy Duty can be used in any pairing.
+- Vacuum coverage: use the normal vacuum coverage, then the chosen periodic
+  vacuum coverage every N verified cleans. Quick, Optimal, and Heavy Duty can
+  be used in any pairing for Vacuum and Vacuum + mop. Mop-only rooms cannot
+  use this rule. Existing incompatible rules remain visible for repair; choose
+  a vacuum mode or clear the room rule. Clearing it leaves shared schedules
+  unchanged for other participants.
 
 Intervals range from 1 to 100. A new interval of 3 applies periodic work on
 the third qualifying clean. If both rules are due, that clean includes both.

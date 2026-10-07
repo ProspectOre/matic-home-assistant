@@ -1840,6 +1840,38 @@ async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
     }
 
 
+async def test_plan_workspace_keeps_inapplicable_mop_cadence_editable(hass) -> None:
+    runtime = _runtime()
+    manager = CleaningPlanManager(hass)
+    robot = manager._robot("synthetic-serial")
+    robot["plans"]["legacy"] = {
+        "name": "Legacy mop plan",
+        "rooms": [
+            {
+                "room_id": "room-1",
+                "cleaning_mode": "mop",
+                "coverage_setting": "quick",
+                "cadence": {
+                    "coverage_every_n": 3,
+                    "periodic_coverage_setting": "heavy_duty",
+                },
+            }
+        ],
+    }
+    runtime.cleaning_plans = manager
+    before = manager.plans("synthetic-serial")
+
+    response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
+
+    assert response.status == HTTPStatus.OK
+    plan = json.loads(response.body)["plans"][0]
+    assert plan["next_run_preview"]["blocker"] == "coverage_requires_vacuum"
+    assert plan["rooms"][0]["cadence_reasons"] == ["coverage_requires_vacuum"]
+    assert plan["rooms"][0]["cadence"]["coverage_every_n"] == 3
+    assert plan["rooms"][0]["cadence"]["periodic_coverage_setting"] == "heavy_duty"
+    assert manager.plans("synthetic-serial") == before
+
+
 async def test_plan_workspace_skips_malformed_rooms_and_uses_safe_defaults() -> None:
     runtime = _runtime()
     runtime.cleaning_plans.plans.return_value = {

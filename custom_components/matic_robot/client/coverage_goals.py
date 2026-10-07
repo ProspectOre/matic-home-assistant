@@ -31,37 +31,56 @@ def coverage_readback_matches(
     *,
     deep_mop_enabled: bool = False,
 ) -> bool:
-    """Accept only the observed per-room mop readback transformations.
+    """Accept only native-observed transformations of complete room groups.
 
-    With a freshly confirmed native double-pass override, Standard and Quick
-    mop goals can retain setting 3. Each complete mop group must transform
-    together. Heavy Duty and vacuum settings are never normalized here.
-    The optional behavior-three omission remains independent per room.
+    Heavy Duty vacuum goals can retain setting 3. Standard mop goals can
+    retain setting 3 only with a freshly confirmed double-pass override.
+    Every sibling must agree; optional mop behavior-three omission remains
+    independent per room. No transformed value is sent as a command enum.
     """
     if _matches_with_mop_omission(expected, actual):
         return True
-    if not deep_mop_enabled:
-        return False
 
     normalized = expected.copy()
-    mop_groups: dict[str, Counter[CoverageGoalSignature]] = {}
+    groups: dict[tuple[str, int], Counter[CoverageGoalSignature]] = {}
     for goal, count in expected.items():
-        if goal[3] == 1:
-            mop_groups.setdefault(goal[0], Counter())[goal] = count
-    for region, goals in mop_groups.items():
+        groups.setdefault((goal[0], goal[3]), Counter())[goal] = count
+    for (region, mode), goals in groups.items():
         settings = {goal[1] for goal in goals}
         if len(settings) != 1:
             return False
         setting = next(iter(settings))
-        if setting not in (1, 2):
+        if (mode, setting) != (0, 0) and not (
+            deep_mop_enabled and (mode, setting) == (1, 1)
+        ):
             continue
+        floors = (0, 1) if mode == 0 else (0,)
         complete = Counter(
-            {(region, setting, 0, 1, behavior): 1 for behavior in range(4)}
+            {
+                (region, setting, floor, mode, behavior): 1
+                for floor in floors
+                for behavior in range(4)
+            }
         )
         if goals != complete:
             return False
-        normalized.subtract(complete)
-        normalized.update({(region, 3, 0, 1, behavior): 1 for behavior in range(4)})
+        retained = Counter(
+            {
+                (region, 3, floor, mode, behavior): 1
+                for floor in floors
+                for behavior in range(4)
+            }
+        )
+        actual_group = Counter(
+            {
+                goal: count
+                for goal, count in actual.items()
+                if (goal[0], goal[3]) == (region, mode)
+            }
+        )
+        if _matches_with_mop_omission(retained, actual_group):
+            normalized.subtract(complete)
+            normalized.update(retained)
     return _matches_with_mop_omission(+normalized, actual)
 
 

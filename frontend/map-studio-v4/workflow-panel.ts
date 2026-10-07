@@ -128,6 +128,16 @@ line-height: var(--ms-lh-snug);
     return this.#t("heavy_duty", "Heavy Duty");
   }
 
+  #settingsLabel(room: Pick<PlanRoom, "cleaningMode" | "coverageSetting">): string {
+    const mode = this.#modeLabel(room.cleaningMode);
+    if (room.cleaningMode === "mop") return mode;
+    return `${mode} · ${this.#t("v4_vacuum_coverage_summary", "{coverage} vacuum coverage", { coverage: this.#coverageLabel(room.coverageSetting) })}`;
+  }
+
+  #mopCoverageHint(mode: CleaningMode) {
+    return mode === "vacuum" ? nothing : html`<p class="subtle">${this.#t("v4_mop_coverage_hint", "Vacuum coverage applies only when vacuuming. Use the robot's Double-pass mopping setting for an extra mop pass.")}</p>`;
+  }
+
   #cadenceReason(reason: string): string {
     if (reason === "mop_due") return this.#t("v4_cadence_mop_due_reason", "Vacuum and mop are due");
     if (reason === "coverage_due") return this.#t("v4_cadence_coverage_due_reason", "Periodic coverage is due");
@@ -137,6 +147,7 @@ line-height: var(--ms-lh-snug);
   }
 
   #previewBlocker(blocker: string): string {
+    if (blocker === "coverage_requires_vacuum") return this.#t("v4_cadence_coverage_requires_vacuum", "Periodic vacuum coverage requires a vacuum cleaning mode. Clear this room's rule or select Vacuum or Vacuum + mop.");
     if (blocker === "plan_disabled") return this.#t("v4_preview_plan_disabled", "This plan is paused. Enable it to preview and run.");
     if (blocker === "shared_schedule_unavailable") return this.#t("v4_preview_shared_unavailable", "The shared room schedule cannot be verified on this map.");
     if (blocker === "cadence_progress_unverified") return this.#t("v4_preview_cadence_progress_unverified", "A room schedule has progress that cannot be verified. Reset the affected interval in its room schedule before running this plan.");
@@ -294,7 +305,7 @@ line-height: var(--ms-lh-snug);
               <li class="ms-row ms-row--stack">
                 ${boundaries.has(index) ? html`<strong>${this.#t("v4_room_mission_boundary", "New mission")}</strong>` : nothing}
                 <strong>${room.name}</strong>
-                <span class="subtle">${this.#modeLabel(room.cleaningMode)} · ${this.#coverageLabel(room.coverageSetting)}</span>
+                <span class="subtle">${this.#settingsLabel(room)}</span>
                 ${room.cadenceReasons.length
                   ? html`<span class="subtle">${room.cadenceReasons.map((reason) => this.#cadenceReason(reason)).join("; ")}</span>`
                   : nothing}
@@ -321,9 +332,10 @@ line-height: var(--ms-lh-snug);
             })}
           >${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
         </label>
-        <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
+        <label class="field ms-field">${this.#t("vacuum_coverage", "Vacuum coverage")}
           <select
-            aria-label=${this.#t("v4_room_cleaning_mode_named", "Cleaning mode for {room}", { room: name })}
+            aria-label=${this.#t("v4_room_vacuum_coverage_named", "Vacuum coverage for {room}", { room: name })}
+            ?disabled=${room.cleaningMode === "mop"}
             .value=${room.coverageSetting}
             @change=${(event: Event) => this.#intent({
               type: "patch-room-settings",
@@ -333,6 +345,7 @@ line-height: var(--ms-lh-snug);
           >${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
         </label>
       </div>
+      ${this.#mopCoverageHint(room.cleaningMode)}
     `;
   }
 
@@ -352,6 +365,9 @@ line-height: var(--ms-lh-snug);
     progress: PlanRoom["cadenceProgress"] | undefined,
     reasons: readonly CadenceReason[] = progress?.reasons || [],
   ): string {
+    if (reasons.includes("coverage_requires_vacuum")) {
+      return this.#previewBlocker("coverage_requires_vacuum");
+    }
     if (reasons.includes("identity_changed") || reasons.includes("room_not_on_current_map")) {
       return this.#t("v4_cadence_identity_blocked", "Schedule identity does not match the current room map. Review this room before cleaning.");
     }
@@ -483,21 +499,27 @@ line-height: var(--ms-lh-snug);
           <label class="field ms-field">${this.#t("v4_cadence_mop_interval", "Vacuum and mop every N cleans")}
             <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#t("v4_cadence_mop_interval_named", "Vacuum and mop interval for {room}, from 1 to 100", { room: label })} .value=${policy.mopEveryN?.toString() || ""} ?disabled=${room.cleaningMode !== "vacuum"} @change=${(event: Event) => this.#patchCadenceInterval(event, index, "mopEveryN")}>
           </label>
-          <label class="field ms-field">${this.#t("v4_cadence_coverage_interval", "Use periodic coverage every N cleans")}
-            <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#t("v4_cadence_coverage_interval_named", "Periodic coverage interval for {room}, from 1 to 100", { room: label })} .value=${policy.coverageEveryN?.toString() || ""} @change=${(event: Event) => this.#patchCadenceInterval(event, index, "coverageEveryN")}>
+          <label class="field ms-field">${this.#t("v4_cadence_coverage_interval", "Use periodic vacuum coverage every N cleans")}
+            <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#t("v4_cadence_coverage_interval_named", "Periodic vacuum coverage interval for {room}, from 1 to 100", { room: label })} ?disabled=${room.cleaningMode === "mop"} .value=${policy.coverageEveryN?.toString() || ""} @change=${(event: Event) => this.#patchCadenceInterval(event, index, "coverageEveryN")}>
           </label>
           ${policy.coverageEveryN ? html`
-            <label class="field ms-field">${this.#t("v4_cadence_periodic_coverage", "Periodic coverage setting")}
-              <select aria-label=${this.#t("v4_cadence_periodic_coverage_named", "Periodic coverage setting for {room}", { room: label })} .value=${policy.periodicCoverageSetting || "standard"} @change=${(event: Event) => this.#patchPlanCadence(index, { periodicCoverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === policy.periodicCoverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
+            <label class="field ms-field">${this.#t("v4_cadence_periodic_coverage", "Periodic vacuum coverage setting")}
+              <select aria-label=${this.#t("v4_cadence_periodic_coverage_named", "Periodic vacuum coverage setting for {room}", { room: label })} ?disabled=${room.cleaningMode === "mop"} .value=${policy.periodicCoverageSetting || "standard"} @change=${(event: Event) => this.#patchPlanCadence(index, { periodicCoverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === policy.periodicCoverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
             </label>
           ` : nothing}
         </div>
         <p class="subtle" role="status">${scopeExplanation}</p>
+        ${room.cleaningMode === "mop" ? html`
+          <p class="subtle">${policy.coverageEveryN ? this.#previewBlocker("coverage_requires_vacuum") : this.#t("v4_cadence_coverage_available_modes", "Periodic vacuum coverage is available for Vacuum and Vacuum + mop.")}</p>
+          ${policy.coverageEveryN ? html`<button type="button" class="ms-btn ms-btn--secondary"
+            @click=${() => this.#patchPlanCadence(index, { scope: "plan", coverageEveryN: null, periodicCoverageSetting: null, doCoverageNext: false })}
+          >${this.#t("v4_cadence_clear_room_coverage", "Clear this room's periodic vacuum rule")}</button>` : nothing}
+        ` : nothing}
         ${room.cleaningMode !== "vacuum" ? html`<p class="subtle">${this.#t("v4_cadence_mop_requires_vacuum", "Set this room's normal cleaning system to vacuum to enable periodic mopping.")}</p>` : nothing}
         ${policy.mopEveryN && room.cleaningMode === "vacuum" ? html`<p class="subtle">${this.#t("v4_cadence_clear_mop_to_change_normal", "Clear the mopping interval before changing this room's normal cleaning system.")}</p>` : nothing}
         <div class="plan-options" role="group" aria-label=${this.#t("v4_cadence_next_actions_named", "Next clean options for {room}", { room: label })}>
           <label class="plan-option"><input type="checkbox" aria-label=${this.#t("v4_cadence_do_mop_next_named", "Do vacuum and mop on the next clean for {room}", { room: label })} .checked=${policy.doMopNext} ?disabled=${!policy.mopEveryN} @change=${(event: Event) => this.#patchPlanCadence(index, { doMopNext: eventChecked(event) })}><span class="plan-option-copy"><strong>${this.#t("v4_cadence_do_mop_next", "Do vacuum and mop on the next clean")}</strong></span></label>
-          <label class="plan-option"><input type="checkbox" aria-label=${this.#t("v4_cadence_do_coverage_next_named", "Use periodic coverage on the next clean for {room}", { room: label })} .checked=${policy.doCoverageNext} ?disabled=${!policy.coverageEveryN} @change=${(event: Event) => this.#patchPlanCadence(index, { doCoverageNext: eventChecked(event) })}><span class="plan-option-copy"><strong>${this.#t("v4_cadence_do_coverage_next", "Use periodic coverage on the next clean")}</strong></span></label>
+          <label class="plan-option"><input type="checkbox" aria-label=${this.#t("v4_cadence_do_coverage_next_named", "Use periodic vacuum coverage on the next clean for {room}", { room: label })} .checked=${policy.doCoverageNext} ?disabled=${!policy.coverageEveryN || room.cleaningMode === "mop"} @change=${(event: Event) => this.#patchPlanCadence(index, { doCoverageNext: eventChecked(event) })}><span class="plan-option-copy"><strong>${this.#t("v4_cadence_do_coverage_next", "Use periodic vacuum coverage on the next clean")}</strong></span></label>
         </div>
         ${policy.coverageEveryN ? html`<p class="subtle">${this.#t("v4_cadence_coverage_proof_pending", "This integration cannot currently verify the coverage used for each clean. Once due, the selected coverage is requested on later cleans. Disable the rule to pause it. Resetting progress delays the next request only when the interval is greater than 1.")}</p>` : nothing}
         <p class="subtle" aria-live="polite">${this.#cadenceSummary(policy, progress, room.cadenceReasons)}</p>
@@ -669,10 +691,11 @@ line-height: var(--ms-lh-snug);
                     <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning system")}
                       <select aria-label=${this.#t("v4_room_cleaning_system_named", "Cleaning system for {room}", { room: label })} .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode} ?disabled=${Boolean("cadence" in room && room.cadence?.mopEveryN && mode !== "vacuum")}>${this.#modeLabel(mode)}</option>`)}</select>
                     </label>
-                    <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
-                      <select aria-label=${this.#t("v4_room_cleaning_mode_named", "Cleaning mode for {room}", { room: label })} .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
+                    <label class="field ms-field">${this.#t("vacuum_coverage", "Vacuum coverage")}
+                      <select aria-label=${this.#t("v4_room_vacuum_coverage_named", "Vacuum coverage for {room}", { room: label })} ?disabled=${room.cleaningMode === "mop"} .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
                     </label>
                   </div>
+                  ${this.#mopCoverageHint(room.cleaningMode)}
                   ${this.#cadenceControls(room, index, label)}
                 ` : nothing}
               </div>
@@ -695,7 +718,7 @@ line-height: var(--ms-lh-snug);
                       return html`<li class="ms-row ms-row--stack">
                         <span class="subtle">${this.#t("v4_next_run_mission", "Mission {number}", { number: mission })}</span>
                         <strong>${roomIndex + 1}. ${previewRoom.name}</strong>
-                        <span>${this.#modeLabel(previewRoom.cleaningMode)} · ${this.#coverageLabel(previewRoom.coverageSetting)}</span>
+                        <span>${this.#settingsLabel(previewRoom)}</span>
                         ${previewRoom.cadenceReasons.length ? html`<small>${previewRoom.cadenceReasons.map((reason) => this.#cadenceReason(reason)).join(" · ")}</small>` : nothing}
                       </li>`;
                     })}
@@ -786,10 +809,11 @@ line-height: var(--ms-lh-snug);
           <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning system")}
             <select .value=${draft.cleaningMode} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { cleaningMode: eventValue(event) as CleaningMode } })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === draft.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
           </label>
-          <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
-            <select .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === draft.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
+          <label class="field ms-field">${this.#t("vacuum_coverage", "Vacuum coverage")}
+            <select ?disabled=${draft.cleaningMode === "mop"} .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === draft.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
           </label>
         </div>
+        ${this.#mopCoverageHint(draft.cleaningMode)}
         <div class="toolbar">
           <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>${this.#t("v4_edit_outline", "Edit outline")}</button>
           ${draft.id ? html`

@@ -254,9 +254,10 @@ def test_all_mode_setting_pairs_preserve_first_room(mode1, mode2, setting1, sett
     assert b(initial, 6) == b(update, 6)
     for goal in after[count[mode1] :]:
         spec = b(b(goal, 6), 3)
-        assert (
-            v(spec, 1)
-            == {Setting.QUICK: 2, Setting.OPTIMAL: 1, Setting.HEAVY_DUTY: 0}[setting2]
+        assert v(spec, 1) == (
+            1
+            if v(spec, 4) == 1
+            else {Setting.QUICK: 2, Setting.OPTIMAL: 1, Setting.HEAVY_DUTY: 0}[setting2]
         )
         assert v(spec, 4) in (
             {0, 1} if mode2 == Mode.BOTH else {0} if mode2 == Mode.VACUUM else {1}

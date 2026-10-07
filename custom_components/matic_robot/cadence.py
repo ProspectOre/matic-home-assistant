@@ -9,6 +9,10 @@ MAX_CADENCE_INTERVAL = 100
 _COVERAGE_SETTINGS = {"quick", "standard", "heavy_duty"}
 
 
+class CoverageCadenceRequiresVacuumError(ValueError):
+    """A vacuum-strength schedule cannot change a mop-only run."""
+
+
 def normalize_cadence_policy(
     value: object,
     *,
@@ -59,6 +63,11 @@ def normalize_cadence_policy(
             raise ValueError("do_mop_next requires mop_every_n")
         if do_coverage_next and coverage_interval is None:
             raise ValueError("do_coverage_next requires coverage_every_n")
+    if coverage_interval is not None and cleaning_mode == "mop":
+        raise CoverageCadenceRequiresVacuumError(
+            "coverage cadence requires vacuum or vacuum_and_mop "
+            "as the normal cleaning mode"
+        )
     return {
         "scope": scope,
         "mop_every_n": mop_interval,

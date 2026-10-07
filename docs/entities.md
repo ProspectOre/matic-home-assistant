@@ -16,7 +16,7 @@ plus two opt-in statistics sensors per mapped room.
 | --- | --- |
 | Vacuum | Start/resume, pause, stop, dock, and room or Area cleaning |
 | Cleaning mode | Default vacuum, mop, or vacuum-and-mop mode |
-| Coverage | Default Quick, Optimal, or Heavy Duty coverage |
+| Vacuum coverage | Default Quick, Optimal, or Heavy Duty vacuum coverage |
 | Saved cleaning plan | Select the default plan |
 | Custom cleaning area | Select a saved outline |
 | Plan buttons | Run the selected plan, use rotation, run top-to-bottom, or stop |

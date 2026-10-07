@@ -14,6 +14,7 @@ from custom_components.matic_robot.client.commands import (
     CoverageSetting as Setting,
 )
 from custom_components.matic_robot.client.commands import (
+    encode_coverage_command,
     encode_mixed_coverage_commands,
 )
 from custom_components.matic_robot.client.coverage_goals import (
@@ -105,7 +106,9 @@ def test_double_pass_does_not_hide_other_goal_changes(corruption):
     assert not coverage_readback_matches(expected, +actual, deep_mop_enabled=True)
 
 
-@pytest.mark.parametrize("malformation", ("incomplete", "multiple_settings", "heavy"))
+@pytest.mark.parametrize(
+    "malformation", ("incomplete", "multiple_settings", "mop_quick", "mop_heavy")
+)
 def test_double_pass_does_not_generalize_unproven_source_groups(malformation):
     expected = _mixed_goals()
     goal = next(g for g in expected if g[3] == 1)
@@ -114,10 +117,108 @@ def test_double_pass_does_not_generalize_unproven_source_groups(malformation):
     elif malformation == "multiple_settings":
         expected[(goal[0], 2, *goal[2:])] += 1
     else:
-        expected = _mixed_goals((Setting.HEAVY_DUTY, Setting.HEAVY_DUTY))
+        expected = Counter(
+            (
+                region,
+                (2 if malformation == "mop_quick" else 0) if mode == 1 else setting,
+                floor,
+                mode,
+                behavior,
+            )
+            for region, setting, floor, mode, behavior in expected.elements()
+        )
     assert not coverage_readback_matches(
         expected, _override(expected, omit=True), deep_mop_enabled=True
     )
+
+
+@pytest.mark.parametrize("mode", Mode)
+@pytest.mark.parametrize("setting", Setting)
+@pytest.mark.parametrize("deep_mop", (False, True))
+def test_native_retained_setting_matrix(mode, setting, deep_mop):
+    expected = Counter(
+        coverage_command_goal_signatures(
+            encode_coverage_command(
+                mission_id=42,
+                partition_id=PARTITION,
+                region_ids=[ROOMS[0]],
+                cleaning_mode=mode,
+                coverage_setting=setting,
+            )
+        )
+    )
+    actual = Counter(
+        (
+            region,
+            3
+            if (cleaning == 0 and value == 0) or (cleaning == 1 and deep_mop)
+            else value,
+            floor,
+            cleaning,
+            behavior,
+        )
+        for region, value, floor, cleaning, behavior in expected.elements()
+        if not (cleaning == 1 and behavior == 3)
+    )
+    assert coverage_readback_matches(expected, actual, deep_mop_enabled=deep_mop)
+    if deep_mop and mode != Mode.VACUUM:
+        assert not coverage_readback_matches(expected, actual)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ("partial", "missing", "duplicate", "floor", "mode", "setting", "region"),
+)
+def test_heavy_vacuum_rewrite_cannot_hide_corruption(corruption):
+    expected = _mixed_goals((Setting.HEAVY_DUTY, Setting.STANDARD))
+    actual = Counter(
+        (region, 3 if mode == 0 else setting, floor, mode, behavior)
+        for region, setting, floor, mode, behavior in expected.elements()
+    )
+    assert coverage_readback_matches(expected, actual)
+    goal = next(goal for goal in actual if goal[3] == 0)
+    changed = list(goal)
+    actual.subtract({goal: 1})
+    if corruption == "partial":
+        changed[1] = 0
+    elif corruption == "duplicate":
+        actual[goal] += 2
+    elif corruption == "floor":
+        changed[2] = 2
+    elif corruption == "mode":
+        changed[3] = 1
+    elif corruption == "setting":
+        changed[1] = 4
+    elif corruption == "region":
+        changed[0] = str(UUID(int=99))
+    if corruption not in ("missing", "duplicate"):
+        actual[tuple(changed)] += 1
+    assert not coverage_readback_matches(expected, +actual, deep_mop_enabled=True)
+
+
+def test_heavy_vacuum_requires_a_complete_expected_group():
+    expected = _mixed_goals((Setting.HEAVY_DUTY, Setting.STANDARD))
+    del expected[next(goal for goal in expected if goal[3] == 0)]
+    actual = Counter(
+        (region, 3 if mode == 0 else setting, floor, mode, behavior)
+        for region, setting, floor, mode, behavior in expected.elements()
+    )
+    assert not coverage_readback_matches(expected, actual)
+
+
+def test_rewritten_and_unchanged_complete_room_groups_can_coexist():
+    expected = _mixed_goals((Setting.HEAVY_DUTY, Setting.STANDARD))
+    actual = Counter(
+        (
+            region,
+            3 if mode == 0 or region == ROOMS[1] else setting,
+            floor,
+            mode,
+            behavior,
+        )
+        for region, setting, floor, mode, behavior in expected.elements()
+    )
+    assert coverage_readback_matches(expected, actual, deep_mop_enabled=True)
 
 
 @pytest.mark.parametrize(

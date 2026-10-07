@@ -76,6 +76,22 @@ def test_three_room_configuration_matrix(configuration):
         )
         actual = expected - missing
         assert coverage_readback_matches(expected, actual)
+        for deep_mop in (False, True):
+            retained = Counter(
+                (
+                    region,
+                    3
+                    if (mode == 0 and setting == 0) or (mode == 1 and deep_mop)
+                    else setting,
+                    floor,
+                    mode,
+                    behavior,
+                )
+                for region, setting, floor, mode, behavior in actual.elements()
+            )
+            assert coverage_readback_matches(
+                expected, retained, deep_mop_enabled=deep_mop
+            )
         # No room may lose any other vacuum or mop goal, even when its peers
         # have the same mode/setting and complete retained goal sets.
         for goal in actual:

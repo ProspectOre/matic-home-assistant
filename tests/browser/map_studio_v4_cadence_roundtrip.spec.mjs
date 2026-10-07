@@ -98,10 +98,10 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   await expectNoSeriousAccessibilityViolations(page, "plan cadence editor");
   const scope = schedule.getByLabel("Schedule scope for Kitchen");
   const mopInterval = schedule.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100");
-  const coverageInterval = schedule.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100");
-  const coverageSetting = schedule.getByLabel("Periodic coverage setting for Kitchen");
+  const coverageInterval = schedule.getByLabel("Periodic vacuum coverage interval for Kitchen, from 1 to 100");
+  const coverageSetting = schedule.getByLabel("Periodic vacuum coverage setting for Kitchen");
   const mopNext = schedule.getByLabel("Do vacuum and mop on the next clean for Kitchen");
-  const coverageNext = schedule.getByLabel("Use periodic coverage on the next clean for Kitchen");
+  const coverageNext = schedule.getByLabel("Use periodic vacuum coverage on the next clean for Kitchen");
   const save = panel.getByRole("button", { name: "Save plan", exact: true });
 
   const waitForReadback = async (saveCount, expectedEnabled, expectedPolicy) => {
@@ -157,10 +157,10 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   await reopenedSchedule.locator("summary").click();
   await expect(reopenedSchedule.getByLabel("Schedule scope for Kitchen")).toHaveValue("shared");
   await expect(reopenedSchedule.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100")).toHaveValue("7");
-  await expect(reopenedSchedule.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100")).toHaveValue("5");
-  await expect(reopenedSchedule.getByLabel("Periodic coverage setting for Kitchen")).toHaveValue("heavy_duty");
+  await expect(reopenedSchedule.getByLabel("Periodic vacuum coverage interval for Kitchen, from 1 to 100")).toHaveValue("5");
+  await expect(reopenedSchedule.getByLabel("Periodic vacuum coverage setting for Kitchen")).toHaveValue("heavy_duty");
   await expect(reopenedSchedule.getByLabel("Do vacuum and mop on the next clean for Kitchen")).toBeChecked();
-  await expect(reopenedSchedule.getByLabel("Use periodic coverage on the next clean for Kitchen")).toBeChecked();
+  await expect(reopenedSchedule.getByLabel("Use periodic vacuum coverage on the next clean for Kitchen")).toBeChecked();
 
   await scope.selectOption("plan");
   await mopInterval.fill("4");
@@ -223,3 +223,34 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
 
 test("plan editor saves cadence choices and restores them from the packaged panel @safety", exerciseCadenceRoundtrip);
 test("plan editor restores cadence choices on touch viewports @mobile", exerciseCadenceRoundtrip);
+
+test("mop-only legacy vacuum rules stay visible and can leave shared participation @safety", async ({ page }) => {
+  const catalog = planCatalog({ policy: cadence("shared", null, 3, "heavy_duty", false, true) });
+  catalog.plans[0].rooms[0].cleaning_mode = "mop";
+  catalog.plans[0].rooms[0].cadence_reasons = ["coverage_requires_vacuum"];
+  catalog.plans[0].next_run_preview = {
+    rooms: [], mission_boundaries: [], blocker: "coverage_requires_vacuum",
+  };
+  const fixture = await installPanelFixture(page, { initialPlanCatalog: catalog, moduleSource: "packaged" });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  await panel.getByRole("button", { name: /^Run a plan/ }).click();
+  await panel.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+  const schedule = panel.getByLabel("Plan rooms").locator("details").first();
+  await schedule.locator("summary").click();
+  await expect(schedule.getByLabel("Periodic vacuum coverage interval for Kitchen, from 1 to 100")).toHaveValue("3");
+  await expect(schedule.getByLabel("Periodic vacuum coverage interval for Kitchen, from 1 to 100")).toBeDisabled();
+  await expect(schedule.getByLabel("Periodic vacuum coverage setting for Kitchen")).toHaveValue("heavy_duty");
+  await expect(schedule.getByLabel("Periodic vacuum coverage setting for Kitchen")).toBeDisabled();
+  await expect(panel.getByRole("button", { name: "Run this plan", exact: true })).toBeDisabled();
+  await schedule.getByRole("button", { name: "Clear this room's periodic vacuum rule" }).click();
+  await expect(schedule.getByLabel("Schedule scope for Kitchen")).toHaveValue("plan");
+  await expect(schedule.getByLabel("Periodic vacuum coverage interval for Kitchen, from 1 to 100")).toHaveValue("");
+  await panel.getByRole("button", { name: "Save plan", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.serviceCalls.length)).toBe(1);
+  const calls = await page.evaluate(() => window.__panelFixture.serviceCalls);
+  expect(calls[0].data.rooms[0]).toMatchObject({
+    cleaning_mode: "mop", coverage_setting: "standard",
+    cadence: cadence("plan", null, null, null),
+  });
+});

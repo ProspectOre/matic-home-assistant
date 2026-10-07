@@ -359,7 +359,7 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         )
         selects = translations["entity"]["select"]
         assert selects["cleaning_mode"]["name"] == "Default cleaning mode"
-        assert selects["coverage_setting"]["name"] == "Default coverage"
+        assert selects["coverage_setting"]["name"] == "Default vacuum coverage"
         assert selects["saved_cleaning_plan"]["name"] == "Default cleaning plan"
         assert selects["custom_cleaning_area"]["name"] == "Custom cleaning area"
         assert translations["selector"]["coverage_setting"]["options"] == {

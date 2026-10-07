@@ -403,7 +403,20 @@
     "room_editor_loading": "Loading editor…",
     "room_editor_load_failed": "Editor could not load.",
     "room_editor_retry": "Retry",
-    "v4_retry": "Retry"
+    "v4_retry": "Retry",
+    "vacuum_coverage": "Vacuum coverage",
+    "v4_room_vacuum_coverage_named": "Vacuum coverage for {room}",
+    "v4_vacuum_coverage_summary": "{coverage} vacuum coverage",
+    "v4_mop_coverage_hint": "Vacuum coverage applies only when vacuuming. Use the robot's Double-pass mopping setting for an extra mop pass.",
+    "v4_cadence_coverage_requires_vacuum": "Periodic vacuum coverage requires a vacuum cleaning mode. Clear this room's rule or select Vacuum or Vacuum + mop.",
+    "v4_cadence_clear_room_coverage": "Clear this room's periodic vacuum rule",
+    "v4_cadence_coverage_interval": "Use periodic vacuum coverage every N cleans",
+    "v4_cadence_coverage_interval_named": "Periodic vacuum coverage interval for {room}, from 1 to 100",
+    "v4_cadence_periodic_coverage": "Periodic vacuum coverage setting",
+    "v4_cadence_periodic_coverage_named": "Periodic vacuum coverage setting for {room}",
+    "v4_cadence_do_coverage_next_named": "Use periodic vacuum coverage on the next clean for {room}",
+    "v4_cadence_do_coverage_next": "Use periodic vacuum coverage on the next clean",
+    "v4_cadence_coverage_available_modes": "Periodic vacuum coverage is available for Vacuum and Vacuum + mop."
   },
   "config": {
     "abort": {
@@ -719,7 +732,7 @@
         }
       },
       "coverage_setting": {
-        "name": "Default coverage",
+        "name": "Default vacuum coverage",
         "state": {
           "heavy_duty": "Heavy Duty",
           "quick": "Quick",
@@ -1100,8 +1113,8 @@
           "description": "Override the mode saved with this area."
         },
         "coverage_setting": {
-          "name": "Coverage",
-          "description": "Override the coverage saved with this area."
+          "name": "Vacuum coverage",
+          "description": "Override the vacuum coverage saved with this area. Does not change mopping; use the robot's Double-pass mopping setting for an extra mop pass."
         }
       }
     },
@@ -1118,8 +1131,8 @@
           "description": "Cleaning system for this run. Omit it to use Default cleaning mode."
         },
         "coverage_setting": {
-          "name": "Coverage",
-          "description": "Coverage for this run. Omit it to use Default coverage."
+          "name": "Vacuum coverage",
+          "description": "Vacuum coverage for this run. Omit it to use Default vacuum coverage. Does not change mopping; use the robot's Double-pass mopping setting for an extra mop pass."
         },
         "ordered": {
           "name": "Clean in order",
