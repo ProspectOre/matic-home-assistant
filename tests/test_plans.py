@@ -345,6 +345,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
             confirm_room_completed=confirmed,
             set_activity_run_id=set_run_id,
         )
+    await hass.async_block_till_done()
 
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "completed"

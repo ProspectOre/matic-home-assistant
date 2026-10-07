@@ -1424,6 +1424,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         actual_goals: Counter[tuple[str, int, int, int, int]] | None = None
         malformed = False
         stage = "coverage_plan"
+
+        def note_stage(value: str) -> None:
+            nonlocal stage
+            stage = value
+
         try:
             async with timeout:
                 while True:
@@ -1433,7 +1438,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                         (
                             actual_goals,
                             matched,
-                        ) = await self._async_read_coverage_readback(expected_goals)
+                        ) = await self._async_read_coverage_readback(
+                            expected_goals, note_stage=note_stage
+                        )
                         malformed = False
                     except DecodeError:
                         actual_goals = Counter()
@@ -1460,7 +1467,10 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             raise MaticError("Mixed coverage readback verification timed out") from err
 
     async def _async_read_coverage_readback(
-        self, expected_goals: Counter[tuple[str, int, int, int, int]]
+        self,
+        expected_goals: Counter[tuple[str, int, int, int, int]],
+        *,
+        note_stage: Callable[[str], None] | None = None,
     ) -> tuple[Counter[tuple[str, int, int, int, int]], bool]:
         """Qualify an override with current native state around a fresh plan.
 
@@ -1468,10 +1478,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         override was enabled at dispatch or an atomic property snapshot.
         The caller must still verify native session and ownership guards.
         """
+
+        async def read(name: str, stage: str) -> bytes:
+            if note_stage is not None:
+                note_stage(stage)
+            return await self.async_get_property(name)
+
         actual_goals = Counter(
-            coverage_plan_goal_signatures(
-                await self.async_get_property("coverage_plan")
-            )
+            coverage_plan_goal_signatures(await read("coverage_plan", "coverage_plan"))
         )
         if mixed_coverage_readback_matches(expected_goals, actual_goals):
             return actual_goals, True
@@ -1481,19 +1495,25 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             return actual_goals, False
         if (
             _decode_deep_mop_state(
-                await self.async_get_property("deep_mop_override_setting_state")
+                await read("deep_mop_override_setting_state", "deep_mop_state_before")
             )
             is not True
         ):
             return actual_goals, False
         actual_goals = Counter(
             coverage_plan_goal_signatures(
-                await self.async_get_property("coverage_plan")
+                await read("coverage_plan", "coverage_plan_confirm")
             )
         )
+        if mixed_coverage_readback_matches(expected_goals, actual_goals):
+            return actual_goals, True
+        if not mixed_coverage_readback_matches(
+            expected_goals, actual_goals, deep_mop_enabled=True
+        ):
+            return actual_goals, False
         deep_mop_enabled = (
             _decode_deep_mop_state(
-                await self.async_get_property("deep_mop_override_setting_state")
+                await read("deep_mop_override_setting_state", "deep_mop_state_after")
             )
             is True
         )
