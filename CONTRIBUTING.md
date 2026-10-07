@@ -29,6 +29,7 @@ style. Keep runtime traffic local and use Home Assistant's asynchronous APIs.
 - New commands require an exact synthetic fixture, successful robot validation, and Home Assistant-native error handling. Never guess enums or payloads.
 - Pairing changes must preserve the scoped BlueZ agent and cover success, malformed/rejected/expired codes, cancellation, and unavailable adapters.
 - Tests must retain 100% coverage. Required CI, privacy, HACS, Hassfest, and review must pass before a manual merge.
+- Follow the [review and manual-merge checklist](docs/maintenance-reviews.md); the bespoke custom status gate is retired.
 
 ## Documentation
 
