@@ -226,8 +226,34 @@ def test_decode_slam_mission_id_requires_the_verified_exact_shape() -> None:
     mission = bytes((2 << 3 | 5,)) + struct.pack("<I", mission_id)
 
     assert decode_slam_mission_id(mission) == mission_id
+    assert decode_slam_mission_id(b"") is None
     assert decode_slam_mission_id(b"opaque-mission") is None
     assert decode_slam_mission_id(mission + _varint_field(3, 1)) is None
+
+
+def test_decode_slam_mission_id_bounds_input_before_protobuf_decode() -> None:
+    from custom_components.matic_robot.client import slam_map as slam_map_module
+
+    with patch.object(slam_map_module, "decode_fields") as decode_fields:
+        assert decode_slam_mission_id(b"x" * 65) is None
+    decode_fields.assert_not_called()
+
+
+def test_decode_slam_tile_rejects_oversized_raw_entry_before_parsing() -> None:
+    from custom_components.matic_robot.client import slam_map as slam_map_module
+
+    entry = synthetic_slam_entry()
+    oversized = HermesCollectionEntry(entry.key, entry.value + b"x" * (128 * 1024))
+    with patch.object(slam_map_module, "first_bytes") as first_bytes:
+        with pytest.raises(DecodeError, match="byte limit"):
+            decode_slam_tile(oversized)
+        structure = synthetic_structure_entry()
+        oversized_structure = HermesCollectionEntry(
+            structure.key, structure.value + b"x" * (128 * 1024)
+        )
+        with pytest.raises(DecodeError, match="byte limit"):
+            decode_slam_structure_tile(oversized_structure)
+    first_bytes.assert_not_called()
 
 
 def test_decode_slam_tile_transposes_floor_texture_axes() -> None:
