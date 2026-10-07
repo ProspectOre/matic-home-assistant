@@ -331,9 +331,11 @@ def _coverage_specs(
                 for behavior in range(4)
             )
     if cleaning_mode in {CleaningMode.MOP, CleaningMode.BOTH}:
+        # The native app's strength selector controls vacuum coverage only.
+        # Mop goals always request Standard; double-pass is a robot override.
         specs.extend(
             (
-                _varint_field(1, setting_value)
+                _varint_field(1, _COVERAGE_SETTING_VALUES[CoverageSetting.STANDARD])
                 + _varint_field(2, 0)
                 + _varint_field(4, 1)
                 + _varint_field(5, behavior)

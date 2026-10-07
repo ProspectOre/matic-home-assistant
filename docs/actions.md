@@ -23,7 +23,7 @@ and Home Assistant's **Developer tools → Actions**.
 | `stop_intelligent_cleaning` | Apply the active plan's stop policy and dock. Set `include_unmanaged: true` to also stop other cleaning. |
 
 Cleaning modes: `vacuum`, `mop`, `vacuum_and_mop`.
-Coverage: `quick`, `standard` (Optimal), `heavy_duty`.
+Vacuum coverage: `quick`, `standard` (Optimal), `heavy_duty`. These choices do not change mopping; use Double-pass mopping for an extra mop pass.
 For pause, resume, stop, and dock, use Home Assistant's standard vacuum actions.
 
 ## Plans

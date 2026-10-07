@@ -57,6 +57,7 @@ from .plans import (
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
+    effective_room_settings,
     normalize_run_provenance,
 )
 from .plans import (
@@ -303,7 +304,7 @@ async def _async_dispatch_leg_command(
         params[PLAN_MOTION_TOKEN] = motion_token
     if managed_session_id is not None:
         params[PLAN_SESSION_ID] = str(managed_session_id)
-    if len({(room.cleaning_mode, room.coverage_setting) for room in leg}) > 1:
+    if len({effective_room_settings(room) for room in leg}) > 1:
         params["room_coverage"] = [room.coverage_setting for room in leg]
         params["room_modes"] = [room.cleaning_mode for room in leg]
     if floor_token is not None:
@@ -3176,6 +3177,10 @@ async def _async_execute_rooms_reserved(
                 chosen,
                 mixed_settings=durable
                 and (recovery is None or checkpoint.get("mixed_settings") is True),
+                preserve_legacy_settings=(
+                    recovery is not None
+                    and checkpoint.get("mixed_settings") is not True
+                ),
             )
             if recovery is None:
                 run_started = True

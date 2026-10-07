@@ -11,7 +11,7 @@ Choose **Create a plan**, or open **Run a plan** to select an existing routine.
 Each plan saves:
 
 - Included rooms and their order.
-- Cleaning mode and coverage for each room.
+- Cleaning mode and vacuum coverage for each room.
 - Intelligent rotation or saved-order execution.
 - Return-to-dock and finish-current-room preferences.
 
@@ -77,8 +77,9 @@ The map panel requires a Home Assistant administrator. For a dashboard, add
 ## One-time cleaning
 
 Choose **One-time clean**, select rooms, and pick vacuum, mop, or both.
-Coverage choices are **Quick**, **Optimal**, and **Heavy Duty**. Start the run
-from its summary; use the active cleaning controls to pause, resume, or stop.
+Vacuum coverage choices are **Quick**, **Optimal**, and **Heavy Duty**. They do
+not change mopping; use the robot's **Double-pass mopping** setting for an extra
+mop pass. Start the run from its summary; use the active cleaning controls to pause, resume, or stop.
 
 Home Assistant Areas can map to Matic rooms. Exact names and unique aliases
 match automatically; manage other matches in the vacuum entity's cleaning-area

@@ -47,6 +47,12 @@ def test_normalize_cadence_policy_accepts_independent_rules() -> None:
             "mop cadence requires vacuum",
         ),
         (
+            {"coverage_every_n": 3, "periodic_coverage_setting": "heavy_duty"},
+            "mop",
+            "standard",
+            "coverage cadence requires vacuum",
+        ),
+        (
             {"coverage_every_n": 3, "periodic_coverage_setting": "turbo"},
             "vacuum",
             "standard",

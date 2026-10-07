@@ -11,7 +11,7 @@ Pair once over Bluetooth; everyday control, maps, and state use your local netwo
 ## Home Assistant cleaning workflows
 
 - **Give every room a turn.** Intelligent rotation starts with rooms that have waited longest. Short trips away won't keep restarting the same first rooms; cleaning from the Matic app also informs the order.
-- **Build a plan around each room.** Save room order, vacuum/mop mode, and Quick, Optimal, or Heavy Duty coverage per room. Preview the next run before starting it.
+- **Build a plan around each room.** Save room order, vacuum/mop mode, and Quick, Optimal, or Heavy Duty vacuum coverage per room. Preview the next run before starting it.
 - **Clean around your life.** Run plans when everyone leaves, schedule quiet-hours routines, or clean a named area after a litter-box cycle. Ready-to-import blueprints get you started.
 - **Choose how to stop.** Stop immediately or let the active room finish based on a configurable progress estimate, then dock without starting another room.
 - **Use cleaning results in your smart home.** Trigger actions on verified room completion, track last-cleaned times and durations, and distinguish completed, partial, and unattempted vacuum/mop work.

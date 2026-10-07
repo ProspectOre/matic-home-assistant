@@ -28,14 +28,67 @@ type CoverageGoalSignature = tuple[str, int, int, int, int]
 def coverage_readback_matches(
     expected: Counter[CoverageGoalSignature],
     actual: Counter[CoverageGoalSignature],
+    *,
+    deep_mop_enabled: bool = False,
 ) -> bool:
-    """Allow the observed mop behavior-three omission independently per room.
+    """Accept only native-observed transformations of complete room groups.
 
-    This applies to managed normal and mixed coverage readback. Each affected
-    room must retain exactly its other three mop behaviors at the requested
-    setting. All vacuum goals and every other signature remain exact; an
-    omission in one room cannot compensate for another room's goals.
+    Heavy Duty vacuum goals can retain setting 3. Standard mop goals can
+    retain setting 3 only with a freshly confirmed double-pass override.
+    Every sibling must agree; optional mop behavior-three omission remains
+    independent per room. No transformed value is sent as a command enum.
     """
+    if _matches_with_mop_omission(expected, actual):
+        return True
+
+    normalized = expected.copy()
+    groups: dict[tuple[str, int], Counter[CoverageGoalSignature]] = {}
+    for goal, count in expected.items():
+        groups.setdefault((goal[0], goal[3]), Counter())[goal] = count
+    for (region, mode), goals in groups.items():
+        settings = {goal[1] for goal in goals}
+        if len(settings) != 1:
+            return False
+        setting = next(iter(settings))
+        if (mode, setting) != (0, 0) and not (
+            deep_mop_enabled and (mode, setting) == (1, 1)
+        ):
+            continue
+        floors = (0, 1) if mode == 0 else (0,)
+        complete = Counter(
+            {
+                (region, setting, floor, mode, behavior): 1
+                for floor in floors
+                for behavior in range(4)
+            }
+        )
+        if goals != complete:
+            return False
+        retained = Counter(
+            {
+                (region, 3, floor, mode, behavior): 1
+                for floor in floors
+                for behavior in range(4)
+            }
+        )
+        actual_group = Counter(
+            {
+                goal: count
+                for goal, count in actual.items()
+                if (goal[0], goal[3]) == (region, mode)
+            }
+        )
+        if _matches_with_mop_omission(retained, actual_group):
+            normalized.subtract(complete)
+            normalized.update(retained)
+    return _matches_with_mop_omission(+normalized, actual)
+
+
+def _matches_with_mop_omission(
+    expected: Counter[CoverageGoalSignature],
+    actual: Counter[CoverageGoalSignature],
+) -> bool:
+    """Keep every signature exact except the observed optional mop behavior."""
     if not expected:
         return False
     if actual == expected:

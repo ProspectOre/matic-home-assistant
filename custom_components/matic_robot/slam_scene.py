@@ -31,6 +31,7 @@ from .area_binding import (
 )
 from .area_geometry import AreaGeometry, RoomGeometryIndex
 from .area_outline import validate_outline
+from .cadence import CoverageCadenceRequiresVacuumError
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
 from .client.floor_plan import resolve_robot_map_position, robot_location_source
@@ -1288,7 +1289,9 @@ class MaticPlansView(HomeAssistantView):
             except (KeyError, TypeError, ValueError) as err:
                 message = str(err).casefold()
                 blocker = (
-                    "plan_disabled"
+                    "coverage_requires_vacuum"
+                    if isinstance(err, CoverageCadenceRequiresVacuumError)
+                    else "plan_disabled"
                     if "disabled" in message
                     else "plan_has_no_rooms"
                     if "no rooms" in message

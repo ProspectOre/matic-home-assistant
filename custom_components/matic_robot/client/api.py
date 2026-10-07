@@ -1491,22 +1491,28 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         actual_goals: Counter[tuple[str, int, int, int, int]] | None = None
         malformed = False
         stage = "coverage_plan"
+
+        def note_stage(value: str) -> None:
+            nonlocal stage
+            stage = value
+
         try:
             async with timeout:
                 while True:
                     require_current()
                     stage = "coverage_plan"
                     try:
-                        actual_goals = Counter(
-                            coverage_plan_goal_signatures(
-                                await self.async_get_property("coverage_plan")
-                            )
+                        (
+                            actual_goals,
+                            matched,
+                        ) = await self._async_read_coverage_readback(
+                            expected_goals, note_stage=note_stage
                         )
                         malformed = False
                     except DecodeError:
                         actual_goals = Counter()
                         malformed = True
-                    matched = coverage_readback_matches(expected_goals, actual_goals)
+                        matched = False
                     stage = "session_identity"
                     if (
                         await self.async_get_cleaning_session_identity()
@@ -1526,6 +1532,61 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 expected_goals, actual_goals, stage=stage, malformed=malformed
             )
             raise MaticError("Mixed coverage readback verification timed out") from err
+
+    async def _async_read_coverage_readback(
+        self,
+        expected_goals: Counter[tuple[str, int, int, int, int]],
+        *,
+        note_stage: Callable[[str], None] | None = None,
+    ) -> tuple[Counter[tuple[str, int, int, int, int]], bool]:
+        """Qualify an override with current native state around a fresh plan.
+
+        This is observed current-state consistency, not proof that the global
+        override was enabled at dispatch or an atomic property snapshot.
+        The caller must still verify native session and ownership guards.
+        """
+
+        async def read(name: str, stage: str) -> bytes:
+            if note_stage is not None:
+                note_stage(stage)
+            return await self.async_get_property(name)
+
+        actual_goals = Counter(
+            coverage_plan_goal_signatures(await read("coverage_plan", "coverage_plan"))
+        )
+        if coverage_readback_matches(expected_goals, actual_goals):
+            return actual_goals, True
+        if not coverage_readback_matches(
+            expected_goals, actual_goals, deep_mop_enabled=True
+        ):
+            return actual_goals, False
+        if (
+            _decode_deep_mop_state(
+                await read("deep_mop_override_setting_state", "deep_mop_state_before")
+            )
+            is not True
+        ):
+            return actual_goals, False
+        actual_goals = Counter(
+            coverage_plan_goal_signatures(
+                await read("coverage_plan", "coverage_plan_confirm")
+            )
+        )
+        if coverage_readback_matches(expected_goals, actual_goals):
+            return actual_goals, True
+        if not coverage_readback_matches(
+            expected_goals, actual_goals, deep_mop_enabled=True
+        ):
+            return actual_goals, False
+        deep_mop_enabled = (
+            _decode_deep_mop_state(
+                await read("deep_mop_override_setting_state", "deep_mop_state_after")
+            )
+            is True
+        )
+        return actual_goals, deep_mop_enabled and coverage_readback_matches(
+            expected_goals, actual_goals, deep_mop_enabled=True
+        )
 
     async def _async_wait_for_coverage_readback(
         self,
@@ -1570,14 +1631,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     active = await self.async_get_active_cleaning_session_state()
                     if active is True:
                         try:
-                            actual_goals = Counter(
-                                coverage_plan_goal_signatures(
-                                    await self.async_get_property("coverage_plan")
-                                )
+                            _, matched = await self._async_read_coverage_readback(
+                                expected_goals
                             )
                         except DecodeError:
-                            actual_goals = Counter()
-                        if coverage_readback_matches(expected_goals, actual_goals):
+                            matched = False
+                        if matched:
                             if (
                                 await self.async_get_cleaning_session_identity()
                                 != identity
@@ -1660,7 +1719,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Set the verified double-pass mopping override."""
         await self._async_send_channel_payload(
             "deep_mop_override_setting_command",
-            b"\x0a\x00" if enabled else b"\x12\x00",
+            b"\x12\x00" if enabled else b"\x0a\x00",
         )
 
     async def async_set_water_flow(self, factor: float) -> None:
@@ -2071,16 +2130,17 @@ def _decode_binary_state(payload: object) -> bool | None:
 
 
 def _decode_deep_mop_state(payload: object) -> bool | None:
-    """Decode the verified DeepMopOverrideSetting oneof."""
+    """Decode the native app's observed disabled/enabled empty-message arms.
+
+    Field 1 is disabled; field 2 enables double-pass mopping. Accept only the
+    complete observed encodings so ambiguous or malformed state cannot qualify
+    a firmware coverage-setting override.
+    """
     if not isinstance(payload, bytes):
         return None
-    try:
-        fields = decode_fields(payload)
-    except DecodeError:
-        return None
-    if any(field.number == 1 and field.wire_type == 2 for field in fields):
+    if payload == b"\x12\x00":
         return True
-    if any(field.number == 2 and field.wire_type == 2 for field in fields):
+    if payload == b"\x0a\x00":
         return False
     return None
 

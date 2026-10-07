@@ -1032,6 +1032,183 @@ async def test_cadence_editor_contains_non_object_persisted_policy(hass) -> None
         manager.resolve_cadence("serial", "home", [room])
 
 
+@pytest.mark.parametrize("shared", [False, True], ids=["private", "shared"])
+async def test_mop_only_vacuum_cadence_is_preserved_until_explicitly_repaired(
+    hass, shared
+):
+    manager = _manager(hass)
+    scope = "shared" if shared else "plan"
+    policy = {
+        "scope": scope,
+        "coverage_every_n": 3,
+        "periodic_coverage_setting": "heavy_duty",
+    }
+    room = CleaningRoom("room-a", "Kitchen", "mop", "quick")
+    robot = manager._robot("serial")
+    robot["plans"]["home"] = {
+        "name": "Home",
+        "rooms": [
+            {
+                "room_id": room.room_id,
+                "cleaning_mode": "mop",
+                "coverage_setting": "quick",
+                "cadence": policy,
+            }
+        ],
+    }
+    if shared:
+        robot["shared_room_cadence"][room.room_id] = {
+            "policy": {key: value for key, value in policy.items() if key != "scope"},
+            "progress": {"mop": 0, "coverage": 2},
+        }
+    robot["selected_plan"] = "home"
+    original = deepcopy(robot)
+    state = manager.cadence_editor_state("serial", "home", room)
+    assert state["cadence"]["coverage_every_n"] == 3
+    assert state["cadence"]["periodic_coverage_setting"] == "heavy_duty"
+    assert state["cadence_reasons"] == ["coverage_requires_vacuum"]
+    assert state["cadence_progress"] is None
+    assert manager.plans("serial")["home"] == original["plans"]["home"]
+    with pytest.raises(ValueError, match="coverage cadence requires vacuum"):
+        manager.resolve_cadence("serial", "home", [room])
+    # Even an edit omitting cadence cannot silently remove the inherited rule.
+    with pytest.raises(ValueError, match="coverage cadence requires vacuum"):
+        await manager.async_save_plan(
+            "serial",
+            "home",
+            {
+                "name": "Renamed",
+                "rooms": [
+                    {
+                        "room_id": room.room_id,
+                        "cleaning_mode": "mop",
+                        "coverage_setting": "quick",
+                    }
+                ],
+            },
+        )
+    assert robot == original
+    manager._store.async_save.assert_not_awaited()
+    # Leave shared participation before clearing this room's private rule.
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room.room_id,
+                    "cleaning_mode": "mop",
+                    "coverage_setting": "quick",
+                    "cadence": {"scope": "plan"},
+                }
+            ],
+        },
+    )
+    effective, snapshots = manager.resolve_cadence("serial", "home", [room])
+    assert effective == [room]
+    assert snapshots[room.room_id]["coverage_every_n"] is None
+    assert robot["shared_room_cadence"] == original["shared_room_cadence"]
+
+
+async def test_changing_a_legacy_mop_plan_to_vacuum_retains_its_coverage_rule(hass):
+    manager = _manager(hass)
+    policy = {"coverage_every_n": 1, "periodic_coverage_setting": "heavy_duty"}
+    manager._robot("serial")["plans"]["home"] = {
+        "name": "Home",
+        "rooms": [
+            {
+                "room_id": "room-a",
+                "cleaning_mode": "mop",
+                "coverage_setting": "quick",
+                "cadence": policy,
+            }
+        ],
+    }
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-a",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                }
+            ],
+        },
+    )
+    effective, snapshots = manager.resolve_cadence(
+        "serial", "home", [CleaningRoom("room-a", "Kitchen", "vacuum", "quick")]
+    )
+    assert effective[0].coverage_setting == "heavy_duty"
+    assert snapshots["room-a"]["coverage_due"] is True
+
+
+async def test_repairing_mop_mode_adopts_current_shared_policy_without_overwriting_it(
+    hass,
+):
+    manager = _manager(hass)
+    floor = _floor()
+    identity = room_cadence_identity(floor, "room-a")
+    robot = manager._robot("serial")
+    robot["plans"]["home"] = {
+        "name": "Home",
+        "rooms": [
+            {
+                "room_id": "room-a",
+                "cleaning_mode": "mop",
+                "coverage_setting": "standard",
+                "cadence_identity": identity,
+                "cadence": {
+                    "scope": "shared",
+                    "coverage_every_n": 3,
+                    "periodic_coverage_setting": "heavy_duty",
+                },
+            }
+        ],
+    }
+    robot["shared_room_cadence"]["room-a"] = {
+        "identity": identity,
+        "floor_token": plan_floor_token(floor),
+        "policy": {
+            "mop_every_n": None,
+            "coverage_every_n": 1,
+            "periodic_coverage_setting": "quick",
+            "do_mop_next": False,
+            "do_coverage_next": False,
+        },
+        "progress": {"mop": 0, "coverage": 0},
+    }
+    before = deepcopy(robot["shared_room_cadence"])
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-a",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+        },
+        floor_token=plan_floor_token(floor),
+        room_identities={"room-a": identity},
+    )
+    assert robot["shared_room_cadence"] == before
+    effective, _snapshots = manager.resolve_cadence(
+        "serial",
+        "home",
+        [CleaningRoom("room-a", "Kitchen", "vacuum", "standard")],
+        floor_token=plan_floor_token(floor),
+        room_identities={"room-a": identity},
+    )
+    assert effective[0].coverage_setting == "quick"
+
+
 @pytest.mark.parametrize("case", _CADENCE_COMPLETION_CASES)
 async def test_late_native_completion_advances_shared_schedule_exactly_once(
     hass,

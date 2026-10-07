@@ -163,6 +163,7 @@ export interface PlanRoom {
 }
 
 export type CadenceReason =
+  | "coverage_requires_vacuum"
   | "mop_due"
   | "coverage_due"
   | "room_not_on_current_map"
@@ -181,6 +182,7 @@ export interface NextRunPreviewRoom {
 }
 
 export type NextRunPreviewBlocker =
+  | "coverage_requires_vacuum"
   | "cadence_identity_unavailable"
   | "preview_unavailable"
   | "plan_disabled"
@@ -531,6 +533,7 @@ const nullableInterval = (value: unknown, code: string): number | null =>
 const parseCadenceReasons = (value: unknown): readonly CadenceReason[] => {
   if (value === undefined || value === null) return [];
   const validReasons: readonly CadenceReason[] = [
+    "coverage_requires_vacuum",
     "mop_due",
     "coverage_due",
     "room_not_on_current_map",
@@ -624,6 +627,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     throw new ContractError("invalid-plan-preview-boundary-order");
   }
   const blockers: readonly NextRunPreviewBlocker[] = [
+    "coverage_requires_vacuum",
     "cadence_identity_unavailable",
     "preview_unavailable",
     "plan_disabled",
