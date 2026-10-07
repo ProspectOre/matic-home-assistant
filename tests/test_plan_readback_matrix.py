@@ -191,7 +191,8 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
     client.async_send_user_command = AsyncMock()
     prepare_stop, rollback_stop = AsyncMock(), AsyncMock()
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.monotonic", iter((0.0, 9.0)).__next__
+        "custom_components.matic_robot.client.api._MIXED_COVERAGE_READBACK_TIMEOUT",
+        0.01,
     )
 
     async def dispatch():
@@ -208,7 +209,7 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
         )
 
     if drop_required:
-        with pytest.raises(MaticError, match="did not retain all requested"):
+        with pytest.raises(MaticError, match="readback verification timed out"):
             await dispatch()
         prepare_stop.assert_awaited_once()
         client.async_send_user_command.assert_awaited_once()
