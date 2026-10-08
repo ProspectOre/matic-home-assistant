@@ -160,6 +160,13 @@ _BINARY_SETTING_CHANNELS = {
     "pet_waste": "petwaste_enabled_command",
     "voice": "voice_enabled_command",
 }
+_BINARY_SETTING_STATE_PROPERTIES = {
+    "child_lock": "child_lock_enabled_state",
+    "pet_waste": "petwaste_enabled_state",
+    "voice": "voice_enabled_state",
+}
+_SETTING_READBACK_TIMEOUT_SECONDS = 8.0
+_SETTING_READBACK_INTERVAL_SECONDS = 0.25
 
 _WEEKDAYS = (
     "sunday",
@@ -1544,11 +1551,15 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Set a live-verified reversible binary preference."""
         try:
             channel = _BINARY_SETTING_CHANNELS[setting]
+            state_property = _BINARY_SETTING_STATE_PROPERTIES[setting]
         except KeyError as err:
             raise ValueError(f"Unsupported binary setting: {setting}") from err
         await self._async_send_channel_payload(
             channel,
             bytes((0x08, int(enabled))),
+        )
+        await self._async_confirm_setting_readback(
+            state_property, _decode_binary_state, enabled
         )
 
     async def async_set_deep_mop(self, enabled: bool) -> None:
@@ -1556,6 +1567,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         await self._async_send_channel_payload(
             "deep_mop_override_setting_command",
             b"\x12\x00" if enabled else b"\x0a\x00",
+        )
+        await self._async_confirm_setting_readback(
+            "deep_mop_override_setting_state", _decode_deep_mop_state, enabled
         )
 
     async def async_set_water_flow(self, factor: float) -> None:
@@ -1569,6 +1583,42 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             "water_flow_override_command",
             b"\x0a\x05\x0d" + struct.pack("<f", rounded),
         )
+        await self._async_confirm_setting_readback(
+            "water_flow_override_state", _decode_water_flow_factor, rounded
+        )
+
+    async def _async_confirm_setting_readback(
+        self,
+        property_name: str,
+        decode: Callable[[object], bool | float | None],
+        expected: bool | float,
+    ) -> None:
+        """Wait for one acknowledged setting write to appear in fresh state."""
+        reconnect_attempted = False
+        try:
+            async with asyncio.timeout(_SETTING_READBACK_TIMEOUT_SECONDS):
+                while True:
+                    await self.async_connect()
+                    failed_channel = self._channel
+                    try:
+                        observed = decode(await self.async_get_property(property_name))
+                    except CannotConnectError:
+                        if reconnect_attempted:
+                            raise
+                        _LOGGER.debug(
+                            "Retrying Hermes %s setting read on a fresh pinned channel",
+                            property_name,
+                        )
+                        await self._async_reconnect_after_read_failure(failed_channel)
+                        reconnect_attempted = True
+                        observed = None
+                    if observed is not None and observed == expected:
+                        return
+                    await asyncio.sleep(_SETTING_READBACK_INTERVAL_SECONDS)
+        except TimeoutError as err:
+            raise CannotConnectError(
+                "The robot did not confirm the requested setting"
+            ) from err
 
     async def _async_send_user_payload(
         self,

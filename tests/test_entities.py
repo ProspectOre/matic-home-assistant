@@ -1233,6 +1233,34 @@ async def test_verified_setting_entities_write_and_refresh() -> None:
     assert coordinator.async_request_full_refresh.await_count == 5
 
 
+@pytest.mark.parametrize("entity_kind", ["switch", "number"])
+async def test_setting_confirmation_failure_uses_safe_translation(
+    entity_kind: str,
+) -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    if entity_kind == "switch":
+        entity = switch.MaticSettingSwitch(entry, switch.DESCRIPTIONS[-1])
+        coordinator.client.async_set_deep_mop.side_effect = CannotConnectError(
+            "private transport detail"
+        )
+        operation = entity.async_turn_on()
+    else:
+        entity = number.MaticWaterFlowNumber(entry)
+        coordinator.client.async_set_water_flow.side_effect = CannotConnectError(
+            "private transport detail"
+        )
+        operation = entity.async_set_native_value(1.4)
+
+    with pytest.raises(HomeAssistantError) as error:
+        await operation
+
+    assert error.value.translation_domain == "matic_robot"
+    assert error.value.translation_key == "setting_unconfirmed"
+    assert error.value.__suppress_context__ is True
+    coordinator.async_request_full_refresh.assert_not_awaited()
+
+
 async def test_saved_plan_select_and_native_button() -> None:
     entry = _entry()
     plan_select = select.MaticSavedPlanSelect(entry)
