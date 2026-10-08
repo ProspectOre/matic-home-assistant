@@ -215,6 +215,15 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
 async def test_verified_setting_payloads_and_bounds() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
     client._async_send_channel_payload = AsyncMock()
+    client.async_get_property = AsyncMock(
+        side_effect=(
+            b"\x08\x01",
+            b"\x08\x00",
+            b"\x12\x00",
+            b"\x0a\x00",
+            b"\x0a\x05\x0d" + struct.pack("<f", 1.4),
+        )
+    )
 
     await client.async_set_binary_setting("child_lock", True)
     await client.async_set_binary_setting("pet_waste", False)
@@ -228,6 +237,13 @@ async def test_verified_setting_payloads_and_bounds() -> None:
         call("deep_mop_override_setting_command", b"\x12\x00"),
         call("deep_mop_override_setting_command", b"\x0a\x00"),
         call("water_flow_override_command", b"\x0a\x05\x0d" + struct.pack("<f", 1.4)),
+    ]
+    assert client.async_get_property.await_args_list == [
+        call("child_lock_enabled_state"),
+        call("petwaste_enabled_state"),
+        call("deep_mop_override_setting_state"),
+        call("deep_mop_override_setting_state"),
+        call("water_flow_override_state"),
     ]
 
     with pytest.raises(ValueError, match="Unsupported"):
