@@ -717,7 +717,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)
-        entry.runtime_data.client.close()
+        await entry.runtime_data.client.async_shutdown()
     return unload_ok
 
 

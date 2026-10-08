@@ -43,6 +43,8 @@ async function loadRenderer(page) {
         boundBuffer: null,
         currentVertexArray: null,
         vertexArrayBuffers: new Map(),
+        vertexArrayLayouts: new Map(),
+        vertexArrayAttributes: new Map(),
         initializedBytes: new Map(),
         buffers: new Map(),
         errors: [],
@@ -67,8 +69,23 @@ async function loadRenderer(page) {
         getUniformLocation() { return {}; },
         bindVertexArray(vertexArray) { this.currentVertexArray = vertexArray; },
         bindBuffer(target, buffer) { this.boundBuffer = buffer; },
-        vertexAttribIPointer() { if (this.currentVertexArray) this.vertexArrayBuffers.set(this.currentVertexArray.id, this.boundBuffer); },
-        vertexAttribPointer() { if (this.currentVertexArray) this.vertexArrayBuffers.set(this.currentVertexArray.id, this.boundBuffer); },
+        vertexAttribIPointer(index, size, type, stride, offset) {
+          if (this.currentVertexArray) {
+            this.vertexArrayBuffers.set(this.currentVertexArray.id, this.boundBuffer);
+            if (index === 0) this.vertexArrayLayouts.set(this.currentVertexArray.id, { stride, offset });
+            const attributes = this.vertexArrayAttributes.get(this.currentVertexArray.id) ?? {};
+            attributes[index] = { size, type, stride, offset, integer: true };
+            this.vertexArrayAttributes.set(this.currentVertexArray.id, attributes);
+          }
+        },
+        vertexAttribPointer(index, size, type, normalized, stride, offset) {
+          if (this.currentVertexArray) {
+            this.vertexArrayBuffers.set(this.currentVertexArray.id, this.boundBuffer);
+            const attributes = this.vertexArrayAttributes.get(this.currentVertexArray.id) ?? {};
+            attributes[index] = { size, type, normalized, stride, offset, integer: false };
+            this.vertexArrayAttributes.set(this.currentVertexArray.id, attributes);
+          }
+        },
         bufferData(target, data, usage) {
           const bytes = typeof data === "number" ? data : data.byteLength;
           if (this.failNextAllocation) {
@@ -113,7 +130,11 @@ async function loadRenderer(page) {
         drawArrays(mode, first, count) {
           const buffer = this.vertexArrayBuffers.get(this.currentVertexArray?.id);
           const initialized = this.initializedBytes.get(buffer?.id) ?? 0;
-          this.calls.push({ type: "draw", first, count, valid: count === 0 || (first + count) * 8 <= initialized, frame });
+          const { stride = 8, offset = 0 } = this.vertexArrayLayouts.get(this.currentVertexArray?.id) ?? {};
+          const end = offset + (first + count - 1) * stride + 8;
+          this.calls.push({ type: "draw", first, count, stride, offset,
+            valid: count === 0 || end <= initialized,
+            attributes: { ...this.vertexArrayAttributes.get(this.currentVertexArray?.id) }, frame });
         },
       };
       context.bindBuffer = (target, buffer) => {
@@ -928,3 +949,81 @@ test("@safety point-layout changes revoke the old front and use a bounded full u
   expect(outcome.copies).toBe(0);
   expect(outcome.liveBuffers).toBeLessThanOrEqual(2);
 });
+
+for (const [quality, step] of [["maximum", 1], ["balanced", 2], ["efficient", 3], ["auto", 4]]) {
+  test(`@safety ${quality} samples both point ranges across distant tiles without reading uninitialized bytes`, async ({ page }) => {
+    await loadRenderer(page);
+    const result = await page.evaluate(async ({ quality, step }) => {
+      const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
+      const base = createGalleryState("ready");
+      // Four successive tile regions in each range; a prefix budget loses
+      // later floor regions and all surfaces when floors dominate the scene.
+      const floorCount = 120_001;
+      const surfaceCount = 12_001;
+      const total = floorCount + surfaceCount;
+      const pointOffset = 64;
+      const buffer = new ArrayBuffer(pointOffset + total * 8);
+      const data = new DataView(buffer);
+      for (let i = 0; i < total; i += 1) {
+        const start = i < floorCount ? 0 : floorCount;
+        const length = i < floorCount ? floorCount : surfaceCount;
+        data.setUint16(pointOffset + i * 8, Math.min(3, Math.floor((i - start) * 4 / length)) * 100, true);
+      }
+      const scene = { ...base.resources.scene.value, buffer, pointOffset, floorCount, surfaceCount, total, revision: 91, source: "live" };
+      const canvas = document.createElement("canvas");
+      const overlay = document.createElement("canvas");
+      for (const element of [canvas, overlay]) {
+        Object.assign(element.style, { width: "700px", height: "500px" });
+        document.body.append(element);
+      }
+      const renderer = new RendererController(canvas, overlay);
+      const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
+      if (quality === "auto") {
+        let clock = 0;
+        Object.defineProperty(performance, "now", { configurable: true, value: () => { clock += 20; return clock; } });
+      }
+      try {
+        renderer.setState({ ...base, quality, resources: { ...base.resources,
+          scene: { status: "ready", value: scene, problem: null } } });
+        const gl = contexts.at(-1);
+        const expected = Math.ceil(floorCount / step) + Math.ceil(surfaceCount / step);
+        for (let i = 0; i < 120 && renderer.diagnostics().renderedPoints !== expected; i += 1) {
+          renderer.requestRender();
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        const draws = gl.calls.filter(call => call.type === "draw");
+        const ranges = draws.slice(-2).map(call => {
+          const regions = new Set();
+          for (let i = 0; i < call.count; i += 1) {
+            regions.add(data.getUint16(pointOffset + call.offset + (call.first + i) * call.stride, true));
+          }
+          return { regions: [...regions].sort((a, b) => a - b), count: call.count,
+            aligned: call.attributes[0].stride === step * 8
+              && call.attributes[1].stride === step * 8
+              && call.attributes[2].stride === step * 8
+              && call.attributes[1].offset === call.attributes[0].offset + 4
+              && call.attributes[2].offset === call.attributes[0].offset + 5
+              && call.attributes[0].integer && call.attributes[1].integer
+              && !call.attributes[2].integer && call.attributes[2].normalized };
+        });
+        return { rendered: renderer.diagnostics().renderedPoints, expected, ranges,
+          invalid: draws.filter(call => !call.valid).length,
+          allocations: gl.calls.filter(call => call.type === "allocate").length };
+      } finally {
+        if (quality === "auto") {
+          if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
+          else delete performance.now;
+        }
+        renderer.dispose(); canvas.remove(); overlay.remove();
+      }
+    }, { quality, step });
+    expect(result.rendered).toBe(result.expected);
+    expect(result.ranges).toHaveLength(2);
+    for (const range of result.ranges) {
+      expect(range.regions).toEqual([0, 100, 200, 300]);
+      expect(range.aligned).toBe(true);
+    }
+    expect(result.invalid).toBe(0);
+    expect(result.allocations).toBe(1);
+  });
+}

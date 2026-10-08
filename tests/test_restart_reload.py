@@ -30,7 +30,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
     runtime = entry.runtime_data
     runtime.slam_map.async_shutdown = AsyncMock()
     runtime.slam_history = SimpleNamespace(async_shutdown=AsyncMock())
-    runtime.client.close = lambda: None
+    runtime.client.async_shutdown = AsyncMock()
     entry.entry_id = "entry"
     entry.disabled_by = None
     entry.data = {CONF_SERIAL_NUMBER: "serial"}

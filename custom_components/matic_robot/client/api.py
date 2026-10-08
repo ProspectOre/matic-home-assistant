@@ -369,14 +369,21 @@ class _PinnedChannel(Channel):
         expected_hostname: str | None,
         expected_serial: str | None,
         expected_fingerprint: str | None,
+        is_retired: Callable[[], bool] | None = None,
     ) -> None:
         super().__init__(host, port, ssl=ssl)
         self._expected_hostname = expected_hostname
         self._expected_serial = expected_serial
         self._expected_fingerprint = expected_fingerprint
+        self._is_retired = is_retired
+
+    def _require_active(self) -> None:
+        if self._is_retired is not None and self._is_retired():
+            raise CannotConnectError("Hermes client has been retired")
 
     def request(self, *args: Any, **kwargs: Any) -> Stream[Any, Any]:
         """Create the bounded stream used by every generated Hermes stub."""
+        self._require_active()
         stream = super().request(*args, **kwargs)
         # grpclib has no public stream-factory hook. Its Stream has no slots, so
         # switching to this behavior-only subclass preserves initialized state.
@@ -384,8 +391,10 @@ class _PinnedChannel(Channel):
         return stream
 
     async def _create_connection(self) -> H2Protocol:
+        self._require_active()
         protocol = await super()._create_connection()
         try:
+            self._require_active()
             ssl_object = cast(
                 "ssl.SSLObject | None",
                 protocol.connection._transport.get_extra_info("ssl_object"),
@@ -436,6 +445,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self._timezone_identifier = timezone_identifier
         self._seconds_from_gmt = seconds_from_gmt
         self._channel: Channel | None = None
+        self._retired = False
         self._connect_lock = asyncio.Lock()
         self._endpoint_health: dict[str, str] = {}
         self._command_health: dict[str, str] = {}
@@ -456,17 +466,21 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     async def async_connect(self) -> None:
         """Verify the pinned certificate, then open an HTTP/2 channel."""
         async with self._connect_lock:
+            self._require_active()
             if self._channel is not None:
                 return
             await self._async_connect_locked()
 
     async def _async_connect_locked(self) -> None:
         """Open and initialize one channel while holding the connection lock."""
+        self._require_active()
         context = await async_robot_client_context()
+        self._require_active()
         last_error: CannotConnectError | None = None
         for host in await _async_connection_candidates(
             self._host, self._hostname, self._port
         ):
+            self._require_active()
             channel = _PinnedChannel(
                 host,
                 self._port,
@@ -474,6 +488,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 expected_hostname=self._hostname,
                 expected_serial=self._serial_number,
                 expected_fingerprint=self._certificate_fingerprint,
+                is_retired=lambda: self._retired,
             )
             # Force the TLS handshake now so the pinned identity is enforced and
             # an unreachable candidate falls back to the next resolved address.
@@ -481,6 +496,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             try:
                 async with asyncio.timeout(_RPC_TIMEOUT):
                     await channel.__connect__()
+                self._require_active()
                 self._host = host
                 self._channel = channel
                 break
@@ -499,14 +515,30 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         try:
             await self._async_handshake()
             await self._async_send_user_data()
+            self._require_active()
         except BaseException:
             # Never leave a half-initialized channel behind: closing it lets a
             # later async_connect() re-dial instead of silently no-opping.
             self.close()
             raise
 
+    def _require_active(self) -> None:
+        if self._retired:
+            raise CannotConnectError("Hermes client has been retired")
+
+    def retire(self) -> None:
+        """Permanently revoke this runtime, including captured channel references."""
+        self._retired = True
+        self.close()
+
+    async def async_shutdown(self) -> None:
+        """Revoke this runtime and wait for any in-flight dial to settle."""
+        self.retire()
+        async with self._connect_lock:
+            self.close()
+
     def close(self) -> None:
-        """Close the active channel."""
+        """Close the active channel while allowing a later reconnect."""
         if self._channel is not None:
             self._channel.close()
             self._channel = None
@@ -516,6 +548,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     ) -> None:
         """Replace one failed read channel without racing concurrent readers."""
         async with self._connect_lock:
+            self._require_active()
             # Another concurrent read may already have replaced the failed
             # channel. Reuse that fresh pinned session instead of closing it.
             if self._channel is not failed_channel and self._channel is not None:
