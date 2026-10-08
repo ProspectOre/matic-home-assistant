@@ -1,7 +1,6 @@
 # Final 0.5 candidate acceptance
 
-Reconciled October 8, 2026, Pacific time. Source, installed, device, physical
-and owner acceptance are separate gates.
+Reconciled October 8, 2026, Pacific time; source, installed, device, physical and owner gates remain separate.
 
 ## Composition and review
 
@@ -130,10 +129,9 @@ qualify component/GPU retention, sustained presented FPS or field INP.
 
 [PR #138](https://github.com/ProspectOre/matic-home-assistant/pull/138) merged as
 `156ae4bf7f0203436bb73301153ef44bc2b707da` on October 4 Pacific time. Its former
-merge hold is retired. The owner has retired the request coordinator; do not
-route new review requests through it. Authentic complete review, findings
-dispositions and required CI remain mandatory. Historical evidence gaps remain
-historical and do not supply runtime acceptance.
+merge hold and the owner-retired request coordinator are retired. Use direct
+regular review; complete review, findings dispositions and required CI remain
+mandatory. Historical evidence gaps do not supply runtime acceptance.
 
 ## Remaining acceptance matrix
 
