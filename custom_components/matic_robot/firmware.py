@@ -507,6 +507,48 @@ class FirmwareTracker:
         robot = self._data.get("robots", {}).get(robot_id, {})
         snapshot = robot.get("snapshot") or {}
         comparison = robot.get("last_comparison") or {}
+        # Investigator narratives and source URLs are administrator content.
+        # Diagnostics and entity attributes expose only structured scan state.
+        report = self.report(robot_id)
+        report_summary: dict[str, Any] = {
+            key: value
+            for key in (
+                "revision",
+                "evidence_revision",
+                "scan_count",
+                "failed_endpoints",
+                "reachable_endpoints",
+                "endpoint_count",
+            )
+            if isinstance(value := report.get(key), int)
+            and not isinstance(value, bool)
+            and value >= 0
+        }
+        if report.get("scan_status") in ("complete", "incomplete"):
+            report_summary["scan_status"] = report["scan_status"]
+        if isinstance(report.get("attention_required"), bool):
+            report_summary["attention_required"] = report["attention_required"]
+        if report:
+            report_summary["notification_pending"] = report["notification_pending"]
+            report_id = report.get("id")
+            if (
+                isinstance(report_id, str)
+                and len(report_id) == 24
+                and all(character in "0123456789abcdef" for character in report_id)
+            ):
+                report_summary["id"] = report_id
+            report_summary["firmware_version"] = report.get("firmware_version")
+            report_summary["findings"] = [
+                {"kind": "new_field"}
+                for finding in report["findings"]
+                if finding.get("kind") == "new_field"
+            ]
+            status = report["investigation"].get("status")
+            report_summary["investigation"] = {
+                "status": status
+                if status in ("pending", "claimed", "complete")
+                else "pending"
+            }
         return {
             "observed_version": robot.get("observed_version"),
             "observed_protocol": robot.get("observed_protocol"),
@@ -530,7 +572,7 @@ class FirmwareTracker:
                 "wire_shape_candidate_endpoints", []
             ),
             "firmware_report_revision": self.report(robot_id).get("revision", 0),
-            "firmware_report": self.report(robot_id),
+            "firmware_report": report_summary,
         }
 
     def needs_snapshot(

@@ -349,7 +349,13 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
             revision = item["revision"]
             point_count = item["point_count"]
             mission_token = item.get("mission_token")
-            compressed = base64.b64decode(item["scene"], validate=True)
+            encoded_scene = item["scene"]
+            if (
+                not isinstance(encoded_scene, str)
+                or len(encoded_scene) > ((MAX_HISTORY_COMPRESSED_BYTES + 2) // 3) * 4
+            ):
+                raise ValueError("stored history exceeds the encoded byte limit")
+            compressed = base64.b64decode(encoded_scene, validate=True)
             if (
                 not isinstance(snapshot_id, str)
                 or len(snapshot_id) != 24
@@ -388,6 +394,12 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
                 mission_token,
             )
         )
+        # Repair corrupt/oversized caches incrementally instead of retaining
+        # every individually valid scene until the entire cache is decoded.
+        snapshots.sort(key=lambda snapshot: snapshot.created_at)
+        before_count = len(snapshots)
+        _enforce_history_bounds(snapshots)
+        dirty |= before_count != len(snapshots)
     snapshots.sort(key=lambda snapshot: snapshot.created_at)
     before = tuple(snapshot.snapshot_id for snapshot in snapshots)
     _enforce_history_bounds(snapshots)

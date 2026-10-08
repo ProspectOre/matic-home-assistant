@@ -19,6 +19,8 @@ from homeassistant.helpers.trigger import async_initialize_triggers
 from homeassistant.util.yaml import load_yaml
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.matic_robot.firmware import FirmwareTracker
+
 ROOT = Path(__file__).parents[1]
 BLUEPRINT_PATH = ROOT / "blueprints/automation/matic_robot/firmware_intelligence.yaml"
 VACUUM = "vacuum.matic_test"
@@ -218,6 +220,30 @@ async def test_pending_report_delivers_then_marks_delivered_last(
     )
 
 
+async def test_projected_sensor_report_preserves_notification_actions(hass):
+    current = report()
+    current["findings"] = {
+        "synthetic": {"kind": "new_field", "status": "first_observed"}
+    }
+    current["delivered_revision"] = 0
+    current["acknowledged_revision"] = 0
+    current["investigation"]["summary"] = "password=synthetic-secret"
+    tracker = FirmwareTracker(hass)
+    tracker._data = {"robots": {"entry": {"firmware_report": current}}}
+    projected = tracker.summary("entry")["firmware_report"]
+    assert "synthetic-secret" not in repr(projected)
+    calls = await install_services(hass, lambda _name, _data: None)
+    script = await make_script(hass, projected)
+    await run_script(script, trigger_id="reconcile")
+    assert [name for name, _ in calls] == [
+        "persistent_notification.create",
+        NOTIFY,
+        "matic_robot.firmware_notification",
+    ]
+    assert calls[-1][1]["report_id"] == REPORT_ID
+    assert "synthetic-secret" not in repr(calls)
+
+
 async def test_notification_failure_leaves_delivery_pending_for_reconcile(
     hass: HomeAssistant,
 ) -> None:
@@ -328,7 +354,7 @@ async def test_research_markdown_is_escaped_in_persistent_notification(
     assert hostile not in persistent["message"]
     assert "<img" not in persistent["message"]
     assert "](javascript:" not in persistent["message"]
-    assert escaped in persistent["message"]
+    assert escaped not in persistent["message"]
     mobile = next(data for name, data in calls if name == NOTIFY)
     assert len(mobile["message"]) <= 350
 

@@ -22,6 +22,7 @@ from homeassistant.helpers.storage import Store
 from .client.api import MaticHermesClient
 from .client.models import FloorPlan, HermesCollectionEntry
 from .client.slam_map import (
+    MAX_TILE_ENTRY_BYTES,
     SlamStructureTile,
     SlamTile,
     decode_slam_structure_tile,
@@ -1196,9 +1197,24 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
                 dirty = True
                 continue
             try:
+                encoded_key = item["key"]
+                encoded_value = item["value"]
+                encoded_limit = ((MAX_TILE_ENTRY_BYTES + 2) // 3) * 4
+                if any(
+                    not isinstance(value, str) or len(value) > encoded_limit
+                    for value in (encoded_key, encoded_value)
+                ):
+                    raise ValueError("stored tile exceeds the encoded byte limit")
+                decoded_bytes = sum(
+                    ((len(value) + 3) // 4) * 3
+                    - (2 if value.endswith("==") else int(value.endswith("=")))
+                    for value in (encoded_key, encoded_value)
+                )
+                if decoded_bytes > MAX_TILE_ENTRY_BYTES:
+                    raise ValueError("stored tile exceeds the combined byte limit")
                 entry = HermesCollectionEntry(
-                    base64.b64decode(item["key"], validate=True),
-                    base64.b64decode(item["value"], validate=True),
+                    base64.b64decode(encoded_key, validate=True),
+                    base64.b64decode(encoded_value, validate=True),
                 )
                 tile = (
                     decode_slam_structure_tile(entry)

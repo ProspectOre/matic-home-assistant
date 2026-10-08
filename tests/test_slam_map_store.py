@@ -1598,6 +1598,26 @@ def test_slam_map_store_bounds_health_metadata_and_spatial_helpers() -> None:
     assert _bucket(100, 0, 1) == 7
 
 
+@pytest.mark.parametrize("field", ["key", "value"])
+@pytest.mark.parametrize("value", ["A" * 16, b"AAAA"])
+def test_stored_tile_admission_precedes_base64_allocation(monkeypatch, field, value):
+    monkeypatch.setattr(slam_map_store_module, "MAX_TILE_ENTRY_BYTES", 3)
+    item = {"key": "AAAA", "value": "AAAA", field: value}
+    with patch.object(slam_map_store_module.base64, "b64decode") as decode:
+        loaded = _decode_stored_snapshot({"tiles": [item]})
+    decode.assert_not_called()
+    assert loaded.invalid_tiles == 1
+    assert not loaded.entries
+
+
+def test_stored_tile_combined_budget_precedes_base64_allocation(monkeypatch):
+    monkeypatch.setattr(slam_map_store_module, "MAX_TILE_ENTRY_BYTES", 3)
+    with patch.object(slam_map_store_module.base64, "b64decode") as decode:
+        loaded = _decode_stored_snapshot({"tiles": [{"key": "AAAA", "value": "AAAA"}]})
+    decode.assert_not_called()
+    assert loaded.invalid_tiles == 1
+
+
 async def test_return_floor_retains_supported_map_before_selection_catches_up(hass):
     store = SlamMapStore(hass, "return-floor-buffer")
     store.set_expected_mission_id(1)

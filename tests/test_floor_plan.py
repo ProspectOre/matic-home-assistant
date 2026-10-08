@@ -82,6 +82,21 @@ def test_decode_named_rooms_and_protocol_ids() -> None:
     assert floor_plan.rooms[0].boundary[0] == (0.0, 0.0)
 
 
+@pytest.mark.parametrize("reordered", [False, True])
+def test_duplicate_room_protocol_identity_is_rejected(reordered: bool) -> None:
+    points = ((0.0, 0.0), (4.0, 0.0), (4.0, 3.0))
+    first = _region_wire(REGION_ID, "First room", points)
+    second = _region_wire(REGION_ID, "Different room", points)
+    if reordered:
+        raw = _fixed64(2, REGION_ID.int & ((1 << 64) - 1)) + _fixed64(
+            1, REGION_ID.int >> 64
+        )
+        second = second.replace(_uuid(REGION_ID), _field(2, raw))
+        assert first != second
+    with pytest.raises(DecodeError, match="repeats a room identity"):
+        decode_floor_plan(_plan_payload(first, second))
+
+
 def test_decode_all_mapped_floors_without_guessing_the_active_one() -> None:
     payload = _floor_plan_payload(42) + _floor_plan_payload(84)
 

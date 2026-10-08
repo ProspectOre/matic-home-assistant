@@ -29,6 +29,42 @@ from tests.test_mission import _labeled as _labeled_floor
 from tests.test_mission import _state as _mission_client_state
 
 
+async def test_queued_return_cannot_dock_newer_motion(hass) -> None:
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial = "synthetic-serial"
+    entity = vacuum.MaticVacuum(entry)
+    lock = manager.command_lock(serial)
+    await lock.acquire()
+    task = asyncio.create_task(entity.async_return_to_base())
+    try:
+        for _ in range(30):
+            waiters = getattr(lock, "_waiters", None)
+            if waiters and any(not waiter.done() for waiter in waiters):
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("Return-to-base did not queue")
+        # A previously admitted clean changes ownership while Return waits.
+        manager.begin_managed_motion(serial)
+        lock.release()
+        with pytest.raises(ServiceValidationError, match="superseded"):
+            await task
+        entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+        await entity.async_return_to_base()
+        entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+            UserCommand.DOCK
+        )
+    finally:
+        if lock.locked():
+            lock.release()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 @pytest.mark.parametrize("command", ["start", "clean_rooms"])
 @pytest.mark.parametrize("coherent", [True, False])
 async def test_numeric_floor_label_preserves_map_command_guard(command, coherent):

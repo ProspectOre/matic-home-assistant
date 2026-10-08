@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import struct
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock, call
+from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
 from custom_components.matic_robot.client import api as api_module
+from custom_components.matic_robot.client import wire as wire_module
 from custom_components.matic_robot.client.api import (
     MaticHermesClient,
     _decode_binary_state,
@@ -19,6 +20,7 @@ from custom_components.matic_robot.client.api import (
     _decode_nested_timestamp,
     _decode_presence_state,
     _decode_schedule,
+    _decode_text_field,
     _decode_timezone,
     _decode_update_state,
     _decode_uploader_state,
@@ -27,6 +29,84 @@ from custom_components.matic_robot.client.api import (
 )
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from tests.wire_builders import _bfield, _fixed64, _vfield
+
+
+@pytest.mark.parametrize(
+    "decoder",
+    [
+        _decode_current_version,
+        _decode_binary_state,
+        _decode_presence_state,
+        _decode_water_flow_factor,
+        _decode_update_state,
+        _decode_timezone,
+        _decode_uploader_state,
+        _decode_coverage_time,
+    ],
+)
+def test_scalar_telemetry_rejects_field_amplification_before_allocation(
+    monkeypatch: pytest.MonkeyPatch, decoder
+) -> None:
+    allocated = []
+    original = wire_module.WireField
+
+    def capture(*args, **kwargs):
+        allocated.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(wire_module, "WireField", capture)
+    limit = api_module._TELEMETRY_NESTED_MAX_FIELDS
+    payload = _vfield(1, 0) * (limit + 50)
+    result = decoder(payload)
+    assert result in {None, (None, None, None, None)}
+    assert len(allocated) == limit
+
+
+@pytest.mark.parametrize(
+    "decoder",
+    [
+        _decode_current_version,
+        _decode_binary_state,
+        _decode_presence_state,
+        _decode_water_flow_factor,
+        _decode_update_state,
+        _decode_timezone,
+        _decode_uploader_state,
+        _decode_coverage_time,
+    ],
+)
+def test_scalar_telemetry_rejects_oversized_bytes_before_parsing(
+    monkeypatch: pytest.MonkeyPatch, decoder
+) -> None:
+    parser = Mock()
+    monkeypatch.setattr(api_module, "decode_fields", parser)
+    result = decoder(b"x" * (api_module._TELEMETRY_NESTED_MAX_BYTES + 1))
+    assert result in {None, (None, None, None, None)}
+    parser.assert_not_called()
+
+
+def test_nested_water_flow_property_rejects_field_amplification() -> None:
+    dense = _vfield(1, 0) * (api_module._TELEMETRY_NESTED_MAX_FIELDS + 1)
+    assert _decode_water_flow_factor(_bfield(1, dense)) is None
+
+
+def test_schedule_nested_field_budget_prevents_aggregate_allocation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from google.protobuf.message import DecodeError
+
+    allocated = []
+    original = wire_module.WireField
+
+    def capture(*args, **kwargs):
+        allocated.append(args)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(wire_module, "WireField", capture)
+    nested = _vfield(1, 0) * 600
+    with pytest.raises(DecodeError):
+        api_module._uuid_candidates(_bfield(1, nested) + _bfield(2, nested))
+    assert len(allocated) == api_module._SCHEDULE_MAX_FIELDS
 
 
 def test_decode_safe_telemetry_fixtures() -> None:
@@ -455,6 +535,7 @@ def test_decode_auxiliary_states() -> None:
 
 
 def test_decoders_fail_closed_and_use_safe_defaults() -> None:
+    assert _decode_text_field(b"\x0a\xff", 1) is None
     assert _decode_uploader_state(None) is None
     assert _decode_uploader_state(b"\x0a\xff") is None
     assert _decode_uploader_state(_bfield(2, b"")) is False

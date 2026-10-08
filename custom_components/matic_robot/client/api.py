@@ -107,7 +107,14 @@ from .tls import (
     validate_certificate,
 )
 from .trajectory import decode_approximate_trajectory
-from .wire import WireField, decode_fields, first_bytes, first_varint, uuid_string
+from .wire import (
+    WireField,
+    WireFieldBudget,
+    WireFieldBudgetExceeded,
+    WireFieldLimitExceeded,
+    decode_fields,
+    uuid_string,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -270,6 +277,8 @@ async def _async_recv_bounded_message(
     stream: Any,
     codec: Any,
     message_type: type[Any],
+    *,
+    max_bytes: int | None = None,
 ) -> Any | None:
     """Decode one gRPC frame after validating its declared byte length."""
     metadata = await stream.recv_data(5)
@@ -280,7 +289,12 @@ async def _async_recv_bounded_message(
     if struct.unpack("?", metadata[:1])[0]:
         raise NotImplementedError("Compression not implemented")
     message_length = struct.unpack(">I", metadata[1:])[0]
-    if message_length > MAX_HERMES_MESSAGE_BYTES:
+    message_limit = (
+        MAX_HERMES_MESSAGE_BYTES
+        if max_bytes is None
+        else min(max_bytes, MAX_HERMES_MESSAGE_BYTES)
+    )
+    if message_length > message_limit:
         raise CannotConnectError("Hermes response exceeds the message byte limit")
     message_bytes = await stream.recv_data(message_length)
     if len(message_bytes) != message_length:
@@ -291,13 +305,18 @@ async def _async_recv_bounded_message(
 class _BoundedStream(Stream[Any, Any]):
     """grpclib client stream with a preallocation message-size guard."""
 
+    message_byte_limit: int | None = None
+
     async def recv_message(self) -> Any | None:
         if not self._recv_initial_metadata_done:
             await self.recv_initial_metadata()
 
         with self._wrapper:
             message = await _async_recv_bounded_message(
-                self._stream, self._codec, self._recv_type
+                self._stream,
+                self._codec,
+                self._recv_type,
+                max_bytes=self.message_byte_limit,
             )
             if message is None:
                 return None
@@ -945,7 +964,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     async def _async_optional_property(self, name: str) -> bytes | None:
         """Return one optional property without hiding core robot state."""
         try:
+            max_bytes = (
+                _WIFI_STATUS_MAX_BYTES
+                if name == "wifi_status"
+                else _TELEMETRY_NESTED_MAX_BYTES
+            )
             value = await self.async_get_property(name)
+            if len(value) > max_bytes:
+                raise CannotConnectError("Hermes property exceeds its value byte limit")
             self._endpoint_health[name] = "ok"
             return value
         except (AuthenticationRequiredError, CannotConnectError) as err:
@@ -980,8 +1006,16 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             self._endpoint_health[name] = type(err).__name__
             return None
 
-    async def async_get_property(self, collection_name: str) -> bytes:
+    async def async_get_property(
+        self, collection_name: str, *, max_bytes: int | None = None
+    ) -> bytes:
         """Read one authenticated Hermes property snapshot."""
+        if max_bytes is None and collection_name in _TELEMETRY_PROPERTIES:
+            max_bytes = (
+                _WIFI_STATUS_MAX_BYTES
+                if collection_name == "wifi_status"
+                else _TELEMETRY_NESTED_MAX_BYTES
+            )
         if self._channel is None:
             await self.async_connect()
         channel = self._channel
@@ -1000,6 +1034,10 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             async with HermesStub(channel).FetchCollection.open(
                 metadata=self._metadata
             ) as stream:
+                if max_bytes is not None:
+                    # Bound the frame before reading its body, allowing a small
+                    # protobuf envelope around the separately bounded value.
+                    cast(_BoundedStream, stream).message_byte_limit = max_bytes + 4096
                 await stream.send_message(request, end=True)
                 response = await stream.recv_message()
 
@@ -1008,6 +1046,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 f"Hermes {collection_name} stream returned no value"
             )
         payload = _response_value_bytes(response)
+        if max_bytes is not None and len(payload) > max_bytes:
+            raise CannotConnectError("Hermes property exceeds its value byte limit")
         if not payload:
             raise CannotConnectError(
                 f"Hermes {collection_name} stream returned an empty value"
@@ -2025,10 +2065,51 @@ def _bounded_fields(
     """Decode a protobuf message only within semantic byte and field budgets."""
     if len(payload) > max_bytes:
         raise DecodeError("telemetry payload exceeds the byte limit")
-    fields = decode_fields(payload)
-    if len(fields) > max_fields:
-        raise DecodeError("telemetry payload has too many fields")
-    return fields
+    try:
+        return decode_fields(payload, max_fields=max_fields)
+    except WireFieldLimitExceeded as err:
+        raise DecodeError(
+            "telemetry payload has too many fields (field limit)"
+        ) from err
+
+
+def _telemetry_fields(payload: bytes) -> tuple[WireField, ...]:
+    """Bound scalar property allocation before interpreting its fields."""
+    return _bounded_fields(
+        payload,
+        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+    )
+
+
+def _telemetry_bytes(
+    payload: bytes,
+    number: int,
+    *,
+    max_bytes: int = _TELEMETRY_NESTED_MAX_BYTES,
+    max_fields: int = _TELEMETRY_NESTED_MAX_FIELDS,
+) -> bytes:
+    """Read a required bytes field after enforcing its message budgets."""
+    for field in _bounded_fields(payload, max_bytes=max_bytes, max_fields=max_fields):
+        if field.number == number and field.wire_type == 2:
+            assert isinstance(field.value, bytes)
+            return field.value
+    raise DecodeError(f"missing protobuf field {number}")
+
+
+def _telemetry_varint(
+    payload: bytes,
+    number: int,
+    *,
+    max_bytes: int = _TELEMETRY_NESTED_MAX_BYTES,
+    max_fields: int = _TELEMETRY_NESTED_MAX_FIELDS,
+) -> int:
+    """Read a required varint after enforcing its message budgets."""
+    for field in _bounded_fields(payload, max_bytes=max_bytes, max_fields=max_fields):
+        if field.number == number and field.wire_type == 0:
+            assert isinstance(field.value, int)
+            return field.value
+    raise DecodeError(f"missing protobuf varint field {number}")
 
 
 def _decode_text_from_fields(fields: tuple[WireField, ...], number: int) -> str | None:
@@ -2241,7 +2322,7 @@ def _decode_current_version(
     if not isinstance(payload, bytes):
         return None, None, None, None
     try:
-        fields = decode_fields(payload)
+        fields = _telemetry_fields(payload)
     except DecodeError:
         return None, None, None, None
     protocol = next(
@@ -2257,8 +2338,8 @@ def _decode_current_version(
         False,
     )
     return (
-        _decode_text_field(payload, 1),
-        _decode_text_field(payload, 2),
+        _decode_text_from_fields(fields, 1),
+        _decode_text_from_fields(fields, 2),
         protocol if isinstance(protocol, int) else None,
         supports,
     )
@@ -2269,11 +2350,8 @@ def _decode_text_field(payload: object, number: int) -> str | None:
     if not isinstance(payload, bytes):
         return None
     try:
-        value = first_bytes(payload, number)
-        if len(value) > _TELEMETRY_TEXT_MAX_BYTES:
-            return None
-        return value.decode("utf-8").strip() or None
-    except DecodeError, UnicodeDecodeError:
+        return _decode_text_from_fields(_telemetry_fields(payload), number)
+    except DecodeError:
         return None
 
 
@@ -2284,7 +2362,7 @@ def _decode_binary_state(payload: object) -> bool | None:
     if len(payload) == 16:
         return False
     try:
-        return bool(first_varint(payload, 1))
+        return bool(_telemetry_varint(payload, 1))
     except DecodeError:
         return None
 
@@ -2312,7 +2390,7 @@ def _decode_presence_state(payload: object) -> bool | None:
     if len(payload) == 16:
         return False
     try:
-        return bool(decode_fields(payload))
+        return bool(_telemetry_fields(payload))
     except DecodeError:
         return None
 
@@ -2324,10 +2402,10 @@ def _decode_water_flow_factor(payload: object) -> float | None:
     if len(payload) == 16:
         return 1.0
     try:
-        nested = first_bytes(payload, 1)
+        nested = _telemetry_bytes(payload, 1)
         raw_factor = next(
             item.value
-            for item in decode_fields(nested)
+            for item in _telemetry_fields(nested)
             if item.number == 1
             and item.wire_type == 5
             and isinstance(item.value, bytes)
@@ -2351,7 +2429,7 @@ def _decode_update_state(payload: object) -> str | None:
         6: "available",
     }
     try:
-        return names.get(decode_fields(payload)[0].number)
+        return names.get(_telemetry_fields(payload)[0].number)
     except DecodeError, IndexError:
         return None
 
@@ -2361,7 +2439,7 @@ def _decode_timezone(payload: object) -> str | None:
     if not isinstance(payload, bytes) or len(payload) == 16:
         return None
     try:
-        return _decode_text_field(first_bytes(payload, 1), 2)
+        return _decode_text_field(_telemetry_bytes(payload, 1), 2)
     except DecodeError:
         return None
 
@@ -2382,14 +2460,32 @@ def _decode_wifi_status(
         6: "roaming",
     }
     try:
-        state = names.get(first_varint(payload, 1), "unknown")
+        fields = _bounded_fields(
+            payload,
+            max_bytes=_WIFI_STATUS_MAX_BYTES,
+            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+        )
+        state = names.get(
+            _telemetry_varint(
+                payload,
+                1,
+                max_bytes=_WIFI_STATUS_MAX_BYTES,
+                max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+            ),
+            "unknown",
+        )
     except DecodeError:
         return None, None, None, ()
 
-    ssid = _decode_text_field(payload, 4) or _decode_text_field(payload, 10)
+    ssid = _decode_text_from_fields(fields, 4) or _decode_text_from_fields(fields, 10)
     networks: list[WifiNetwork] = []
     try:
-        scan = first_bytes(payload, 7)
+        scan = _telemetry_bytes(
+            payload,
+            7,
+            max_bytes=_WIFI_STATUS_MAX_BYTES,
+            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+        )
         scan_fields = _bounded_fields(
             scan,
             max_bytes=_WIFI_STATUS_MAX_BYTES,
@@ -2414,16 +2510,16 @@ def _decode_wifi_status(
             if network_ssid is None:
                 continue
             try:
-                encoded_signal = first_varint(item, 6)
+                encoded_signal = _telemetry_varint(item, 6)
                 signal = (encoded_signal >> 1) ^ -(encoded_signal & 1)
             except DecodeError:
                 signal = None
             try:
-                connected = bool(first_varint(item, 3))
+                connected = bool(_telemetry_varint(item, 3))
             except DecodeError:
                 connected = network_ssid == ssid
             try:
-                known = bool(first_varint(item, 8))
+                known = bool(_telemetry_varint(item, 8))
             except DecodeError:
                 known = connected
             networks.append(WifiNetwork(network_ssid, signal, connected, known))
@@ -2453,7 +2549,7 @@ def _decode_uploader_state(payload: object) -> bool | None:
     if len(payload) == 16:
         return False
     try:
-        fields = decode_fields(payload)
+        fields = _telemetry_fields(payload)
     except DecodeError:
         return None
     for field in fields:
@@ -2464,7 +2560,7 @@ def _decode_uploader_state(payload: object) -> bool | None:
                 return bool(field.value)
             if isinstance(field.value, bytes):
                 try:
-                    return bool(first_varint(field.value, 1))
+                    return bool(_telemetry_varint(field.value, 1))
                 except DecodeError:
                     return False
     return None
@@ -2475,10 +2571,10 @@ def _decode_coverage_time(payload: object) -> int | None:
     if not isinstance(payload, bytes) or len(payload) == 16:
         return None
     try:
-        for field in decode_fields(payload):
+        for field in _telemetry_fields(payload):
             if field.number != 3 or not isinstance(field.value, bytes):
                 continue
-            return first_varint(field.value, 1)
+            return _telemetry_varint(field.value, 1)
     except DecodeError:
         pass
     return None
@@ -2489,37 +2585,48 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
     if len(payload) > _SCHEDULE_MAX_BYTES:
         return None
     try:
-        weekly = first_bytes(payload, 1)
-        days = first_bytes(weekly, 1)
-        schedule_time = first_bytes(weekly, 3)
-        minute_of_day = first_varint(schedule_time, 1)
+        weekly = _telemetry_bytes(
+            payload, 1, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
+        )
+        days = _telemetry_bytes(weekly, 1)
+        schedule_time = _telemetry_bytes(weekly, 3)
+        minute_of_day = _telemetry_varint(schedule_time, 1)
     except DecodeError:
         return None
 
     weekdays: list[str] = []
     for number, name in enumerate(_WEEKDAYS, start=1):
         try:
-            if first_varint(days, number):
+            if _telemetry_varint(days, number):
                 weekdays.append(name)
         except DecodeError:
             continue
     try:
-        timezone_payload = first_bytes(schedule_time, 4)
+        timezone_payload = _telemetry_bytes(schedule_time, 4)
         timezone = _decode_text_field(timezone_payload, 2)
     except DecodeError:
         timezone = None
     try:
-        ordered = bool(first_varint(payload, 3))
+        ordered = bool(
+            _telemetry_varint(
+                payload,
+                3,
+                max_bytes=_SCHEDULE_MAX_BYTES,
+                max_fields=_SCHEDULE_MAX_FIELDS,
+            )
+        )
     except DecodeError:
         ordered = False
 
     enabled: bool | None = None
     try:
-        enabled_payload = first_bytes(payload, 9)
+        enabled_payload = _telemetry_bytes(
+            payload, 9, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
+        )
         if not enabled_payload:
             enabled = True
         else:
-            enabled_fields = decode_fields(enabled_payload)
+            enabled_fields = _telemetry_fields(enabled_payload)
             if enabled_fields:
                 enabled = enabled_fields[0].number == 1
     except DecodeError:
@@ -2527,10 +2634,13 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
 
     try:
         room_ids = _uuid_candidates(payload)
+        name_fields = _bounded_fields(
+            payload, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
+        )
     except DecodeError:
         return None
     return CleaningSchedule(
-        name=_decode_text_field(payload, 2),
+        name=_decode_text_from_fields(name_fields, 2),
         weekdays=tuple(weekdays),
         minute_of_day=minute_of_day if 0 <= minute_of_day < 1440 else None,
         timezone=timezone,
@@ -2544,19 +2654,17 @@ def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
     """Return stable UUID values nested in a protocol payload."""
     found: list[str] = []
     seen: set[str] = set()
-    field_count = 0
+    field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
 
     def walk(data: bytes, depth: int) -> None:
-        nonlocal field_count
         if depth > _SCHEDULE_MAX_DEPTH:
             return
         try:
-            fields = decode_fields(data)
+            fields = decode_fields(data, field_budget=field_budget)
+        except WireFieldBudgetExceeded, WireFieldLimitExceeded:
+            raise
         except DecodeError:
             return
-        field_count += len(fields)
-        if field_count > _SCHEDULE_MAX_FIELDS:
-            raise DecodeError("schedule has too many nested fields")
         fixed = {
             field.number: field.value
             for field in fields
@@ -2583,7 +2691,12 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     if len(payload) > _CLEANING_SESSION_MAX_BYTES:
         return None
     try:
-        summary = first_bytes(payload, 5)
+        summary = _telemetry_bytes(
+            payload,
+            5,
+            max_bytes=_CLEANING_SESSION_MAX_BYTES,
+            max_fields=_CLEANING_SESSION_MAX_FIELDS,
+        )
     except DecodeError:
         return None
     started_at = _decode_nested_timestamp(summary, 3)
@@ -2617,7 +2730,7 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
             if room_field.number != 1 or not isinstance(room_field.value, bytes):
                 continue
             try:
-                details = first_bytes(room_field.value, 2)
+                details = _telemetry_bytes(room_field.value, 2)
                 detail_fields = _bounded_fields(
                     details,
                     max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
@@ -2651,7 +2764,7 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
             statuses[key] = status
             durations[key] = None
             try:
-                duration = first_bytes(details, 4)
+                duration = _telemetry_bytes(details, 4)
                 seconds_fields = [
                     field
                     for field in _bounded_fields(
@@ -2763,11 +2876,16 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
 def _decode_nested_timestamp(payload: bytes, number: int) -> str | None:
     """Decode Matic's nested SystemTime/Timestamp wrapper as an ISO value."""
     try:
-        wrapper = first_bytes(payload, number)
-        timestamp = first_bytes(wrapper, 1)
-        seconds = first_varint(timestamp, 1)
+        wrapper = _telemetry_bytes(
+            payload,
+            number,
+            max_bytes=_CLEANING_SESSION_MAX_BYTES,
+            max_fields=_CLEANING_SESSION_MAX_FIELDS,
+        )
+        timestamp = _telemetry_bytes(wrapper, 1)
+        seconds = _telemetry_varint(timestamp, 1)
         try:
-            nanos = first_varint(timestamp, 2)
+            nanos = _telemetry_varint(timestamp, 2)
         except DecodeError:
             nanos = 0
         value = datetime.fromtimestamp(seconds + nanos / 1_000_000_000, UTC)

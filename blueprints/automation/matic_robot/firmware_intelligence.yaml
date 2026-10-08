@@ -121,18 +121,16 @@ actions:
                 {% elif new_fields > 0 %}{{ new_fields }} newly observed field(s); their meaning remains unverified.
                 {% else %}Read checks have recovered.{% endif %}
                 {% if research.get('status') == 'complete' %}
-                Research assessment: {{ research.summary }}
-                {% elif report.investigator != 'manual' %}
-                Investigation assigned to {{ report.investigator }}.
+                An administrator can retrieve the assessment with MaticGetFirmware.
                 {% endif %}
           - action: persistent_notification.create
             data:
               notification_id: "{{ notification_key }}"
               title: "{{ title | trim }}"
               message: >-
-                {{ message | replace(research.get('summary', ''), research.get('summary_markdown', '')) if research.get('status') == 'complete' else message }}
+                {{ message }}
 
-                [View firmware evidence](/config/devices/device/{{ device_id(vacuum_entity) }})
+                [View device and firmware status](/config/devices/device/{{ device_id(vacuum_entity) }})
           - action: "{{ notify_service }}"
             data:
               title: "{{ title | trim }}"

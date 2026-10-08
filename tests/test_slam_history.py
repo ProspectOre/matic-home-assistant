@@ -35,6 +35,23 @@ def _scene(*, page_x: int = 0, mission_id: int = 0x1234ABCD) -> bytes:
     )
 
 
+@pytest.mark.parametrize("value", ["A" * 16, b"AAAA"])
+def test_stored_history_admission_precedes_base64_allocation(monkeypatch, value):
+    monkeypatch.setattr(
+        "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES", 3
+    )
+    item = {
+        "id": "0" * 24,
+        "created_at": "2026-07-26T00:00:00+00:00",
+        "revision": 1,
+        "point_count": 1,
+        "scene": value,
+    }
+    with patch("custom_components.matic_robot.slam_history.base64.b64decode") as decode:
+        assert _decode_history({"snapshots": [item]}) == ([], True)
+    decode.assert_not_called()
+
+
 def _identity(mission_id: int = 0x1234ABCD) -> SlamMapIdentity:
     tile = decode_slam_tile(synthetic_slam_entry(mission_id=mission_id))
     return SlamMapIdentity(tile.mission_token, tile.mission_id)
@@ -346,6 +363,39 @@ def test_history_decoder_repairs_invalid_private_storage() -> None:
     mismatched = {**valid, "id": "0" * 24}
     assert _decode_history({"snapshots": [mismatched]}) == ([], True)
     assert _decode_history("invalid") == ([], True)
+
+
+def test_history_load_trims_between_scene_decodes(monkeypatch) -> None:
+    scene = _scene()
+    compressed = __import__("zlib").compress(scene)
+    snapshot_id = __import__("hashlib").sha256(scene).hexdigest()[:24]
+    monkeypatch.setattr(
+        "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES",
+        len(compressed),
+    )
+    items = [
+        {
+            "id": snapshot_id,
+            "created_at": f"2026-07-26T12:0{index}:00+00:00",
+            "revision": index,
+            "point_count": 1025,
+            "scene": base64.b64encode(compressed).decode(),
+        }
+        for index in range(6)
+    ]
+    peaks = []
+
+    def enforce(snapshots):
+        peaks.append(sum(len(snapshot.compressed) for snapshot in snapshots))
+        _enforce_history_bounds(snapshots)
+
+    with patch(
+        "custom_components.matic_robot.slam_history._enforce_history_bounds", enforce
+    ):
+        snapshots, dirty = _decode_history({"snapshots": items})
+    assert dirty is True
+    assert [snapshot.revision for snapshot in snapshots] == [5]
+    assert max(peaks) == 2 * len(compressed)
     assert _decode_history({"snapshots": "invalid"}) == ([], True)
 
 
