@@ -53,8 +53,9 @@ reported that room unvisited and both modes unattempted. One Start, Stop and
 Dock were observed; the robot physically returned, but software settlement
 waited on a command lease held by the Dock watcher. The timeout finalizer needs
 that same lease, while the watcher awaits a terminal run outcome. No success
-or cadence credit is claimed. The room-start cause still needs route/device
-observation; command acknowledgement does not establish it.
+or cadence credit is claimed. The owner subsequently confirmed the selected
+target was closed off and unavailable; this is guarded failure evidence,
+not a successful room-cleaning result.
 
 The RC13 follow-up releases the command lease before Dock confirmation, clears
 only a failed run's captured Stop fence without upgrading outcome or credit,
@@ -65,9 +66,36 @@ after verified settlement; original definitions, selection, saved Areas and
 automation enablement were preserved. RC13 local validation passes 4,297 Python
 tests with 100% production coverage, Ruff, formatting, strict mypy, packaging
 and privacy checks. Tests also cover newer fences, replacement runs and unload
-after the Dock lease is released. RC13 requires fresh complete
-review, CI, manual merge, pre-release installation and live requalification;
-RC12 evidence cannot qualify its changed runtime paths.
+after the Dock lease is released.
+
+[PR #232](https://github.com/ProspectOre/matic-home-assistant/pull/232) merged as
+`5534960fd30aab7da4018031e3e1ca49f9d75f1b`, after clean regular review of
+`1fc97e3f0bd73cee3ec3c6d33c0b10ab6392d77b` and green hosted checks.
+RC13 was published as a pre-release and installed through HACS. All 92 files,
+rollback copies and preserved settings/definitions matched. New startup,
+diagnostics, source-matching caches, native runner, map/pose and visible Safari
+recovery passed; the startup thread error was absent. All five setters again
+passed live change/restore confirmation. The unavailable-target test dispatched
+one Start, Stop and Dock, finalized failure about 1.9 seconds after Stop,
+cleared its fence and returned to docked/idle with zero completion credit.
+Temporary plans were removed with preservation receipts.
+
+Whole-product source review then found allocation before telemetry field and
+stored-base64 limits, duplicate canonical room identities, a queued Return-to-base
+race and untrusted research text/URLs in diagnostic summaries. Remediation and
+targeted regressions are consolidated for RC14: 4,333 local tests pass at
+100% production coverage, with Ruff, formatting, strict mypy and privacy checks.
+Firmware notifications retain structured identity/actions without research text.
+RC14 still requires exact-head review, hosted CI and installed qualification.
+
+Actual Android Chrome completed ten minutes and 298 generated map gestures at
+native 150% zoom, with no page errors. Captured interaction-duration p95 was
+152 ms, exceeding the 100 ms project budget in this stress scope. Whole-page
+heap and Chrome-process PSS do not establish component or GPU retention.
+A separate short diagnostic trace showed presentation gaps, but cannot qualify
+sustained frame rates. A 124-second default-zoom comparison with 60 gestures
+recorded p95 144 ms and no page errors. This also misses the lab input proxy;
+queue/handler/presentation attribution and final-build repeat remain open.
 
 [PR #138](https://github.com/ProspectOre/matic-home-assistant/pull/138) merged as
 `156ae4bf7f0203436bb73301153ef44bc2b707da` on October 4 Pacific time. Its former
@@ -80,7 +108,7 @@ historical and do not supply runtime acceptance.
 
 | Gate | Current evidence and closing requirement |
 |---|---|
-| Exact installed candidate | RC12 file identity, new startup, diagnostics/caches, rollback, saved definitions/settings, map/pose and five live confirmations passed. Repeat changed runtime checks on RC13. Exercise child lock, pet waste, voice, deep mop and water flow independently, including confirmation, timeout, cancellation and reconnect. Synthetic tests do not establish device behavior. |
+| Exact installed candidate | RC13 identity, startup, diagnostics/caches, rollback, preservation, map/pose, five live confirmations and bounded failure settlement passed. Repeat changed paths on RC14. Live timeout, cancellation and reconnect remain unqualified for every setter. |
 | Reliability and safety | Qualify disconnect/reconnect, stale/wrong-floor data, administrator loss, unload/reload, multiple tabs, history/Area conflicts and renderer failures on the final build. Guards must prevent commands; recovery must avoid duplicate dispatch and credit. Keep live transport default-OFF until fault/fallback and resource qualification. |
 | Actual devices and accessibility | Actual iPhone/iPad Safari and Android Chrome; touch, keyboard, VoiceOver/NVDA, switch access, native zoom, safe areas, RTL and recovery language. Actual Android Chrome rendered 2D/3D, accepted generated touch navigation and reflowed at native 150% zoom. This limited flow does not qualify every device or assistive technology. |
 | Sustained performance | Measure final-build desktop/mobile responsiveness and frame rates, CPU, retained memory/GPU and traffic/reconnect budgets over long sessions and large maps. RC12 synthetic desktop endurance completed 10 minutes/403 scene changes, no console errors, stable node/listener counts, post-GC heap 3.0–4.1 MB. RAF sampling is not GPU-presented FPS; this does not close mobile/GPU/live-traffic or longer-session qualification. |

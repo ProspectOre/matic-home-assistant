@@ -458,6 +458,54 @@ async def test_bounded_grpc_frame_decodes_legitimate_message() -> None:
     codec.decode.assert_called_once_with(b"abc", bytes)
 
 
+async def test_property_frame_budget_rejects_before_body_allocation() -> None:
+    raw = _RawFrameStream(b"\x00" + struct.pack(">I", 9))
+    codec = MagicMock()
+    with pytest.raises(CannotConnectError, match="message byte limit"):
+        await _async_recv_bounded_message(raw, codec, bytes, max_bytes=8)
+    assert raw.requested == [5]
+    codec.decode.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("name", "expected_limit"),
+    [("current_version", 64 * 1024 + 4096), ("wifi_status", 256 * 1024 + 4096)],
+)
+async def test_known_property_assigns_semantic_frame_budget(
+    monkeypatch, name, expected_limit
+) -> None:
+    stream = _Stream(_collection_response(direct=b"value"))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
+    )
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._channel = object()
+    assert await client.async_get_property(name) == b"value"
+    assert stream.message_byte_limit == expected_limit
+
+
+async def test_property_rejects_oversized_value_within_envelope_allowance(
+    monkeypatch,
+) -> None:
+    stream = _Stream(_collection_response(direct=b"x" * 9))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
+    )
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._channel = object()
+    with pytest.raises(CannotConnectError, match="value byte limit"):
+        await client.async_get_property("optional", max_bytes=8)
+
+
+async def test_optional_property_drops_oversized_value_before_retention() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"x" * (64 * 1024 + 1))
+    assert await client._async_optional_property("current_version") is None
+    assert client.endpoint_health["current_version"] == "CannotConnectError"
+
+
 async def test_bounded_grpc_frame_rejects_malformed_framing() -> None:
     assert (
         await _async_recv_bounded_message(_RawFrameStream(b""), MagicMock(), bytes)

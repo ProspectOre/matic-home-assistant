@@ -26,7 +26,7 @@ SEMANTIC_BYTES = TILE_SIDE * TILE_SIDE
 VOXEL_SCALE_METERS = 0.015
 _MAX_TILES = 1024
 _MAX_TILE_PAGE_COORDINATE = 4096
-_MAX_TILE_ENTRY_BYTES = 128 * 1024
+MAX_TILE_ENTRY_BYTES = 128 * 1024
 _MAX_MISSION_ID_BYTES = 64
 _MAX_SEMANTIC_PAYLOAD_BYTES = 2048
 SCENE_MAGIC = b"MATIC3D\x00"
@@ -423,7 +423,7 @@ def decode_slam_tile(entry: HermesCollectionEntry) -> SlamTile:
     """
     if not entry.key or not entry.value:
         raise DecodeError("photorealistic SLAM tile is empty")
-    if len(entry.key) + len(entry.value) > _MAX_TILE_ENTRY_BYTES:
+    if len(entry.key) + len(entry.value) > MAX_TILE_ENTRY_BYTES:
         raise DecodeError("photorealistic SLAM tile exceeds its byte limit")
 
     page = first_bytes(entry.key, 1)
@@ -485,7 +485,7 @@ def decode_slam_structure_tile(entry: HermesCollectionEntry) -> SlamStructureTil
     """Decode one verified ``map_integrated`` structural page."""
     if not entry.key or not entry.value:
         raise DecodeError("integrated SLAM tile is empty")
-    if len(entry.key) + len(entry.value) > _MAX_TILE_ENTRY_BYTES:
+    if len(entry.key) + len(entry.value) > MAX_TILE_ENTRY_BYTES:
         raise DecodeError("integrated SLAM tile exceeds its byte limit")
     page = first_bytes(entry.key, 1)
     page_x = _optional_sint32(page, 3)

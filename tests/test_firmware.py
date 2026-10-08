@@ -237,6 +237,48 @@ async def test_firmware_writers_serialize_commits_without_lost_updates(hass) -> 
     assert tracker.summary("second")["observed_version"] == "v170"
 
 
+async def test_diagnostic_report_excludes_untrusted_research(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._data = {
+        "robots": {
+            "entry": {
+                "firmware_report": {
+                    "revision": 2,
+                    "evidence_revision": 1,
+                    "scan_count": 3,
+                    "failed_endpoints": 0,
+                    "scan_status": "complete",
+                    "attention_required": False,
+                    "findings": {},
+                    "delivered_revision": 2,
+                    "acknowledged_revision": 2,
+                    "investigation": {
+                        "status": "complete",
+                        "summary": "password=synthetic-secret",
+                        "sources": ["https://example.com/?token=synthetic-secret"],
+                    },
+                    "investigation_history": [{"summary": "synthetic-secret"}],
+                }
+            }
+        }
+    }
+    summary = tracker.summary("entry")
+    assert summary["firmware_report"] == {
+        "revision": 2,
+        "evidence_revision": 1,
+        "scan_count": 3,
+        "failed_endpoints": 0,
+        "scan_status": "complete",
+        "attention_required": False,
+        "notification_pending": False,
+        "firmware_version": None,
+        "findings": [],
+        "investigation": {"status": "complete"},
+    }
+    assert "synthetic-secret" not in repr(summary)
+    assert "synthetic-secret" in repr(tracker.report("entry"))
+
+
 async def test_tracker_persists_snapshots_caps_history_and_summarizes(
     hass, monkeypatch
 ) -> None:

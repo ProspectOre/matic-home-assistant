@@ -118,9 +118,14 @@ def _decode_floor_plan_entry(partition_map_entry: bytes) -> tuple[FloorPlan, int
         raise DecodeError("coverage plan has too many rooms")
 
     rooms: list[Room] = []
+    room_protocol_ids: set[str] = set()
     total_boundary_points = 0
     for region_wire in region_wires:
         region_id_wire = first_bytes(region_wire, 1)
+        protocol_id = uuid_string(region_id_wire)
+        if protocol_id in room_protocol_ids:
+            raise DecodeError("coverage plan repeats a room identity")
+        room_protocol_ids.add(protocol_id)
         region = first_bytes(region_wire, 2)
         names = bytes_fields(region, 9)
         name_bytes = names[0] if names else b""
@@ -146,7 +151,7 @@ def _decode_floor_plan_entry(partition_map_entry: bytes) -> tuple[FloorPlan, int
             Room(
                 id=f"room_{sha256(region_id_wire).hexdigest()[:16]}",
                 name=name or f"Room {len(rooms) + 1}",
-                protocol_id=uuid_string(region_id_wire),
+                protocol_id=protocol_id,
                 id_wire=region_id_wire,
                 boundary=boundary,
             )

@@ -482,7 +482,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             else None
         )
         expected_generation = (
-            expected_generations[0] if expected_generations is not None else None
+            expected_generations[0]
+            if expected_generations is not None
+            else self._plans.motion_generation(serial_number)
         )
         stop_request_generation = (
             expected_generations[1]
@@ -499,6 +501,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     self._require_stop_request_generation(
                         serial_number, stop_request_generation
                     )
+                    self._require_motion_generation(serial_number, expected_generation)
                 return
             self._require_stop_request_generation(
                 serial_number, stop_request_generation
