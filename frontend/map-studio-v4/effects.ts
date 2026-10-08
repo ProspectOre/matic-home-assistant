@@ -2140,11 +2140,27 @@ export class EffectController {
       const current = this.#store.value;
       // A blank Draw draft is editable while the area catalog is loading. Do
       // not replace that draft when the response arrives, or an early stroke
-      // would be silently discarded. Existing selections still reconcile to
-      // the returned catalog, including a deleted saved area.
+      // would be silently discarded. If a selected saved Area was deleted
+      // elsewhere, preserve its edits but detach the stale ID so a later save
+      // creates a new Area instead of updating a missing target.
       const selectedExists = areas.areas.some((area) => area.id === selectedId);
-      if (reconcileDraft && ((!current.draw.dirty && !current.areaDraft.dirty)
-        || (selectedId !== null && !selectedExists))) {
+      if (reconcileDraft && selectedId !== null && !selectedExists
+        && (current.draw.dirty || current.areaDraft.dirty)) {
+        this.#store.patch({
+          selection: { ...current.selection, areaId: null },
+          areaDraft: {
+            ...current.areaDraft,
+            id: null,
+            status: "new",
+            canRebind: false,
+            dirty: true,
+          },
+          notice: {
+            tone: "warning",
+            text: "This saved Area was removed elsewhere. Your edits are preserved as a new Area draft; saving will create a new Area.",
+          },
+        });
+      } else if (reconcileDraft && !current.draw.dirty && !current.areaDraft.dirty) {
         this.selectArea(selectedExists ? selectedId : null);
       }
       return areas;

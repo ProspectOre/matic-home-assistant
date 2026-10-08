@@ -15,6 +15,13 @@ A failed read reconnects once using the pinned channel, without resending the
 write. Cancellation propagates. Unconfirmed writes surface a safe HA error.
 The coordinator retains refresh demand raised during an existing poll.
 
+Independent product review found an Area conflict: a catalog refresh after
+another tab deleted the selected Area discarded unsaved edits. The repair
+preserves the drawing/name/settings as a new dirty draft, detaches the missing
+ID and warns that saving creates a new Area. Clean selections still reconcile;
+targeted Chromium/WebKit regressions verify preservation and no stale deletion.
+Shipped frontend assets are regenerated from the repaired source.
+
 Local validation: 4,291 Python tests pass at 100% production coverage; Ruff,
 formatting, strict mypy (64 source files), privacy and whitespace checks pass.
 The 171 focused setting/entity/coordinator cases pass. Every affected setter
