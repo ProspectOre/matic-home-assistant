@@ -214,6 +214,8 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
 
 async def test_verified_setting_payloads_and_bounds() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
+    client._channel = object()
+    client.async_connect = AsyncMock()
     client._async_send_channel_payload = AsyncMock()
     client.async_get_property = AsyncMock(
         side_effect=(

@@ -11,6 +11,15 @@ from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 
 
+def _client() -> MaticHermesClient:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._channel = object()
+    client.async_connect = AsyncMock()
+    client._async_send_channel_payload = AsyncMock()
+    client.async_get_property = AsyncMock()
+    return client
+
+
 @pytest.mark.parametrize(
     "setting,enabled,property_name,old_state,new_state,channel,payload",
     (
@@ -46,8 +55,7 @@ from custom_components.matic_robot.client.exceptions import CannotConnectError
 async def test_binary_setting_waits_for_delayed_matching_state_once(
     setting, enabled, property_name, old_state, new_state, channel, payload
 ):
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._async_send_channel_payload = AsyncMock()
+    client = _client()
     client.async_get_property = AsyncMock(side_effect=[old_state, new_state])
 
     await client.async_set_binary_setting(setting, enabled)
@@ -69,8 +77,7 @@ async def test_binary_setting_waits_for_delayed_matching_state_once(
 async def test_deep_mop_waits_for_enabled_or_disabled_state_once(
     enabled, old_state, new_state, payload
 ):
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._async_send_channel_payload = AsyncMock()
+    client = _client()
     client.async_get_property = AsyncMock(side_effect=[old_state, new_state])
 
     await client.async_set_deep_mop(enabled)
@@ -85,8 +92,7 @@ async def test_deep_mop_waits_for_enabled_or_disabled_state_once(
 
 
 async def test_water_flow_waits_for_matching_float_state_once():
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._async_send_channel_payload = AsyncMock()
+    client = _client()
     old_state = b"\x0a\x05\x0d" + struct.pack("<f", 0.8)
     new_state = b"\x0a\x05\x0d" + struct.pack("<f", 1.4)
     client.async_get_property = AsyncMock(side_effect=[old_state, new_state])
@@ -104,11 +110,18 @@ async def test_water_flow_waits_for_matching_float_state_once():
 
 
 async def test_binary_setting_retries_after_transient_read_error_without_resend():
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._async_send_channel_payload = AsyncMock()
+    client = _client()
+    failed_channel = client._channel
+    fresh_channel = object()
     client.async_get_property = AsyncMock(
         side_effect=(CannotConnectError("temporary read failure"), b"\x08\x01")
     )
+
+    async def reconnect(channel):
+        assert channel is failed_channel
+        client._channel = fresh_channel
+
+    client._async_reconnect_after_read_failure = AsyncMock(side_effect=reconnect)
 
     await client.async_set_binary_setting("child_lock", True)
 
@@ -116,6 +129,34 @@ async def test_binary_setting_retries_after_transient_read_error_without_resend(
         call("child_lock_enabled_state"),
         call("child_lock_enabled_state"),
     ]
+    client._async_reconnect_after_read_failure.assert_awaited_once_with(failed_channel)
+    client._async_send_channel_payload.assert_awaited_once_with(
+        "child_lock_enabled_command", b"\x08\x01"
+    )
+
+
+async def test_binary_setting_stops_after_reconnect_read_failure_without_resend():
+    client = _client()
+    failed_channel = client._channel
+    fresh_channel = object()
+    client.async_get_property = AsyncMock(
+        side_effect=(
+            CannotConnectError("temporary read failure"),
+            CannotConnectError("fresh session read failure"),
+        )
+    )
+
+    async def reconnect(channel):
+        assert channel is failed_channel
+        client._channel = fresh_channel
+
+    client._async_reconnect_after_read_failure = AsyncMock(side_effect=reconnect)
+
+    with pytest.raises(CannotConnectError, match="fresh session read failure"):
+        await client.async_set_binary_setting("child_lock", True)
+
+    assert client.async_get_property.await_count == 2
+    client._async_reconnect_after_read_failure.assert_awaited_once_with(failed_channel)
     client._async_send_channel_payload.assert_awaited_once_with(
         "child_lock_enabled_command", b"\x08\x01"
     )
@@ -150,8 +191,7 @@ async def test_setter_fails_when_state_never_confirms(
         "timeout",
         lambda _duration: original_timeout(0.01),
     )
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._async_send_channel_payload = AsyncMock()
+    client = _client()
     client.async_get_property = AsyncMock(return_value=stale_or_unknown)
 
     with pytest.raises(CannotConnectError):
@@ -166,8 +206,7 @@ async def test_setter_fails_when_state_never_confirms(
 
 
 async def test_binary_setting_confirmation_propagates_cancellation_without_resend():
-    client = MaticHermesClient("robot.invalid", 16320)
-    client._async_send_channel_payload = AsyncMock()
+    client = _client()
     read_started = asyncio.Event()
 
     async def wait_for_confirmation(_property):

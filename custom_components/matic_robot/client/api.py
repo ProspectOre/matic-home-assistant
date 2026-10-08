@@ -1594,12 +1594,23 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         expected: bool | float,
     ) -> None:
         """Wait for one acknowledged setting write to appear in fresh state."""
+        reconnect_attempted = False
         try:
             async with asyncio.timeout(_SETTING_READBACK_TIMEOUT_SECONDS):
                 while True:
+                    await self.async_connect()
+                    failed_channel = self._channel
                     try:
                         observed = decode(await self.async_get_property(property_name))
                     except CannotConnectError:
+                        if reconnect_attempted:
+                            raise
+                        _LOGGER.debug(
+                            "Retrying Hermes %s setting read on a fresh pinned channel",
+                            property_name,
+                        )
+                        await self._async_reconnect_after_read_failure(failed_channel)
+                        reconnect_attempted = True
                         observed = None
                     if observed is not None and observed == expected:
                         return
