@@ -22,14 +22,17 @@ ID and warns that saving creates a new Area. Clean selections still reconcile;
 targeted Chromium/WebKit regressions verify preservation and no stale deletion.
 Shipped frontend assets are regenerated from the repaired source.
 
-Local validation: 4,291 Python tests pass at 100% production coverage; Ruff,
+The initial setter port passed 4,291 Python tests at 100% production coverage; Ruff,
 formatting, strict mypy (64 source files), privacy and whitespace checks pass.
 The 171 focused setting/entity/coordinator cases pass. Every affected setter
 has synthetic timeout, cancellation and reconnect success/failure cases asserting
 one write. Wheel and sdist match the integration source; fresh-wheel import passes.
 Python 3.14.8 and HA 2026.9.3 were used, with `dbus-fast` explicitly installed for
-the macOS test environment. Hosted Browser, HACS and Hassfest remain unrun for
-this follow-up. No frontend assets changed.
+the macOS test environment. After the Area repair, 38 focused
+packaging/privacy/frontend tests and four Chromium/WebKit effect regressions
+pass. Frontend source, browser tests and generated chunk/index assets changed.
+Final exact-head hosted Test, Browser, HACS and Hassfest checks remain required;
+results on earlier heads do not qualify the repaired candidate.
 
 The follow-up prepares `v0.5.0-rc12` metadata and is not yet a published or
 installed RC. Its complete comparison
