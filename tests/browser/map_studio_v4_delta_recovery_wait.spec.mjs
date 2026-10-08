@@ -8,7 +8,8 @@ async function loadRecoveryHarness(page) {
       resolveDir: process.cwd(),
     },
     bundle: true,
-    format: "esm",
+    format: "iife",
+    globalName: "__deltaRecoveryWaitModules",
     write: false,
   });
   await page.route("**/delta-recovery-wait.js", (route) => route.fulfill({
@@ -16,11 +17,12 @@ async function loadRecoveryHarness(page) {
     body: bundle.outputFiles[0].text,
   }));
   await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.addScriptTag({ url: "/delta-recovery-wait.js" });
 }
 
 async function startRecovery(page, failure = null) {
-  await page.evaluate(async (failure) => {
-    const { EffectController, WorkspaceStore, createGalleryState } = await import("/delta-recovery-wait.js");
+  await page.evaluate((failure) => {
+    const { EffectController, WorkspaceStore, createGalleryState } = window.__deltaRecoveryWaitModules;
     const initial = createGalleryState("ready");
     const entryA = { ...initial.resources.entry, deltaUrl: "/synthetic-delta-a" };
     const entryB = {
