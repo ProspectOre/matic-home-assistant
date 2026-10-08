@@ -526,6 +526,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         if self._retired:
             raise CannotConnectError("Hermes client has been retired")
 
+    @property
+    def retired(self) -> bool:
+        """Whether this runtime has permanently revoked transport access."""
+        return self._retired
+
     def retire(self) -> None:
         """Permanently revoke this runtime, including captured channel references."""
         self._retired = True

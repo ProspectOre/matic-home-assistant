@@ -173,6 +173,11 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 _LOGGER.debug("Matic Cues subscription interrupted: %s", err)
                 if self._cues_states_received > 1:
                     retry_delay = 1
+            # Closing grpclib can replace task cancellation with a transport
+            # error. A retired runtime must finish instead of retrying that
+            # terminal failure through the normal subscription backoff.
+            if self.client.retired:
+                return
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
 
@@ -296,6 +301,11 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 raise
             except MaticError as err:
                 _LOGGER.debug("Matic floor subscription interrupted: %s", err)
+            # Closing grpclib can replace task cancellation with a transport
+            # error. A retired runtime must finish instead of retrying that
+            # terminal failure through the normal subscription backoff.
+            if self.client.retired:
+                return
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
 

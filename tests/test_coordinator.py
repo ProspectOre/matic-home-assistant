@@ -14,6 +14,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
+from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.exceptions import (
     AuthenticationRequiredError,
     MaticError,
@@ -56,6 +57,7 @@ def _client() -> AsyncMock:
     client.async_get_floor_plan.return_value = None
     client.async_get_pose.return_value = None
     client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
+    client.retired = False
     return client
 
 
@@ -1913,3 +1915,64 @@ async def test_native_finished_event_excludes_unattempted_room_scope(hass):
     assert events[0].data["rooms"] == ["Study"]
     assert events[0].data["completed_rooms"] == []
     assert events[0].data["completed"] is False
+
+
+@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_cues"))
+async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
+    hass, watcher
+) -> None:
+    """Real grpclib error replacement cannot leave teardown in retry sleep."""
+    from grpclib.exceptions import StreamTerminatedError
+    from grpclib.utils import Wrapper
+
+    client = MaticHermesClient("192.0.2.1", 16320)
+    coordinator = _coordinator(hass, client)
+    wrapper = Wrapper()
+    started = asyncio.Event()
+    subscriptions = 0
+
+    async def subscription(*_args):
+        nonlocal subscriptions
+        subscriptions += 1
+        async with client._map_stream_errors("synthetic subscription"):
+            with wrapper:
+                started.set()
+                await asyncio.Event().wait()
+            yield None
+
+    client.async_subscribe_collection_entries = subscription
+    client.async_subscribe_state = subscription
+    channel = MagicMock()
+    channel.close.side_effect = lambda: wrapper.cancel(
+        StreamTerminatedError("synthetic closed channel")
+    )
+    client._channel = channel
+    coordinator.async_request_refresh = AsyncMock()
+    task = asyncio.create_task(getattr(coordinator, watcher)())
+    await started.wait()
+    client.retire()
+    if watcher == "async_watch_floor_plan":
+        # HA's cancellation races the close-triggered cancellation. Wrapper
+        # replaces both with its saved transport error on the same stack.
+        task.cancel("synthetic config entry unload")
+    await asyncio.wait_for(task, 0.5)
+    assert subscriptions == 1
+    assert client.retired
+    assert client._channel is None
+    coordinator.async_request_refresh.assert_not_awaited()
+    assert coordinator.data is None
+
+
+@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_cues"))
+async def test_retired_watcher_finishes_after_subscription_ends(hass, watcher) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def subscription(*_args):
+        client.retired = True
+        if False:
+            yield None
+
+    client.async_subscribe_collection_entries = subscription
+    client.async_subscribe_state = subscription
+    await asyncio.wait_for(getattr(coordinator, watcher)(), 0.5)
