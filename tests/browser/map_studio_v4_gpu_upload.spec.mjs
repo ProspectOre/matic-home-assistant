@@ -155,6 +155,75 @@ async function loadRenderer(page) {
   });
 }
 
+test("@safety rotated fallback points align with room hits on a rectangular map", async ({ page }) => {
+  await loadRenderer(page);
+  const outcome = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = window.__gpuUploadHarness;
+    const base = createGalleryState("ready");
+    const buffer = new ArrayBuffer(16);
+    const data = new DataView(buffer);
+    const points = [[20, 20, 255, 0, 0], [90, 20, 0, 255, 0]];
+    points.forEach(([x, y, r, g, b], index) => {
+      const offset = index * 8;
+      data.setUint16(offset, x, true); data.setUint16(offset + 2, y, true);
+      data.setUint8(offset + 5, r); data.setUint8(offset + 6, g); data.setUint8(offset + 7, b);
+    });
+    const names = ["Amber", "Grove"];
+    const scene = {
+      ...base.resources.scene.value, buffer, pointOffset: 0, total: 2, floorCount: 2, surfaceCount: 0,
+      metadata: {
+        ...base.resources.scene.value.metadata, span: [120, 60], origin: [13, 21], metersPerCell: .1,
+        rooms: points.map(([x, y], index) => ({
+          id: names[index], name: names[index], center: [x, y],
+          boundary: [[x - 5, y - 5], [x + 5, y - 5], [x + 5, y + 5], [x - 5, y + 5]],
+        })),
+      },
+    };
+    const container = document.createElement("div");
+    Object.assign(container.style, { position: "relative", width: "700px", height: "500px" });
+    document.body.append(container);
+    const canvas = document.createElement("canvas"), overlay = document.createElement("canvas");
+    for (const element of [canvas, overlay]) {
+      Object.assign(element.style, { position: "absolute", inset: "0", width: "700px", height: "500px" });
+      container.append(element);
+    }
+    const renderer = new RendererController(canvas, overlay);
+    renderer.setState({ ...base, view: "three", labelsVisible: false, appearance: "photo", resources: {
+      ...base.resources,
+      pose: { ...base.resources.pose, value: null },
+      scene: { ...base.resources.scene, value: scene },
+      plans: { ...base.resources.plans, value: { ...base.resources.plans.value,
+        rooms: names.map((name) => ({ roomId: name, name })),
+      } },
+    } });
+    renderer.setCamera({ ...renderer.camera, yaw: .6, pitch: .9, distance: 15 });
+    const camera = renderer.camera;
+    canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const context = overlay.getContext("2d"), bounds = canvas.getBoundingClientRect();
+    const results = points.map(([x, y], index) => {
+      const map = { x: (x + 13) * .1, y: (y + 21) * .1 };
+      const projected = renderer.mapToScreen(map);
+      const ratio = Math.min(window.devicePixelRatio || 1, 3);
+      const radius = Math.ceil(ratio);
+      const pixels = context.getImageData(Math.floor(projected.x * ratio) - radius,
+        Math.floor(projected.y * ratio) - radius, radius * 2 + 1, radius * 2 + 1).data;
+      let colored = false;
+      for (let offset = 0; offset < pixels.length; offset += 4) {
+        if (pixels[offset + index] > 100 && pixels[offset + (1 - index)] < 50 && pixels[offset + 3] > 0) colored = true;
+      }
+      const hit = renderer.roomAt(bounds.left + projected.x, bounds.top + projected.y);
+      return { colored, hit };
+    });
+    const result = { mode: renderer.diagnostics().mode, cameraPreserved: JSON.stringify(camera) === JSON.stringify(renderer.camera), results };
+    renderer.dispose();
+    return result;
+  });
+  expect(outcome).toEqual({ mode: "canvas2d", cameraPreserved: true,
+    results: [{ colored: true, hit: "Amber" }, { colored: true, hit: "Grove" }],
+  });
+});
+
 test("@safety WebGL uploads use bounded aligned chunks and compatible scenes publish atomically", async ({ page }) => {
   await loadRenderer(page);
   const outcome = await page.evaluate(async () => {
@@ -950,16 +1019,24 @@ test("@safety point-layout changes revoke the old front and use a bounded full u
   expect(outcome.liveBuffers).toBeLessThanOrEqual(2);
 });
 
-for (const [quality, step] of [["maximum", 1], ["balanced", 2], ["efficient", 3], ["auto", 4]]) {
-  test(`@safety ${quality} samples both point ranges across distant tiles without reading uninitialized bytes`, async ({ page }) => {
+for (const [quality, step, coarse] of [["maximum", 1, false], ["balanced", 2, false], ["efficient", 3, false], ["auto", 4, false], ["auto", 3, true]]) {
+  test(`@safety ${quality}${coarse ? " on touch" : ""} samples both point ranges across distant tiles without reading uninitialized bytes`, async ({ page }) => {
+    if (coarse) await page.addInitScript(() => {
+      const original = window.matchMedia.bind(window);
+      window.matchMedia = (query) => {
+        const media = original(query);
+        if (query === "(any-pointer: coarse)") Object.defineProperty(media, "matches", { value: true });
+        return media;
+      };
+    });
     await loadRenderer(page);
-    const result = await page.evaluate(async ({ quality, step }) => {
+    const result = await page.evaluate(async ({ quality, step, coarse }) => {
       const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
       const base = createGalleryState("ready");
       // Four successive tile regions in each range; a prefix budget loses
       // later floor regions and all surfaces when floors dominate the scene.
-      const floorCount = 120_001;
-      const surfaceCount = 12_001;
+      const floorCount = coarse ? 720_001 : 120_001;
+      const surfaceCount = coarse ? 207_074 : 12_001;
       const total = floorCount + surfaceCount;
       const pointOffset = 64;
       const buffer = new ArrayBuffer(pointOffset + total * 8);
@@ -978,7 +1055,7 @@ for (const [quality, step] of [["maximum", 1], ["balanced", 2], ["efficient", 3]
       }
       const renderer = new RendererController(canvas, overlay);
       const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
-      if (quality === "auto") {
+      if (quality === "auto" && !coarse) {
         let clock = 0;
         Object.defineProperty(performance, "now", { configurable: true, value: () => { clock += 20; return clock; } });
       }
@@ -1010,13 +1087,13 @@ for (const [quality, step] of [["maximum", 1], ["balanced", 2], ["efficient", 3]
           invalid: draws.filter(call => !call.valid).length,
           allocations: gl.calls.filter(call => call.type === "allocate").length };
       } finally {
-        if (quality === "auto") {
+        if (quality === "auto" && !coarse) {
           if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
           else delete performance.now;
         }
         renderer.dispose(); canvas.remove(); overlay.remove();
       }
-    }, { quality, step });
+    }, { quality, step, coarse });
     expect(result.rendered).toBe(result.expected);
     expect(result.ranges).toHaveLength(2);
     for (const range of result.ranges) {

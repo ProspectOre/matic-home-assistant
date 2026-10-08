@@ -84,9 +84,11 @@ export class RovingFocusController implements ReactiveController {
     const index = Math.max(0, items.findIndex((item) => item === this.#current
       || (origin instanceof Node && item.contains(origin))));
     let next: number;
+    const horizontalStep = this.#container
+      && getComputedStyle(this.#container).direction === "rtl" ? -1 : 1;
     switch (event.key) {
-      case "ArrowLeft": if (!horizontal) return; next = index - 1; break;
-      case "ArrowRight": if (!horizontal) return; next = index + 1; break;
+      case "ArrowLeft": if (!horizontal) return; next = index - horizontalStep; break;
+      case "ArrowRight": if (!horizontal) return; next = index + horizontalStep; break;
       case "ArrowUp": if (!vertical) return; next = index - 1; break;
       case "ArrowDown": if (!vertical) return; next = index + 1; break;
       case "Home": next = 0; break;

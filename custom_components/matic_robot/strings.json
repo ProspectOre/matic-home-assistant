@@ -177,6 +177,8 @@
     "v4_loading_saved_map": "Loading saved map",
     "v4_loading_saved_map_detail": "This read-only snapshot is still preparing.",
     "v4_loading_workspace": "Loading workspace…",
+    "v4_map_workspace": "Map workspace",
+    "v4_robot_status_and_action": "Robot status and action",
     "v4_locating": "Locating",
     "v4_locating_map": "Locating the current map",
     "v4_locating_map_detail": "Map controls will return after the floor is verified.",

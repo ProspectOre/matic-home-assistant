@@ -129,6 +129,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         # a failed read cannot make an older cached plan current again.
         self._displayed_floor_mission_id: int | None = None
         self._displayed_floor_signature: tuple[MappedFloor, ...] | None = None
+        self._displayed_floor_unknown = False
         self._verified_floor_mission_id: int | None = None
         self._floor_read_generation = 0
         self._floor_reads_in_flight = 0
@@ -245,10 +246,13 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     try:
                         mission_state = decode_mission_client_state(entry.value)
                     except DecodeError:
+                        self._async_revoke_displayed_floor()
                         continue
                     active_floor = mission_state.active_floor
                     if active_floor is None:
+                        self._async_revoke_displayed_floor()
                         continue
+                    self._displayed_floor_unknown = False
                     states_received += 1
                     if states_received > 1:
                         retry_delay = 1
@@ -308,6 +312,19 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 return
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
+
+    @callback
+    def _async_revoke_displayed_floor(self) -> None:
+        """Withhold cached and in-flight maps after unknown live localization."""
+        self._displayed_floor_unknown = True
+        self._displayed_floor_mission_id = None
+        self._displayed_floor_signature = None
+        self._verified_floor_mission_id = None
+        self._floor_read_generation += 1
+        self._cached_floor_plan = None
+        self._map_refresh_due = 0.0
+        if self.data is not None and self.data.floor_plan is not None:
+            self.async_set_updated_data(replace(self.data, floor_plan=None))
 
     @callback
     def async_process_cues_state(self, state: RobotOperationalState) -> None:
@@ -641,6 +658,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
     async def _async_optional_floor_plan(self) -> FloorPlan | None:
         """Read map geometry without hiding core state if unavailable."""
+        if self._displayed_floor_unknown:
+            return None
         now = monotonic()
         expected_mission_id = self.expected_floor_mission_id
         read_generation = self._floor_read_generation
@@ -723,6 +742,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     @property
     def expected_floor_mission_id(self) -> int | None:
         """Return the current floor identity admitted by live evidence."""
+        if self._displayed_floor_unknown:
+            return None
         return (
             self._verified_floor_mission_id
             if self._verified_floor_mission_id is not None

@@ -364,6 +364,10 @@ export class RendererController {
   #lastFrameMs = 0;
   #slowFrames = 0;
   #qualityScale = 1;
+  // Touch-device qualification showed GPU/presentation delay despite short
+  // JavaScript frames. Bound Auto's point workload independently of CPU time.
+  readonly #autoTouchPointLimit = window.matchMedia("(any-pointer: coarse)").matches
+    ? 350_000 : Number.POSITIVE_INFINITY;
   #viewport = { width: 1, height: 1, left: 0, top: 0 };
   #fitActive = true;
   #disposed = false;
@@ -1264,8 +1268,12 @@ export class RendererController {
     // The producer groups points by tile and then by floor/surface. Drawing
     // a prefix would crop later tiles and starve surfaces at lower quality.
     // Stride each range instead, using only its initialized upload frontier.
-    const step = Math.ceil(1 / this.#qualityScale);
     const initializedPoints = Math.min(scene.total, this.#initializedPoints);
+    const step = Math.max(
+      Math.ceil(1 / this.#qualityScale),
+      this.#state?.quality === "auto"
+        ? Math.ceil(initializedPoints / this.#autoTouchPointLimit) : 1,
+    );
     const floorAvailable = Math.min(scene.floorCount, initializedPoints);
     const surfaceAvailable = Math.min(
       scene.surfaceCount,
@@ -1347,12 +1355,20 @@ export class RendererController {
     const palette = this.#palette;
     if (this.#mode === "canvas2d" && this.#fallbackCanvas
       && !(state.view === "top" && state.appearance === "rooms")) {
-      const zoom = this.#homeTop / this.#camera.distance;
-      const width = bounds.width * zoom;
-      const height = bounds.height * zoom;
-      const offsetX = (bounds.width - width) / 2 - this.#camera.targetX * 32 * zoom;
-      const offsetY = (bounds.height - height) / 2 - this.#camera.targetZ * 32 * zoom;
-      context.drawImage(this.#fallbackCanvas, offsetX, offsetY, width, height);
+      // Use the same projection as annotations and hit testing, including
+      // rotated perspective views and rectangular maps after context loss.
+      const points = new DataView(scene.buffer, scene.pointOffset, scene.total * 8);
+      const step = Math.max(1, Math.ceil(scene.total / 50_000));
+      for (let index = 0; index < scene.total; index += step) {
+        const offset = index * 8;
+        const projected = this.#projectCell(
+          points.getUint16(offset, true), points.getUint16(offset + 2, true),
+          points.getUint8(offset + 4),
+        );
+        if (!projected) continue;
+        context.fillStyle = `rgb(${points.getUint8(offset + 5)} ${points.getUint8(offset + 6)} ${points.getUint8(offset + 7)})`;
+        context.fillRect(projected.x - 0.75, projected.y - 0.75, 1.5, 1.5);
+      }
     }
     const selectedNames = this.#selectedRoomNames(state);
     if (state.labelsVisible || (state.view === "top" && state.appearance === "rooms")) {
