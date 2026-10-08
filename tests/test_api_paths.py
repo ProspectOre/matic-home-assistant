@@ -2666,3 +2666,12 @@ async def test_retirement_revokes_captured_channel_and_pending_tls_protocol(
     with pytest.raises(CannotConnectError, match="retired"):
         await channel._create_connection()
     channel.close()
+
+
+def test_client_retirement_is_distinct_from_reusable_close() -> None:
+    client = MaticHermesClient("192.0.2.1", 16320)
+    assert not client.retired
+    client.close()
+    assert not client.retired
+    client.retire()
+    assert client.retired
