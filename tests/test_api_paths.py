@@ -2539,3 +2539,130 @@ async def test_send_callback_does_not_mark_locally_rejected_write(monkeypatch) -
 
     callback.assert_not_called()
     assert stream.request is None
+
+
+@pytest.mark.parametrize(
+    "method,args,old_state",
+    (
+        ("async_set_binary_setting", ("child_lock", True), b"\x08\x00"),
+        ("async_set_binary_setting", ("pet_waste", True), b"\x08\x00"),
+        ("async_set_binary_setting", ("voice", True), b"\x08\x00"),
+        ("async_set_deep_mop", (True,), b"\x0a\x00"),
+        ("async_set_water_flow", (1.4,), b"\x0a\x05\x0d" + struct.pack("<f", 0.8)),
+    ),
+)
+async def test_retirement_revokes_late_setting_readback_without_resending(
+    method, args, old_state
+) -> None:
+    """An acknowledged setting cannot reopen its old runtime after unload."""
+    client = MaticHermesClient("192.0.2.1", 16320)
+    channel = MagicMock()
+    client._channel = channel
+    client._async_send_channel_payload = AsyncMock()
+    client._async_connect_locked = AsyncMock()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read(_name: str) -> bytes:
+        started.set()
+        await release.wait()
+        return old_state
+
+    client.async_get_property = AsyncMock(side_effect=read)
+    task = asyncio.create_task(getattr(client, method)(*args))
+    await started.wait()
+    await client.async_shutdown()
+    release.set()
+    with pytest.raises(CannotConnectError, match="retired"):
+        await task
+    client._async_send_channel_payload.assert_awaited_once()
+    client._async_connect_locked.assert_not_awaited()
+    channel.close.assert_called_once()
+    assert client._channel is None
+    with pytest.raises(CannotConnectError, match="retired"):
+        await client._async_reconnect_after_read_failure(channel)
+    with pytest.raises(CannotConnectError, match="retired"):
+        await MaticHermesClient._async_connect_locked(client)
+
+
+async def test_retirement_during_tls_connect_closes_unpublished_channel(
+    monkeypatch,
+) -> None:
+    """A candidate dial completing after retirement cannot acquire ownership."""
+    client = MaticHermesClient("192.0.2.1", 16320)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    closed = MagicMock()
+
+    class PendingChannel:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __connect__(self) -> None:
+            started.set()
+            await release.wait()
+
+        def close(self) -> None:
+            closed()
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.async_robot_client_context",
+        AsyncMock(return_value=object()),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._PinnedChannel", PendingChannel
+    )
+    task = asyncio.create_task(client.async_connect())
+    await started.wait()
+    shutdown = asyncio.create_task(client.async_shutdown())
+    await asyncio.sleep(0)
+    assert client._retired
+    assert not shutdown.done()
+    release.set()
+    with pytest.raises(CannotConnectError, match="retired"):
+        await task
+    await shutdown
+    closed.assert_called_once()
+    assert client._channel is None
+
+
+async def test_retirement_revokes_captured_channel_and_pending_tls_protocol(
+    monkeypatch,
+) -> None:
+    """Old streams cannot use grpclib's transparent reconnect after unload."""
+    from grpclib.client import Channel
+
+    from custom_components.matic_robot.client.api import _PinnedChannel
+
+    client = MaticHermesClient("192.0.2.1", 16320)
+    channel = _PinnedChannel(
+        "192.0.2.1",
+        16320,
+        ssl=object(),
+        expected_hostname=None,
+        expected_serial=None,
+        expected_fingerprint=None,
+        is_retired=lambda: client._retired,
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+    closed: list[bool] = []
+
+    async def connect(self):
+        started.set()
+        await release.wait()
+        return _FakeProtocol(b"synthetic-cert", closed)
+
+    monkeypatch.setattr(Channel, "_create_connection", connect)
+    task = asyncio.create_task(channel._create_connection())
+    await started.wait()
+    client.retire()
+    release.set()
+    with pytest.raises(CannotConnectError, match="retired"):
+        await task
+    assert closed == [True]
+    with pytest.raises(CannotConnectError, match="retired"):
+        channel.request("/hermes.Test/Read", Cardinality.UNARY_UNARY, bytes, bytes)
+    with pytest.raises(CannotConnectError, match="retired"):
+        await channel._create_connection()
+    channel.close()

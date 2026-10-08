@@ -1526,6 +1526,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     unload_ok, disabled, stopping
 ) -> None:
     client = MagicMock()
+    client.async_shutdown = AsyncMock()
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
     plans = SimpleNamespace(
@@ -1583,7 +1584,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         )
     else:
         plans.async_retire_recovery.assert_not_awaited()
-    assert client.close.called is unload_ok
+    assert client.async_shutdown.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
     assert slam_map.async_shutdown.await_count == int(unload_ok)
@@ -1613,7 +1614,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             await release_cleanup.wait()
 
     manager.async_cancel_and_wait = hold_existing_cleanup
-    client = SimpleNamespace(close=MagicMock())
+    client = SimpleNamespace(async_shutdown=AsyncMock())
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
     entry = SimpleNamespace(
@@ -1661,7 +1662,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             external.cancel()
             await asyncio.gather(external, return_exceptions=True)
 
-    client.close.assert_called_once()
+    client.async_shutdown.assert_awaited_once()
     assert not manager.command_admission_open(serial)
 
 

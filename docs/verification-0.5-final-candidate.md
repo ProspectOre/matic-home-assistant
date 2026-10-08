@@ -86,7 +86,33 @@ race and untrusted research text/URLs in diagnostic summaries. Remediation and
 targeted regressions are consolidated for RC14: 4,333 local tests pass at
 100% production coverage, with Ruff, formatting, strict mypy and privacy checks.
 Firmware notifications retain structured identity/actions without research text.
-RC14 still requires exact-head review, hosted CI and installed qualification.
+[PR #233](https://github.com/ProspectOre/matic-home-assistant/pull/233) merged
+as `78f0d9309fed44fe261bc45198f0cc1a510c60a4` after clean regular exact-head
+review and green hosted Test, Browser, HACS and Hassfest. RC14 is installed
+through HACS: all 92 files match, rollback/state preservation and new-startup
+runtime diagnostics/caches, native idle state and map/pose guards pass.
+All five live setters passed change/restore confirmation. Idle entry reload
+preserved settings, plans, last-run evidence and HA uptime; an independent
+Core event observer recorded no commands in its reload window.
+Startup has no Matic runtime error; HA warns that JSON tool results are
+deprecated and require migration before HA 2027.11.
+
+Performance-path review found lower renderer detail cropped the point-cloud
+prefix, spending its budget on floors before surfaces. RC15 samples each
+initialized floor/surface range with a shared stride, spreading samples across
+both ranges without extra GPU allocation or changing delta bytes. Balanced
+uses every second point; Efficient every third; Auto can adapt to every fourth.
+Sparse features can still be missed: this removes prefix cropping, not a
+universal spatial-coverage guarantee. Synthetic distant-region, attribute
+alignment and partial-upload checks supplement renderer recovery regressions.
+Lifecycle review also found a pending setting readback could reconnect its
+client after unload. Successful unload now permanently retires that runtime;
+normal close remains reusable for read recovery. Shutdown drains pending dials.
+Retirement rejects new reads,
+reconnects and captured-channel requests, and closes connections finishing late.
+Deterministic readback and TLS-race regressions assert no reopened channel or
+repeated write. RC15 still requires exact-head review, hosted checks and
+installed qualification.
 
 Actual Android Chrome completed ten minutes and 298 generated map gestures at
 native 150% zoom, with no page errors. Captured interaction-duration p95 was
@@ -108,7 +134,7 @@ historical and do not supply runtime acceptance.
 
 | Gate | Current evidence and closing requirement |
 |---|---|
-| Exact installed candidate | RC13 identity, startup, diagnostics/caches, rollback, preservation, map/pose, five live confirmations and bounded failure settlement passed. Repeat changed paths on RC14. Live timeout, cancellation and reconnect remain unqualified for every setter. |
+| Exact installed candidate | RC14 identity, startup, diagnostics/caches, rollback, preservation, map/pose, five live confirmations and idle reload passed. RC13 bounded failure settlement passed. Repeat changed paths on RC15. Live timeout, cancellation and reconnect remain unqualified for every setter. |
 | Reliability and safety | Qualify disconnect/reconnect, stale/wrong-floor data, administrator loss, unload/reload, multiple tabs, history/Area conflicts and renderer failures on the final build. Guards must prevent commands; recovery must avoid duplicate dispatch and credit. Keep live transport default-OFF until fault/fallback and resource qualification. |
 | Actual devices and accessibility | Actual iPhone/iPad Safari and Android Chrome; touch, keyboard, VoiceOver/NVDA, switch access, native zoom, safe areas, RTL and recovery language. Actual Android Chrome rendered 2D/3D, accepted generated touch navigation and reflowed at native 150% zoom. This limited flow does not qualify every device or assistive technology. |
 | Sustained performance | Measure final-build desktop/mobile responsiveness and frame rates, CPU, retained memory/GPU and traffic/reconnect budgets over long sessions and large maps. RC12 synthetic desktop endurance completed 10 minutes/403 scene changes, no console errors, stable node/listener counts, post-GC heap 3.0–4.1 MB. RAF sampling is not GPU-presented FPS; this does not close mobile/GPU/live-traffic or longer-session qualification. |

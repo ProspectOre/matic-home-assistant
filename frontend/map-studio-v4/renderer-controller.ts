@@ -781,17 +781,17 @@ export class RendererController {
 
 
 
-  #bindVertexBuffer(buffer: WebGLBuffer): void {
+  #bindVertexBuffer(buffer: WebGLBuffer, step = 1, first = 0): void {
     const gl = this.#gl;
     if (!gl || !this.#vertexArray) return;
     gl.bindVertexArray(this.#vertexArray);
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.enableVertexAttribArray(0);
-    gl.vertexAttribIPointer(0, 2, gl.UNSIGNED_SHORT, 8, 0);
+    gl.vertexAttribIPointer(0, 2, gl.UNSIGNED_SHORT, 8 * step, 8 * first);
     gl.enableVertexAttribArray(1);
-    gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_BYTE, 8, 4);
+    gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_BYTE, 8 * step, 8 * first + 4);
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 3, gl.UNSIGNED_BYTE, true, 8, 5);
+    gl.vertexAttribPointer(2, 3, gl.UNSIGNED_BYTE, true, 8 * step, 8 * first + 5);
     gl.bindVertexArray(null);
   }
 
@@ -1250,7 +1250,7 @@ export class RendererController {
     gl.viewport(0, 0, this.#sceneCanvas.width, this.#sceneCanvas.height);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    if (!scene || !this.#program || !this.#vertexArray) return;
+    if (!scene || !this.#program || !this.#vertexArray || !this.#buffer) return;
     if (this.#state?.view === "top" && this.#state.appearance === "rooms") {
       this.#renderedPoints = 0;
       return;
@@ -1261,20 +1261,32 @@ export class RendererController {
     gl.uniform2f(this.#center, (scene.metadata.span[0] - 1) / 2, (scene.metadata.span[1] - 1) / 2);
     gl.uniform1f(this.#meters, scene.metadata.metersPerCell);
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
-    const pointBudget = Math.max(1, Math.floor(scene.total * this.#qualityScale));
+    // The producer groups points by tile and then by floor/surface. Drawing
+    // a prefix would crop later tiles and starve surfaces at lower quality.
+    // Stride each range instead, using only its initialized upload frontier.
+    const step = Math.ceil(1 / this.#qualityScale);
     const initializedPoints = Math.min(scene.total, this.#initializedPoints);
-    const floorCount = Math.min(scene.floorCount, pointBudget, initializedPoints);
-    const surfaceCount = Math.min(
+    const floorAvailable = Math.min(scene.floorCount, initializedPoints);
+    const surfaceAvailable = Math.min(
       scene.surfaceCount,
-      Math.max(0, pointBudget - floorCount),
       Math.max(0, initializedPoints - scene.floorCount),
     );
-    gl.uniform1f(this.#pointPixels, this.#sceneCanvas.height * 0.038);
-    gl.uniform1f(this.#maxPointPixels, 4.5 * ratio);
-    gl.drawArrays(gl.POINTS, 0, floorCount);
-    gl.uniform1f(this.#pointPixels, this.#sceneCanvas.height * 0.05);
-    gl.uniform1f(this.#maxPointPixels, 7 * ratio);
-    gl.drawArrays(gl.POINTS, scene.floorCount, surfaceCount);
+    const floorCount = Math.ceil(floorAvailable / step);
+    const surfaceCount = Math.ceil(surfaceAvailable / step);
+    if (floorCount > 0) {
+      this.#bindVertexBuffer(this.#buffer, step);
+      gl.bindVertexArray(this.#vertexArray);
+      gl.uniform1f(this.#pointPixels, this.#sceneCanvas.height * 0.038);
+      gl.uniform1f(this.#maxPointPixels, 4.5 * ratio);
+      gl.drawArrays(gl.POINTS, 0, floorCount);
+    }
+    if (surfaceCount > 0) {
+      this.#bindVertexBuffer(this.#buffer, step, scene.floorCount);
+      gl.bindVertexArray(this.#vertexArray);
+      gl.uniform1f(this.#pointPixels, this.#sceneCanvas.height * 0.05);
+      gl.uniform1f(this.#maxPointPixels, 7 * ratio);
+      gl.drawArrays(gl.POINTS, 0, surfaceCount);
+    }
     gl.bindVertexArray(null);
     this.#renderedPoints = floorCount + surfaceCount;
   }
