@@ -136,6 +136,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._map_refresh_due = 0.0
         self._slow_refresh_due = 0.0
         self._force_full_refresh = False
+        self._full_refresh_generation = 0
         self._snapshot_versions_in_progress: set[tuple[str, int | None]] = set()
         self._snapshot_retry_after: dict[tuple[str, int | None], float] = {}
         self._device_software_version: str | None = None
@@ -349,6 +350,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
     async def _async_update_data(self) -> RobotState:
         cues_push_sequence = self._cues_push_sequence
+        full_refresh_generation = self._full_refresh_generation
         try:
             info, operational, floor_plan, pose, telemetry = await asyncio.gather(
                 self._async_info(),
@@ -446,7 +448,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         except MaticError as err:
             raise UpdateFailed(str(err)) from err
         finally:
-            self._force_full_refresh = False
+            if self._full_refresh_generation == full_refresh_generation:
+                self._force_full_refresh = False
 
     @callback
     def _async_resolve_bag_capability(
@@ -750,8 +753,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
     async def async_request_full_refresh(self) -> None:
         """Refresh slow settings immediately after a local write."""
+        self._full_refresh_generation += 1
         self._force_full_refresh = True
-        await self.async_request_refresh()
+        await self.async_refresh()
 
     async def async_request_floor_plan_refresh(
         self, expected_mission_id: int | None = None

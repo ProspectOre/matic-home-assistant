@@ -431,6 +431,91 @@ for (const sameFloor of [true, false]) {
   });
 }
 
+test("external Area deletion preserves a dirty draft and turns later save into a create", async ({ page }) => {
+  await loadQualityModules(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const initial = createGalleryState("draw");
+    const editedCircles = [...initial.draw.circles, { x: 2, y: 3, radius: 0.4 }];
+    const store = new WorkspaceStore({
+      ...initial,
+      areaDraft: { ...initial.areaDraft, name: "Edited Entryway", cleaningMode: "mop", dirty: true },
+      draw: { ...initial.draw, circles: editedCircles, dirty: true, strokeCount: 4 },
+    });
+    const writes = [];
+    const areas = { ...initial.resources.areas.value, areas: [] };
+    let areaReads = 0;
+    const effects = new EffectController(store, {
+      catalog: async () => [initial.resources.entry],
+      scene: async () => ({ floorCoherent: true, revision: initial.resources.entry.mapRevision, scene: initial.resources.scene.value }),
+      pose: async () => initial.resources.pose.value,
+      history: async () => initial.resources.history.value,
+      plans: async () => initial.resources.plans.value,
+      areas: async () => { areaReads += 1; return areas; },
+      saveArea: async (_url, value) => { writes.push(value); return "replacement-area"; },
+      deleteArea: async (_url, id) => writes.push({ deleted: id }),
+      dispose() {},
+    });
+    effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+    await effects.refreshCatalog(true);
+    await effects.refreshCatalog(true);
+    store.patch({ map: initial.map, coherence: "current" });
+    await effects.loadAreas();
+    const afterConflict = {
+      selectedId: store.value.selection.areaId,
+      draft: { id: store.value.areaDraft.id, name: store.value.areaDraft.name, cleaningMode: store.value.areaDraft.cleaningMode, dirty: store.value.areaDraft.dirty },
+      circles: store.value.draw.circles,
+      drawDirty: store.value.draw.dirty,
+      notice: store.value.notice,
+    };
+    await effects.deleteArea();
+    const deleteCalls = writes.length;
+    await effects.saveArea();
+    const save = writes[0];
+    effects.dispose();
+    return { afterConflict, areaReads, expectedCircles: editedCircles, deleteCalls, save: { areaId: save?.areaId, name: save?.name, circles: save?.circles }, finalId: store.value.areaDraft.id };
+  });
+  expect(result.afterConflict).toMatchObject({
+    selectedId: null,
+    draft: { id: null, name: "Edited Entryway", cleaningMode: "mop", dirty: true },
+    circles: result.expectedCircles,
+    drawDirty: true,
+    notice: { tone: "warning", text: "This saved Area was removed elsewhere. Your edits are preserved as a new Area draft; saving will create a new Area." },
+  });
+  expect(result.areaReads).toBeGreaterThan(0);
+  expect(result.deleteCalls).toBe(0);
+  expect(result.save).toMatchObject({ areaId: null, name: "Edited Entryway" });
+  expect(result.save.circles.length).toBeGreaterThan(0);
+  expect(result.finalId).toBe("replacement-area");
+});
+
+test("external Area deletion still reconciles a clean selection", async ({ page }) => {
+  await loadQualityModules(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const initial = createGalleryState("draw");
+    const store = new WorkspaceStore({ ...initial, draw: { ...initial.draw, dirty: false, strokeCount: 0 } });
+    const effects = new EffectController(store, {
+      catalog: async () => [initial.resources.entry],
+      scene: async () => ({ floorCoherent: true, revision: initial.resources.entry.mapRevision, scene: initial.resources.scene.value }),
+      pose: async () => initial.resources.pose.value,
+      history: async () => initial.resources.history.value,
+      plans: async () => initial.resources.plans.value,
+      areas: async () => ({ ...initial.resources.areas.value, areas: [] }),
+      dispose() {},
+    });
+    effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+    await effects.refreshCatalog(true);
+    await effects.refreshCatalog(true);
+    store.patch({ map: initial.map, coherence: "current" });
+    await effects.loadAreas();
+    const result = { selectedId: store.value.selection.areaId, name: store.value.areaDraft.name, dirty: store.value.areaDraft.dirty, circles: store.value.draw.circles.length, notice: store.value.notice };
+    effects.dispose();
+    return result;
+  });
+  expect(result).toMatchObject({ selectedId: null, name: "", dirty: false, circles: 0 });
+});
+
 test("revalidation clears drafts when the verified map session changes at the same floor ordinal @safety", async ({ page }) => {
   await loadQualityModules(page);
   const result = await page.evaluate(async () => {

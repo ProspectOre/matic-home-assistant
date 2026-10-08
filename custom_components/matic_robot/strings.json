@@ -947,6 +947,9 @@
     }
   },
   "exceptions": {
+    "setting_unconfirmed": {
+      "message": "The robot did not confirm the setting change. Check the robot's current setting before trying again."
+    },
     "invalid_area": {
       "message": "The saved custom area is invalid: {error}"
     },

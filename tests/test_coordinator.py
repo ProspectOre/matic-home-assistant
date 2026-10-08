@@ -1096,9 +1096,9 @@ async def test_coordinator_caches_slow_reads_and_can_force_them(hass) -> None:
     assert client.async_get_state.await_count == 2
     assert client.async_get_pose.await_count == 2
 
-    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_refresh = AsyncMock()
     await coordinator.async_request_full_refresh()
-    coordinator.async_request_refresh.assert_awaited_once()
+    coordinator.async_refresh.assert_awaited_once()
     await coordinator._async_update_data()
     assert client.async_get_floor_plan.await_count == 2
     assert client.async_get_telemetry.await_count == 2

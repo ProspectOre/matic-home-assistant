@@ -5,6 +5,10 @@ complete review, required CI and a designated-owner manual merge. The canonical
 [workspace checklist](https://github.com/ProspectOre/wiki/blob/main/workflows/pr-gates.md)
 owns the shared process.
 
+The owner retired the request coordinator on October 8, 2026. Request regular
+`@codex review` directly for each opened or pushed PR head, after checking for an
+existing request on the unchanged comparison. Do not use the retired coordinator.
+
 ## Candidate evidence
 
 Freeze the full candidate head and intended base OIDs. Obtain an authentic Codex
