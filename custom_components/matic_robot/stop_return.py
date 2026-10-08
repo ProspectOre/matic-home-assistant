@@ -175,6 +175,7 @@ async def async_dock_when_stop_settles(
                     refresh_transition = True
                 elif state.state == SETTLED_STATE:
                     settled_state_observed = True
+                    dock_sent = False
                     async with manager.external_command(serial_number):
                         # Replacements invalidate the fence before waiting for
                         # this lock. Recheck it both before and after the native
@@ -214,47 +215,23 @@ async def async_dock_when_stop_settles(
                                     type(err).__name__,
                                 )
                                 return False
+                            dock_sent = True
+                    if dock_sent:
+                        # Failure finalization also needs the command lease. Do
+                        # not hold it while waiting for the run's terminal state.
+                        if settlement_callback is not None:
+                            await async_confirm_docked(
+                                hass,
+                                refresh=refresh,
+                                entity_id=entity_id,
+                                on_docked=settlement_callback,
+                                run_id=run_id,
+                                set_run_id=set_run_id,
+                                get_run_id=get_run_id,
+                            )
+                        else:
                             await refresh()
-                            if settlement_callback is not None:
-                                confirm_deadline = (
-                                    monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
-                                )
-                                replacement_deadline: float | None = None
-                                while True:
-                                    confirmed = hass.states.get(entity_id)
-                                    now = monotonic()
-                                    if (
-                                        confirmed is not None
-                                        and confirmed.state in DOCKED_STATES
-                                    ):
-                                        if await settlement_callback() is not False:
-                                            break
-                                    if (
-                                        confirmed is not None
-                                        and confirmed.state in REPLACEMENT_STATES
-                                    ):
-                                        if replacement_deadline is None:
-                                            replacement_deadline = (
-                                                now
-                                                + DOCK_CONFIRM_TRANSITION_GRACE_SECONDS
-                                            )
-                                        elif now >= replacement_deadline:
-                                            _LOGGER.debug(
-                                                "Matic DOCK confirmation abandoned "
-                                                "after replacement motion"
-                                            )
-                                            break
-                                    else:
-                                        replacement_deadline = None
-                                    if now >= confirm_deadline:
-                                        _LOGGER.debug(
-                                            "Matic DOCK accepted but docked state was "
-                                            "not observed"
-                                        )
-                                        break
-                                    await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
-                                    await refresh()
-                            return True
+                        return True
             if now >= deadline:
                 return False
             await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)

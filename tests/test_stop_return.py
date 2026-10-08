@@ -1051,3 +1051,151 @@ async def test_schedule_is_a_no_op_without_background_task_support() -> None:
     )
 
     manager.register_reconciliation_task.assert_not_called()
+
+
+async def test_timeout_failure_can_finalize_while_dock_confirmation_waits(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dock watcher must release the command lease for failure persistence."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    motion_token = manager.begin_managed_motion("serial")
+    await manager.async_mark_stop_pending("serial", run_id="run-1")
+    token = manager.stop_fence_token("serial")
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    dock_sent = asyncio.Event()
+    failure_saved = asyncio.Event()
+
+    async def send(_command) -> None:
+        dock_sent.set()
+
+    client.async_send_user_command.side_effect = send
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "charging", {})
+        await asyncio.sleep(0)
+
+    async def save_failure() -> None:
+        await dock_sent.wait()
+        async with manager.managed_reconciliation("serial", motion_token) as owned:
+            assert owned
+            failure_saved.set()
+
+    async def on_docked() -> bool:
+        return failure_saved.is_set()
+
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 30)
+    writer = asyncio.create_task(save_failure())
+    watcher = asyncio.create_task(
+        async_dock_when_stop_settles(
+            hass,
+            client=client,
+            refresh=refresh,
+            manager=manager,
+            serial_number="serial",
+            entity_id=ENTITY,
+            run_id="run-1",
+            stop_fence_token=token,
+            on_docked=on_docked,
+        )
+    )
+    try:
+        async with asyncio.timeout(1):
+            await failure_saved.wait()
+            assert await watcher
+            await writer
+    finally:
+        for task in (writer, watcher):
+            task.cancel()
+        await asyncio.gather(writer, watcher, return_exceptions=True)
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+
+
+@pytest.mark.parametrize("matching_fence", [True, False])
+async def test_failed_run_dock_settlement_preserves_failure_and_credit(
+    hass, matching_fence: bool
+) -> None:
+    """Only its captured fence can settle a failed run without changing credit."""
+    from custom_components.matic_robot.managed_executor import _async_mark_run_docked
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    before = {
+        "run_id": "run-1",
+        "plan_id": "test-plan",
+        "provenance": "user",
+        "trigger": "user",
+        "outcome": "failed",
+        "completed_room_count": 0,
+    }
+    manager._robot("serial")["last_run"] = dict(before)
+    await manager.async_mark_stop_pending("serial", run_id="run-1")
+    token = manager.stop_fence_token("serial")
+    assert token is not None
+    if not matching_fence:
+        await manager.async_mark_stop_pending("serial", run_id="run-new")
+    assert (
+        await _async_mark_run_docked(manager, "serial", "run-1", ENTITY, None, token)
+        is matching_fence
+    )
+    assert manager.snapshot("serial")["last_run"] == before
+    assert manager.stop_pending("serial") is (not matching_fence)
+
+
+@pytest.mark.parametrize("replacement", ["new_fence", "new_run", "unload"])
+async def test_post_dispatch_dock_confirmation_preserves_replacement_or_unload(
+    hass, replacement: str
+) -> None:
+    """Releasing the lease cannot settle an old fence after ownership changes."""
+    from custom_components.matic_robot.managed_executor import _async_mark_run_docked
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    record = {
+        "run_id": "run-1",
+        "plan_id": "plan",
+        "outcome": "failed",
+        "completed_room_count": 0,
+        "provenance": "user",
+        "trigger": "user",
+    }
+    manager._robot("serial")["last_run"] = dict(record)
+    await manager.async_mark_stop_pending("serial", run_id="run-1")
+    token = manager.stop_fence_token("serial")
+    assert token is not None
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+
+    async def refresh() -> None:
+        # This is the first await after releasing the guarded DOCK dispatch.
+        assert not manager.command_lock("serial").locked()
+        hass.states.async_set(ENTITY, "docked", {})
+        if replacement == "unload":
+            await manager.async_close_command_admission_and_wait("serial")
+            await manager.async_close_metadata_admission_and_wait("serial")
+        else:
+            await manager.async_mark_stop_pending("serial", run_id="run-new")
+            if replacement == "new_run":
+                manager._robot("serial")["last_run"] = {**record, "run_id": "run-new"}
+
+    async def on_docked() -> bool:
+        return await _async_mark_run_docked(
+            manager, "serial", "run-1", ENTITY, None, token
+        )
+
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=client,
+        refresh=refresh,
+        manager=manager,
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        stop_fence_token=token,
+        on_docked=on_docked,
+    )
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    assert manager.stop_pending("serial")
+    expected = {**record, "run_id": "run-new"} if replacement == "new_run" else record
+    assert manager.snapshot("serial")["last_run"] == expected

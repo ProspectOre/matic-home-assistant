@@ -27,6 +27,7 @@ from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
     SupportsResponse,
+    callback,
 )
 from homeassistant.exceptions import (
     ServiceValidationError,
@@ -366,8 +367,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
     if hass.is_running:
         firmware_tracker.replay_reports()
     else:
+
+        @callback
+        def _async_replay_firmware_reports(_event: object) -> None:
+            firmware_tracker.replay_reports()
+
         hass.bus.async_listen_once(
-            EVENT_HOMEASSISTANT_STARTED, lambda event: firmware_tracker.replay_reports()
+            EVENT_HOMEASSISTANT_STARTED, _async_replay_firmware_reports
         )
 
     async def async_firmware_investigator(call: ServiceCall) -> None:
