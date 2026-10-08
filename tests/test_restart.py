@@ -79,13 +79,17 @@ async def recovery_state(hass):
         "started_room_ids": [room.room_id],
     }
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    journal_scope = {"run_id": None}
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=identity),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
         async_get_active_cleaning_session_state=AsyncMock(return_value=True),
         async_send_user_command=AsyncMock(),
         activity_journal=SimpleNamespace(
-            set_run_id=MagicMock(), current_run_id=MagicMock()
+            set_run_id=MagicMock(
+                side_effect=lambda value: journal_scope.update(run_id=value)
+            ),
+            current_run_id=MagicMock(side_effect=lambda: journal_scope["run_id"]),
         ),
     )
     runtime = SimpleNamespace(

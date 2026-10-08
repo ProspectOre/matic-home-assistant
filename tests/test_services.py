@@ -6227,5 +6227,18 @@ async def test_firmware_reports_replay_waits_for_home_assistant_started(hass):
     listen_once.assert_called_once()
     event, callback = listen_once.call_args.args
     assert event == "homeassistant_started"
-    callback(None)
+    from homeassistant.core import is_callback
+
+    assert is_callback(callback)
+    import threading
+
+    callback_threads = []
+    loop_thread = threading.get_ident()
+    tracker.replay_reports.side_effect = lambda: callback_threads.append(
+        threading.get_ident()
+    )
+    hass.bus.async_listen_once(event, callback)
+    hass.bus.async_fire(event)
+    await hass.async_block_till_done()
     tracker.replay_reports.assert_called_once_with()
+    assert callback_threads == [loop_thread]

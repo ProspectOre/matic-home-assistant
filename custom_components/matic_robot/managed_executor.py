@@ -3094,6 +3094,17 @@ async def _async_mark_run_docked(
             )
             if cancellation_reason != "managed_stop":
                 return False
+        if (
+            isinstance(last_run, dict)
+            and last_run.get("run_id") == run_id
+            and last_run.get("outcome") == "failed"
+            and stop_fence_token is not None
+        ):
+            # A failed room stays failed after physically returning home. Only
+            # clear its captured STOP fence; never upgrade outcome or credit.
+            return await manager.async_clear_stop_pending_if_token(
+                serial_number, stop_fence_token, run_id=run_id
+            )
     return await manager.async_mark_run_docked(
         serial_number,
         run_id,
