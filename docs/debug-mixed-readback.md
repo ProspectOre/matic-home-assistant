@@ -1,10 +1,12 @@
 # Mixed-room readback correction candidate
 
-Version `0.4.8rc2` is a diagnostic prerelease based on `v0.4.7` for
+Version `0.4.8rc3` is a diagnostic prerelease based on `v0.4.7` for
 [issue #218](https://github.com/ProspectOre/matic-home-assistant/issues/218).
 It corrects the native double-pass switch mapping, sends Standard mop goals
 independently of vacuum strength, and recognizes only observed complete-group
-readback transformations. The bounded, redacted diagnostics remain available.
+readback transformations. It also confirms each acknowledged binary, deep-mop or
+water-flow setting write with a bounded fresh robot read before reporting success.
+The bounded, redacted diagnostics remain available.
 Native-app comparisons and standalone-client readbacks support the correction;
 completed cleaning on this installed HA candidate remains a separate gate.
 This is a prerelease, not a stable release.
@@ -23,8 +25,8 @@ Preserve the supplied archive checksum and per-file manifest for verification.
 
 ## HACS installation
 
-Enable beta/prerelease versions for Matic, choose `v0.4.8-rc2` in Redownload,
-and restart Home Assistant. Confirm the integration reports `0.4.8rc2`.
+Enable beta/prerelease versions for Matic, choose `v0.4.8-rc3` in Redownload,
+and restart Home Assistant. Confirm the integration reports `0.4.8rc3`.
 Do not select the separate 0.5 prerelease for this diagnostic test.
 
 ## Manual installation
@@ -33,7 +35,7 @@ The ZIP contains a single top-level `matic_robot/` directory. Replace the existi
 `config/custom_components/matic_robot/` directory with it; do not nest a second
 `matic_robot` directory or merge it with leftover files from another version.
 Do not change the integration's configuration, credentials, plans, or schedules.
-Restart Home Assistant and verify the loaded integration reports `0.4.8rc2`.
+Restart Home Assistant and verify the loaded integration reports `0.4.8rc3`.
 Confirm normal startup and map readiness before arranging the diagnostic run.
 
 ## Collect the comparison
