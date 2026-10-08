@@ -13,7 +13,8 @@ October 8 reconciliation: [final-candidate receipt](verification-0.5-final-candi
 records RC11 composition, the local RC3 setting-confirmation port and the seven
 remaining acceptance families. PR #138 is merged; its old hold is retired. The
 owner has also retired the request coordinator. Complete exact-head regular
-review and CI remain required. No movement is authorized, and live transport
+review and CI remain required. The owner authorized bounded physical acceptance
+on October 8; live transport
 remains default-OFF pending qualification.
 
 The owner approved retiring the bespoke status gate while preserving authentic

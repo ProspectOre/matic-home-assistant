@@ -24,7 +24,8 @@ Python 3.14.8 and HA 2026.9.3 were used, with `dbus-fast` explicitly installed f
 the macOS test environment. Hosted Browser, HACS and Hassfest remain unrun for
 this follow-up. No frontend assets changed.
 
-This local follow-up is not a published or installed RC. Its complete comparison
+The follow-up prepares `v0.5.0-rc12` metadata and is not yet a published or
+installed RC. Its complete comparison
 still requires regular exact-head review, Test/Browser/Validate and manual merge
 under [the maintenance checklist](maintenance-reviews.md).
 
@@ -44,7 +45,7 @@ historical and do not supply runtime acceptance.
 | Actual devices and accessibility | Actual iPhone/iPad Safari and Android Chrome; touch, keyboard, VoiceOver/NVDA, switch access, native zoom, safe areas, RTL and recovery language. Emulation and earlier Safari receipts cover only their named flows. |
 | Sustained performance | Measure final-build desktop/mobile responsiveness and frame rates, CPU, retained memory/GPU and traffic/reconnect budgets over long sessions and large maps. Earlier scoped lab results do not close this gate. |
 | Reporter confirmation | Issue #218 remains open pending the reporter's successful five-room RC3 result. Issues #65, #139 and #198 remain open pending affected-device confirmation. |
-| Physical and cadence | No movement is authorized. Private/shared N=1/N=3 progression, per-mode completion credit, pause/restart/low-charge recovery, guarded failure, Stop settlement and docking remain pending. Do not infer these results from source tests or Activity rows. Preserve schedules. |
+| Physical and cadence | Bounded physical acceptance is authorized by the owner on October 8. Private/shared N=1/N=3 progression, per-mode completion credit, pause/restart/low-charge recovery, guarded failure, Stop settlement and docking remain pending. Do not infer these results from source tests or Activity rows. Preserve schedules. |
 | Product and publication | Independent whole-product review of the exact final candidate, owner walkthrough/signoff and separate stable-publication authorization remain required. |
 
 A read-only administrator operations check on October 8 reported coordinator
