@@ -21,25 +21,14 @@ preserves the drawing/name/settings as a new dirty draft, detaches the missing
 ID and warns that saving creates a new Area. Clean selections still reconcile;
 targeted Chromium/WebKit regressions verify preservation and no stale deletion.
 Shipped frontend assets are regenerated from the repaired source.
-The initial port passed 4,291 Python tests at 100% coverage and all source
-checks. Every setter has synthetic timeout, cancellation and reconnect
-success/failure cases asserting one write; 171 focused cases passed. Wheel/sdist
-parity and fresh-wheel import passed on Python 3.14.8/HA 2026.9.3. After the
-Area repair, 38 focused packaging/privacy/frontend cases and four browser
-regressions passed. Earlier-head results do not qualify later runtime changes.
-
 [PR #231](https://github.com/ProspectOre/matic-home-assistant/pull/231) merged as
-`892185d304ee7fa5cd6dedcb7b78ada37be75047` after a clean regular review of
-`d74d761a05174d0d739b9d728acc01ffeb0303cb` and green Test, Browser, HACS and
-Hassfest. Browser reported 1,038 passed and one capability skip. RC12 was
-published as a pre-release and installed through HACS beta versions. Its 92
-integration files matched the candidate; rollback and saved definitions,
-selection, Areas and automation enablement were verified. The new HTTP
-next-run preview is derived output, not a stored-plan change. A new HA startup,
-source-matching compiled caches, diagnostics version, native state, coherent
-map/live pose and visible Safari behavior provided separate recovery evidence.
-All five setters passed live change/restore confirmation (10 cases); every
-original setting was restored. Live timeout/cancel/reconnect remain unqualified.
+`892185d304ee7fa5cd6dedcb7b78ada37be75047`, after clean regular review of
+`d74d761a05174d0d739b9d728acc01ffeb0303cb` and green hosted checks.
+RC12's HACS install matched 92 files; rollback, preservation, new startup,
+diagnostics/compiled caches, map/live pose, visible Safari and all five live
+setter change/restore confirmations passed. Every setter also has synthetic
+timeout, cancellation and reconnect cases asserting one write; live fault
+qualification remains open. Earlier-head results do not qualify later changes.
 
 RC12 physical qualification failed: the bounded one-room private N=1 run
 missed its 120-second start deadline. Native history showed the room unvisited
@@ -52,12 +41,10 @@ The RC13 follow-up releases the command lease before Dock confirmation, clears
 only a failed run's captured Stop fence without upgrading outcome or credit,
 and marks firmware startup replay as an event-loop callback. Live HA 2026.10
 logs exposed an issue-registry thread-safety error in the old startup lambda.
-Focused regressions reproduce both mechanisms. The temporary plan was removed
-after verified settlement; original definitions, selection, saved Areas and
-automation enablement were preserved. RC13 local validation passes 4,297 Python
-tests with 100% production coverage, Ruff, formatting, strict mypy, packaging
-and privacy checks. Tests also cover newer fences, replacement runs and unload
-after the Dock lease is released.
+Focused regressions reproduce both mechanisms and cover newer fences,
+replacement runs and unload. Temporary plans were removed after settlement,
+preserving definitions, selection, saved Areas and automation enablement. RC13
+passed 4,297 Python tests at 100% coverage and all source checks.
 
 [PR #232](https://github.com/ProspectOre/matic-home-assistant/pull/232) merged as
 `5534960fd30aab7da4018031e3e1ca49f9d75f1b`, after clean regular review of
@@ -113,18 +100,33 @@ idle state pass. All five setters passed change/restore confirmation. Idle
 reload preserved settings/plans/last-run state; the observer saw one new-runtime
 session-identification write, no retired-runtime writes and no motion/settings.
 HA nevertheless warned a floor-stream task exceeded its unload cancellation
-deadline; lifecycle qualification remains open pending investigation.
+deadline; RC16 addresses this separately.
 
-Actual Android Chrome completed ten minutes and 298 generated map gestures at
-native 150% zoom, with no page errors. Captured interaction-duration p95 was
-152 ms, exceeding the 100 ms project budget in this stress scope. Whole-page
-heap and Chrome-process PSS do not establish component or GPU retention.
-A separate short diagnostic trace showed presentation gaps, but cannot qualify
-sustained frame rates. A 124-second default-zoom comparison with 60 gestures
-recorded p95 144 ms and no page errors, also missing the lab input proxy.
-An RC15 default-zoom repeat lasted 122 seconds/61 gestures, with four RC15
-assets matching reviewed bytes, no page errors and p95 160 ms. The budget remains unmet;
-these short runs do not qualify sustained resources or GPU-presented FPS.
+[PR #236](https://github.com/ProspectOre/matic-home-assistant/pull/236) merged as
+`bdb52e0db654d54174b3330efd1f974b4eb4f0fa` after clean regular review of
+`8f47997504bbfadc9a95a3daf35988052a8b5876` and green hosted Test/Browser/HACS/Hassfest.
+The real grpclib wrapper reproduced transport-error replacement of cancellation;
+retired floor/Cues watchers now finish before backoff, while active clients retry.
+All 4,346 Python tests pass at 100% coverage; Browser passed 1,050/one skip.
+Wheel/sdist match all 92 source files byte-for-byte; fresh-wheel import passes.
+RC16 is installed through HACS, with matching files, verified rollback,
+preservation, new startup/version diagnostics, source-matching compiled caches,
+native idle state, map/live pose and visible desktop Safari recovery.
+All five setters passed live change/restore confirmation, restoring every value.
+Idle reload preserved settings/plans/last-run state; its observer recorded one
+new-runtime session-identification write, no retired-runtime writes and no
+motion/settings. The cancellation warning was absent in that reload window.
+Compiled-cache matching is not an in-process code-hash measurement.
+
+Actual Android Chrome's earlier ten-minute/298-gesture 150% zoom stress
+measured p95 152 ms; a 124-second/60-gesture 100% comparison measured 144 ms.
+RC15's 122-second/61-gesture default-zoom repeat measured 160 ms, as did three
+detailed repeats. The 2D comparison measured 168 ms. Handlers were short and
+delay after processing remained in both modes; no GPU cause or version regression
+is proved. RC16's final 122-second/61-gesture run measured 152 ms, with four
+assets matching reviewed bytes and no page errors. These scopes all miss the
+100 ms project budget. Whole-page heap/Chrome PSS and RAF/short traces do not
+qualify component/GPU retention, sustained presented FPS or field INP.
 
 [PR #138](https://github.com/ProspectOre/matic-home-assistant/pull/138) merged as
 `156ae4bf7f0203436bb73301153ef44bc2b707da` on October 4 Pacific time. Its former
@@ -137,7 +139,7 @@ historical and do not supply runtime acceptance.
 
 | Gate | Current evidence and closing requirement |
 |---|---|
-| Exact installed candidate | RC15 file identity, startup, diagnostics/compiled caches, rollback, preservation, map/pose, five live confirmations and idle reload state preservation passed. An unload task exceeded HA cancellation deadline; investigation remains open. RC13 bounded failure settlement passed. Live timeout, cancellation and reconnect remain unqualified for every setter. |
+| Exact installed candidate | RC16 files/version, startup, diagnostics/compiled caches, rollback, preservation, map/pose, five live confirmations and idle reload passed; its cancellation warning was absent. Direct in-process code-hash proof remains open. RC13 bounded failure settlement passed. Live timeout, cancellation and reconnect remain unqualified for every setter. |
 | Reliability and safety | Qualify disconnect/reconnect, stale/wrong-floor data, administrator loss, unload/reload, multiple tabs, history/Area conflicts and renderer failures on the final build. Guards must prevent commands; recovery must avoid duplicate dispatch and credit. Keep live transport default-OFF until fault/fallback and resource qualification. |
 | Actual devices and accessibility | Actual iPhone/iPad Safari and Android Chrome; touch, keyboard, VoiceOver/NVDA, switch access, native zoom, safe areas, RTL and recovery language. Actual Android Chrome rendered 2D/3D, accepted generated touch navigation and reflowed at native 150% zoom. This limited flow does not qualify every device or assistive technology. |
 | Sustained performance | Measure final-build desktop/mobile responsiveness and frame rates, CPU, retained memory/GPU and traffic/reconnect budgets over long sessions and large maps. RC12 synthetic desktop endurance completed 10 minutes/403 scene changes, no console errors, stable node/listener counts, post-GC heap 3.0–4.1 MB. RAF sampling is not GPU-presented FPS; this does not close mobile/GPU/live-traffic or longer-session qualification. |
