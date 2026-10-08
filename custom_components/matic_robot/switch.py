@@ -7,9 +7,12 @@ from dataclasses import dataclass
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
+from .client.exceptions import MaticError
+from .const import DOMAIN
 from .entity import MaticEntity
 
 PARALLEL_UPDATES = 0
@@ -106,11 +109,17 @@ class MaticSettingSwitch(MaticEntity, SwitchEntity):
 
     async def _async_set(self, enabled: bool) -> None:
         setting = self.entity_description.api_setting
-        if setting == "deep_mop":
-            await self.coordinator.client.async_set_deep_mop(enabled)
-        else:
-            await self.coordinator.client.async_set_binary_setting(
-                setting,
-                enabled,
-            )
+        try:
+            if setting == "deep_mop":
+                await self.coordinator.client.async_set_deep_mop(enabled)
+            else:
+                await self.coordinator.client.async_set_binary_setting(
+                    setting,
+                    enabled,
+                )
+        except MaticError:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="setting_unconfirmed",
+            ) from None
         await self.coordinator.async_request_full_refresh()

@@ -2,7 +2,7 @@
 
 ## Review contract
 
-Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Every candidate requires an authentic complete Codex review bound to its exact head and intended base, meaningful required CI, finding dispositions and a designated-owner manual merge. Use the existing request coordinator to avoid duplicate requests; it is not merge authority. The bespoke custom status gate is retired by owner approval. Preserve historical review gaps and keep runtime, physical, release and human approval boundaries separate.
+Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Every candidate requires an authentic complete Codex review bound to its exact head and intended base, meaningful required CI, finding dispositions and a designated-owner manual merge. The request coordinator and bespoke custom status gate are retired by owner approval. Request regular `@codex review` directly on each opened or pushed PR head; check existing requests to avoid duplicates. Preserve historical review gaps and keep runtime, physical, release and human approval boundaries separate.
 
 ## Apple tool capabilities
 

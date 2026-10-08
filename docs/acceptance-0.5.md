@@ -9,6 +9,13 @@ Historical RC5 receipt: `v0.5.0-rc5` at `699a1bb` was installed through HACS. It
 
 ## Review-process migration — 2026-10-06
 
+October 8 reconciliation: [final-candidate receipt](verification-0.5-final-candidate.md)
+records RC11 composition, the local RC3 setting-confirmation port and the seven
+remaining acceptance families. PR #138 is merged; its old hold is retired. The
+owner has also retired the request coordinator. Complete exact-head regular
+review and CI remain required. No movement is authorized, and live transport
+remains default-OFF pending qualification.
+
 The owner approved retiring the bespoke status gate while preserving authentic
 complete head/base review, findings dispositions, required CI, native protections
 and designated-owner manual merges. See [the replacement process](maintenance-reviews.md).

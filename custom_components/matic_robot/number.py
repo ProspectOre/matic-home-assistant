@@ -5,9 +5,12 @@ from __future__ import annotations
 from homeassistant.components.number import NumberEntity, NumberEntityDescription
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
+from .client.exceptions import MaticError
+from .const import DOMAIN
 from .entity import MaticEntity
 
 PARALLEL_UPDATES = 0
@@ -52,5 +55,11 @@ class MaticWaterFlowNumber(MaticEntity, NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the robot's official 0.5x to 2.0x water-flow factor."""
-        await self.coordinator.client.async_set_water_flow(value)
+        try:
+            await self.coordinator.client.async_set_water_flow(value)
+        except MaticError:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN,
+                translation_key="setting_unconfirmed",
+            ) from None
         await self.coordinator.async_request_full_refresh()
