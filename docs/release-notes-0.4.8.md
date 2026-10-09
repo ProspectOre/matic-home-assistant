@@ -10,7 +10,10 @@ the setting command.
 ## Acceptance evidence
 
 The [issue #218 reporter](https://github.com/ProspectOre/matic-home-assistant/issues/218#issuecomment-6073803413)
-confirmed the original defect fixed on loaded 0.4.8rc2 with HA 2026.8.0.
+reported on October 8, 2026 as `axsuul`: “Confirming v0.4.8-rc2 fixes this for us.”
+The receipt identifies loaded 0.4.8rc2 and HA 2026.8.0.
+GitHub issue-comment ID `6073803413` is independently retrievable through
+`GET /repos/ProspectOre/matic-home-assistant/issues/comments/6073803413`.
 The Heavy/double-pass run completed all five rooms with verified credit,
 resumed after two recharges and finished docked without integration warnings
 or errors. The Standard run reached room five before an external app Stop;
