@@ -343,6 +343,12 @@ export class RendererController {
   #upload: GpuUpload | null = null;
   #frame: number | null = null;
   #fallbackFrame: number | null = null;
+  #fallbackProjection: {
+    readonly scene: SceneModel;
+    readonly matrix: Float32Array;
+    readonly width: number;
+    readonly height: number;
+  } | null = null;
   #resizeObserver: ResizeObserver;
   #camera: CameraState = {
     yaw: -Math.PI / 4,
@@ -482,6 +488,7 @@ export class RendererController {
       && this.#upload.contextGeneration === this.#contextGeneration);
     if (!state.pageActive) {
       this.#cancelGpuUpload(true);
+      this.#cancelFallback();
     } else if (scene !== null) {
       // Capture the context inside the non-null scene branch. The nullable
       // outer value also represents the intentionally empty-scene state.
@@ -548,6 +555,7 @@ export class RendererController {
       }
     } else if (this.#scene !== null || this.#upload !== null) {
       this.#cancelGpuUpload(true);
+      this.#cancelFallback();
       this.#deleteFrontBuffer();
       this.#scene = null;
       this.#sceneContext = null;
@@ -763,10 +771,8 @@ export class RendererController {
         targetZ: this.#camera.targetZ,
       };
       this.#callbacks.onCameraPreferences?.(preferences);
-      if (this.#mode !== "webgl2") this.#buildFallback(scene);
       return preferences;
     }
-    if (this.#mode !== "webgl2") this.#buildFallback(scene);
     return null;
   }
 
@@ -1119,53 +1125,70 @@ export class RendererController {
   }
 
   #initFallback(): void {
+    this.#cancelFallback();
     this.#mode = "canvas2d";
     this.#fallbackCanvas = document.createElement("canvas");
-    this.#fallbackCanvas.width = 1024;
-    this.#fallbackCanvas.height = 1024;
     this.#fallback = this.#fallbackCanvas.getContext("2d", { alpha: true });
     if (!this.#fallback) {
       this.#mode = "unavailable";
       this.#callbacks.onProblem?.("renderer-unavailable");
-    } else if (this.#scene) {
-      this.#buildFallback(this.#scene);
     }
   }
 
   #buildFallback(scene: SceneModel): void {
     const context = this.#fallback;
-    if (!context || !this.#fallbackCanvas) return;
-    context.clearRect(0, 0, this.#fallbackCanvas.width, this.#fallbackCanvas.height);
+    const canvas = this.#fallbackCanvas;
+    if (!context || !canvas) return;
+    this.#cancelFallback();
+    const projection = {
+      scene,
+      matrix: new Float32Array(this.#matrix),
+      width: this.#viewport.width,
+      height: this.#viewport.height,
+    };
+    this.#fallbackProjection = projection;
+    // Cache the camera-aligned raster, capped at four MiB regardless of zoom
+    // or display density. Animation frames only composite this cached layer.
+    const scale = Math.min(window.devicePixelRatio || 1,
+      1024 / Math.max(1, projection.width), 1024 / Math.max(1, projection.height));
+    canvas.width = Math.max(1, Math.round(projection.width * scale));
+    canvas.height = Math.max(1, Math.round(projection.height * scale));
+    context.setTransform(scale, 0, 0, scale, 0, 0);
+    this.#renderedPoints = 0;
     const view = new DataView(scene.buffer, scene.pointOffset, scene.total * 8);
-    const maximum = Math.min(scene.total, 50_000);
-    const step = Math.max(1, Math.ceil(scene.total / maximum));
+    const step = Math.max(1, Math.ceil(scene.total / 50_000));
     let index = 0;
     let rendered = 0;
     const drawChunk = (): void => {
-      if (this.#disposed || scene !== this.#scene || !this.#fallbackCanvas) return;
-      const end = Math.min(scene.total, index + step * 4_000);
-      for (; index < end; index += step) {
+      if (this.#disposed || !this.#state?.pageActive || this.#mode !== "canvas2d"
+        || scene !== this.#scene || projection !== this.#fallbackProjection) return;
+      this.#fallbackFrame = null;
+      const started = performance.now();
+      let processed = 0;
+      while (index < scene.total && processed < 2_000) {
         const offset = index * 8;
-        const x = view.getUint16(offset, true) / Math.max(1, scene.metadata.span[0]) * this.#fallbackCanvas.width;
-        const y = view.getUint16(offset + 2, true) / Math.max(1, scene.metadata.span[1]) * this.#fallbackCanvas.height;
-        const red = view.getUint8(offset + 5);
-        const green = view.getUint8(offset + 6);
-        const blue = view.getUint8(offset + 7);
-        context.fillStyle = `rgb(${red} ${green} ${blue})`;
-        context.fillRect(x, y, 1.5, 1.5);
+        const point = this.#projectCell(view.getUint16(offset, true), view.getUint16(offset + 2, true),
+          view.getUint8(offset + 4), true, projection.matrix, projection);
+        if (point) {
+          context.fillStyle = `rgb(${view.getUint8(offset + 5)} ${view.getUint8(offset + 6)} ${view.getUint8(offset + 7)})`;
+          context.fillRect(point.x - 0.75, point.y - 0.75, 1.5, 1.5);
+        }
+        index += step;
+        processed += 1;
         rendered += 1;
+        if (processed % 64 === 0 && performance.now() - started >= 4) break;
       }
       this.#renderedPoints = rendered;
       this.requestRender();
       if (index < scene.total) this.#fallbackFrame = window.setTimeout(drawChunk, 0);
-      else this.#fallbackFrame = null;
     };
-    drawChunk();
+    this.#fallbackFrame = window.setTimeout(drawChunk, 0);
   }
 
   #cancelFallback(): void {
     if (this.#fallbackFrame !== null) window.clearTimeout(this.#fallbackFrame);
     this.#fallbackFrame = null;
+    this.#fallbackProjection = null;
   }
 
   #measureViewport(): ViewportBounds {
@@ -1300,8 +1323,19 @@ export class RendererController {
   }
 
   #renderFallback(): void {
-    // A WebGL canvas cannot later acquire a 2D context. The persistent overlay
-    // owns the bounded raster fallback as well as vector annotations.
+    const scene = this.#scene;
+    if (this.#mode !== "canvas2d" || !scene
+      || (this.#state?.view === "top" && this.#state.appearance === "rooms")) {
+      this.#cancelFallback();
+      this.#renderedPoints = 0;
+      return;
+    }
+    const projection = this.#fallbackProjection;
+    if (!projection || projection.scene !== scene
+      || projection.width !== this.#viewport.width || projection.height !== this.#viewport.height
+      || !projection.matrix.every((value, index) => value === this.#matrix[index])) {
+      this.#buildFallback(scene);
+    }
   }
 
   #worldForCell(x: number, y: number, height = 0): readonly [number, number, number] | null {
@@ -1314,7 +1348,8 @@ export class RendererController {
     ];
   }
 
-  #projectCell(x: number, y: number, height = 0, clipToViewport = true, matrix = this.#matrix): MapPoint | null {
+  #projectCell(x: number, y: number, height = 0, clipToViewport = true, matrix = this.#matrix,
+    bounds: Pick<ViewportBounds, "width" | "height"> = this.#viewport): MapPoint | null {
     const world = this.#worldForCell(x, y, height);
     if (!world) return null;
     const [worldX, worldY, worldZ] = world;
@@ -1327,7 +1362,6 @@ export class RendererController {
     if (!Number.isFinite(xNormalized) || !Number.isFinite(yNormalized)) return null;
     if (clipToViewport
       && (Math.abs(xNormalized) > 1.15 || Math.abs(yNormalized) > 1.15)) return null;
-    const bounds = this.#viewport;
     return {
       x: (xNormalized * 0.5 + 0.5) * bounds.width,
       y: (-yNormalized * 0.5 + 0.5) * bounds.height,
@@ -1355,20 +1389,8 @@ export class RendererController {
     const palette = this.#palette;
     if (this.#mode === "canvas2d" && this.#fallbackCanvas
       && !(state.view === "top" && state.appearance === "rooms")) {
-      // Use the same projection as annotations and hit testing, including
-      // rotated perspective views and rectangular maps after context loss.
-      const points = new DataView(scene.buffer, scene.pointOffset, scene.total * 8);
-      const step = Math.max(1, Math.ceil(scene.total / 50_000));
-      for (let index = 0; index < scene.total; index += step) {
-        const offset = index * 8;
-        const projected = this.#projectCell(
-          points.getUint16(offset, true), points.getUint16(offset + 2, true),
-          points.getUint8(offset + 4),
-        );
-        if (!projected) continue;
-        context.fillStyle = `rgb(${points.getUint8(offset + 5)} ${points.getUint8(offset + 6)} ${points.getUint8(offset + 7)})`;
-        context.fillRect(projected.x - 0.75, projected.y - 0.75, 1.5, 1.5);
-      }
+      // A WebGL canvas cannot acquire a 2D context after context loss.
+      context.drawImage(this.#fallbackCanvas, 0, 0, bounds.width, bounds.height);
     }
     const selectedNames = this.#selectedRoomNames(state);
     if (state.labelsVisible || (state.view === "top" && state.appearance === "rooms")) {

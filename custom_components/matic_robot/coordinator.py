@@ -378,6 +378,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     async def _async_update_data(self) -> RobotState:
         cues_push_sequence = self._cues_push_sequence
         full_refresh_generation = self._full_refresh_generation
+        floor_read_generation = self._floor_read_generation
         try:
             info, operational, floor_plan, pose, telemetry = await asyncio.gather(
                 self._async_info(),
@@ -461,6 +462,11 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                         following_person=latest_cues_state.following_person,
                     ),
                 )
+            # A cached floor may have completed before another gathered read
+            # or later enrichment. Revalidate at publication, including a
+            # revoke/recover cycle that has already cleared the unknown flag.
+            if self._floor_read_generation != floor_read_generation:
+                state = replace(state, floor_plan=self._current_published_floor_plan())
             return state
         except AuthenticationRequiredError as err:
             raise ConfigEntryAuthFailed(
@@ -714,20 +720,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             )
         ):
             self._map_refresh_due = 0.0
-            published_floor_plan = (
-                self.data.floor_plan if self.data is not None else None
-            )
-            if _floor_plan_matches_displayed(
-                published_floor_plan,
-                self._displayed_floor_mission_id,
-                self._displayed_floor_signature,
-            ) and (
-                current_expected_mission_id is None
-                or (
-                    published_floor_plan is not None
-                    and published_floor_plan.mission_id == current_expected_mission_id
-                )
-            ):
+            published_floor_plan = self._current_published_floor_plan()
+            if published_floor_plan is not None:
                 # A concurrent identity event can revoke this read while
                 # confirming that the already-published map is still exact.
                 # Keep that verified map visible while the replacement read
@@ -738,6 +732,24 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._map_refresh_due = refresh_due
         self._cached_floor_plan = floor_plan
         return floor_plan
+
+    @callback
+    def _current_published_floor_plan(self) -> FloorPlan | None:
+        """Retain only a published map still admitted by current localization."""
+        if self._displayed_floor_unknown:
+            return None
+        floor_plan = self.data.floor_plan if self.data is not None else None
+        expected_mission_id = self.expected_floor_mission_id
+        if _floor_plan_matches_displayed(
+            floor_plan,
+            self._displayed_floor_mission_id,
+            self._displayed_floor_signature,
+        ) and (
+            expected_mission_id is None
+            or (floor_plan is not None and floor_plan.mission_id == expected_mission_id)
+        ):
+            return floor_plan
+        return None
 
     @property
     def expected_floor_mission_id(self) -> int | None:

@@ -1,6 +1,6 @@
 # Final 0.5 candidate acceptance
 
-Reconciled October 8, 2026, Pacific time; source, installed, device, physical and owner gates remain separate.
+Installed evidence reconciled October 8, 2026, Pacific time. [RC17 source qualification](verification-0.5-rc17.md) tracks the later repairs; installed, device, physical and owner gates remain separate.
 
 ## Composition and review
 
@@ -141,7 +141,7 @@ mandatory. Historical evidence gaps do not supply runtime acceptance.
 | Reliability and safety | Qualify disconnect/reconnect, stale/wrong-floor data, administrator loss, unload/reload, multiple tabs, history/Area conflicts and renderer failures on the final build. Guards must prevent commands; recovery must avoid duplicate dispatch and credit. Keep live transport default-OFF until fault/fallback and resource qualification. |
 | Actual devices and accessibility | Actual iPhone/iPad Safari and Android Chrome; touch, keyboard, VoiceOver/NVDA, switch access, native zoom, safe areas, RTL and recovery language. Actual Android Chrome rendered 2D/3D, accepted generated touch navigation and reflowed at native 150% zoom. This limited flow does not qualify every device or assistive technology. |
 | Sustained performance | Measure final-build desktop/mobile responsiveness and frame rates, CPU, retained memory/GPU and traffic/reconnect budgets over long sessions and large maps. RC12 synthetic desktop endurance completed 10 minutes/403 scene changes, no console errors, stable node/listener counts, post-GC heap 3.0–4.1 MB. RAF sampling is not GPU-presented FPS; this does not close mobile/GPU/live-traffic or longer-session qualification. |
-| Reporter confirmation | Issue #218 remains open pending the reporter's successful five-room RC3 result. Issues #65, #139 and #198 remain open pending affected-device confirmation. |
+| Reporter confirmation | Issue #218 is closed following accepted five-room RC2 proof and stable 0.4.8 publication; this does not qualify 0.5 cadence. Issues #65, #139 and #198 remain open pending affected-device confirmation. |
 | Physical and cadence | Bounded physical acceptance is authorized by the owner on October 8. Private/shared N=1/N=3 progression, per-mode completion credit, pause/restart/low-charge recovery, guarded failure, Stop settlement and docking remain pending. Do not infer these results from source tests or Activity rows. Preserve schedules. |
 | Product and publication | Independent whole-product review of the exact final candidate, owner walkthrough/signoff remain required. The owner authorized stable publication after completed qualification. |
 

@@ -199,7 +199,10 @@ test("@safety rotated fallback points align with room hits on a rectangular map"
     renderer.setCamera({ ...renderer.camera, yaw: .6, pitch: .9, distance: 15 });
     const camera = renderer.camera;
     canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
-    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    for (let attempt = 0; attempt < 120 && renderer.diagnostics().renderedPoints !== 2; attempt += 1) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    await new Promise(resolve => requestAnimationFrame(resolve));
     const context = overlay.getContext("2d"), bounds = canvas.getBoundingClientRect();
     const results = points.map(([x, y], index) => {
       const map = { x: (x + 13) * .1, y: (y + 21) * .1 };
@@ -222,6 +225,125 @@ test("@safety rotated fallback points align with room hits on a rectangular map"
   expect(outcome).toEqual({ mode: "canvas2d", cameraPreserved: true,
     results: [{ colored: true, hit: "Amber" }, { colored: true, hit: "Grove" }],
   });
+});
+
+test("@safety fallback raster work yields, caches unchanged views and cancels obsolete projections", async ({ page }) => {
+  await loadRenderer(page);
+  const outcome = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = window.__gpuUploadHarness;
+    const base = createGalleryState("ready");
+    const total = 100_000;
+    const buffer = new ArrayBuffer(total * 8);
+    const points = new DataView(buffer);
+    for (let index = 0; index < total; index += 1) {
+      points.setUint16(index * 8, 50, true);
+      points.setUint16(index * 8 + 2, 50, true);
+      points.setUint8(index * 8 + 5, 255);
+    }
+    const scene = { ...base.resources.scene.value, buffer, pointOffset: 0, total,
+      floorCount: total, surfaceCount: 0,
+      metadata: { ...base.resources.scene.value.metadata, span: [100, 100], rooms: [] },
+    };
+    const state = { ...base, view: "three", appearance: "photo", labelsVisible: false,
+      resources: { ...base.resources, scene: { ...base.resources.scene, value: scene },
+        pose: { ...base.resources.pose, value: null } },
+    };
+    const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
+    canvases.forEach(canvas => {
+      Object.assign(canvas.style, { width: "300px", height: "150px" });
+      document.body.append(canvas);
+    });
+    const renderer = new RendererController(...canvases);
+    const original = {
+      setTimeout: window.setTimeout, clearTimeout: window.clearTimeout,
+      requestAnimationFrame: window.requestAnimationFrame,
+      fillRect: CanvasRenderingContext2D.prototype.fillRect,
+    };
+    const timers = new Map();
+    let timerId = 0, painted = 0, framePaints = 0, inFrame = false;
+    const chunkSizes = [];
+    window.setTimeout = callback => { timers.set(++timerId, callback); return timerId; };
+    window.clearTimeout = id => timers.delete(id);
+    window.requestAnimationFrame = callback => original.requestAnimationFrame(time => {
+      inFrame = true;
+      try { callback(time); } finally { inFrame = false; }
+    });
+    CanvasRenderingContext2D.prototype.fillRect = function (x, y, width, height) {
+      if (width === 1.5 && height === 1.5) {
+        painted += 1;
+        if (inFrame) framePaints += 1;
+      }
+      return original.fillRect.call(this, x, y, width, height);
+    };
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const drain = async () => {
+      for (let attempt = 0; timers.size && attempt < 1_000; attempt += 1) {
+        const [id, callback] = timers.entries().next().value;
+        timers.delete(id);
+        const before = painted;
+        callback();
+        chunkSizes.push(painted - before);
+        await nextFrame();
+      }
+    };
+    try {
+      renderer.setState(state);
+      canvases[0].dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+      await nextFrame();
+      await drain();
+      const completed = renderer.diagnostics().renderedPoints;
+      const initialPaints = painted;
+      for (let count = 0; count < 3; count += 1) {
+        renderer.requestRender();
+        await nextFrame();
+      }
+      const cachedPaints = painted - initialPaints;
+      renderer.setCamera({ ...renderer.camera, yaw: .2 });
+      await nextFrame();
+      const obsolete = timers.values().next().value;
+      renderer.setCamera({ ...renderer.camera, yaw: .4 });
+      await nextFrame();
+      const beforeObsolete = painted;
+      obsolete?.();
+      const obsoletePaints = painted - beforeObsolete;
+      await drain();
+      const cameraPaints = painted - initialPaints;
+      renderer.setCamera({ ...renderer.camera, yaw: .6 });
+      await nextFrame();
+      const hidden = timers.values().next().value;
+      renderer.setState({ ...state, pageActive: false });
+      const hiddenTimers = timers.size;
+      const beforeHidden = painted;
+      hidden?.();
+      renderer.setState(state);
+      await nextFrame();
+      const retired = timers.values().next().value;
+      renderer.dispose();
+      retired?.();
+      return { completed, initialPaints, cachedPaints, obsoletePaints, cameraPaints,
+        framePaints, maxChunk: Math.max(...chunkSizes), chunks: chunkSizes.length,
+        scheduled: Boolean(obsolete && hidden && retired),
+        hiddenTimers, cancelledPaints: painted - beforeHidden, remainingTimers: timers.size };
+    } finally {
+      renderer.dispose();
+      Object.assign(window, { setTimeout: original.setTimeout, clearTimeout: original.clearTimeout,
+        requestAnimationFrame: original.requestAnimationFrame });
+      CanvasRenderingContext2D.prototype.fillRect = original.fillRect;
+      canvases.forEach(canvas => canvas.remove());
+    }
+  });
+  expect(outcome.completed).toBe(50_000);
+  expect(outcome.initialPaints).toBe(50_000);
+  expect(outcome.maxChunk).toBeLessThanOrEqual(2_000);
+  expect(outcome.chunks).toBeGreaterThanOrEqual(50);
+  expect(outcome.framePaints).toBe(0);
+  expect(outcome.cachedPaints).toBe(0);
+  expect(outcome.obsoletePaints).toBe(0);
+  expect(outcome.cameraPaints).toBe(50_000);
+  expect(outcome.scheduled).toBe(true);
+  expect(outcome.hiddenTimers).toBe(0);
+  expect(outcome.cancelledPaints).toBe(0);
+  expect(outcome.remainingTimers).toBe(0);
 });
 
 test("@safety WebGL uploads use bounded aligned chunks and compatible scenes publish atomically", async ({ page }) => {
@@ -712,17 +834,14 @@ test("@safety context loss during compatible staging falls back to the latest ad
       ...base,
       appearance: "photo",
       labelsVisible: false,
-      resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null } },
+      resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null },
+        pose: { ...base.resources.pose, value: null } },
     });
     const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
-    canvases.forEach((canvas) => document.body.append(canvas));
-    const created = document.createElement.bind(document);
-    const fallbackCanvases = [];
-    document.createElement = function (name, options) {
-      const element = created(name, options);
-      if (name.toLowerCase() === "canvas") fallbackCanvases.push(element);
-      return element;
-    };
+    canvases.forEach((canvas) => {
+      Object.assign(canvas.style, { width: "300px", height: "150px" });
+      document.body.append(canvas);
+    });
     const renderer = new RendererController(...canvases);
     const context = contexts.at(-1);
     const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
@@ -744,11 +863,17 @@ test("@safety context loss during compatible staging falls back to the latest ad
     canvases[0].dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
     const fallbackComplete = await waitFor(() => renderer.diagnostics().mode === "canvas2d"
       && renderer.diagnostics().renderedPoints === 50_000);
-    const fallbackCanvas = fallbackCanvases.at(-1);
-    const pixel = fallbackCanvas?.getContext("2d")?.getImageData(512, 512, 1, 1).data;
-    const obsoletePixel = fallbackCanvas?.getContext("2d")?.getImageData(102, 102, 1, 1).data;
+    await nextFrame();
+    const context2d = canvases[1].getContext("2d");
+    const ratio = Math.min(window.devicePixelRatio || 1, 3);
+    const pixelsAt = point => {
+      const screen = renderer.mapToScreen(point);
+      return context2d.getImageData(Math.floor(screen.x * ratio) - 1,
+        Math.floor(screen.y * ratio) - 1, 3, 3).data;
+    };
+    const pixel = pixelsAt({ x: 25, y: 25 });
+    const obsoletePixel = pixelsAt({ x: 5, y: 5 });
     const diagnostics = renderer.diagnostics();
-    document.createElement = created;
     renderer.dispose();
     canvases.forEach((canvas) => canvas.remove());
     return {
@@ -760,8 +885,9 @@ test("@safety context loss during compatible staging falls back to the latest ad
       sceneRevision: diagnostics.sceneRevision,
       sourcePoints: diagnostics.sourcePoints,
       renderedPoints: diagnostics.renderedPoints,
-      currentPixel: pixel ? [...pixel] : null,
-      obsoletePixel: obsoletePixel ? [...obsoletePixel] : null,
+      currentGreen: pixel.some((value, index) => index % 4 === 1 && value > 240),
+      currentRed: pixel.some((value, index) => index % 4 === 0 && value > 10),
+      obsoletePainted: obsoletePixel.some((value, index) => index % 4 === 3 && value > 0),
     };
   });
 
@@ -773,9 +899,9 @@ test("@safety context loss during compatible staging falls back to the latest ad
   expect(outcome.sceneRevision).toBe(41);
   expect(outcome.sourcePoints).toBe(100_000);
   expect(outcome.renderedPoints).toBe(50_000);
-  expect(outcome.currentPixel?.[1]).toBeGreaterThan(240);
-  expect(outcome.currentPixel?.[0]).toBeLessThan(10);
-  expect(outcome.obsoletePixel?.[3]).toBe(0);
+  expect(outcome.currentGreen).toBe(true);
+  expect(outcome.currentRed).toBe(false);
+  expect(outcome.obsoletePainted).toBe(false);
 });
 
 test("@safety hidden context restoration stays idle then uploads the same admitted scene on resume", async ({ page }) => {
