@@ -51,7 +51,7 @@ from .coverage_accounting import (
     async_confirm_completed_coverage,
     coverage_evidence_from_storage,
 )
-from .native_completion import match_single_room_completions
+from .native_completion import match_single_room_completions, native_room_key
 from .plans import (
     OEM_STOP_RECONCILIATION_SECONDS as OEM_STOP_RECONCILIATION_SECONDS,
 )
@@ -3275,6 +3275,22 @@ async def _async_execute_rooms_reserved(
                     finish_current_room=finish_current_room,
                     finish_current_room_threshold=finish_current_room_threshold,
                 )
+            if mapped_room_names:
+                mapped_keys = [native_room_key(name) for name in mapped_room_names]
+                ambiguous = [
+                    room.name
+                    for room in chosen
+                    if mapped_keys.count(native_room_key(room.name)) != 1
+                ]
+                if ambiguous:
+                    # Admission and completion must use the same identity key.
+                    # Check all legs before a prior leg can prefetch a command.
+                    raise _validation_error(
+                        "Managed completion cannot distinguish duplicate "
+                        "mapped room names",
+                        "ambiguous_room_name",
+                        {"room": ", ".join(ambiguous)},
+                    )
             if durable and recovery is None:
                 checkpoint = {
                     "version": 1,
@@ -3428,17 +3444,6 @@ async def _async_execute_rooms_reserved(
                     session_history,
                     confirm_room_completed,
                     managed_user_command,
-                    room_name_is_unique=(
-                        not mapped_room_names
-                        or all(
-                            sum(
-                                name.strip().casefold() == room.name.strip().casefold()
-                                for name in mapped_room_names
-                            )
-                            == 1
-                            for room in leg
-                        )
-                    ),
                     prepared_dispatch=prepared_dispatch,
                     prefetch_next=prefetch_next
                     if next_leg is not None and not durable

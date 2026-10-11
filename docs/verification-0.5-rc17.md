@@ -16,6 +16,10 @@ new installation, device performance, physical cleaning or owner acceptance.
 - Native mixed-cleaning admission rechecks stable idle state and ownership after
   checkpoint persistence, before the first command. Cancellation or replacement
   task evidence sends no start command.
+- Managed-plan admission uses the same normalized room name as native completion
+  matching. Aliases such as `Dining Room` and `The Dining Room` are rejected
+  before any leg dispatch or prefetch. Eight regressions cover case, whitespace,
+  native prefixes and an ambiguous later leg; seven fail the earlier source.
 - Canvas2D fallback uses the same camera projection as annotations and room hits.
   It caches at most 1024 by 1024 pixels, projects at most 2,000 sampled points per
   timer turn with a four-millisecond yield target, and composites the cache on
@@ -34,7 +38,7 @@ new installation, device performance, physical cleaning or owner acceptance.
 ## Qualification
 
 The cached-floor regression failed the earlier source, then passed the repair.
-All 4,360 Python tests pass at 100% statement coverage. Ruff, formatting, strict
+All 4,368 Python tests pass at 100% statement coverage. Ruff, formatting, strict
 Python types, TypeScript, public-tree privacy, frontend rebuild, wheel/sdist
 file parity and fresh-wheel import pass locally. The macOS test environment
 adds Home Assistant's pinned `dbus-fast==5.0.22` dependency, which its normal
@@ -49,7 +53,8 @@ editing, discard confirmation and Escape cancellation. Dark-theme screenshots
 were visually checked at phone and desktop widths. These are synthetic UI
 checks, not live Home Assistant or physical-device acceptance.
 
-Regular review and hosted checks must cover the pushed candidate. The earlier
+Regular review and hosted checks must cover the pushed candidate, including the
+room-alias repair found during the wider executor audit. The earlier
 review of `6cc423e87d40ef3af0d9430e1161647b4008345d`
 reported the two repaired floor-publication and fallback-rendering findings;
 its completion status was not a clean verdict.
