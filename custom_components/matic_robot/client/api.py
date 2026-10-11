@@ -1469,6 +1469,10 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             await checkpoint_initial_session(
                 hashlib.sha256(commands.session_id.encode("ascii")).hexdigest()
             )
+            # Durable persistence can yield to an external native start. Revoke
+            # this transaction before sending any bytes if ownership changed.
+            if await self._async_require_idle_native_session() != baseline_identity:
+                raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
         require_current()
         try:
             await self._async_send_user_payload(

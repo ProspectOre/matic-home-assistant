@@ -629,16 +629,16 @@ for (const width of [320, 390, 820, 1280]) {
   for (const theme of ["light", "dark"]) {
     test(`plan picker separates selection and creation at ${width}px ${theme}`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height: 900 });
+      await page.emulateMedia({ colorScheme: theme });
       await page.goto("/map-studio-v4-audit");
       const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
-      await gallery.evaluate((element, theme) => {
-        element.theme = theme;
+      await gallery.evaluate((element) => {
         const state = element.getWorkspaceSnapshot();
         const plan = state.resources.plans.value.plans[0];
         element.replaceWorkspaceState({ ...state, resources: { ...state.resources,
           plans: { ...state.resources.plans, value: { ...state.resources.plans.value,
             plans: [plan, { ...plan, id: "second", name: "Evening routine", enabled: false }] } } } });
-      }, theme);
+      });
       const menu = gallery.getByRole("button", { name: "Open Home Assistant sidebar" });
       const title = gallery.getByRole("heading", { name: "Matic Map", exact: true });
       const toggle = gallery.getByRole("button", { name: "Hide cleaning panel", exact: true });
@@ -651,6 +651,27 @@ for (const width of [320, 390, 820, 1280]) {
       await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toHaveCount(0);
       const create = gallery.getByRole("button", { name: "Create a plan", exact: true });
       const choice = gallery.getByRole("button", { name: /Evening routine.*paused.*Edit plan/ });
+      const appearance = await choice.evaluate((element) => {
+        const context = document.createElement("canvas").getContext("2d");
+        const luminance = color => {
+          context.fillStyle = color;
+          context.fillRect(0, 0, 1, 1);
+          const [r, g, b] = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3)
+            .map(value => value / 255)
+            .map(value => value <= .04045 ? value / 12.92 : ((value + .055) / 1.055) ** 2.4);
+          return r * .2126 + g * .7152 + b * .0722;
+        };
+        const background = luminance(getComputedStyle(element).backgroundColor);
+        const contrast = [...element.querySelectorAll("strong, small, .ms-row__trail")].map(label => {
+          const foreground = luminance(getComputedStyle(label).color);
+          return (Math.max(foreground, background) + .05) / (Math.min(foreground, background) + .05);
+        });
+        return { background, contrast };
+      });
+      if (theme === "dark") expect(appearance.background).toBeLessThan(.1);
+      else expect(appearance.background).toBeGreaterThan(.7);
+      expect(appearance.contrast.length).toBeGreaterThanOrEqual(2);
+      for (const contrast of appearance.contrast) expect(contrast).toBeGreaterThanOrEqual(4.5);
       for (const control of [menu, create, choice]) {
         const box = await control.boundingBox();
         expect(box.width).toBeGreaterThanOrEqual(44);

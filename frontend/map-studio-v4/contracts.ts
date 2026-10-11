@@ -369,9 +369,53 @@ export interface RouteLike {
   readonly prefix?: string;
 }
 
+const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
+  "set-host": true,
+  "set-operational-state": true,
+  "set-narrow-hint": true,
+  "set-view": true,
+  "set-appearance": true,
+  "set-quality": true,
+  "set-camera": true,
+  "toggle-labels": true,
+  "open-workflow": true,
+  "enter-full-map": true,
+  "exit-full-map": true,
+  "set-precision-open": true,
+  "set-zoom": true,
+  "step-zoom": true,
+  "fit-map": true,
+  "set-brush": true,
+  "set-draw-tool": true,
+  "mark-draft": true,
+  "undo-draft": true,
+  "clear-draft": true,
+  "discard-draft": true,
+  "set-draft-circles": true,
+  "redo-draft": true,
+  "toggle-room": true,
+  "clear-selection": true,
+  "patch-room-settings": true,
+  "set-use-room-schedule": true,
+  "retry-room-preview": true,
+  "request-room-cadence-reset": true,
+  "set-floor": true,
+  "select-entry": true,
+  "set-history": true,
+  "select-plan": true,
+  "select-area": true,
+  "patch-plan-draft": true,
+  "patch-area-draft": true,
+  "set-notice": true,
+  "open-dialog": true,
+  "dismiss-top-layer": true,
+  "return-live": true,
+};
+
 export const isWorkspaceIntent = (value: unknown): value is WorkspaceIntent => {
   if (!value || typeof value !== "object") return false;
-  return typeof (value as { type?: unknown }).type === "string";
+  const type = (value as { type?: unknown }).type;
+  return typeof type === "string" && Object.hasOwn(workspaceIntentTypes, type);
 };
 import type {
   AreaCircle,

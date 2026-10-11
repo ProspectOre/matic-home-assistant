@@ -3,7 +3,7 @@
 import asyncio
 import hashlib
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,7 +19,7 @@ from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     MaticError,
 )
-from custom_components.matic_robot.client.models import FloorPlan
+from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import (
     PlanCancelledError,
@@ -47,7 +47,16 @@ async def recovery_state(hass):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")
-    floor = FloorPlan(42, "partition", b"partition", ())
+    floor = FloorPlan(
+        42,
+        "partition",
+        b"partition",
+        (
+            Room("kitchen", "Kitchen", "kitchen", b"kitchen", ()),
+            Room("office", "Office", "office", b"office", ()),
+            Room("hall", "Hall", "hall", b"hall", ()),
+        ),
+    )
     identity = b"synthetic-session"
     entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
     hass.states.async_set(entity.entity_id, "cleaning")
@@ -113,6 +122,7 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
         assert kwargs["recovered_dispatch"].rooms == (room,)
         assert kwargs["recovered_dispatch"].native_identity == b"synthetic-session"
         assert kwargs["floor_is_current"]()
+        assert kwargs["mapped_room_names"] == ("Kitchen", "Office", "Hall")
         await manager.async_finish_run(
             "serial", "run", "completed", "all_rooms_verified", 1
         )
@@ -292,8 +302,9 @@ async def test_interrupted_mixed_dispatch_rechecks_identity_after_fence_persist(
 
 
 @pytest.mark.parametrize("stop_intent", [None, "after_room"])
+@pytest.mark.parametrize("renamed", [False, True])
 async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
-    hass, recovery_state, stop_intent
+    hass, recovery_state, stop_intent, renamed
 ):
     manager, entry, checkpoint, _ = recovery_state
     identity, expected_hash = await _set_interrupted_mixed_dispatch(
@@ -302,6 +313,12 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
     if stop_intent is not None:
         checkpoint["stop_intent"] = stop_intent
         await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    if renamed:
+        floor = entry.runtime_data.coordinator.data.floor_plan
+        entry.runtime_data.coordinator.data.floor_plan = replace(
+            floor,
+            rooms=tuple(replace(room, name="The Kitchen") for room in floor.rooms),
+        )
 
     async def send_stop(command, *, on_transmitted=None):
         assert command is UserCommand.STOP
@@ -321,9 +338,12 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
             on_transmitted()
 
     entry.runtime_data.client.async_send_user_command.side_effect = send_stop
-    with patch(
-        "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
-    ) as schedule:
+    with (
+        patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
+        patch(
+            "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+        ) as schedule,
+    ):
         await async_recover_managed_run(hass, entry, "serial")
 
     entry.runtime_data.client.async_send_user_command.assert_awaited_once()
@@ -558,6 +578,7 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         assert kwargs["recovery"]["recovery_checkpoint"]["phase"] == "handoff"
         assert kwargs["recovered_dispatch"] is None
         assert kwargs["handoff_expected_identity"] == b""
+        assert kwargs["mapped_room_names"] == ("Kitchen", "Office", "Hall")
 
     async def wait_for_handoff(*_args, **_kwargs):
         assert _kwargs["finish_room_event"] is manager.finish_room_event("serial")
@@ -590,6 +611,83 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     if case == "stop_during_wait":
         assert manager.snapshot("serial")["last_run"]["reason_code"] == "managed_stop"
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("phase", ["accepted", "handoff", "verifying"])
+@pytest.mark.parametrize("rename_timing", ["before_recovery", "during_history"])
+async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
+    hass, recovery_state, phase, rename_timing
+):
+    """A same-floor rename cannot authorize a queued leg or completion credit."""
+    manager, entry, checkpoint, room = recovery_state
+    runtime = entry.runtime_data
+    floor = runtime.coordinator.data.floor_plan
+    renamed = replace(
+        floor,
+        rooms=(
+            floor.rooms[0],
+            replace(floor.rooms[1], name="The Kitchen"),
+            *floor.rooms[2:],
+        ),
+    )
+    assert plan_floor_token(renamed) == checkpoint["floor_token"]
+    if phase == "handoff":
+        previous = CleaningRoom("office", "Office", "mop", "standard")
+        checkpoint.update(
+            phase="handoff",
+            handoff_history=[],
+            leg_index=1,
+            rooms=[asdict(previous), asdict(room)],
+            completed_room_ids=[previous.room_id],
+        )
+        manager._robot("serial")["last_run"].update(
+            room_count=2, completed_room_count=1
+        )
+    elif phase == "verifying":
+        checkpoint.update(
+            phase="verifying",
+            verification_deadline=(
+                dt_util.utcnow() + timedelta(seconds=300)
+            ).isoformat(),
+        )
+    if phase != "accepted":
+        runtime.client.async_get_cleaning_session_identity.return_value = b""
+        hass.states.async_set(checkpoint["entity_id"], "idle")
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    before_count = manager.snapshot("serial")["last_run"]["completed_room_count"]
+
+    async def history(**_kwargs):
+        if rename_timing == "during_history":
+            runtime.coordinator.data.floor_plan = renamed
+        return ()
+
+    runtime.client.async_get_cleaning_session_records.side_effect = history
+    if rename_timing == "before_recovery":
+        runtime.coordinator.data.floor_plan = renamed
+    with (
+        patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
+        patch(
+            "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "custom_components.matic_robot.restart._async_execute_rooms",
+            new_callable=AsyncMock,
+        ) as execute,
+        patch(
+            "custom_components.matic_robot.restart._async_verify_leg_completion",
+            AsyncMock(return_value={room.room_id: (dt_util.utcnow().isoformat(), 30)}),
+        ) as verify,
+    ):
+        await async_recover_managed_run(hass, entry, "serial")
+
+    execute.assert_not_awaited()
+    verify.assert_not_awaited()
+    runtime.client.async_send_user_command.assert_not_awaited()
+    runtime.coordinator.async_confirm_room_completed.assert_not_called()
+    run = manager.snapshot("serial")["last_run"]
+    assert run["outcome"] == "unverified"
+    assert run["completed_room_count"] == before_count
 
 
 @pytest.mark.parametrize(

@@ -4771,11 +4771,14 @@ test.describe("Map Studio v0.4 foundation", () => {
         v4_clean_rooms: "Limpiar habitaciones",
         v4_action_clean_rooms: "Limpiar las habitaciones elegidas",
         v4_reason_clean_rooms_empty: "Elige al menos una habitación.",
+        v4_map_workspace: "Espacio de trabajo del mapa",
+        v4_robot_status_and_action: "Estado y acción del robot",
       };
       shell.localize = (key) => strings[key.split(".").at(-1)] || key;
       shell.requestUpdate();
     });
     await expect(gallery.getByRole("heading", { name: "Mapa Matic" })).toBeVisible();
+    await expect(gallery.getByRole("complementary", { name: "Espacio de trabajo del mapa", exact: true })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Ocultar espacio de trabajo" })).toBeVisible();
     const help = gallery.getByRole("button", { name: "Cómo mover el mapa" });
     await help.click();
@@ -6326,9 +6329,12 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
   });
 });
 
-for (const narrow of [false, true]) {
-  test(`Draw toolbar uses one tab stop and skips disabled tools ${narrow ? "on a phone @mobile" : "on desktop"}`, async ({ page }) => {
+for (const narrow of [false, true]) for (const direction of ["ltr", "rtl"]) {
+  test(`Draw toolbar uses one tab stop and skips disabled tools in ${direction} ${narrow ? "on a phone @mobile" : "on desktop"}`, async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "draw", narrow });
+    await page.evaluate((direction) => { document.documentElement.dir = direction; }, direction);
+    const forward = direction === "rtl" ? "ArrowLeft" : "ArrowRight";
+    const backward = direction === "rtl" ? "ArrowRight" : "ArrowLeft";
     const toolbar = gallery.getByRole("toolbar", { name: "Draw area tools" });
     await expect(toolbar).toBeVisible();
     const zone = toolbar.getByRole("button", { name: "Zone", exact: true });
@@ -6338,14 +6344,14 @@ for (const narrow of [false, true]) {
     await expect(toolbar.locator('button[tabindex="0"]')).toHaveCount(1);
     await paint.focus();
     const before = await snapshot(page);
-    await paint.press("ArrowRight");
+    await paint.press(forward);
     await expect(erase).toBeFocused();
     await expect(paint).toHaveAttribute("tabindex", "-1");
     await erase.press("End");
     await expect(brush).toBeFocused();
-    await brush.press("ArrowRight");
+    await brush.press(forward);
     await expect(zone).toBeFocused();
-    await zone.press("ArrowLeft");
+    await zone.press(backward);
     await expect(brush).toBeFocused();
     await brush.press("Home");
     await expect(zone).toBeFocused();
@@ -6356,7 +6362,7 @@ for (const narrow of [false, true]) {
     const reached = [];
     for (let index = 0; index < expected.length; index++) {
       reached.push(await toolbar.locator('button[tabindex="0"]').evaluate((button) => button.getAttribute("aria-label") || button.textContent.trim()));
-      await page.keyboard.press("ArrowRight");
+      await page.keyboard.press(forward);
     }
     expect(reached).toEqual(expected);
     await expect(zone).toBeFocused();

@@ -1483,7 +1483,7 @@ export class MaticMapShellV4 extends LitElement {
               class=${narrow ? "inspector mobile-sheet" : "inspector"}
               data-detent=${narrow ? this._sheetDetent : nothing}
               data-workflow=${state.workflow}
-              aria-label="Map workspace"
+              aria-label=${this.#t("v4_map_workspace", "Map workspace")}
             >
               ${narrow ? html`
                 <div
@@ -1561,7 +1561,7 @@ export class MaticMapShellV4 extends LitElement {
             ${state.fullMap ? html`
               <section
                 class=${`full-map-hud ms-surface ms-surface--floating ${secondary ? "has-secondary" : ""} ${!narrow && (state.workflow === "draw" || (state.workflow === "rooms" && state.selection.roomIds.length > 0)) ? "above-dock" : ""}`}
-                aria-label="Robot status and action"
+                aria-label=${this.#t("v4_robot_status_and_action", "Robot status and action")}
               >
                 <span class="hud-copy"><strong>${status.title}</strong><small>${status.detail}</small></span>
                 ${locatingInFullMap && primary.id !== "stop" ? nothing : this.#actionButton(primary, "ms-btn ms-btn--lg ms-btn--primary", "hud-reason")}

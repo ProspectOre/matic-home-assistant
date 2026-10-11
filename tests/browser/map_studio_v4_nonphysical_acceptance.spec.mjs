@@ -31,6 +31,22 @@ async function mountPanel(page, { width = 1180, height = 760, initialPlanCatalog
   return { fixture, panel };
 }
 
+test("unknown workspace events preserve the mounted panel and its live state @safety", async ({ page }) => {
+  const { panel } = await mountPanel(page);
+  const preserved = await page.evaluate(() => {
+    const panel = window.__acceptancePanel;
+    const before = panel.getWorkspaceSnapshot();
+    for (const type of ["not-an-intent", "toString", "__proto__"]) {
+      panel.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type }, bubbles: true, composed: true,
+      }));
+    }
+    return panel.getWorkspaceSnapshot() === before;
+  });
+  expect(preserved).toBe(true);
+  await expect(panel.getByRole("button", { name: "Map options", exact: true })).toBeVisible();
+});
+
 for (const { label, width } of [
   { label: "200% effective viewport", width: 640 },
   { label: "400% effective viewport", width: 320 },

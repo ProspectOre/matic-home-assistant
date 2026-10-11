@@ -785,7 +785,7 @@ async def test_floor_read_does_not_preserve_map_after_same_mission_signature_cha
     assert coordinator._cached_floor_plan is floor_plan
 
 
-async def test_floor_watcher_ignores_unknown_state_and_retries_failures(
+async def test_floor_watcher_revokes_unknown_state_and_retries_failures(
     hass, monkeypatch
 ) -> None:
     client = _client()
@@ -829,6 +829,172 @@ async def test_floor_watcher_ignores_unknown_state_and_retries_failures(
 
     coordinator.async_request_refresh.assert_awaited_once_with()
     assert [args.args for args in sleep.await_args_list] == [(1,), (2,)]
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+async def test_unknown_display_revokes_published_and_inflight_maps(
+    hass, monkeypatch, malformed
+) -> None:
+    client = _client()
+    floor = MappedFloor(42, "Main", "1" * 64)
+    plan = FloorPlan(42, b"partition", b"partition", ())
+    client.async_get_floor_plan.return_value = plan
+    coordinator = _coordinator(hass, client)
+    coordinator._verified_floor_mission_id = 42
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (floor,)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+    assert coordinator.data.floor_plan is plan
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read(**kwargs):
+        started.set()
+        await release.wait()
+        return plan
+
+    client.async_get_floor_plan.side_effect = read
+    coordinator._map_refresh_due = 0.0
+    pending = asyncio.create_task(coordinator._async_optional_floor_plan())
+    await started.wait()
+    unknown_processed = asyncio.Event()
+    recover = asyncio.Event()
+    recovered = asyncio.Event()
+
+    async def entries(name):
+        yield HermesCollectionEntry(b"", b"unknown")
+        unknown_processed.set()
+        await recover.wait()
+        yield HermesCollectionEntry(b"", b"current")
+        recovered.set()
+        await asyncio.Event().wait()
+
+    def decode(payload):
+        if payload == b"unknown" and malformed:
+            raise DecodeError("synthetic malformed display")
+        return MissionClientState(floor if payload == b"current" else None, (floor,))
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state", decode
+    )
+    client.async_subscribe_collection_entries = entries
+    coordinator.async_request_refresh = AsyncMock()
+    watcher = asyncio.create_task(coordinator.async_watch_floor_plan())
+    try:
+        await unknown_processed.wait()
+        assert coordinator.data.floor_plan is None
+        assert coordinator.expected_floor_mission_id is None
+        assert coordinator.displayed_floor_mission_id is None
+        release.set()
+        assert await pending is None
+        client.async_get_floor_plan.reset_mock(side_effect=True)
+        assert await coordinator._async_optional_floor_plan() is None
+        await coordinator.async_request_floor_plan_refresh(42)
+        assert coordinator.expected_floor_mission_id is None
+        assert await coordinator._async_optional_floor_plan() is None
+        client.async_get_floor_plan.assert_not_awaited()
+        recover.set()
+        await recovered.wait()
+        assert coordinator.expected_floor_mission_id == 42
+        assert await coordinator._async_optional_floor_plan() is plan
+    finally:
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+@pytest.mark.parametrize("recover_before_publish", [False, True])
+@pytest.mark.parametrize("delay_enrichment", [False, True])
+async def test_floor_revocation_fences_completed_poll_snapshot(
+    hass, monkeypatch, malformed, recover_before_publish, delay_enrichment
+) -> None:
+    """A cached map cannot outlive its authority while unrelated work waits."""
+    client = _client()
+    floor = MappedFloor(42, "Main", "1" * 64)
+    plan = FloorPlan(42, b"partition", b"partition", ())
+    client.async_get_floor_plan.return_value = plan
+    coordinator = _coordinator(hass, client)
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (floor,)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    assert initial.floor_plan is plan
+    client.async_get_floor_plan.reset_mock()
+    floor_captured = asyncio.Event()
+    blocked = asyncio.Event()
+    release = asyncio.Event()
+    read_floor = coordinator._async_optional_floor_plan
+
+    async def cached_floor():
+        value = await read_floor()
+        assert value is plan
+        floor_captured.set()
+        return value
+
+    async def delayed_read():
+        blocked.set()
+        await release.wait()
+        return initial.operational
+
+    async def delayed_enrichment(state):
+        blocked.set()
+        await release.wait()
+        return state
+
+    monkeypatch.setattr(coordinator, "_async_optional_floor_plan", cached_floor)
+    if delay_enrichment:
+        monkeypatch.setattr(
+            coordinator, "_async_track_cleaning_session", delayed_enrichment
+        )
+    else:
+        client.async_get_state.side_effect = delayed_read
+    poll = asyncio.create_task(coordinator._async_update_data())
+    await floor_captured.wait()
+    await blocked.wait()
+    client.async_get_floor_plan.assert_not_awaited()
+    unknown_processed = asyncio.Event()
+    recover = asyncio.Event()
+    recovered = asyncio.Event()
+
+    async def entries(name):
+        yield HermesCollectionEntry(b"", b"unknown")
+        unknown_processed.set()
+        await recover.wait()
+        yield HermesCollectionEntry(b"", b"current")
+        recovered.set()
+        await asyncio.Event().wait()
+
+    def decode(payload):
+        if payload == b"unknown" and malformed:
+            raise DecodeError("synthetic malformed display")
+        return MissionClientState(floor if payload == b"current" else None, (floor,))
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state", decode
+    )
+    client.async_subscribe_collection_entries = entries
+    coordinator.async_request_refresh = AsyncMock()
+    watcher = asyncio.create_task(coordinator.async_watch_floor_plan())
+    try:
+        await unknown_processed.wait()
+        assert coordinator.data.floor_plan is None
+        if recover_before_publish:
+            recover.set()
+            await recovered.wait()
+            assert coordinator.displayed_floor_mission_id == 42
+        release.set()
+        result = await poll
+        coordinator.async_set_updated_data(result)
+        assert coordinator.data.floor_plan is None
+        assert coordinator._cached_floor_plan is None
+        # A subsequent read under the recovered identity can restore the map.
+        recover.set()
+        await recovered.wait()
+        assert await read_floor() is plan
+    finally:
+        release.set()
+        watcher.cancel()
+        await asyncio.gather(poll, watcher, return_exceptions=True)
 
 
 async def test_live_cues_push_wins_over_an_overlapping_poll(hass) -> None:

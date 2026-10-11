@@ -577,6 +577,9 @@ export const reduceWorkspace = (
         workflow: "none",
         floor: { ...state.floor, readOnly: false },
       };
+    default:
+      // DOM events can come from outside the typed component graph.
+      return state;
   }
 };
 

@@ -155,6 +155,197 @@ async function loadRenderer(page) {
   });
 }
 
+test("@safety rotated fallback points align with room hits on a rectangular map", async ({ page }) => {
+  await loadRenderer(page);
+  const outcome = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = window.__gpuUploadHarness;
+    const base = createGalleryState("ready");
+    const buffer = new ArrayBuffer(16);
+    const data = new DataView(buffer);
+    const points = [[20, 20, 255, 0, 0], [90, 20, 0, 255, 0]];
+    points.forEach(([x, y, r, g, b], index) => {
+      const offset = index * 8;
+      data.setUint16(offset, x, true); data.setUint16(offset + 2, y, true);
+      data.setUint8(offset + 5, r); data.setUint8(offset + 6, g); data.setUint8(offset + 7, b);
+    });
+    const names = ["Amber", "Grove"];
+    const scene = {
+      ...base.resources.scene.value, buffer, pointOffset: 0, total: 2, floorCount: 2, surfaceCount: 0,
+      metadata: {
+        ...base.resources.scene.value.metadata, span: [120, 60], origin: [13, 21], metersPerCell: .1,
+        rooms: points.map(([x, y], index) => ({
+          id: names[index], name: names[index], center: [x, y],
+          boundary: [[x - 5, y - 5], [x + 5, y - 5], [x + 5, y + 5], [x - 5, y + 5]],
+        })),
+      },
+    };
+    const container = document.createElement("div");
+    Object.assign(container.style, { position: "relative", width: "700px", height: "500px" });
+    document.body.append(container);
+    const canvas = document.createElement("canvas"), overlay = document.createElement("canvas");
+    for (const element of [canvas, overlay]) {
+      Object.assign(element.style, { position: "absolute", inset: "0", width: "700px", height: "500px" });
+      container.append(element);
+    }
+    const renderer = new RendererController(canvas, overlay);
+    renderer.setState({ ...base, view: "three", labelsVisible: false, appearance: "photo", resources: {
+      ...base.resources,
+      pose: { ...base.resources.pose, value: null },
+      scene: { ...base.resources.scene, value: scene },
+      plans: { ...base.resources.plans, value: { ...base.resources.plans.value,
+        rooms: names.map((name) => ({ roomId: name, name })),
+      } },
+    } });
+    renderer.setCamera({ ...renderer.camera, yaw: .6, pitch: .9, distance: 15 });
+    const camera = renderer.camera;
+    canvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+    for (let attempt = 0; attempt < 120 && renderer.diagnostics().renderedPoints !== 2; attempt += 1) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    await new Promise(resolve => requestAnimationFrame(resolve));
+    const context = overlay.getContext("2d"), bounds = canvas.getBoundingClientRect();
+    const results = points.map(([x, y], index) => {
+      const map = { x: (x + 13) * .1, y: (y + 21) * .1 };
+      const projected = renderer.mapToScreen(map);
+      const ratio = Math.min(window.devicePixelRatio || 1, 3);
+      const radius = Math.ceil(ratio);
+      const pixels = context.getImageData(Math.floor(projected.x * ratio) - radius,
+        Math.floor(projected.y * ratio) - radius, radius * 2 + 1, radius * 2 + 1).data;
+      let colored = false;
+      for (let offset = 0; offset < pixels.length; offset += 4) {
+        if (pixels[offset + index] > 100 && pixels[offset + (1 - index)] < 50 && pixels[offset + 3] > 0) colored = true;
+      }
+      const hit = renderer.roomAt(bounds.left + projected.x, bounds.top + projected.y);
+      return { colored, hit };
+    });
+    const result = { mode: renderer.diagnostics().mode, cameraPreserved: JSON.stringify(camera) === JSON.stringify(renderer.camera), results };
+    renderer.dispose();
+    return result;
+  });
+  expect(outcome).toEqual({ mode: "canvas2d", cameraPreserved: true,
+    results: [{ colored: true, hit: "Amber" }, { colored: true, hit: "Grove" }],
+  });
+});
+
+test("@safety fallback raster work yields, caches unchanged views and cancels obsolete projections", async ({ page }) => {
+  await loadRenderer(page);
+  const outcome = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = window.__gpuUploadHarness;
+    const base = createGalleryState("ready");
+    const total = 100_000;
+    const buffer = new ArrayBuffer(total * 8);
+    const points = new DataView(buffer);
+    for (let index = 0; index < total; index += 1) {
+      points.setUint16(index * 8, 50, true);
+      points.setUint16(index * 8 + 2, 50, true);
+      points.setUint8(index * 8 + 5, 255);
+    }
+    const scene = { ...base.resources.scene.value, buffer, pointOffset: 0, total,
+      floorCount: total, surfaceCount: 0,
+      metadata: { ...base.resources.scene.value.metadata, span: [100, 100], rooms: [] },
+    };
+    const state = { ...base, view: "three", appearance: "photo", labelsVisible: false,
+      resources: { ...base.resources, scene: { ...base.resources.scene, value: scene },
+        pose: { ...base.resources.pose, value: null } },
+    };
+    const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
+    canvases.forEach(canvas => {
+      Object.assign(canvas.style, { width: "300px", height: "150px" });
+      document.body.append(canvas);
+    });
+    const renderer = new RendererController(...canvases);
+    const original = {
+      setTimeout: window.setTimeout, clearTimeout: window.clearTimeout,
+      requestAnimationFrame: window.requestAnimationFrame,
+      fillRect: CanvasRenderingContext2D.prototype.fillRect,
+    };
+    const timers = new Map();
+    let timerId = 0, painted = 0, framePaints = 0, inFrame = false;
+    const chunkSizes = [];
+    window.setTimeout = callback => { timers.set(++timerId, callback); return timerId; };
+    window.clearTimeout = id => timers.delete(id);
+    window.requestAnimationFrame = callback => original.requestAnimationFrame(time => {
+      inFrame = true;
+      try { callback(time); } finally { inFrame = false; }
+    });
+    CanvasRenderingContext2D.prototype.fillRect = function (x, y, width, height) {
+      if (width === 1.5 && height === 1.5) {
+        painted += 1;
+        if (inFrame) framePaints += 1;
+      }
+      return original.fillRect.call(this, x, y, width, height);
+    };
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const drain = async () => {
+      for (let attempt = 0; timers.size && attempt < 1_000; attempt += 1) {
+        const [id, callback] = timers.entries().next().value;
+        timers.delete(id);
+        const before = painted;
+        callback();
+        chunkSizes.push(painted - before);
+        await nextFrame();
+      }
+    };
+    try {
+      renderer.setState(state);
+      canvases[0].dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+      await nextFrame();
+      await drain();
+      const completed = renderer.diagnostics().renderedPoints;
+      const initialPaints = painted;
+      for (let count = 0; count < 3; count += 1) {
+        renderer.requestRender();
+        await nextFrame();
+      }
+      const cachedPaints = painted - initialPaints;
+      renderer.setCamera({ ...renderer.camera, yaw: .2 });
+      await nextFrame();
+      const obsolete = timers.values().next().value;
+      renderer.setCamera({ ...renderer.camera, yaw: .4 });
+      await nextFrame();
+      const beforeObsolete = painted;
+      obsolete?.();
+      const obsoletePaints = painted - beforeObsolete;
+      await drain();
+      const cameraPaints = painted - initialPaints;
+      renderer.setCamera({ ...renderer.camera, yaw: .6 });
+      await nextFrame();
+      const hidden = timers.values().next().value;
+      renderer.setState({ ...state, pageActive: false });
+      const hiddenTimers = timers.size;
+      const beforeHidden = painted;
+      hidden?.();
+      renderer.setState(state);
+      await nextFrame();
+      const retired = timers.values().next().value;
+      renderer.dispose();
+      retired?.();
+      return { completed, initialPaints, cachedPaints, obsoletePaints, cameraPaints,
+        framePaints, maxChunk: Math.max(...chunkSizes), chunks: chunkSizes.length,
+        scheduled: Boolean(obsolete && hidden && retired),
+        hiddenTimers, cancelledPaints: painted - beforeHidden, remainingTimers: timers.size };
+    } finally {
+      renderer.dispose();
+      Object.assign(window, { setTimeout: original.setTimeout, clearTimeout: original.clearTimeout,
+        requestAnimationFrame: original.requestAnimationFrame });
+      CanvasRenderingContext2D.prototype.fillRect = original.fillRect;
+      canvases.forEach(canvas => canvas.remove());
+    }
+  });
+  expect(outcome.completed).toBe(50_000);
+  expect(outcome.initialPaints).toBe(50_000);
+  expect(outcome.maxChunk).toBeLessThanOrEqual(2_000);
+  expect(outcome.chunks).toBeGreaterThanOrEqual(50);
+  expect(outcome.framePaints).toBe(0);
+  expect(outcome.cachedPaints).toBe(0);
+  expect(outcome.obsoletePaints).toBe(0);
+  expect(outcome.cameraPaints).toBe(50_000);
+  expect(outcome.scheduled).toBe(true);
+  expect(outcome.hiddenTimers).toBe(0);
+  expect(outcome.cancelledPaints).toBe(0);
+  expect(outcome.remainingTimers).toBe(0);
+});
+
 test("@safety WebGL uploads use bounded aligned chunks and compatible scenes publish atomically", async ({ page }) => {
   await loadRenderer(page);
   const outcome = await page.evaluate(async () => {
@@ -643,17 +834,14 @@ test("@safety context loss during compatible staging falls back to the latest ad
       ...base,
       appearance: "photo",
       labelsVisible: false,
-      resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null } },
+      resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null },
+        pose: { ...base.resources.pose, value: null } },
     });
     const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
-    canvases.forEach((canvas) => document.body.append(canvas));
-    const created = document.createElement.bind(document);
-    const fallbackCanvases = [];
-    document.createElement = function (name, options) {
-      const element = created(name, options);
-      if (name.toLowerCase() === "canvas") fallbackCanvases.push(element);
-      return element;
-    };
+    canvases.forEach((canvas) => {
+      Object.assign(canvas.style, { width: "300px", height: "150px" });
+      document.body.append(canvas);
+    });
     const renderer = new RendererController(...canvases);
     const context = contexts.at(-1);
     const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
@@ -675,11 +863,17 @@ test("@safety context loss during compatible staging falls back to the latest ad
     canvases[0].dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
     const fallbackComplete = await waitFor(() => renderer.diagnostics().mode === "canvas2d"
       && renderer.diagnostics().renderedPoints === 50_000);
-    const fallbackCanvas = fallbackCanvases.at(-1);
-    const pixel = fallbackCanvas?.getContext("2d")?.getImageData(512, 512, 1, 1).data;
-    const obsoletePixel = fallbackCanvas?.getContext("2d")?.getImageData(102, 102, 1, 1).data;
+    await nextFrame();
+    const context2d = canvases[1].getContext("2d");
+    const ratio = Math.min(window.devicePixelRatio || 1, 3);
+    const pixelsAt = point => {
+      const screen = renderer.mapToScreen(point);
+      return context2d.getImageData(Math.floor(screen.x * ratio) - 1,
+        Math.floor(screen.y * ratio) - 1, 3, 3).data;
+    };
+    const pixel = pixelsAt({ x: 25, y: 25 });
+    const obsoletePixel = pixelsAt({ x: 5, y: 5 });
     const diagnostics = renderer.diagnostics();
-    document.createElement = created;
     renderer.dispose();
     canvases.forEach((canvas) => canvas.remove());
     return {
@@ -691,8 +885,9 @@ test("@safety context loss during compatible staging falls back to the latest ad
       sceneRevision: diagnostics.sceneRevision,
       sourcePoints: diagnostics.sourcePoints,
       renderedPoints: diagnostics.renderedPoints,
-      currentPixel: pixel ? [...pixel] : null,
-      obsoletePixel: obsoletePixel ? [...obsoletePixel] : null,
+      currentGreen: pixel.some((value, index) => index % 4 === 1 && value > 240),
+      currentRed: pixel.some((value, index) => index % 4 === 0 && value > 10),
+      obsoletePainted: obsoletePixel.some((value, index) => index % 4 === 3 && value > 0),
     };
   });
 
@@ -704,9 +899,9 @@ test("@safety context loss during compatible staging falls back to the latest ad
   expect(outcome.sceneRevision).toBe(41);
   expect(outcome.sourcePoints).toBe(100_000);
   expect(outcome.renderedPoints).toBe(50_000);
-  expect(outcome.currentPixel?.[1]).toBeGreaterThan(240);
-  expect(outcome.currentPixel?.[0]).toBeLessThan(10);
-  expect(outcome.obsoletePixel?.[3]).toBe(0);
+  expect(outcome.currentGreen).toBe(true);
+  expect(outcome.currentRed).toBe(false);
+  expect(outcome.obsoletePainted).toBe(false);
 });
 
 test("@safety hidden context restoration stays idle then uploads the same admitted scene on resume", async ({ page }) => {
@@ -950,16 +1145,24 @@ test("@safety point-layout changes revoke the old front and use a bounded full u
   expect(outcome.liveBuffers).toBeLessThanOrEqual(2);
 });
 
-for (const [quality, step] of [["maximum", 1], ["balanced", 2], ["efficient", 3], ["auto", 4]]) {
-  test(`@safety ${quality} samples both point ranges across distant tiles without reading uninitialized bytes`, async ({ page }) => {
+for (const [quality, step, coarse] of [["maximum", 1, false], ["balanced", 2, false], ["efficient", 3, false], ["auto", 4, false], ["auto", 3, true]]) {
+  test(`@safety ${quality}${coarse ? " on touch" : ""} samples both point ranges across distant tiles without reading uninitialized bytes`, async ({ page }) => {
+    if (coarse) await page.addInitScript(() => {
+      const original = window.matchMedia.bind(window);
+      window.matchMedia = (query) => {
+        const media = original(query);
+        if (query === "(any-pointer: coarse)") Object.defineProperty(media, "matches", { value: true });
+        return media;
+      };
+    });
     await loadRenderer(page);
-    const result = await page.evaluate(async ({ quality, step }) => {
+    const result = await page.evaluate(async ({ quality, step, coarse }) => {
       const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
       const base = createGalleryState("ready");
       // Four successive tile regions in each range; a prefix budget loses
       // later floor regions and all surfaces when floors dominate the scene.
-      const floorCount = 120_001;
-      const surfaceCount = 12_001;
+      const floorCount = coarse ? 720_001 : 120_001;
+      const surfaceCount = coarse ? 207_074 : 12_001;
       const total = floorCount + surfaceCount;
       const pointOffset = 64;
       const buffer = new ArrayBuffer(pointOffset + total * 8);
@@ -978,7 +1181,7 @@ for (const [quality, step] of [["maximum", 1], ["balanced", 2], ["efficient", 3]
       }
       const renderer = new RendererController(canvas, overlay);
       const nowDescriptor = Object.getOwnPropertyDescriptor(performance, "now");
-      if (quality === "auto") {
+      if (quality === "auto" && !coarse) {
         let clock = 0;
         Object.defineProperty(performance, "now", { configurable: true, value: () => { clock += 20; return clock; } });
       }
@@ -1010,13 +1213,13 @@ for (const [quality, step] of [["maximum", 1], ["balanced", 2], ["efficient", 3]
           invalid: draws.filter(call => !call.valid).length,
           allocations: gl.calls.filter(call => call.type === "allocate").length };
       } finally {
-        if (quality === "auto") {
+        if (quality === "auto" && !coarse) {
           if (nowDescriptor) Object.defineProperty(performance, "now", nowDescriptor);
           else delete performance.now;
         }
         renderer.dispose(); canvas.remove(); overlay.remove();
       }
-    }, { quality, step });
+    }, { quality, step, coarse });
     expect(result.rendered).toBe(result.expected);
     expect(result.ranges).toHaveLength(2);
     for (const range of result.ranges) {

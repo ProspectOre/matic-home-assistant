@@ -3,15 +3,15 @@
 Use the public repository's free standard hosted CI route described in
 [Contributing](../CONTRIBUTING.md#ci-routing); a local Linux runner is not a gate.
 
-Baseline: stable `v0.4.7`; desktop control: `v0.4.5`; authority `architecture-0.5.md`.
+Current stable: `v0.4.8`; desktop comparison control: `v0.4.5`; authority `architecture-0.5.md`.
 Historical RC5 receipt: `v0.5.0-rc5` at `699a1bb` was installed through HACS. Its exact 91-file digest matched before and after restart; the prior RC4 rollback copy, config entry, saved plans, and automations are preserved. Fresh startup recovered a coherent ready map and live verified pose; operations are docked/idle with the runner unlocked. Native Safari shows the live Map Studio, verified position, `Docked/Ready`, and the plan, custom-area, and history entry points. A separate owner-authorized bounded one-room Map Studio attempt returned `coverage_activity_unavailable` before the managed client sent `START_COVERAGE`; 0/1 rooms were verified and no cadence credit was applied. Activity state was stale during the attempt. A later administrator operations read at 18:43:07–18:43:09 UTC reported docked, native-inactive, and runner-unlocked; it cannot establish state or movement during the attempt. The saved plan was unchanged, and schedules were not edited. A private receipt records the attempt and evidence limits.
 “Preserved and verified” covers verified prior stable regressions; it is not blanket 0.5 acceptance. Implementation gaps, runtime/device/owner gates, and explicitly out-of-scope items remain distinct.
 
 ## Review-process migration — 2026-10-06
 
-October 8 reconciliation: [final-candidate receipt](verification-0.5-final-candidate.md)
-records RC11 composition, the local RC3 setting-confirmation port and the seven
-remaining acceptance families. PR #138 is merged; its old hold is retired. The
+October 10 reconciliation: [RC17 qualification](verification-0.5-rc17.md) records
+the current source repairs; the [final-candidate receipt](verification-0.5-final-candidate.md)
+retains installed RC16 and earlier evidence. PR #138 is merged; its old hold is retired. The
 owner has also retired the request coordinator. Complete exact-head regular
 review and CI remain required. The owner authorized bounded physical acceptance
 on October 8; live transport
@@ -45,7 +45,7 @@ The October 6 source reconciliation supersedes the old open-PR inventory. Policy
 
 Main also contains the bounded coverage parser [#214](https://github.com/ProspectOre/matic-home-assistant/pull/214), queued-clean/Stop ordering [#215](https://github.com/ProspectOre/matic-home-assistant/pull/215), first-room mixed start [#217](https://github.com/ProspectOre/matic-home-assistant/pull/217), timeout diagnostics [#219](https://github.com/ProspectOre/matic-home-assistant/pull/219), and selected-floor coverage repair [#221](https://github.com/ProspectOre/matic-home-assistant/pull/221). Each PR's final comparison, CI and merge record bounds its source evidence. Use [#213](https://github.com/ProspectOre/matic-home-assistant/pull/213)'s final comparison and merge record for administrator-demotion delivery. Freeze and qualify the combined RC before installation; none of these source receipts establishes the loaded runtime.
 
-Issue #218's five-room mixed-mode abort remains unresolved: improved diagnostics are not a root-cause fix. Issue #65's selected-floor rejection is repaired in source, while device confirmation and separate map-completeness symptoms remain open. Stable v0.4.7 includes the safe-area and numeric-label fixes; #202 has affected-device confirmation and is closed. Affected-2026.8 startup confirmation (#198), stale-bond device recovery (#139), and the candidate acceptance scenarios below remain open. Bluetooth proxy pairing (#171) remains outside 0.5 scope.
+Issue [#218](https://github.com/ProspectOre/matic-home-assistant/issues/218) is closed: the reporter confirmed a natural five-room mixed-mode RC2 completion with all rooms credited, recharge recovery and docking; stable `v0.4.8` is published. This does not qualify 0.5 cadence. Issue #65's selected-floor rejection is repaired in source, while device confirmation and separate map-completeness symptoms remain open. Stable v0.4.7 included the safe-area and numeric-label fixes; #202 has affected-device confirmation and is closed. Affected-2026.8 startup confirmation (#198), stale-bond device recovery (#139), and the candidate acceptance scenarios below remain open. Bluetooth proxy pairing (#171) remains outside 0.5 scope.
 
 Historical installed candidate: RC9 at `c5daa6d`. The 91 installed integration files matched the reviewed tree before and after restart; the loaded panel fingerprint was `fea378f99e6d`. A complete coherent live map and exact pose were read back. Plans, Areas, selection, and private/shared cadence settings remained unchanged. The Stop check preserved all eight protected non-plan files. After the restart/natural-completion run, seven of eight remained byte-identical; the HA auth-file hash changed, while plan run bookkeeping changed as expected. No secret material is recorded. These receipts apply to that installed RC9 only and do not qualify the merged #207 source or the next combined release candidate. Current installed candidate is RC16 (`bdb52e0db654d54174b3330efd1f974b4eb4f0fa`): its 92 files match, rollback/state preservation, new startup/version diagnostics, compiled caches, map/live pose, five setter change/restore confirmations and idle reload pass. The prior unload cancellation warning was absent; the observer saw one new-runtime identification write, no retired-runtime writes and no motion/settings. See the [final candidate receipt](verification-0.5-final-candidate.md) for exact review/CI and scope limits; compiled caches are not direct in-process code-hash proof.
 
@@ -131,7 +131,7 @@ The owner authorized bounded physical acceptance on October 8; each run still re
 
 Binding sources: Matic Map Studio Roadmap, Matic Map Studio Independent Review, the full 2026-08-29 review, and [managed-run contract](e2e-contract.md).
 
-The roadmap’s v0.4.4 metadata and former 22-open-security-PR inventory are historical. The historical RC5 receipt predates stable v0.4.7; the current stable baseline is v0.4.7. The paired desktop comparison uses `v0.4.5` at `f15dfa2` as its performance control. Earlier statements about the pre-implementation open-item inventory are historical. The wiki card links to this contract and matrix and identifies the active branch; it is not release proof.
+The roadmap’s v0.4.4 metadata and former 22-open-security-PR inventory are historical. The historical RC5 receipt predates stable v0.4.7; the current stable release is v0.4.8. The paired desktop comparison uses `v0.4.5` at `f15dfa2` as its performance control. Earlier statements about the pre-implementation open-item inventory are historical. The wiki card links to this contract and matrix and identifies the active branch; it is not release proof.
 
 ## Performance and privacy rules
 

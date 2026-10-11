@@ -6320,6 +6320,47 @@ async def test_managed_plan_rejects_duplicate_room_names_before_dispatch() -> No
     assert failure.value.translation_key == "ambiguous_room_name"
 
 
+@pytest.mark.parametrize(
+    "other_name",
+    ["Dining Room", "The Dining Room", " DINING  ROOM ", "the dining\troom"],
+)
+@pytest.mark.parametrize("preceding_leg", [False, True])
+async def test_managed_plan_rejects_native_name_aliases_before_any_dispatch(
+    hass, other_name: str, preceding_leg: bool
+) -> None:
+    """Completion aliases must not authorize an ambiguous room or queued leg."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    hass.states.async_set("vacuum.matic", "docked", {})
+    rooms = [CleaningRoom("dining", "Dining Room", "vacuum", "quick")]
+    if preceding_leg:
+        rooms.insert(0, CleaningRoom("kitchen", "Kitchen", "mop", "optimal"))
+    dispatch = AsyncMock(side_effect=AssertionError("ambiguous plan dispatched"))
+    commands = AsyncMock()
+    with (
+        patch(
+            "custom_components.matic_robot.managed_executor._async_dispatch_leg_command",
+            dispatch,
+        ),
+        pytest.raises(ServiceValidationError) as failure,
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            mapped_room_names=("Kitchen", "Dining Room", other_name),
+            managed_user_command=commands,
+        )
+
+    assert failure.value.translation_key == "ambiguous_room_name"
+    dispatch.assert_not_awaited()
+    commands.assert_not_awaited()
+    assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 0
+
+
 async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity() -> (
     None
 ):
