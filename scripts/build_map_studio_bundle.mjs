@@ -13,6 +13,7 @@ const result = await build({
   entryPoints: {
     index: "frontend/map-studio-v4/index.ts",
     review: "frontend/map-studio-v4/review.ts",
+    mockups: "frontend/map-studio-v4/mockups.ts",
   },
   bundle: true, format: "esm", target: "es2022", charset: "ascii", minify: true,
   splitting: true, legalComments: "eof", entryNames: "[name]", chunkNames: "chunks/[name]-[hash]",

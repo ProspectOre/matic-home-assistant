@@ -2,8 +2,11 @@ import type {
   AreasCatalog,
   HistoryCatalog,
   MapEntry,
+  MapRoom,
   PlansCatalog,
   PoseModel,
+  RoomCadencePolicy,
+  RoomCadenceProgress,
   SceneModel,
 } from "./backend-contracts";
 
@@ -222,3 +225,167 @@ export const syntheticPose = (): PoseModel => ({
   mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
   freshness: "live",
 });
+
+// ---- 0.5 sign-off mockups (/map-studio-v4-mockups) ------------------------
+// A seven-room floor and plan catalog for the presentational mockups. Every
+// name, number and outline is invented; nothing here comes from a robot.
+
+const mockupFloor = [
+  { roomId: "room-kitchen", name: "Kitchen", boundary: [[0.4, 0.4], [3.6, 0.4], [3.6, 3.4], [0.4, 3.4]] },
+  { roomId: "room-living", name: "Living room", boundary: [[3.8, 0.4], [7.8, 0.4], [7.8, 3.4], [3.8, 3.4]] },
+  { roomId: "room-study", name: "Study", boundary: [[8, 0.4], [10.6, 0.4], [10.6, 3.4], [8, 3.4]] },
+  { roomId: "room-hallway", name: "Hallway", boundary: [[0.4, 3.6], [2.2, 3.6], [2.2, 7], [0.4, 7]] },
+  { roomId: "room-bedroom", name: "Bedroom", boundary: [[2.4, 3.6], [6.4, 3.6], [6.4, 7], [2.4, 7]] },
+  { roomId: "room-bathroom", name: "Bathroom", boundary: [[6.6, 3.6], [8.4, 3.6], [8.4, 7], [6.6, 7]] },
+  { roomId: "room-guest", name: "Guest room", boundary: [[8.6, 3.6], [10.6, 3.6], [10.6, 7], [8.6, 7]] },
+] as const;
+
+export const syntheticMockupFloor = (): readonly MapRoom[] => mockupFloor.map((room) => ({
+  roomId: room.roomId,
+  name: room.name,
+  boundary: room.boundary.map((point) => [...point] as const),
+}));
+
+/** Map metres: the dock sits in the hallway; a running clean is in the living room. */
+export const syntheticMockupRobot = {
+  dock: [1.3, 6.4],
+  cleaning: [7.25, 2.85],
+  batteryPercent: 82,
+  currentRoom: "Living room",
+} as const;
+
+const sharedPolicy = (mopEveryN: number | null, coverageEveryN: number | null): RoomCadencePolicy => ({
+  scope: "shared",
+  mopEveryN,
+  coverageEveryN,
+  periodicCoverageSetting: coverageEveryN === null ? null : "heavy_duty",
+  doMopNext: false,
+  doCoverageNext: false,
+});
+
+const kitchenProgress: RoomCadenceProgress = {
+  mopProgress: 2,
+  coverageProgress: 1,
+  mopDue: true,
+  coverageDue: false,
+  nextMopIn: 0,
+  nextCoverageIn: 3,
+  reasons: ["mop_due"],
+  effectiveCleaningMode: "vacuum_and_mop",
+  effectiveCoverageSetting: "standard",
+};
+
+const livingProgress: RoomCadenceProgress = {
+  mopProgress: 0,
+  coverageProgress: 3,
+  mopDue: false,
+  coverageDue: true,
+  nextMopIn: null,
+  nextCoverageIn: 0,
+  reasons: ["coverage_due"],
+  effectiveCleaningMode: "vacuum",
+  effectiveCoverageSetting: "heavy_duty",
+};
+
+const studySharedProgress: RoomCadenceProgress = {
+  mopProgress: 1,
+  coverageProgress: 0,
+  mopDue: false,
+  coverageDue: false,
+  nextMopIn: 2,
+  nextCoverageIn: null,
+  reasons: [],
+};
+
+const mockupPreviewToken = "f".repeat(64);
+
+export const syntheticMockupPlans = (): PlansCatalog => ({
+  rooms: mockupFloor.map(({ roomId, name }) => roomId === "room-study"
+    ? { roomId, name, sharedCadence: sharedPolicy(4, null), sharedCadenceProgress: studySharedProgress }
+    : { roomId, name }),
+  selectedPlan: "daily",
+  plans: [
+    {
+      id: "daily",
+      name: "Daily clean",
+      enabled: true,
+      runBehavior: "intelligent",
+      rooms: [
+        { roomId: "room-kitchen", cleaningMode: "vacuum", coverageSetting: "standard", cadence: sharedPolicy(3, 5), cadenceProgress: kitchenProgress, cadenceReasons: ["mop_due"] },
+        { roomId: "room-living", cleaningMode: "vacuum", coverageSetting: "standard", cadence: sharedPolicy(null, 4), cadenceProgress: livingProgress, cadenceReasons: ["coverage_due"] },
+        { roomId: "room-hallway", cleaningMode: "vacuum", coverageSetting: "quick" },
+        { roomId: "room-study", cleaningMode: "vacuum", coverageSetting: "standard" },
+      ],
+      roomOrder: ["room-kitchen", "room-living", "room-hallway", "room-study"],
+      returnToBase: true,
+      finishCurrentRoom: true,
+      finishCurrentRoomThreshold: 50,
+      nextRunPreview: {
+        previewToken: mockupPreviewToken,
+        rooms: [
+          { roomId: "room-living", name: "Living room", cleaningMode: "vacuum", coverageSetting: "heavy_duty", cadenceReasons: ["coverage_due"] },
+          { roomId: "room-kitchen", name: "Kitchen", cleaningMode: "vacuum_and_mop", coverageSetting: "standard", cadenceReasons: ["mop_due"] },
+          { roomId: "room-study", name: "Study", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] },
+          { roomId: "room-hallway", name: "Hallway", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: [] },
+        ],
+        missionBoundaries: [],
+        blocker: null,
+      },
+    },
+    {
+      id: "weekend",
+      name: "Weekend deep clean",
+      enabled: true,
+      runBehavior: "ordered",
+      rooms: [
+        { roomId: "room-living", cleaningMode: "vacuum", coverageSetting: "heavy_duty" },
+        { roomId: "room-bedroom", cleaningMode: "vacuum_and_mop", coverageSetting: "standard" },
+        { roomId: "room-kitchen", cleaningMode: "vacuum_and_mop", coverageSetting: "standard" },
+        { roomId: "room-bathroom", cleaningMode: "mop", coverageSetting: "standard" },
+        { roomId: "room-guest", cleaningMode: "vacuum", coverageSetting: "standard" },
+      ],
+      roomOrder: ["room-living", "room-bedroom", "room-kitchen", "room-bathroom", "room-guest"],
+      returnToBase: true,
+      finishCurrentRoom: false,
+      finishCurrentRoomThreshold: 50,
+      nextRunPreview: {
+        previewToken: mockupPreviewToken,
+        rooms: [
+          { roomId: "room-living", name: "Living room", cleaningMode: "vacuum", coverageSetting: "heavy_duty", cadenceReasons: [] },
+          { roomId: "room-bedroom", name: "Bedroom", cleaningMode: "vacuum_and_mop", coverageSetting: "standard", cadenceReasons: [] },
+          { roomId: "room-kitchen", name: "Kitchen", cleaningMode: "vacuum_and_mop", coverageSetting: "standard", cadenceReasons: [] },
+          { roomId: "room-bathroom", name: "Bathroom", cleaningMode: "mop", coverageSetting: "standard", cadenceReasons: [] },
+          { roomId: "room-guest", name: "Guest room", cleaningMode: "vacuum", coverageSetting: "standard", cadenceReasons: [] },
+        ],
+        missionBoundaries: [3],
+        blocker: null,
+      },
+    },
+    {
+      id: "guest",
+      name: "Guest room refresh",
+      enabled: false,
+      runBehavior: "ordered",
+      rooms: [
+        { roomId: "room-guest", cleaningMode: "vacuum", coverageSetting: "standard" },
+        { roomId: "room-bathroom", cleaningMode: "mop", coverageSetting: "standard" },
+      ],
+      roomOrder: ["room-guest", "room-bathroom"],
+      returnToBase: true,
+      finishCurrentRoom: false,
+      finishCurrentRoomThreshold: 50,
+      nextRunPreview: { rooms: [], missionBoundaries: [], blocker: "plan_disabled" },
+    },
+  ],
+});
+
+/**
+ * The `next_run_estimate_seconds` backend need (plan.md §9), per plan id.
+ * `null` is the "a room has no estimate" case, where Run hides the line; a
+ * paused plan has no next-run preview, so it has no estimate either.
+ */
+export const syntheticMockupEstimateSeconds: Readonly<Record<string, number | null>> = {
+  daily: 2_880,
+  weekend: null,
+  guest: null,
+};

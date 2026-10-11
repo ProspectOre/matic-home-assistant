@@ -44,6 +44,31 @@ const server = createServer((request, response) => {
 </html>`);
     return;
   }
+  if (path === "/map-studio-v4-mockups") {
+    response.writeHead(200, {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    });
+    response.end(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="Synthetic Map Studio 0.5 mockups for design sign-off.">
+    <title>Synthetic Matic mockups — not live Home Assistant</title>
+    <style>html, body { height: 100%; margin: 0; }</style>
+  </head>
+  <body>
+    <aside style="padding:6px 12px;background:#fff3cd;color:#513d00;font:13px system-ui" role="note">Synthetic test harness — not live Home Assistant. No robot is connected.</aside>
+    <script type="module">
+      import "/map_studio_v4-review/mockups.js";
+      await customElements.whenDefined("matic-map-studio-mockups");
+      document.body.append(document.createElement("matic-map-studio-mockups"));
+    </script>
+  </body>
+</html>`);
+    return;
+  }
   if (path === "/" || path === "/health") {
     response.writeHead(200, {
       "Content-Type": path === "/" ? "text/html; charset=utf-8" : "text/plain",
