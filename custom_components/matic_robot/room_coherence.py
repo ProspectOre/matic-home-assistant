@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+from collections.abc import Sequence
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -11,7 +13,21 @@ from homeassistant.helpers import entity_registry as er
 
 from .client.models import FloorPlan
 from .const import DOMAIN
-from .plans import room_cadence_identity
+from .native_completion import native_room_key
+from .plans import CleaningRoom, room_cadence_identity
+
+
+def room_completion_names_are_current(
+    floor_plan: FloorPlan, rooms: Sequence[CleaningRoom]
+) -> bool:
+    """Keep completion labels unique and bound to the same mapped room IDs."""
+    mapped = {room.id: native_room_key(room.name) for room in floor_plan.rooms}
+    counts = Counter(native_room_key(room.name) for room in floor_plan.rooms)
+    return all(
+        mapped.get(room.room_id) == native_room_key(room.name)
+        and counts[native_room_key(room.name)] == 1
+        for room in rooms
+    )
 
 
 def current_floor_plan(entry: ConfigEntry[Any]) -> FloorPlan:

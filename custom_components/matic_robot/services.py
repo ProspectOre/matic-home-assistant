@@ -74,6 +74,7 @@ from .plans import (
     room_cadence_identity,
 )
 from .room_coherence import current_floor_plan as _current_floor_plan
+from .room_coherence import room_completion_names_are_current
 from .room_sequence import resolve_room_sequence, saved_plan_preview_token
 
 SERVICE_CLEAN = "clean"
@@ -606,6 +607,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             return (
                 floor_plan is not None
                 and plan_floor_token(floor_plan) == execution_floor_token
+                and room_completion_names_are_current(floor_plan, rooms)
                 and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
             )
 
@@ -767,6 +769,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             return (
                 floor_plan is not None
                 and plan_floor_token(floor_plan) == execution_floor_token
+                and room_completion_names_are_current(floor_plan, rooms)
                 and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
             )
 

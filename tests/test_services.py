@@ -1673,6 +1673,15 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
 
     async def exercise_sequence(*_args, **kwargs) -> None:
         assert kwargs["floor_is_current"]() is True
+        original_floor = coordinator.data.floor_plan
+        coordinator.data.floor_plan = replace(
+            original_floor,
+            rooms=tuple(
+                replace(room, name="The Study") for room in original_floor.rooms
+            ),
+        )
+        assert kwargs["floor_is_current"]() is False
+        coordinator.data.floor_plan = original_floor
         token = manager.begin_managed_motion("serial")
         try:
             await kwargs["managed_user_command"](token, UserCommand.STOP)
@@ -3245,6 +3254,19 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         floor_plan
     )
     assert floor_guard() is True
+    coordinator.data.floor_plan = replace(
+        floor_plan,
+        rooms=tuple(replace(room, name="The Study") for room in floor_plan.rooms),
+    )
+    assert floor_guard() is False
+    coordinator.data.floor_plan = replace(
+        floor_plan,
+        rooms=tuple(
+            replace(room, name="Office" if room.name == "Study" else "Study")
+            for room in floor_plan.rooms
+        ),
+    )
+    assert floor_guard() is False
     coordinator.data.floor_plan = replace(
         floor_plan,
         rooms=tuple(

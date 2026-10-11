@@ -32,6 +32,7 @@ from .managed_executor import (
     _shutdown_suspends_run,
 )
 from .plans import CleaningRoom, leg_groups, plan_floor_token
+from .room_coherence import current_floor_plan, room_completion_names_are_current
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -342,6 +343,14 @@ async def async_recover_managed_run(
                 and runtime.slam_map.floor_plan_is_current(floor)
             )
 
+        def completion_is_current() -> bool:
+            floor = runtime.coordinator.data.floor_plan
+            return (
+                floor is not None
+                and floor_is_current()
+                and room_completion_names_are_current(floor, rooms)
+            )
+
         identity: bytes | None = None
         for attempt in range(RECOVERY_ATTEMPTS):
             if (
@@ -377,6 +386,11 @@ async def async_recover_managed_run(
                 cancel,
                 floor_is_current,
             )
+            return
+        # Room labels authorize dispatch and credit, not STOP of an already
+        # owned interrupted mission, which depends on native and floor identity.
+        if not completion_is_current():
+            reason = "restart_recovery_superseded"
             return
         if handoff:
             if not identity or hashlib.sha256(identity).hexdigest() != expected:
@@ -429,6 +443,7 @@ async def async_recover_managed_run(
             if (
                 cancel.is_set()
                 or manager.motion_generation(serial_number) != generation
+                or not completion_is_current()
             ):
                 reason = "restart_recovery_cancelled"
                 return
@@ -450,7 +465,10 @@ async def async_recover_managed_run(
                 ),
                 confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
                 managed_user_command=command,
-                floor_is_current=floor_is_current,
+                mapped_room_names=tuple(
+                    room.name for room in current_floor_plan(entry).rooms
+                ),
+                floor_is_current=completion_is_current,
                 floor_token=checkpoint["floor_token"],
                 set_activity_run_id=runtime.client.activity_journal.set_run_id,
                 get_activity_run_id=runtime.client.activity_journal.current_run_id,
@@ -478,7 +496,7 @@ async def async_recover_managed_run(
         if (
             cancel.is_set()
             or manager.motion_generation(serial_number) != generation
-            or not floor_is_current()
+            or not completion_is_current()
             or await runtime.client.async_get_cleaning_session_identity()
             not in {identity, b""}
         ):
@@ -511,7 +529,7 @@ async def async_recover_managed_run(
                 if (
                     cancel.is_set()
                     or manager.motion_generation(serial_number) != generation
-                    or not floor_is_current()
+                    or not completion_is_current()
                     or await runtime.client.async_get_cleaning_session_identity() != b""
                 ):
                     raise HomeAssistantError("Completion recovery was superseded")
@@ -537,7 +555,7 @@ async def async_recover_managed_run(
             if (
                 cancel.is_set()
                 or manager.motion_generation(serial_number) != generation
-                or not floor_is_current()
+                or not completion_is_current()
             ):
                 reason = "restart_recovery_superseded"
                 return
@@ -560,7 +578,7 @@ async def async_recover_managed_run(
                         completion_is_current=lambda: (
                             not cancel.is_set()
                             and manager.motion_generation(serial_number) == generation
-                            and floor_is_current()
+                            and completion_is_current()
                         ),
                     )
                     if not accepted:
@@ -608,7 +626,10 @@ async def async_recover_managed_run(
             ),
             confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
             managed_user_command=command,
-            floor_is_current=floor_is_current,
+            mapped_room_names=tuple(
+                room.name for room in current_floor_plan(entry).rooms
+            ),
+            floor_is_current=completion_is_current,
             floor_token=checkpoint["floor_token"],
             set_activity_run_id=runtime.client.activity_journal.set_run_id,
             get_activity_run_id=runtime.client.activity_journal.current_run_id,

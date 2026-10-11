@@ -20,6 +20,13 @@ new installation, device performance, physical cleaning or owner acceptance.
   matching. Aliases such as `Dining Room` and `The Dining Room` are rejected
   before any leg dispatch or prefetch. Eight regressions cover case, whitespace,
   native prefixes and an ambiguous later leg; seven fail the earlier source.
+  Live guards also bind completion names to their mapped room IDs. Restart
+  passes the current catalog into both executor paths; accepted, handoff and
+  verification recovery reject aliases or renamed bindings before dispatch or
+  credit. Six recovery regressions fail the earlier source, including renames
+  during awaited history reads. Saved-plan and sequence guards reject aliases
+  and exchanged labels while retaining geometry-only refinements. Two additional
+  cases preserve STOP for the exact owned interrupted mission after a rename.
 - Canvas2D fallback uses the same camera projection as annotations and room hits.
   It caches at most 1024 by 1024 pixels, projects at most 2,000 sampled points per
   timer turn with a four-millisecond yield target, and composites the cache on
@@ -38,7 +45,7 @@ new installation, device performance, physical cleaning or owner acceptance.
 ## Qualification
 
 The cached-floor regression failed the earlier source, then passed the repair.
-All 4,368 Python tests pass at 100% statement coverage. Ruff, formatting, strict
+All 4,376 Python tests pass at 100% statement coverage. Ruff, formatting, strict
 Python types, TypeScript, public-tree privacy, frontend rebuild, wheel/sdist
 file parity and fresh-wheel import pass locally. The macOS test environment
 adds Home Assistant's pinned `dbus-fast==5.0.22` dependency, which its normal
@@ -67,8 +74,12 @@ its completion status was not a clean verdict.
    preservation receipts, then verify installed files, loaded runtime, map/pose,
    guarded failures, settings confirmations and unload/recovery.
 3. Remeasure sustained Android input and resource budgets. RC16's 152 ms p95
-   missed the 100 ms budget. Emulation does not qualify actual Apple devices,
-   VoiceOver/NVDA, switch access or native zoom.
+   missed the 100 ms budget. The generated-swipe collector records Event Timing
+   for gesture boundary events, but no pointer moves; it does not measure
+   input-to-visible camera motion. The RC15 default-zoom reference also has no
+   asset hashes because its URL filter used underscores instead of hyphens.
+   Neither limitation supplies a performance pass. Emulation does not qualify
+   actual Apple devices, VoiceOver/NVDA, switch access or native zoom.
 4. Complete bounded physical and private/shared N=1/N=3 cadence qualification
    on an accessible floor, including verified credit, interruption/recovery,
    Stop settlement, docking and cleanup. Preserve normal schedules.
