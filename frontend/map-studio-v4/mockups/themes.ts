@@ -39,5 +39,31 @@ export const HA_THEMES: Readonly<Record<ThemeName, Readonly<Record<string, strin
   },
 };
 
-export const themeStyle = (theme: ThemeName): string =>
-  Object.entries(HA_THEMES[theme]).map(([name, value]) => `${name}:${value}`).join(";");
+/**
+ * design-system.md Decision 1 with HA's default palette (§4 :22, §5 :61-62,
+ * §10 Decision 1): the six `--ms-resolved-*` values the shell would write.
+ * Off, the resolved tokens fall back to HA's own colours.
+ */
+export const D1_RESOLVED: Readonly<Record<ThemeName, Readonly<Record<string, string>>>> = {
+  light: {
+    "--ms-resolved-accent-fill": "#007b9f",
+    "--ms-resolved-on-accent-fill": "#ffffff",
+    "--ms-resolved-danger-fill": "#d04134",
+    "--ms-resolved-on-danger-fill": "#ffffff",
+    "--ms-resolved-indicator": "#008bb3",
+    "--ms-resolved-danger-text": "#d04134",
+  },
+  dark: {
+    "--ms-resolved-accent-fill": "#007b9f",
+    "--ms-resolved-on-accent-fill": "#ffffff",
+    "--ms-resolved-danger-fill": "#d04134",
+    "--ms-resolved-on-danger-fill": "#ffffff",
+    "--ms-resolved-indicator": "#009ac7",
+    "--ms-resolved-danger-text": "#df574b",
+  },
+};
+
+export const RESOLVED_NAMES = Object.keys(D1_RESOLVED.light);
+
+export const themeStyle = (theme: ThemeName, d1 = false): string =>
+  Object.entries({ ...HA_THEMES[theme], ...(d1 ? D1_RESOLVED[theme] : {}) }).map(([name, value]) => `${name}:${value}`).join(";");

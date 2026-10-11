@@ -15,7 +15,7 @@ import { MockHome, MockRooms, MockStatus } from "./mockups/home";
 import { MockPlan, MockPlans, MockSchedule } from "./mockups/plan";
 import { previewControls, previewTokens } from "./mockups/preview-styles";
 import { MockSystem, MockThemePanel } from "./mockups/system";
-import { HA_THEMES, type ThemeName } from "./mockups/themes";
+import { D1_RESOLVED, HA_THEMES, RESOLVED_NAMES, type ThemeName } from "./mockups/themes";
 
 const define = (tag: string, element: CustomElementConstructor): void => {
   if (!customElements.get(tag)) customElements.define(tag, element);
@@ -32,34 +32,35 @@ interface StateEntry {
 const entry = (id: string, label: string, caption: string): StateEntry => ({ id, label, caption });
 
 const PLAN_RUN: readonly StateEntry[] = [
-  entry("ready", "Daily clean", "plan.md §4 Run: summary, about N min, the next run with due chips. Numbers only in saved order."),
-  entry("parts", "In two parts", "plan.md §4 Run: a saved-order plan that runs in two parts, divided where the robot docks."),
-  entry("paused", "Paused plan", "plan.md §4 Run: a paused plan has no next run and no estimate; Turn on is the primary."),
-  entry("blocked", "Needs attention", "plan.md §4 Run: Run plan disabled with its reason and a jump to the room."),
+  entry("ready", "Daily clean", "plan.md §4 R1: the summary with about N min, the next run with due chips and one When a run ends line. Numbers only in Saved order."),
+  entry("parts", "In two parts", "plan.md §4 R1: a plan that runs in two parts, divided where the robot docks. The order toggle switches Intelligent rotation and Saved order."),
+  entry("paused", "Paused plan", "plan.md §4 R2: the switch is off, the rooms are listed without numbers or chips, and Run plan is disabled with \"Can't run this plan until you turn it on.\""),
+  entry("blocked", "Needs attention", "plan.md §4 R3: Run plan disabled with its reason and a jump to the room."),
 ];
 
 const PLAN_EDIT: readonly StateEntry[] = [
-  entry("clean", "Clean edit", "plan.md §5 Edit, nothing changed: Done is enabled and leaves without a dialog."),
-  entry("dirty", "Dirty edit", "plan.md §5 Edit with changes: Cancel and Done stay pinned at the bottom."),
-  entry("menu", "Heading menu", "plan.md §5 More for this plan: Delete plan disabled with its reason while there are changes."),
-  entry("discard", "Discard dialog", "plan.md §6: Cancel with changes asks before discarding."),
-  entry("new", "New plan", "plan.md §5 New plan: Save is disabled with its reason until there is a name and a room."),
+  entry("clean", "Clean edit", "plan.md §4 E1: nothing changed; Done is enabled and leaves without a dialog."),
+  entry("dirty", "Dirty edit", "plan.md §4 E2: the Unsaved changes chip; Cancel and Save stay pinned at the bottom."),
+  entry("menu", "Heading menu", "plan.md §3 Edit view: More actions holds Delete, disabled with its reason while there are changes."),
+  entry("discard", "Discard dialog", "shell.md §5 dialogs: Cancel with changes asks before discarding: Keep editing, Save, Discard."),
+  entry("new", "New plan", "plan.md §4 E3: New plan; Save is disabled with its reason until there is a name and a room."),
 ];
 
 const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly states: readonly StateEntry[] }>> = {
   home: {
     label: "Home",
     states: [
-      entry("h1", "H1 Ready", "home-rooms.md §2 H1: the robot is docked and ready; three task cards and Maps."),
-      entry("h4", "H4 Cleaning", "home-rooms.md §2 H4: cleaning. Stop sits in the status strip at 1024 and wider, in the action bar when narrow."),
-      entry("h7", "H7 Problem", "home-rooms.md §2 H7: the robot needs attention; cards stay usable."),
-      entry("h10", "H10 No robot", "home-rooms.md §2 H10: no robot set up; Open integration is the one action."),
+      entry("h1", "H1 Ready", "home-rooms.md §4 H1: the robot is docked and ready; three task cards and Maps."),
+      entry("h3", "H3 Locating", "home-rooms.md §4 H3: the heading stays, one reason line, and the cards are disabled with no per-card reasons. Status strip › Locating, after 20 s shows the escalation."),
+      entry("h4", "H4 Cleaning", "home-rooms.md §4 H4: cleaning. Stop sits in the status strip beside an inspector, and in the action bar under a sheet."),
+      entry("h7", "H7 Problem", "home-rooms.md §4 H7: the shell.md row 6 heading and body, Open map diagnostics, no cards, then Maps with diagnostics first."),
+      entry("h10", "H10 No robot", "home-rooms.md §4 H10: no robot set up; Open integration is the one action."),
     ],
   },
   rooms: {
     label: "Rooms",
     states: [
-      entry("r1", "R1 None selected", "home-rooms.md §3 R1: nothing selected; Clean rooms is disabled with its reason."),
+      entry("r1", "R1 None selected", "home-rooms.md §4 R1: nothing selected; Clean rooms is disabled with its reason."),
       entry("r2", "R2 Checking", "home-rooms.md §4 R2: three rooms selected while the settings check runs; Clean 3 rooms disabled with its reason."),
       entry("r3", "R3 Selected, due chips", "home-rooms.md §4 R3: selected rows show the effective setting and the due chips; the summary line sits over Clean 3 rooms."),
       entry("r3-room", "R3 Room open", "home-rooms.md §5: a room's Settings open, with the line saying due work changes it for this clean."),
@@ -79,13 +80,13 @@ const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly stat
   schedule: {
     label: "Room schedule",
     states: [
-      entry("counting", "Counting", "room-schedule.md §4: Mop and Deep vacuum steppers with their status lines. The scope toggle switches shared and This plan only."),
-      entry("do-next", "Do on next clean", "room-schedule.md §5: the one Do on next clean switch, on."),
-      entry("edited", "Edited", "room-schedule.md §6: an edited interval restarts nothing; the status line says what was counted."),
-      entry("available", "Shared available", "room-schedule.md §3: a room with no schedule in this plan; the shared hint."),
-      entry("joined", "Joined shared", "room-schedule.md §3: the plan joins the room's shared schedule, read-only until saved."),
-      entry("limits", "Limits", "room-schedule.md §4: steppers at Off and at 100, ends disabled with a reason; Advanced open."),
-      entry("unverified", "Unverified", "room-schedule.md §6: progress could not be verified; Reset mopping inline."),
+      entry("counting", "Counting", "room-schedule.md §4 S2: Mop and Deep vacuum steppers, each with its label above and its status line below. The scope toggle switches shared and This plan only."),
+      entry("do-next", "Do on next clean", "room-schedule.md §4 S4 and §5: the one Do on next clean switch, on."),
+      entry("edited", "Edited", "room-schedule.md §4 S5: an edited interval restarts nothing; the status line says what was counted."),
+      entry("available", "Shared available", "room-schedule.md §4 S6: a room with no schedule in this plan; the shared hint."),
+      entry("joined", "Joined shared", "room-schedule.md §4 S7: the plan joins the room's shared schedule, read-only until saved."),
+      entry("limits", "Limits", "room-schedule.md §5 Stepper: steppers at Off and at 100; the unavailable end carries its reason as screen-reader text and a tooltip, with no visible line. Advanced open."),
+      entry("unconfirmed", "Can't confirm", "room-schedule.md §4 S11: progress can't be confirmed; the reason replaces the status line and Reset mopping shows inline."),
     ],
   },
   status: {
@@ -96,13 +97,14 @@ const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly stat
       entry("stopping", "Stopping", "shell.md §4: Stopping while it settles; Stop disabled with its reason."),
       entry("stopping-fence", "Stop settling", "shell.md §4: Stopping with stopSettlePending; Stop stays available."),
       entry("starting", "Starting", "shell.md §4: Starting."),
-      entry("paused", "Paused", "shell.md §4: Paused, with Resume and Stop."),
+      entry("paused", "Paused", "shell.md §4: Paused, with Resume and Stop; when wide they share the strip's trailing slot on one row."),
       entry("problem", "Problem", "shell.md §4: Problem."),
-      entry("offline", "Robot offline", "shell.md §4: Robot offline; the map dims."),
+      entry("offline", "Robot offline", "shell.md §4 row 5: Robot offline; the map is read only."),
       entry("map-unavailable", "Map unavailable", "shell.md §4: Map unavailable."),
-      entry("notice", "Notice and toast", "shell.md §6: the notice slot directly under the h2, and its toast."),
-      entry("full-map", "Full map", "shell.md §5: Full map with the HUD."),
-      entry("locating", "Locating", "shell.md §5: Full map while locating; the HUD keeps exit and Stop."),
+      entry("notice", "Notice and toast", "shell.md §4 notice rule 2: the notice slot directly under the h2, and its toast."),
+      entry("full-map", "Full map", "shell.md §3: Full map with the HUD."),
+      entry("locating", "Locating", "shell.md §4 row 8: Full map while locating; the HUD keeps Exit and Stop."),
+      entry("locating-slow", "Locating, after 20 s", "Decision shell D1: after 20 s. The sheet adds \"This is taking longer than usual.\" and Try again; in Full map (app bar) the HUD only swaps its detail."),
     ],
   },
   system: {
@@ -133,6 +135,8 @@ interface GalleryState extends Variants {
   readonly height: number;
   readonly theme: ThemeName;
   readonly dir: "ltr" | "rtl";
+  /** design-system.md Decision 1: the `--ms-resolved-*` fills in place of HA's. */
+  readonly d1: boolean;
 }
 
 const DEFAULTS: GalleryState = {
@@ -144,6 +148,7 @@ const DEFAULTS: GalleryState = {
   height: 844,
   theme: "light",
   dir: "ltr",
+  d1: false,
 };
 
 const clampSize = (value: number, min: number, max: number): number => Math.min(max, Math.max(min, Math.round(value)));
@@ -172,11 +177,13 @@ const fromHash = (hash: string): GalleryState => {
     order: pick("order", ["intelligent", "ordered"], DEFAULTS.order),
     scope: pick("scope", ["shared", "plan"], DEFAULTS.scope),
     due: params.get("due") !== "0",
+    origin: pick("origin", ["home", "plans"], DEFAULTS.origin),
     detent: pick("detent", DETENTS, DEFAULTS.detent),
     width: size("w", DEFAULTS.width, 280),
     height: size("h", DEFAULTS.height, 320),
     theme: pick("theme", ["light", "dark"], DEFAULTS.theme),
     dir: pick("dir", ["ltr", "rtl"], DEFAULTS.dir),
+    d1: params.get("d1") === "1",
   });
 };
 
@@ -187,11 +194,13 @@ const toHash = (state: GalleryState): string => new URLSearchParams({
   order: state.order,
   scope: state.scope,
   due: state.due ? "1" : "0",
+  origin: state.origin,
   detent: state.detent,
   w: String(state.width),
   h: String(state.height),
   theme: state.theme,
   dir: state.dir,
+  d1: state.d1 ? "1" : "0",
 }).toString();
 
 const galleryCss = css`
@@ -250,6 +259,7 @@ export class MapStudioMockups extends LitElement {
       ...(change.order !== undefined ? { order: change.order } : {}),
       ...(change.scope !== undefined ? { scope: change.scope } : {}),
       ...(change.due !== undefined ? { due: change.due } : {}),
+      ...(change.origin !== undefined ? { origin: change.origin } : {}),
       ...(change.detent !== undefined ? { detent: change.detent } : {}),
     };
     this.#set(next);
@@ -258,6 +268,13 @@ export class MapStudioMockups extends LitElement {
   protected override willUpdate(changed: PropertyValues): void {
     super.willUpdate(changed);
     for (const [name, value] of Object.entries(HA_THEMES[this._state.theme])) this.style.setProperty(name, value);
+    // Decision 1 writes only the six resolved properties on the host, as the
+    // shell would; off, they are removed and the fills fall back to HA's.
+    for (const name of RESOLVED_NAMES) {
+      const value = this._state.d1 ? D1_RESOLVED[this._state.theme][name] : undefined;
+      if (value) this.style.setProperty(name, value);
+      else this.style.removeProperty(name);
+    }
   }
 
   protected override firstUpdated(): void {
@@ -301,18 +318,17 @@ export class MapStudioMockups extends LitElement {
       case "status":
         return html`<matic-mock-status data-screen .frame=${frame} .variants=${variants} .mockState=${state}></matic-mock-status>`;
       case "system":
-        return html`<matic-mock-system data-screen .frame=${frame} .variants=${variants} .mockState=${state}></matic-mock-system>`;
+        return html`<matic-mock-system data-screen .frame=${frame} .variants=${variants} .mockState=${state} .d1=${this._state.d1}></matic-mock-system>`;
     }
   }
 
   protected override render(): TemplateResult {
     const current = this._state;
-    const variants: Variants = { view: current.view, order: current.order, scope: current.scope, due: current.due };
+    const variants: Variants = { view: current.view, order: current.order, scope: current.scope, due: current.due, origin: current.origin };
     const frame: StageFrame = { width: current.width, height: current.height, detent: current.detent };
     const states = statesFor(current.screen, current.view);
     const active = states.find((candidate) => candidate.id === current.state);
     const layout = layoutFor(current.width, current.height);
-    const narrow = current.width < 1024 || current.height < 480;
     return html`<div class="toolbar" role="group" aria-label="Mockup controls">
         <div class="group" role="group" aria-label="Screen">
           <span class="name">Screen</span>
@@ -336,13 +352,16 @@ export class MapStudioMockups extends LitElement {
         <div class="group" role="group" aria-label="Stage">
           <span class="name">Stage</span>
           ${SIZES.map(([width, height]) => html`<button class="ms-btn ms-btn--sm" type="button" aria-pressed=${String(width === current.width && height === current.height)} @click=${() => this.#set({ width, height })}>${width === 844 ? "844×390" : String(width)}</button>`)}
-          <span class="readout" aria-live="polite">${current.width} × ${current.height} · ${layout}${narrow ? " · narrow" : " · wide"}</span>
+          <span class="readout" aria-live="polite">${current.width} × ${current.height} · ${layout}</span>
           <span class="sep"></span>
           ${DETENTS.map((detent) => this.#toggle(detent === "start" ? "Starting detent" : detent, detent, current.detent, { detent }))}
           <span class="sep"></span>
           ${this.#toggle("Light", "light", current.theme, { theme: "light" })}${this.#toggle("Dark", "dark", current.theme, { theme: "dark" })}
           <span class="sep"></span>
+          ${this.#toggle("HA fills", false, current.d1, { d1: false })}${this.#toggle("Decision 1", true, current.d1, { d1: true })}
+          <span class="sep"></span>
           ${this.#toggle("LTR", "ltr", current.dir, { dir: "ltr" })}${this.#toggle("RTL", "rtl", current.dir, { dir: "rtl" })}
+          <span class="applies">Dark sets HA's dark palette; the shadow tokens follow the OS colour scheme, as they do inside HA. Decision 1 swaps in the resolved fills, focus ring and danger text. RTL mirrors layout; English copy reorders.</span>
         </div>
         <p class="caption"><strong>${SCREENS[current.screen].label}${current.screen === "plan" ? ` · ${current.view === "run" ? "Run" : "Edit"}` : ""} · ${active?.label ?? ""}</strong>${active?.caption ?? nothing}</p>
       </div>

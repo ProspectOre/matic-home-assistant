@@ -70,10 +70,10 @@ export const working = (reason?: string): MotionView => ({ stop: stopAction(reas
 
 // ---- Home panel (home-rooms.md §3–§4) ------------------------------------------
 
-type HomeKind = "ready" | "busy" | "paused" | "problem" | "offline" | "map-unavailable" | "no-robot";
+type HomeKind = "ready" | "locating" | "locating-slow" | "busy" | "paused" | "problem" | "offline" | "map-unavailable" | "no-robot";
 
 const homeCss = css`
-.quick-actions .ms-row__body .warn-line { color: var(--ms-text); }
+.quick-actions .ms-row:not([aria-disabled="true"]) .ms-row__body .warn-line { color: var(--ms-text); }
 .home-recovery { justify-self: start; margin-block-end: var(--ms-space-4); }
 .host-actions { display: flex; flex-wrap: wrap; gap: var(--ms-space-2); margin-block-end: var(--ms-space-2); }
 `;
@@ -103,7 +103,7 @@ const homeCards = (variants: Variants, disabledBy: string | undefined, go: (chan
       detail: planLine(plan, orderFor(plan, variants, DEFAULT_PLAN_ID)),
       ...(attention ? { extra: html`<small class="warn-line">${glyph(glyphAlert)}<span>${attention}</span></small>` } : {}),
       ...(disabledBy ? { disabledBy } : {}),
-      onPress: () => go({ screen: "plan", state: "ready", view: "run" }),
+      onPress: () => go({ screen: "plan", state: "ready", view: "run", origin: "home" }),
     })}
     ${cardRow({
       lead: iconNewArea,
@@ -118,6 +118,18 @@ const homePanel = (kind: HomeKind, variants: Variants, go: (change: MockChange) 
   switch (kind) {
     case "ready":
       return { heading: t("v4_what_to_clean"), body: html`${homeCards(variants, undefined, go)}${mapsGroup(false)}` };
+    case "locating":
+    case "locating-slow":
+      // home-rooms.md H3: heading kept, one line, cards demoted with no
+      // per-card reasons. After 20 s (shell.md §5, D1) the sheet adds
+      // v4_locating_slow and the one recovery verb, "Try again".
+      return {
+        heading: t("v4_what_to_clean"),
+        body: html`<p class="panel-description" id="home-reason">${t("v4_reason_locating")}</p>
+          ${kind === "locating-slow" ? html`<p class="panel-description">${t("v4_locating_slow")}</p>
+            <div class="host-actions"><button class="ms-btn ms-btn--secondary" type="button">${t("v4_retry")}</button></div>` : nothing}
+          ${homeCards(variants, "home-reason", go)}${mapsGroup(false)}`,
+      };
     case "busy":
     case "paused":
       return {
@@ -130,7 +142,7 @@ const homePanel = (kind: HomeKind, variants: Variants, go: (change: MockChange) 
         heading: t("v4_attention_title"),
         body: html`<p class="panel-description">${t("v4_attention_body")}</p>
           <div class="host-actions"><button class="ms-btn ms-btn--secondary" type="button">${t("v4_open_diagnostics")}</button></div>
-          ${mapsGroup(false)}`,
+          ${mapsGroup(true)}`,
       };
     case "offline":
       return {
@@ -167,6 +179,8 @@ const cleaningMap: MapView = { mode: "map", robot: "cleaning" };
 
 const HOME_STATES: Readonly<Record<string, HomeState>> = {
   ready: { kind: "ready", status: STATUS.ready, map: atDock },
+  "locating-sheet": { kind: "locating", status: STATUS.locating, map: { ...atDock, chip: t("v4_locating") } },
+  "locating-slow": { kind: "locating-slow", status: STATUS.locating, map: { ...atDock, chip: t("v4_locating") } },
   cleaning: { kind: "busy", status: STATUS.cleaning, motion: working(), map: cleaningMap },
   stopping: { kind: "busy", status: STATUS.stopping, motion: working(t("v4_reason_stop")), map: cleaningMap },
   "stopping-fence": { kind: "busy", status: STATUS.stopping, motion: working(), map: cleaningMap },
@@ -178,7 +192,7 @@ const HOME_STATES: Readonly<Record<string, HomeState>> = {
     map: cleaningMap,
   },
   problem: { kind: "problem", status: STATUS.problem, map: { ...atDock, chip: t("v4_needs_attention") } },
-  offline: { kind: "offline", status: STATUS.offline, map: { ...atDock, dim: true, chip: t("v4_robot_offline") } },
+  offline: { kind: "offline", status: STATUS.offline, map: { ...atDock, chip: t("v4_robot_offline") } },
   "map-unavailable": {
     kind: "map-unavailable",
     status: STATUS.mapUnavailable,
@@ -202,22 +216,35 @@ const HOME_STATES: Readonly<Record<string, HomeState>> = {
     kind: "busy",
     status: STATUS.locating,
     motion: working(),
-    map: { ...cleaningMap, dim: true, chip: t("v4_locating") },
+    map: { ...cleaningMap, chip: t("v4_locating") },
     fullMap: { locating: true },
   },
 };
 
 /** Home and status screens share one builder; the state id picks the row. */
 abstract class HomeLike extends MockScreen {
+  static override properties = { ...MockScreen.properties, _fullMap: { state: true } };
   static override styles = [...screenStyles, homeCss];
 
   protected abstract readonly stateMap: Readonly<Record<string, string>>;
+  /** The app bar's Full map button, pressed: a mockup-local toggle, reset per state. */
+  protected _fullMap = false;
+
+  protected override willUpdate(changed: PropertyValues): void {
+    super.willUpdate(changed);
+    if (changed.has("mockState")) this._fullMap = false;
+  }
 
   protected override view(): ShellView {
     const id = this.stateMap[this.mockState] ?? "ready";
     const state = HOME_STATES[id] ?? HOME_STATES["ready"];
     if (!state) throw new Error("missing home state");
     const panel = homePanel(state.kind, this.variants, (change) => this.emit(change));
+    const locating = state.status === STATUS.locating;
+    // shell.md §5: after 20 s the HUD only swaps its detail; no new button.
+    const fullMap = state.fullMap ?? (this._fullMap
+      ? { locating, ...(state.kind === "locating-slow" ? { detail: t("v4_locating_slow_full") } : {}) }
+      : undefined);
     return {
       workflow: "none",
       status: state.status,
@@ -226,19 +253,20 @@ abstract class HomeLike extends MockScreen {
       map: state.map,
       ...(state.motion ? { motion: state.motion } : {}),
       ...(state.notice ? { notice: state.notice } : {}),
-      ...(state.fullMap ? { fullMap: state.fullMap } : {}),
+      ...(fullMap ? { fullMap } : {}),
+      ...(state.fullMap ? {} : { onFullMap: () => { this._fullMap = !this._fullMap; } }),
       ...(state.bar ? { bar: state.bar } : {}),
     };
   }
 }
 
 export class MockHome extends HomeLike {
-  protected readonly stateMap = { h1: "ready", h4: "cleaning", h7: "problem", h10: "no-robot" };
+  protected readonly stateMap = { h1: "ready", h3: "locating-sheet", h4: "cleaning", h7: "problem", h10: "no-robot" };
 }
 
 export class MockStatus extends HomeLike {
   protected readonly stateMap: Readonly<Record<string, string>> = Object.fromEntries(
-    Object.keys(HOME_STATES).filter((id) => id !== "no-robot").map((id) => [id, id]),
+    Object.keys(HOME_STATES).filter((id) => id !== "no-robot" && id !== "locating-sheet").map((id) => [id, id]),
   );
 }
 

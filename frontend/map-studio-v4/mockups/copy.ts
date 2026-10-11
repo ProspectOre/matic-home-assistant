@@ -14,7 +14,7 @@ export const COPY = {
   v4_rooms_quick_detail: "Pick rooms and clean them now.",
   v4_run_named_plan: "Run {plan}",
   v4_custom_areas: "Clean custom area",
-  v4_areas_quick_detail: "Draw a new custom area or choose a saved one",
+  v4_areas_quick_detail: "Draw or choose a custom area",
   v4_maps_heading: "Maps",
   v4_map_history: "Map history",
   v4_history_quick_detail: "Browse earlier floor maps.",
@@ -72,19 +72,22 @@ export const COPY = {
   v4_no_plans: "No plans yet",
   v4_no_plans_hint: "Save a plan to repeat a set of rooms.",
   v4_create_plan: "Create a plan",
-  v4_plan_room_count: "{count} rooms", // (literal) plan.md §3 picker line 2
   v4_plan_order_intelligent_hint: "Longest-waiting rooms first",
   v4_plan_order_ordered_hint: "Top to bottom, as listed",
+  v4_plan_row_rotation: "{count} rooms · Longest-waiting rooms first",
+  v4_plan_row_ordered: "{count} rooms · Top to bottom, as listed",
   v4_plan_default: "Default",
   v4_paused: "Paused",
   v4_plan_row_mop_due: "Mop due: {rooms}",
   v4_plan_row_deep_due: "Deep vacuum due: {rooms}",
+  v4_plan_row_both_due: "Mop due: {mop} · Deep vacuum due: {deep}",
   v4_plan_row_blocked: "Needs attention before it can run",
   v4_edit: "Edit",
   v4_edit_plan_named: "Edit {plan}",
   v4_action_run_plan: "Run plan",
   v4_action_run_plan_named: "Run plan {plan}",
-  v4_plan_estimate: "About {minutes} min",
+  v4_plan_summary_rooms: "{count} rooms",
+  v4_plan_summary_rooms_estimate: "{count} rooms · about {minutes} min",
   v4_plan_can_run: "Plan enabled",
   v4_plan_can_run_on: "When it's on, this plan can run from here, from automations and from Home Assistant actions.",
   v4_plan_default_hint: "Home Assistant's plan button and plan select run this plan.",
@@ -123,7 +126,6 @@ export const COPY = {
   v4_when_run_ends: "When a run ends", // (literal) plan.md §3
   v4_return_to_dock: "Return to the dock", // (literal) plan.md §3
   v4_finish_current_room: "Finish the current room", // (literal) plan.md §3
-  v4_finish_threshold: "Minimum progress: {percent}%", // (not in spec) plan.md §3 names only "the minimum-progress slider"
   v4_action_save_plan: "Save",
   v4_action_done: "Done",
   v4_cancel: "Cancel",
@@ -197,6 +199,9 @@ export const COPY = {
   v4_cleaning_blocked: "Cleaning can't start",
   v4_locating: "Locating",
   v4_finding_map: "Finding the current map",
+  v4_reason_locating: "Waiting for the robot to confirm which floor it is on.", // (existing) strings.json, home-rooms.md H3
+  v4_locating_slow: "This is taking longer than usual.",
+  v4_locating_slow_full: "Still locating, so exit full map to try again.",
   v4_no_robot_short: "No robot",
   v4_no_robot_detail: "Set up a robot",
   v4_action_stop: "Stop",

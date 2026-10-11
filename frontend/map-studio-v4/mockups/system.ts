@@ -69,15 +69,16 @@ const notice = (tone: Tone, text: string): TemplateResult => html`<div class="ms
 
 /** One palette's tints, tone pairs and fills; its host carries the HA theme. */
 export class MockThemePanel extends LitElement {
-  static override properties = { theme: { type: String } };
+  static override properties = { theme: { type: String }, d1: { type: Boolean } };
   static override styles = [...screenStyles, panelCss];
 
   theme: ThemeName = "light";
+  d1 = false;
 
   protected override render(): TemplateResult {
     const swatch = (name: string, token: string): TemplateResult => html`<span class="swatch" style=${`background: var(${token}); --ms-local: var(${token})`}><strong>${name}</strong><span>${token}</span></span>`;
     return html`<div class="panel">
-      <h3>${this.theme === "light" ? "Light" : "Dark"} · HA default palette</h3>
+      <h3>${this.theme === "light" ? "Light" : "Dark"} · HA default palette · ${this.d1 ? "Decision 1 fills" : "HA fills"}</h3>
       <div class="swatches">
         ${swatch("Accent tint", "--ms-tint-accent")}
         ${swatch("Danger tint", "--ms-tint-danger")}
@@ -117,6 +118,7 @@ export class MockSystem extends LitElement {
     frame: { attribute: false },
     variants: { attribute: false },
     mockState: { attribute: false },
+    d1: { attribute: false },
     _small: { state: true },
     _count: { state: true },
   };
@@ -126,6 +128,8 @@ export class MockSystem extends LitElement {
   frame: StageFrame = { width: 1024, height: 768, detent: "start" };
   variants: Variants = DEFAULT_VARIANTS;
   mockState = "sheet";
+  /** design-system.md Decision 1 (the gallery's `d1` toggle). */
+  d1 = false;
   protected _small: readonly Target[] = [];
   protected _count = 0;
 
@@ -177,7 +181,11 @@ export class MockSystem extends LitElement {
     return html`<div class="sheet">
       <header>
         <h1>Design system</h1>
-        <p class="lede">design-system.md §4–§5 with HA's default palette. Hover and focus columns are forced; disabled controls are <code>aria-disabled</code>, stay focusable and are described by the reason under them.</p>
+        <p class="lede">design-system.md §4–§5 with HA's default palette. Hover and focus columns are forced; disabled controls are <code>aria-disabled</code>, stay focusable and are described by their reason: a visible line under a button, row or switch, and screen-reader text plus a tooltip at a range end (stepper ends, first and last reorder arrows), with no visible line.</p>
+        <p class="lede"><strong>Fills: HA defaults (Run plan 3.26:1, Stop 4.29:1) · Decision 1 resolved (≥4.5:1).</strong> Showing: ${this.d1
+          ? "Decision 1 resolved: accent fill #007b9f, danger fill #d04134, indicator #008bb3 light / #009ac7 dark, danger text #d04134 light / #df574b dark."
+          : "HA defaults, before Decision 1 (--primary-color #009ac7, --error-color #db4437)."}</p>
+        <p class="lede">Pixel-identical before Decision 1, so not mocked: (a) the <code>:active</code> mix, (b) the field and switch focus ring, (f) the checked switch knob colour. Not mocked: (e) the inspector's 19rem minimum (the stage keeps 22.5rem).</p>
       </header>
       <section>
         <h2>Controls</h2>
@@ -214,14 +222,15 @@ export class MockSystem extends LitElement {
               aria-describedby=${state === "disabled" ? "sw-reason" : nothing}
             ></button><span>${t("v4_plan_can_run")}</span></span>
             ${state === "disabled" ? html`<p class="reason" id="sw-reason">${t("v4_reason_plan_switch_busy")}</p>` : nothing}`)}
-          ${this.#row("Stepper", ".ms-stepper, ends disabled", (state) => {
+          ${this.#row("Stepper", ".ms-stepper; a range end: sr-only reason + title, no visible line", (state) => {
             const value = state === "disabled" ? null : 3;
+            const reason = value === null ? t("v4_cadence_stepper_off_reason") : undefined;
             return html`<span class="ms-stepper" data-force=${force(state)}>
-                <button class="ms-btn ms-btn--icon" type="button" aria-label=${t("v4_stepper_decrease", { label: "Mop every 3 cleans" })} aria-disabled=${value === null ? "true" : nothing} aria-describedby=${value === null ? "st-min" : nothing}>${glyph(glyphMinus)}</button>
+                <button class="ms-btn ms-btn--icon" type="button" aria-label=${t("v4_stepper_decrease", { label: "Mop every 3 cleans" })} aria-disabled=${reason ? "true" : nothing} aria-describedby=${reason ? "st-min" : nothing} title=${reason ?? nothing}>${glyph(glyphMinus)}</button>
                 <input type="number" inputmode="numeric" min="1" max="100" .value=${value === null ? "" : String(value)} placeholder=${t("v4_cadence_off")} aria-label="Mop every 3 cleans">
                 <button class="ms-btn ms-btn--icon" type="button" aria-label=${t("v4_stepper_increase", { label: "Mop every 3 cleans" })}>${glyph(iconPlus)}</button>
               </span>
-              ${state === "disabled" ? html`<p class="reason" id="st-min">− ${t("v4_cadence_stepper_off_reason")} + at 100: ${t("v4_cadence_stepper_max_reason")}</p>` : nothing}`;
+              ${reason ? html`<span class="sr-only" id="st-min">${reason}</span>` : nothing}`;
           })}
           ${this.#row("Select", ".ms-field > select", (state) => html`<label class="ms-field">${t("v4_cleaning_system")}
               <select data-force=${force(state)} ?disabled=${state === "disabled"} aria-describedby=${state === "disabled" ? "sel-reason" : nothing}><option>${t("vacuum")}</option><option>${t("vacuum_and_mop")}</option></select>
@@ -230,14 +239,14 @@ export class MockSystem extends LitElement {
               <button class="ms-btn" type="button" aria-pressed="true" data-force=${force(state)} aria-disabled=${state === "disabled" ? "true" : nothing}>${t("v4_order_intelligent")}</button>
               <button class="ms-btn" type="button" aria-pressed="false" aria-disabled=${state === "disabled" ? "true" : nothing}>${t("v4_order_ordered")}</button>
             </div>${state === "disabled" ? html`<p class="reason">${t("v4_reason_plan_saving")}</p>` : nothing}`)}
-          ${this.#row("Range", ".ms-range", (state) => html`<input class="ms-range" type="range" min="0" max="100" .value=${"50"} aria-label=${t("v4_finish_threshold", { percent: 50 })} data-force=${force(state)} ?disabled=${state === "disabled"}>`)}
+          ${this.#row("Range", ".ms-range", (state) => html`<input class="ms-range" type="range" min="0" max="100" .value=${"50"} aria-label=${t("v4_finish_current_room")} data-force=${force(state)} ?disabled=${state === "disabled"}>`)}
         </div>
       </section>
       <section>
         <h2>Tints and tones in light and dark</h2>
         <div class="schemes">
-          <matic-mock-theme-panel theme="light" style=${themeStyle("light")}></matic-mock-theme-panel>
-          <matic-mock-theme-panel theme="dark" style=${themeStyle("dark")}></matic-mock-theme-panel>
+          <matic-mock-theme-panel theme="light" .d1=${this.d1} style=${themeStyle("light", this.d1)}></matic-mock-theme-panel>
+          <matic-mock-theme-panel theme="dark" .d1=${this.d1} style=${themeStyle("dark", this.d1)}></matic-mock-theme-panel>
         </div>
       </section>
       <section>

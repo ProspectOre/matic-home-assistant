@@ -67,6 +67,14 @@ a.ms-btn { text-decoration: none; }
 .ms-row--featured { --ms-local: var(--ms-tint-accent); background: var(--ms-local); border-color: color-mix(in srgb, var(--ms-indicator) 35%, var(--ms-line)); }
 .ms-row { font-size: var(--ms-t-md); }
 .ms-row__body small { line-height: var(--ms-lh-snug); }
+/* Row leads read the accent tint token instead of an inline mix (controls.ts:105). */
+.ms-row__lead { background: var(--ms-tint-accent); }
+/* NEW .ms-row[aria-disabled="true"]: the enabled fill and border stay (no
+   lighter or darker inversion); title, detail, line 3, lead glyph, chevron
+   and chip text take --ms-text-disabled, and chips keep their tint. */
+.ms-row[aria-disabled="true"] { background: var(--ms-local); border-color: var(--ms-line); color: var(--ms-text-disabled); }
+.ms-row--featured[aria-disabled="true"] { border-color: color-mix(in srgb, var(--ms-indicator) 35%, var(--ms-line)); }
+.ms-row[aria-disabled="true"] :is(.ms-row__body strong, .ms-row__body small, .ms-row__lead, .ms-row__trail, .warn-line, .warn-line .ms-icon, .ms-chip) { color: var(--ms-text-disabled); }
 /* .ms-switch: the knob moves by a logical offset, so RTL keeps it on the track. */
 .ms-switch::after { inset-inline-start: 0.4375rem; translate: 0 -50%; transition: inset-inline-start var(--ms-fast) var(--ms-ease); }
 .ms-switch[aria-checked="true"]::after { inset-inline-start: 1.6875rem; translate: 0 -50%; }
@@ -90,7 +98,7 @@ details[open] > .ms-disclosure .chev:dir(rtl), [aria-expanded="true"] > .chev:di
 .ms-stepper { --ms-local: var(--ms-surface-card); display: inline-grid; flex: none; grid-template-columns: var(--ms-control) minmax(3rem, 4.5rem) var(--ms-control); gap: var(--ms-space-1); align-items: center; border: 1px solid var(--ms-line-strong); border-radius: var(--ms-radius-sm); background: var(--ms-local); }
 .ms-stepper--readonly { grid-template-columns: minmax(3rem, 4.5rem); }
 .ms-stepper .ms-btn { border-radius: calc(var(--ms-radius-sm) - 1px); }
-.ms-stepper input { inline-size: 100%; min-inline-size: 0; min-block-size: var(--ms-control); padding: 0; border: 0; border-radius: var(--ms-radius-xs); color: var(--ms-text); background: transparent; font-size: var(--ms-t-md); font-weight: var(--ms-w-bold); font-variant-numeric: tabular-nums; text-align: center; appearance: textfield; -moz-appearance: textfield; }
+.ms-stepper input { inline-size: 100%; min-inline-size: 0; min-block-size: var(--ms-control); padding: 0; border: 0; border-radius: var(--ms-radius-xs); color: var(--ms-text); background: transparent; font-size: var(--ms-t-md); font-weight: var(--ms-w-medium); font-variant-numeric: tabular-nums; text-align: center; appearance: textfield; -moz-appearance: textfield; }
 .ms-stepper input::-webkit-inner-spin-button, .ms-stepper input::-webkit-outer-spin-button { margin: 0; appearance: none; -webkit-appearance: none; }
 .ms-stepper input::placeholder { color: var(--ms-text-quiet); font-weight: var(--ms-w-medium); opacity: 1; }
 .ms-stepper input:focus-visible { outline: 2px solid var(--ms-indicator); outline-offset: -2px; }
@@ -111,20 +119,22 @@ details[open] > .ms-disclosure .chev:dir(rtl), [aria-expanded="true"] > .chev:di
 .ms-btn--primary, .ms-btn--primary.ms-btn--danger { forced-color-adjust: none; color: HighlightText; background: Highlight; border-color: Highlight; }
 .ms-btn--primary:disabled, .ms-btn--primary[aria-disabled="true"] { color: GrayText; background: Canvas; border-color: GrayText; }
 .ms-notice, .ms-stepper, .ms-toast { border: 1px solid CanvasText; }
-/* plan.md §8: chips keep their text and a ButtonBorder outline. */
-.mock-chip { border: 1px solid ButtonBorder; }
+/* design-system.md §4 .ms-chip and plan.md §8: chips keep their text and a 1 px ButtonBorder outline. */
+.ms-chip { border: 1px solid ButtonBorder; }
 .ms-row:has(.ms-check :checked) { border-color: Highlight; }
+.ms-row[aria-disabled="true"] :is(.ms-row__body strong, .ms-row__body small, .ms-row__lead, .ms-row__trail, .warn-line, .warn-line .ms-icon, .ms-chip) { color: GrayText; }
 }
 `;
 
-// Chips are named by plan.md §3/§8 ("Default", "Paused", due, "Needs
-// attention", "Unsaved changes") but design-system.md defines no chip class;
-// this is the smallest shape that follows its tint and type rules.
+// design-system.md §4 .ms-chip and .ms-badge (plan.md §3 names the chips:
+// "Default", "Paused", due, "Needs attention", "Unsaved changes"; the badge
+// is the Saved-order position number).
 export const previewChips = css`
-.mock-chip { --ms-local: var(--ms-tint-accent); display: inline-flex; align-items: center; min-block-size: 1.375rem; padding-inline: var(--ms-space-2); border-radius: var(--ms-radius-pill); color: var(--ms-text); background: var(--ms-local); font-size: var(--ms-t-xs); font-weight: var(--ms-w-medium); line-height: var(--ms-lh-tight); white-space: nowrap; vertical-align: middle; }
-.mock-chip[data-tone="warning"] { --ms-local: var(--ms-tint-warning); }
-.mock-chip[data-tone="danger"] { --ms-local: var(--ms-tint-danger); }
-.mock-chip[data-tone="neutral"] { --ms-local: var(--ms-surface-sunken); border: 1px solid var(--ms-line); }
+.ms-chip { --ms-local: var(--ms-tint-accent); display: inline-flex; align-items: center; gap: var(--ms-space-1); min-block-size: 1.5rem; padding-inline: var(--ms-space-2); border-radius: var(--ms-radius-pill); color: var(--ms-text); background: var(--ms-local); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); line-height: var(--ms-lh-tight); white-space: nowrap; vertical-align: middle; }
+.ms-chip[data-tone="warning"] { --ms-local: var(--ms-tint-warning); }
+.ms-chip[data-tone="danger"] { --ms-local: var(--ms-tint-danger); }
+.ms-chip[data-tone="neutral"] { --ms-local: var(--ms-surface-sunken); border: 1px solid var(--ms-line); }
+.ms-badge { display: grid; flex: none; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; border-radius: 50%; color: var(--ms-text); background: var(--ms-tint-accent); font-size: var(--ms-t-xs); font-weight: var(--ms-w-bold); font-variant-numeric: tabular-nums; }
 .mock-chips { display: flex; flex-wrap: wrap; gap: var(--ms-space-1); margin-block-start: var(--ms-space-1); }
 `;
 
@@ -143,14 +153,14 @@ export const previewShell = css`
 .narrow .sheet-status { font-size: var(--ms-t-lg); }
 .status-strip { grid-template-columns: var(--ms-control-sm) minmax(0, 1fr) auto; }
 .status-strip strong { font-size: var(--ms-t-md); }
+/* The status icon reads the accent tint token instead of an inline mix (shell-styles.ts:149). */
+.status-icon { background: var(--ms-tint-accent); }
+/* shell.md §3: paused [Resume][Stop] share the trailing slot on one row; the detail truncates first. */
 .status-actions { display: flex; gap: var(--ms-space-2); }
 .status-strip .action-reason { display: block; grid-column: 2 / -1; margin-block-start: calc(-1 * var(--ms-space-2)); text-align: start; }
-/* Not in the specs: at 360 px, glyph + copy + [Resume cleaning][Stop] leave the
-   copy ~50 px, so with two actions the buttons take a second strip row. */
-.status-strip--two .status-actions { grid-column: 2 / -1; }
 .panel-pinned { flex: none; display: grid; gap: var(--ms-space-2); padding-block-end: var(--ms-space-3); }
 .panel-heading h2 { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.panel-heading h2 .mock-chip { margin-inline-start: var(--ms-space-2); }
+.panel-heading h2 .ms-chip { margin-inline-start: var(--ms-space-2); }
 .panel-heading .ms-btn--icon { flex: none; }
 .panel-description { margin: 0 0 var(--ms-space-4); font-size: var(--ms-t-md); }
 .workflow { padding-block-end: var(--ms-space-3); }
@@ -177,8 +187,8 @@ export const previewShell = css`
 .full-map-hud .ms-btn { min-inline-size: 0; }
 .narrow .full-map-hud { inset-inline: var(--ms-space-3); }
 .hud-actions { display: flex; gap: var(--ms-space-2); }
-/* Not in the specs: the HUD detail wraps so v4_locating_slow_full (shell.md §5) is never cut off. */
-.hud-copy small { white-space: normal; }
+/* design-system.md §4 Type: the 13 px --ms-t-sm uses move to --ms-t-md. The detail keeps shell-styles.ts:220's ellipsis. */
+.hud-copy strong { font-size: var(--ms-t-md); }
 .ms-toast { --ms-local: var(--ms-surface-card); position: absolute; z-index: 20; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--ms-space-2); align-items: center; inline-size: min(24rem, calc(100% - 1.5rem)); padding-inline: var(--ms-space-3) 0; border-inline-start: 3px solid var(--tone, var(--ms-accent)); border-radius: var(--ms-radius-md); color: var(--ms-text); background: var(--ms-local); box-shadow: var(--ms-shadow-3); font-size: var(--ms-t-md); line-height: var(--ms-lh-snug); }
 .ms-toast[data-tone="error"] { --tone: var(--ms-danger); }
 .ms-toast[data-tone="success"] { --tone: var(--ms-success); }

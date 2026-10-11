@@ -17,7 +17,6 @@ import { STATUS, dueChips } from "./home";
 import {
   CATALOG,
   DEFAULT_PLAN_ID,
-  estimateLabel,
   orderFor,
   planAttention,
   planById,
@@ -25,6 +24,7 @@ import {
   previewRooms,
   progressFor,
   roomName,
+  runSummary,
   statusLine,
   withDue,
 } from "./plan-data";
@@ -46,14 +46,16 @@ const planCss = css`
 .run-row { display: flex; gap: var(--ms-space-3); align-items: flex-start; padding-block: var(--ms-space-2); border-block-end: 1px solid var(--ms-line); }
 .run-row:last-child { border-block-end: 0; }
 .run-row[data-break] { position: relative; margin-block-start: var(--ms-space-3); border-block-start: 2px dashed var(--ms-line-strong); padding-block-start: var(--ms-space-3); }
-.pos { display: grid; flex: none; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; border: 1px solid var(--ms-indicator); border-radius: 50%; color: var(--ms-text); background: var(--ms-tint-accent); font-size: var(--ms-t-xs); font-weight: var(--ms-w-bold); font-variant-numeric: tabular-nums; }
 .run-row .row-lines { flex: 1; }
 .enable-row { margin-block: var(--ms-space-2); }
 .end-lines { display: grid; gap: var(--ms-space-1); margin-block-start: var(--ms-space-2); }
 .edit-list { margin-block-start: var(--ms-space-1); }
 .edit-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; padding: 0; }
-.edit-check { display: grid; place-items: center; inline-size: var(--ms-control); block-size: var(--ms-control); }
+/* plan.md §3: the "Include {room}" checkbox is its own 44 × 44 target; its <label> is the hit box. */
+.edit-check { display: grid; place-items: center; inline-size: var(--ms-control); block-size: var(--ms-control); cursor: pointer; }
 .edit-check input { inline-size: var(--ms-icon); block-size: var(--ms-icon); margin: 0; accent-color: var(--ms-indicator); cursor: pointer; }
+.edit-check:has(:focus-visible) { outline: 2px solid var(--ms-indicator); outline-offset: -2px; border-radius: var(--ms-radius-sm); }
+.edit-check input:focus-visible { outline: none; }
 .edit-disclosure { display: flex; gap: var(--ms-space-2); align-items: center; min-inline-size: 0; min-block-size: var(--ms-control); padding: var(--ms-space-2) var(--ms-space-1); border: 0; border-radius: var(--ms-radius-sm); color: inherit; background: transparent; text-align: start; cursor: pointer; font-size: var(--ms-t-md); }
 .edit-disclosure:focus-visible { outline: 2px solid var(--ms-indicator); outline-offset: -2px; }
 .edit-disclosure .row-lines { flex: 1; }
@@ -67,9 +69,10 @@ const planCss = css`
 .schedule { display: grid; gap: var(--ms-space-3); }
 .schedule-head { display: flex; align-items: center; gap: var(--ms-space-2); }
 .schedule-head h3 { flex: 1; margin: 0; font-size: var(--ms-t-md); font-weight: var(--ms-w-bold); }
-.sched-row { display: flex; flex-wrap: wrap; gap: var(--ms-space-1) var(--ms-space-3); align-items: center; justify-content: space-between; }
-.sched-label { flex: 1 1 9rem; font-size: var(--ms-t-md); font-weight: var(--ms-w-medium); }
-.sched-status { flex-basis: 100%; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
+/* room-schedule.md §7: at every width the label sits above [−][field][+] and the status line below. */
+.sched-row { display: grid; gap: var(--ms-space-1); justify-items: start; }
+.sched-label { font-size: var(--ms-t-md); font-weight: var(--ms-w-medium); }
+.sched-status { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 .sched-status.reason { display: flex; gap: var(--ms-space-1); color: var(--ms-text); }
 .sched-status.reason .ms-icon { inline-size: 1rem; block-size: 1rem; color: var(--ms-warning); }
 .schedule-note { margin: 0; font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
@@ -87,7 +90,7 @@ export class MockPlans extends MockScreen {
     const order = orderFor(plan, this.variants, DEFAULT_PLAN_ID);
     const attention = planAttention(plan, this.variants, DEFAULT_PLAN_ID);
     const target = plan.id === "weekend" ? "parts" : plan.enabled ? "ready" : "paused";
-    return html`<li><button class="ms-row ms-row--card plan-row" type="button" @click=${() => this.emit({ screen: "plan", view: "run", state: target })}>
+    return html`<li><button class="ms-row ms-row--card plan-row" type="button" @click=${() => this.emit({ screen: "plan", view: "run", state: target, origin: "plans" })}>
       <span class="ms-row__body">
         <strong class="plan-title"><bdi>${plan.name}</bdi>${plan.id === CATALOG.selectedPlan ? chip(t("v4_plan_default")) : nothing}${!plan.enabled ? chip(t("v4_paused"), "neutral") : nothing}</strong>
         <small>${planLine(plan, order)}</small>
@@ -329,7 +332,7 @@ export class MockPlan extends MockScreen {
   #runRow(room: { readonly roomId: string; readonly name: string; readonly cleaningMode: CleaningMode; readonly coverageSetting: CoverageSetting; readonly cadenceReasons: readonly string[] }, index: number | null, options: { readonly chips: boolean; readonly blocked?: boolean; readonly partBreak?: number }): TemplateResult {
     return html`<li class="run-row" data-break=${options.partBreak ? "" : nothing}>
       ${options.partBreak ? html`<span class="sr-only">${t("v4_part_break", { number: num(options.partBreak) })}</span>` : nothing}
-      ${index === null ? nothing : html`<span class="pos" aria-hidden="true">${num(index + 1)}</span>`}
+      ${index === null ? nothing : html`<span class="ms-badge" aria-hidden="true">${num(index + 1)}</span>`}
       <span class="row-lines">
         <bdi>${room.name}</bdi>
         <small>${roomSetting(room.cleaningMode, room.coverageSetting)}</small>
@@ -345,7 +348,6 @@ export class MockPlan extends MockScreen {
     const plan = this.planFor(state);
     const order = orderFor(plan, this.variants, plan.id);
     const ordered = order === "ordered";
-    const estimate = estimateLabel(plan);
     const paused = state === "paused";
     const blocked = state === "blocked";
     const rooms = previewRooms(plan, this.variants, plan.id);
@@ -370,20 +372,18 @@ export class MockPlan extends MockScreen {
     const list = ListTag === "ol"
       ? html`<ol class="mock-stack run-list">${listRows}</ol>`
       : html`<ul class="mock-stack run-list">${listRows}</ul>`;
-    const finishLine = plan.finishCurrentRoom
-      ? html`<p class="quiet-line">${t("v4_plan_summary_finish", { percent: num(plan.finishCurrentRoomThreshold) })}</p>`
-      : nothing;
+    // plan.md §6: one "When a run ends" line, finish when a threshold is set, else return.
+    const endLine = plan.finishCurrentRoom
+      ? t("v4_plan_summary_finish", { percent: num(plan.finishCurrentRoomThreshold) })
+      : t("v4_plan_summary_return");
     const body = html`
-      <p class="run-summary">${planLine(plan, order)}${estimate && !paused && !blocked ? ` · ${estimate}` : ""}</p>
+      <p class="run-summary">${runSummary(plan, !paused && !blocked)}</p>
       <h3 class="ms-section-heading">${paused ? t("v4_plan_rooms_heading") : t("v4_next_run_preview")}</h3>
       ${!paused && !blocked && !ordered ? html`<p class="run-caption">${t("v4_plan_rotation_settings")}</p>` : nothing}
       ${!paused && !blocked && boundaries.length ? html`<p class="run-caption">${t("v4_room_parts", { count: num(boundaries.length + 1) })}</p>` : nothing}
       ${list}
       <div class="enable-row">${switchRow("plan-enabled", t("v4_plan_can_run"), t("v4_plan_can_run_on"), plan.enabled)}</div>
-      <div class="end-lines">
-        <p class="quiet-line">${t("v4_plan_summary_return")}</p>
-        ${finishLine}
-      </div>`;
+      <div class="end-lines"><p class="quiet-line">${endLine}</p></div>`;
     const start: MockAction = {
       label: t("v4_action_run_plan"),
       kind: "primary",
@@ -395,7 +395,10 @@ export class MockPlan extends MockScreen {
     return {
       workflow: "plan-run",
       status: STATUS.ready,
-      back: { label: t("v4_back_to_plans"), kind: "secondary", change: { screen: "plans", state: "ready" } },
+      // plan.md §3, §5: Back is named by `planOrigin`, and returns there.
+      back: this.variants.origin === "home"
+        ? { label: t("v4_back_to_all_tasks"), kind: "secondary", change: { screen: "home", state: "h1" } }
+        : { label: t("v4_back_to_plans"), kind: "secondary", change: { screen: "plans", state: "ready" } },
       heading: plan.name,
       headingTrail: html`<button
         class="ms-btn heading-edit"
@@ -429,14 +432,14 @@ export class MockPlan extends MockScreen {
     const first = index === 0;
     const isLast = index === last;
     return html`<li class="ms-row edit-row" data-selected=${selected ? "true" : nothing} ?data-scroll-target=${open && !this.scrollToSchedule}>
-      <span class="edit-check"><input
+      <label class="edit-check"><input
         type="checkbox"
         .checked=${selected}
         aria-label=${t("v4_room_include_named", { room: name })}
         @click=${(event: Event) => event.preventDefault()}
-      ></span>
+      ></label>
       ${selected ? html`<button class="edit-disclosure" type="button" aria-expanded=${String(open)} aria-label=${t("v4_room_settings_named", { room: name })}>
-          ${ordered ? html`<span class="pos" aria-hidden="true">${num(index + 1)}</span>` : nothing}
+          ${ordered ? html`<span class="ms-badge" aria-hidden="true">${num(index + 1)}</span>` : nothing}
           <span class="row-lines">
             <bdi>${name}</bdi>
             <small>${line}</small>
@@ -528,9 +531,7 @@ export class MockPlan extends MockScreen {
           <h4 class="ms-section-heading sub">${t("v4_when_run_ends")}</h4>
           ${switchRow("return-dock", t("v4_return_to_dock"), null, plan.returnToBase)}
           ${switchRow("finish-room", t("v4_finish_current_room"), null, plan.finishCurrentRoom)}
-          <label class="ms-field">${t("v4_finish_threshold", { percent: num(plan.finishCurrentRoomThreshold) })}
-            <input class="ms-range" type="range" min="0" max="100" step="5" .value=${String(plan.finishCurrentRoomThreshold)}>
-          </label>
+          <input class="ms-range" type="range" min="0" max="100" step="5" aria-labelledby="finish-room-label" .value=${String(plan.finishCurrentRoomThreshold)}>
         </div>
       </details>`;
     const primary: MockAction = {
@@ -558,7 +559,7 @@ export class MockPlan extends MockScreen {
           title: t("v4_discard_plan"),
           body: t("v4_discard_plan_detail", { name: plan.name }),
           actions: [
-            { label: t("v4_keep_area_editing"), kind: "secondary", change: { state: "dirty" } },
+            { label: t("v4_keep_area_editing"), kind: "plain", change: { state: "dirty" } },
             { label: t("v4_save"), kind: "secondary" },
             { label: t("v4_discard"), kind: "stop", change: { view: "run", state: "ready" } },
           ],
@@ -579,7 +580,7 @@ export class MockPlan extends MockScreen {
 
 // ---- Room schedule (room-schedule.md) ------------------------------------------------------
 
-type ScheduleState = "counting" | "do-next" | "edited" | "available" | "joined" | "limits" | "unverified";
+type ScheduleState = "counting" | "do-next" | "edited" | "available" | "joined" | "limits" | "unconfirmed";
 
 export class MockSchedule extends MockPlan {
   protected override scrollToSchedule = true;
@@ -617,7 +618,7 @@ export class MockSchedule extends MockPlan {
         explanation,
         advancedOpen: leaving,
         hasProgress: true,
-        ...(state === "unverified" ? { mopReason: t("v4_cadence_mop_progress_unverified") } : {}),
+        ...(state === "unconfirmed" ? { mopReason: t("v4_cadence_mop_progress_unverified") } : {}),
       },
     };
   }
@@ -672,7 +673,7 @@ export class MockSchedule extends MockPlan {
   }
 
   protected override view(): ShellView {
-    const state = (["counting", "do-next", "edited", "available", "joined", "limits", "unverified"].includes(this.mockState)
+    const state = (["counting", "do-next", "edited", "available", "joined", "limits", "unconfirmed"].includes(this.mockState)
       ? this.mockState
       : "counting") as ScheduleState;
     const model = state === "available" || state === "joined"

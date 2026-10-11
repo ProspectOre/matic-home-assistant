@@ -62,7 +62,7 @@ A household administrator opens Matic Map to start a clean (some rooms now, a sa
 | `v4_run_named_plan` NEW | Run {plan} | – | plan card when a default plan exists; detail = `plan.md` picker row line 2, plus line 3 when work is due |
 | `v4_run_a_plan` · `v4_saved_routine` · `v4_saved_routines` · `v4_create_plan` · `v4_no_plans_hint` | Run a plan · 1 saved plan · {count} saved plans · Create a plan · Save a plan to repeat a set of rooms | – · N | CP-0390, CP-0308, CP-0214 |
 | `v4_plans_loading_hint` · `v4_plans_unavailable_hint` | Reading plans for this floor · Try again to load your plans. | S · N | CP-0387, CP-0389 |
-| `v4_custom_areas` · `v4_areas_quick_detail` | Clean custom area · Draw a new custom area or choose a saved one | – | glossary: custom area; the card is a button, so 3 words |
+| `v4_custom_areas` · `v4_areas_quick_detail` | Clean custom area · Draw or choose a custom area | – | glossary: custom area; the card is a button, so 3 words; the detail stays one line at 390 (§7) |
 | `v4_maps_heading` NEW · `v4_history_quick_detail` · `v4_diagnostics_quick_detail` NEW | Maps · Browse earlier floor maps. · Check the map and copy details for support. | – · – · N | replaces `v4_more`; distinct from the rail group `v4_map_tools` (map-canvas.ts:607); history drops "floor-scoped" (CP-0188) |
 | `v4_no_rooms_reason` | Can't clean rooms until you name them in the Matic app. | S N | CP-0220; one sentence |
 | `v4_setup_title` NEW · `v4_no_robot_body` · `v4_open_integration` | Set up your robot · Add the Matic (Unofficial) integration to see a map here. · Open integration | – · C N · N | H10, stated once (MS-HOME-03); the body names the integration as manifest.json:3 does, so the button needs only 2 words (D2) |
@@ -92,9 +92,9 @@ Retired as well: `v4_room_ready`; `v4_shared_schedule_status` (its content moves
 ## 7. Responsive
 | Width | Layout · detent | Pinned | Scrolls |
 |---|---|---|---|
-| 320×844 | sheet; home and rooms at `half`; card titles wrap to 2 lines; a long plan name ends in an ellipsis (full name in the accessible name); multi-robot header per `design-system.md` | grip + action bar | panel body |
+| 320×844 | sheet; home and rooms at `half`; card titles wrap to 2 lines, and when the cards do not fit, the third card's top edge stays visible; a long plan name ends in an ellipsis (full name in the accessible name); multi-robot header per `design-system.md` | grip + action bar | panel body |
 | 360×844 | as 320; rail labels per `shell.md` | same | same |
-| 390×844 | as §3; at `half` the heading and all three cards must fit without scrolling | same | Maps, rows |
+| 390×844 | as §3; at `half` the heading and all three cards fit without scrolling: cards are two lines (62 px); only the plan card adds line 3 (96 px); 236 px of a 242 px body | same | Maps, rows |
 | 600×1024 · 768×1024 | sheet at `half` (≈43%) | same | same |
 | 768×600 | 320 px inspector, because the height is ≥480 (MS-RESP-04; numbers in `design-system.md`); same layout as 1024; the sheet only below 480 px height | strip + action bar | workflow body |
 | 1024×768 | 360 px inspector; Stop in the strip; chip on the canvas | strip + action bar | workflow body |

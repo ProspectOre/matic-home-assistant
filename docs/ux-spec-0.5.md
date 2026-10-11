@@ -15,7 +15,7 @@ Every file follows the same twelve sections (scope, user goal, hierarchy, states
 | [`ux-spec-0.5/room-schedule.md`](ux-spec-0.5/room-schedule.md) | 143 | "Mop every N cleans" / "Deep vacuum every N cleans" steppers, progress line, one "Do on next clean" switch, shared-by-default scope, reset | 8 | 1 |
 | [`ux-spec-0.5/shell.md`](ux-spec-0.5/shell.md) | 136 | Status strip (incl. the Stopping state), host and failure states, notice rule (inline + toast, two shell live regions), dialogs, focus, sheet, diagnostics | 33 | 1 |
 | [`ux-spec-0.5/map-surfaces.md`](ux-spec-0.5/map-surfaces.md) | 103 | Draw, area review, history, Full map (Locating keeps exit + Stop), one help component | 26 | 3 |
-| [`ux-spec-0.5/design-system.md`](ux-spec-0.5/design-system.md) | 147 | `ms-*` refinement: tokens, tints, `ms-stepper`, 44 px targets, disabled-with-reason, forced colors, detents, measured responsive rows | 35 | 3 |
+| [`ux-spec-0.5/design-system.md`](ux-spec-0.5/design-system.md) | 149 | `ms-*` refinement: tokens, tints, `ms-stepper`, 44 px targets, disabled-with-reason, forced colors, detents, measured responsive rows | 35 | 3 |
 | [`ux-spec-0.5/ha-native.md`](ux-spec-0.5/ha-native.md) | 123 | Config, reconfigure, reauth and options flows; three Repairs; identity-changed recovery by fresh re-pair | 25 | 5 |
 | [`ux-spec-0.5/ha-entities.md`](ux-spec-0.5/ha-entities.md) | 109 | Entity renames and removals (unique_ids stable), action names and descriptions, blueprints, LLM tools, events | 27 | 4 |
 | [`copy-style-0.5.md`](copy-style-0.5.md) | 143 | Voice, glossary, denylist, length limits, dialog and notice shapes; wins over the audit corpus rewrites | — | — |
@@ -49,7 +49,7 @@ Plans projection `next_run_estimate_seconds` (hidden when null); room progress, 
 
 ## Mockups
 
-`npm run build:map-studio-v4` also emits `mockups.js` into the git-ignored review bundle (never into `custom_components/`). `node tests/browser/server.mjs` serves `/map-studio-v4-mockups`: presentational Lit elements built from the real `ms-*` CSS and synthetic fixtures, with toggles for run/edit, intelligent/ordered, shared/this plan, due/not due, width presets (320 to 1440 and 844×390), light/dark and RTL. Buttons are inert. Review at 390 and 1024, light and dark, before answering the decisions.
+`npm run build:map-studio-v4` also emits `mockups.js` into the git-ignored review bundle (never into `custom_components/`). `node tests/browser/server.mjs` serves `/map-studio-v4-mockups`: presentational Lit elements built from the real `ms-*` CSS and synthetic fixtures, with toggles for run/edit, intelligent/ordered, shared/this plan, due/not due, width presets (320 to 1440 and 844×390), light/dark, RTL, and `d1` (`design-system.md` Decision 1: the resolved fills, indicator and danger text in place of HA's defaults; off by default). The status strip includes the Locating escalation (`shell.md` D1, after 20 s) and home includes H3 Locating. Buttons are inert apart from navigation and Full map. Review at 390 and 1024, light and dark, before answering the decisions.
 
 ## Not verified here
 

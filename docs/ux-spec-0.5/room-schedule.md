@@ -98,10 +98,10 @@ Keys are added to `strings.json` common if they exist only in TypeScript today. 
 | Width | Layout · detent | Sticky | Scrolls | Notes |
 |---|---|---|---|---|
 | 320×844 | inside Edit at full (`plan.md` §7) | Edit's action bar | sheet body | each row stacks the label above `[−][field][+]`, with the status line below; switch and radio labels wrap to 2 lines |
-| 360×844 · 390×844 | as 320 | as 320 | as 320 | the label and stepper share a line when both fit, otherwise they stack |
-| 600×1024 · 768×1024 | as 390 | as 320 | sheet body | the label and stepper share one line |
+| 360×844 · 390×844 | as 320 | as 320 | as 320 | label above the stepper, status line below, as 320 |
+| 600×1024 · 768×1024 | as 390 | as 320 | sheet body | label above the stepper, status line below, as 320 |
 | 768×600 | 320 px inspector (`design-system.md`) | bar at the inspector's bottom | inspector body | as 320 |
-| 1024×768 · 1440×900 | 360 px inspector | bar at the inspector's bottom | inspector body | the label and stepper share one line; the status line sits under them |
+| 1024×768 · 1440×900 | 360 px inspector | bar at the inspector's bottom | inspector body | label above the stepper, status line below, as 320 |
 | 844×390 | Edit at full | bar in the visible viewport | body | as 390 |
 
 ## 8. Accessibility

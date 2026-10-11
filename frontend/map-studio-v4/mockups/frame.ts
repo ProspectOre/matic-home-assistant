@@ -40,9 +40,11 @@ export interface Variants {
   readonly order: "intelligent" | "ordered";
   readonly scope: "shared" | "plan";
   readonly due: boolean;
+  /** Where plan Run was opened from (plan.md §5 `planOrigin`): it names Back. */
+  readonly origin: "home" | "plans";
 }
 
-export const DEFAULT_VARIANTS: Variants = { view: "run", order: "intelligent", scope: "shared", due: true };
+export const DEFAULT_VARIANTS: Variants = { view: "run", order: "intelligent", scope: "shared", due: true, origin: "plans" };
 
 export interface StageFrame {
   readonly width: number;
@@ -81,7 +83,7 @@ const START_DETENT: Readonly<Record<Workflow, readonly [Detent, Detent]>> = {
 
 // ---- View model ------------------------------------------------------------
 
-export type ActionKind = "primary" | "stop" | "stop-outline" | "secondary" | "link";
+export type ActionKind = "primary" | "stop" | "stop-outline" | "secondary" | "plain" | "link";
 
 export interface MockAction {
   readonly label: string;
@@ -120,7 +122,6 @@ export interface MapView {
   readonly chip?: string;
   readonly chipClear?: boolean;
   readonly card?: { readonly glyph: string; readonly title: string };
-  readonly dim?: boolean;
   readonly rail?: boolean;
   /** False: rooms have no names yet (home-rooms.md R9). */
   readonly labels?: boolean;
@@ -158,7 +159,10 @@ export interface ShellView {
   readonly bar?: BarView;
   readonly motion?: MotionView;
   readonly map: MapView;
-  readonly fullMap?: { readonly locating: boolean };
+  /** `detail` replaces the HUD detail (shell.md §5: `v4_locating_slow_full` after 20 s). */
+  readonly fullMap?: { readonly locating: boolean; readonly detail?: string };
+  /** Present: the app bar's Full map button and the HUD's Exit toggle Full map here. */
+  readonly onFullMap?: () => void;
   readonly dialog?: DialogView;
 }
 
@@ -176,7 +180,7 @@ export const glyph = (path: string, directional = false, extra = ""): TemplateRe
 export type ChipTone = "accent" | "warning" | "danger" | "neutral";
 
 export const chip = (text: string, tone: ChipTone = "accent"): TemplateResult =>
-  html`<span class="mock-chip" data-tone=${tone === "accent" ? nothing : tone}>${text}</span>`;
+  html`<span class="ms-chip" data-tone=${tone === "accent" ? nothing : tone}>${text}</span>`;
 
 const TONE_GLYPH: Readonly<Record<Tone, string>> = {
   info: iconDiagnostics,
@@ -250,7 +254,6 @@ const shellCss = (): CSSResultGroup => {
 const frameCss = css`
 .mock-map { position: absolute; inset: 0; inset-block-end: var(--mock-sheet, 0px); overflow: hidden; background: var(--ms-surface-app); container-type: size; }
 .mock-map__svg { display: block; inline-size: 100%; block-size: 100%; padding: min(4rem, 20cqh) var(--ms-space-4) min(var(--ms-space-4), 6cqh); direction: ltr; }
-.mock-map--dim .mock-map__svg { opacity: 0.5; filter: grayscale(0.7); }
 .room { fill: color-mix(in srgb, var(--ms-text) 5%, var(--ms-surface-card)); stroke: var(--ms-line-strong); stroke-width: 0.03; }
 .room--selected { fill: var(--ms-tint-accent); stroke: var(--ms-indicator); stroke-width: 0.07; }
 .room-label { fill: var(--ms-text); font: 700 0.3px var(--ms-font); }
@@ -386,9 +389,10 @@ export abstract class MockScreen extends LitElement {
       stop: "ms-btn--primary ms-btn--danger",
       "stop-outline": "ms-btn--danger",
       secondary: "ms-btn--secondary",
+      plain: "",
     }[action.kind];
     const size = placement === "bar" ? "ms-btn--lg ms-btn--block" : placement === "row" || placement === "grip" || placement === "hud" ? "ms-btn--lg" : "";
-    const classes = `ms-btn ${variant} ${size}`;
+    const classes = ["ms-btn", variant, size].filter(Boolean).join(" ");
     const content = html`${action.glyph ? glyph(action.glyph) : nothing}${action.label}`;
     if (action.kind === "link") {
       return html`<a class=${classes} href="#open-integration" @click=${inert}>${content}</a>`;
@@ -464,7 +468,7 @@ export abstract class MockScreen extends LitElement {
   #strip(view: ShellView): TemplateResult {
     const motion = view.motion;
     const actions = motion ? [motion.resume, motion.stop].filter((item): item is MockAction => Boolean(item)) : [];
-    return html`<div class=${`status-strip ${actions.length > 1 ? "status-strip--two" : ""}`}>
+    return html`<div class="status-strip">
       <span class="status-icon" aria-hidden="true">${glyph(view.status.glyph)}</span>
       <span class="status-copy"><strong>${view.status.title}</strong><small>${view.status.detail}</small></span>
       ${actions.length ? html`<span class="status-actions">${actions.map((action, index) => this.actionButton(action, "strip", `status-reason-${index}`))}</span>` : nothing}
@@ -528,7 +532,7 @@ export abstract class MockScreen extends LitElement {
     const showMap = map.mode === "map";
     const count = map.selected?.length ?? 0;
     return html`<div class="canvas">
-      <div class=${`mock-map ${map.dim ? "mock-map--dim" : ""}`} style=${`--mock-sheet:${sheet}px`}>
+      <div class="mock-map" style=${`--mock-sheet:${sheet}px`}>
         ${showMap ? html`<svg
           class="mock-map__svg"
           viewBox="0 0 11 7.4"
@@ -556,9 +560,9 @@ export abstract class MockScreen extends LitElement {
   #hud(view: ShellView): TemplateResult {
     const primary = view.motion?.stop ?? (view.fullMap?.locating ? undefined : view.bar?.primary);
     return html`<section class="full-map-hud ms-surface ms-surface--floating has-secondary" aria-label="Robot status and action">
-      <span class="hud-copy"><strong>${view.status.title}</strong><small>${view.status.detail}</small></span>
+      <span class="hud-copy"><strong>${view.status.title}</strong><small>${view.fullMap?.detail ?? view.status.detail}</small></span>
       ${primary ? this.actionButton(primary, "hud", "hud-reason") : nothing}
-      <button class="ms-btn ms-btn--lg ms-btn--secondary" type="button">${glyph(glyphExitFullMap)}${t("v4_exit_full_map")}</button>
+      <button class="ms-btn ms-btn--lg ms-btn--secondary" type="button" @click=${() => view.onFullMap?.()}>${glyph(glyphExitFullMap)}${t("v4_exit_full_map")}</button>
       ${primary ? this.reasonLine(primary, "hud-reason") : nothing}
     </section>`;
   }
@@ -610,6 +614,7 @@ export abstract class MockScreen extends LitElement {
             aria-label=${t("v4_full_map")}
             title=${t("v4_full_map")}
             aria-pressed=${String(Boolean(view.fullMap))}
+            @click=${() => view.onFullMap?.()}
           >${glyph(glyphFullMap)}</button>` : nothing}
           <div class="overflow-wrap">
             <button class="overflow ms-btn ms-btn--icon" type="button" aria-label=${t("v4_map_options")} title=${t("v4_map_options")} aria-expanded="false">${glyph(iconOverflow)}</button>
