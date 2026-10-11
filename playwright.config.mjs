@@ -1,9 +1,20 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// UX audit captures (`@audit`) are evidence tooling, not gates. Default runs
+// and CI exclude them; they run only through `npm run audit:ux`
+// (`--grep @audit`). A project's own `grepInvert` replaces the top-level one,
+// so the exclusion is repeated per project and lifted only for an audit run.
+const argv = process.argv.slice(2);
+const auditRun = argv.some((arg, index) =>
+  /^(--grep|-g)=.*@audit/u.test(arg)
+  || ((arg === "--grep" || arg === "-g") && Boolean(argv[index + 1]?.includes("@audit"))));
+const excludeAudit = auditRun ? [] : [/@audit/];
+
 // Project selection is tag-based: tests whose title carries `@mobile` run only
 // on the two mobile-device projects; everything else runs on the desktop ones.
 export default defineConfig({
   testDir: "./tests/browser",
+  grepInvert: auditRun ? undefined : /@audit/,
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   failOnFlakyTests: Boolean(process.env.CI),
@@ -20,7 +31,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      grepInvert: /@mobile/,
+      grepInvert: [/@mobile/, ...excludeAudit],
       use: { ...devices["Desktop Chrome"] },
     },
     {
@@ -30,7 +41,7 @@ export default defineConfig({
       // and touch input on both engines; physical-device acceptance is separate.
       name: "webkit",
       testMatch: "tests/browser/map_studio_v4*.spec.mjs",
-      grepInvert: /@mobile/,
+      grepInvert: [/@mobile/, ...excludeAudit],
       use: { ...devices["Desktop Safari"] },
     },
     {

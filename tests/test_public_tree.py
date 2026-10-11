@@ -132,3 +132,24 @@ def test_privacy_scan_skips_generated_browser_artifacts(
     generated.write_text("host=" + ".".join(("192", "168", "50", "12")))
 
     assert scan_tree(tmp_path) == []
+
+
+def test_privacy_scan_skips_generated_ux_audit_screenshots(tmp_path: Path) -> None:
+    """Do not flag gitignored synthetic UX audit captures as household imagery."""
+    screenshot = (
+        tmp_path
+        / "tests"
+        / "browser"
+        / ".generated"
+        / "ux-audit"
+        / "ready"
+        / "390x844-light-ltr.png"
+    )
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(b"synthetic gallery capture placeholder")
+    tracked_png = tmp_path / "tests" / "browser" / "house.png"
+    tracked_png.write_bytes(b"synthetic private-map placeholder")
+
+    assert scan_tree(tmp_path) == [
+        "tests/browser/house.png: private artifact type .png"
+    ]
