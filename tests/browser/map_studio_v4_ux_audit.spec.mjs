@@ -1,8 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test } from "@playwright/test";
 import { build } from "esbuild";
-import { mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // Evidence harness, not a gate: `npm run audit:ux` captures every Map Studio v4
@@ -10,17 +11,37 @@ import { fileURLToPath } from "node:url";
 // `manifest.json` + `summary.md` for the UX audit agents to cite. Excluded from
 // default runs and CI by the `@audit` tag (see playwright.config.mjs).
 // Everything is synthetic gallery data served by tests/browser/server.mjs.
+// `UX_AUDIT_OUT_DIR` (repository-relative or absolute) redirects the output root.
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../..", import.meta.url));
-const OUTPUT_ROOT = fileURLToPath(new URL("./.generated/ux-audit/", import.meta.url));
-const OUTPUT_REPOSITORY_PATH = "tests/browser/.generated/ux-audit";
+const OUTPUT_ROOT = resolve(
+  REPOSITORY_ROOT,
+  process.env.UX_AUDIT_OUT_DIR || "tests/browser/.generated/ux-audit",
+);
+const OUTPUT_REPOSITORY_PATH = relative(REPOSITORY_ROOT, OUTPUT_ROOT).split(sep).join("/");
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
 const AUDIT_PAGE = "/map-studio-v4-audit";
-// The shell's own narrow rule is `width < 1024` (shell.ts ResizeObserver).
-const NARROW_BELOW = 1024;
+// The shell's own narrow rule (shell.ts ResizeObserver): width < 1024 || height < 480.
+const NARROW_BELOW_WIDTH = 1024;
+const NARROW_BELOW_HEIGHT = 480;
 // Chromium cannot reliably encode screenshots much taller than this.
 const MAX_FULL_PAGE_HEIGHT = 9000;
 const SAMPLE_NOTICE = "Sample notice text";
+const RTL_NOTE = "English copy under dir=rtl: bidi punctuation artifacts are not RTL-locale defects.";
+
+const git = (...args) => {
+  try {
+    return execFileSync("git", args, { cwd: REPOSITORY_ROOT, encoding: "utf8" }).trim();
+  } catch {
+    return null;
+  }
+};
+// Stamps every record so a manifest says which code produced it. Tracked
+// changes mark the stamp dirty (untracked docs from other tasks are ignored).
+const SOURCE_STAMP = {
+  gitHead: git("rev-parse", "HEAD"),
+  gitDirty: Boolean(git("status", "--porcelain", "--untracked-files=no")),
+};
 
 // The scenario, dialog, and tone lists come from the TypeScript source so the
 // harness cannot drift from them. The browser runs the review bundle, so each
@@ -44,7 +65,7 @@ const variant = (width, height, theme = "light", dir = "ltr", forced = false) =>
   theme,
   dir,
   forced,
-  narrow: width < NARROW_BELOW,
+  narrow: width < NARROW_BELOW_WIDTH || height < NARROW_BELOW_HEIGHT,
   name: `${width}x${height}-${theme}-${dir}${forced ? "-forced" : ""}`,
 });
 
@@ -163,6 +184,10 @@ async function assertFreshBundle(page) {
 
 // Loads a fresh gallery so every capture starts from the same detent, focus,
 // and scroll state, then puts it into the requested scenario and variant.
+// The gallery stage is sized before the first render: the map fits its first
+// layout, and a stage resized afterwards refits differently depending on which
+// state changes follow (a wide map sat at x=66 in `ready` but x=2 after a
+// scenario switch). Every capture therefore gets one first fit at final size.
 async function openScenario(page, item, size) {
   await page.setViewportSize({ width: size.width, height: size.height });
   await page.emulateMedia({
@@ -180,11 +205,18 @@ async function openScenario(page, item, size) {
   await page.addStyleTag({ content: "body > aside[role='note'] { display: none !important; }" });
   await page.evaluate(async ({ tag, scenario, narrow, dir, patch }) => {
     document.documentElement.dir = dir;
-    const gallery = document.querySelector(tag);
-    gallery.shadowRoot.querySelector(".stage").style.cssText =
-      "block-size:100dvh;min-block-size:0;max-inline-size:none;";
+    // Replace the page's own gallery (rendered at the default stage size) with
+    // one whose stage override is adopted right after Lit creates the render
+    // root and before its first update renders the stage.
+    document.querySelector(tag).remove();
+    const gallery = document.createElement(tag);
+    gallery.controls = false;
     gallery.narrow = narrow;
     gallery.scenario = scenario;
+    document.body.append(gallery);
+    const stage = new CSSStyleSheet();
+    stage.replaceSync(".stage{block-size:100dvh!important;min-block-size:0!important;max-inline-size:none!important}");
+    gallery.shadowRoot.adoptedStyleSheets = [...gallery.shadowRoot.adoptedStyleSheets, stage];
     await gallery.updateComplete;
     if (patch) {
       gallery.replaceWorkspaceState({ ...gallery.getWorkspaceSnapshot(), ...patch });
@@ -245,6 +277,53 @@ async function stableScreenshot(page, fullPage = false) {
   return { png: latest, stable: false };
 }
 
+// Framing evidence: the leftmost viewport pixel the map canvases paint. It is the
+// first column that differs between the shot and the same frame with the scene
+// and overlay canvases hidden, so it is independent of theme and map colors.
+// Auditors can compare it across scenarios at one size; a wide framing drift
+// would show as a different value.
+async function measureMapLeft(page, withMap) {
+  const setHidden = (hidden) => page.evaluate(({ tag, hidden }) => {
+    const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+    const canvas = [...shell.shadowRoot.querySelectorAll("*")]
+      .find((element) => element.localName.startsWith("matic-map-canvas-v4"));
+    const scene = canvas?.shadowRoot?.querySelector(".scene-window");
+    if (!scene) return null;
+    for (const surface of scene.querySelectorAll("canvas")) surface.style.visibility = hidden ? "hidden" : "";
+    const { left, top, width, height } = scene.getBoundingClientRect();
+    return { left, top, width, height };
+  }, { tag: GALLERY_TAG, hidden });
+  const rect = await setHidden(true);
+  if (!rect) return null;
+  let without;
+  try {
+    await pause(80);
+    without = await page.screenshot({ animations: "disabled", caret: "hide" });
+  } finally {
+    await setHidden(false);
+  }
+  return page.evaluate(async ({ before, after, rect }) => {
+    const decode = async (base64) => {
+      const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${base64}`)).blob());
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext("2d");
+      context.drawImage(bitmap, 0, 0);
+      return context.getImageData(0, 0, bitmap.width, bitmap.height);
+    };
+    const [a, b] = [await decode(before), await decode(after)];
+    const bottom = Math.min(a.height, Math.ceil(rect.top + rect.height));
+    for (let x = Math.max(0, Math.floor(rect.left)); x < Math.min(a.width, Math.ceil(rect.left + rect.width)); x += 1) {
+      for (let y = Math.max(0, Math.floor(rect.top)); y < bottom; y += 1) {
+        const index = (y * a.width + x) * 4;
+        const difference = Math.abs(a.data[index] - b.data[index])
+          + Math.abs(a.data[index + 1] - b.data[index + 1])
+          + Math.abs(a.data[index + 2] - b.data[index + 2]);
+        if (difference > 24) return x;
+      }
+    }
+    return null;
+  }, { before: withMap.toString("base64"), after: without.toString("base64"), rect });
+}
+
 async function runAxe(page) {
   const { violations } = await new AxeBuilder({ page }).analyze();
   return violations.map(({ id, impact, help, helpUrl, nodes }) => ({
@@ -302,6 +381,14 @@ async function writeCapture(directory, name, png) {
   await writeFile(join(directory, `${name}.png`), png);
 }
 
+// Stamps a finished record with its time and source, and the RTL caveat.
+const finalize = (record, size) => ({
+  ...record,
+  generatedAt: new Date().toISOString(),
+  ...SOURCE_STAMP,
+  ...(size.dir === "rtl" ? { note: [record.note, RTL_NOTE].filter(Boolean).join(" ") } : {}),
+});
+
 async function captureVariant(page, item, size, directory) {
   const base = {
     scenario: item.id,
@@ -320,7 +407,7 @@ async function captureVariant(page, item, size, directory) {
     if (item.help) {
       const skipped = await openHelp(page);
       if (skipped) {
-        return [{ ...base, path: null, axeSerious: null, axeCritical: null, axeIds: [], skipped }];
+        return [finalize({ ...base, path: null, axeSerious: null, axeCritical: null, axeIds: [], skipped }, size)];
       }
     }
     const shot = await stableScreenshot(page);
@@ -328,12 +415,21 @@ async function captureVariant(page, item, size, directory) {
     const record = {
       ...base,
       path: toRepositoryPath(item.id, `${size.name}.png`),
+      mapLeftPx: null,
       axeSerious: null,
       axeCritical: null,
       axeIds: [],
       ...(shot.stable ? {} : { note: "Screenshot did not reach two identical frames." }),
     };
     records.push(record);
+    // Wide layouts only: on narrow ones the sheet covers the map's left edge.
+    if (!size.narrow) {
+      try {
+        record.mapLeftPx = await measureMapLeft(page, shot.png);
+      } catch {
+        record.mapLeftPx = null;
+      }
+    }
     // Axe runs in light and dark only; forced-colors replaces the palette.
     if (!size.forced) {
       const violations = await runAxe(page);
@@ -359,26 +455,27 @@ async function captureVariant(page, item, size, directory) {
       error: errorText(error),
     });
   }
-  return records;
+  return records.map((record) => finalize(record, size));
 }
 
 // A second, fullPage capture when content is out of view: the document itself
 // scrolls (for example landscape phones) or the full-height sheet body scrolls.
 // The sheet scrolls inside a fixed box, so the viewport is grown until its
-// whole body fits and the fullPage shot then shows every row.
+// whole body fits and the fullPage shot then shows every row. `height` stays
+// the variant's viewport height; `grownViewportHeight` is the size captured.
 async function captureFullPage(page, base, item, size, directory) {
   try {
     let scroll = await measureScroll(page);
     const sheetScrolls = size.narrow && scroll.detent === "full" && scroll.sheetOverflow > 1;
     if (scroll.documentOverflow <= 1 && !sheetScrolls) return [];
-    let height = size.height;
+    let grownHeight = size.height;
     let capped = false;
     for (let pass = 0; sheetScrolls && pass < 4 && scroll.sheetOverflow > 1; pass += 1) {
-      const next = Math.min(MAX_FULL_PAGE_HEIGHT, height + scroll.sheetOverflow + 4);
+      const next = Math.min(MAX_FULL_PAGE_HEIGHT, grownHeight + scroll.sheetOverflow + 4);
       capped = next === MAX_FULL_PAGE_HEIGHT;
-      if (next === height) break;
-      height = next;
-      await page.setViewportSize({ width: size.width, height });
+      if (next === grownHeight) break;
+      grownHeight = next;
+      await page.setViewportSize({ width: size.width, height: grownHeight });
       await settle(page);
       scroll = await measureScroll(page);
     }
@@ -388,7 +485,7 @@ async function captureFullPage(page, base, item, size, directory) {
     return [{
       ...base,
       variant: name,
-      height,
+      grownViewportHeight: grownHeight,
       kind: "full-page",
       path: toRepositoryPath(item.id, `${name}.png`),
       axeSerious: null,
@@ -410,27 +507,52 @@ async function captureFullPage(page, base, item, size, directory) {
   }
 }
 
-// Rebuilds manifest.json and summary.md from every finished scenario. Each
-// test calls this when it ends, so the last one to finish writes the final
-// files; the rename keeps concurrent writers from leaving a half-written file.
-async function writeIndex() {
-  const present = new Set(await readdir(OUTPUT_ROOT).catch(() => []));
-  const manifest = [];
-  for (const item of ITEMS) {
-    if (!present.has(item.id)) continue;
+// Serializes index writers across workers with an atomic mkdir lock, so the
+// last test to take it reads every finished scenario and writes the final files.
+async function withIndexLock(action) {
+  const lock = join(OUTPUT_ROOT, ".index.lock");
+  for (let attempt = 0; ; attempt += 1) {
     try {
-      manifest.push(...JSON.parse(await readFile(join(OUTPUT_ROOT, item.id, "records.json"), "utf8")));
-    } catch {
-      // A scenario still running has no records yet.
+      await mkdir(lock);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST" || attempt >= 600) throw error;
+      // A lock left behind by a killed run would block every later run.
+      const held = await stat(lock).catch(() => null);
+      if (held && Date.now() - held.mtimeMs > 30_000) await rm(lock, { recursive: true, force: true });
+      await pause(100);
     }
   }
-  const replace = async (name, contents) => {
-    const temporary = join(OUTPUT_ROOT, `.${name}.${process.pid}.tmp`);
-    await writeFile(temporary, contents);
-    await rename(temporary, join(OUTPUT_ROOT, name));
-  };
-  await replace("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
-  await replace("summary.md", summarize(manifest));
+  try {
+    return await action();
+  } finally {
+    await rm(lock, { recursive: true, force: true });
+  }
+}
+
+// Rebuilds manifest.json and summary.md from every finished scenario. Each
+// test calls this when it ends, under the lock; the rename keeps readers from
+// ever seeing a half-written file.
+async function writeIndex() {
+  await withIndexLock(async () => {
+    const present = new Set(await readdir(OUTPUT_ROOT).catch(() => []));
+    const manifest = [];
+    for (const item of ITEMS) {
+      if (!present.has(item.id)) continue;
+      try {
+        manifest.push(...JSON.parse(await readFile(join(OUTPUT_ROOT, item.id, "records.json"), "utf8")));
+      } catch {
+        // A scenario still running has no records yet.
+      }
+    }
+    const replace = async (name, contents) => {
+      const temporary = join(OUTPUT_ROOT, `.${name}.${process.pid}.tmp`);
+      await writeFile(temporary, contents);
+      await rename(temporary, join(OUTPUT_ROOT, name));
+    };
+    await replace("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
+    await replace("summary.md", summarize(manifest));
+  });
 }
 
 function summarize(manifest) {
@@ -453,6 +575,8 @@ function summarize(manifest) {
     "Synthetic gallery fixtures only; not live Home Assistant. Screenshots are",
     "a desktop Chromium profile resized to each width (no touch emulation).",
     "Paths are relative to the repository root; see `manifest.json` for every capture.",
+    "RTL captures render English copy under dir=rtl: bidi punctuation artifacts are not RTL-locale defects.",
+    `Generated ${new Date().toISOString()} from commit ${SOURCE_STAMP.gitHead ?? "unknown"}${SOURCE_STAMP.gitDirty ? " (tracked changes present)" : ""}.`,
     "",
     `- Captures (PNG files): ${captured.length} (${captured.filter((entry) => entry.kind === "full-page").length} are full-page companions)`,
     `- Errors: ${manifest.filter((entry) => entry.error).length}`,
