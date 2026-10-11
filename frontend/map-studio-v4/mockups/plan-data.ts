@@ -6,7 +6,7 @@ import type {
   SavedPlan,
 } from "../backend-contracts";
 import { syntheticMockupEstimateSeconds, syntheticMockupPlans } from "../synthetic-fixtures";
-import { listOf, num, t } from "./copy";
+import { ROTATION_LEVEL, listOf, num, t, type CopyKey, type RotationLevel } from "./copy";
 import type { Variants } from "./frame";
 
 // Derived views of the synthetic plan catalog. The toggles map onto it as:
@@ -54,28 +54,48 @@ export const previewRooms = (plan: SavedPlan, variants: Variants, focusId: strin
 export const planLine = (plan: SavedPlan, order: SavedPlan["runBehavior"]): string =>
   t(order === "ordered" ? "v4_plan_row_ordered" : "v4_plan_row_rotation", { count: num(plan.rooms.length) });
 
+type DueKind = "mop" | RotationLevel;
+
+const DUE_KEYS: Readonly<Record<DueKind, CopyKey>> = {
+  mop: "v4_due_mop",
+  quick: "v4_due_quick",
+  optimal: "v4_due_optimal",
+  heavy: "v4_due_heavy",
+};
+
 /**
- * Picker line 3 (plan.md §3, §6): due work, or "Needs attention" for any
- * blocker but `plan_disabled`; nothing for a paused plan. Mop, deep vacuum
- * and both due are three whole strings; nothing is joined in code.
+ * The due lines (plan.md §6 `v4_due_*`): one whole string per due kind, in
+ * the order mop, quick, optimal, heavy duty. A room's rotation level is the
+ * preview room's effective `coverageSetting` (backend-contracts.ts:180-181).
  */
-export const planAttention = (plan: SavedPlan, variants: Variants, focusId: string): string | null => {
+export const dueLines = (rooms: readonly NextRunPreviewRoom[]): readonly string[] => {
+  const names: Record<DueKind, string[]> = { mop: [], quick: [], optimal: [], heavy: [] };
+  for (const room of rooms) {
+    if (room.cadenceReasons.includes("mop_due")) names.mop.push(room.name);
+    if (room.cadenceReasons.includes("coverage_due")) names[ROTATION_LEVEL[room.coverageSetting]].push(room.name);
+  }
+  return (Object.keys(DUE_KEYS) as DueKind[])
+    .filter((kind) => names[kind].length > 0)
+    .map((kind) => t(DUE_KEYS[kind], { rooms: listOf(names[kind]) }));
+};
+
+/**
+ * Picker line 3 and the home card's line 3 (plan.md §3): the due lines, or
+ * "Needs attention" for any blocker but `plan_disabled`; nothing for a
+ * paused plan.
+ */
+export const planLine3 = (plan: SavedPlan, variants: Variants, focusId: string): { readonly due: readonly string[] } | { readonly blocked: string } | null => {
   if (!plan.enabled) return null;
   const blocker = plan.nextRunPreview?.blocker ?? null;
-  if (blocker && blocker !== "plan_disabled") return t("v4_plan_row_blocked");
-  const rooms = previewRooms(plan, variants, focusId);
-  const mop = rooms.filter((room) => room.cadenceReasons.includes("mop_due")).map((room) => room.name);
-  const deep = rooms.filter((room) => room.cadenceReasons.includes("coverage_due")).map((room) => room.name);
-  if (mop.length && deep.length) return t("v4_plan_row_both_due", { mop: listOf(mop), deep: listOf(deep) });
-  if (mop.length) return t("v4_plan_row_mop_due", { rooms: listOf(mop) });
-  if (deep.length) return t("v4_plan_row_deep_due", { rooms: listOf(deep) });
-  return null;
+  if (blocker && blocker !== "plan_disabled") return { blocked: t("v4_plan_row_blocked") };
+  const due = dueLines(previewRooms(plan, variants, focusId));
+  return due.length ? { due } : null;
 };
 
 /**
  * Run's summary (plan.md §3, §6): "{count} rooms", or the estimate string
  * when the plan.md §9 field exists and the preview is runnable. The order
- * is not repeated here: the caption or the numbers carry it.
+ * is not repeated here: the rotation hint or the numbers carry it.
  */
 export const runSummary = (plan: SavedPlan, runnable: boolean): string => {
   const count = num(plan.rooms.length);
@@ -84,7 +104,10 @@ export const runSummary = (plan: SavedPlan, runnable: boolean): string => {
   return t("v4_plan_summary_rooms_estimate", { count, minutes: num(Math.round(seconds / 60)) });
 };
 
-/** The due toggle off moves each due schedule two cleans away. */
+/**
+ * The due toggle off moves each due schedule two cleans away: count
+ * every − 2, so cadence.py:118-131 gives next_*_in = 2.
+ */
 export const progressFor = (
   progress: RoomCadenceProgress | undefined,
   cadence: RoomCadencePolicy | undefined,
@@ -96,28 +119,24 @@ export const progressFor = (
   return {
     ...progress,
     ...(progress.mopDue && mopEvery !== null
-      ? { mopDue: false, mopProgress: Math.max(0, mopEvery - 3), nextMopIn: 2 }
+      ? { mopDue: false, mopProgress: Math.max(0, mopEvery - 2), nextMopIn: 2 }
       : {}),
     ...(progress.coverageDue && coverageEvery !== null
-      ? { coverageDue: false, coverageProgress: Math.max(0, coverageEvery - 3), nextCoverageIn: 2 }
+      ? { coverageDue: false, coverageProgress: Math.max(0, coverageEvery - 2), nextCoverageIn: 2 }
       : {}),
     reasons: withDue(progress.reasons, false),
   };
 };
 
-/** room-schedule.md §6 status line for one schedule. */
-export const statusLine = (
-  every: number | null,
-  counted: number,
-  due: boolean,
-  remaining: number | null,
-): string | null => {
-  if (every === null) return null;
+/**
+ * room-schedule.md §5 status line, when it happens and nothing else:
+ * "Due next clean" when the server's next_*_in is 1 or the next-clean switch
+ * forces it, else "Due in {count} cleans" with that server value.
+ */
+export const statusLine = (every: number | null, nextIn: number | null, forced: boolean): string | null => {
+  if (every === null) return t("v4_cadence_status_off");
   if (every === 1) return t("v4_cadence_status_every");
-  if (due) return t("v4_cadence_status_due", { counted: num(counted), every: num(every) });
-  return t("v4_cadence_status", {
-    counted: num(counted),
-    every: num(every),
-    remaining: num(remaining ?? Math.max(1, every - 1 - counted)),
-  });
+  if (forced) return t("v4_cadence_status_next");
+  if (nextIn === null) return null;
+  return nextIn <= 1 ? t("v4_cadence_status_next") : t("v4_cadence_status_in", { count: num(nextIn) });
 };

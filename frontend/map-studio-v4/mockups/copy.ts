@@ -1,5 +1,14 @@
 import type { CleaningMode, CoverageSetting } from "../backend-contracts";
 
+/** The vacuum rotation's level, as the room-schedule.md §6 keys name it. */
+export type RotationLevel = "quick" | "optimal" | "heavy";
+
+export const ROTATION_LEVEL: Readonly<Record<CoverageSetting, RotationLevel>> = {
+  quick: "quick",
+  standard: "optimal",
+  heavy_duty: "heavy",
+};
+
 // The strings the 0.5 mockups show, keyed as the specs key them. Values are
 // the "Final copy" tables of docs/ux-spec-0.5/*.md, verbatim. Keys marked
 // "(literal)" are labels a spec names in prose without a copy-table row; the
@@ -35,12 +44,12 @@ export const COPY = {
   v4_room_cleaning_system_named: "Cleaning mode for {room}",
   v4_vacuum_coverage: "Vacuum coverage", // (literal) plan.md §3
   v4_room_setting_mop: "Mop",
-  v4_room_setting_vacuum_quick: "Vacuum · Quick vacuum coverage",
-  v4_room_setting_vacuum_standard: "Vacuum · Optimal vacuum coverage",
-  v4_room_setting_vacuum_heavy_duty: "Vacuum · Heavy duty vacuum coverage",
-  v4_room_setting_vacuum_and_mop_quick: "Vacuum + mop · Quick vacuum coverage",
-  v4_room_setting_vacuum_and_mop_standard: "Vacuum + mop · Optimal vacuum coverage",
-  v4_room_setting_vacuum_and_mop_heavy_duty: "Vacuum + mop · Heavy duty vacuum coverage",
+  v4_room_setting_vacuum_quick: "Vacuum · Quick",
+  v4_room_setting_vacuum_standard: "Vacuum · Optimal",
+  v4_room_setting_vacuum_heavy_duty: "Vacuum · Heavy duty",
+  v4_room_setting_vacuum_and_mop_quick: "Vacuum + mop · Quick",
+  v4_room_setting_vacuum_and_mop_standard: "Vacuum + mop · Optimal",
+  v4_room_setting_vacuum_and_mop_heavy_duty: "Vacuum + mop · Heavy duty",
   vacuum: "Vacuum",
   mop: "Mop",
   vacuum_and_mop: "Vacuum + mop",
@@ -49,7 +58,6 @@ export const COPY = {
   heavy_duty: "Heavy duty",
   v4_include_due_schedule: "Include scheduled work that's due",
   v4_include_due_schedule_hint: "Turn off to use only your settings. Skipped work stays due for the next clean.",
-  v4_room_due_changes: "Due work changes this room's settings for this clean.",
   v4_room_parts: "The robot cleans these rooms in {count} parts and may stop at the dock between parts.",
   v4_room_preview_loading: "Checking settings…",
   v4_room_preview_unavailable: "Home Assistant couldn't check the room settings.",
@@ -78,9 +86,10 @@ export const COPY = {
   v4_plan_row_ordered: "{count} rooms · Top to bottom, as listed",
   v4_plan_default: "Default",
   v4_paused: "Paused",
-  v4_plan_row_mop_due: "Mop due: {rooms}",
-  v4_plan_row_deep_due: "Deep vacuum due: {rooms}",
-  v4_plan_row_both_due: "Mop due: {mop} · Deep vacuum due: {deep}",
+  v4_due_mop: "Mop due in {rooms}",
+  v4_due_quick: "Quick vacuum due in {rooms}",
+  v4_due_optimal: "Optimal vacuum due in {rooms}",
+  v4_due_heavy: "Heavy duty vacuum due in {rooms}",
   v4_plan_row_blocked: "Needs attention before it can run",
   v4_edit: "Edit",
   v4_edit_plan_named: "Edit {plan}",
@@ -95,13 +104,11 @@ export const COPY = {
   v4_next_run_preview: "Next run",
   v4_next_run_after_active: "After this run",
   v4_plan_rooms_heading: "Rooms in this plan",
-  v4_plan_rotation_settings: "Longest-waiting rooms go first. The order is checked again when you run the plan.",
+  v4_plan_rotation_settings: "Longest-waiting rooms first, rechecked when you run the plan.",
   v4_part_break: "Part {number} starts here; the robot may stop at the dock first",
-  v4_cadence_mop_due_reason: "Mop due",
-  v4_cadence_coverage_due_reason: "Deep vacuum due",
   v4_needs_attention_chip: "Needs attention", // (literal) plan.md §3 row chip
   v4_plan_summary_return: "Returns to the dock when finished",
-  v4_plan_summary_finish: "If you press Stop once the current room is {percent}% done, the robot finishes that room first.",
+  v4_plan_summary_finish: "When you press Stop, the robot finishes the current room if it's at least {percent}% done.",
   v4_reason_run_plan_paused: "Can't run this plan until you turn it on.",
   v4_reason_plan_room_progress: "Can't run this plan until you reset {room}'s schedule progress, which Home Assistant can't confirm.",
   v4_review_room: "Review {room}",
@@ -122,10 +129,31 @@ export const COPY = {
   move_room_down: "Move {room} later",
   v4_room_already_first: "{room} is already first",
   v4_room_already_last: "{room} is already last",
-  v4_more_options: "More options",
-  v4_when_run_ends: "When a run ends", // (literal) plan.md §3
-  v4_return_to_dock: "Return to the dock", // (literal) plan.md §3
-  v4_finish_current_room: "Finish the current room", // (literal) plan.md §3
+  v4_room_schedules_mop: "Mop every {mop} cleans",
+  v4_room_schedules_mop_one: "Mop every clean",
+  v4_room_schedules_quick: "Quick vacuum every {cov} cleans",
+  v4_room_schedules_quick_one: "Quick vacuum every clean",
+  v4_room_schedules_optimal: "Optimal vacuum every {cov} cleans",
+  v4_room_schedules_optimal_one: "Optimal vacuum every clean",
+  v4_room_schedules_heavy: "Heavy duty vacuum every {cov} cleans",
+  v4_room_schedules_heavy_one: "Heavy duty vacuum every clean",
+  v4_room_schedules_mop_quick: "Mop every {mop} cleans · Quick vacuum every {cov} cleans",
+  v4_room_schedules_mop_quick_one_mop: "Mop every clean · Quick vacuum every {cov} cleans",
+  v4_room_schedules_mop_quick_one_cov: "Mop every {mop} cleans · Quick vacuum every clean",
+  v4_room_schedules_mop_quick_one_both: "Mop every clean · Quick vacuum every clean",
+  v4_room_schedules_mop_optimal: "Mop every {mop} cleans · Optimal vacuum every {cov} cleans",
+  v4_room_schedules_mop_optimal_one_mop: "Mop every clean · Optimal vacuum every {cov} cleans",
+  v4_room_schedules_mop_optimal_one_cov: "Mop every {mop} cleans · Optimal vacuum every clean",
+  v4_room_schedules_mop_optimal_one_both: "Mop every clean · Optimal vacuum every clean",
+  v4_room_schedules_mop_heavy: "Mop every {mop} cleans · Heavy duty vacuum every {cov} cleans",
+  v4_room_schedules_mop_heavy_one_mop: "Mop every clean · Heavy duty vacuum every {cov} cleans",
+  v4_room_schedules_mop_heavy_one_cov: "Mop every {mop} cleans · Heavy duty vacuum every clean",
+  v4_room_schedules_mop_heavy_one_both: "Mop every clean · Heavy duty vacuum every clean",
+  v4_run_end_options: "When a run ends",
+  v4_plan_return_to_dock: "Return to the dock when finished",
+  v4_plan_finish_room: "Finish the current room when you press Stop",
+  v4_plan_finish_room_hint: "Only if the room is at least {percent}% done; otherwise the robot stops right away.",
+  v4_plan_finish_threshold: "Finish if at least {percent}% done",
   v4_action_save_plan: "Save",
   v4_action_done: "Done",
   v4_cancel: "Cancel",
@@ -133,43 +161,52 @@ export const COPY = {
   v4_reason_save_plan: "Can't save until the plan has a name and at least one room.",
 
   // room-schedule.md §6
-  v4_room_schedule: "Room schedule",
+  v4_room_schedule: "Schedule",
   v4_room_cadence_named: "Room schedule for {room}",
   v4_room_more_named: "More for {room}",
   v4_reset_mop_cadence_button: "Reset mopping",
-  v4_reset_coverage_cadence_button: "Reset deep vacuum",
+  v4_reset_coverage_cadence_button: "Reset vacuum rotation",
   v4_cadence_mop_interval: "Mop every {count} cleans",
   v4_cadence_mop_interval_one: "Mop every clean",
-  v4_cadence_mop_off: "Mop on a schedule",
-  v4_cadence_coverage_interval: "Deep vacuum every {count} cleans",
-  v4_cadence_coverage_interval_one: "Deep vacuum every clean",
-  v4_cadence_coverage_off: "Deep vacuum on a schedule",
+  v4_cadence_mop_off: "Mop",
+  v4_cadence_coverage_quick: "Quick vacuum every {count} cleans",
+  v4_cadence_coverage_quick_one: "Quick vacuum every clean",
+  v4_cadence_coverage_quick_off: "Quick vacuum",
+  v4_cadence_coverage_optimal: "Optimal vacuum every {count} cleans",
+  v4_cadence_coverage_optimal_one: "Optimal vacuum every clean",
+  v4_cadence_coverage_optimal_off: "Optimal vacuum",
+  v4_cadence_coverage_heavy: "Heavy duty vacuum every {count} cleans",
+  v4_cadence_coverage_heavy_one: "Heavy duty vacuum every clean",
+  v4_cadence_coverage_heavy_off: "Heavy duty vacuum",
+  v4_cadence_rotation_level: "Vacuum rotation level",
   v4_cadence_off: "Off",
   v4_cadence_stepper_off_reason: "This schedule is already off.",
   v4_cadence_stepper_max_reason: "Every 100 cleans is the longest schedule.",
-  v4_cadence_status: "{counted} of {every} cleans · due in {remaining} cleans",
-  v4_cadence_status_due: "{counted} of {every} cleans · due next clean",
+  v4_cadence_status_next: "Due next clean",
+  v4_cadence_status_in: "Due in {count} cleans",
   v4_cadence_status_every: "Due every clean",
-  v4_cadence_status_edited: "{counted} cleans counted so far · saving keeps the count",
-  v4_cadence_status_edited_one: "{counted} clean counted so far · saving keeps the count",
-  v4_cadence_do_next: "Do on next clean",
-  v4_cadence_do_next_named: "Do scheduled work in {room} on the next clean",
+  v4_cadence_status_off: "Not scheduled",
+  v4_cadence_status_edited: "Keeps the progress so far",
   v4_cadence_next_mop: "Mop on the next clean",
-  v4_cadence_next_deep: "Deep vacuum on the next clean",
-  v4_cadence_next_both: "Mop and deep vacuum on the next clean",
+  v4_cadence_next_quick: "Quick vacuum on the next clean",
+  v4_cadence_next_optimal: "Optimal vacuum on the next clean",
+  v4_cadence_next_heavy: "Heavy duty vacuum on the next clean",
+  v4_cadence_next_mop_quick: "Mop and quick vacuum on the next clean",
+  v4_cadence_next_mop_optimal: "Mop and optimal vacuum on the next clean",
+  v4_cadence_next_mop_heavy: "Mop and heavy duty vacuum on the next clean",
+  v4_cadence_next_hint: "Brings it forward once; the schedule then continues as usual.",
   v4_advanced: "Advanced",
-  v4_cadence_scope: "Track progress",
-  v4_cadence_shared: "Shared across plans (recommended)",
-  v4_cadence_this_plan: "This plan only",
+  v4_cadence_scope: "Count cleans",
+  v4_cadence_shared: "Across all plans (recommended)",
+  v4_cadence_this_plan: "In this plan only",
   v4_cadence_new_shared_effect: "Saving creates a schedule shared by every plan that uses this room, starting from zero.",
   v4_cadence_shared_join_effect: "Saving shares this room's progress with every plan that uses it, picking up any progress already counted.",
   v4_cadence_shared_leave_effect: "Saving starts new progress for this plan only, and other plans keep the shared schedule.",
   v4_cadence_new_private_effect: "Saving starts progress for this plan only, from zero.",
   v4_cadence_existing_effect: "Changing how often keeps the progress, and turning a schedule off pauses it.",
   v4_cadence_shared_available: "{room} has a shared schedule, and turning on a row uses it.",
-  v4_cadence_join_pending: "Uses {room}'s shared schedule; change it after you save, or choose This plan only under Advanced.",
+  v4_cadence_join_pending: "Uses {room}'s shared schedule; change it after you save, or choose \"In this plan only\" under Advanced.",
   v4_cadence_shared_edit_effect: "Changes apply to every plan that uses {room}'s shared schedule.",
-  v4_cadence_periodic_coverage: "Deep vacuum level",
   v4_cadence_description: "Only cleans the robot confirms count toward these schedules, and due work stays due until a clean is confirmed.",
   v4_cadence_mop_progress_unverified: "Can't run this schedule until you reset its mopping progress, which Home Assistant can't confirm.",
 
@@ -201,7 +238,7 @@ export const COPY = {
   v4_finding_map: "Finding the current map",
   v4_reason_locating: "Waiting for the robot to confirm which floor it is on.", // (existing) strings.json, home-rooms.md H3
   v4_locating_slow: "This is taking longer than usual.",
-  v4_locating_slow_full: "Still locating, so exit full map to try again.",
+  v4_locating_slow_full: "Taking longer than usual",
   v4_no_robot_short: "No robot",
   v4_no_robot_detail: "Set up a robot",
   v4_action_stop: "Stop",
@@ -232,7 +269,7 @@ export const COPY = {
   v4_discard: "Discard",
   // Design-system sheet samples, from the spec copy tables
   v4_notice_saving: "Saving…", // shell.md §6
-  v4_notice_recheck_failed: "Home Assistant can't refresh the map status right now.", // shell.md §6
+  v4_notice_recheck_failed: "Home Assistant can't refresh the map status right now, so try again.", // shell.md §6
   v4_rooms_busy: "Can't change rooms until the robot finishes or stops.", // home-rooms.md §6
   v4_reason_plan_saving: "Waiting for Home Assistant to save the plan.", // plan.md §6
   v4_reason_plan_switch_busy: "Can't change this until the robot finishes.", // plan.md §6
@@ -289,11 +326,49 @@ export const roomsSummary = (names: readonly string[]): string => {
   return t("v4_clean_rooms_summary", { rooms: listOf(shown) });
 };
 
-export const intervalLabel = (kind: "mop" | "coverage", every: number | null): string => {
-  if (kind === "mop") {
-    if (every === null) return t("v4_cadence_mop_off");
-    return every === 1 ? t("v4_cadence_mop_interval_one") : t("v4_cadence_mop_interval", { count: num(every) });
+/** room-schedule.md §3: the Mop row's label by value; Off is the bare name. */
+export const mopLabel = (every: number | null): string => {
+  if (every === null) return t("v4_cadence_mop_off");
+  return every === 1 ? t("v4_cadence_mop_interval_one") : t("v4_cadence_mop_interval", { count: num(every) });
+};
+
+const ROTATION_KEYS: Readonly<Record<RotationLevel, readonly [CopyKey, CopyKey, CopyKey]>> = {
+  quick: ["v4_cadence_coverage_quick", "v4_cadence_coverage_quick_one", "v4_cadence_coverage_quick_off"],
+  optimal: ["v4_cadence_coverage_optimal", "v4_cadence_coverage_optimal_one", "v4_cadence_coverage_optimal_off"],
+  heavy: ["v4_cadence_coverage_heavy", "v4_cadence_coverage_heavy_one", "v4_cadence_coverage_heavy_off"],
+};
+
+/** room-schedule.md §3: the vacuum rotation row's label (its level select's option) by level and value. */
+export const rotationLabel = (level: RotationLevel, every: number | null): string => {
+  const [many, one, off] = ROTATION_KEYS[level];
+  if (every === null) return t(off);
+  return every === 1 ? t(one) : t(many, { count: num(every) });
+};
+
+const NEXT_KEYS: Readonly<Record<RotationLevel, readonly [CopyKey, CopyKey]>> = {
+  quick: ["v4_cadence_next_quick", "v4_cadence_next_mop_quick"],
+  optimal: ["v4_cadence_next_optimal", "v4_cadence_next_mop_optimal"],
+  heavy: ["v4_cadence_next_heavy", "v4_cadence_next_mop_heavy"],
+};
+
+/** room-schedule.md §6: the next-clean switch, labelled by the schedules that are on. */
+export const nextCleanLabel = (mopOn: boolean, rotation: RotationLevel | null): string => {
+  if (rotation === null) return t("v4_cadence_next_mop");
+  const [alone, withMop] = NEXT_KEYS[rotation];
+  return t(mopOn ? withMop : alone);
+};
+
+/** plan.md §6 `v4_room_schedules_*`: the Edit row's line 3, one whole string per combination. */
+export const scheduleText = (mopEvery: number | null, coverageEvery: number | null, level: RotationLevel): string | null => {
+  const mop = mopEvery === null ? null : num(mopEvery);
+  const cov = coverageEvery === null ? null : num(coverageEvery);
+  if (mopEvery !== null && coverageEvery === null) return mopEvery === 1 ? t("v4_room_schedules_mop_one") : t("v4_room_schedules_mop", { mop: mop ?? "" });
+  if (coverageEvery === null) return null;
+  if (mopEvery === null) {
+    const single = `v4_room_schedules_${level}` as const;
+    return coverageEvery === 1 ? t(`${single}_one`) : t(single, { cov: cov ?? "" });
   }
-  if (every === null) return t("v4_cadence_coverage_off");
-  return every === 1 ? t("v4_cadence_coverage_interval_one") : t("v4_cadence_coverage_interval", { count: num(every) });
+  const pair = `v4_room_schedules_mop_${level}` as const;
+  const suffix = mopEvery === 1 && coverageEvery === 1 ? "_one_both" : mopEvery === 1 ? "_one_mop" : coverageEvery === 1 ? "_one_cov" : "";
+  return t(`${pair}${suffix}` as CopyKey, { mop: mop ?? "", cov: cov ?? "" });
 };

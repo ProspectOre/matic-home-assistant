@@ -3,30 +3,41 @@ import type { PropertyValues, TemplateResult } from "lit";
 import type { CleaningMode, CoverageSetting, PlanRoom, SavedPlan } from "../backend-contracts";
 import { iconChevronRight, iconMoveDown, iconMoveUp, iconOverflow, iconPlus } from "../icons";
 import { syntheticMockupFloor } from "../synthetic-fixtures";
-import { intervalLabel, num, roomSetting, t } from "./copy";
+import {
+  ROTATION_LEVEL,
+  mopLabel,
+  nextCleanLabel,
+  num,
+  roomSetting,
+  rotationLabel,
+  scheduleText,
+  t,
+  type RotationLevel,
+} from "./copy";
 import {
   MockScreen,
   chip,
+  dueBlock,
   glyph,
   screenStyles,
   type MockAction,
   type ShellView,
 } from "./frame";
 import { glyphAlert, glyphMinus } from "./glyphs";
-import { STATUS, dueChips } from "./home";
+import { STATUS } from "./home";
 import {
   CATALOG,
   DEFAULT_PLAN_ID,
+  dueLines,
   orderFor,
-  planAttention,
   planById,
   planLine,
+  planLine3,
   previewRooms,
   progressFor,
   roomName,
   runSummary,
   statusLine,
-  withDue,
 } from "./plan-data";
 
 const planCss = css`
@@ -42,6 +53,8 @@ const planCss = css`
 .heading-edit { flex: none; }
 .run-summary { margin: 0 0 var(--ms-space-2); color: var(--ms-text-quiet); font-size: var(--ms-t-md); line-height: var(--ms-lh-snug); }
 .run-caption { margin: 0 0 var(--ms-space-2); color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
+/* plan.md §3 Run: the due lines sit directly under the summary. */
+.run-due { margin: 0 0 var(--ms-space-3); }
 .run-list { gap: 0; margin-block-end: var(--ms-space-4); }
 .run-row { display: flex; gap: var(--ms-space-3); align-items: flex-start; padding-block: var(--ms-space-2); border-block-end: 1px solid var(--ms-line); }
 .run-row:last-child { border-block-end: 0; }
@@ -49,6 +62,8 @@ const planCss = css`
 .run-row .row-lines { flex: 1; }
 .enable-row { margin-block: var(--ms-space-2); }
 .end-lines { display: grid; gap: var(--ms-space-1); margin-block-start: var(--ms-space-2); }
+/* plan.md §3 Edit: the slider's label shows the live value and names it. */
+.threshold-row { display: grid; gap: var(--ms-space-1); font-size: var(--ms-t-md); }
 .edit-list { margin-block-start: var(--ms-space-1); }
 .edit-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; padding: 0; }
 /* plan.md §3: the "Include {room}" checkbox is its own 44 × 44 target; its <label> is the hit box. */
@@ -72,6 +87,10 @@ const planCss = css`
 /* room-schedule.md §7: at every width the label sits above [−][field][+] and the status line below. */
 .sched-row { display: grid; gap: var(--ms-space-1); justify-items: start; }
 .sched-label { font-size: var(--ms-t-md); font-weight: var(--ms-w-medium); }
+/* room-schedule.md §3: row 2's title is the level select; it spans the row at 44 px. */
+.sched-level { inline-size: 100%; min-block-size: var(--ms-control); font-size: var(--ms-t-md); font-weight: var(--ms-w-medium); }
+.sched-row:has(.sched-level) { justify-items: stretch; }
+.sched-row:has(.sched-level) > :not(.sched-level) { justify-self: start; }
 .sched-status { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 .sched-status.reason { display: flex; gap: var(--ms-space-1); color: var(--ms-text); }
 .sched-status.reason .ms-icon { inline-size: 1rem; block-size: 1rem; color: var(--ms-warning); }
@@ -88,13 +107,17 @@ export class MockPlans extends MockScreen {
 
   #row(plan: SavedPlan): TemplateResult {
     const order = orderFor(plan, this.variants, DEFAULT_PLAN_ID);
-    const attention = planAttention(plan, this.variants, DEFAULT_PLAN_ID);
+    const line3 = planLine3(plan, this.variants, DEFAULT_PLAN_ID);
     const target = plan.id === "weekend" ? "parts" : plan.enabled ? "ready" : "paused";
     return html`<li><button class="ms-row ms-row--card plan-row" type="button" @click=${() => this.emit({ screen: "plan", view: "run", state: target, origin: "plans" })}>
       <span class="ms-row__body">
         <strong class="plan-title"><bdi>${plan.name}</bdi>${plan.id === CATALOG.selectedPlan ? chip(t("v4_plan_default")) : nothing}${!plan.enabled ? chip(t("v4_paused"), "neutral") : nothing}</strong>
         <small>${planLine(plan, order)}</small>
-        ${attention ? html`<small class="warn-line">${glyph(glyphAlert)}<span>${attention}</span></small>` : nothing}
+        ${line3 === null
+          ? nothing
+          : "blocked" in line3
+            ? html`<small class="warn-line">${glyph(glyphAlert)}<span>${line3.blocked}</span></small>`
+            : dueBlock(line3.due)}
       </span>
       <span class="ms-row__trail">${glyph(iconChevronRight, true)}</span>
     </button></li>`;
@@ -146,7 +169,8 @@ const coverageSelect = (label: string, value: CoverageSetting): TemplateResult =
   </select>
 </label>`;
 
-const switchRow = (id: string, label: string, hint: string | null, checked: boolean, options: { readonly name?: string; readonly readonly?: boolean } = {}): TemplateResult => html`<div class="switch-row">
+/** A switch named by its visible label, described by its hint. */
+const switchRow = (id: string, label: string, hint: string | null, checked: boolean, options: { readonly readonly?: boolean } = {}): TemplateResult => html`<div class="switch-row">
   <span class="switch-copy"><span id=${`${id}-label`}>${label}</span>${hint ? html`<small id=${`${id}-hint`}>${hint}</small>` : nothing}</span>
   <button
     class="ms-switch"
@@ -154,8 +178,7 @@ const switchRow = (id: string, label: string, hint: string | null, checked: bool
     role="switch"
     aria-checked=${String(checked)}
     aria-readonly=${options.readonly ? "true" : nothing}
-    aria-label=${options.name ?? nothing}
-    aria-labelledby=${options.name ? nothing : `${id}-label`}
+    aria-labelledby=${`${id}-label`}
     aria-describedby=${hint ? `${id}-hint` : nothing}
   ></button>
 </div>`;
@@ -168,10 +191,13 @@ interface StepperOptions {
   readonly status?: string | null;
   readonly reason?: string;
   readonly reset?: string;
+  /** room-schedule.md §3: row 2's title is the level select, and the field is labelled by it. */
+  readonly title?: { readonly control: TemplateResult; readonly id: string };
 }
 
 const stepperRow = (options: StepperOptions): TemplateResult => {
   const { id, label, value } = options;
+  const labelId = options.title?.id ?? `${id}-label`;
   const atOff = value === null;
   const atMax = value === 100;
   const minReason = atOff ? t("v4_cadence_stepper_off_reason") : undefined;
@@ -187,11 +213,11 @@ const stepperRow = (options: StepperOptions): TemplateResult => {
     ?readonly=${Boolean(options.readonly)}
     .value=${value === null ? "" : String(value)}
     placeholder=${t("v4_cadence_off")}
-    aria-labelledby=${`${id}-label`}
+    aria-labelledby=${labelId}
     aria-describedby=${describedBy ?? nothing}
   >`;
   return html`<div class="sched-row">
-    <span class="sched-label" id=${`${id}-label`}>${label}</span>
+    ${options.title ? options.title.control : html`<span class="sched-label" id=${labelId}>${label}</span>`}
     ${options.readonly
       ? html`<span class="ms-stepper ms-stepper--readonly">${field}</span>`
       : html`<span class="ms-stepper">
@@ -224,14 +250,15 @@ const stepperRow = (options: StepperOptions): TemplateResult => {
   </div>`;
 };
 
-/** room-schedule.md §3: the Room schedule block inside an expanded Edit row. */
+/** room-schedule.md §3: the Schedule block inside an expanded Edit row. */
 export interface ScheduleModel {
   readonly roomId: string;
   readonly mopEvery: number | null;
-  readonly deepEvery: number | null;
+  /** The vacuum rotation: how often, and its level (kept while Off; default Heavy duty, D1). */
+  readonly covEvery: number | null;
+  readonly level: RotationLevel;
   readonly mopStatus: string | null;
-  readonly deepStatus: string | null;
-  readonly level: CoverageSetting | null;
+  readonly covStatus: string | null;
   readonly doNext: boolean;
   readonly scope: "shared" | "plan";
   readonly readonly?: boolean;
@@ -244,13 +271,22 @@ export interface ScheduleModel {
   readonly hasProgress?: boolean;
 }
 
+const LEVELS: readonly RotationLevel[] = ["quick", "optimal", "heavy"];
+
 const scheduleBlock = (model: ScheduleModel, onScope: (scope: "shared" | "plan") => void, scrollTarget = false): TemplateResult => {
   const name = roomName(model.roomId);
   const id = model.roomId;
-  const anyOn = model.mopEvery !== null || model.deepEvery !== null;
-  const nextHint = model.mopEvery !== null && model.deepEvery !== null
-    ? t("v4_cadence_next_both")
-    : model.mopEvery !== null ? t("v4_cadence_next_mop") : t("v4_cadence_next_deep");
+  const mopOn = model.mopEvery !== null;
+  const covOn = model.covEvery !== null;
+  const levelId = `${id}-level`;
+  // room-schedule.md §3, §8: the select's options are the whole row labels;
+  // it is named "Vacuum rotation level", and the field takes its selected
+  // option as its name. Joined (read-only), the level shows as text.
+  const levelControl = model.readonly
+    ? html`<span class="sched-label" id=${levelId}>${rotationLabel(model.level, model.covEvery)}</span>`
+    : html`<select class="sched-level" id=${levelId} aria-label=${t("v4_cadence_rotation_level")}>
+        ${LEVELS.map((level) => html`<option value=${level} ?selected=${level === model.level}>${rotationLabel(level, model.covEvery)}</option>`)}
+      </select>`;
   return html`<section class="schedule" role="group" aria-label=${t("v4_room_cadence_named", { room: name })} ?data-scroll-target=${scrollTarget}>
     <div class="schedule-head">
       <h3>${t("v4_room_schedule")}</h3>
@@ -261,23 +297,23 @@ const scheduleBlock = (model: ScheduleModel, onScope: (scope: "shared" | "plan")
     ${model.sharedHint ? html`<p class="schedule-note">${t("v4_cadence_shared_available", { room: name })}</p>` : nothing}
     ${stepperRow({
       id: `${id}-mop`,
-      label: intervalLabel("mop", model.mopEvery),
+      label: mopLabel(model.mopEvery),
       value: model.mopEvery,
       status: model.mopStatus,
       ...(model.readonly ? { readonly: true } : {}),
       ...(model.mopReason ? { reason: model.mopReason, reset: t("v4_reset_mop_cadence_button") } : {}),
     })}
     ${stepperRow({
-      id: `${id}-deep`,
-      label: intervalLabel("coverage", model.deepEvery),
-      value: model.deepEvery,
-      status: model.deepStatus,
+      id: `${id}-cov`,
+      label: rotationLabel(model.level, model.covEvery),
+      value: model.covEvery,
+      status: model.covStatus,
+      title: { control: levelControl, id: levelId },
       ...(model.readonly ? { readonly: true } : {}),
     })}
-    ${anyOn ? switchRow(`${id}-next`, t("v4_cadence_do_next"), model.doNext ? nextHint : null, model.doNext, {
-      name: t("v4_cadence_do_next_named", { room: name }),
-      ...(model.readonly ? { readonly: true } : {}),
-    }) : nothing}
+    ${mopOn || covOn
+      ? switchRow(`${id}-next`, nextCleanLabel(mopOn, covOn ? model.level : null), t("v4_cadence_next_hint"), model.doNext, model.readonly ? { readonly: true } : {})
+      : nothing}
     ${model.note ? html`<p class="schedule-note">${model.note}</p>` : nothing}
     ${model.explanation ? html`<p class="schedule-note">${model.explanation}</p>` : nothing}
     <details class="mock-details advanced" ?open=${Boolean(model.advancedOpen)}>
@@ -288,12 +324,6 @@ const scheduleBlock = (model: ScheduleModel, onScope: (scope: "shared" | "plan")
           <label class="ms-check"><input type="radio" name=${`${id}-scope`} .checked=${model.scope === "shared"} @change=${() => onScope("shared")}>${t("v4_cadence_shared")}</label>
           <label class="ms-check"><input type="radio" name=${`${id}-scope`} .checked=${model.scope === "plan"} @change=${() => onScope("plan")}>${t("v4_cadence_this_plan")}</label>
         </fieldset>
-        ${model.deepEvery !== null ? html`<label class="ms-field">${t("v4_cadence_periodic_coverage")}
-          <select .value=${model.level ?? "heavy_duty"}>
-            <option value="standard">${t("standard")}</option>
-            <option value="heavy_duty">${t("heavy_duty")}</option>
-          </select>
-        </label>` : nothing}
         <p class="quiet-line">${t("v4_cadence_description")}</p>
       </div>
     </details>
@@ -301,12 +331,12 @@ const scheduleBlock = (model: ScheduleModel, onScope: (scope: "shared" | "plan")
 };
 
 type RunState = "ready" | "parts" | "paused" | "blocked";
-type EditState = "clean" | "dirty" | "menu" | "discard" | "new";
+type EditState = "clean" | "dirty" | "options" | "menu" | "discard" | "new";
 
 interface EditOptions {
   readonly plan: SavedPlan;
   readonly state: EditState;
-  readonly expanded?: { readonly roomId: string; readonly schedule: ScheduleModel; readonly line?: string; readonly chips?: readonly TemplateResult[] };
+  readonly expanded?: { readonly roomId: string; readonly schedule: ScheduleModel };
   readonly dirty: boolean;
 }
 
@@ -325,21 +355,20 @@ export class MockPlan extends MockScreen {
 
   protected planFor(state: string): SavedPlan {
     if (state === "parts") return planById("weekend");
-    if (state === "paused") return planById("guest");
+    // home-rooms.md §6: the home card of a paused default plan opens its Run (plan.md R2).
+    if (state === "paused") return this.variants.origin === "home" ? { ...planById(DEFAULT_PLAN_ID), enabled: false } : planById("guest");
     return planById(DEFAULT_PLAN_ID);
   }
 
-  #runRow(room: { readonly roomId: string; readonly name: string; readonly cleaningMode: CleaningMode; readonly coverageSetting: CoverageSetting; readonly cadenceReasons: readonly string[] }, index: number | null, options: { readonly chips: boolean; readonly blocked?: boolean; readonly partBreak?: number }): TemplateResult {
+  /** plan.md §3 Run row: the name and its effective setting; "Needs attention" is the only chip. */
+  #runRow(room: { readonly roomId: string; readonly name: string; readonly cleaningMode: CleaningMode; readonly coverageSetting: CoverageSetting }, index: number | null, options: { readonly blocked?: boolean; readonly partBreak?: number }): TemplateResult {
     return html`<li class="run-row" data-break=${options.partBreak ? "" : nothing}>
       ${options.partBreak ? html`<span class="sr-only">${t("v4_part_break", { number: num(options.partBreak) })}</span>` : nothing}
       ${index === null ? nothing : html`<span class="ms-badge" aria-hidden="true">${num(index + 1)}</span>`}
       <span class="row-lines">
         <bdi>${room.name}</bdi>
         <small>${roomSetting(room.cleaningMode, room.coverageSetting)}</small>
-        ${options.chips || options.blocked ? html`<span class="mock-chips">${[
-          ...(options.chips ? dueChips(room.cadenceReasons) : []),
-          ...(options.blocked ? [chip(t("v4_needs_attention_chip"), "danger")] : []),
-        ]}</span>` : nothing}
+        ${options.blocked ? html`<span class="mock-chips">${chip(t("v4_needs_attention_chip"), "danger")}</span>` : nothing}
       </span>
     </li>`;
   }
@@ -359,31 +388,33 @@ export class MockPlan extends MockScreen {
         name: roomName(roomId),
         cleaningMode: own?.cleaningMode ?? "vacuum",
         coverageSetting: own?.coverageSetting ?? "standard",
-        cadenceReasons: [] as readonly string[],
       };
     });
     const ListTag = ordered && !paused && !blocked ? "ol" : "ul";
     const listRows = paused || blocked
-      ? savedRooms.map((room) => this.#runRow(room, null, { chips: false, blocked: blocked && room.roomId === "room-kitchen" }))
+      ? savedRooms.map((room) => this.#runRow(room, null, { blocked: blocked && room.roomId === "room-kitchen" }))
       : rooms.map((room, index) => {
         const breakAt = boundaries.indexOf(index);
-        return this.#runRow(room, ordered ? index : null, { chips: true, ...(breakAt >= 0 ? { partBreak: breakAt + 2 } : {}) });
+        return this.#runRow(room, ordered ? index : null, breakAt >= 0 ? { partBreak: breakAt + 2 } : {});
       });
+    const due = paused || blocked ? [] : dueLines(rooms);
     const list = ListTag === "ol"
       ? html`<ol class="mock-stack run-list">${listRows}</ol>`
       : html`<ul class="mock-stack run-list">${listRows}</ul>`;
-    // plan.md §6: one "When a run ends" line, finish when a threshold is set, else return.
+    // plan.md §6: one "When a run ends" line: the finish sentence while
+    // finish-room is on, else the return line while return-to-dock is on.
     const endLine = plan.finishCurrentRoom
       ? t("v4_plan_summary_finish", { percent: num(plan.finishCurrentRoomThreshold) })
-      : t("v4_plan_summary_return");
+      : plan.returnToBase ? t("v4_plan_summary_return") : null;
     const body = html`
       <p class="run-summary">${runSummary(plan, !paused && !blocked)}</p>
+      ${due.length ? html`<div class="run-due">${dueBlock(due, { tag: "div" })}</div>` : nothing}
       <h3 class="ms-section-heading">${paused ? t("v4_plan_rooms_heading") : t("v4_next_run_preview")}</h3>
       ${!paused && !blocked && !ordered ? html`<p class="run-caption">${t("v4_plan_rotation_settings")}</p>` : nothing}
       ${!paused && !blocked && boundaries.length ? html`<p class="run-caption">${t("v4_room_parts", { count: num(boundaries.length + 1) })}</p>` : nothing}
       ${list}
       <div class="enable-row">${switchRow("plan-enabled", t("v4_plan_can_run"), t("v4_plan_can_run_on"), plan.enabled)}</div>
-      <div class="end-lines"><p class="quiet-line">${endLine}</p></div>`;
+      ${endLine ? html`<div class="end-lines"><p class="quiet-line">${endLine}</p></div>` : nothing}`;
     const start: MockAction = {
       label: t("v4_action_run_plan"),
       kind: "primary",
@@ -417,18 +448,15 @@ export class MockPlan extends MockScreen {
     const own: PlanRoom | undefined = plan.rooms.find((room) => room.roomId === roomId);
     const preview = (plan.nextRunPreview?.rooms ?? []).find((room) => room.roomId === roomId);
     const open = expanded?.roomId === roomId;
-    const reasons = withDue(preview?.cadenceReasons ?? [], this.variants.due);
     const effective = this.variants.due && preview ? preview : own;
-    const line = expanded?.roomId === roomId && expanded.line
-      ? expanded.line
-      : effective ? roomSetting(effective.cleaningMode, effective.coverageSetting) : "";
-    const chips = expanded?.roomId === roomId && expanded.chips
-      ? expanded.chips
-      : [
-        ...(own?.cadence?.mopEveryN ? [chip(intervalLabel("mop", own.cadence.mopEveryN), "neutral")] : []),
-        ...(own?.cadence?.coverageEveryN ? [chip(intervalLabel("coverage", own.cadence.coverageEveryN), "neutral")] : []),
-        ...dueChips(reasons),
-      ];
+    const line = effective ? roomSetting(effective.cleaningMode, effective.coverageSetting) : "";
+    // plan.md §3 Edit room row: line 3 is the schedule text (`v4_room_schedules_*`),
+    // from the open draft when this row is expanded, else from the saved cadence.
+    const schedules = open && expanded
+      ? scheduleText(expanded.schedule.mopEvery, expanded.schedule.covEvery, expanded.schedule.level)
+      : own?.cadence
+        ? scheduleText(own.cadence.mopEveryN, own.cadence.coverageEveryN, ROTATION_LEVEL[own.cadence.periodicCoverageSetting ?? "heavy_duty"])
+        : null;
     const first = index === 0;
     const isLast = index === last;
     return html`<li class="ms-row edit-row" data-selected=${selected ? "true" : nothing} ?data-scroll-target=${open && !this.scrollToSchedule}>
@@ -443,7 +471,7 @@ export class MockPlan extends MockScreen {
           <span class="row-lines">
             <bdi>${name}</bdi>
             <small>${line}</small>
-            ${chips.length ? html`<span class="mock-chips">${chips}</span>` : nothing}
+            ${schedules ? html`<small>${schedules}</small>` : nothing}
           </span>
           ${glyph(iconChevronRight, true, "chev")}
         </button>` : html`<span class="edit-name"><bdi>${name}</bdi></span>`}
@@ -525,13 +553,24 @@ export class MockPlan extends MockScreen {
         ${selectedIds.map((roomId, index) => this.#editRow(roomId, index, true, ordered, selectedIds.length - 1, plan, options.expanded))}
         ${rest.map((roomId, index) => this.#editRow(roomId, index, false, ordered, -1, plan, undefined))}
       </ul>
-      <details class="mock-details more-options">
-        <summary class="ms-disclosure"><span>${t("v4_more_options")}</span>${glyph(iconChevronRight, true, "chev")}</summary>
+      <details class="mock-details more-options" ?open=${state === "options"} ?data-scroll-target=${state === "options"}>
+        <summary class="ms-disclosure"><span>${t("v4_run_end_options")}</span>${glyph(iconChevronRight, true, "chev")}</summary>
         <div class="mock-details__body">
-          <h4 class="ms-section-heading sub">${t("v4_when_run_ends")}</h4>
-          ${switchRow("return-dock", t("v4_return_to_dock"), null, plan.returnToBase)}
-          ${switchRow("finish-room", t("v4_finish_current_room"), null, plan.finishCurrentRoom)}
-          <input class="ms-range" type="range" min="0" max="100" step="5" aria-labelledby="finish-room-label" .value=${String(plan.finishCurrentRoomThreshold)}>
+          ${switchRow("return-dock", t("v4_plan_return_to_dock"), null, plan.returnToBase)}
+          ${switchRow("finish-room", t("v4_plan_finish_room"), t("v4_plan_finish_room_hint", { percent: num(plan.finishCurrentRoomThreshold) }), plan.finishCurrentRoom)}
+          ${plan.finishCurrentRoom ? html`<div class="threshold-row">
+            <span id="finish-threshold-label">${t("v4_plan_finish_threshold", { percent: num(plan.finishCurrentRoomThreshold) })}</span>
+            <input
+              class="ms-range"
+              type="range"
+              min="0"
+              max="100"
+              step="5"
+              aria-labelledby="finish-threshold-label"
+              aria-valuetext=${`${num(plan.finishCurrentRoomThreshold)}%`}
+              .value=${String(plan.finishCurrentRoomThreshold)}
+            >
+          </div>` : nothing}
         </div>
       </details>`;
     const primary: MockAction = {
@@ -573,46 +612,47 @@ export class MockPlan extends MockScreen {
       const state = (["ready", "parts", "paused", "blocked"].includes(this.mockState) ? this.mockState : "ready") as RunState;
       return this.#run(state);
     }
-    const state = (["clean", "dirty", "menu", "discard", "new"].includes(this.mockState) ? this.mockState : "clean") as EditState;
+    const state = (["clean", "dirty", "options", "menu", "discard", "new"].includes(this.mockState) ? this.mockState : "clean") as EditState;
     return this.edit({ plan: planById(DEFAULT_PLAN_ID), state, dirty: state === "dirty" || state === "menu" || state === "discard" });
   }
 }
 
 // ---- Room schedule (room-schedule.md) ------------------------------------------------------
 
-type ScheduleState = "counting" | "do-next" | "edited" | "available" | "joined" | "limits" | "unconfirmed";
+type ScheduleState = "counting" | "next-clean" | "edited" | "available" | "joined" | "limits" | "unconfirmed";
+
+const levelOf = (setting: CoverageSetting | null | undefined): RotationLevel => ROTATION_LEVEL[setting ?? "heavy_duty"];
 
 export class MockSchedule extends MockPlan {
   protected override scrollToSchedule = true;
 
-  #kitchen(state: ScheduleState): { schedule: ScheduleModel; dirty: boolean; line?: string; chips?: readonly TemplateResult[] } {
+  #kitchen(state: ScheduleState): { schedule: ScheduleModel; dirty: boolean } {
     const plan = planById(DEFAULT_PLAN_ID);
     const room = plan.rooms.find((candidate) => candidate.roomId === "room-kitchen");
     const cadence = room?.cadence;
-    const progress = progressFor(room?.cadenceProgress, cadence, this.variants.due || state === "do-next");
+    const progress = progressFor(room?.cadenceProgress, cadence, this.variants.due);
     const mopEvery = state === "edited" ? 4 : cadence?.mopEveryN ?? null;
-    const deepEvery = cadence?.coverageEveryN ?? null;
-    const doNext = state === "do-next";
+    const covEvery = cadence?.coverageEveryN ?? null;
+    const doNext = state === "next-clean";
     const leaving = this.variants.scope === "plan";
-    const counted = progress?.mopProgress ?? 0;
     const mopStatus = state === "edited"
-      ? t(counted === 1 ? "v4_cadence_status_edited_one" : "v4_cadence_status_edited", { counted: num(counted) })
-      : statusLine(mopEvery, counted, Boolean(progress?.mopDue) || doNext, progress?.nextMopIn ?? null);
-    const deepStatus = statusLine(deepEvery, progress?.coverageProgress ?? 0, Boolean(progress?.coverageDue) || doNext, progress?.nextCoverageIn ?? null);
+      ? t("v4_cadence_status_edited")
+      : statusLine(mopEvery, progress?.nextMopIn ?? null, doNext);
+    const covStatus = statusLine(covEvery, progress?.nextCoverageIn ?? null, doNext);
     const explanation = state === "edited"
       ? t("v4_cadence_existing_effect")
       : leaving ? t("v4_cadence_shared_leave_effect") : t("v4_cadence_shared_edit_effect", { room: roomName("room-kitchen") });
     return {
       // S11's inline Reset needs a clean draft (room-schedule.md §4 S13), so only
       // the switch, an edited interval or a scope change make the draft dirty.
-      dirty: state === "do-next" || state === "edited" || leaving,
+      dirty: state === "next-clean" || state === "edited" || leaving,
       schedule: {
         roomId: "room-kitchen",
         mopEvery,
-        deepEvery,
+        covEvery,
         mopStatus,
-        deepStatus,
-        level: cadence?.periodicCoverageSetting ?? "heavy_duty",
+        covStatus,
+        level: levelOf(cadence?.periodicCoverageSetting),
         doNext,
         scope: this.variants.scope,
         explanation,
@@ -623,28 +663,38 @@ export class MockSchedule extends MockPlan {
     };
   }
 
-  #study(state: "available" | "joined"): { schedule: ScheduleModel; dirty: boolean; line?: string; chips?: readonly TemplateResult[] } {
+  #study(state: "available" | "joined"): { schedule: ScheduleModel; dirty: boolean } {
     const shared = CATALOG.rooms.find((room) => room.roomId === "room-study");
     const policy = shared?.sharedCadence;
     const progress = shared?.sharedCadenceProgress;
     if (state === "available") {
       return {
         dirty: false,
-        schedule: { roomId: "room-study", mopEvery: null, deepEvery: null, mopStatus: null, deepStatus: null, level: null, doNext: false, scope: "shared", sharedHint: true },
+        schedule: {
+          roomId: "room-study",
+          mopEvery: null,
+          covEvery: null,
+          level: "heavy",
+          mopStatus: statusLine(null, null, false),
+          covStatus: statusLine(null, null, false),
+          doNext: false,
+          scope: "shared",
+          sharedHint: true,
+        },
       };
     }
     const mopEvery = policy?.mopEveryN ?? null;
+    const covEvery = policy?.coverageEveryN ?? null;
     return {
       dirty: true,
-      chips: [chip(intervalLabel("mop", mopEvery), "neutral")],
       schedule: {
         roomId: "room-study",
         mopEvery,
-        deepEvery: policy?.coverageEveryN ?? null,
-        mopStatus: statusLine(mopEvery, progress?.mopProgress ?? 0, Boolean(progress?.mopDue), progress?.nextMopIn ?? null),
-        deepStatus: null,
-        level: null,
-        doNext: false,
+        covEvery,
+        level: levelOf(policy?.periodicCoverageSetting),
+        mopStatus: statusLine(mopEvery, progress?.nextMopIn ?? null, Boolean(policy?.doMopNext)),
+        covStatus: statusLine(covEvery, progress?.nextCoverageIn ?? null, Boolean(policy?.doCoverageNext)),
+        doNext: Boolean(policy?.doMopNext || policy?.doCoverageNext),
         scope: "shared",
         readonly: true,
         note: t("v4_cadence_join_pending", { room: roomName("room-study") }),
@@ -653,17 +703,18 @@ export class MockSchedule extends MockPlan {
     };
   }
 
-  #hallway(): { schedule: ScheduleModel; dirty: boolean; chips?: readonly TemplateResult[] } {
+  #hallway(): { schedule: ScheduleModel; dirty: boolean } {
+    // A new, unsaved rotation has no server progress yet, so no status line;
+    // the explanation says it starts from zero.
     return {
       dirty: true,
-      chips: [chip(intervalLabel("coverage", 100), "neutral")],
       schedule: {
         roomId: "room-hallway",
         mopEvery: null,
-        deepEvery: 100,
-        mopStatus: null,
-        deepStatus: null,
-        level: "heavy_duty",
+        covEvery: 100,
+        level: "heavy",
+        mopStatus: statusLine(null, null, false),
+        covStatus: null,
         doNext: false,
         scope: "shared",
         explanation: t("v4_cadence_new_shared_effect"),
@@ -673,7 +724,7 @@ export class MockSchedule extends MockPlan {
   }
 
   protected override view(): ShellView {
-    const state = (["counting", "do-next", "edited", "available", "joined", "limits", "unconfirmed"].includes(this.mockState)
+    const state = (["counting", "next-clean", "edited", "available", "joined", "limits", "unconfirmed"].includes(this.mockState)
       ? this.mockState
       : "counting") as ScheduleState;
     const model = state === "available" || state === "joined"
@@ -684,11 +735,7 @@ export class MockSchedule extends MockPlan {
       plan,
       state: model.dirty ? "dirty" : "clean",
       dirty: model.dirty,
-      expanded: {
-        roomId: model.schedule.roomId,
-        schedule: model.schedule,
-        ...("chips" in model && model.chips ? { chips: model.chips } : {}),
-      },
+      expanded: { roomId: model.schedule.roomId, schedule: model.schedule },
     });
   }
 }

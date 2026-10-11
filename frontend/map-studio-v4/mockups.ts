@@ -32,15 +32,16 @@ interface StateEntry {
 const entry = (id: string, label: string, caption: string): StateEntry => ({ id, label, caption });
 
 const PLAN_RUN: readonly StateEntry[] = [
-  entry("ready", "Daily clean", "plan.md §4 R1: the summary with about N min, the next run with due chips and one When a run ends line. Numbers only in Saved order."),
+  entry("ready", "Daily clean", "plan.md §4 R1: the summary with about N min, the due lines directly under it, the next run with each room's effective setting and no due chips, and one When a run ends line (finish the room at 70 %). Numbers only in Saved order."),
   entry("parts", "In two parts", "plan.md §4 R1: a plan that runs in two parts, divided where the robot docks. The order toggle switches Intelligent rotation and Saved order."),
-  entry("paused", "Paused plan", "plan.md §4 R2: the switch is off, the rooms are listed without numbers or chips, and Run plan is disabled with \"Can't run this plan until you turn it on.\""),
+  entry("paused", "Paused plan", "plan.md §4 R2: the switch is off, the rooms are listed without numbers or chips, and Run plan is disabled with \"Can't run this plan until you turn it on.\" Opened from the home card (H1 Plan paused), it is Daily clean."),
   entry("blocked", "Needs attention", "plan.md §4 R3: Run plan disabled with its reason and a jump to the room."),
 ];
 
 const PLAN_EDIT: readonly StateEntry[] = [
-  entry("clean", "Clean edit", "plan.md §4 E1: nothing changed; Done is enabled and leaves without a dialog."),
+  entry("clean", "Clean edit", "plan.md §4 E1: nothing changed; Done is enabled and leaves without a dialog. A room with schedules shows them as line 3 text; chips are status only."),
   entry("dirty", "Dirty edit", "plan.md §4 E2: the Unsaved changes chip; Cancel and Save stay pinned at the bottom."),
+  entry("options", "When a run ends", "plan.md §3 Edit view: the When a run ends disclosure open: Return to the dock, Finish the current room with its hint, and the 70 % slider shown while that switch is on."),
   entry("menu", "Heading menu", "plan.md §3 Edit view: More actions holds Delete, disabled with its reason while there are changes."),
   entry("discard", "Discard dialog", "shell.md §5 dialogs: Cancel with changes asks before discarding: Keep editing, Save, Discard."),
   entry("new", "New plan", "plan.md §4 E3: New plan; Save is disabled with its reason until there is a name and a room."),
@@ -50,7 +51,8 @@ const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly stat
   home: {
     label: "Home",
     states: [
-      entry("h1", "H1 Ready", "home-rooms.md §4 H1: the robot is docked and ready; three task cards and Maps."),
+      entry("h1", "H1 Ready", "home-rooms.md §4 H1: the robot is docked and ready; three task cards and Maps. The plan card's line 3 holds the due lines, clamped to two."),
+      entry("h1p", "H1 Plan paused", "home-rooms.md §6: the default plan is paused, so its card shows the Paused chip and no line 3; it still opens Run (plan.md R2)."),
       entry("h3", "H3 Locating", "home-rooms.md §4 H3: the heading stays, one reason line, and the cards are disabled with no per-card reasons. Status strip › Locating, after 20 s shows the escalation."),
       entry("h4", "H4 Cleaning", "home-rooms.md §4 H4: cleaning. Stop sits in the status strip beside an inspector, and in the action bar under a sheet."),
       entry("h7", "H7 Problem", "home-rooms.md §4 H7: the shell.md row 6 heading and body, Open map diagnostics, no cards, then Maps with diagnostics first."),
@@ -62,8 +64,8 @@ const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly stat
     states: [
       entry("r1", "R1 None selected", "home-rooms.md §4 R1: nothing selected; Clean rooms is disabled with its reason."),
       entry("r2", "R2 Checking", "home-rooms.md §4 R2: three rooms selected while the settings check runs; Clean 3 rooms disabled with its reason."),
-      entry("r3", "R3 Selected, due chips", "home-rooms.md §4 R3: selected rows show the effective setting and the due chips; the summary line sits over Clean 3 rooms."),
-      entry("r3-room", "R3 Room open", "home-rooms.md §5: a room's Settings open, with the line saying due work changes it for this clean."),
+      entry("r3", "R3 Selected, due lines", "home-rooms.md §4 R3: the due lines sit above the rows; selected rows show only their effective setting; the summary line sits over Clean 3 rooms."),
+      entry("r3-room", "R3 Room open", "home-rooms.md §5: a room's Settings open; the row shows what will run, and the due lines above the rows say what is due."),
       entry("r3-settings", "Cleaning settings", "home-rooms.md §5: the Cleaning settings row open, with the due-work switch."),
       entry("r4", "R4 Check failed", "home-rooms.md §4 R4: the check failed; Try again, and Clean 3 rooms disabled with its reason."),
       entry("r9", "R9 Empty", "home-rooms.md §4 R9: no rooms; the description says so and there is no list."),
@@ -72,7 +74,7 @@ const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly stat
   plans: {
     label: "Plan picker",
     states: [
-      entry("ready", "Plans", "plan.md §3: the picker; line 3 shows due work or Needs attention."),
+      entry("ready", "Plans", "plan.md §3: the picker; line 3 shows the due lines (due glyph) or Needs attention (warning glyph)."),
       entry("empty", "No plans", "plan.md §3: no plans yet; Create plan is the only row."),
     ],
   },
@@ -80,9 +82,9 @@ const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly stat
   schedule: {
     label: "Room schedule",
     states: [
-      entry("counting", "Counting", "room-schedule.md §4 S2: Mop and Deep vacuum steppers, each with its label above and its status line below. The scope toggle switches shared and This plan only."),
-      entry("do-next", "Do on next clean", "room-schedule.md §4 S4 and §5: the one Do on next clean switch, on."),
-      entry("edited", "Edited", "room-schedule.md §4 S5: an edited interval restarts nothing; the status line says what was counted."),
+      entry("counting", "Counting", "room-schedule.md §4 S2: the Mop row and the vacuum rotation row, whose level select is its title; each stepper has its Due line below, then the next-clean switch with its hint. The scope toggle switches Across all plans and In this plan only."),
+      entry("next-clean", "Next clean on", "room-schedule.md §4 S4 and §5: the next-clean switch on; both rows read Due next clean."),
+      entry("edited", "Edited", "room-schedule.md §4 S5: an edited interval restarts nothing; the status line reads Keeps the progress so far."),
       entry("available", "Shared available", "room-schedule.md §4 S6: a room with no schedule in this plan; the shared hint."),
       entry("joined", "Joined shared", "room-schedule.md §4 S7: the plan joins the room's shared schedule, read-only until saved."),
       entry("limits", "Limits", "room-schedule.md §5 Stepper: steppers at Off and at 100; the unavailable end carries its reason as screen-reader text and a tooltip, with no visible line. Advanced open."),
@@ -104,7 +106,7 @@ const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly stat
       entry("notice", "Notice and toast", "shell.md §4 notice rule 2: the notice slot directly under the h2, and its toast."),
       entry("full-map", "Full map", "shell.md §3: Full map with the HUD."),
       entry("locating", "Locating", "shell.md §4 row 8: Full map while locating; the HUD keeps Exit and Stop."),
-      entry("locating-slow", "Locating, after 20 s", "Decision shell D1: after 20 s. The sheet adds \"This is taking longer than usual.\" and Try again; in Full map (app bar) the HUD only swaps its detail."),
+      entry("locating-slow", "Locating, after 20 s", "Decision shell D1: after 20 s. The sheet adds \"This is taking longer than usual.\" and Try again; in Full map (app bar) the HUD only swaps its detail, to \"Taking longer than usual\"."),
     ],
   },
   system: {
@@ -344,7 +346,7 @@ export class MapStudioMockups extends LitElement {
           <span class="sep"></span>
           ${this.#toggle("Intelligent", "intelligent", current.order, { order: "intelligent" })}${this.#toggle("Saved order", "ordered", current.order, { order: "ordered" })}
           <span class="sep"></span>
-          ${this.#toggle("Shared", "shared", current.scope, { scope: "shared" })}${this.#toggle("This plan only", "plan", current.scope, { scope: "plan" })}
+          ${this.#toggle("Across all plans", "shared", current.scope, { scope: "shared" })}${this.#toggle("In this plan only", "plan", current.scope, { scope: "plan" })}
           <span class="sep"></span>
           ${this.#toggle("Due", true, current.due, { due: true })}${this.#toggle("Not due", false, current.due, { due: false })}
           <span class="applies">Run/Edit: Plan. Order: Plan, and Daily clean on Home and the picker. Scope: Room schedule. Due: everywhere.</span>

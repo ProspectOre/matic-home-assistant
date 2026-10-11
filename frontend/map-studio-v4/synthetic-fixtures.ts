@@ -263,13 +263,14 @@ const sharedPolicy = (mopEveryN: number | null, coverageEveryN: number | null): 
   doCoverageNext: false,
 });
 
+// next_*_in follow cadence.py:118-131: 1 when due, else interval − count.
 const kitchenProgress: RoomCadenceProgress = {
   mopProgress: 2,
   coverageProgress: 1,
   mopDue: true,
   coverageDue: false,
-  nextMopIn: 0,
-  nextCoverageIn: 3,
+  nextMopIn: 1,
+  nextCoverageIn: 4,
   reasons: ["mop_due"],
   effectiveCleaningMode: "vacuum_and_mop",
   effectiveCoverageSetting: "standard",
@@ -281,7 +282,7 @@ const livingProgress: RoomCadenceProgress = {
   mopDue: false,
   coverageDue: true,
   nextMopIn: null,
-  nextCoverageIn: 0,
+  nextCoverageIn: 1,
   reasons: ["coverage_due"],
   effectiveCleaningMode: "vacuum",
   effectiveCoverageSetting: "heavy_duty",
@@ -292,7 +293,7 @@ const studySharedProgress: RoomCadenceProgress = {
   coverageProgress: 0,
   mopDue: false,
   coverageDue: false,
-  nextMopIn: 2,
+  nextMopIn: 3,
   nextCoverageIn: null,
   reasons: [],
 };
@@ -319,7 +320,7 @@ export const syntheticMockupPlans = (): PlansCatalog => ({
       roomOrder: ["room-kitchen", "room-living", "room-hallway", "room-study"],
       returnToBase: true,
       finishCurrentRoom: true,
-      finishCurrentRoomThreshold: 50,
+      finishCurrentRoomThreshold: 70,
       nextRunPreview: {
         previewToken: mockupPreviewToken,
         rooms: [

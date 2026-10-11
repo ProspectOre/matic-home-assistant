@@ -73,8 +73,10 @@ a.ms-btn { text-decoration: none; }
    lighter or darker inversion); title, detail, line 3, lead glyph, chevron
    and chip text take --ms-text-disabled, and chips keep their tint. */
 .ms-row[aria-disabled="true"] { background: var(--ms-local); border-color: var(--ms-line); color: var(--ms-text-disabled); }
-.ms-row--featured[aria-disabled="true"] { border-color: color-mix(in srgb, var(--ms-indicator) 35%, var(--ms-line)); }
-.ms-row[aria-disabled="true"] :is(.ms-row__body strong, .ms-row__body small, .ms-row__lead, .ms-row__trail, .warn-line, .warn-line .ms-icon, .ms-chip) { color: var(--ms-text-disabled); }
+/* design-system.md §4: a demoted featured card drops its accent border and
+   tint and takes the plain row's disabled fill. */
+.ms-row--featured[aria-disabled="true"] { --ms-local: var(--ms-surface-sunken); border-color: var(--ms-line); }
+.ms-row[aria-disabled="true"] :is(.ms-row__body strong, .ms-row__body small, .ms-row__lead, .ms-row__trail, .warn-line, .warn-line .ms-icon, .due-block, .due-line .ms-icon, .ms-chip) { color: var(--ms-text-disabled); }
 /* .ms-switch: the knob moves by a logical offset, so RTL keeps it on the track. */
 .ms-switch::after { inset-inline-start: 0.4375rem; translate: 0 -50%; transition: inset-inline-start var(--ms-fast) var(--ms-ease); }
 .ms-switch[aria-checked="true"]::after { inset-inline-start: 1.6875rem; translate: 0 -50%; }
@@ -122,12 +124,12 @@ details[open] > .ms-disclosure .chev:dir(rtl), [aria-expanded="true"] > .chev:di
 /* design-system.md §4 .ms-chip and plan.md §8: chips keep their text and a 1 px ButtonBorder outline. */
 .ms-chip { border: 1px solid ButtonBorder; }
 .ms-row:has(.ms-check :checked) { border-color: Highlight; }
-.ms-row[aria-disabled="true"] :is(.ms-row__body strong, .ms-row__body small, .ms-row__lead, .ms-row__trail, .warn-line, .warn-line .ms-icon, .ms-chip) { color: GrayText; }
+.ms-row[aria-disabled="true"] :is(.ms-row__body strong, .ms-row__body small, .ms-row__lead, .ms-row__trail, .warn-line, .warn-line .ms-icon, .due-block, .due-line .ms-icon, .ms-chip) { color: GrayText; }
 }
 `;
 
 // design-system.md §4 .ms-chip and .ms-badge (plan.md §3 names the chips:
-// "Default", "Paused", due, "Needs attention", "Unsaved changes"; the badge
+// "Default", "Paused", "Needs attention", "Unsaved changes"; the badge
 // is the Saved-order position number).
 export const previewChips = css`
 .ms-chip { --ms-local: var(--ms-tint-accent); display: inline-flex; align-items: center; gap: var(--ms-space-1); min-block-size: 1.5rem; padding-inline: var(--ms-space-2); border-radius: var(--ms-radius-pill); color: var(--ms-text); background: var(--ms-local); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); line-height: var(--ms-lh-tight); white-space: nowrap; vertical-align: middle; }
@@ -135,6 +137,8 @@ export const previewChips = css`
 .ms-chip[data-tone="danger"] { --ms-local: var(--ms-tint-danger); }
 .ms-chip[data-tone="neutral"] { --ms-local: var(--ms-surface-sunken); border: 1px solid var(--ms-line); }
 .ms-badge { display: grid; flex: none; place-items: center; inline-size: 1.5rem; block-size: 1.5rem; border-radius: 50%; color: var(--ms-text); background: var(--ms-tint-accent); font-size: var(--ms-t-xs); font-weight: var(--ms-w-bold); font-variant-numeric: tabular-nums; }
+/* design-system.md §4: inside a selected (tinted) row the badge takes the card fill and a line border. */
+.ms-row[data-selected="true"] .ms-badge, .ms-row:has(.ms-check :checked) .ms-badge { box-sizing: border-box; border: 1px solid var(--ms-line); background: var(--ms-surface-card); }
 .mock-chips { display: flex; flex-wrap: wrap; gap: var(--ms-space-1); margin-block-start: var(--ms-space-1); }
 `;
 

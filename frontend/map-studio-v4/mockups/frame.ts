@@ -21,6 +21,7 @@ import {
   glyphCheck,
   glyphChevronBack,
   glyphClose,
+  glyphDue,
   glyphExitFullMap,
   glyphFitMap,
   glyphFullMap,
@@ -292,6 +293,15 @@ const bodyCss = css`
 .row-lines .mock-chips { margin: 0; }
 .warn-line, .ms-row__body small.warn-line { display: flex; gap: var(--ms-space-1); align-items: flex-start; color: var(--ms-text); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 .warn-line .ms-icon { inline-size: 1rem; block-size: 1rem; color: var(--ms-warning); }
+/* plan.md §3, §6 and the index "Due work" rule: one due line per due kind,
+   --ms-t-xs in --ms-text with the due glyph, no live role. The glyph hangs
+   so a wrapped line aligns with the text. The home card clamps the block to
+   two lines (home-rooms.md §6); the full text stays in the DOM, so it stays
+   in the card's accessible name. */
+.due-block { display: grid; gap: 0.125rem; margin: 0; color: var(--ms-text); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
+.due-line { display: block; padding-inline-start: 1.25rem; text-indent: -1.25rem; }
+.due-line .ms-icon { display: inline-block; inline-size: 1rem; block-size: 1rem; margin-inline-end: 0.25rem; vertical-align: -0.1875rem; color: var(--ms-indicator); }
+.due-block--clamp { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .check-line { display: flex; flex-wrap: wrap; gap: var(--ms-space-2); align-items: center; margin: 0; font-size: var(--ms-t-md); line-height: var(--ms-lh-snug); }
 .check-line > .ms-icon { color: var(--ms-warning); }
 .check-line > span { flex: 1; min-inline-size: 12rem; }
@@ -650,12 +660,22 @@ export abstract class MockScreen extends LitElement {
 
 // ---- Shared builders ---------------------------------------------------------------
 
+/** The due lines (plan.md §6 `v4_due_*`), each with the due glyph; `clamp` is the home card's two-line clamp. */
+export const dueBlock = (lines: readonly string[], options: { readonly clamp?: boolean; readonly tag?: "span" | "div" } = {}): TemplateResult | typeof nothing => {
+  if (!lines.length) return nothing;
+  const content = lines.map((line) => html`<span class="due-line">${glyph(glyphDue)}${line}</span>`);
+  const cls = `due-block${options.clamp ? " due-block--clamp" : ""}`;
+  return options.tag === "div" ? html`<div class=${cls}>${content}</div>` : html`<span class=${cls}>${content}</span>`;
+};
+
 /** A Maps-group or home card row (`.ms-row--card`), as shell.ts renders them. */
 export const cardRow = (options: {
   readonly lead: string;
   readonly title: string;
+  /** A status chip on the title line (home-rooms.md §6: a paused default plan's "Paused"). */
+  readonly titleExtra?: TemplateResult;
   readonly detail?: string;
-  readonly extra?: TemplateResult;
+  readonly extra?: TemplateResult | typeof nothing;
   readonly featured?: boolean;
   readonly disabledBy?: string;
   readonly onPress?: () => void;
@@ -667,6 +687,8 @@ export const cardRow = (options: {
   @click=${() => { if (!options.disabledBy) options.onPress?.(); }}
 >
   <span class="ms-row__lead">${glyph(options.lead)}</span>
-  <span class="ms-row__body"><strong>${options.title}</strong>${options.detail ? html`<small>${options.detail}</small>` : nothing}${options.extra ?? nothing}</span>
+  <span class="ms-row__body">${options.titleExtra
+    ? html`<strong class="card-title"><bdi>${options.title}</bdi>${options.titleExtra}</strong>`
+    : html`<strong>${options.title}</strong>`}${options.detail ? html`<small>${options.detail}</small>` : nothing}${options.extra ?? nothing}</span>
   <span class="ms-row__trail">${glyph(iconChevronRight, true)}</span>
 </button>`;

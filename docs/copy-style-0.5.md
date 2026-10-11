@@ -7,7 +7,7 @@ Rules for every string a household member can read. Inputs: `docs/ux-audit-0.5/c
 One voice for every human-readable string: the Matic Map panel and its TypeScript fallbacks, config and options flows, entity and attribute names, actions, Repairs, blueprints, LLM tools, exceptions that reach the UI, and release notes. Log lines are exempt, but must not contradict the words used here. Binding owner decisions, not open to rewording:
 
 - Stop never asks for confirmation. Its consequence is stated in the status line once Stop is accepted.
-- Room-schedule progress is shared across plans by default; the other choice is "This plan only". The code still defaults to "This plan only" and UX3 flips it, so copy written now describes the new default.
+- Room-schedule progress is shared across plans by default ("Across all plans"); the other choice is "In this plan only". The code still defaults to counting in this plan only and UX3 flips it, so copy written now describes the new default.
 - Developer actions are named with an "Advanced:" prefix.
 - A robot that no longer matches the one Home Assistant was set up with is recovered by a fresh Bluetooth pairing. Copy never offers to skip, accept or relax that check.
 
@@ -40,9 +40,9 @@ One term per concept. Use the "Use" column everywhere, including code comments t
 | Run behavior | Intelligent rotation (longest-waiting rooms first), Saved order | Intelligent cleaning, Run all |
 | Run actions | Run plan (saved plan), Clean {count} rooms (one-time clean) | Start default plan, Clean entire plan |
 | How a room is mopped over time | room schedule; progress; "counted" | recurrence |
-| Where progress counts | Shared across plans (default, recommended), This plan only | per-plan, global |
+| Where progress counts ("Count cleans") | Across all plans (default, recommended), In this plan only | per-plan, global |
 | How the robot cleans | cleaning mode | mode of operation (and the denylist term) |
-| Deep vacuum and vacuum coverage | "Deep vacuum" is the schedule type ("Deep vacuum every {count} cleans", with its own "Deep vacuum level"); "vacuum coverage" is a room's vacuum level (Quick, Optimal, Heavy duty). Both are allowed and never swapped | "coverage" for the schedule, "deep vacuum" for the room's level |
+| Vacuum rotation and vacuum coverage | "vacuum rotation" is a room's "{Level} vacuum every N cleans" schedule ("Heavy duty vacuum every {count} cleans"); "vacuum coverage" is a room's level setting (Quick, Optimal, Heavy duty). They share the level names and are never swapped; the work itself is named by its level ("Heavy duty vacuum due in Kitchen") | "coverage" for the schedule, "rotation" for the room's level |
 | Charging base | dock | base, station |
 | Bluetooth link to the robot | pairing; Pairing mode (a Matic app control, written as shown) | link, connect, authorization |
 | The sidebar page | Matic Map | Map Studio, workspace, the panel |
@@ -59,7 +59,7 @@ One term per concept. Use the "Use" column everywhere, including code comments t
 | profile, section, round-robin | setting or cleaning mode; room; Intelligent rotation | existing test |
 | session, managed, managed run | run; drop the word; plan | CP-0838, CP-0903 |
 | verified (and every word matching `verif\w*`), identity, authoritative | ready; "can't match"; "can't confirm" | CP-0254, CP-0469 |
-| cadence, interval, qualifying, schedule scope | room schedule; progress; counted; "Track progress" | CP-0438 |
+| cadence, interval, qualifying, schedule scope | room schedule; progress; counted; "Count cleans" | CP-0438 |
 | endpoint, payload, fingerprint, SHA-256, wire-shape, Hermes | robot data check; item; checksum (Advanced only) | CP-1078, CP-1084 |
 | token, revision, ledger, epoch, goal ID, stable ID | ID or version, with where to find it (Advanced only) | CP-0997, CP-1094 |
 | native, OEM | the robot's own stop; drop the word | CP-0829 |
@@ -116,7 +116,7 @@ The word in this heading stands for three different things: a map is ready, save
 
 ## Entities, services, blueprints, LLM
 
-- Entities: names are noun phrases of 4 words or fewer for what they show ("Cleaning run in progress", CP-0653), without "Matic" (Home Assistant prefixes the device name). Existing tests pin names starting "Robot " for the diagnostic upload and SSH tunnel entities. Button names are verb plus object, 3 words or fewer, with no status text: the Stop button is "Stop cleaning" (CP-0670); what happens to the current room goes in the action description (CP-1004). Option labels are sentence case ("Saved order", CP-0946).
+- Entities: names are noun phrases of 4 words or fewer for what they show ("Robot cleaning runs", `ha-entities.md`), without "Matic" (Home Assistant prefixes the device name). Existing tests pin names starting "Robot " for the diagnostic upload and SSH tunnel entities. Button names are verb plus object, 3 words or fewer, with no status text: the Stop button is "Stop cleaning" (CP-0670); what happens to the current room goes in the action description (CP-1004). Option labels are sentence case ("Saved order", CP-0946).
 - Actions: verb-first names, one name per action across action, button and blueprint. Developer actions carry "Advanced:" (CP-1077, CP-1083, CP-1085, CP-1089); plan-editing actions stay ordinary. Descriptions are third person and start with what the user gets (first word "Reads" or "Starts"). A field description is never just the field name (CP-0950); raw keys appear only in backticks after the plain explanation, in object fields. ID fields say where the value comes from ("List cleaning plans") and are marked `advanced`.
 - Config and options flows: field labels are nouns; each `data_description` says what the value does or where to find it; abort and error text follow Errors and aborts.
 - Blueprints: names are "Matic: <verb phrase of 4 words or fewer>" ("Matic: Clean when everyone leaves"); the brand prefix is fine on a blueprint name, a dash is not. In descriptions "Matic" is never the noun for the robot ("the robot"). Descriptions state every condition that stops the action, and each must be true in the code (CP-1127). Notification text never names a tool identifier (CP-1115).

@@ -18,6 +18,7 @@ import {
   MockScreen,
   cardRow,
   chip,
+  dueBlock,
   glyph,
   screenStyles,
   type MapView,
@@ -40,7 +41,7 @@ import {
   glyphStopping,
   glyphVacuumAlert,
 } from "./glyphs";
-import { DEFAULT_PLAN_ID, orderFor, planAttention, planById, planLine, previewRooms } from "./plan-data";
+import { DEFAULT_PLAN_ID, dueLines, orderFor, planById, planLine, planLine3, previewRooms } from "./plan-data";
 
 // ---- Status rows (shell.md §4) ------------------------------------------------
 
@@ -70,10 +71,12 @@ export const working = (reason?: string): MotionView => ({ stop: stopAction(reas
 
 // ---- Home panel (home-rooms.md §3–§4) ------------------------------------------
 
-type HomeKind = "ready" | "locating" | "locating-slow" | "busy" | "paused" | "problem" | "offline" | "map-unavailable" | "no-robot";
+type HomeKind = "ready" | "ready-paused" | "locating" | "locating-slow" | "busy" | "paused" | "problem" | "offline" | "map-unavailable" | "no-robot";
 
 const homeCss = css`
 .quick-actions .ms-row:not([aria-disabled="true"]) .ms-row__body .warn-line { color: var(--ms-text); }
+.card-title { display: flex; flex-wrap: wrap; gap: var(--ms-space-1) var(--ms-space-2); align-items: center; min-inline-size: 0; }
+.card-title bdi { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .home-recovery { justify-self: start; margin-block-end: var(--ms-space-4); }
 .host-actions { display: flex; flex-wrap: wrap; gap: var(--ms-space-2); margin-block-end: var(--ms-space-2); }
 `;
@@ -85,9 +88,21 @@ const mapsGroup = (diagnosticsFirst: boolean): TemplateResult => {
     <div class="shelf">${diagnosticsFirst ? [diagnostics, history] : [history, diagnostics]}</div>`;
 };
 
-const homeCards = (variants: Variants, disabledBy: string | undefined, go: (change: MockChange) => void): TemplateResult => {
-  const plan = planById(DEFAULT_PLAN_ID);
-  const attention = planAttention(plan, variants, DEFAULT_PLAN_ID);
+/**
+ * home-rooms.md §6 `v4_run_named_plan`: line 3 holds the due lines (due
+ * glyph), clamped to two lines, or the blocked line (warning glyph). A
+ * paused default plan shows the "Paused" chip on its title line and no
+ * line 3, and still opens Run (plan.md R2).
+ */
+const homeCards = (variants: Variants, disabledBy: string | undefined, go: (change: MockChange) => void, planPaused = false): TemplateResult => {
+  const saved = planById(DEFAULT_PLAN_ID);
+  const plan = planPaused ? { ...saved, enabled: false } : saved;
+  const line3 = planLine3(plan, variants, DEFAULT_PLAN_ID);
+  const extra = line3 === null
+    ? nothing
+    : "blocked" in line3
+      ? html`<small class="warn-line">${glyph(glyphAlert)}<span>${line3.blocked}</span></small>`
+      : dueBlock(line3.due, { clamp: true });
   return html`<div class="quick-actions" role="group" aria-label=${t("v4_cleaning_choices")}>
     ${cardRow({
       lead: glyphRobot,
@@ -100,10 +115,11 @@ const homeCards = (variants: Variants, disabledBy: string | undefined, go: (chan
     ${cardRow({
       lead: iconPlan,
       title: t("v4_run_named_plan", { plan: plan.name }),
+      ...(planPaused ? { titleExtra: chip(t("v4_paused"), "neutral") } : {}),
       detail: planLine(plan, orderFor(plan, variants, DEFAULT_PLAN_ID)),
-      ...(attention ? { extra: html`<small class="warn-line">${glyph(glyphAlert)}<span>${attention}</span></small>` } : {}),
+      extra,
       ...(disabledBy ? { disabledBy } : {}),
-      onPress: () => go({ screen: "plan", state: "ready", view: "run", origin: "home" }),
+      onPress: () => go({ screen: "plan", state: planPaused ? "paused" : "ready", view: "run", origin: "home" }),
     })}
     ${cardRow({
       lead: iconNewArea,
@@ -117,7 +133,8 @@ const homeCards = (variants: Variants, disabledBy: string | undefined, go: (chan
 const homePanel = (kind: HomeKind, variants: Variants, go: (change: MockChange) => void): { heading: string; body: TemplateResult } => {
   switch (kind) {
     case "ready":
-      return { heading: t("v4_what_to_clean"), body: html`${homeCards(variants, undefined, go)}${mapsGroup(false)}` };
+    case "ready-paused":
+      return { heading: t("v4_what_to_clean"), body: html`${homeCards(variants, undefined, go, kind === "ready-paused")}${mapsGroup(false)}` };
     case "locating":
     case "locating-slow":
       // home-rooms.md H3: heading kept, one line, cards demoted with no
@@ -179,6 +196,7 @@ const cleaningMap: MapView = { mode: "map", robot: "cleaning" };
 
 const HOME_STATES: Readonly<Record<string, HomeState>> = {
   ready: { kind: "ready", status: STATUS.ready, map: atDock },
+  "ready-paused": { kind: "ready-paused", status: STATUS.ready, map: atDock },
   "locating-sheet": { kind: "locating", status: STATUS.locating, map: { ...atDock, chip: t("v4_locating") } },
   "locating-slow": { kind: "locating-slow", status: STATUS.locating, map: { ...atDock, chip: t("v4_locating") } },
   cleaning: { kind: "busy", status: STATUS.cleaning, motion: working(), map: cleaningMap },
@@ -261,12 +279,12 @@ abstract class HomeLike extends MockScreen {
 }
 
 export class MockHome extends HomeLike {
-  protected readonly stateMap = { h1: "ready", h3: "locating-sheet", h4: "cleaning", h7: "problem", h10: "no-robot" };
+  protected readonly stateMap = { h1: "ready", h1p: "ready-paused", h3: "locating-sheet", h4: "cleaning", h7: "problem", h10: "no-robot" };
 }
 
 export class MockStatus extends HomeLike {
   protected readonly stateMap: Readonly<Record<string, string>> = Object.fromEntries(
-    Object.keys(HOME_STATES).filter((id) => id !== "no-robot" && id !== "locating-sheet").map((id) => [id, id]),
+    Object.keys(HOME_STATES).filter((id) => id !== "no-robot" && id !== "locating-sheet" && id !== "ready-paused").map((id) => [id, id]),
   );
 }
 
@@ -277,8 +295,7 @@ const roomsCss = css`
 .rooms-header .ms-btn--sm { margin-inline-start: auto; }
 .room-list { margin-block-start: var(--ms-space-2); }
 .settings-body { display: grid; gap: var(--ms-space-3); padding: 0 var(--ms-space-3) var(--ms-space-3); }
-.due-changes { margin: 0; font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
-.check-line { margin-block: var(--ms-space-2); }
+.check-lines { display: grid; gap: var(--ms-space-2); margin-block: var(--ms-space-2); }
 `;
 
 type RoomsState = "r1" | "r2" | "r3" | "r3-room" | "r3-settings" | "r4" | "r9";
@@ -303,10 +320,6 @@ const coverageSelect = (label: string, value: CoverageSetting): TemplateResult =
   </select>
 </label>`;
 
-export const dueChips = (reasons: readonly string[]): TemplateResult[] => [
-  ...(reasons.includes("mop_due") ? [chip(t("v4_cadence_mop_due_reason"), "warning")] : []),
-  ...(reasons.includes("coverage_due") ? [chip(t("v4_cadence_coverage_due_reason"), "warning")] : []),
-];
 
 export class MockRooms extends MockScreen {
   static override properties = { ...MockScreen.properties, _openRoom: { state: true }, _settingsOpen: { state: true } };
@@ -349,16 +362,19 @@ export class MockRooms extends MockScreen {
     </div>`;
   }
 
-  #row(roomId: string, name: string, selected: boolean, line: string | null, reasons: readonly string[], changed: boolean): TemplateResult {
+  /**
+   * home-rooms.md §3 room row: the effective setting already shows the due
+   * work that will run, so the row carries no due chip, and an open
+   * disclosure adds nothing (the due lines above the rows say what is due).
+   */
+  #row(roomId: string, name: string, selected: boolean, line: string | null): TemplateResult {
     const open = selected && this._openRoom === roomId;
-    const chips = selected ? dueChips(reasons) : [];
     return html`<li class="ms-row room-row">
       <label class="ms-check">
         <input type="checkbox" .checked=${selected} @click=${(event: Event) => event.preventDefault()}>
         <span class="row-lines">
           <bdi>${name}</bdi>
           ${selected && line ? html`<small>${line}</small>` : nothing}
-          ${chips.length ? html`<span class="mock-chips">${chips}</span>` : nothing}
         </span>
       </label>
       ${selected ? html`<button
@@ -372,7 +388,6 @@ export class MockRooms extends MockScreen {
       ${open ? html`<div class="row-expanded" id=${`settings-${roomId}`}>
         ${modeSelect(t("v4_room_cleaning_system_named", { room: name }), WHOLE_MODE)}
         ${coverageSelect(t("v4_vacuum_coverage"), WHOLE_COVERAGE)}
-        ${changed ? html`<p class="due-changes">${t("v4_room_due_changes")}</p>` : nothing}
       </div>` : nothing}
     </li>`;
   }
@@ -386,17 +401,16 @@ export class MockRooms extends MockScreen {
     const ready = state === "r3" || state === "r3-room" || state === "r3-settings";
     const anyDue = ready && preview.some((room) => room.cadenceReasons.length > 0);
     const back: MockAction = { label: t("v4_back_to_all_tasks"), kind: "secondary", change: { screen: "home", state: "h1" } };
-    const lineFor = (roomId: string): { line: string | null; reasons: readonly string[]; changed: boolean } => {
-      if (state === "r2") return { line: t("v4_room_preview_loading"), reasons: [], changed: false };
-      if (!ready) return { line: roomSetting(WHOLE_MODE, WHOLE_COVERAGE), reasons: [], changed: false };
+    const lineFor = (roomId: string): string | null => {
+      if (state === "r2") return t("v4_room_preview_loading");
+      if (!ready) return roomSetting(WHOLE_MODE, WHOLE_COVERAGE);
       const room = preview.find((candidate) => candidate.roomId === roomId);
-      if (!room) return { line: null, reasons: [], changed: false };
-      return {
-        line: roomSetting(room.cleaningMode, room.coverageSetting),
-        reasons: room.cadenceReasons,
-        changed: room.cleaningMode !== WHOLE_MODE || room.coverageSetting !== WHOLE_COVERAGE,
-      };
+      return room ? roomSetting(room.cleaningMode, room.coverageSetting) : null;
     };
+    // home-rooms.md §3 item 7: the check lines, stacked, each only when
+    // needed: due lines, then the parts line, then the failed line (R4).
+    const due = ready ? dueLines(preview) : [];
+    const failed = state === "r4";
     const count = selected.length;
     const primary: MockAction = {
       label: cleanRoomsLabel(count),
@@ -419,13 +433,15 @@ export class MockRooms extends MockScreen {
             <button class="ms-btn ms-btn--sm" type="button">${t("v4_clear")}</button>` : nothing}
         </div>
         ${this.#settingsRow(anyDue)}
-        ${state === "r4" ? html`<p class="check-line">${glyph(glyphAlert)}<span>${t("v4_room_preview_unavailable")}</span>
-          <button class="ms-btn ms-btn--secondary" type="button">${t("v4_retry")}</button></p>` : nothing}
+        ${due.length || failed ? html`<div class="check-lines">
+          ${dueBlock(due, { tag: "div" })}
+          ${failed ? html`<p class="check-line">${glyph(glyphAlert)}<span>${t("v4_room_preview_unavailable")}</span>
+            <button class="ms-btn ms-btn--secondary" type="button">${t("v4_retry")}</button></p>` : nothing}
+        </div>` : nothing}
         <ul class="mock-stack room-list" role="group" aria-label=${t("v4_rooms_to_clean")}>
           ${floor.map((room) => {
             const isSelected = selected.includes(room.roomId);
-            const info = isSelected ? lineFor(room.roomId) : { line: null, reasons: [], changed: false };
-            return this.#row(room.roomId, room.name, isSelected, info.line, info.reasons, info.changed);
+            return this.#row(room.roomId, room.name, isSelected, isSelected ? lineFor(room.roomId) : null);
           })}
         </ul>`;
     return {

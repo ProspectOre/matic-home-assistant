@@ -2,7 +2,7 @@ import { LitElement, css, html, nothing } from "lit";
 import type { PropertyValues, TemplateResult } from "lit";
 import { iconChevronRight, iconOverflow, iconPlus } from "../icons";
 import { roomSetting, t } from "./copy";
-import { DEFAULT_VARIANTS, chip, glyph, screenStyles, toneGlyph, type StageFrame, type Tone, type Variants } from "./frame";
+import { DEFAULT_VARIANTS, chip, dueBlock, glyph, screenStyles, toneGlyph, type StageFrame, type Tone, type Variants } from "./frame";
 import { glyphClose, glyphMinus, glyphRobot } from "./glyphs";
 import { themeStyle, type ThemeName } from "./themes";
 
@@ -90,7 +90,8 @@ export class MockThemePanel extends LitElement {
       ${notice("warning", t("v4_notice_recheck_failed"))}
       ${notice("error", t("v4_notice_stop_unconfirmed"))}
       <div class="card">
-        <div class="mock-chips">${chip(t("v4_plan_default"))}${chip(t("v4_paused"), "neutral")}${chip(t("v4_cadence_mop_due_reason"), "warning")}${chip(t("v4_needs_attention_chip"), "danger")}</div>
+        <div class="mock-chips">${chip(t("v4_plan_default"))}${chip(t("v4_paused"), "neutral")}${chip(t("v4_needs_attention_chip"), "danger")}</div>
+        ${dueBlock([t("v4_due_mop", { rooms: "Kitchen" })], { tag: "div" })}
         <div class="buttons">
           <button class="ms-btn ms-btn--primary" type="button">${t("v4_action_run_plan")}</button>
           <button class="ms-btn ms-btn--primary ms-btn--danger" type="button" aria-label=${t("v4_stop_cleaning_label")}>${t("v4_action_stop")}</button>
@@ -239,7 +240,7 @@ export class MockSystem extends LitElement {
               <button class="ms-btn" type="button" aria-pressed="true" data-force=${force(state)} aria-disabled=${state === "disabled" ? "true" : nothing}>${t("v4_order_intelligent")}</button>
               <button class="ms-btn" type="button" aria-pressed="false" aria-disabled=${state === "disabled" ? "true" : nothing}>${t("v4_order_ordered")}</button>
             </div>${state === "disabled" ? html`<p class="reason">${t("v4_reason_plan_saving")}</p>` : nothing}`)}
-          ${this.#row("Range", ".ms-range", (state) => html`<input class="ms-range" type="range" min="0" max="100" .value=${"50"} aria-label=${t("v4_finish_current_room")} data-force=${force(state)} ?disabled=${state === "disabled"}>`)}
+          ${this.#row("Range", ".ms-range", (state) => html`<input class="ms-range" type="range" min="0" max="100" .value=${"50"} aria-label=${t("v4_plan_finish_threshold", { percent: 50 })} aria-valuetext="50%" data-force=${force(state)} ?disabled=${state === "disabled"}>`)}
         </div>
       </section>
       <section>
