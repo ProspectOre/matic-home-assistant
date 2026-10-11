@@ -11,13 +11,25 @@ import { fileURLToPath } from "node:url";
 // `manifest.json` + `summary.md` for the UX audit agents to cite. Excluded from
 // default runs and CI by the `@audit` tag (see playwright.config.mjs).
 // Everything is synthetic gallery data served by tests/browser/server.mjs.
-// `UX_AUDIT_OUT_DIR` (repository-relative or absolute) redirects the output root.
+// `UX_AUDIT_OUT_DIR` redirects the output root; it must stay under the git-ignored
+// `tests/browser/.generated/` because every scenario deletes its own output directory.
 
 const REPOSITORY_ROOT = fileURLToPath(new URL("../..", import.meta.url));
+const GENERATED_ROOT = resolve(REPOSITORY_ROOT, "tests/browser/.generated");
 const OUTPUT_ROOT = resolve(
   REPOSITORY_ROOT,
   process.env.UX_AUDIT_OUT_DIR || "tests/browser/.generated/ux-audit",
 );
+const OUTPUT_GENERATED_PATH = relative(GENERATED_ROOT, OUTPUT_ROOT);
+if (
+  !OUTPUT_GENERATED_PATH ||
+  OUTPUT_GENERATED_PATH.startsWith("..") ||
+  OUTPUT_GENERATED_PATH.includes(`..${sep}`)
+) {
+  throw new Error(
+    `UX_AUDIT_OUT_DIR must name a directory under tests/browser/.generated/ (got ${OUTPUT_ROOT})`,
+  );
+}
 const OUTPUT_REPOSITORY_PATH = relative(REPOSITORY_ROOT, OUTPUT_ROOT).split(sep).join("/");
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
 const AUDIT_PAGE = "/map-studio-v4-audit";
