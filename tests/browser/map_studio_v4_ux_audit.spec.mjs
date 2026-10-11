@@ -549,12 +549,15 @@ async function writeIndex() {
   await withIndexLock(async () => {
     const present = new Set(await readdir(OUTPUT_ROOT).catch(() => []));
     const manifest = [];
+    // A scenario with an output directory but no records.json never finished:
+    // it timed out, was dropped, or was still running when this index was built.
+    const unfinished = [];
     for (const item of ITEMS) {
       if (!present.has(item.id)) continue;
       try {
         manifest.push(...JSON.parse(await readFile(join(OUTPUT_ROOT, item.id, "records.json"), "utf8")));
       } catch {
-        // A scenario still running has no records yet.
+        unfinished.push(item.id);
       }
     }
     const replace = async (name, contents) => {
@@ -563,12 +566,15 @@ async function writeIndex() {
       await rename(temporary, join(OUTPUT_ROOT, name));
     };
     await replace("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
-    await replace("summary.md", summarize(manifest));
+    await replace("summary.md", summarize(manifest, unfinished));
   });
 }
 
-function summarize(manifest) {
+function summarize(manifest, unfinished = []) {
   const captured = manifest.filter((entry) => entry.path);
+  const failedCaptures = manifest.filter((entry) => entry.error);
+  const errorScenarios = [...new Set([...failedCaptures.map((entry) => entry.scenario), ...unfinished])];
+  const errorCount = failedCaptures.length + unfinished.length;
   const sum = (entries, field) => entries.reduce((total, entry) => total + (entry[field] ?? 0), 0);
   const rows = ITEMS.map(({ id }) => {
     const entries = manifest.filter((entry) => entry.scenario === id);
@@ -591,7 +597,7 @@ function summarize(manifest) {
     `Generated ${new Date().toISOString()} from commit ${SOURCE_STAMP.gitHead ?? "unknown"}${SOURCE_STAMP.gitDirty ? " (tracked changes present)" : ""}.`,
     "",
     `- Captures (PNG files): ${captured.length} (${captured.filter((entry) => entry.kind === "full-page").length} are full-page companions)`,
-    `- Errors: ${manifest.filter((entry) => entry.error).length}`,
+    `- Errors: ${errorCount}${errorScenarios.length ? ` (scenarios: ${errorScenarios.join(", ")})` : ""}`,
     `- Skipped: ${manifest.filter((entry) => entry.skipped).length}`,
     `- Axe serious (rule count across captures): ${sum(manifest, "axeSerious")}`,
     `- Axe critical (rule count across captures): ${sum(manifest, "axeCritical")}`,
@@ -611,6 +617,9 @@ function summarize(manifest) {
 }
 
 test.describe("@audit Map Studio UX capture", () => {
+  // Without `--project chromium`, a webkit worker would rewrite the same
+  // output directories. The skip is evaluated per project at run time.
+  test.skip(({ browserName }) => browserName !== "chromium", "audit captures are Chromium-only");
   for (const item of ITEMS) {
     test(`captures ${item.id}`, async ({ page }) => {
       test.setTimeout(600_000);

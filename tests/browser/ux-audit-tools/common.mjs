@@ -16,7 +16,9 @@ export function outputPath(name) {
 export const BASE = "http://127.0.0.1:4173";
 export const AUDIT_PAGE = "/map-studio-v4-audit";
 export const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
-export const NARROW_BELOW = 1024; // shell.ts ResizeObserver: width < 1024 || height < 480
+// The shell's own narrow rule (shell.ts ResizeObserver): width < 1024 || height < 480.
+export const NARROW_BELOW_WIDTH = 1024;
+export const NARROW_BELOW_HEIGHT = 480;
 
 export async function launch() {
   const browser = await chromium.launch();
@@ -37,14 +39,20 @@ export async function openScenario(page, scenario, { width, height, theme = "lig
     GALLERY_TAG,
   );
   await page.addStyleTag({ content: "body > aside[role='note'] { display: none !important; }" });
-  const narrow = width < NARROW_BELOW;
+  const narrow = width < NARROW_BELOW_WIDTH || height < NARROW_BELOW_HEIGHT;
   await page.evaluate(async ({ tag, scenario, narrow, dir, patch }) => {
     document.documentElement.dir = dir;
-    const gallery = document.querySelector(tag);
-    gallery.shadowRoot.querySelector(".stage").style.cssText =
-      "block-size:100dvh;min-block-size:0;max-inline-size:none;";
+    // Same as the capture harness: swap in a fresh gallery whose full-size stage
+    // is adopted before its first render, so the map fits once at final size.
+    document.querySelector(tag).remove();
+    const gallery = document.createElement(tag);
+    gallery.controls = false;
     gallery.narrow = narrow;
     gallery.scenario = scenario;
+    document.body.append(gallery);
+    const stage = new CSSStyleSheet();
+    stage.replaceSync(".stage{block-size:100dvh!important;min-block-size:0!important;max-inline-size:none!important}");
+    gallery.shadowRoot.adoptedStyleSheets = [...gallery.shadowRoot.adoptedStyleSheets, stage];
     await gallery.updateComplete;
     if (patch) {
       gallery.replaceWorkspaceState({ ...gallery.getWorkspaceSnapshot(), ...patch });
