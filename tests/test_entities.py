@@ -1989,6 +1989,23 @@ async def test_vacuum_start_resumes_or_cleans_all_rooms() -> None:
     ]
 
 
+async def test_paused_vacuum_with_latched_warning_reports_paused_and_problem() -> None:
+    """A latched warning must not turn a paused robot back into cleaning."""
+    entry = _entry(paused=True)
+    coordinator = entry.runtime_data.coordinator
+    # Firmware keeps the mission flag set while paused; warning 326 is latched.
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(
+            coordinator.data.operational, cleaning=True, error_codes=(326,)
+        ),
+    )
+    entity = vacuum.MaticVacuum(entry)
+
+    assert entity.activity is VacuumActivity.PAUSED, entity.activity
+    assert entity.extra_state_attributes["problem"] is True
+
+
 async def test_clean_action_supports_the_complete_verified_option_matrix() -> None:
     entry = _entry()
     entity = vacuum.MaticVacuum(entry)

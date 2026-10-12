@@ -64,7 +64,7 @@ def test_decode_verified_kabuki_state_fields() -> None:
     assert state.paused is True
     assert state.cleaning is False
     assert state.returning is False
-    assert state.activity is RobotActivity.DOCKED
+    assert state.activity is RobotActivity.PAUSED
     assert state.error_names == ("error_code_207",)
 
 
@@ -127,24 +127,28 @@ def test_low_charge_cleaning_task_at_dock_is_recharge_and_resume() -> None:
 
 
 @pytest.mark.parametrize(
-    ("states", "activity"),
+    ("states", "errors", "activity"),
     [
-        ([106, 119], RobotActivity.DOCKED),
-        ([107, 119, 206], RobotActivity.CHARGING),
-        ([109, 200, 119], RobotActivity.PAUSED),
-        ([104, 105], RobotActivity.RETURNING),
-        ([104, 105, 106, 119], RobotActivity.RETURNING),
-        ([106], RobotActivity.DOCKED),
-        ([], RobotActivity.READY),
+        ([106, 119], [], RobotActivity.DOCKED),
+        ([107, 119, 206], [], RobotActivity.CHARGING),
+        ([109, 200, 119], [], RobotActivity.PAUSED),
+        ([109, 200, 119], [326], RobotActivity.PAUSED),
+        ([109, 200, 119], [326, 206, 207], RobotActivity.PAUSED),
+        ([101, 119, 209, 212], [207], RobotActivity.CLEANING),
+        ([104, 105], [], RobotActivity.RETURNING),
+        ([104, 105, 106, 119], [], RobotActivity.RETURNING),
+        ([106], [], RobotActivity.DOCKED),
+        ([], [], RobotActivity.READY),
     ],
 )
 def test_decode_live_verified_activity_transitions(
-    states: list[int], activity: RobotActivity
+    states: list[int], errors: list[int], activity: RobotActivity
 ) -> None:
     state = _decode_operational_state(
-        KabukiOutputWire(states=states).SerializeToString()
+        KabukiOutputWire(states=states, errors=errors).SerializeToString()
     )
 
+    assert state.error_codes == tuple(errors)
     assert state.activity is activity
 
 
