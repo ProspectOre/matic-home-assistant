@@ -304,18 +304,18 @@ class MaticRobotStatusAPI(_AdministratorAPI):
         self.administrators: frozenset[str] = frozenset()
 
     @override
-    def tools(self) -> list[llm.Tool]:
+    def tools(self, *, exposed_only: bool = False) -> list[llm.Tool]:
         return [
-            MaticGetOperationsTool(),
-            MaticGetPlanTool(),
-            MaticGetNativeHistoryTool(),
-            MaticGetRecentEventsTool(self),
-            MaticGetActivityTool(),
-            MaticGetFirmwareTool(),
-            MaticRunPlanTool(),
-            MaticCleanRoomsTool(),
-            MaticStopCleaningTool(),
-            MaticResetScheduleTool(),
+            MaticGetOperationsTool(exposed_only=exposed_only),
+            MaticGetPlanTool(exposed_only=exposed_only),
+            MaticGetNativeHistoryTool(exposed_only=exposed_only),
+            MaticGetRecentEventsTool(self, exposed_only=exposed_only),
+            MaticGetActivityTool(exposed_only=exposed_only),
+            MaticGetFirmwareTool(exposed_only=exposed_only),
+            MaticRunPlanTool(exposed_only=exposed_only),
+            MaticCleanRoomsTool(exposed_only=exposed_only),
+            MaticStopCleaningTool(exposed_only=exposed_only),
+            MaticResetScheduleTool(exposed_only=exposed_only),
         ]
 
     @callback
@@ -404,9 +404,40 @@ class MaticFirmwareResearchAPI(_AdministratorAPI):
 
 
 class _MaticTool(llm.Tool):
-    """A Matic tool that only a current administrator can call."""
+    """A Matic tool that only a current administrator can call.
+
+    Tools handed to Assist see only robots whose vacuum is exposed to the
+    calling assistant; an unexposed robot is treated as absent.
+    """
 
     integration = DOMAIN
+
+    def __init__(self, *, exposed_only: bool = False) -> None:
+        self.exposed_only = exposed_only
+
+    def entries(
+        self, hass: HomeAssistant, llm_context: llm.LLMContext
+    ) -> list[ConfigEntry[Any]]:
+        """Return the loaded robots this caller may see, or a plain error."""
+        entries = hass.config_entries.async_loaded_entries(DOMAIN)
+        if self.exposed_only:
+            entries = [
+                entry
+                for entry in entries
+                if _exposed_to(hass, llm_context.assistant, entry)
+            ]
+        if not entries:
+            raise _error("llm_no_robot")
+        return entries
+
+    def resolve_entry(
+        self,
+        hass: HomeAssistant,
+        llm_context: llm.LLMContext,
+        reference: str | None,
+    ) -> ConfigEntry[Any]:
+        """Resolve one visible robot without accepting its serial number."""
+        return _resolve_entry(self.entries(hass, llm_context), reference)
 
     @abstractmethod
     async def async_run(
@@ -463,9 +494,9 @@ class MaticGetFirmwareTool(_MaticTool):
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
         entries = (
-            [_resolve_entry(hass, args["robot"])]
+            [self.resolve_entry(hass, llm_context, args["robot"])]
             if args.get("robot")
-            else _loaded_entries(hass)
+            else self.entries(hass, llm_context)
         )
         robots = []
         for entry in entries:
@@ -522,7 +553,7 @@ class MaticClaimFirmwareInvestigationTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        entry = _resolve_entry(hass, args.pop("robot", None))
+        entry = self.resolve_entry(hass, llm_context, args.pop("robot", None))
         try:
             result = (
                 await entry.runtime_data.firmware_tracker.async_claim_investigation(
@@ -572,7 +603,7 @@ class MaticCompleteFirmwareInvestigationTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        entry = _resolve_entry(hass, args.pop("robot", None))
+        entry = self.resolve_entry(hass, llm_context, args.pop("robot", None))
         try:
             await entry.runtime_data.firmware_tracker.async_complete_investigation(
                 entry.entry_id, **args
@@ -601,7 +632,7 @@ class MaticGetOperationsTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        entries = _loaded_entries(hass)
+        entries = self.entries(hass, llm_context)
         return llm.ToolResult(
             data={
                 "read_only": True,
@@ -638,7 +669,7 @@ class MaticGetPlanTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        entry = _resolve_entry(hass, args.get("robot"))
+        entry = self.resolve_entry(hass, llm_context, args.get("robot"))
         runtime = entry.runtime_data
         state = runtime.coordinator.data
         floor_plan = state.floor_plan
@@ -804,7 +835,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        entry = _resolve_entry(hass, args.get("robot"))
+        entry = self.resolve_entry(hass, llm_context, args.get("robot"))
         try:
             records = (
                 await entry.runtime_data.client.async_get_cleaning_session_records()
@@ -946,7 +977,8 @@ class MaticGetRecentEventsTool(_MaticTool):
         }
     )
 
-    def __init__(self, api: MaticRobotStatusAPI) -> None:
+    def __init__(self, api: MaticRobotStatusAPI, *, exposed_only: bool = False) -> None:
+        super().__init__(exposed_only=exposed_only)
         self.api = api
 
     @override
@@ -961,7 +993,19 @@ class MaticGetRecentEventsTool(_MaticTool):
             if args["include_activity"]
             else self.api.operational_events
         )
-        events = list(source)[-args["limit"] :]
+        events = list(source)
+        if self.exposed_only:
+            visible = _robot_identifiers(hass, self.entries(hass, llm_context))
+            events = [
+                event
+                for event in events
+                if visible.intersection(
+                    value
+                    for key in ("entry_id", "device_id", "entity_id")
+                    if isinstance(value := cast(Any, event["data"]).get(key), str)
+                )
+            ]
+        events = events[-args["limit"] :]
         events.reverse()
         return llm.ToolResult(
             data=cast(
@@ -1020,7 +1064,7 @@ class MaticGetActivityTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        entry = _resolve_entry(hass, args.get("robot"))
+        entry = self.resolve_entry(hass, llm_context, args.get("robot"))
         observations = [
             _activity_observation(item)
             for item in entry.runtime_data.client.activity_journal.snapshot
@@ -1128,7 +1172,9 @@ class MaticRunPlanTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(hass, _resolve_entry(hass, args.get("robot")))
+        robot = _PanelRobot(
+            hass, self.resolve_entry(hass, llm_context, args.get("robot"))
+        )
         if reason := robot.start_block_reason():
             return await _async_refusal(hass, llm_context, "common", reason)
         manager = robot.entry.runtime_data.cleaning_plans
@@ -1200,7 +1246,9 @@ class MaticCleanRoomsTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(hass, _resolve_entry(hass, args.get("robot")))
+        robot = _PanelRobot(
+            hass, self.resolve_entry(hass, llm_context, args.get("robot"))
+        )
         if reason := robot.start_block_reason():
             return await _async_refusal(hass, llm_context, "common", reason)
         sequence = {
@@ -1262,7 +1310,9 @@ class MaticStopCleaningTool(_MaticTool):
         args: dict[str, Any],
         llm_context: llm.LLMContext,
     ) -> llm.ToolResult:
-        robot = _PanelRobot(hass, _resolve_entry(hass, args.get("robot")))
+        robot = _PanelRobot(
+            hass, self.resolve_entry(hass, llm_context, args.get("robot"))
+        )
         if not robot.connected:
             return await _async_refusal(
                 hass, llm_context, "exceptions", "llm_robot_unavailable"
@@ -1321,7 +1371,9 @@ class MaticResetScheduleTool(_MaticTool):
     ) -> llm.ToolResult:
         if args["scope"] == "room" and "room" not in args:
             raise _error("llm_room_required")
-        robot = _PanelRobot(hass, _resolve_entry(hass, args.get("robot")))
+        robot = _PanelRobot(
+            hass, self.resolve_entry(hass, llm_context, args.get("robot"))
+        )
         if reason := robot.edit_block_reason():
             return await _async_refusal(hass, llm_context, "common", reason)
         manager = robot.entry.runtime_data.cleaning_plans
@@ -1527,16 +1579,15 @@ def async_get_tools(
     user_id = llm_context.context.user_id if llm_context.context else None
     if api is None or user_id not in api.administrators:
         return None
-    registry = er.async_get(hass)
     if not any(
-        async_should_expose(hass, llm_context.assistant, entity.entity_id)
+        _exposed_to(hass, llm_context.assistant, entry)
         for entry in hass.config_entries.async_loaded_entries(DOMAIN)
-        for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
-        if entity.domain == VACUUM_DOMAIN
     ):
         return None
     return LLMTools(
-        tools=[llm.NamespacedTool(DOMAIN, tool) for tool in api.tools()],
+        tools=[
+            llm.NamespacedTool(DOMAIN, tool) for tool in api.tools(exposed_only=True)
+        ],
         prompt=ROBOT_STATUS_PROMPT,
     )
 
@@ -1551,17 +1602,36 @@ def async_register_matic_llm_api(hass: HomeAssistant) -> MaticRobotStatusAPI:
     return api
 
 
-def _loaded_entries(hass: HomeAssistant) -> list[ConfigEntry[Any]]:
-    """Return loaded Matic entries or a plain error."""
-    entries = hass.config_entries.async_loaded_entries(DOMAIN)
-    if not entries:
-        raise _error("llm_no_robot")
-    return entries
+def _exposed_to(hass: HomeAssistant, assistant: str, entry: ConfigEntry[Any]) -> bool:
+    """Return whether the robot's vacuum is exposed to the assistant."""
+    return any(
+        async_should_expose(hass, assistant, entity.entity_id)
+        for entity in er.async_entries_for_config_entry(
+            er.async_get(hass), entry.entry_id
+        )
+        if entity.domain == VACUUM_DOMAIN
+    )
 
 
-def _resolve_entry(hass: HomeAssistant, reference: str | None) -> ConfigEntry[Any]:
+def _robot_identifiers(
+    hass: HomeAssistant, entries: list[ConfigEntry[Any]]
+) -> set[str]:
+    """Return the entry, device and entity ids that identify these robots."""
+    registry = er.async_get(hass)
+    identifiers: set[str] = set()
+    for entry in entries:
+        identifiers.add(entry.entry_id)
+        for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+            identifiers.add(entity.entity_id)
+            if entity.device_id is not None:
+                identifiers.add(entity.device_id)
+    return identifiers
+
+
+def _resolve_entry(
+    entries: list[ConfigEntry[Any]], reference: str | None
+) -> ConfigEntry[Any]:
     """Resolve one robot without exposing or accepting its serial number."""
-    entries = _loaded_entries(hass)
     if reference is None:
         if len(entries) != 1:
             raise _error("llm_robot_required")
