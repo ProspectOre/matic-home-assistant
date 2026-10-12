@@ -2,9 +2,11 @@ import AxeBuilder from "@axe-core/playwright";
 import { test } from "@playwright/test";
 import { build } from "esbuild";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { STAMP_FILE, hashSources } from "../../scripts/source_stamp.mjs";
 
 // Evidence harness, not a gate: `npm run audit:ux` captures every Map Studio v4
 // gallery scenario and state at the contract widths, runs axe on each, and writes
@@ -48,12 +50,41 @@ const git = (...args) => {
     return null;
   }
 };
-// Stamps every record so a manifest says which code produced it. Tracked
-// changes mark the stamp dirty (untracked docs from other tasks are ignored).
-const SOURCE_STAMP = {
-  gitHead: git("rev-parse", "HEAD"),
-  gitDirty: Boolean(git("status", "--porcelain", "--untracked-files=no")),
-};
+// Stamps every record so a manifest says which code produced it: the commit,
+// whether tracked files differ from it, and `sourceHash`, a digest of the exact
+// sources the review bundle was compiled from plus this harness file. Two runs
+// on the same dirty head with different edits therefore carry different stamps.
+// The stamp is resolved lazily by `assertFreshBundle` so that non-audit runs,
+// which only load this file, never need the review bundle.
+const REVIEW_ROOT = resolve(GENERATED_ROOT, "map-studio-v4-review");
+let SOURCE_STAMP = null;
+async function loadSourceStamp() {
+  if (SOURCE_STAMP) return SOURCE_STAMP;
+  const stale = new Error(
+    "The Map Studio review bundle is missing or its sources changed since it was built. Run `npm run build:map-studio-v4` (or `npm run audit:ux`, which builds first).",
+  );
+  let bundleStamp;
+  try {
+    bundleStamp = JSON.parse(await readFile(join(REVIEW_ROOT, STAMP_FILE), "utf8"));
+  } catch {
+    throw stale;
+  }
+  if (!Array.isArray(bundleStamp?.inputs) || typeof bundleStamp.sourceHash !== "string") throw stale;
+  let current;
+  try {
+    current = await hashSources(REPOSITORY_ROOT, bundleStamp.inputs);
+  } catch {
+    throw stale;
+  }
+  if (current !== bundleStamp.sourceHash) throw stale;
+  const harness = await readFile(fileURLToPath(import.meta.url));
+  SOURCE_STAMP = {
+    gitHead: git("rev-parse", "HEAD"),
+    gitDirty: Boolean(git("status", "--porcelain", "--untracked-files=no")),
+    sourceHash: createHash("sha256").update(bundleStamp.sourceHash).update("\0").update(harness).digest("hex"),
+  };
+  return SOURCE_STAMP;
+}
 
 // The scenario, dialog, and tone lists come from the TypeScript source so the
 // harness cannot drift from them. The browser runs the review bundle, so each
@@ -175,7 +206,10 @@ const errorText = (error) => String(error?.message ?? error).split("\n")[0].slic
 
 const pause = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+// The bundle must have been compiled from the current sources (source stamp)
+// and must expose the same lists as the TypeScript this harness imported.
 async function assertFreshBundle(page) {
+  await loadSourceStamp();
   const bundled = await page.evaluate(async () => {
     const module = await import("/map_studio_v4-review/review.js");
     return {
@@ -546,7 +580,7 @@ async function withIndexLock(action) {
 // the code running now. Records left in OUTPUT_ROOT by an earlier run on another
 // commit (or on a differently dirty tree) are stale and never enter the index.
 const isCurrentRecord = (record) =>
-  record?.gitHead === SOURCE_STAMP.gitHead && record?.gitDirty === SOURCE_STAMP.gitDirty;
+  record?.gitHead === SOURCE_STAMP.gitHead && record?.sourceHash === SOURCE_STAMP.sourceHash;
 
 // Rebuilds manifest.json and summary.md from every finished scenario. Each
 // test calls this when it ends, under the lock; the rename keeps readers from
@@ -555,14 +589,19 @@ async function writeIndex() {
   await withIndexLock(async () => {
     const present = new Set(await readdir(OUTPUT_ROOT).catch(() => []));
     const manifest = [];
-    // A scenario with an output directory but no records.json never finished:
-    // it timed out, was dropped, or was still running when this index was built.
+    // A scenario with no output directory, or one without records.json, never
+    // finished: it was not started, timed out, was dropped, or was still running
+    // when this index was built. Every one is listed, so a partial run can never
+    // read as complete.
     const unfinished = [];
     // A scenario whose records carry another source stamp came from an earlier
     // run that this one has not (yet) replaced; it is reported, never indexed.
     const stale = [];
     for (const item of ITEMS) {
-      if (!present.has(item.id)) continue;
+      if (!present.has(item.id)) {
+        unfinished.push(item.id);
+        continue;
+      }
       let records;
       try {
         records = JSON.parse(await readFile(join(OUTPUT_ROOT, item.id, "records.json"), "utf8"));
@@ -614,7 +653,8 @@ function summarize(manifest, unfinished = [], stale = []) {
     "",
     `- Captures (PNG files): ${captured.length} (${captured.filter((entry) => entry.kind === "full-page").length} are full-page companions)`,
     `- Errors: ${errorCount}${errorScenarios.length ? ` (scenarios: ${errorScenarios.join(", ")})` : ""}`,
-    `- Stale (recorded by another commit or tree state, excluded from this index): ${stale.length}${stale.length ? ` (scenarios: ${stale.join(", ")})` : ""}`,
+    `- Unfinished or not started (counted in Errors): ${unfinished.length}${unfinished.length ? ` (scenarios: ${unfinished.join(", ")})` : ""}`,
+    `- Stale (recorded from other sources, excluded from this index): ${stale.length}${stale.length ? ` (scenarios: ${stale.join(", ")})` : ""}`,
     `- Skipped: ${manifest.filter((entry) => entry.skipped).length}`,
     `- Axe serious (rule count across captures): ${sum(manifest, "axeSerious")}`,
     `- Axe critical (rule count across captures): ${sum(manifest, "axeCritical")}`,

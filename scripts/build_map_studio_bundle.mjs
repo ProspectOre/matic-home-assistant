@@ -2,6 +2,7 @@ import { build } from "esbuild";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { STAMP_FILE, hashSources } from "./source_stamp.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const production = resolve(root, "custom_components/matic_robot/map_studio_v4");
@@ -52,3 +53,10 @@ for (const output of result.outputFiles) {
   await mkdir(dirname(destination), { recursive: true });
   await writeFile(destination, contents);
 }
+// Records which sources this review bundle was compiled from, so the audit
+// harness can refuse a bundle that no longer matches the working tree.
+const inputs = Object.keys(result.metafile.inputs).sort();
+await writeFile(
+  resolve(review, STAMP_FILE),
+  `${JSON.stringify({ inputs, sourceHash: await hashSources(root, inputs) }, null, 2)}\n`,
+);
