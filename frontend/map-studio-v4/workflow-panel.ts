@@ -16,6 +16,7 @@ import {
   MAX_ROOM_SEQUENCE_SIZE,
   type DateFormat,
   type Localize,
+  type ResourceState,
   type WorkspaceIntent,
   type WorkspaceState,
 } from "./contracts";
@@ -210,9 +211,10 @@ line-height: var(--ms-lh-snug);
     }
   }
 
-  #resource(status: string, problem: string | null, body: unknown) {
+  // A reload keeps showing what is already loaded; only an empty load waits.
+  #resource({ status, value, problem }: ResourceState<unknown>, body: unknown) {
     const copy = this.#resourceCopy();
-    if (status === "loading" || status === "idle") return html`<div class="loading" role="status">${copy.loading}</div>`;
+    if (status === "idle" || (status === "loading" && value === null)) return html`<div class="loading" role="status">${copy.loading}</div>`;
     if (status === "error") {
       const workflow = this.state.workflow;
       return html`
@@ -233,7 +235,7 @@ line-height: var(--ms-lh-snug);
     const admitted = admittedManualRoomPreview(this.state);
     const previewCurrent = admitted !== null;
     const atRoomLimit = this.state.selection.roomIds.length >= MAX_ROOM_SEQUENCE_SIZE;
-    return this.#resource(plans.status, plans.problem, html`
+    return this.#resource(plans, html`
       <div class="stack">
         <h3 class="group-heading" id="rooms-heading">${this.#t("v4_rooms_to_clean", "Rooms to clean")}</h3>
         <div class="list" role="group" aria-labelledby="rooms-heading">
@@ -584,7 +586,7 @@ line-height: var(--ms-lh-snug);
 
   #planPicker() {
     const resource = this.state.resources.plans;
-    return this.#resource(resource.status, resource.problem, html`
+    return this.#resource(resource, html`
       <div class="stack">
         <button class="ms-btn ms-btn--primary" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>
           ${icon(iconPlus)}<span>${this.#t("v4_create_plan", "Create a plan")}</span>
@@ -624,7 +626,7 @@ line-height: var(--ms-lh-snug);
     const mixedSettings = new Set(draft.rooms.map((room) => `${room.cleaningMode}:${room.coverageSetting}`)).size > 1;
     const savedPlan = draft.id ? catalog?.plans.find((plan) => plan.id === draft.id) : undefined;
     const nextRunPreview = savedPlan?.nextRunPreview;
-    return this.#resource(resource.status, resource.problem, html`
+    return this.#resource(resource, html`
       <div class="stack">
         <label class="field ms-field">${this.#t("plan_name", "Plan name")}
           <input
@@ -779,7 +781,7 @@ line-height: var(--ms-lh-snug);
       <div class="stack">
         <p class="subtle">${this.state.draw.tool === "outline" ? this.#t("v4_zone_coverage", "Place points around the area. Shading shows where the robot cleans inside the outline; narrow edges may stay uncovered.") : this.#t("v4_draw_floor_hint", "Paint only on the mapped floor. Zooming and panning never change the area.")}</p>
         ${this.state.draw.tool !== "outline" ? html`<p class="subtle">${this.#t("v4_keyboard_draw_help", "Keyboard: focus the map, use arrow keys to aim, then Enter to paint or erase at the crosshair. D selects Paint; E selects Erase.")}</p>` : nothing}
-        ${this.#resource(areas.status, areas.problem, html`
+        ${this.#resource(areas, html`
           <div class="group">
             <h3 class="group-heading" id="areas-heading">${this.#t("area_workspace_title", "Saved custom areas")}</h3>
             <div class="list" role="group" aria-labelledby="areas-heading">
@@ -850,7 +852,7 @@ line-height: var(--ms-lh-snug);
       : this.#t("v4_return_current_floor", "Return to current floor");
     const displayPosition = this._historyPreviewPosition ?? position;
     const selectedSnapshot = snapshots[displayPosition];
-    return this.#resource(resource.status, resource.problem, html`
+    return this.#resource(resource, html`
       <div class="stack">
         ${(catalog?.floors.length || 0) > 1 ? html`
           <div class="group">

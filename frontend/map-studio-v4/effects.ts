@@ -2063,7 +2063,7 @@ export class EffectController {
     const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("plans");
     this.#store.patch({
-      resources: { ...this.#store.value.resources, plans: resource("loading", null) },
+      resources: { ...this.#store.value.resources, plans: resource("loading", this.#store.value.resources.plans.value) },
     });
     try {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
@@ -2149,7 +2149,7 @@ export class EffectController {
     const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("areas");
     this.#store.patch({
-      resources: { ...this.#store.value.resources, areas: resource("loading", null) },
+      resources: { ...this.#store.value.resources, areas: resource("loading", this.#store.value.resources.areas.value) },
     });
     try {
       const areas = await this.#backend.areas(entry.areasUrl, controller.signal);

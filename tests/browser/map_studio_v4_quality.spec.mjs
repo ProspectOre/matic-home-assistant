@@ -63,7 +63,9 @@ async function loadQualityModules(page) {
     stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects";
       export { WorkspaceStore } from "./frontend/map-studio-v4/state";
       export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";
-      export { PreferenceStore, preferencesKey } from "./frontend/map-studio-v4/preferences";`, resolveDir: process.cwd() },
+      export { PreferenceStore, preferencesKey } from "./frontend/map-studio-v4/preferences";
+      export { SHELL_TAG, WORKFLOW_TAG } from "./frontend/map-studio-v4/element-tags";
+      import "./frontend/map-studio-v4/shell";`, resolveDir: process.cwd() },
     bundle: true, format: "esm", write: false,
   });
   await page.route("**/quality-modules.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
@@ -428,6 +430,91 @@ for (const sameFloor of [true, false]) {
     }, sameFloor);
     expect(result.unknown).toEqual({ name: "Edited outline", count: result.count, available: true });
     expect(result.restored).toEqual(sameFloor ? { name: "Edited outline", plan: "Edited plan", count: result.count } : { name: "", plan: "", count: 0 });
+  });
+}
+
+for (const kind of ["plan", "area"]) {
+  test(`a ${kind} delete dialog stays open through a catalog reload that still holds the ${kind}`, async ({ page }) => {
+    await loadQualityModules(page);
+    const result = await page.evaluate(async (kind) => {
+      const { EffectController, WorkspaceStore, createGalleryState, SHELL_TAG, WORKFLOW_TAG } = await import("/quality-modules.js");
+      const plan = kind === "plan";
+      const initial = createGalleryState(plan ? "plans" : "area-review-rebind");
+      const store = new WorkspaceStore(initial);
+      let catalog = plan ? initial.resources.plans.value : initial.resources.areas.value;
+      const gate = { held: false, release: null };
+      const read = async () => {
+        if (gate.held) await new Promise((resolve) => { gate.release = resolve; });
+        return structuredClone(catalog);
+      };
+      const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry], scene: aborted, pose: aborted,
+        history: async () => initial.resources.history.value,
+        plans: plan ? read : async () => initial.resources.plans.value,
+        areas: plan ? async () => initial.resources.areas.value : read,
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      await effects.refreshCatalog(true);
+      store.patch({ map: initial.map, coherence: "current" });
+      const load = () => plan ? effects.loadPlans({ force: true }) : effects.loadAreas();
+      await load();
+      if (plan) effects.selectPlan("daily");
+      else {
+        effects.selectArea("entryway");
+        store.patch({ workflow: "areaReview" });
+      }
+      const shell = document.createElement(SHELL_TAG);
+      shell.state = store.value;
+      store.subscribe((state) => { shell.state = state; });
+      document.body.append(shell);
+      const dialogName = plan ? "confirmDeletePlan" : "confirmDeleteArea";
+      const launcher = () => shell.shadowRoot.querySelector(WORKFLOW_TAG)?.shadowRoot
+        ?.querySelector(`[data-dialog-launcher="${dialogName}"]`) ?? null;
+      const settle = async () => {
+        await shell.updateComplete;
+        await shell.shadowRoot.querySelector(WORKFLOW_TAG)?.updateComplete;
+        await new Promise(requestAnimationFrame);
+      };
+      for (let frame = 0; frame < 200 && !launcher(); frame += 1) await new Promise(requestAnimationFrame);
+      store.dispatch({ type: "open-dialog", dialog: dialogName });
+      await settle();
+      const button = launcher();
+      const observe = async () => {
+        await settle();
+        return {
+          dialog: store.value.dialog,
+          detail: shell.shadowRoot.querySelector("#dialog-detail")?.textContent.replace(/\s+/gu, " ").trim() ?? null,
+          sameButton: Boolean(button?.isConnected) && launcher() === button,
+        };
+      };
+      const opened = await observe();
+      gate.held = true;
+      const reload = load();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const loading = { status: (plan ? store.value.resources.plans : store.value.resources.areas).status, ...await observe() };
+      gate.held = false;
+      gate.release();
+      await reload;
+      const reloaded = await observe();
+      catalog = plan
+        ? { ...catalog, plans: catalog.plans.filter((candidate) => candidate.id !== "daily"), selectedPlan: "weekend" }
+        : { ...catalog, areas: [], selectedArea: null };
+      await load();
+      const removed = { dialog: store.value.dialog };
+      effects.dispose();
+      shell.remove();
+      return { opened, loading, reloaded, removed };
+    }, kind);
+    const detail = kind === "plan"
+      ? "Automations that run \"Daily clean\" will stop working, and the robot won't move. Weekend refresh becomes your default plan."
+      : "Automations that clean \"Entryway\" will stop working, and the robot won't move. No custom area will be selected.";
+    const dialog = kind === "plan" ? "confirmDeletePlan" : "confirmDeleteArea";
+    expect(result.opened, "the dialog opens over its Delete button").toEqual({ dialog, detail, sameButton: true });
+    expect(result.loading, "while the catalog reloads, the dialog and its Delete button stay").toEqual({ status: "loading", dialog, detail, sameButton: true });
+    expect(result.reloaded, "after a reload that still holds the item").toEqual({ dialog, detail, sameButton: true });
+    expect(result.removed, "a ready catalog without the item closes the dialog").toEqual({ dialog: null });
   });
 }
 

@@ -308,8 +308,8 @@ const dialogCopy = (
   resetRoomName = "room",
   sharedCadence = false,
   resetMode: "mop" | "coverage" = "mop",
-  subject: DeleteSubject | null = null,
-): DialogPresentation | null => {
+  subject?: DeleteSubject,
+): DialogPresentation | undefined => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
     translate(localize, key, fallback, placeholders);
   switch (dialog) {
@@ -360,7 +360,7 @@ const dialogCopy = (
         action: "reset-room-cadence",
       };
     case null:
-      return null;
+      return undefined;
   }
 };
 
@@ -997,7 +997,7 @@ export class MaticMapShellV4 extends LitElement {
     for (const node of event.composedPath()) {
       if (node === event.currentTarget) break;
       if (node instanceof HTMLElement && node.scrollHeight > node.clientHeight
-        && /auto|scroll/u.test(getComputedStyle(node).overflowY)) return node;
+        && /auto|scroll/.test(getComputedStyle(node).overflowY)) return node;
     }
     return null;
   }
