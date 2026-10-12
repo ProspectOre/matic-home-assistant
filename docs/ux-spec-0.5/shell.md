@@ -113,6 +113,7 @@ Strip titles and details are in §4; dialog copy is in §5. Glossary: `docs/ux-a
 
 ## 10. Decisions needed
 - **D1 Locating escalation (MS-HOST-04).** Offer "Try again" in the sheet after a bounded wait? *Recommended:* 20 s, with the fail-closed timer rules in §5 and the HUD gaining text only. *Alternative:* also offer Copy support info (the audit Direction), at the cost of a second verb.
+- **Owner decisions (2026-10-11):** all recommendations accepted. D1 "Try again" after 20 s with the §5 timer rules; the HUD gains text only; no Copy support info.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

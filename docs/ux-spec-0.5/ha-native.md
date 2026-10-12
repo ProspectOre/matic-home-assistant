@@ -101,6 +101,7 @@ HA's dialog supplies 44 px targets, focus order, forced-colors, reduced-motion a
 3. **Where the pairing steps run.** Hand off to the Reconfigure flow (steps reused unchanged) or host them inside the Repair dialog (needs the pairing code in a shared mixin). Recommended: hand off.
 4. **Address field in recovery.** Update robot address still works when a robot moved with its certificate unchanged (the Repair offers it); it cannot work once the certificate changed, so without the field a reset robot that also moved dead-ends. Recommended: include the collapsed section.
 5. **Moving plans to a replacement robot (later).** Plans are keyed by serial; 0.5 refuses (section 12). Recommended: no data migration in 0.5; revisit with its own design.
+- **Owner decisions (2026-10-11):** all recommendations accepted. D1 re-pin after a fresh passkey pairing, approved subject to the security review before the UX6 build; D2 the abort names the Reconfigure path and adds `next_flow` where feature-detected; D3 hand off to Reconfigure; D4 include the collapsed address section; D5 no plan migration in 0.5.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

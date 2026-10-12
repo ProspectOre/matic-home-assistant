@@ -1,6 +1,6 @@
 # 0.5 UX spec (Phase B of the human-interface overhaul)
 
-Status: specs and mockups ready for owner sign-off; nothing in product code changed. Follows [`ux-audit-0.5.md`](ux-audit-0.5.md) (Phase A, 167 structural findings and 462 scored copy rows) and precedes the Phase C build PRs. Owner decision (2026-10-11): 0.5.0 stable is blocked until these specs are built, reviewed and re-qualified; see the dated refinement in [`architecture-0.5.md`](architecture-0.5.md).
+Status: signed off. The owner accepted all 24 recommendations on 2026-10-11 (recorded in each file's section 10); nothing in product code changed yet, and Phase C starts with UX0. Follows [`ux-audit-0.5.md`](ux-audit-0.5.md) (Phase A, 167 structural findings and 462 scored copy rows) and precedes the Phase C build PRs. Owner decision (2026-10-11): 0.5.0 stable is blocked until these specs are built, reviewed and re-qualified; see the dated refinement in [`architecture-0.5.md`](architecture-0.5.md).
 
 Binding and unchanged: the shell invariants (one canvas, one status strip, one contextual primary action, fail-closed selectors, room/list parity, reversible Full map, read-only history), the 2026-08-29 responsive table and accessibility rules, `selectPrimaryAction` branch order and enable policy (labels and reasons change, policy does not, except the four selector-affecting changes declared below), service names, entity unique_ids, storage schema, cadence normalization, certificate pinning.
 
@@ -10,14 +10,14 @@ Every file follows the same twelve sections (scope, user goal, hierarchy, states
 
 | File | Lines | Scope | Audit IDs owned | Decisions |
 |---|---:|---|---:|---:|
-| [`ux-spec-0.5/home-rooms.md`](ux-spec-0.5/home-rooms.md) | 148 | Home hierarchy (strip → task cards → Maps), Rooms list and map parity, per-room settings summary | 31 | 5 |
-| [`ux-spec-0.5/plan.md`](ux-spec-0.5/plan.md) | 149 | Plan picker; separate **Run** and **Edit** views (`planView` substate); numbers and reorder only in saved order | 20 | 2 |
-| [`ux-spec-0.5/room-schedule.md`](ux-spec-0.5/room-schedule.md) | 140 | The Schedule block: "Mop every N cleans" and the vacuum rotation "{Level} vacuum every N cleans" (a label line, a control line with the level select beside the stepper, a status line), steppers with a "Due …" status line, one next-clean switch, "Count cleans" across all plans by default, reset | 8 | 1 |
-| [`ux-spec-0.5/shell.md`](ux-spec-0.5/shell.md) | 139 | Status strip (incl. the Stopping state), host and failure states, notice rule (inline + toast, two shell live regions), dialogs, focus, sheet, diagnostics | 33 | 1 |
-| [`ux-spec-0.5/map-surfaces.md`](ux-spec-0.5/map-surfaces.md) | 103 | Draw, area review, history, Full map (Locating keeps exit + Stop), one help component | 26 | 3 |
-| [`ux-spec-0.5/design-system.md`](ux-spec-0.5/design-system.md) | 149 | `ms-*` refinement: tokens, tints, `ms-stepper`, 44 px targets, disabled-with-reason, forced colors, detents, measured responsive rows | 35 | 3 |
-| [`ux-spec-0.5/ha-native.md`](ux-spec-0.5/ha-native.md) | 123 | Config, reconfigure, reauth and options flows; three Repairs; identity-changed recovery by fresh re-pair | 25 | 5 |
-| [`ux-spec-0.5/ha-entities.md`](ux-spec-0.5/ha-entities.md) | 109 | Entity renames and removals (unique_ids stable), action names and descriptions, blueprints, LLM tools, events | 27 | 4 |
+| [`ux-spec-0.5/home-rooms.md`](ux-spec-0.5/home-rooms.md) | 149 | Home hierarchy (strip → task cards → Maps), Rooms list and map parity, per-room settings summary | 31 | 5 |
+| [`ux-spec-0.5/plan.md`](ux-spec-0.5/plan.md) | 150 | Plan picker; separate **Run** and **Edit** views (`planView` substate); numbers and reorder only in saved order | 20 | 2 |
+| [`ux-spec-0.5/room-schedule.md`](ux-spec-0.5/room-schedule.md) | 141 | The Schedule block: "Mop every N cleans" and the vacuum rotation "{Level} vacuum every N cleans" (a label line, a control line with the level select beside the stepper, a status line), steppers with a "Due …" status line, one next-clean switch, "Count cleans" across all plans by default, reset | 8 | 1 |
+| [`ux-spec-0.5/shell.md`](ux-spec-0.5/shell.md) | 140 | Status strip (incl. the Stopping state), host and failure states, notice rule (inline + toast, two shell live regions), dialogs, focus, sheet, diagnostics | 33 | 1 |
+| [`ux-spec-0.5/map-surfaces.md`](ux-spec-0.5/map-surfaces.md) | 104 | Draw, area review, history, Full map (Locating keeps exit + Stop), one help component | 26 | 3 |
+| [`ux-spec-0.5/design-system.md`](ux-spec-0.5/design-system.md) | 150 | `ms-*` refinement: tokens, tints, `ms-stepper`, 44 px targets, disabled-with-reason, forced colors, detents, measured responsive rows | 35 | 3 |
+| [`ux-spec-0.5/ha-native.md`](ux-spec-0.5/ha-native.md) | 124 | Config, reconfigure, reauth and options flows; three Repairs; identity-changed recovery by fresh re-pair | 25 | 5 |
+| [`ux-spec-0.5/ha-entities.md`](ux-spec-0.5/ha-entities.md) | 110 | Entity renames and removals (unique_ids stable), action names and descriptions, blueprints, LLM tools, events | 27 | 4 |
 | [`copy-style-0.5.md`](copy-style-0.5.md) | 143 | Voice, glossary, denylist, length limits, dialog and notice shapes; wins over the audit corpus rewrites | — | — |
 
 All 167 structural audit IDs are resolved in at least one file. The columns sum to 205 entries because 33 IDs are cited by two or more files (mostly `design-system.md` beside the surface that applies its rule); the file whose section defines the rule owns the wording: `shell.md` the status strip, notice rule, workflow gating, `recheck-status`, dialogs and sheet detents; `map-surfaces.md` Draw, area review, history, Full map, help and the compact Draw layout; `design-system.md` tokens, `ms-stepper`, `.ms-check` and forced colors; `home-rooms.md` `v4_room_setting_*`, `v4_open_integration`, "Maps" and `v4_room_colours`; `plan.md` and `room-schedule.md` `planView`, Run and Edit, the due lines (`plan.md`), schedules and Off; `copy-style-0.5.md` all wording.
@@ -36,14 +36,14 @@ Each rule is owned by the file named; the others repeat it only by cite.
 
 ## Selector-affecting changes (4)
 
-- `home-rooms.md` D2: the no-robot `setup` branch (state.ts:924) becomes an enabled navigation primary, "Open integration", if the owner accepts it.
+- `home-rooms.md` D2: the no-robot `setup` branch (state.ts:924) becomes an enabled navigation primary, "Open integration" (accepted 2026-10-11).
 - `plan.md` §5: the plan branch takes `save-plan` when `planView === "edit" || dirty || !id` (state.ts:1005), and `run-plan` otherwise.
 - `plan.md` §5: the `save-plan` branch's `enabled` (state.ts:1017) gains `command !== "pending"`, strictly narrower and fail-closed.
 - `plan.md` §9, `shell.md` §6: a failed Home Assistant write returns `command` to idle, so `"failed"`, and with it "Check robot status" (state.ts:874), is reserved for robot commands; it is an effects change that narrows which states reach 874.
 
-## Decisions for sign-off (24)
+## Decisions (24, signed off 2026-10-11)
 
-Recommendations are in each file's section 10. The owner's answers are recorded there under "Owner decisions (date)" and nothing is built before that.
+Recommendations are in each file's section 10, and the owner's answers are recorded there under "Owner decisions (2026-10-11)": every recommendation accepted.
 
 - **Policy and contract**: `home-rooms.md` D2 (the no-robot `setup` branch becomes an enabled navigation primary, the one selector change that needs a decision; the other three are rulings, listed above); `design-system.md` D2 (keep or amend the frozen 768-landscape row; recommended keep); `map-surfaces.md` D2 (amend `acceptance-0.5.md:109` to "Locating keeps Stop and the exit control").
 - **Security**: `ha-native.md` D1 (re-pin after a fresh passkey pairing; trust = Matic CA + stored serial + stored hostname, the same as first setup; the Bluetooth step is not bound to the TLS endpoint, stated as a limit); D2 (`next_flow` fallback vs raising the minimum Home Assistant version); D3 (pairing steps in Reconfigure vs inside the Repair); D4 (address field in recovery); D5 (no plan migration to a replacement robot in 0.5).
@@ -68,4 +68,4 @@ Plans projection `next_run_estimate_seconds` (hidden when null); room progress, 
 
 ## Next
 
-Owner sign-off at 390 and 1024, light and dark → answers recorded per file → Phase C in order: UX0 foundations and translation parity, UX1 copy, UX2 plan Run/Edit, UX3 room schedule, UX4 home and rooms, UX5 map surfaces and help, UX6 HA-native and identity recovery (security review), UX7 Android latency, UX8 docs and acceptance rows; then a new release candidate and the qualification reset.
+Owner sign-off done and the answers recorded per file (2026-10-11) → Phase C in order: UX0 foundations and translation parity, UX1 copy, UX2 plan Run/Edit, UX3 room schedule, UX4 home and rooms, UX5 map surfaces and help, UX6 HA-native and identity recovery (security review), UX7 Android latency, UX8 docs and acceptance rows; then a new release candidate and the qualification reset.

@@ -85,6 +85,7 @@ None. Every surface here uses existing services and the scene, area and history 
 - **D1 Gesture model (MS-HELP-03).** One drag meaning for every input? *Recommended:* drag pans for touch and mouse; orbit and tilt by two-finger twist, right- or Shift-drag, or the camera buttons. Until decided, help keeps per-input rows.
 - **D2 Locating HUD contract.** Amend `docs/acceptance-0.5.md:109` ("Locating retains only exit control") to "Locating keeps Stop and the exit control", matching `shell.ts:1566-1570`. *Recommended:* amend in the UX8 docs PR.
 - **D3 Browser full screen (MS-FULL-01).** Fold it into Full map? *Recommended:* yes, with the panel-only fallback where the browser refuses. Trade-off: the browser consumes Escape to leave full screen, so in Full map one Escape also closes any open help or precision instead of the `shell.md` §5 order.
+- **Owner decisions (2026-10-11):** all recommendations accepted. D1 one gesture model (drag pans; orbit and tilt by two-finger twist, right- or Shift-drag, or the camera buttons); D2 amend `acceptance-0.5.md:109` in UX8; D3 fold browser full screen into Full map with the panel-only fallback.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

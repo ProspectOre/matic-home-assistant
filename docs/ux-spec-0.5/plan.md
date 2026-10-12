@@ -122,6 +122,7 @@ Every key below is added to `strings.json` common if it exists only in TypeScrip
 ## 10. Decisions needed
 - **D1.** Creating a plan makes it the default (`select: !draft.id`, effects.ts:2324; plans.py:2560-2561), which silently changes what Home Assistant's plan button runs (button.py:28). *Recommended:* only when no default exists; the picker chip and the options flow show the default and let you change it. If accepted, this drops `!draft.id` from `select`, which is the one change to a save-payload value (§12).
 - **D2.** Ship the Run-view time estimate (§9) in 0.5? *Recommended:* yes; it is read-only, and hidden whenever the value is null.
+- **Owner decisions (2026-10-11):** all recommendations accepted. D1 a new plan becomes the default only when none exists (`!draft.id` leaves `select`); D2 ship the time estimate.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

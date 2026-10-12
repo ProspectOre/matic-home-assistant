@@ -114,6 +114,7 @@ None. Keeping a join read-only until Save is a frontend consequence of plans.py:
 
 ## 10. Decisions needed
 - **D1.** Owner statement (2026-10-11): when the vacuum rotation is turned on it defaults to Heavy duty and offers all three levels (Quick, Optimal, Heavy duty). Today it copies the room's vacuum coverage (workflow-panel.ts:448). Existing Quick schedules keep working and show "Quick vacuum every {count} cleans". *Recommended:* as stated; kept as a decision for the record.
+- **Owner decisions (2026-10-11):** all recommendations accepted. D1 as stated: the vacuum rotation defaults to Heavy duty and offers all three levels.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

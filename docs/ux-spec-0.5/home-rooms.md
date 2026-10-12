@@ -119,6 +119,7 @@ None. The plan card uses the existing `selected_plan`; a "last run" plan field w
 - **D3. Card 1 name.** "Clean rooms" (verb-first, matching "Clean {count} rooms") or "One-time clean"? *Recommended:* "Clean rooms".
 - **D4. Busy home.** While the robot is busy, should home demote the cards (visible, disabled, one reason line) or hide them? Either way plans can't be browsed during a run, so `plan.md` E6 is reachable only from a plan view that was already open. *Recommended:* demote, which keeps the layout stable.
 - **D5. Settings row before selection.** Should the Cleaning settings row appear before any room is chosen? It sets the default and stops the list shifting on the first tap. *Recommended:* yes.
+- **Owner decisions (2026-10-11):** all recommendations accepted. D1 the Run view; D2 yes, "Open integration" becomes an enabled navigation primary; D3 "Clean rooms"; D4 demote the cards; D5 yes.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

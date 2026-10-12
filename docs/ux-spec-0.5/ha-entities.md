@@ -90,6 +90,7 @@ HA supplies 44 px targets, focus order, forced colors and reduced motion; add no
 2. **Model string.** No source reports a model (`client/models.py:10-22`). Recommended: model "Robot" and no `model_id` until the robot reports one.
 3. **Removed entities: release-note mechanics only.** Already decided (duplicates are removed, owner decision). Remaining: remove on first load, list the four replacements in the release note, no deprecation Repair. Recommended as written.
 4. **Blueprint plan input.** The guide (`copy-style-0.5.md:123`) keeps a typed name with a description, an example and a blank-valid default (blank means the default plan), because the plan select entity holds one robot-wide selection (`select.py:103-145`) and a picker cannot express a different plan per automation. Recommended: as the guide says; the alternative is a default-plan-only blueprint, which would change the guide's UX1 check.
+- **Owner decisions (2026-10-11):** all recommendations accepted. D1 split the LLM API now, MaticGetFirmware in both; D2 model "Robot" and no `model_id`; D3 remove on first load, list the replacements in the release note, no deprecation Repair; D4 the blueprint plan input stays a typed name as the guide says.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |
