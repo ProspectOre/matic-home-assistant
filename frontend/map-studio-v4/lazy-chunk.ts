@@ -77,11 +77,10 @@ const RESUME_MS = 30_000;
 // Try again's reload, which the shell runs once no draft would be lost
 // (shell.ts #retry). It lands back in `workflow`: the marker lives for the
 // one reload, stamped with its time, and the shell takes it at startup
-// (takeResume). The page's
-// layer entries (layer-history.ts) are stepped back over first, so Back after
-// the reload behaves as after a fresh entry. That step's popstate is the
-// reload's alone, so it stops there before the layer controller reads it as a
-// Back press.
+// (takeResume). The page's layer entries (layer-history.ts) are stepped back
+// over first, so Back after the reload behaves as after a fresh entry. That
+// step's popstate is the reload's alone, so it stops there before the layer
+// controller reads it as a Back press.
 export const reloadInto = (workflow: Workflow): void => {
   try {
     sessionStorage.setItem(RESUME_KEY, JSON.stringify({ workflow, at: Date.now() }));

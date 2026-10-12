@@ -36,7 +36,7 @@ Each rule is owned by the file named; the others repeat it only by cite.
 
 ## Selector-affecting changes (4)
 
-- `home-rooms.md` D2: the no-robot `setup` branch (state.ts:924) becomes an enabled navigation primary, "Open integration" (accepted 2026-10-11).
+- `home-rooms.md` D2: the no-robot `setup` branch (state.ts:946) becomes an enabled navigation primary, "Open integration" (accepted 2026-10-11).
 - `plan.md` §5: the plan branch takes `save-plan` when `planView === "edit" || dirty || !id` (state.ts:1005), and `run-plan` otherwise.
 - `plan.md` §5: the `save-plan` branch's `enabled` (state.ts:1017) gains `command !== "pending"`, strictly narrower and fail-closed.
 - `plan.md` §9, `shell.md` §6: a failed Home Assistant write returns `command` to idle, so `"failed"`, and with it "Check robot status" (state.ts:874), is reserved for robot commands; it is an effects change that narrows which states reach 874.
