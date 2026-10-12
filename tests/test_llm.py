@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import logging
+import re
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import voluptuous as vol
-from homeassistant.core import Context, Event
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.core import Context, Event, State
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
@@ -27,21 +36,31 @@ from custom_components.matic_robot.client.observations import (
     MAX_OBSERVATIONS,
     ActivityJournal,
 )
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import DATA_LLM_API, DOMAIN
 from custom_components.matic_robot.llm import (
+    _ERRORS,
     LLM_API_ID,
     MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
     MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES,
     MAX_RECENT_EVENTS,
+    NON_ADMIN_PROMPT,
+    ROBOT_STATUS_PROMPT,
+    MaticCleanRoomsTool,
+    MaticFirmwareResearchAPI,
     MaticGetActivityTool,
     MaticGetFirmwareTool,
     MaticGetNativeHistoryTool,
     MaticGetOperationsTool,
     MaticGetPlanTool,
     MaticGetRecentEventsTool,
-    MaticOperationsAPI,
+    MaticResetScheduleTool,
+    MaticRobotStatusAPI,
+    MaticRunPlanTool,
+    MaticStopCleaningTool,
+    _async_refusal,
     _entry_name,
     _loaded_entries,
+    _log_run_end,
     _resolve_entry,
     async_get_tools,
     async_register_matic_llm_api,
@@ -52,10 +71,11 @@ from custom_components.matic_robot.plans import (
     room_cadence_identity,
 )
 
-
-def test_llm_platform_does_not_duplicate_the_dedicated_api() -> None:
-    """Home Assistant 2026.8 can safely discover this module as a platform."""
-    assert async_get_tools(MagicMock(), MagicMock(), "assist") is None
+_INTERNAL_TERMS = re.compile(
+    r"\bmission|\bleg|\bnative|runner lock|reconciliation marker|opaque key|"
+    r"allowlist|payload",
+    re.IGNORECASE,
+)
 
 
 def _state(*, name: str = "Synthetic Robot", floor_plan: FloorPlan | None = None):
@@ -142,8 +162,14 @@ def _entry(
 def _hass(*entries, user=None):
     user = user or SimpleNamespace(is_admin=True)
     return SimpleNamespace(
-        auth=SimpleNamespace(async_get_user=AsyncMock(return_value=user)),
+        auth=SimpleNamespace(
+            async_get_user=AsyncMock(return_value=user),
+            async_get_users=AsyncMock(return_value=[]),
+        ),
         bus=SimpleNamespace(async_listen=MagicMock(return_value=MagicMock())),
+        async_create_task=lambda target, eager_start=True: asyncio.ensure_future(
+            target
+        ),
         config_entries=SimpleNamespace(
             async_loaded_entries=MagicMock(return_value=list(entries))
         ),
@@ -162,9 +188,9 @@ def _context(user_id: str | None = "admin") -> llm.LLMContext:
 
 async def test_api_registration_event_capture_and_admin_gate() -> None:
     hass = _hass(_entry())
-    api = MaticOperationsAPI(hass)
+    api = MaticRobotStatusAPI(hass)
     api.async_start()
-    assert hass.bus.async_listen.call_count == 15
+    assert hass.bus.async_listen.call_count == 18
 
     event_callback = hass.bus.async_listen.call_args_list[0].args[1]
     event_callback(
@@ -306,24 +332,34 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         {"room": "ignored"},
     ]
 
-    missing_context = _context(None)
-    with pytest.raises(HomeAssistantError, match="Administrator"):
-        await api.async_get_api_instance(missing_context)
     no_user_context = _context()
     no_user_context.context = Context()
-    with pytest.raises(HomeAssistantError, match="Administrator"):
-        await api.async_get_api_instance(no_user_context)
-
-    hass.auth.async_get_user.side_effect = [None, SimpleNamespace(is_admin=False)]
-    for _ in range(2):
-        with pytest.raises(HomeAssistantError, match="Administrator"):
-            await api.async_get_api_instance(_context())
+    hass.auth.async_get_user.side_effect = {
+        "member": SimpleNamespace(is_admin=False)
+    }.get
+    for context in (
+        _context(None),
+        no_user_context,
+        _context("deleted-user"),
+        _context("member"),
+    ):
+        for refused_api in (api, MaticFirmwareResearchAPI(hass)):
+            refused = await refused_api.async_get_api_instance(context)
+            assert refused.tools == []
+            assert refused.api_prompt == NON_ADMIN_PROMPT
+    assert NON_ADMIN_PROMPT == (
+        "These tools are only for Home Assistant administrators. Ask an administrator."
+    )
 
     hass.auth.async_get_user.side_effect = None
     hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
     instance = await api.async_get_api_instance(_context())
-    assert instance.api.id == LLM_API_ID
-    assert "never issue" in instance.api_prompt
+    assert instance.api.id == LLM_API_ID == "matic_robot_operations"
+    assert instance.api.name == "Matic: Robot status (administrators only)"
+    assert instance.api_prompt.startswith(
+        "Answer in plain words (robot, room, plan, cleaning run) and do not "
+        "repeat internal terms."
+    )
     assert [tool.name for tool in instance.tools] == [
         "MaticGetOperations",
         "MaticGetPlan",
@@ -331,19 +367,38 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "MaticGetRecentEvents",
         "MaticGetActivity",
         "MaticGetFirmware",
+        "MaticRunPlan",
+        "MaticCleanRooms",
+        "MaticStopCleaning",
+        "MaticResetSchedule",
+    ]
+    research = await MaticFirmwareResearchAPI(hass).async_get_api_instance(_context())
+    assert research.api.id == "matic_robot_firmware_research"
+    assert research.api.name == "Matic: Firmware research (administrators only)"
+    assert research.api_prompt.startswith("Answer in plain words")
+    assert [tool.name for tool in research.tools] == [
+        "MaticGetFirmware",
         "MaticClaimFirmwareInvestigation",
         "MaticCompleteFirmwareInvestigation",
     ]
-    assert all(tool.integration == DOMAIN for tool in instance.tools)
-    assert all(
-        isinstance(tool.parameters, type(llm.Tool.parameters))
-        for tool in instance.tools
-    )
+    for tool in (*instance.tools, *research.tools):
+        assert tool.integration == DOMAIN
+        assert tool.title
+        assert isinstance(tool.parameters, type(llm.Tool.parameters))
+        assert not _INTERNAL_TERMS.search(tool.description)
+        assert tool.annotations.open_world is False
+        assert tool.annotations.read_only is tool.name.startswith("MaticGet")
+    assert not _INTERNAL_TERMS.search(instance.api_prompt)
+    assert not _INTERNAL_TERMS.search(research.api_prompt)
 
     with patch("custom_components.matic_robot.llm.llm.async_register_api") as register:
         registered = async_register_matic_llm_api(hass)
-    register.assert_called_once_with(hass, registered)
-    assert hass.bus.async_listen.call_count == 30
+    assert [call.args[1].id for call in register.call_args_list] == [
+        "matic_robot_operations",
+        "matic_robot_firmware_research",
+    ]
+    assert register.call_args_list[0].args == (hass, registered)
+    assert hass.bus.async_listen.call_count == 36
 
 
 async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
@@ -365,13 +420,15 @@ async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
     )
     second_entry.runtime_data.firmware_tracker = second_tracker
     hass = _hass(entry, second_entry)
-    tool = MaticGetFirmwareTool(MaticOperationsAPI(hass))
+    tool = MaticGetFirmwareTool()
 
-    result = await tool.async_call(
-        hass,
-        llm.ToolInput(tool.name, {"robot": "entry-one", "include_history": True}),
-        _context(),
-    )
+    result = (
+        await tool.async_call(
+            hass,
+            llm.ToolInput(tool.name, {"robot": "entry-one", "include_history": True}),
+            _context(),
+        )
+    ).data
 
     assert result == {
         "read_only": True,
@@ -388,7 +445,9 @@ async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
     tracker.report_history.assert_called_once_with("entry-one")
     entry.runtime_data.client.async_get_cleaning_session_records.assert_not_awaited()
 
-    all_robots = await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    all_robots = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
     assert [robot["robot"] for robot in all_robots["robots"]] == [
         "Synthetic Robot",
         "Synthetic Robot",
@@ -404,17 +463,17 @@ async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
 
 async def test_firmware_research_tool_requires_current_admin() -> None:
     hass = _hass(_entry(), user=SimpleNamespace(is_admin=False))
-    tool = MaticGetFirmwareTool(MaticOperationsAPI(hass))
-    with pytest.raises(HomeAssistantError, match="Administrator"):
+    tool = MaticGetFirmwareTool()
+    with pytest.raises(HomeAssistantError, match="Only a Home Assistant administrator"):
         await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
 
     no_user = _context(None)
-    with pytest.raises(HomeAssistantError, match="Administrator"):
+    with pytest.raises(HomeAssistantError, match="Only a Home Assistant administrator"):
         await tool.async_call(hass, llm.ToolInput(tool.name, {}), no_user)
 
     removed_user = _context("deleted-user")
     hass.auth.async_get_user.return_value = None
-    with pytest.raises(HomeAssistantError, match="Administrator"):
+    with pytest.raises(HomeAssistantError, match="Only a Home Assistant administrator"):
         await tool.async_call(hass, llm.ToolInput(tool.name, {}), removed_user)
     hass.auth.async_get_user.assert_awaited_with("deleted-user")
 
@@ -437,10 +496,10 @@ async def test_retained_operations_tools_recheck_admin_after_demotion(
         SimpleNamespace(is_admin=True),
         SimpleNamespace(is_admin=False),
     ]
-    instance = await MaticOperationsAPI(hass).async_get_api_instance(_context())
+    instance = await MaticRobotStatusAPI(hass).async_get_api_instance(_context())
     tool = next(tool for tool in instance.tools if tool.name == tool_name)
 
-    with pytest.raises(HomeAssistantError, match="Administrator"):
+    with pytest.raises(HomeAssistantError, match="Only a Home Assistant administrator"):
         await tool.async_call(hass, llm.ToolInput(tool_name, {}), _context())
 
     assert hass.auth.async_get_user.await_count == 2
@@ -459,7 +518,7 @@ async def test_firmware_claim_and_complete_tools_bind_args_and_errors() -> None:
     )
     entry.runtime_data.firmware_tracker = tracker
     hass = _hass(entry)
-    claim = MaticClaimFirmwareInvestigationTool(MaticOperationsAPI(hass))
+    claim = MaticClaimFirmwareInvestigationTool()
     claim_args = {
         "robot": "entry-one",
         "report_id": "a" * 24,
@@ -467,9 +526,9 @@ async def test_firmware_claim_and_complete_tools_bind_args_and_errors() -> None:
         "routing_revision": 2,
         "provider": "researcher",
     }
-    assert await claim.async_call(
-        hass, llm.ToolInput(claim.name, claim_args), _context()
-    ) == {"token": "synthetic-token"}
+    assert (
+        await claim.async_call(hass, llm.ToolInput(claim.name, claim_args), _context())
+    ).data == {"token": "synthetic-token"}
     tracker.async_claim_investigation.assert_awaited_once_with(
         "entry-one",
         report_id="a" * 24,
@@ -478,7 +537,7 @@ async def test_firmware_claim_and_complete_tools_bind_args_and_errors() -> None:
         provider="researcher",
     )
 
-    complete = MaticCompleteFirmwareInvestigationTool(MaticOperationsAPI(hass))
+    complete = MaticCompleteFirmwareInvestigationTool()
     complete_args = {
         **claim_args,
         "token": "synthetic-token-1234",
@@ -486,9 +545,11 @@ async def test_firmware_claim_and_complete_tools_bind_args_and_errors() -> None:
         "summary": "Synthetic bounded assessment",
         "sources": ["https://example.invalid/source"],
     }
-    assert await complete.async_call(
-        hass, llm.ToolInput(complete.name, complete_args), _context()
-    ) == {"recorded": True, "robot_control_changed": False}
+    assert (
+        await complete.async_call(
+            hass, llm.ToolInput(complete.name, complete_args), _context()
+        )
+    ).data == {"recorded": True, "robot_control_changed": False}
     tracker.async_complete_investigation.assert_awaited_once_with(
         "entry-one",
         report_id="a" * 24,
@@ -504,6 +565,7 @@ async def test_firmware_claim_and_complete_tools_bind_args_and_errors() -> None:
     tracker.async_claim_investigation.side_effect = ValueError("stale claim")
     with pytest.raises(HomeAssistantError, match="stale claim"):
         await claim.async_call(hass, llm.ToolInput(claim.name, claim_args), _context())
+
     tracker.async_complete_investigation.side_effect = ValueError("expired claim")
     with pytest.raises(HomeAssistantError, match="expired claim"):
         await complete.async_call(
@@ -515,9 +577,11 @@ async def test_operations_and_robot_resolution() -> None:
     named = _entry()
     fallback = _entry(name="", title="Fallback", entry_id="entry-two")
     hass = _hass(named, fallback)
-    result = await MaticGetOperationsTool(MaticOperationsAPI(hass)).async_call(
-        hass, llm.ToolInput("MaticGetOperations", {}), _context()
-    )
+    result = (
+        await MaticGetOperationsTool().async_call(
+            hass, llm.ToolInput("MaticGetOperations", {}), _context()
+        )
+    ).data
     assert result["read_only"] is True
     assert result["robot_count"] == 2
     robot = result["robots"][0]
@@ -551,9 +615,11 @@ async def test_operations_includes_read_only_bag_observation_when_available() ->
     }
     hass = _hass(entry)
 
-    result = await MaticGetOperationsTool(MaticOperationsAPI(hass)).async_call(
-        hass, llm.ToolInput("MaticGetOperations", {}), _context()
-    )
+    result = (
+        await MaticGetOperationsTool().async_call(
+            hass, llm.ToolInput("MaticGetOperations", {}), _context()
+        )
+    ).data
 
     assert result["robots"][0]["robot"]["bag_observation"] == {
         "full": False,
@@ -571,7 +637,7 @@ async def test_robot_resolution_variants() -> None:
     hass = _hass(named, fallback)
 
     assert _resolve_entry(_hass(named), None) is named
-    with pytest.raises(HomeAssistantError, match="Specify one"):
+    with pytest.raises(HomeAssistantError, match="More than one robot is set up"):
         _resolve_entry(hass, None)
     assert _resolve_entry(hass, "ENTRY-ONE") is named
     assert _resolve_entry(hass, "matic FALLBACK") is named
@@ -579,11 +645,11 @@ async def test_robot_resolution_variants() -> None:
     duplicate_name = _entry(entry_id="entry-three")
     duplicate_hass = _hass(named, duplicate_name)
     assert _resolve_entry(duplicate_hass, "ENTRY-ONE") is named
-    with pytest.raises(HomeAssistantError, match="share that name"):
+    with pytest.raises(HomeAssistantError, match="More than one robot has that name"):
         _resolve_entry(duplicate_hass, "Synthetic Robot")
-    with pytest.raises(HomeAssistantError, match="Unknown Matic robot"):
+    with pytest.raises(HomeAssistantError, match="No robot is named missing"):
         _resolve_entry(hass, "missing")
-    with pytest.raises(HomeAssistantError, match="No loaded"):
+    with pytest.raises(HomeAssistantError, match="No robot is set up"):
         _loaded_entries(_hass())
 
 
@@ -633,8 +699,10 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
     entry = _entry(floor_plan=floor_plan)
     entry.runtime_data.cleaning_plans = manager
     hass = _hass(entry)
-    tool = MaticGetPlanTool(MaticOperationsAPI(hass))
-    result = await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    tool = MaticGetPlanTool()
+    result = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
     expected = manager.preview(
         "synthetic-serial",
         room_map,
@@ -683,9 +751,11 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
             ],
         },
     )
-    ordered = await tool.async_call(
-        hass, llm.ToolInput(tool.name, {"plan": "saved order"}), _context()
-    )
+    ordered = (
+        await tool.async_call(
+            hass, llm.ToolInput(tool.name, {"plan": "saved order"}), _context()
+        )
+    ).data
     expected_ordered = manager.preview(
         "synthetic-serial",
         room_map,
@@ -720,9 +790,11 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
             ],
         },
     )
-    by_name = await tool.async_call(
-        hass, llm.ToolInput(tool.name, {"plan": "unique NAME"}), _context()
-    )
+    by_name = (
+        await tool.async_call(
+            hass, llm.ToolInput(tool.name, {"plan": "unique NAME"}), _context()
+        )
+    ).data
     assert by_name["plan"]["id"] == "named-id"
 
     await manager.async_save_plan(
@@ -755,24 +827,31 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
             ],
         },
     )
-    by_id = await tool.async_call(
-        hass, llm.ToolInput(tool.name, {"plan": "first-id"}), _context()
-    )
+    by_id = (
+        await tool.async_call(
+            hass, llm.ToolInput(tool.name, {"plan": "first-id"}), _context()
+        )
+    ).data
     assert by_id["plan"]["id"] == "first-id"
-    with pytest.raises(HomeAssistantError, match="plan is unavailable"):
+    with pytest.raises(HomeAssistantError, match="No plan is named missing"):
         await tool.async_call(
             hass, llm.ToolInput(tool.name, {"plan": "missing"}), _context()
         )
+
     no_map = _entry()
     no_map_hass = _hass(no_map)
     with pytest.raises(HomeAssistantError, match="room map"):
-        await MaticGetPlanTool(MaticOperationsAPI(no_map_hass)).async_call(
+        await MaticGetPlanTool().async_call(
             no_map_hass, llm.ToolInput(tool.name, {}), _context()
         )
-    with pytest.raises(HomeAssistantError, match="share the name"):
+
+    with pytest.raises(
+        HomeAssistantError, match="More than one plan is named Shared name"
+    ):
         await tool.async_call(
             hass, llm.ToolInput(tool.name, {"plan": "Shared name"}), _context()
         )
+
     with pytest.raises(vol.Invalid):
         await tool.async_call(hass, llm.ToolInput(tool.name, {"plan": ""}), _context())
 
@@ -817,9 +896,11 @@ async def test_plan_tool_projects_real_manager_cadence_preview(hass) -> None:
     entry.runtime_data.cleaning_plans = manager
 
     hass = _hass(entry)
-    result = await MaticGetPlanTool(MaticOperationsAPI(hass)).async_call(
-        hass, llm.ToolInput("MaticGetPlan", {}), _context()
-    )
+    result = (
+        await MaticGetPlanTool().async_call(
+            hass, llm.ToolInput("MaticGetPlan", {}), _context()
+        )
+    ).data
 
     expected = manager.preview(
         "synthetic-serial",
@@ -837,17 +918,18 @@ async def test_plan_tool_projects_real_manager_cadence_preview(hass) -> None:
     assert projected_room["cadence"] == expected["rooms"][0]["cadence"]
 
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
-    with pytest.raises(HomeAssistantError, match="room map is being rechecked"):
-        await MaticGetPlanTool(MaticOperationsAPI(hass)).async_call(
+    with pytest.raises(HomeAssistantError, match="room map is being checked"):
+        await MaticGetPlanTool().async_call(
             hass, llm.ToolInput("MaticGetPlan", {}), _context()
         )
+
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
 
     manager._robot("synthetic-serial")["plans"]["home"]["rooms"][0]["cadence"][
         "mop_every_n"
     ] = True
-    with pytest.raises(HomeAssistantError, match="plan is unavailable"):
-        await MaticGetPlanTool(MaticOperationsAPI(hass)).async_call(
+    with pytest.raises(HomeAssistantError, match="The plan can't be previewed"):
+        await MaticGetPlanTool().async_call(
             hass, llm.ToolInput("MaticGetPlan", {}), _context()
         )
 
@@ -882,10 +964,12 @@ async def test_native_history_is_bounded_sanitized_and_failure_safe() -> None:
     )
     entry.runtime_data.client.async_get_cleaning_session_records.return_value = records
     hass = _hass(entry)
-    tool = MaticGetNativeHistoryTool(MaticOperationsAPI(hass))
-    result = await tool.async_call(
-        hass, llm.ToolInput(tool.name, {"limit": "1"}), _context()
-    )
+    tool = MaticGetNativeHistoryTool()
+    result = (
+        await tool.async_call(
+            hass, llm.ToolInput(tool.name, {"limit": "1"}), _context()
+        )
+    ).data
     assert len(result["sessions"]) == 1
     assert result["sessions"][0]["room_evidence"] == [
         {
@@ -918,9 +1002,9 @@ async def test_native_history_is_bounded_sanitized_and_failure_safe() -> None:
     entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
         bounded_records
     )
-    bounded = await tool.async_call(
-        hass, llm.ToolInput(tool.name, {"limit": 2}), _context()
-    )
+    bounded = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {"limit": 2}), _context())
+    ).data
     evidence = [
         item for session in bounded["sessions"] for item in session["room_evidence"]
     ]
@@ -939,7 +1023,7 @@ async def test_native_history_is_bounded_sanitized_and_failure_safe() -> None:
     entry.runtime_data.client.async_get_cleaning_session_records.side_effect = (
         CannotConnectError("synthetic outage")
     )
-    with pytest.raises(HomeAssistantError, match="history is unavailable"):
+    with pytest.raises(HomeAssistantError, match="cleaning history is unavailable"):
         await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
     with pytest.raises(vol.Invalid):
         await tool.async_call(
@@ -948,7 +1032,7 @@ async def test_native_history_is_bounded_sanitized_and_failure_safe() -> None:
 
 
 async def test_recent_events_returns_newest_first_and_honors_limit() -> None:
-    api = MaticOperationsAPI(_hass(_entry()))
+    api = MaticRobotStatusAPI(_hass(_entry()))
     for index in range(MAX_RECENT_EVENTS + 1):
         api._async_capture_event(
             Event(
@@ -958,9 +1042,11 @@ async def test_recent_events_returns_newest_first_and_honors_limit() -> None:
             )
         )
     tool = MaticGetRecentEventsTool(api)
-    result = await tool.async_call(
-        api.hass, llm.ToolInput(tool.name, {"limit": 2}), _context()
-    )
+    result = (
+        await tool.async_call(
+            api.hass, llm.ToolInput(tool.name, {"limit": 2}), _context()
+        )
+    ).data
     assert len(api.recent_events) == MAX_RECENT_EVENTS
     assert [item["data"]["room"] for item in result["events"]] == [
         f"Room {MAX_RECENT_EVENTS}",
@@ -970,7 +1056,7 @@ async def test_recent_events_returns_newest_first_and_honors_limit() -> None:
 
 
 async def test_recent_events_keep_operational_evidence_out_of_activity_churn() -> None:
-    api = MaticOperationsAPI(_hass(_entry()))
+    api = MaticRobotStatusAPI(_hass(_entry()))
     api._async_capture_event(
         Event(
             "matic_robot_room_started",
@@ -987,14 +1073,20 @@ async def test_recent_events_keep_operational_evidence_out_of_activity_churn() -
             )
         )
 
-    operational = await MaticGetRecentEventsTool(api).async_call(
-        api.hass, llm.ToolInput("MaticGetRecentEvents", {"limit": 1}), _context()
-    )
-    combined = await MaticGetRecentEventsTool(api).async_call(
-        api.hass,
-        llm.ToolInput("MaticGetRecentEvents", {"limit": 1, "include_activity": True}),
-        _context(),
-    )
+    operational = (
+        await MaticGetRecentEventsTool(api).async_call(
+            api.hass, llm.ToolInput("MaticGetRecentEvents", {"limit": 1}), _context()
+        )
+    ).data
+    combined = (
+        await MaticGetRecentEventsTool(api).async_call(
+            api.hass,
+            llm.ToolInput(
+                "MaticGetRecentEvents", {"limit": 1, "include_activity": True}
+            ),
+            _context(),
+        )
+    ).data
     assert len(api.operational_events) == 1
     assert operational["activity_included"] is False
     assert operational["events"][0]["event_type"] == "matic_robot_room_started"
@@ -1024,18 +1116,22 @@ async def test_native_history_scopes_completion_to_the_requested_mode() -> None:
         ),
     )
     hass = _hass(entry)
-    tool = MaticGetNativeHistoryTool(MaticOperationsAPI(hass))
+    tool = MaticGetNativeHistoryTool()
     for mode, expected, durations in (
         (None, [None, None], [120, 200]),
         ("vacuum", [True, True], [120, 200]),
         ("mop", [False, False], [None, 40]),
         ("vacuum_and_mop", [False, False], [120, 240]),
     ):
-        result = await tool.async_call(
-            hass,
-            llm.ToolInput(tool.name, {} if mode is None else {"cleaning_mode": mode}),
-            _context(),
-        )
+        result = (
+            await tool.async_call(
+                hass,
+                llm.ToolInput(
+                    tool.name, {} if mode is None else {"cleaning_mode": mode}
+                ),
+                _context(),
+            )
+        ).data
         session = result["sessions"][0]
         assert session["completion_scope"] == (mode or "unspecified")
         assert [room["completed"] for room in session["room_evidence"]] == expected
@@ -1066,10 +1162,12 @@ async def test_activity_journal_pagination_filtering_and_restart_guards() -> Non
     journal.record("command_requested", command="DOCK", channel="user_command")
     journal.record("command_result", command_id=8, command="DOCK", outcome="failed")
     hass = _hass(entry)
-    tool = MaticGetActivityTool(MaticOperationsAPI(hass))
+    tool = MaticGetActivityTool()
 
     async def read(**args):
-        return await tool.async_call(hass, llm.ToolInput(tool.name, args), _context())
+        return (
+            await tool.async_call(hass, llm.ToolInput(tool.name, args), _context())
+        ).data
 
     result = await read(limit=2)
     assert [item["sequence"] for item in result["observations"]] == [9, 8]
@@ -1095,7 +1193,7 @@ async def test_activity_journal_pagination_filtering_and_restart_guards() -> Non
     assert not (
         await read(before_sequence=1, observation_session=result["observation_session"])
     )["observations"]
-    with pytest.raises(HomeAssistantError, match="requires observation_session"):
+    with pytest.raises(HomeAssistantError, match="pass the observation session"):
         await read(before_sequence=8)
     entry.runtime_data.client.activity_journal = ActivityJournal()
     with pytest.raises(HomeAssistantError, match="restarted"):
@@ -1137,9 +1235,13 @@ async def test_activity_journal_eviction_and_output_privacy() -> None:
         error_codes="must-not-appear",
     )
     hass = _hass(entry)
-    result = await MaticGetActivityTool(MaticOperationsAPI(hass)).async_call(
-        hass, llm.ToolInput("MaticGetActivity", {"kind": "all", "limit": 2}), _context()
-    )
+    result = (
+        await MaticGetActivityTool().async_call(
+            hass,
+            llm.ToolInput("MaticGetActivity", {"kind": "all", "limit": 2}),
+            _context(),
+        )
+    ).data
     assert result["older_observations_evicted"] is True
     assert result["first_available_sequence"] == 3
     assert result["retained_observations"] == MAX_OBSERVATIONS
@@ -1150,3 +1252,676 @@ async def test_activity_journal_eviction_and_output_privacy() -> None:
     assert result["observations"][1]["state_codes"] == [109]
     result["observations"][1]["state_codes"].append(1)
     assert journal.snapshot[-2]["state_codes"] == [109]
+
+
+def _strings(category: str) -> dict[str, str]:
+    """Flatten one strings.json category the way Home Assistant serves it."""
+    strings = json.loads(
+        (
+            Path(__file__).parents[1] / "custom_components" / DOMAIN / "strings.json"
+        ).read_text()
+    )[category]
+    return {
+        f"component.{DOMAIN}.{category}.{key}"
+        + (".message" if isinstance(value, dict) else ""): (
+            value["message"] if isinstance(value, dict) else value
+        )
+        for key, value in strings.items()
+    }
+
+
+def _text(category: str, key: str, **placeholders: str) -> str:
+    suffix = ".message" if category == "exceptions" else ""
+    return _strings(category)[f"component.{DOMAIN}.{category}.{key}{suffix}"].format(
+        **placeholders
+    )
+
+
+def test_llm_errors_match_strings() -> None:
+    strings = _strings("exceptions")
+    for key, message in _ERRORS.items():
+        assert strings[f"component.{DOMAIN}.exceptions.{key}.message"] == message
+
+
+_READY_PROJECTION = {
+    "map_floor_coherent": True,
+    "map_session_verified": True,
+    "map_complete": True,
+    "map_truncated": False,
+    "map_health": "healthy",
+    "runner_locked": False,
+    "stop_settle_pending": False,
+    "active_plan": False,
+    "native_reconciliation_pending": False,
+    "native_session_active": False,
+}
+
+
+def _control_hass(
+    *,
+    state: str | None = "docked",
+    attributes: dict[str, Any] | None = None,
+    projection: dict[str, Any] | None = None,
+    plans: dict[str, dict[str, Any]] | None = None,
+    floor_plan: FloorPlan | None = None,
+):
+    """Build an administrator, one robot and the panel's facts about it."""
+    entry = _entry(floor_plan=floor_plan)
+    manager = entry.runtime_data.cleaning_plans
+    saved = plans if plans is not None else {"home": {"name": "Home", "enabled": True}}
+
+    def plan(_serial: str, reference: str | None = None) -> dict[str, Any]:
+        reference = reference or "home"
+        for plan_id, value in saved.items():
+            if reference in (plan_id, value["name"]):
+                return {"id": plan_id, **value}
+        raise KeyError(reference)
+
+    manager.plan.side_effect = plan
+    hass = _hass(entry)
+    hass.config = SimpleNamespace(language="en")
+    hass.services = SimpleNamespace(async_call=AsyncMock())
+    hass.states = SimpleNamespace(
+        get=MagicMock(
+            return_value=None
+            if state is None
+            else State("vacuum.robot", state, attributes or {})
+        )
+    )
+    hass.async_create_background_task = lambda target, name: asyncio.ensure_future(
+        target
+    )
+    registry = SimpleNamespace(
+        async_get_entity_id=MagicMock(return_value="vacuum.robot")
+    )
+    patches = (
+        patch("custom_components.matic_robot.llm.er.async_get", return_value=registry),
+        patch(
+            "custom_components.matic_robot.llm.catalog_entry_projection",
+            return_value={**_READY_PROJECTION, **(projection or {})},
+        ),
+        patch(
+            "custom_components.matic_robot.llm.translation.async_get_translations",
+            AsyncMock(
+                side_effect=lambda _hass, _lang, category, _domains: _strings(category)
+            ),
+        ),
+    )
+    return hass, registry, patches
+
+
+async def _run(hass, patches, tool, args: dict[str, Any], context=None):
+    with patches[0], patches[1], patches[2]:
+        return await tool.async_call(
+            hass, llm.ToolInput(tool.name, args), context or _context()
+        )
+
+
+def _refused(result: llm.ToolResult, category: str, key: str, **placeholders: str):
+    assert result.error is True
+    assert result.data == {
+        "done": False,
+        "reason": _text(category, key, **placeholders),
+    }
+
+
+@pytest.mark.parametrize(
+    ("state", "attributes", "projection", "reason"),
+    [
+        (None, None, {}, "v4_reason_clean_rooms_verification"),
+        ("unavailable", None, {}, "v4_reason_clean_rooms_verification"),
+        (
+            "docked",
+            None,
+            {"map_session_verified": False},
+            "v4_reason_clean_rooms_verification",
+        ),
+        ("docked", None, {"map_truncated": True}, "v4_reason_clean_rooms_verification"),
+        (
+            "docked",
+            None,
+            {"map_health": "limited"},
+            "v4_reason_clean_rooms_verification",
+        ),
+        (
+            "docked",
+            None,
+            {"stop_settle_pending": True},
+            "v4_reason_stop_settle_pending",
+        ),
+        ("docked", None, {"runner_locked": True}, "v4_reason_robot_operation_waiting"),
+        ("docked", None, {"active_plan": True}, "v4_reason_robot_operation_waiting"),
+        (
+            "docked",
+            None,
+            {"native_reconciliation_pending": True},
+            "v4_reason_robot_operation_waiting",
+        ),
+        (
+            "docked",
+            None,
+            {"native_session_active": True},
+            "v4_reason_robot_operation_waiting",
+        ),
+        ("cleaning", None, {}, "v4_reason_robot_operation_waiting"),
+        (
+            "docked",
+            {"recharge_and_resume": True, "charging": True},
+            {},
+            "v4_reason_robot_operation_waiting",
+        ),
+    ],
+)
+async def test_start_tools_refuse_with_the_strip_reason(
+    state, attributes, projection, reason
+) -> None:
+    for tool, args in (
+        (MaticRunPlanTool(), {}),
+        (MaticCleanRoomsTool(), {"rooms": ["Kitchen"]}),
+    ):
+        hass, _registry, patches = _control_hass(
+            state=state, attributes=attributes, projection=projection
+        )
+        _refused(await _run(hass, patches, tool, args), "common", reason)
+        hass.services.async_call.assert_not_awaited()
+
+
+async def test_write_tools_fail_closed_for_non_administrators() -> None:
+    for tool in (
+        MaticRunPlanTool(),
+        MaticCleanRoomsTool(),
+        MaticStopCleaningTool(),
+        MaticResetScheduleTool(),
+    ):
+        hass, _registry, patches = _control_hass()
+        hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=False)
+        with pytest.raises(
+            HomeAssistantError,
+            match="Only a Home Assistant administrator can use the robot tools",
+        ) as err:
+            await _run(hass, patches, tool, {"rooms": ["Kitchen"], "schedule": "mop"})
+        assert err.value.translation_key == "llm_admin_required"
+        hass.services.async_call.assert_not_awaited()
+
+
+async def test_write_tools_need_the_robot_vacuum_entity() -> None:
+    hass, registry, patches = _control_hass()
+    registry.async_get_entity_id.return_value = None
+    with pytest.raises(HomeAssistantError, match="The robot is unavailable"):
+        await _run(hass, patches, MaticStopCleaningTool(), {})
+
+
+async def test_run_plan_previews_then_runs_on_the_panel_action() -> None:
+    hass, registry, patches = _control_hass()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def call(domain, service, data, **kwargs):
+        if service == "preview_plan":
+            return {"preview_token": "a" * 64}
+        started.set()
+        await release.wait()
+
+    hass.services.async_call.side_effect = call
+    context = _context()
+    with patch("custom_components.matic_robot.llm.RUN_START_WAIT_SECONDS", 0.01):
+        result = await _run(hass, patches, MaticRunPlanTool(), {}, context)
+    assert result.error is False
+    assert result.data == {"started": True, "plan": "Home"}
+    assert started.is_set()
+    registry.async_get_entity_id.assert_called_once_with(
+        "vacuum", DOMAIN, "synthetic-serial_vacuum"
+    )
+    assert [call.args[:3] for call in hass.services.async_call.await_args_list] == [
+        (DOMAIN, "preview_plan", {"entity_id": "vacuum.robot", "plan": "home"}),
+        (
+            DOMAIN,
+            "run_selected_plan",
+            {"entity_id": "vacuum.robot", "plan": "home", "preview_token": "a" * 64},
+        ),
+    ]
+    for awaited in hass.services.async_call.await_args_list:
+        assert awaited.kwargs["context"] is context.context
+        assert awaited.kwargs["blocking"] is True
+    assert hass.services.async_call.await_args_list[0].kwargs["return_response"]
+    release.set()
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+async def test_run_plan_reports_quick_outcomes_and_refusals() -> None:
+    preview = AsyncMock(return_value={"preview_token": "b" * 64})
+
+    async def finished(domain, service, data, **kwargs):
+        return await preview() if service == "preview_plan" else None
+
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = finished
+    result = await _run(hass, patches, MaticRunPlanTool(), {"plan": "Home"})
+    assert result.data == {"started": True, "finished": True, "plan": "Home"}
+
+    async def refused(domain, service, data, **kwargs):
+        if service == "preview_plan":
+            return await preview()
+        raise ServiceValidationError(
+            "busy", translation_domain=DOMAIN, translation_key="plan_already_running"
+        )
+
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = refused
+    _refused(
+        await _run(hass, patches, MaticRunPlanTool(), {}),
+        "exceptions",
+        "plan_already_running",
+    )
+
+    async def broken(domain, service, data, **kwargs):
+        if service == "preview_plan":
+            return await preview()
+        raise RuntimeError("synthetic")
+
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = broken
+    with pytest.raises(RuntimeError, match="synthetic"):
+        await _run(hass, patches, MaticRunPlanTool(), {})
+
+    hass, _registry, patches = _control_hass()
+    _refused(
+        await _run(hass, patches, MaticRunPlanTool(), {"plan": "Missing"}),
+        "exceptions",
+        "unknown_plan",
+        plan="Missing",
+    )
+    hass, _registry, patches = _control_hass(
+        plans={"home": {"name": "Home", "enabled": False}}
+    )
+    _refused(
+        await _run(hass, patches, MaticRunPlanTool(), {}),
+        "common",
+        "v4_reason_run_plan_paused",
+    )
+
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = ServiceValidationError(
+        "The cleaning request is invalid: plan has no rooms",
+        translation_domain=DOMAIN,
+        translation_key="invalid_plan",
+        translation_placeholders={"error": "plan has no rooms"},
+    )
+    _refused(
+        await _run(hass, patches, MaticRunPlanTool(), {}),
+        "exceptions",
+        "invalid_plan",
+        error="plan has no rooms",
+    )
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = HomeAssistantError("raw private text")
+    _refused(
+        await _run(hass, patches, MaticRunPlanTool(), {}),
+        "exceptions",
+        "robot_command_failed",
+    )
+
+
+async def test_action_errors_without_translation_relay_their_own_message() -> None:
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = ServiceValidationError(
+        "The saved-plan preview is stale; refresh it before starting",
+        translation_domain=DOMAIN,
+        translation_key="invalid_plan",
+    )
+    result = await _run(hass, patches, MaticRunPlanTool(), {})
+    assert result.data["reason"] == (
+        "The saved-plan preview is stale; refresh it before starting"
+    )
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = ServiceValidationError(
+        "room cadence cannot reset while its plan is running",
+        translation_domain=DOMAIN,
+        translation_key="cadence_reset_blocked",
+    )
+    result = await _run(
+        hass, patches, MaticResetScheduleTool(), {"schedule": "mop", "scope": "plan"}
+    )
+    assert (
+        result.data["reason"] == "room cadence cannot reset while its plan is running"
+    )
+
+
+async def test_run_left_running_logs_its_later_end(caplog) -> None:
+    release = asyncio.Event()
+
+    async def call(domain, service, data, **kwargs):
+        if service == "preview_plan":
+            return {"preview_token": "c" * 64}
+        await release.wait()
+        raise HomeAssistantError("room interrupted")
+
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = call
+    caplog.set_level(logging.DEBUG, logger="custom_components.matic_robot.llm")
+    with patch("custom_components.matic_robot.llm.RUN_START_WAIT_SECONDS", 0.01):
+        assert (await _run(hass, patches, MaticRunPlanTool(), {})).data["started"]
+    release.set()
+    for _ in range(3):
+        await asyncio.sleep(0)
+    assert "ended: room interrupted" in caplog.text
+
+
+def test_cancelled_run_is_not_logged() -> None:
+    task = MagicMock()
+    task.cancelled.return_value = True
+    _log_run_end(task)
+    task.exception.assert_not_called()
+    task.cancelled.return_value = False
+    task.exception.return_value = None
+    _log_run_end(task)
+
+
+async def test_clean_rooms_previews_the_sequence_then_runs_it() -> None:
+    hass, _registry, patches = _control_hass()
+
+    async def call(domain, service, data, **kwargs):
+        if service == "preview_room_sequence":
+            return {
+                "preview_token": "d" * 64,
+                "blocker": None,
+                "rooms": [{"name": "Kitchen"}, {"name": "Study"}],
+            }
+        return None
+
+    hass.services.async_call.side_effect = call
+    result = await _run(
+        hass,
+        patches,
+        MaticCleanRoomsTool(),
+        {"rooms": ["kitchen", "Study"], "cleaning_mode": "mop"},
+    )
+    assert result.data == {
+        "started": True,
+        "finished": True,
+        "rooms": ["Kitchen", "Study"],
+    }
+    sequence = {
+        "entity_id": "vacuum.robot",
+        "rooms": [
+            {"room": "kitchen", "cleaning_mode": "mop"},
+            {"room": "Study", "cleaning_mode": "mop"},
+        ],
+        "use_room_schedule": True,
+        "override_room_schedule": False,
+        "return_to_base": True,
+    }
+    assert [call.args[:3] for call in hass.services.async_call.await_args_list] == [
+        (DOMAIN, "preview_room_sequence", sequence),
+        (DOMAIN, "clean_room_sequence", {**sequence, "preview_token": "d" * 64}),
+    ]
+
+    for blocked in (
+        {"preview_token": None, "blocker": "shared_schedule_unavailable", "rooms": []},
+        {"preview_token": "e" * 64, "blocker": None, "rooms": []},
+    ):
+        hass, _registry, patches = _control_hass()
+        hass.services.async_call.return_value = blocked
+        _refused(
+            await _run(hass, patches, MaticCleanRoomsTool(), {"rooms": ["Kitchen"]}),
+            "common",
+            "v4_reason_room_preview_blocked",
+        )
+        assert hass.services.async_call.await_args.args[1] == "preview_room_sequence"
+        assert (
+            hass.services.async_call.await_args.args[2]["rooms"][0]["cleaning_mode"]
+            == "vacuum"
+        )
+
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = ServiceValidationError(
+        "Unknown Matic rooms: Attic",
+        translation_domain=DOMAIN,
+        translation_key="unknown_rooms",
+        translation_placeholders={"rooms": "Attic"},
+    )
+    _refused(
+        await _run(hass, patches, MaticCleanRoomsTool(), {"rooms": ["Attic"]}),
+        "exceptions",
+        "unknown_rooms",
+        rooms="Attic",
+    )
+
+
+@pytest.mark.parametrize(
+    ("state", "projection", "category", "reason"),
+    [
+        ("unavailable", {}, "exceptions", "llm_robot_unavailable"),
+        ("cleaning", {"stop_settle_pending": True}, "common", "v4_reason_stop"),
+        ("docked", {}, "exceptions", "llm_nothing_to_stop"),
+    ],
+)
+async def test_stop_refuses_like_the_panel(state, projection, category, reason) -> None:
+    hass, _registry, patches = _control_hass(state=state, projection=projection)
+    _refused(await _run(hass, patches, MaticStopCleaningTool(), {}), category, reason)
+    hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("state", "attributes", "projection"),
+    [
+        ("cleaning", None, {}),
+        ("paused", None, {}),
+        ("returning", None, {}),
+        ("docked", {"recharge_and_resume": True, "charging": True}, {}),
+        ("docked", None, {"runner_locked": True}),
+        ("docked", None, {"active_plan": True}),
+        ("docked", None, {"native_session_active": True}),
+    ],
+)
+async def test_stop_sends_the_panel_stop(state, attributes, projection) -> None:
+    hass, _registry, patches = _control_hass(
+        state=state, attributes=attributes, projection=projection
+    )
+    result = await _run(hass, patches, MaticStopCleaningTool(), {})
+    assert result.data == {"stop_sent": True}
+    hass.services.async_call.assert_awaited_once()
+    assert hass.services.async_call.await_args.args == (
+        DOMAIN,
+        "stop_intelligent_cleaning",
+        {"entity_id": "vacuum.robot", "include_unmanaged": True},
+    )
+
+    hass, _registry, patches = _control_hass(
+        state=state, attributes=attributes, projection=projection
+    )
+    hass.services.async_call.side_effect = ServiceValidationError(
+        "changed", translation_domain=DOMAIN, translation_key="managed_run_changed"
+    )
+    _refused(
+        await _run(hass, patches, MaticStopCleaningTool(), {}),
+        "exceptions",
+        "managed_run_changed",
+    )
+
+
+async def test_reset_schedule_uses_the_panel_reset() -> None:
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room("kitchen", "Kitchen", "kitchen", b"kitchen", ()),
+            Room("study", "Study", "study", b"study", ()),
+        ),
+    )
+    hass, _registry, patches = _control_hass(floor_plan=floor_plan)
+    result = await _run(
+        hass,
+        patches,
+        MaticResetScheduleTool(),
+        {"room": "kitchen", "schedule": "mop"},
+    )
+    assert result.data == {
+        "reset": True,
+        "plan": "Home",
+        "room": "Kitchen",
+        "schedule": "mop",
+    }
+    assert hass.services.async_call.await_args.args == (
+        DOMAIN,
+        "reset_room_cadence",
+        {
+            "entity_id": "vacuum.robot",
+            "plan": "home",
+            "modes": ["mop"],
+            "room_id": "kitchen",
+        },
+    )
+    assert hass.services.async_call.await_args.kwargs["return_response"] is True
+
+    hass, _registry, patches = _control_hass(floor_plan=floor_plan)
+    result = await _run(
+        hass,
+        patches,
+        MaticResetScheduleTool(),
+        {"plan": "Home", "schedule": "coverage", "scope": "plan"},
+    )
+    assert result.data == {
+        "reset": True,
+        "plan": "Home",
+        "room": None,
+        "schedule": "coverage",
+    }
+    assert "room_id" not in hass.services.async_call.await_args.args[2]
+
+    hass, _registry, patches = _control_hass(floor_plan=floor_plan)
+    with pytest.raises(HomeAssistantError, match="Name the room to reset"):
+        await _run(hass, patches, MaticResetScheduleTool(), {"schedule": "mop"})
+    with pytest.raises(HomeAssistantError, match="No room is named Attic"):
+        await _run(
+            hass,
+            patches,
+            MaticResetScheduleTool(),
+            {"room": "Attic", "schedule": "mop"},
+        )
+    _refused(
+        await _run(
+            hass,
+            patches,
+            MaticResetScheduleTool(),
+            {"plan": "Missing", "schedule": "mop", "scope": "plan"},
+        ),
+        "exceptions",
+        "unknown_plan",
+        plan="Missing",
+    )
+    hass.services.async_call.assert_not_awaited()
+
+    for state, projection, reason in (
+        ("cleaning", {}, "v4_reason_robot_operation_waiting"),
+        ("docked", {"map_complete": False}, "v4_reason_clean_rooms_verification"),
+    ):
+        hass, _registry, patches = _control_hass(
+            state=state, projection=projection, floor_plan=floor_plan
+        )
+        _refused(
+            await _run(
+                hass,
+                patches,
+                MaticResetScheduleTool(),
+                {"room": "Kitchen", "schedule": "mop"},
+            ),
+            "common",
+            reason,
+        )
+
+
+async def test_refusals_use_the_conversation_language() -> None:
+    hass, _registry, patches = _control_hass(state="cleaning")
+    hass.config.language = "de"
+    context = _context()
+    context.language = "fr"
+    translations = AsyncMock(return_value=_strings("common"))
+    with (
+        patches[0],
+        patches[1],
+        patch(
+            "custom_components.matic_robot.llm.translation.async_get_translations",
+            translations,
+        ),
+    ):
+        await MaticRunPlanTool().async_call(
+            hass, llm.ToolInput("MaticRunPlan", {}), context
+        )
+        context.language = "*"
+        await MaticRunPlanTool().async_call(
+            hass, llm.ToolInput("MaticRunPlan", {}), context
+        )
+    assert [call.args[1] for call in translations.await_args_list] == ["fr", "de"]
+
+
+async def test_refusal_text_comes_from_the_integration_translations(hass) -> None:
+    result = await _async_refusal(hass, _context(), "common", "v4_reason_stop")
+    assert result.data["reason"] == _text("common", "v4_reason_stop")
+    result = await _async_refusal(
+        hass, _context(), "exceptions", "unknown_plan", {"plan": "Attic"}
+    )
+    assert result.data["reason"] == _text("exceptions", "unknown_plan", plan="Attic")
+
+
+async def test_assist_gets_the_robot_status_tools_for_administrators(hass) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, entry_id="entry-one")
+    entry.add_to_hass(hass)
+    entry.mock_state(hass, ConfigEntryState.LOADED)
+    registry = er.async_get(hass)
+    vacuum = registry.async_get_or_create(
+        "vacuum", DOMAIN, "synthetic-serial_vacuum", config_entry=entry
+    )
+    registry.async_get_or_create(
+        "sensor", DOMAIN, "synthetic-serial_battery", config_entry=entry
+    )
+    api = MaticRobotStatusAPI(hass)
+    admin = await hass.auth.async_create_user("Admin", group_ids=["system-admin"])
+    member = await hass.auth.async_create_user("Member", group_ids=["system-users"])
+    api.async_start()
+    await hass.async_block_till_done()
+    assert admin.id in api.administrators
+    assert member.id not in api.administrators
+
+    def context(user_id: str | None, assistant: str = "conversation"):
+        return llm.LLMContext(
+            platform="conversation",
+            context=Context(user_id=user_id),
+            language="en",
+            assistant=assistant,
+            device_id=None,
+        )
+
+    exposed = MagicMock(return_value=True)
+    with patch("custom_components.matic_robot.llm.async_should_expose", exposed):
+        assert async_get_tools(hass, context(admin.id), "assist") is None
+        hass.data.setdefault(DOMAIN, {})[DATA_LLM_API] = api
+        assert async_get_tools(hass, context(admin.id), "other") is None
+        assert async_get_tools(hass, context(admin.id, ""), "assist") is None
+        assert async_get_tools(hass, context(member.id), "assist") is None
+        assert async_get_tools(hass, context(None), "assist") is None
+        no_context = context(admin.id)
+        no_context.context = None
+        assert async_get_tools(hass, no_context, "assist") is None
+        tools = async_get_tools(hass, context(admin.id), "assist")
+        exposed.return_value = False
+        assert async_get_tools(hass, context(admin.id), "assist") is None
+    exposed.assert_called_with(hass, "conversation", vacuum.entity_id)
+    assert tools is not None
+    assert tools.prompt == ROBOT_STATUS_PROMPT
+    assert [tool.name for tool in tools.tools] == [
+        f"{DOMAIN}__{tool.name}" for tool in api.tools()
+    ]
+    assert "matic_robot__MaticClaimFirmwareInvestigation" not in {
+        tool.name for tool in tools.tools
+    }
+    assert all(tool.integration == DOMAIN for tool in tools.tools)
+
+    await hass.auth.async_update_user(member, group_ids=["system-admin"])
+    await hass.async_block_till_done()
+    assert member.id in api.administrators
+    await hass.auth.async_remove_user(member)
+    await hass.async_block_till_done()
+    assert member.id not in api.administrators

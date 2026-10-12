@@ -20,7 +20,7 @@ from custom_components.matic_robot.client.observations import (
     ActivityJournal,
 )
 from custom_components.matic_robot.const import EVENT_ACTIVITY_OBSERVED
-from custom_components.matic_robot.llm import MaticOperationsAPI
+from custom_components.matic_robot.llm import MaticRobotStatusAPI
 from tests.test_api_paths import _OpenMethod, _Stream
 
 
@@ -141,7 +141,7 @@ async def test_observer_failure_cannot_block_a_command(monkeypatch, caplog) -> N
 
 
 def test_mcp_keeps_only_bounded_integer_raw_codes() -> None:
-    api = MaticOperationsAPI(SimpleNamespace())
+    api = MaticRobotStatusAPI(SimpleNamespace())
     api._async_capture_event(
         Event(
             EVENT_ACTIVITY_OBSERVED,

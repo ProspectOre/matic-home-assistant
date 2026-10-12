@@ -69,8 +69,9 @@ this setting does not install or authenticate an agent.
 Switching increments a routing revision and invalidates unfinished claims.
 Completed research remains visible; future evidence goes to the new owner.
 Agent names are routing labels, not authentication identities. The server
-requires administrator authorization for every research tool call. Restrict a
-worker's tools to these three APIs and public web research; a client tool filter
+requires administrator authorization for every research tool call. Give a
+worker only the **Matic: Firmware research (administrators only)** LLM API and
+public web research; a client tool filter
 does not narrow the underlying HA administrator credential.
 
 ## Investigator contract

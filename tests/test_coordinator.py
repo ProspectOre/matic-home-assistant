@@ -1614,7 +1614,7 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
 
     from custom_components.matic_robot.client.api import _decode_cleaning_session
     from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
-    from custom_components.matic_robot.llm import MaticOperationsAPI
+    from custom_components.matic_robot.llm import MaticRobotStatusAPI
     from tests.wire_builders import _bfield, _vfield
 
     client = _client()
@@ -1651,7 +1651,7 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
     assert event.data["vacuum_completed_room_count"] == 1
     assert event.data["mop_completed_room_count"] == 0
     assert event.data["combined_completed_room_count"] == 0
-    api = MaticOperationsAPI(hass)
+    api = MaticRobotStatusAPI(hass)
     api._async_capture_event(event)
     assert api.recent_events[-1]["data"]["vacuum_completed_room_count"] == 1
     assert api.recent_events[-1]["data"]["completion_scope"] == "native_room_summary"

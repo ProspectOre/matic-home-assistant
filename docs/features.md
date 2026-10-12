@@ -15,7 +15,7 @@ These are the integration's main additions:
 | Home-driven cleaning | Combine presence, schedules, pet devices, and other Home Assistant triggers with plans or named areas. |
 | Completion events | React to verified room completion and plan outcomes in automations. |
 | Room statistics | Put last-cleaned times and successful cleaning durations on dashboards and in Recorder. |
-| Read-only operations tools | Inspect plan order, run status, recent events, command activity, and mode-specific history through administrator-only MCP tools. |
+| Assistant tools | Inspect plan order, run status, recent events, command activity, and mode-specific history, and run plans, clean rooms, stop cleaning or reset schedule progress through administrator-only tools for Assist and MCP. |
 | Firmware comparisons | Track local protocol changes and receive Home Assistant Repairs for endpoint availability or transport changes. |
 
 ## A routine that adapts to short trips away

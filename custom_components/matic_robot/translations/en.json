@@ -998,6 +998,60 @@
     }
   },
   "exceptions": {
+    "llm_admin_required": {
+      "message": "Only a Home Assistant administrator can use the robot tools."
+    },
+    "llm_no_robot": {
+      "message": "No robot is set up in Home Assistant. Set up the robot, then try again."
+    },
+    "llm_robot_required": {
+      "message": "More than one robot is set up. Name the robot to use, then try again."
+    },
+    "llm_robot_ambiguous": {
+      "message": "More than one robot has that name. Use the robot's entry ID instead."
+    },
+    "llm_robot_unknown": {
+      "message": "No robot is named {robot}. Check the name, then try again."
+    },
+    "llm_robot_unavailable": {
+      "message": "The robot is unavailable. Check that it is on and connected, then try again."
+    },
+    "llm_map_unavailable": {
+      "message": "The robot's room map is unavailable. Open Matic Map to check it, then try again."
+    },
+    "llm_map_rechecking": {
+      "message": "The robot's room map is being checked. Try again in a moment."
+    },
+    "llm_plan_ambiguous": {
+      "message": "More than one plan is named {plan}. Use the plan's ID instead."
+    },
+    "llm_plan_unknown": {
+      "message": "No plan is named {plan}. Check the name, then try again."
+    },
+    "llm_plan_unavailable": {
+      "message": "The plan can't be previewed. Open it in Matic Map to check it, then try again.\nDetails: {error}"
+    },
+    "llm_room_required": {
+      "message": "Name the room to reset, then try again."
+    },
+    "llm_room_unknown": {
+      "message": "No room is named {room}. Check the name, then try again."
+    },
+    "llm_history_unavailable": {
+      "message": "The robot's cleaning history is unavailable. Check the robot, then try again."
+    },
+    "llm_activity_session_required": {
+      "message": "To read older activity, pass the observation session from the first page as well."
+    },
+    "llm_activity_restarted": {
+      "message": "The activity record restarted. Read the newest page, then continue."
+    },
+    "llm_firmware_research_rejected": {
+      "message": "The firmware research request was rejected. Read the firmware reports again, then retry.\nDetails: {error}"
+    },
+    "llm_nothing_to_stop": {
+      "message": "The robot isn't cleaning, so there is nothing to stop."
+    },
     "setting_unconfirmed": {
       "message": "The robot did not confirm the setting change. Check the robot's current setting before trying again."
     },
