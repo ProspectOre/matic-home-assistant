@@ -298,7 +298,7 @@ const dialogCopy = (
         title: t("v4_delete_plan", "Delete this plan?"),
         detail: t("v4_delete_plan_detail", "This removes the saved plan from Home Assistant. The robot will not move."),
         cancelLabel: t("v4_cancel", "Cancel"),
-        confirmLabel: t("plan_delete", "Delete plan"),
+        confirmLabel: t("v4_delete_plan_label", "Delete plan"),
         action: "delete-plan",
       };
     case "confirmDeleteArea":
@@ -306,7 +306,7 @@ const dialogCopy = (
         title: t("v4_delete_area", "Delete this area?"),
         detail: t("v4_delete_area_detail", "This removes the saved outline from Home Assistant. The robot will not move."),
         cancelLabel: t("v4_cancel", "Cancel"),
-        confirmLabel: t("area_delete", "Delete area"),
+        confirmLabel: t("v4_delete_area_label", "Delete area"),
         action: "delete-area",
       };
     case "confirmResetCadence":

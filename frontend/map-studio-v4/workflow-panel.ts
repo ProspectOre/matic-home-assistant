@@ -751,7 +751,7 @@ line-height: var(--ms-lh-snug);
             <button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
-              aria-label=${this.#t("plan_delete", "Delete plan")}
+              aria-label=${this.#t("v4_delete_plan_label", "Delete plan")}
               data-dialog-launcher="confirmDeletePlan"
               @click=${() => this.#intent({ type: "open-dialog", dialog: "confirmDeletePlan" })}
             >${this.#t("plan_delete", "Delete")}</button>
@@ -813,7 +813,7 @@ line-height: var(--ms-lh-snug);
             <button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
-              aria-label=${this.#t("area_delete", "Delete area")}
+              aria-label=${this.#t("v4_delete_area_label", "Delete area")}
               data-dialog-launcher="confirmDeleteArea"
               @click=${() => this.#intent({ type: "open-dialog", dialog: "confirmDeleteArea" })}
             >${this.#t("area_delete", "Delete")}</button>
