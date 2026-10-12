@@ -54,8 +54,8 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
   console.log(`\n--- K2 rooms open/close @${w}x${h}`);
   await openScenario(page, "ready", { width: w, height: h });
   await inject(page);
-  const t = await tabTo((a) => /One-time clean/.test(a.name));
-  log(`K2a Tab reaches "One-time clean" launcher @${w}`, t.ok, `after ${t.steps} Tab presses -> ${fmt(t.a)}`);
+  const t = await tabTo((a) => /Clean rooms/.test(a.name));
+  log(`K2a Tab reaches "Clean rooms" launcher @${w}`, t.ok, `after ${t.steps} Tab presses -> ${fmt(t.a)}`);
   await page.keyboard.press("Enter");
   await settleAll();
   let a = await active();
@@ -65,7 +65,7 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
   a = await active();
   const s = await snap();
   log(`K2c Escape closes Rooms (workflow none) @${w}`, s.workflow === "none", JSON.stringify(s));
-  log(`K2d Focus returns to the "One-time clean" launcher @${w}`, /One-time clean/.test(a.name), `focus = ${fmt(a)}`);
+  log(`K2d Focus returns to the "Clean rooms" launcher @${w}`, /Clean rooms/.test(a.name), `focus = ${fmt(a)}`);
 }
 
 // ---------- K3: plan editor heading focus + Escape ----------
@@ -173,7 +173,7 @@ for (const [w, h] of [[1440, 900], [390, 844]]) {
   await page.keyboard.press("Enter");
   await settleAll();
   let a = await active();
-  log(`K7a Map options opens and focus enters the menu @${w}`, /Scene detail|Auto/.test(a.name) || a.tag === "select", fmt(a));
+  log(`K7a Map options opens and focus enters the menu @${w}`, /Map detail|Auto/.test(a.name) || a.tag === "select", fmt(a));
   await page.keyboard.press("Escape");
   await settleAll();
   a = await active();

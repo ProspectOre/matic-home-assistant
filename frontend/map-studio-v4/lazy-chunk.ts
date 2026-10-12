@@ -123,5 +123,5 @@ export const chunkStatus = (
 ) => status === "ready"
   ? nothing
   : status === "failed"
-    ? html`<div class="problem" role="alert"><p>${translate(localize, "v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p><button class="ms-btn ms-btn--secondary" type="button" data-dialog-launcher="discardDraft" @click=${retry}>${translate(localize, "v4_retry", "Try again")}</button></div>`
-    : html`<p class="loading" role="status">${translate(localize, "v4_workflow_loading", "Loading workspace tools…")}</p>`;
+    ? html`<div class="problem" role="alert"><p>${translate(localize, "v4_workflow_load_failed", "The cleaning tools didn't load. Reload the page to try again.")}</p><button class="ms-btn ms-btn--secondary" type="button" data-dialog-launcher="discardDraft" @click=${retry}>${translate(localize, "v4_retry", "Try again")}</button></div>`
+    : html`<p class="loading" role="status">${translate(localize, "v4_workflow_loading", "Loading…")}</p>`;

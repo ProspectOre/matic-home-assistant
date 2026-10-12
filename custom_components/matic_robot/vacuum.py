@@ -132,8 +132,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> None:
         """Reject an old request without clearing a newer Stop's fence."""
         if self._plans.motion_generation(serial_number) != generation:
-            raise ServiceValidationError(
-                "The command was superseded before it could run"
+            raise _validation_error(
+                "The command was superseded before it could run", "command_superseded"
             )
 
     def _require_stop_request_generation(
@@ -141,8 +141,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> None:
         """Reject a direct request queued before a newer Stop decision."""
         if self._plans.stop_request_generation(serial_number) != generation:
-            raise ServiceValidationError(
-                "The command was superseded before it could run"
+            raise _validation_error(
+                "The command was superseded before it could run", "command_superseded"
             )
 
     def _require_no_pending_stop_dispatch(self, serial_number: str) -> None:
@@ -201,7 +201,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         ):
             return
         raise ServiceValidationError(
-            "Matic is completing its OEM stop countdown; wait until it docks",
+            "The robot is stopping; wait until it docks",
             translation_domain=DOMAIN,
             translation_key="robot_stop_pending",
         )
@@ -250,8 +250,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             or len(room_modes) != len(rooms)
             or len(rooms) < 2
         ):
-            raise ServiceValidationError(
-                "Mixed coverage requires an owned ordered plan with per-room settings"
+            raise _validation_error(
+                "Mixed coverage requires an owned ordered plan with per-room settings",
+                "mixed_coverage_needs_plan",
             )
         floor_plan = self._current_floor_plan(expected_floor_token)
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
@@ -311,7 +312,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     and self._plans.cancellation_event(serial_number).is_set()
                 ):
                     raise HomeAssistantError(
-                        "Managed coverage was stopped before dispatch"
+                        "Managed coverage was stopped before dispatch",
+                        translation_domain=DOMAIN,
+                        translation_key="coverage_stopped_before_start",
                     )
 
             receipt = None
@@ -384,7 +387,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     ) from err
                 except (MaticError, TimeoutError) as err:
                     raise HomeAssistantError(
-                        "Mixed coverage dispatch could not be verified"
+                        "Mixed coverage dispatch could not be verified",
+                        translation_domain=DOMAIN,
+                        translation_key="coverage_start_unconfirmed",
                     ) from err
             else:
                 command_rooms = [room.protocol_id for room in rooms]
@@ -896,7 +901,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             if key in params:
                 values = params[key]
                 if not isinstance(values, list):
-                    raise ServiceValidationError(f"{key} must be a list")
+                    raise _validation_error(
+                        f"{key} must be a list", "invalid_room_setting"
+                    )
                 try:
                     result[key] = [
                         _enum_option(CoverageSetting, value)
@@ -905,7 +912,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         for value in values
                     ]
                 except ValueError as err:
-                    raise ServiceValidationError("Invalid per-room setting") from err
+                    raise _validation_error(
+                        "Invalid per-room setting", "invalid_room_setting"
+                    ) from err
         return result
 
     @staticmethod
@@ -959,23 +968,28 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         return parsed
 
 
+_OPTION_LABELS: dict[type[CleaningMode | CoverageSetting], str] = {
+    CleaningMode: "Cleaning mode",
+    CoverageSetting: "Vacuum coverage",
+}
+
+
 def _enum_option[CleaningOptionT: (CleaningMode, CoverageSetting)](
     enum_type: type[CleaningOptionT], value: Any
 ) -> CleaningOptionT:
     if isinstance(value, enum_type):
         return value
-    if not isinstance(value, str):
-        raise ValueError(f"{enum_type.__name__} must be a string")
-    normalized = value.strip().casefold().replace("_", " ").replace("-", " ")
-    for option in enum_type:
-        names = {
-            option.name.casefold().replace("_", " "),
-            option.value.casefold().replace("_", " ").replace("-", " "),
-        }
-        if normalized in names:
-            return option
+    if isinstance(value, str):
+        normalized = value.strip().casefold().replace("_", " ").replace("-", " ")
+        for option in enum_type:
+            names = {
+                option.name.casefold().replace("_", " "),
+                option.value.casefold().replace("_", " ").replace("-", " "),
+            }
+            if normalized in names:
+                return option
     choices = ", ".join(option.value for option in enum_type)
-    raise ValueError(f"Invalid {enum_type.__name__}; choose {choices}")
+    raise ValueError(f"{_OPTION_LABELS[enum_type]} must be one of: {choices}.")
 
 
 def _validation_error(

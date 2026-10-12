@@ -139,7 +139,7 @@ test("a coverage guard rejection maps to its notice key", async ({ page }) => {
     translation_domain: "matic_robot",
     translation_key: "coverage_native_session_active",
   }));
-  await panel.getByRole("button", { name: "Run this plan", exact: true }).first().click();
+  await panel.getByRole("button", { name: "Run plan", exact: true }).first().click();
 
   await expect.poll(async () => (await snapshot(page)).command).toBe("failed");
   expect((await snapshot(page)).notice).toMatchObject({ tone: "error", key: "v4_notice_coverage_robot_busy" });
@@ -297,7 +297,7 @@ test("success and error notices toast at once", async ({ page }) => {
 
 test("@mobile info and warning notices toast only while the sheet is at peek", async ({ page }) => {
   const gallery = await loadGallery(page, { narrow: true });
-  const sheet = gallery.getByRole("complementary", { name: "Map workspace" });
+  const sheet = gallery.getByRole("complementary", { name: "Cleaning panel" });
   const toast = gallery.locator("[data-notice-toast]");
   await expect(sheet).toHaveAttribute("data-detent", "half");
 
@@ -305,7 +305,7 @@ test("@mobile info and warning notices toast only while the sheet is at peek", a
   await expect(gallery.locator("[data-notice-slot]")).toBeVisible();
   await expect(toast).toBeHidden();
 
-  await gallery.getByRole("button", { name: "Show less of the map workspace" }).click();
+  await gallery.getByRole("complementary", { name: "Cleaning panel" }).getByRole("button", { name: "Collapse panel", exact: true }).click();
   await expect(sheet).toHaveAttribute("data-detent", "peek");
   await setGalleryNotice(page, sampleNotice("warning", "Warning at peek"));
   await expect(toast).toBeVisible();
@@ -322,7 +322,7 @@ test("@mobile info and warning notices toast only while the sheet is at peek", a
   await expect(toast).toBeVisible();
   await expect(toast).toContainText("Info at peek");
 
-  await gallery.getByRole("button", { name: "Show more of the map workspace" }).click();
+  await gallery.getByRole("button", { name: "Expand panel" }).click();
   await expect(sheet).toHaveAttribute("data-detent", "half");
   await expect(toast).toBeHidden();
   await expect(gallery.locator("[data-notice-slot]")).toContainText("Info at peek");
@@ -628,8 +628,8 @@ const readRegion = (page, name) => page.evaluate((region) => window.__regionChan
 
 test("@mobile the polite region holds only the newest message and a cleared notice writes nothing", async ({ page }) => {
   const gallery = await loadGallery(page, { narrow: true });
-  await gallery.getByRole("button", { name: "Show less of the map workspace" }).click();
-  await expect(gallery.locator('.root > [aria-live="polite"]')).toHaveText("Map workspace, peek height");
+  await gallery.getByRole("complementary", { name: "Cleaning panel" }).getByRole("button", { name: "Collapse panel", exact: true }).click();
+  await expect(gallery.locator('.root > [aria-live="polite"]')).toHaveText("Cleaning panel, collapsed");
   await watchRegions(page);
 
   await setGalleryNotice(page, sampleNotice("info", "Newest sample"));

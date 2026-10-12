@@ -2,15 +2,15 @@ blueprint:
   name: "Matic: Send firmware alerts"
   description: >-
     Sends a phone notification when the robot's firmware checks keep failing,
-    when they recover, and when firmware research finishes. Notifications let
-    you check again or acknowledge. Notifications that were not delivered are
-    sent after Home Assistant restarts. Choose who researches firmware
-    separately with the action Advanced: Choose firmware investigator.
+    when they recover, and when firmware research finds something to act on.
+    Notifications let you check again or acknowledge. Notifications that were
+    not delivered are sent after Home Assistant restarts. Choose who researches
+    firmware separately with the action Advanced: Choose firmware investigator.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/firmware_intelligence.yaml
   input:
     firmware_sensor:
-      name: Firmware check sensor
+      name: Firmware check status sensor
       description: >-
         The robot's Firmware check status sensor, for example
         sensor.matic_firmware_compatibility. The robot is found from this
@@ -30,7 +30,8 @@ blueprint:
       name: Notification ID prefix
       description: >-
         Use a different value on each Home Assistant server so notifications
-        don't replace each other. Default matic_firmware.
+        don't replace each other. Default matic_firmware; for example
+        matic_firmware_cabin.
       default: matic_firmware
       selector:
         text:
@@ -129,7 +130,7 @@ actions:
               title: >-
                 {% if report.attention_required %}Matic firmware checks need attention
                 {% elif research_actionable %}Matic firmware investigation complete
-                {% else %}Matic firmware reads recovered{% endif %}
+                {% else %}Matic firmware checks recovered{% endif %}
               message: >-
                 Firmware {{ report.firmware_version }}.
                 {{ report.reachable_endpoints }} of {{ report.endpoint_count }} robot data checks succeeded.

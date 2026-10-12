@@ -50,6 +50,7 @@ Glossary: `docs/ux-audit-0.5/copy.md`. Notices follow `shell.md` §4 (one senten
 | `v4_draw_hint_touch` · `v4_draw_hint_pointer` (both NEW) | Drag to paint · two fingers to move the map · Drag to paint · right-drag or Space-drag to move the map | N | Points tool: `v4_points_hint_touch` "Tap to add points · two fingers to move the map", `v4_points_hint_pointer` "Click to add points · right-drag to move the map" (both NEW) |
 | `v4_precision_hint` | Strokes follow the map's resolution. Zooming changes the view, not the area. | C | CP-0245, "area" per glossary |
 | `v4_reason_save_area_draw` · `v4_reason_save_area_details` | Can't save until you draw the area. · Can't save until you name the area. | C N | copy-style reason form |
+| `v4_reason_save_area_map` NEW | Can't save until Home Assistant can confirm this map. | C N | Draw `review-area` reason when the map can't be edited; replaces the reuse of `v4_map_limited_body`, which the strip keeps |
 | `v4_check_area` NEW · `area_review_required` · `v4_edit_outline` · `area_delete` | Check {name} · The map changed since you saved this area, so save it again or redraw it. · Redraw · Delete | S C N | MS-AREA-01; `area_delete` is the row and the dialog's button, the bare verb under the "Delete area?" title (`shell.md` §5) |
 | `v4_notice_area_saving` · `_saved` · `_deleted` · `_save_failed` · `_delete_failed` (all NEW) | Saving area… · Area saved · Area deleted · Home Assistant can't confirm the area was saved, so try again. · Home Assistant can't confirm the area was deleted, so try again. | S C N | `effects.ts:2229,2251,2285,2269,2288`; a failed save or delete returns `command` to idle, so the primary stays (`shell.md` §6) |
 | `v4_action_return_live` · `v4_reason_live_map_required` · `map_timeline_oldest` NEW · `map_timeline_live_action` | Show live map · Can't edit until you show the live map. · Oldest · Live | C N | buttons ≤3 words; reason in copy-style form |
@@ -86,6 +87,7 @@ None. Every surface here uses existing services and the scene, area and history 
 - **D2 Locating HUD contract.** Amend `docs/acceptance-0.5.md:109` ("Locating retains only exit control") to "Locating keeps Stop and the exit control", matching `shell.ts:1566-1570`. *Recommended:* amend in the UX8 docs PR.
 - **D3 Browser full screen (MS-FULL-01).** Fold it into Full map? *Recommended:* yes, with the panel-only fallback where the browser refuses. Trade-off: the browser consumes Escape to leave full screen, so in Full map one Escape also closes any open help or precision instead of the `shell.md` §5 order.
 - **Owner decisions (2026-10-11):** all recommendations accepted. D1 one gesture model (drag pans; orbit and tilt by two-finger twist, right- or Shift-drag, or the camera buttons); D2 amend `acceptance-0.5.md:109` in UX8; D3 fold browser full screen into Full map with the panel-only fallback.
+- **UX1 (2026-10-12):** area-save reason key `v4_reason_save_area_map`.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

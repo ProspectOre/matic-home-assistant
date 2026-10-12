@@ -163,7 +163,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
     dirty: false,
   },
   notice: null,
-  robotLabel: "Matic robot",
+  robotLabel: "Robot",
   robots: [],
   locale: "en",
 });
@@ -822,18 +822,18 @@ const motionBlockReason = (
 ): { readonly reason: string; readonly reasonKey: string } => {
   if (!canEditCoordinates(state)) {
     return {
-      reason: "Waiting for the current map to be verified.",
+      reason: "Waiting for the map to be ready.",
       reasonKey: "v4_reason_clean_rooms_verification",
     };
   }
   if (state.resources.entry?.stopSettlePending === true) {
     return {
-      reason: "The previous stop is still being confirmed. Cleaning will be available when it finishes.",
+      reason: "Waiting for the robot to finish stopping.",
       reasonKey: "v4_reason_stop_settle_pending",
     };
   }
   return {
-    reason: "Waiting for the current robot operation to finish.",
+    reason: "Waiting for the robot to finish what it's doing.",
     reasonKey: "v4_reason_robot_operation_waiting",
   };
 };
@@ -884,7 +884,7 @@ const stopAction = (state: WorkspaceState): PrimaryAction => {
     labelKey: "v4_action_stop",
     kind: "danger",
     enabled,
-    ...(enabled ? {} : { reason: "The robot is already stopping.", reasonKey: "v4_reason_stop" }),
+    ...(enabled ? {} : { reason: "Waiting for the robot to stop.", reasonKey: "v4_reason_stop" }),
   };
 };
 
@@ -892,7 +892,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction | NoBu
   if (state.dataMode === "history") {
     return {
       id: "return-live",
-      label: "Return to the live map",
+      label: "Show live map",
       labelKey: "v4_action_return_live",
       kind: "primary",
       enabled: true,
@@ -902,7 +902,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction | NoBu
     return disabledAction(
       "read-only",
       "Live map required",
-      "Return to the live map to edit cleaning tasks.",
+      "Can't edit until you show the live map.",
       "v4_action_live_map_required",
       "v4_reason_live_map_required",
     );
@@ -983,11 +983,10 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction | NoBu
       );
   }
   if (state.workflow === "draw") {
-    const drawFirst = { reason: "Draw the area first.", reasonKey: "v4_reason_save_area_draw" };
-    // shell.md §2 row 8: the reason the strip's body gives for a map that cannot be confirmed.
+    const drawFirst = { reason: "Can't save until you draw the area.", reasonKey: "v4_reason_save_area_draw" };
     const mapLimited = {
-      reason: "Home Assistant can show this map but can't confirm it well enough to start cleaning.",
-      reasonKey: "v4_map_limited_body",
+      reason: "Can't save until Home Assistant can confirm this map.",
+      reasonKey: "v4_reason_save_area_map",
     };
     const hasCoverage = state.draw.circles.length > 0 && (!state.draw.outline || state.draw.outline.closed);
     const editable = canEditCoordinates(state);
@@ -1008,7 +1007,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction | NoBu
     const ready = canStartMotion(state) && count > 0 && previewAllowed;
     return {
       id: "clean-rooms",
-      ...(count === 0 ? { label: "Clean selected rooms", labelKey: "v4_action_clean_rooms" }
+      ...(count === 0 ? { label: "Clean rooms", labelKey: "v4_action_clean_rooms" }
         : count === 1 ? { label: "Clean 1 room", labelKey: "v4_action_clean_rooms_count_one" }
         : { label: "Clean {count} rooms", labelKey: "v4_action_clean_rooms_count", labelPlaceholders: { count } }),
       kind: "primary",
@@ -1016,14 +1015,14 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction | NoBu
       ...(ready
         ? {}
         : !count
-          ? { reason: "Select at least one room to clean.", reasonKey: "v4_reason_clean_rooms_empty" }
+          ? { reason: "Can't start until you choose a named room.", reasonKey: "v4_reason_clean_rooms_empty" }
           : !canStartMotion(state)
             ? motionBlockReason(state)
             : state.manualRoomPreview.status === "error"
-              ? { reason: "The room settings preview could not be verified.", reasonKey: "v4_reason_room_preview_unavailable" }
+              ? { reason: "Can't start until Home Assistant checks the room settings.", reasonKey: "v4_reason_room_preview_unavailable" }
               : previewCurrent && admitted.preview.blocker
-                ? { reason: "The room preview is blocked. Review the map and shared schedule.", reasonKey: "v4_reason_room_preview_blocked" }
-                : { reason: "Verifying the selected room settings…", reasonKey: "v4_reason_room_preview_loading" }),
+                ? { reason: "Can't start until you change the settings noted above.", reasonKey: "v4_reason_room_preview_blocked" }
+                : { reason: "Waiting for the room settings check.", reasonKey: "v4_reason_room_preview_loading" }),
     };
   }
   if (state.workflow === "plan") {
@@ -1036,14 +1035,14 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction | NoBu
         && withinRoomLimit;
       return {
         id: "save-plan",
-        label: "Save plan",
+        label: "Save",
         labelKey: "v4_action_save_plan",
         kind: "primary",
         enabled: valid,
         ...(valid ? {} : withinRoomLimit
-          ? { reason: "Add a plan name and at least one room.", reasonKey: "v4_reason_save_plan" }
+          ? { reason: "Can't save until the plan has a name and at least one room.", reasonKey: "v4_reason_save_plan" }
           : {
-            reason: "Remove rooms until 100 or fewer remain before saving.",
+            reason: "Can't save until the plan has 100 rooms or fewer.",
             reasonKey: "v4_reason_save_plan_room_limit",
           }),
       };
@@ -1053,33 +1052,37 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction | NoBu
       && /^[0-9a-f]{64}$/u.test(plan.nextRunPreview.previewToken ?? ""));
     return {
       id: "run-plan",
-      label: "Run this plan",
+      label: "Run plan",
       labelKey: "v4_action_run_plan",
       kind: "primary",
       enabled: canStartMotion(state) && state.planDraft.enabled && previewReady,
       ...(!canStartMotion(state)
         ? motionBlockReason(state)
         : !state.planDraft.enabled
-          ? { reason: "This plan is paused. Enable it to run.", reasonKey: "v4_reason_run_plan_paused" }
+          ? { reason: "Can't run this plan until you turn it on.", reasonKey: "v4_reason_run_plan_paused" }
           : !previewReady
-            ? { reason: "A valid next-run preview is required before starting.", reasonKey: "v4_reason_run_plan_preview" }
+            ? { reason: "Can't run this plan until you retry its next-run preview.", reasonKey: "v4_reason_run_plan_preview" }
             : {}),
     };
   }
   if (state.workflow === "areaReview") {
     if (state.areaDraft.dirty || state.draw.dirty || !state.areaDraft.id || state.areaDraft.canRebind) {
-      const valid = canEditCoordinates(state)
-        && state.areaDraft.name.trim().length > 0
-        && state.draw.circles.length > 0;
+      const editable = canEditCoordinates(state);
+      const drawn = state.draw.circles.length > 0;
+      const named = state.areaDraft.name.trim().length > 0;
       return {
         id: "save-area",
         label: "Save area",
         labelKey: "v4_action_save_area",
         kind: "primary",
-        enabled: valid,
-        ...(valid
-          ? {}
-          : { reason: "Add an area name and at least one mark.", reasonKey: "v4_reason_save_area_details" }),
+        enabled: editable && drawn && named,
+        ...(!editable
+          ? { reason: "Can't save until Home Assistant can confirm this map.", reasonKey: "v4_reason_save_area_map" }
+          : !drawn
+            ? { reason: "Can't save until you draw the area.", reasonKey: "v4_reason_save_area_draw" }
+            : !named
+              ? { reason: "Can't save until you name the area.", reasonKey: "v4_reason_save_area_details" }
+              : {}),
       };
     }
     const current = state.areaDraft.status === "current";

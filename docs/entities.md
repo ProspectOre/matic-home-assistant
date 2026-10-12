@@ -24,7 +24,7 @@ are disabled by default; enable them from the device's entity list.
 | (the robot) | `vacuum.matic` | on |
 | Run plan · Stop cleaning | `button.matic_run_selected_plan` · `button.matic_stop_intelligent_cleaning` | on |
 | Run intelligent rotation · Run saved order | `button.matic_intelligent_clean` · `button.matic_clean_entire_plan` | off |
-| Clean selected area | `button.matic_clean_selected_area` | on |
+| Clean custom area | `button.matic_clean_selected_area` | on |
 | Default cleaning mode · Default vacuum coverage | `select.matic_cleaning_mode` · `select.matic_coverage` | on |
 | Default cleaning plan · Custom cleaning area | `select.matic_saved_cleaning_plan` · `select.matic_custom_cleaning_area` | on |
 | Child lock · Pet-waste avoidance | `switch.matic_child_lock` · `switch.matic_pet_waste_avoidance` | on |

@@ -61,7 +61,7 @@ const verified = (): WorkspaceState => ({
   coherence: "current",
   activity: "docked",
   batteryPercent: 92,
-  robots: [{ entryId: "synthetic-entry", label: "Matic robot" }],
+  robots: [{ entryId: "synthetic-entry", label: "Robot" }],
   host: {
     connected: true,
     administrator: true,
@@ -302,7 +302,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         ...state,
         host: { ...state.host, robotCount: 2 },
         robots: [
-          { entryId: "synthetic-entry", label: "Matic robot" },
+          { entryId: "synthetic-entry", label: "Robot" },
           { entryId: "synthetic-entry-two", label: "Second robot" },
         ],
       };

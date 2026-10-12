@@ -30,10 +30,10 @@ Raw robot payloads, maps, audio and credentials are excluded from the inbox.
 
 ## Notifications
 
-Import [Firmware intelligence](../blueprints/automation/matic_robot/firmware_intelligence.yaml),
+Import [Matic: Send firmware alerts](../blueprints/automation/matic_robot/firmware_intelligence.yaml),
 then select the robot, its Firmware check status sensor and your Companion app
 notification action. Replace an older firmware alert automation to avoid two
-independent notification senders. Use a unique notification identifier per HA server.
+independent notification senders. Use a different Notification ID prefix on each HA server.
 
 Unverified field observations stay quiet. Notifications cover repeated read
 failures, their recovery, and completed actionable research. Passive research
@@ -50,7 +50,7 @@ do not replay a delivered or acknowledged warning. Unchanged findings stay quiet
 
 ## Choose or switch the investigator
 
-In **Developer tools → Actions**, run **Matic Robot: Set firmware investigator**:
+In **Developer tools → Actions**, run **Matic (Unofficial): Advanced: Choose firmware investigator**:
 
 ```yaml
 action: matic_robot.firmware_investigator

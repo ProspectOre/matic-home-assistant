@@ -53,9 +53,9 @@ export class MaticMapDiagnosticsV4 extends LitElement {
     const unknown = this.#t("v4_unknown", "Unknown");
     return [
       [this.#t("v4_connection", "Connection"), this.state.host.connected ? this.#t("v4_connected", "Connected") : this.#t("v4_offline", "Offline")],
-      [this.#t("v4_map_state", "Map state"), String(this.state.coherence)],
-      [this.#t("v4_floor_verified", "Floor verified"), this.state.map.floorCoherent ? yes : no],
-      [this.#t("v4_session_verified", "Session verified"), this.state.map.sessionVerified ? yes : no],
+      [this.#t("v4_map_state", "Map status"), String(this.state.coherence)],
+      [this.#t("v4_floor_verified", "Floor confirmed"), this.state.map.floorCoherent ? yes : no],
+      [this.#t("v4_session_verified", "Map ready"), this.state.map.sessionVerified ? yes : no],
       [this.#t("v4_map_complete", "Map complete"), this.state.map.complete ? yes : no],
       [this.#t("v4_map_health", "Map health"), entry?.health || unknown],
       [this.#t("v4_blocked_by", "Blocked by"), entry?.mapBlockReason?.replaceAll("_", " ") || this.#t("v4_nothing", "Nothing")],
@@ -124,7 +124,7 @@ export class MaticMapDiagnosticsV4 extends LitElement {
         : "";
     return html`
       <div class="stack">
-        <p class="subtle">${this.#t("v4_support_privacy", "This summary contains no map, coordinates, room or floor names, device identifiers, addresses, or credentials.")}</p>
+        <p class="subtle">${this.#t("v4_support_privacy", "Copy a privacy-safe summary to paste into a support request. It never includes your map, room or floor names, addresses, device IDs or keys.")}</p>
         <dl class="diagnostics">
           ${this.#supportRows().map(([label, value]) => html`<dt>${label}</dt><dd>${value}</dd>`)}
         </dl>

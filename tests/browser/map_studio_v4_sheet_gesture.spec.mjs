@@ -98,7 +98,7 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
     await dispatchTouchDrag(page.locator(`${GALLERY_TAG} .panel-heading h2`), 100, 170);
     await expect(sheet).toHaveAttribute("data-detent", "peek");
 
-    await sheet.getByRole("button", { name: "Show more of the map workspace" }).click();
+    await sheet.getByRole("button", { name: "Expand panel" }).click();
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await dispatchTouchDrag(page.locator(`${GALLERY_TAG} [data-notice-slot] .notice-text`), 100, 170);
     await expect(sheet).toHaveAttribute("data-detent", "peek");

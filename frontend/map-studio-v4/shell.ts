@@ -89,9 +89,9 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
     translate(localize, key, fallback, placeholders);
   if (!state.host.connected) return { title: t("v4_reconnecting", "Reconnecting"), detail: t("v4_ha_offline", "Home Assistant is offline"), icon: iconOffline, notable: true };
   if (!state.host.administrator) return { title: t("v4_access_required", "Access required"), detail: t("v4_admin_only", "Administrator only"), icon: iconOffline, notable: true };
-  if (state.host.robotCount === 0) return { title: t("v4_no_robot_short", "No robot"), detail: t("v4_set_up_robot", "Set up a Matic robot"), icon: iconOffline, notable: true };
+  if (state.host.robotCount === 0) return { title: t("v4_no_robot_short", "No robot"), detail: t("v4_set_up_robot", "Set up a robot"), icon: iconOffline, notable: true };
   if (isSelectedRobotUnavailable(state)) return { title: t("v4_selected_robot_unavailable", "Selected robot unavailable"), detail: t("v4_choose_another_robot", "Choose another robot to open its map."), icon: iconOffline, notable: true };
-  if (!state.host.robotConnected) return { title: t("v4_robot_offline", "Robot offline"), detail: t("v4_last_map_read_only", "Last verified map · read only"), icon: iconOffline, notable: true };
+  if (!state.host.robotConnected) return { title: t("v4_robot_offline", "Robot offline"), detail: t("v4_last_map_read_only", "Last known map · read only"), icon: iconOffline, notable: true };
   if (state.activity === "problem") return { title: t("v4_needs_attention", "Needs attention"), detail: t("v4_check_robot", "Check the robot"), icon: iconOffline, notable: true };
   if (state.dataMode === "history") {
     const floor = state.resources.history.value?.floors.find(
@@ -116,12 +116,12 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   if ((state.resources.entry?.activePlan || state.resources.entry?.runnerLocked)
     && (state.activity === "idle" || state.activity === "docked")) {
     return {
-      title: t("v4_task_in_progress", "Task in progress"),
+      title: t("v4_task_in_progress", "Run in progress"),
       detail: state.coherence === "unavailable" || state.coherence === "blocked"
-        ? t("v4_task_map_unavailable", "The live map is unavailable; the current task remains in progress.")
+        ? t("v4_task_map_unavailable", "The live map is unavailable; the current clean continues.")
         : state.activity === "docked"
-        ? t("v4_task_docked", "Robot docked; the cleaning task has not finished.")
-        : t("v4_task_waiting", "Waiting for the cleaning task to continue or finish."),
+        ? t("v4_task_docked", "Robot docked; the clean has not finished.")
+        : t("v4_task_waiting", "Waiting for the clean to continue or finish."),
       icon: iconPlan,
       notable: true,
     };
@@ -144,7 +144,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   if (state.activity === "stopping") return { title: t("v4_stopping", "Stopping"), detail: withMapConsequence(t("v4_waiting_robot", "Waiting for the robot")), icon: iconPaused, notable: true };
   if (mapUnavailable) return {
     title: t("v4_map_unavailable", "Map unavailable"),
-    detail: t("v4_map_unavailable_status", "New cleaning is disabled until the live map is verified."),
+    detail: t("v4_map_unavailable_status", "Home Assistant can't show the map right now, so cleaning can't start."),
     icon: iconOffline,
     notable: true,
   };
@@ -177,7 +177,7 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
   const t = (key: string, fallback: string): string => translate(localize, key, fallback);
   switch (state.workflow) {
     case "rooms":
-      return { title: t("v4_choose_rooms", "Choose rooms"), description: t("v4_choose_rooms_detail", "Select on the map or from the list.") };
+      return { title: t("v4_choose_rooms", "Choose rooms"), description: t("v4_choose_rooms_detail", "Choose rooms on the map or in the list.") };
     case "draw":
       return { title: t("v4_draw_area", "Draw an area"), description: t("v4_draw_area_detail", "Outline or paint the area, then review it before saving.") };
     case "plans":
@@ -187,19 +187,19 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
     case "areaReview":
       return { title: t("v4_name_this_area", "Name this area"), description: t("area_details_hint", "Name the area and choose cleaning settings.") };
     case "history":
-      return { title: t("v4_map_history", "Map history"), description: t("v4_map_history_detail", "Saved maps are floor-scoped and read only.") };
+      return { title: t("v4_map_history", "Map history"), description: t("v4_map_history_detail", "Saved maps show one floor each. They can't be edited and never show where the robot is now.") };
     case "support":
-      return { title: t("v4_map_diagnostics", "Map diagnostics"), description: t("v4_map_support_detail", "Private geometry is never included.") };
+      return { title: t("v4_map_diagnostics", "Map diagnostics"), description: t("v4_map_support_detail", "Details to share with support") };
     case "none":
       if (isReadOnlyWorkspace(state)) {
         return {
           title: t("v4_saved_map_read_only_title", "Saved map is read only"),
           description: state.dataMode === "live"
-            ? t("v4_map_recovery_automatic", "Cleaning controls return automatically when the live map is verified.")
+            ? t("v4_map_recovery_automatic", "Cleaning controls return automatically when the live map is ready.")
             : t("v4_saved_map_read_only_detail", "Return to the live map to choose rooms, run a plan, or draw a custom area."),
         };
       }
-      return { title: t("v4_what_to_clean", "What should the robot clean?"), description: t("v4_clean_detail", "Choose rooms, a saved plan, or a custom area.") };
+      return { title: t("v4_what_to_clean", "Choose what to clean"), description: t("v4_clean_detail", "Choose rooms, a saved plan, or a custom area.") };
   }
 };
 
@@ -965,9 +965,9 @@ export class MaticMapShellV4 extends LitElement {
   #setDetent(detent: SheetDetent): void {
     if (detent === this._sheetDetent) return;
     this._sheetDetent = detent;
-    this.#announce("_polite", detent === "peek" ? this.#t("v4_workspace_height_peek", "Map workspace, peek height")
-      : detent === "half" ? this.#t("v4_workspace_height_half", "Map workspace, half height")
-      : this.#t("v4_workspace_height_full", "Map workspace, full height"));
+    this.#announce("_polite", detent === "peek" ? this.#t("v4_workspace_height_peek", "Cleaning panel, collapsed")
+      : detent === "half" ? this.#t("v4_workspace_height_half", "Cleaning panel, half height")
+      : this.#t("v4_workspace_height_full", "Cleaning panel, full height"));
   }
 
   #sheetStep(delta: 1 | -1, wrap = false): void {
@@ -1328,7 +1328,7 @@ export class MaticMapShellV4 extends LitElement {
           ? this.#t("v4_current_floor", "Current floor")
           : this.#t("v4_saved_floor", "Saved floor {number}", { number: floor.ordinal ?? index + 1 }))}${
           !floor.active && floor.snapshots.length === 0
-            ? ` · ${this.#t("v4_floor_not_captured", "Visit floor to capture")}`
+            ? ` · ${this.#t("v4_floor_not_captured", "No saved map for this floor yet")}`
             : ""
         }`,
         disabled: !floor.active && floor.snapshots.length === 0,
@@ -1362,22 +1362,22 @@ export class MaticMapShellV4 extends LitElement {
       t("v4_map_history", "Map history"),
       iconHistory,
       "history",
-      t("v4_map_history_detail", "Saved maps are floor-scoped and read only."),
+      t("v4_map_history_detail", "Saved maps show one floor each. They can't be edited and never show where the robot is now."),
     );
     const diagnosticsRow = () => this.#shelfRow(
       t("v4_map_diagnostics", "Map diagnostics"),
       iconDiagnostics,
       "support",
-      t("v4_map_support_detail", "Private geometry is never included."),
+      t("v4_map_support_detail", "Details to share with support"),
     );
     const { host } = state;
-    if (!host.connected) return this.#hostState(t("v4_reconnecting_title", "Reconnecting to Home Assistant"), t("v4_reconnecting_body", "The last verified map stays read-only until the connection returns."));
+    if (!host.connected) return this.#hostState(t("v4_reconnecting_title", "Reconnecting to Home Assistant"), t("v4_reconnecting_body", "Cleaning controls come back when Home Assistant reconnects."));
     if (!host.administrator) return this.#hostState(t("v4_admin_title", "Administrator access required"), t("v4_admin_body", "Ask a Home Assistant administrator to open this map."));
     if (host.robotCount === 0) {
       return this.#hostState(
-        t("v4_no_robot_title", "No Matic robot set up"),
-        t("v4_no_robot_body", "Add the Matic integration to see a map here."),
-        html`<a class="ms-btn ms-btn--secondary" href="/config/integrations/integration/matic_robot">${t("v4_open_integration", "Open the Matic integration")}</a>`,
+        t("v4_no_robot_title", "No robot set up"),
+        t("v4_no_robot_body", "Add the Matic (Unofficial) integration to see a map here."),
+        html`<a class="ms-btn ms-btn--secondary" href="/config/integrations/integration/matic_robot">${t("v4_open_integration", "Open integration")}</a>`,
       );
     }
     if (isSelectedRobotUnavailable(state)) {
@@ -1385,7 +1385,7 @@ export class MaticMapShellV4 extends LitElement {
     }
     if (!host.robotConnected) {
       return html`
-        ${this.#hostState(t("v4_robot_offline_title", "Robot offline"), t("v4_robot_offline_body", "Showing the last verified map. Cleaning is unavailable until the robot reconnects."))}
+        ${this.#hostState(t("v4_robot_offline_title", "Robot offline"), t("v4_robot_offline_body", "Showing the last known map. Cleaning comes back when the robot reconnects."))}
         <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
         <div class="shelf">${historyRow()}${diagnosticsRow()}</div>
       `;
@@ -1409,16 +1409,16 @@ export class MaticMapShellV4 extends LitElement {
     const roomsDisabled = locating || noRooms;
     const roomsReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
-      : noRooms ? t("v4_no_rooms_reason", "This floor has no named rooms yet.") : null;
+      : noRooms ? t("v4_no_rooms_reason", "Can't clean rooms until you name them in the Matic app.") : null;
     const planReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
       : null;
     const customAreaReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
-      : t("v4_areas_quick_detail", "Create or choose a saved area");
+      : t("v4_areas_quick_detail", "Draw or choose a custom area");
     return html`
       ${state.activity === "problem"
-        ? this.#hostState(t("v4_attention_title", "The robot needs attention"), t("v4_attention_body", "Check the robot, then start a new task."))
+        ? this.#hostState(t("v4_attention_title", "The robot needs attention"), t("v4_attention_body", "The robot reported a problem. Check it in the Matic app, then start a new clean."))
         : status.recheck ? html`
           <div class="host-state">
             <p>${t("v4_map_limited_body", "Home Assistant can show this map but can't confirm it well enough to start cleaning.")}</p>
@@ -1439,7 +1439,7 @@ export class MaticMapShellV4 extends LitElement {
             >
               <span class="ms-row__lead">${icon(iconRobot)}</span>
               <span class="ms-row__body">
-                <strong>${t("v4_clean_rooms", "One-time clean")}</strong>
+                <strong>${t("v4_clean_rooms", "Clean rooms")}</strong>
                 <small>${roomsReason ?? t("v4_clean_rooms_hint", "Choose rooms for this run")}</small>
               </span>
               <span class="ms-row__trail">${icon(iconChevronRight)}</span>
@@ -1460,12 +1460,12 @@ export class MaticMapShellV4 extends LitElement {
                       ? t("v4_run_a_plan", "Run a plan")
                       : t("v4_create_plan", "Create a plan")}</strong>
                 <small>${planReason ?? (plansLoading
-                  ? t("v4_plans_loading_hint", "Reading routines for this floor")
+                  ? t("v4_plans_loading_hint", "Reading plans for this floor")
                   : plansUnavailable
-                    ? t("v4_plans_unavailable_hint", "Try again to load saved routines")
+                    ? t("v4_plans_unavailable_hint", "Try again to load your plans.")
                     : planCount
-                      ? planCount === 1 ? t("v4_saved_routine", "1 saved routine") : t("v4_saved_routines", "{count} saved routines", { count: planCount })
-                      : t("v4_no_plans_hint", "Save a room routine you can repeat"))}</small>
+                      ? planCount === 1 ? t("v4_saved_routine", "1 saved plan") : t("v4_saved_routines", "{count} saved plans", { count: planCount })
+                      : t("v4_no_plans_hint", "Save a plan to repeat a set of rooms"))}</small>
               </span>
               <span class="ms-row__trail">${icon(iconChevronRight)}</span>
             </button>
@@ -1474,7 +1474,7 @@ export class MaticMapShellV4 extends LitElement {
       <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
       <div class="shelf">
         ${this.#shelfRow(
-          t("v4_custom_areas", "Clean a custom area"),
+          t("v4_custom_areas", "Clean custom area"),
           iconNewArea,
           "draw",
           customAreaReason,
@@ -1498,7 +1498,7 @@ export class MaticMapShellV4 extends LitElement {
               type="button"
               aria-pressed=${String(state.appearance === "rooms")}
               @click=${() => this.#intent({ type: "set-appearance", appearance: "rooms" })}
-            >${t("v4_room_colours", "Floor plan")}</button>
+            >${t("v4_room_colours", "Room colors")}</button>
           </div>
           <label class="ms-checkbox">
             <input type="checkbox" .checked=${state.labelsVisible} @change=${() => this.#intent({ type: "toggle-labels" })}>
@@ -1569,7 +1569,7 @@ export class MaticMapShellV4 extends LitElement {
     const workflow = workflowCopy(state, this.localize);
     let line = workflow.title;
     if (state.workflow === "rooms" && state.selection.roomIds.length) {
-      line = this.#t("v4_rooms_selected_names", "Rooms selected: {count} · {rooms}", {
+      line = this.#t("v4_rooms_selected_names", "{count} selected · {rooms}", {
         count: state.selection.roomIds.length,
         rooms: this.#rooms(state),
       });
@@ -1629,7 +1629,7 @@ export class MaticMapShellV4 extends LitElement {
     const clearDrawing: PrimaryAction | null = state.workflow === "draw" && state.dataMode === "live"
       ? {
         id: "clear-draft",
-        label: "Clear drawing",
+        label: "Clear",
         labelKey: "v4_clear_drawing",
         kind: "neutral",
         enabled: state.draw.circles.length > 0 || Boolean(state.draw.outline?.points.length),
@@ -1668,7 +1668,7 @@ export class MaticMapShellV4 extends LitElement {
     return html`
       <div class=${`root ${narrow ? "narrow" : "wide"}`} @keydown=${this.#keyboard}>
         <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToMap}>${this.#t("v4_skip_to_map", "Skip to the map")}</button>
-        <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToWorkspace}>${this.#t("v4_skip_to_workspace", "Skip to the map workspace")}</button>
+        <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToWorkspace}>${this.#t("v4_skip_to_workspace", "Skip to the panel")}</button>
         <div class="app" ?inert=${Boolean(dialog) || this._helpOpen}>
           <header class="app-bar">
             ${!state.precisionOpen ? html`
@@ -1734,9 +1734,9 @@ export class MaticMapShellV4 extends LitElement {
               >${icon(iconOverflow)}</button>
               ${this._overflowOpen ? html`
                 <div id="map-options" class="overflow-menu ms-surface ms-surface--overlay">
-                  <label class="overflow-field ms-field">${this.#t("map_quality_label", "Scene detail")}
+                  <label class="overflow-field ms-field">${this.#t("map_quality_label", "Map detail")}
                     <select
-                      aria-label=${this.#t("map_quality_label", "Scene detail")}
+                      aria-label=${this.#t("map_quality_label", "Map detail")}
                       .value=${state.quality}
                       @change=${(event: Event) => this.#intent({
                         type: "set-quality",
@@ -1773,7 +1773,7 @@ export class MaticMapShellV4 extends LitElement {
                     slot="scrim"
                     data-map-control
                     type="button"
-                    aria-label=${this.#t("v4_collapse_sheet", "Collapse the map workspace")}
+                    aria-label=${this.#t("v4_collapse_sheet", "Collapse panel")}
                     @click=${() => this.#setDetent("peek")}
                   ></button>
                 ` : nothing}
@@ -1799,7 +1799,7 @@ export class MaticMapShellV4 extends LitElement {
               class=${narrow ? "inspector mobile-sheet" : "inspector"}
               data-detent=${narrow ? this._sheetDetent : nothing}
               data-workflow=${state.workflow}
-              aria-label=${this.#t("v4_map_workspace", "Map workspace")}
+              aria-label=${this.#t("v4_map_workspace", "Cleaning panel")}
             >
               ${narrow ? html`
                 <div
@@ -1824,7 +1824,7 @@ export class MaticMapShellV4 extends LitElement {
                   <button
                     class="ms-btn ms-btn--icon ms-btn--sm"
                     type="button"
-                    aria-label=${this.#t("v4_show_more", "Show more of the map workspace")}
+                    aria-label=${this.#t("v4_show_more", "Expand panel")}
                     aria-controls="sheet-panel"
                     aria-disabled=${this._sheetDetent === "full" ? "true" : nothing}
                     @click=${() => this.#sheetStep(1)}
@@ -1832,7 +1832,7 @@ export class MaticMapShellV4 extends LitElement {
                   <button
                     class="ms-btn ms-btn--icon ms-btn--sm"
                     type="button"
-                    aria-label=${this.#t("v4_show_less", "Show less of the map workspace")}
+                    aria-label=${this.#t("v4_show_less", "Collapse panel")}
                     aria-controls="sheet-panel"
                     aria-disabled=${this._sheetDetent === "peek" ? "true" : nothing}
                     @click=${() => this.#sheetStep(-1)}

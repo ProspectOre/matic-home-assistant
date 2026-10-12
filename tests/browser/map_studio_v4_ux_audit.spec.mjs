@@ -296,7 +296,7 @@ async function settle(page) {
         .find((element) => element.localName.startsWith("matic-map-workflow-v4"));
       if (workflow) await workflow.updateComplete;
       const loading = [root, workflow?.shadowRoot]
-        .some((scope) => (scope?.querySelector(".loading")?.textContent ?? "").includes("Loading workspace tools"));
+        .some((scope) => (scope?.querySelector(".loading[role=status]")?.textContent ?? "").includes("Loading…"));
       if (!loading) break;
       await wait(50);
     }

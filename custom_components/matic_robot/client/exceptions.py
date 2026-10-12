@@ -18,20 +18,16 @@ class CoverageGuardReason(StrEnum):
 
 _COVERAGE_GUARD_MESSAGES = {
     CoverageGuardReason.IDENTITY_UNAVAILABLE: (
-        "Could not verify the current cleaning task. "
-        "Check the robot status, then try again."
+        "Home Assistant can't confirm the current clean, so check the robot first."
     ),
     CoverageGuardReason.ACTIVITY_UNAVAILABLE: (
-        "Could not verify whether the robot is cleaning. "
-        "Check the robot status, then try again."
+        "Home Assistant can't confirm whether the robot is cleaning, so check it first."
     ),
     CoverageGuardReason.NATIVE_SESSION_ACTIVE: (
-        "The robot already has a cleaning task. Wait for it to finish "
-        "before starting another cleaning task."
+        "The robot is already cleaning, so wait for it to finish."
     ),
     CoverageGuardReason.IDENTITY_CHANGED: (
-        "The cleaning task changed during setup. "
-        "Check the robot status, then try again."
+        "The clean changed while starting, so check the robot first."
     ),
 }
 

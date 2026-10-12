@@ -68,7 +68,7 @@ export const renderDrawTools = (
         aria-expanded=${String(state.precisionOpen)}
         aria-haspopup="dialog"
         @click=${handlers.openBrush}
-      >${icon(iconBrush)}<span class="ms-btn__label">${handlers.t("v4_brush", "Brush {brush}", { brush })}</span></button>` : nothing}
+      >${icon(iconBrush)}<span class="ms-btn__label">${handlers.t("v4_brush", "{brush}", { brush })}</span></button>` : nothing}
     </div>
   `;
 };

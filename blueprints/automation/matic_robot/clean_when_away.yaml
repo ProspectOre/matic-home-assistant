@@ -38,7 +38,7 @@ blueprint:
       name: Delay before cleaning
       description: >-
         How long everyone must be away before cleaning starts. Default 5
-        minutes.
+        minutes; for example 15 minutes if people often step out briefly.
       default:
         minutes: 5
       selector:

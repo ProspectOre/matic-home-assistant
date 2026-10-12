@@ -6,10 +6,14 @@ import re
 import struct
 import sys
 import tomllib
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import homeassistant
+import pytest
 import yaml
+
+from tests.frontend_sources import common_strings, key_sites
 
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
@@ -270,13 +274,294 @@ def test_every_options_flow_field_has_inline_guidance() -> None:
             ), f"{filename}: {step_name}"
 
 
-def test_plan_ui_uses_clear_scheduler_language() -> None:
-    """Keep room selection direct and the intelligent behavior understandable."""
-    forbidden = ("profile", "mission", "section", "round-robin")
-    for filename in ("strings.json", "translations/en.json"):
-        translations = json.loads((INTEGRATION / filename).read_text())
-        rendered = json.dumps(translations["options"]).casefold()
-        assert all(term not in rendered for term in forbidden)
+# docs/copy-style-0.5.md denylist table, verbatim
+_DENYLIST = tuple(
+    "mission|leg|dock visit|generation|profile|section|round-robin|session|managed"
+    "|managed run|identity|authoritative|cadence|interval|qualifying|schedule scope"
+    "|endpoint|payload|fingerprint|SHA-256|wire-shape|Hermes|token|revision|ledger"
+    "|epoch|goal ID|stable ID|native|OEM|coherence|reconciliation|runner lock"
+    "|opportunity|handoff|recheck|scene|credential|bond|local access|pinned"
+    "|certificate|TLS|workspace|Map Studio|routine|cleaning system|intent".split("|")
+)
+_DENIED = re.compile(
+    r"\b(?:" + "|".join(map(re.escape, _DENYLIST)) + r")(?:s|es)?\b|\bverif\w*",
+    re.IGNORECASE,
+)
+_TEMPLATE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}|\{[a-z0-9_]+\}", re.DOTALL)
+Copy = Iterator[tuple[str, str]]
+
+
+def _texts(node: object, path: str) -> Copy:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            yield from _texts(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _texts(value, f"{path}.{index}")
+    elif isinstance(node, str):
+        yield path, node
+
+
+def _common(*modules: str) -> Copy:
+    common = common_strings()
+    # No modules: every stored key (test_every_common_key_is_referenced keeps
+    # each one referenced).
+    keys = (
+        {s.key for s in key_sites() if s.module in modules} if modules else set(common)
+    )
+    for key in sorted(keys & set(common)):
+        yield f"common.{key}", common[key]
+
+
+def _strings() -> dict:
+    return json.loads((INTEGRATION / "strings.json").read_text())
+
+
+def _advanced() -> set[str]:
+    return {
+        key
+        for key, value in _strings()["services"].items()
+        if value.get("name", "").startswith("Advanced: ")
+    }
+
+
+def _services() -> Copy:
+    for key, value in _strings()["services"].items():
+        if key not in _advanced():
+            yield from _texts(value, f"services.{key}")
+
+
+def _services_yaml() -> Copy:
+    data = yaml.safe_load((INTEGRATION / "services.yaml").read_text())
+    for key, value in data.items():
+        if key not in _advanced():
+            yield from _texts(value, f"services.yaml.{key}")
+
+
+class _BlueprintLoader(yaml.SafeLoader): ...
+
+
+_BlueprintLoader.add_constructor(
+    "!input", lambda loader, node: loader.construct_scalar(node)
+)
+
+
+def _blueprints() -> Copy:
+    for path in sorted((ROOT / "blueprints").rglob("*.yaml")):
+        data = yaml.load(path.read_text(), Loader=_BlueprintLoader)
+        meta = data["blueprint"]
+        yield f"{path.name}:name", meta["name"]
+        yield f"{path.name}:description", meta["description"]
+        for key, spec in meta["input"].items():
+            for field in ("name", "description"):
+                if field in spec:
+                    yield f"{path.name}:input.{key}.{field}", spec[field]
+        for found_path, text in _texts(data, path.name):
+            if found_path.rsplit(".", 1)[-1] in {"title", "message"}:
+                yield found_path, text
+
+
+_LLM_COPY = {
+    "LLM_API_NAME",
+    "FIRMWARE_LLM_API_NAME",
+    "PLAIN_WORDS_PROMPT",
+    "NON_ADMIN_PROMPT",
+    "ROBOT_STATUS_PROMPT",
+    "FIRMWARE_RESEARCH_PROMPT",
+    "_ERRORS",
+    "description",
+}
+
+
+def _llm() -> Copy:
+    tree = ast.parse((INTEGRATION / "llm.py").read_text())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            getattr(t, "id", "") in _LLM_COPY for t in node.targets
+        ):
+            for part in ast.walk(node.value):
+                if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                    yield f"llm:{part.lineno}", part.value
+        elif (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "HomeAssistantError"
+        ):
+            for arg in node.args:
+                for part in ast.walk(arg):
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                        yield f"llm:{part.lineno}", part.value
+
+
+_COPY_SURFACES: dict[str, Callable[[], Copy]] = {
+    "strings:common": _common,
+    "strings:config": lambda: _texts(_strings()["config"], "config"),
+    "strings:options": lambda: _texts(_strings()["options"], "options"),
+    "strings:issues": lambda: _texts(_strings()["issues"], "issues"),
+    "strings:entity": lambda: _texts(_strings()["entity"], "entity"),
+    "strings:selector": lambda: _texts(_strings()["selector"], "selector"),
+    "strings:device": lambda: _texts(_strings()["device"], "device"),
+    "strings:device_automation": lambda: _texts(
+        _strings()["device_automation"], "device_automation"
+    ),
+    "strings:exceptions": lambda: _texts(_strings()["exceptions"], "exceptions"),
+    "strings:services": _services,
+    "services.yaml": _services_yaml,
+    "blueprints": _blueprints,
+    "llm": _llm,
+}
+
+
+@pytest.mark.parametrize("surface", sorted(_COPY_SURFACES))
+def test_plan_ui_uses_clear_scheduler_language(surface: str) -> None:
+    """User-facing copy avoids the docs/copy-style-0.5.md denylist."""
+    hits = {
+        path: _DENIED.findall(_TEMPLATE.sub("", text))
+        for path, text in _COPY_SURFACES[surface]()
+    }
+    assert {path: found for path, found in hits.items() if found} == {}
+
+
+def test_every_copy_surface_is_scanned() -> None:
+    expected = {f"strings:{category}" for category in _strings()} | {
+        "services.yaml",
+        "blueprints",
+        "llm",
+    }
+    assert set(_COPY_SURFACES) == expected
+
+
+def test_blueprint_scanner_reads_every_blueprint() -> None:
+    texts = list(_blueprints())
+    files = {
+        "clean_when_away.yaml",
+        "firmware_intelligence.yaml",
+        "pet_aware.yaml",
+        "quiet_hours.yaml",
+        "room_rotation.yaml",
+    }
+    for name in files:
+        assert sum(path.startswith(f"{name}:") for path, _ in texts) >= 3, name
+    assert {path.split(":")[0] for path, _ in texts if ":" in path} == files
+    for blueprint in (ROOT / "blueprints").rglob("*.yaml"):
+        meta = yaml.load(blueprint.read_text(), Loader=_BlueprintLoader)["blueprint"]
+        missing = [
+            key for key, spec in meta["input"].items() if "description" not in spec
+        ]
+        assert missing == [], f"{blueprint.name}: {missing}"
+
+
+def _raised_keys() -> Iterator[tuple[str, int, str, frozenset[str] | None]]:
+    """Literal exception keys at every *Error(...) / _validation_error(...) call."""
+    for path in sorted(INTEGRATION.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            name = getattr(node, "func", None) and (
+                getattr(node.func, "id", None) or getattr(node.func, "attr", "")
+            )
+            if not isinstance(node, ast.Call) or not (
+                name.endswith("Error")
+                or name in {"_validation_error", "_error", "_async_refusal"}
+            ):
+                continue
+            words = {k.arg: k.value for k in node.keywords}
+            if (
+                name == "_async_refusal"
+                and len(node.args) >= 4
+                and getattr(node.args[2], "value", None) == "exceptions"
+                and isinstance(node.args[3], ast.Constant)
+            ):
+                # llm.py: a refusal the model relays in the exception's words
+                holders = node.args[4] if len(node.args) > 4 else None
+                yield (
+                    path.name,
+                    node.lineno,
+                    node.args[3].value,
+                    frozenset(k.value for k in holders.keys)
+                    if isinstance(holders, ast.Dict)
+                    else frozenset(),
+                )
+                continue
+            if name == "_error" and node.args:
+                # llm.py: _error("llm_*", **placeholders)
+                yield (
+                    path.name,
+                    node.lineno,
+                    node.args[0].value,
+                    frozenset(k.arg for k in node.keywords),
+                )
+                continue
+            if name == "_validation_error" and len(node.args) >= 2:
+                key, holders = (
+                    node.args[1],
+                    node.args[2] if len(node.args) > 2 else words.get("placeholders"),
+                )
+            else:
+                key, holders = (
+                    words.get("translation_key"),
+                    words.get("translation_placeholders"),
+                )
+            # Dynamic keys (err.reason_code) are covered by their enum test.
+            if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
+                continue
+            supplied = (
+                frozenset(k.value for k in holders.keys if isinstance(k, ast.Constant))
+                if isinstance(holders, ast.Dict)
+                else frozenset()
+                if holders is None
+                else None
+            )
+            yield path.name, node.lineno, key.value, supplied
+
+
+def test_every_raised_exception_key_exists_with_its_placeholders() -> None:
+    exceptions = _strings()["exceptions"]
+    for file, line, key, supplied in _raised_keys():
+        assert key in exceptions, f"{file}:{line} {key}"
+        needed = frozenset(re.findall(r"\{([a-z_]+)\}", exceptions[key]["message"]))
+        assert supplied is None or needed <= supplied, (
+            f"{file}:{line} {key} lacks {sorted(needed - supplied)}"
+        )
+
+
+def test_every_exception_key_is_raised() -> None:
+    from custom_components.matic_robot.client.exceptions import CoverageGuardReason
+
+    raised = {key for _file, _line, key, _supplied in _raised_keys()}
+    raised |= {reason.value for reason in CoverageGuardReason}
+    assert set(_strings()["exceptions"]) - raised == set()
+
+
+def test_coverage_guard_text_matches_everywhere() -> None:
+    from custom_components.matic_robot.client.exceptions import _COVERAGE_GUARD_MESSAGES
+
+    effects = (ROOT / "frontend/map-studio-v4/effects.ts").read_text()
+    for reason, text in _COVERAGE_GUARD_MESSAGES.items():
+        assert _strings()["exceptions"][reason.value]["message"] == text
+        assert re.search(
+            rf'{reason.value}: notice\("error", "v4_notice_coverage_\w+", '
+            rf'"{re.escape(text)}"',
+            effects,
+        )
+
+
+def test_advanced_actions_are_exactly_the_four_named() -> None:
+    assert _advanced() == {
+        "inspect_hermes_endpoint",
+        "firmware_snapshot",
+        "firmware_investigator",
+        "firmware_notification",
+    }
+
+
+def test_denylist_scanner_matches_plurals_and_verify_family() -> None:
+    assert _DENIED.findall("Missions, verified tokens; Map Studio") == [
+        "Missions",
+        "verified",
+        "tokens",
+        "Map Studio",
+    ]
+    harmless = _TEMPLATE.sub("", "legend sessionless preview_token {interval}")
+    assert _DENIED.findall(harmless) == []
+    assert _TEMPLATE.sub("", "Every {interval}{{ x.revision }}{% if a %}") == "Every "
 
 
 def test_options_flow_directs_editing_to_the_single_map_workspace() -> None:
@@ -367,7 +652,7 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             "intelligent_clean": "Run intelligent rotation",
             "clean_entire_plan": "Run saved order",
             "stop_intelligent_cleaning": "Stop cleaning",
-            "clean_selected_area": "Clean selected area",
+            "clean_selected_area": "Clean custom area",
         }
         selects = translations["entity"]["select"]
         assert selects["cleaning_mode"]["name"] == "Default cleaning mode"
@@ -380,47 +665,81 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             "standard": "Optimal",
         }
         assert selects["coverage_setting"]["state"] == {
-            "heavy_duty": "Heavy Duty",
+            "heavy_duty": "Heavy duty",
             "quick": "Quick",
             "standard": "Optimal",
         }
         assert (
             translations["entity"]["button"]["clean_selected_area"]["name"]
-            == "Clean selected area"
+            == "Clean custom area"
         )
 
         services = translations["services"]
-        assert (
-            "starting with the ones that have waited longest"
-            in services["intelligent_clean"]["description"]
-        )
-        assert (
-            "started but not finished stay due"
-            in services["intelligent_clean"]["description"]
-        )
+        intelligent = services["intelligent_clean"]["description"]
+        assert "starting with the ones that have waited longest" in intelligent
+        assert "keeps going until you stop it or every room is done" in intelligent
+        assert "started but not finished stay due" in intelligent
         assert "top to bottom" in services["clean_entire_plan"]["description"]
         assert "the way it is saved" in services["run_selected_plan"]["description"]
         assert (
-            "after all selected rooms finish successfully"
+            "after all selected rooms finish."
             in services["save_plan"]["fields"]["return_to_base"]["description"]
         )
         clean_fields = services["clean"]["fields"]
         assert "Omit this field" in clean_fields["rooms"]["description"]
         assert "Omit it" in clean_fields["cleaning_mode"]["description"]
         assert "Omit it" in clean_fields["coverage_setting"]["description"]
+        assert {
+            key: services[key]["name"]
+            for key in (
+                "run_selected_plan",
+                "intelligent_clean",
+                "clean_entire_plan",
+                "stop_intelligent_cleaning",
+                "reset_plan_history",
+                "inspect_hermes_endpoint",
+                "firmware_snapshot",
+                "firmware_investigator",
+                "firmware_notification",
+            )
+        } == {
+            "run_selected_plan": "Run plan",
+            "intelligent_clean": "Run intelligent rotation",
+            "clean_entire_plan": "Run saved order",
+            "stop_intelligent_cleaning": "Stop cleaning",
+            "reset_plan_history": "Reset room cleaning history",
+            "inspect_hermes_endpoint": "Advanced: Inspect robot data",
+            "firmware_snapshot": "Advanced: Record firmware snapshot",
+            "firmware_investigator": "Advanced: Choose firmware investigator",
+            "firmware_notification": "Advanced: Update firmware notification",
+        }
+        assert services["save_plan"]["fields"]["run_behavior"]["description"].endswith(
+            "Saved order cleans every selected room from top to bottom."
+        )
+        assert services["firmware_investigator"]["description"] == (
+            "Home Assistant assigns the connected agent that researches firmware "
+            "reports, and robot controls are unchanged. Switching agents ends any "
+            "research already claimed and keeps the evidence, and only "
+            "administrators can call this action."
+        )
+        assert services["firmware_notification"]["description"] == (
+            "Home Assistant records that the current firmware report was "
+            "acknowledged or that its notification was delivered, or asks for "
+            "another read-only check. The firmware alerts blueprint uses it."
+        )
         exceptions = translations["exceptions"]
         for alias in ("start", "clean_segments", "dock"):
             assert alias in exceptions["unsupported_command"]["message"]
         assert exceptions["single_robot_required"]["message"] == (
-            "Select exactly one Matic robot."
+            "Select exactly one robot."
         )
         assert "room map" in exceptions["room_plan_unavailable"]["message"]
         assert "reported an error" in exceptions["robot_error"]["message"]
         inspection = services["inspect_hermes_endpoint"]
-        assert "without reading its contents" in inspection["description"]
+        assert "never stored or shown" in inspection["description"]
         assert set(inspection["fields"]) == {"endpoint", "limit"}
         firmware_snapshot = services["firmware_snapshot"]["description"]
-        assert "without the data itself" in firmware_snapshot
+        assert "saves a record without the data itself" in firmware_snapshot
         assert (
             "check the Firmware check status sensor"
             in translations["issues"]["firmware_regression"]["description"]

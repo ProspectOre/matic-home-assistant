@@ -183,7 +183,7 @@ try {
         }
         for (let index = 0; index < 5; index++) await planJourney();
         for (let index = 0; index < 10; index++) {
-          await gallery.getByRole("button", { name: /^One-time clean/ }).click();
+          await gallery.getByRole("button", { name: /^Clean rooms/ }).click();
           await settle(page, "rooms:open");
           await gallery.getByRole("button", { name: "Back to all tasks", exact: true }).click();
           await settle(page, "rooms:back");

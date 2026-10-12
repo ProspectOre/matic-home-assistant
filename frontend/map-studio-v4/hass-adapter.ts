@@ -49,13 +49,13 @@ const safeUserKey = (value: unknown): string => {
 };
 
 const safeRobotLabel = (value: unknown): string => {
-  if (typeof value !== "string") return "Matic robot";
+  if (typeof value !== "string") return "Robot";
   const label = value.trim();
   return label
     && Array.from(label).length <= 128
     && !/[\u0000-\u001f\u007f]/u.test(label)
     ? label
-    : "Matic robot";
+    : "Robot";
 };
 
 export class HassAdapter {

@@ -549,7 +549,7 @@ async def test_read_failure_alert_is_not_mislabeled_as_unknown_protocol_field(
     assert mobile["title"] == (
         "Matic firmware checks need attention"
         if status == "observed_again"
-        else "Matic firmware reads recovered"
+        else "Matic firmware checks recovered"
     )
     assert "newly observed" not in mobile["message"]
     assert calls[-1][0] == "matic_robot.firmware_notification"

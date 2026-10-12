@@ -42,7 +42,7 @@ const describeMap = (state: WorkspaceState, localize?: Localize): string => {
   }
   if (!canShowLiveMap(state)) return t("v4_private_map_unavailable", "The current private map is not available.");
   const pose = canShowExactPose(state)
-    ? t("v4_robot_position_verified", "The robot position is verified.")
+    ? t("v4_robot_position_verified", "The robot's position is confirmed.")
     : t("v4_robot_position_hidden", "The robot position is not shown.");
   return t("v4_live_map_description", "Live map for {floor}. {pose}", {
     floor: state.floor.displayName,
@@ -487,13 +487,13 @@ export class MaticMapCanvasV4 extends LitElement {
 
   #message(): { readonly title: string; readonly detail: string } | null {
     if (!this.state.host.connected) {
-      return { title: this.#t("v4_reconnecting", "Reconnecting"), detail: this.#t("v4_reconnecting_detail", "The verified map is read only until Home Assistant reconnects.") };
+      return { title: this.#t("v4_reconnecting", "Reconnecting"), detail: this.#t("v4_reconnecting_detail", "The map is read only until Home Assistant reconnects.") };
     }
     if (!this.state.host.administrator) {
       return { title: this.#t("v4_admin_required", "Administrator access required"), detail: this.#t("v4_private_map_hidden", "Private map data is hidden.") };
     }
     if (this.state.host.robotCount === 0) {
-      return { title: this.#t("v4_no_robot", "No Matic robot set up"), detail: this.#t("v4_no_robot_detail", "Set up a robot before opening its map.") };
+      return { title: this.#t("v4_no_robot", "No robot set up"), detail: this.#t("v4_no_robot_detail", "Set up a robot before opening its map.") };
     }
     const notice = this.state.notice;
     if (this.state.dataMode === "live" && this.state.floor.readOnly
@@ -513,16 +513,16 @@ export class MaticMapCanvasV4 extends LitElement {
       return null;
     }
     if (!this.state.host.robotConnected) {
-      return { title: this.#t("v4_robot_offline", "Robot offline"), detail: this.#t("v4_robot_offline_detail", "The last verified map stays read only and has no live position.") };
+      return { title: this.#t("v4_robot_offline", "Robot offline"), detail: this.#t("v4_robot_offline_detail", "The last known map stays read only and has no live position.") };
     }
     if (this.state.coherence === "verifying" || this.state.coherence === "booting") {
-      return { title: this.#t("v4_locating_map", "Locating the current map"), detail: this.#t("v4_locating_map_detail", "Map controls will return after the floor is verified.") };
+      return { title: this.#t("v4_locating_map", "Locating the current map"), detail: this.#t("v4_locating_map_detail", "Map controls come back once the robot confirms which floor it is on.") };
     }
     if (!this.state.map.available && this.state.resources.scene.status === "loading") {
-      return { title: this.#t("v4_loading_verified_map", "Loading the verified map"), detail: this.#t("v4_loading_verified_map_detail", "The current floor is verified. The private scene is still preparing.") };
+      return { title: this.#t("v4_loading_verified_map", "Loading the current map"), detail: this.#t("v4_loading_verified_map_detail", "The map is almost ready.") };
     }
     if (!this.state.map.available) {
-      return { title: this.#t("v4_map_unavailable", "Map unavailable"), detail: this.#t("v4_map_unavailable_detail", "The private scene is not ready. No map data is shown until it is verified.") };
+      return { title: this.#t("v4_map_unavailable", "Map unavailable"), detail: this.#t("v4_map_unavailable_detail", "The map isn't ready yet. Nothing is shown until it is.") };
     }
     if (this.state.activity === "problem") {
       return { title: this.#t("v4_robot_attention", "Robot needs attention"), detail: this.#t("v4_robot_attention_detail", "Check the robot before starting another task.") };
@@ -578,7 +578,7 @@ export class MaticMapCanvasV4 extends LitElement {
               type="button"
               aria-pressed=${String(state.appearance === "rooms")}
               @click=${() => this.#intent({ type: "set-appearance", appearance: "rooms" })}
-            >${this.#t("map_style_room_colours", "Floor plan")}</button>
+            >${this.#t("map_style_room_colours", "Room colors")}</button>
           </div>
         ` : nothing}
 
@@ -675,7 +675,7 @@ export class MaticMapCanvasV4 extends LitElement {
       return html`
         <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           <div class="selection-chip ms-surface ms-surface--floating" data-map-control>
-            <span>${this.#t("v4_rooms_selected", "Rooms selected: {count}", { count })}</span>
+            <span>${this.#t("v4_rooms_selected", "{count} selected", { count })}</span>
             <button class="ms-btn ms-btn--sm" type="button" @click=${() => this.#clearSelection()}>${this.#t("v4_clear", "Clear")}</button>
           </div>
         </div>

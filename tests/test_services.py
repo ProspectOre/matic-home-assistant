@@ -1961,10 +1961,11 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
             "custom_components.matic_robot.services._async_execute_rooms",
             execute_with_mutation,
         ),
-        pytest.raises(ServiceValidationError, match="resolution changed"),
+        pytest.raises(ServiceValidationError, match="resolution changed") as raised,
     ):
         await _registered_handler(services, "clean_room_sequence")(dispatch_call)
     execute_with_mutation.assert_awaited_once()
+    assert raised.value.translation_key == "room_sequence_preview_changed"
 
     schedule["progress"] = {"mop": 1, "coverage": 1}
     schedule["policy"]["do_mop_next"] = False
@@ -2016,10 +2017,11 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
             "custom_components.matic_robot.services._saved_plan_context",
             return_value=context,
         ),
-        pytest.raises(ServiceValidationError, match="preview is stale"),
+        pytest.raises(ServiceValidationError, match="preview is stale") as raised,
     ):
         await _registered_handler(services, "clean_room_sequence")(stale_call)
     execute.assert_not_awaited()
+    assert raised.value.translation_key == "room_sequence_preview_changed"
 
 
 async def test_preview_room_sequence_requires_administrator(hass) -> None:
@@ -3348,10 +3350,11 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             "custom_components.matic_robot.services._async_execute_rooms",
             AsyncMock(side_effect=mutate_saved_plan_before_dispatch),
         ) as changed_execute,
-        pytest.raises(ServiceValidationError, match="resolution changed"),
+        pytest.raises(ServiceValidationError, match="resolution changed") as raised,
     ):
         await _registered_handler(services, "run_selected_plan")(token_call)
     changed_execute.assert_awaited_once()
+    assert raised.value.translation_key == "plan_preview_changed"
 
     manager._robot("serial")["plans"]["upstairs"]["return_to_base"] = True
     manager._robot("serial")["plans"]["upstairs"]["return_to_base"] = False
@@ -3364,10 +3367,11 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             "custom_components.matic_robot.services._async_execute_rooms",
             AsyncMock(),
         ) as stale_execute,
-        pytest.raises(ServiceValidationError, match="preview is stale"),
+        pytest.raises(ServiceValidationError, match="preview is stale") as raised,
     ):
         await _registered_handler(services, "run_selected_plan")(token_call)
     stale_execute.assert_not_awaited()
+    assert raised.value.translation_key == "plan_preview_changed"
     manager._robot("serial")["plans"]["upstairs"]["return_to_base"] = True
 
     lock = manager.lock("serial")

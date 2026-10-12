@@ -3991,7 +3991,7 @@ async def _ensure_stop_settled(
     ):
         return
     raise _validation_error(
-        "Matic is completing its OEM stop countdown; wait until it docks",
+        "The robot is stopping; wait until it docks",
         "robot_stop_pending",
     )
 

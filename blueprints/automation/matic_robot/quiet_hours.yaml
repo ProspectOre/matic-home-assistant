@@ -1,10 +1,11 @@
 blueprint:
   name: "Matic: Clean during quiet hours"
   description: >-
-    Starts a saved plan at a time you choose, only when the robot is docked or
-    idle. If you choose a battery sensor, it also skips cleaning when the
-    battery is at or below a level you set (40% by default). Use Quick coverage
-    for rooms where a shorter overnight run is preferred.
+    Starts a saved plan at a time you choose, with the longest-waiting rooms
+    first, only when the robot is docked or idle. If you choose a battery
+    sensor, it also skips cleaning when the battery is at or below a level you
+    set (40% by default). Use Quick coverage for rooms where a shorter
+    overnight run is preferred.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/quiet_hours.yaml
   input:
@@ -25,7 +26,9 @@ blueprint:
         text:
     run_time:
       name: Start time
-      description: Time of day to start cleaning. Default 01:00.
+      description: >-
+        Time of day to start cleaning. Default 01:00; for example 23:30 if the
+        household goes to bed late.
       default: "01:00:00"
       selector:
         time:

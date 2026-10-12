@@ -75,7 +75,7 @@ const NOTICES = {
   roomPreviewBlocked: notice("warning", "v4_notice_room_preview_blocked", "A room can't use these settings, so check the note above the rooms."),
   roomPreviewChanged: notice("info", "v4_notice_room_preview_changed", "The room settings changed, so check them and start again."),
   roomPreviewFailed: notice("warning", "v4_notice_room_preview_failed", "Home Assistant couldn't check the room settings, so try starting again."),
-  areaRemoved: notice("warning", "v4_notice_area_removed", "This saved Area was removed elsewhere. Your edits are preserved as a new Area draft; saving will create a new Area."),
+  areaRemoved: notice("warning", "v4_notice_area_removed", "This saved area was removed elsewhere. Your edits are kept as a new draft; saving will create a new area."),
   areaSaving: notice("info", "v4_notice_area_saving", "Saving area…"),
   areaSaved: notice("success", "v4_notice_area_saved", "Area saved"),
   areaSaveFailed: notice("error", "v4_notice_area_save_failed", "Home Assistant can't confirm the area was saved, so try again."),

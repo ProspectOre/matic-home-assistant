@@ -74,8 +74,7 @@ export async function settle(page) {
       const root = shell.shadowRoot;
       const workflow = [...root.querySelectorAll("*")].find((e) => e.localName.startsWith("matic-map-workflow-v4"));
       if (workflow) await workflow.updateComplete;
-      const loading = Boolean(root.querySelector(".workflow-loading"))
-        || (workflow?.shadowRoot?.querySelector(".loading")?.textContent ?? "").includes("Loading workspace tools");
+      const loading = (workflow?.shadowRoot?.querySelector(".loading")?.textContent ?? "").includes("Loading…");
       if (!loading) break;
       await wait(50);
     }

@@ -1193,7 +1193,7 @@ async def test_activity_journal_pagination_filtering_and_restart_guards() -> Non
     assert not (
         await read(before_sequence=1, observation_session=result["observation_session"])
     )["observations"]
-    with pytest.raises(HomeAssistantError, match="pass the observation session"):
+    with pytest.raises(HomeAssistantError, match="also pass the observation ID"):
         await read(before_sequence=8)
     entry.runtime_data.client.activity_journal = ActivityJournal()
     with pytest.raises(HomeAssistantError, match="restarted"):

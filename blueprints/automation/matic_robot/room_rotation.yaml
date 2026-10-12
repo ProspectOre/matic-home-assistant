@@ -25,7 +25,9 @@ blueprint:
         text:
     run_time:
       name: Start time
-      description: Time of day to start cleaning. Default 10:00.
+      description: >-
+        Time of day to start cleaning. Default 10:00; for example 09:00 once
+        everyone has left for work.
       default: "10:00:00"
       selector:
         time:

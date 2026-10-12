@@ -2,9 +2,9 @@ blueprint:
   name: "Matic: Clean after pets leave"
   description: >-
     Waits until a pet presence sensor has been clear for a time you set, then
-    runs a saved plan. It runs at most once a day, and only when the robot is
-    docked or idle. Also turn on the pet-waste avoidance switch for an extra
-    safeguard on the robot.
+    runs a saved plan with the longest-waiting rooms first. It runs at most
+    once a day, and only when the robot is docked or idle. Also turn on the
+    pet-waste avoidance switch for an extra safeguard on the robot.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/pet_aware.yaml
   input:
@@ -35,7 +35,7 @@ blueprint:
       name: Delay before cleaning
       description: >-
         How long the pet sensor must stay clear before cleaning starts. Default
-        10 minutes.
+        10 minutes; for example 30 minutes for a pet that comes and goes.
       default:
         minutes: 10
       selector:

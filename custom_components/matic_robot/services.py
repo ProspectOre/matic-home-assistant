@@ -1123,7 +1123,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
 
     async def async_reset_plan_history(call: ServiceCall) -> None:
-        """Reset selected or explicitly named durable rotation history."""
+        """Reset selected or explicitly named durable cleaning history."""
         _entity_id, _entry, serial_number, _room_map = _saved_plan_context(hass, call)
         plan_id: str | None = None
         if not call.data["all_plans"]:

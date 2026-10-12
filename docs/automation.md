@@ -48,10 +48,12 @@ actions:
 
 Create a plan in [Matic Map](cleaning.md#saved-plans), then call Run plan
 (`matic_robot.run_selected_plan`). Set `plan` to a plan name or ID, or omit it
-to run the default plan. Run intelligent rotation (`intelligent_clean`) starts
-with the rooms that have waited longest; Run saved order (`clean_entire_plan`)
-keeps the saved order. Stop cleaning (`stop_intelligent_cleaning`) applies the
-plan's [stop setting](cleaning.md#stopping-a-plan).
+to run the default plan. Preview next plan run (`matic_robot.preview_plan`)
+returns the next room order and settings without starting a run. Run
+intelligent rotation (`intelligent_clean`) starts with the rooms that have
+waited longest; Run saved order (`clean_entire_plan`) keeps the saved order.
+Stop cleaning (`stop_intelligent_cleaning`) applies the plan's
+[stop setting](cleaning.md#stopping-a-plan).
 
 <a id="painted-custom-areas"></a>
 <a id="drawn-custom-areas"></a>

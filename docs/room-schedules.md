@@ -11,25 +11,25 @@ Open a saved plan in Map Studio.
 For each room, you can independently enable:
 
 - Mopping: vacuum normally, then vacuum and mop every N verified cleans.
-- Vacuum coverage: use the normal vacuum coverage, then the chosen periodic
-  vacuum coverage every N verified cleans. Quick, Optimal, and Heavy Duty can
+- Vacuum rotation: use the normal vacuum coverage, then the chosen vacuum
+  rotation level every N verified cleans. Quick, Optimal, and Heavy duty can
   be used in any pairing for Vacuum and Vacuum + mop. Mop-only rooms cannot
   use this rule. Existing incompatible rules remain visible for repair; choose
   a vacuum mode or clear the room rule. Clearing it leaves shared schedules
   unchanged for other participants.
 
-Intervals range from 1 to 100. A new interval of 3 applies periodic work on
+Intervals range from 1 to 100. A new interval of 3 applies scheduled work on
 the third qualifying clean. If both rules are due, that clean includes both.
 **Do on next clean** requests the selected work without resetting progress.
-Verified mopping clears its next-clean request. Periodic vacuum coverage is
+Verified mopping clears its next-clean request. A vacuum rotation is
 credited only when the robot confirms the requested goals at dispatch and again
 after the same native session completes. Missing or changed setting evidence
-keeps coverage due. A completed-looking run alone does not clear it.
+keeps the rotation due. A completed-looking run alone does not clear it.
 
 ## Choose where progress is shared
 
-**This plan** keeps settings and progress private to that plan.
-**Shared for this room** lets participating plans and tracked Map Studio room
+**In this plan only** keeps settings and progress private to that plan.
+**Across all plans (recommended)** lets participating plans and tracked Map Studio room
 cleans use the same schedule and progress.
 
 Creating a schedule starts at zero. Joining an existing shared schedule adopts
@@ -66,7 +66,7 @@ aliases are rejected because completion and recovery are recorded per room.
 
 Only verified completed room work advances progress. Partial, failed, stopped,
 skipped, and unverified work does not. A due rule stays due until the requested
-mode and coverage are confirmed. When periodic coverage is due, it remains due
+mode and coverage are confirmed. When a vacuum rotation is due, it remains due
 until Matic can verify that a clean used the selected setting; it can therefore
 be requested again on later cleans. Delayed results and restart recovery cannot
 count the same clean twice.

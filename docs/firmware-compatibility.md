@@ -4,7 +4,7 @@
 [Firmware intelligence](firmware-intelligence.md)
 
 Track robot updates in Home Assistant with automatic local endpoint comparisons
-and a firmware compatibility sensor. The table below records firmware and
+and a Firmware check status sensor. The table below records firmware and
 workflows checked on real robots.
 
 ## Recorded checks

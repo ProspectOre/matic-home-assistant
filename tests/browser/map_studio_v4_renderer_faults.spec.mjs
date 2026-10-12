@@ -120,7 +120,7 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
   }
   await expect.poll(() => map.evaluate((element) => element.rendererDiagnostics()?.mode)).toBe("webgl2");
 
-  await panel.getByRole("button", { name: /One-time clean/ }).click();
+  await panel.getByRole("button", { name: /Clean rooms/ }).click();
   const kitchen = panel.getByRole("checkbox", { name: "Kitchen", exact: true });
   await kitchen.check();
   await expect.poll(() => page.evaluate(() =>

@@ -366,6 +366,30 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     )
 
 
+async def test_renamed_entities_keep_their_entity_ids(hass) -> None:
+    entry, entities = _entry(), []
+    for platform in (button, sensor):
+        await platform.async_setup_entry(
+            hass, entry, lambda values: entities.extend(values)
+        )
+    by_key = {
+        e.unique_id.split("_", 1)[1]: e for e in entities
+    }  # unique_id is "<serial>_<key>"
+    for key in (
+        "run_selected_plan",
+        "intelligent_clean",
+        "clean_entire_plan",
+        "stop_intelligent_cleaning",
+        "current_area",
+        "cleaning_history",
+        "last_run_duration",
+        "local_cleaning_sessions",
+        "firmware_compatibility",
+    ):
+        # entity.py slugifies the key, never the translated name
+        assert by_key[key].suggested_object_id == key
+
+
 async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
     entry = _entry()
     coordinator = entry.runtime_data.coordinator
@@ -2209,8 +2233,13 @@ async def test_send_command_defaults_and_option_type_validation() -> None:
     assert coverage_call.args[1] == ["protocol-2"]
     assert coverage_call.kwargs["ordered"] is False
 
-    with pytest.raises(ServiceValidationError, match="CleaningMode must be a string"):
+    with pytest.raises(
+        ServiceValidationError,
+        match=r"^Cleaning mode must be one of: vacuum, mop, vacuum_and_mop\.$",
+    ) as raised:
         await entity.async_send_command("clean_all", {"cleaning_mode": 5})
+    assert "CleaningMode" not in str(raised.value)
+    assert "CleaningMode" not in raised.value.translation_placeholders["error"]
 
 
 async def test_vacuum_named_commands_and_validation() -> None:
@@ -2261,13 +2290,13 @@ async def test_vacuum_named_commands_and_validation() -> None:
         (
             "clean_all",
             {"coverage": "unknown"},
-            "Invalid CoverageSetting",
+            r"^Vacuum coverage must be one of: quick, standard, heavy_duty\.$",
             "invalid_cleaning_option",
         ),
         (
             "clean_all",
             {"coverage": 7},
-            "CoverageSetting must be a string",
+            r"^Vacuum coverage must be one of: quick, standard, heavy_duty\.$",
             "invalid_cleaning_option",
         ),
         ("unknown", None, "Unsupported Matic command", "unsupported_command"),
