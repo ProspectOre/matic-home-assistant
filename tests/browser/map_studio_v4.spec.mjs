@@ -1,3 +1,4 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { deflateSync } from "node:zlib";
 import { build } from "esbuild";
@@ -817,7 +818,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const useSchedule = gallery.getByRole("checkbox", { name: "Override shared schedule settings" });
     await expect(useSchedule).not.toBeChecked();
     expect((await snapshot(page)).selection.useRoomSchedule).toBe(true);
-    const sharedStatus = gallery.getByLabel("Shared room schedule status");
+    const sharedStatus = gallery.getByText(/^Kitchen: /u);
     await expect(sharedStatus).toContainText("Vacuum and mop is due on this clean.");
     await useSchedule.check();
     await expect(useSchedule).toBeChecked();
@@ -8069,4 +8070,82 @@ test("map taps select run and plan rooms in both views and clear old deletion no
     expect(result.remaining).toBe(0);
     expect(result.notice).toBeNull();
   }
+});
+
+// design-system.md §8 and shell.md §8: axe serious and critical findings are
+// zero at every width, and aria-label sits only on a role that takes a name
+// (MS-AXE-01; axe files a named generic that has content under "incomplete").
+async function settleWorkspace(gallery) {
+  const { workflow } = await gallery.evaluate((element) => element.getWorkspaceSnapshot());
+  if (workflow !== "none") await expect(gallery.locator("matic-map-workflow-v4")).toBeAttached();
+  await expect(gallery.getByText("Loading workspace tools…")).toHaveCount(0);
+  await gallery.evaluate(async (element) => {
+    await element.updateComplete;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  });
+}
+
+const axeFindings = (results) => results.map(({ id, nodes }) => `${id}: ${nodes.map(({ target }) => target.flat().join(" >> ")).join(" | ")}`);
+
+test.describe("Map Studio accessibility baselines", () => {
+  for (const scenario of ["ready", "rooms", "plans", "plan-saved-intelligent", "draw", "history", "cleaning", "access"]) {
+    for (const [width, height] of [[390, 844], [1024, 768]]) {
+      const narrow = width < 1024;
+      test(`${scenario} at ${width} has no serious axe finding and no name on an unnamed role${narrow ? " @mobile" : ""}`, async ({ page }) => {
+        await page.setViewportSize({ width, height });
+        const gallery = await loadGallery(page, { scenario, narrow });
+        await settleWorkspace(gallery);
+        const { violations, incomplete } = await new AxeBuilder({ page }).analyze();
+        expect(axeFindings(violations.filter(({ impact }) => impact === "serious" || impact === "critical"))).toEqual([]);
+        expect(axeFindings(incomplete.filter(({ id }) => id === "aria-prohibited-attr"))).toEqual([]);
+      });
+    }
+  }
+
+  test("the toast sits in a region named Notifications, so axe finds no content outside a landmark", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await settleWorkspace(gallery);
+    await gallery.locator("matic-map-shell-v4").evaluate((shell) => shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: { type: "set-notice", notice: { tone: "error", key: "v4_notice_audit_sample", fallback: "Sample notice text" } },
+      bubbles: true, composed: true,
+    })));
+    await expect(gallery.getByRole("region", { name: "Notifications" })).toContainText("Sample notice text");
+    const { violations } = await new AxeBuilder({ page }).withRules(["region"]).analyze();
+    expect(axeFindings(violations)).toEqual([]);
+  });
+
+  // MS-AXE-02: a scrolling body is a region named by the h2, and it and the
+  // capped pinned top above it (which holds the h2) are tab stops only while
+  // they overflow with nothing inside to Tab to. The stage fills the
+  // viewport, so a resize after the first layout must be caught too.
+  test("a scroller is a tab stop only while it overflows without a focusable child @mobile", async ({ page }) => {
+    const scroller = async (scenario, width, height, which) => {
+      await page.setViewportSize({ width, height });
+      const gallery = await loadGallery(page, { scenario, narrow: width < 1024 });
+      await settleWorkspace(gallery);
+      await gallery.locator(".stage").evaluate((stage) => {
+        Object.assign(stage.style, { blockSize: "100dvh", minBlockSize: "0", maxInlineSize: "none" });
+      });
+      await settleWorkspace(gallery);
+      const heading = gallery.getByRole("heading", { level: 2 }).first();
+      const title = (await heading.textContent()).trim();
+      const element = which === "body" ? gallery.getByRole("region", { name: title, exact: true }) : heading;
+      return element.evaluate((node, top) => {
+        const target = top ? node.closest(".panel-top") : node;
+        const tabbable = "a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+        const nested = [...target.querySelectorAll("*")].some((child) => child.shadowRoot?.querySelector(tabbable));
+        return {
+          overflows: target.scrollHeight > target.clientHeight,
+          focusableChild: Boolean(target.querySelector(tabbable)) || nested,
+          tabindex: target.getAttribute("tabindex"),
+        };
+      }, which === "top");
+    };
+    expect(await scroller("access", 844, 390, "body"), "access body on a landscape phone").toEqual({ overflows: true, focusableChild: false, tabindex: "0" });
+    expect(await scroller("plans", 844, 390, "body"), "plans body on a landscape phone").toEqual({ overflows: true, focusableChild: true, tabindex: null });
+    expect(await scroller("access", 1440, 900, "body"), "access body on a desktop").toEqual({ overflows: false, focusableChild: false, tabindex: null });
+    expect(await scroller("paused", 844, 390, "top"), "paused pinned top on a landscape phone").toEqual({ overflows: true, focusableChild: false, tabindex: "0" });
+    expect(await scroller("ready", 844, 390, "top"), "ready pinned top on a landscape phone").toEqual({ overflows: false, focusableChild: false, tabindex: null });
+  });
 });

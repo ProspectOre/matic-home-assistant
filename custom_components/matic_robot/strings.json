@@ -461,7 +461,6 @@
     "v4_preview_invalid": "The saved plan preview is invalid. Review the plan and try again.",
     "v4_override_room_schedule": "Override shared schedule settings",
     "v4_override_room_schedule_hint": "By default, this clean applies the shared schedule. Turn this on to use the settings selected here. Omitted due work stays due, and compatible verified work still counts toward shared progress.",
-    "v4_shared_schedule_status": "Shared room schedule status",
     "v4_room_preview_loading": "Verifying the effective room settings…",
     "v4_room_preview_unavailable": "Home Assistant couldn't check the room settings.",
     "v4_effective_room_preview": "Effective cleaning preview",
@@ -525,7 +524,8 @@
     "v4_delete_plan_default": "{new_default} becomes your default plan.",
     "v4_delete_plan_none": "You'll have no default plan.",
     "v4_delete_area_selected": "{area} becomes the selected custom area.",
-    "v4_delete_area_none": "No custom area will be selected."
+    "v4_delete_area_none": "No custom area will be selected.",
+    "v4_notifications": "Notifications"
   },
   "config": {
     "abort": {

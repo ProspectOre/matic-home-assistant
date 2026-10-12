@@ -216,7 +216,7 @@ line-height: var(--ms-lh-snug);
   // A reload keeps showing what is already loaded; only an empty load waits.
   #resource({ status, value, problem }: ResourceState<unknown>, body: unknown) {
     const copy = this.#resourceCopy();
-    if (status === "idle" || (status === "loading" && value === null)) return html`<div class="loading" role="status">${copy.loading}</div>`;
+    if (value === null && (status === "idle" || status === "loading")) return html`<div class="loading" role="status">${copy.loading}</div>`;
     if (status === "error") {
       const workflow = this.state.workflow;
       return html`
@@ -273,14 +273,12 @@ line-height: var(--ms-lh-snug);
             <small>${this.#t("v4_override_room_schedule_hint", "By default, this clean applies the shared schedule. Turn this on to use the settings selected here. Omitted due work stays due, and compatible verified work still counts toward shared progress.")}</small>
           </span>
         </label>
-        <div class="stack" aria-label=${this.#t("v4_shared_schedule_status", "Shared room schedule status")}>
-          ${this.state.selection.roomIds.map((roomId) => {
-            const room = plans.value?.rooms.find((candidate) => candidate.roomId === roomId);
-            return room?.sharedCadence || room?.sharedCadenceProgress || room?.sharedCadenceReasons?.length
-              ? html`<p class="subtle">${room.name}: ${this.#cadenceSummary(room.sharedCadence, room.sharedCadenceProgress, room.sharedCadenceReasons)}</p>`
-              : nothing;
-          })}
-        </div>
+        ${this.state.selection.roomIds.map((roomId) => {
+          const room = plans.value?.rooms.find((candidate) => candidate.roomId === roomId);
+          return room?.sharedCadence || room?.sharedCadenceProgress || room?.sharedCadenceReasons?.length
+            ? html`<p class="subtle">${room.name}: ${this.#cadenceSummary(room.sharedCadence, room.sharedCadenceProgress, room.sharedCadenceReasons)}</p>`
+            : nothing;
+        })}
         ${this.state.manualRoomPreview.status === "loading"
           ? html`<p role="status" class="subtle">${this.#t("v4_room_preview_loading", "Verifying the effective room settings…")}</p>`
           : nothing}

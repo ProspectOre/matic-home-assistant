@@ -518,6 +518,29 @@ for (const kind of ["plan", "area"]) {
   });
 }
 
+test("a catalog a suspended page sets back to idle keeps showing its value and Delete", async ({ page }) => {
+  await loadQualityModules(page);
+  const result = await page.evaluate(async () => {
+    const { createGalleryState, SHELL_TAG, WORKFLOW_TAG } = await import("/quality-modules.js");
+    const initial = createGalleryState("plan-saved-intelligent");
+    const shell = document.createElement(SHELL_TAG);
+    shell.state = { ...initial, resources: { ...initial.resources, plans: { ...initial.resources.plans, status: "idle" } } };
+    document.body.append(shell);
+    let view = null;
+    for (let frame = 0; frame < 200 && !view; frame += 1) {
+      await new Promise(requestAnimationFrame);
+      view = shell.shadowRoot.querySelector(WORKFLOW_TAG);
+    }
+    await view?.updateComplete;
+    const root = view?.shadowRoot;
+    return {
+      loading: root?.querySelector(".loading")?.textContent ?? null,
+      deleteLauncher: Boolean(root?.querySelector('[data-dialog-launcher="confirmDeletePlan"]')),
+    };
+  });
+  expect(result, "only an empty load waits (workflow-panel.ts #resource)").toEqual({ loading: null, deleteLauncher: true });
+});
+
 test("external Area deletion preserves a dirty draft and turns later save into a create", async ({ page }) => {
   await loadQualityModules(page);
   const result = await page.evaluate(async () => {

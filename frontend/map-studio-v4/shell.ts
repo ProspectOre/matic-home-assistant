@@ -246,6 +246,8 @@ const FLICK_VELOCITY = 0.5;
 const FLICK_WINDOW_MS = 100;
 const TAP_SLOP = 6;
 const BODY_SWIPE_DISTANCE = 48;
+// The panel's scrollers: the pinned top, capped on a sheet, and the body.
+const SCROLLERS = ".panel-top, .sheet-body, .workflow-body";
 const INTERACTIVE_SHEET_SELECTOR = [
   "a[href]",
   "button",
@@ -263,7 +265,9 @@ const INTERACTIVE_SHEET_SELECTOR = [
   '[role="switch"]',
   '[role="tab"]',
   '[role="menuitem"]',
-  '[tabindex]:not([tabindex="-1"])',
+  // A scroller is a tab stop only so a keyboard can scroll it
+  // (#syncScrollers); a swipe that starts on it still steps the sheet.
+  `[tabindex]:not([tabindex="-1"]):not(${SCROLLERS})`,
 ].join(",");
 
 interface SheetDrag {
@@ -290,6 +294,10 @@ const FOCUSABLE = [
   "textarea:not(:disabled)",
   "[tabindex]:not([tabindex='-1'])",
 ].join(", ");
+
+// Whether Tab reaches anything inside `root`, open shadow roots included.
+const hasFocusable = (root: ParentNode): boolean => Boolean(root.querySelector(FOCUSABLE))
+  || [...root.querySelectorAll("*")].some((element) => element.shadowRoot !== null && hasFocusable(element.shadowRoot));
 
 interface DialogPresentation {
   readonly title: string;
@@ -439,6 +447,7 @@ export class MaticMapShellV4 extends LitElement {
   #focused: Element | null = null;
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
+  #scrollerResizeObserver: ResizeObserver | null = null;
   #observedSheet: Element | null = null;
   #dialogLauncher: HTMLElement | null = null;
   #workspaceLauncher: HTMLElement | null = null;
@@ -500,6 +509,7 @@ export class MaticMapShellV4 extends LitElement {
       const next = Math.ceil(entry.target.getBoundingClientRect().height);
       if (next !== this._sheetOffset) this._sheetOffset = next;
     });
+    this.#scrollerResizeObserver = new ResizeObserver(() => this.#syncScrollers());
   }
 
   override disconnectedCallback(): void {
@@ -509,6 +519,8 @@ export class MaticMapShellV4 extends LitElement {
     this.#resizeObserver = null;
     this.#sheetResizeObserver?.disconnect();
     this.#sheetResizeObserver = null;
+    this.#scrollerResizeObserver?.disconnect();
+    this.#scrollerResizeObserver = null;
     this.#observedSheet = null;
     window.removeEventListener("pointerdown", this.#outsidePointer, true);
     document.removeEventListener("fullscreenchange", this.#fullscreenChange);
@@ -641,6 +653,12 @@ export class MaticMapShellV4 extends LitElement {
       if (sheet) this.#sheetResizeObserver?.observe(sheet);
       else if (this._sheetOffset !== 0) this._sheetOffset = 0;
     }
+    // Observing again reports each box once after this layout, and later
+    // whenever a scroller or its content (the workflow view too) resizes.
+    this.#scrollerResizeObserver?.disconnect();
+    for (const scroller of this.renderRoot.querySelectorAll(SCROLLERS)) {
+      for (const element of [scroller, ...scroller.children]) this.#scrollerResizeObserver?.observe(element);
+    }
     if (local.has("_overflowOpen") && this._overflowOpen) {
       void this.updateComplete.then(() => {
         this.renderRoot.querySelector<HTMLElement>("#map-options select, #map-options button")?.focus();
@@ -724,6 +742,15 @@ export class MaticMapShellV4 extends LitElement {
         this._sheetDetent = DEFAULT_DETENT[this.state.workflow];
         void this.updateComplete.then(() => this.#focusPanel());
       }
+    }
+  }
+
+  // MS-AXE-02: a scroller that overflows with nothing inside to Tab to is
+  // itself a tab stop, so a keyboard can scroll it.
+  #syncScrollers(): void {
+    for (const scroller of this.renderRoot.querySelectorAll<HTMLElement>(SCROLLERS)) {
+      if (scroller.scrollHeight > scroller.clientHeight && !hasFocusable(scroller)) scroller.tabIndex = 0;
+      else scroller.removeAttribute("tabindex");
     }
   }
 
@@ -1018,7 +1045,7 @@ export class MaticMapShellV4 extends LitElement {
     for (const node of event.composedPath()) {
       if (node === event.currentTarget) break;
       if (node instanceof HTMLElement && node.scrollHeight > node.clientHeight
-        && /auto|scroll/.test(getComputedStyle(node).overflowY)) return node;
+        && /auto|scroll/u.test(getComputedStyle(node).overflowY)) return node;
     }
     return null;
   }
@@ -1356,7 +1383,7 @@ export class MaticMapShellV4 extends LitElement {
             >${t("v4_retry", "Try again")}</button>
           </div>
         ` : html`
-          <div class="quick-actions" aria-label=${t("v4_cleaning_choices", "Cleaning choices")}>
+          <div class="quick-actions" role="group" aria-label=${t("v4_cleaning_choices", "Cleaning choices")}>
             <button
               class="ms-row ms-row--card ms-row--featured"
               type="button"
@@ -1477,7 +1504,7 @@ export class MaticMapShellV4 extends LitElement {
               @click=${(event: Event) => this.#workflow(state.workflow === "plan" ? "plans" : "none", event.currentTarget)}
             >${icon(iconBack)}<span class="ms-btn__label">${state.workflow === "plan" ? this.#t("v4_your_plans", "Your plans") : this.#t("v4_all_tasks", "All tasks")}</span></button>
           ` : nothing}
-          <h2 tabindex="-1">${workflowCopy(state, this.localize).title}</h2>
+          <h2 id="workspace-title" tabindex="-1">${workflowCopy(state, this.localize).title}</h2>
         </div>
         ${state.notice ? html`<div class="notice" data-notice-slot data-tone=${state.notice.tone}>${this.#noticeBody(state.notice, this.#closeNotice, this.#t("v4_close", "Close"))}</div>` : nothing}
       </div>
@@ -1783,7 +1810,7 @@ export class MaticMapShellV4 extends LitElement {
                   @pointercancel=${this.#bodyUp}
                 >
                   ${this.#panelTop(state)}
-                  <div class="sheet-body">${this.#panel(state, narrow, status)}</div>
+                  <div class="sheet-body" role="region" aria-labelledby="workspace-title">${this.#panel(state, narrow, status)}</div>
                 </div>
                 ${this.#actionBar(state, footerPrimary, footerSecondary)}
               ` : html`
@@ -1796,7 +1823,7 @@ export class MaticMapShellV4 extends LitElement {
                 </div>
                 <section class="workflow">
                   ${this.#panelTop(state)}
-                  <div class="workflow-body">${this.#panel(state, narrow, status)}</div>
+                  <div class="workflow-body" role="region" aria-labelledby="workspace-title">${this.#panel(state, narrow, status)}</div>
                   ${this.#actionBar(state, footerPrimary, footerSecondary)}
                 </section>
               `}
@@ -1820,6 +1847,8 @@ export class MaticMapShellV4 extends LitElement {
         <div
           class="notice notice-toast"
           data-notice-toast
+          role="region"
+          aria-label=${this.#t("v4_notifications", "Notifications")}
           data-tone=${toast?.tone ?? nothing}
           style=${sheetOffset}
           ?hidden=${!toast}

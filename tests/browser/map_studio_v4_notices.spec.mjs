@@ -877,9 +877,11 @@ test("slot, toast and canvas chip carry no live role", async ({ page }) => {
   for (const surface of [gallery.locator("[data-notice-slot]"), gallery.locator("[data-notice-toast]")]) {
     await expect(surface).toBeVisible();
     expect(await surface.evaluate((element) => {
+      // The toast's region role names a landmark; it is not a live role.
+      const live = ["alert", "status", "log", "marquee", "timer"];
       const found = [];
       for (const node of [element, ...element.querySelectorAll("*")]) {
-        found.push(node.getAttribute("role"), node.getAttribute("aria-live"));
+        found.push(live.find((role) => role === node.getAttribute("role")), node.getAttribute("aria-live"));
       }
       for (let node = element.parentElement; node; node = node.parentElement) {
         found.push(node.getAttribute("aria-live"));

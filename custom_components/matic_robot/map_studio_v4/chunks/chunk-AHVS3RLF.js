@@ -416,7 +416,7 @@ import{C as Le,O as S,a as fe,b as ve,c as be,l as ge,m as we,n as _e,o as xe,p 
         ${a?b`
           <p id="zone-keyboard-help" class="sr-only">${this.#n("v4_zone_keyboard_help","Focus the map, aim with arrow keys, and press Enter to place points. The edges join automatically after three points. Keep adding points or Tab to a point; arrows move it, Delete removes it, and Escape cancels a drag.")}</p>
           <p id="keyboard-draw-help" class="sr-only">${this.#n("v4_keyboard_draw_help","Keyboard: focus the map, use arrow keys to aim, then Enter to paint or erase at the crosshair. D selects Paint; E selects Erase.")}</p>
-          <div class="map-scale" aria-label=${`Scale ${t.label}`}>
+          <div class="map-scale" role="img" aria-label=${`Scale ${t.label}`}>
             <span class="scale-line" style=${`--scale-width:${t.pixels}px`}></span>
             <span>${t.label}</span>
           </div>

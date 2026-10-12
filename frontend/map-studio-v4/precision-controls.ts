@@ -72,7 +72,7 @@ inline-size: min(18rem, calc(100vw - 1.5rem));
   protected override render() {
     const { draw } = this.state;
     return html`
-      <div class="controls ms-surface ms-surface--overlay" aria-label=${this.#t("v4_drawing_precision", "Drawing precision")}>
+      <div class="controls ms-surface ms-surface--overlay" role="group" aria-label=${this.#t("v4_drawing_precision", "Drawing precision")}>
         <div class="row ms-field">
           <label for="brush">${this.#t("brush_size", "Brush width")}</label>
           <div class="stepper">
