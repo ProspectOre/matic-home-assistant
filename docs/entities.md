@@ -115,16 +115,28 @@ removed four duplicate entities once, on its first start; see the
 [release notes](release-notes-0.5.0-rc23.md#entity-changes) for replacements.
 User-assigned names and IDs are preserved.
 
-## Read-only operations
+## Assistant tools
 
-Administrator-only MCP tools provide live runner status, plan order/settings,
-recent native history, and recent events: `MaticGetOperations`, `MaticGetPlan`,
-`MaticGetNativeHistory`, `MaticGetRecentEvents`, and `MaticGetActivity`.
-Recent events keep low-volume room and terminal evidence separate from the
-[command and raw-state observation trail](activity-diagnostics.md), which can be
-queried independently when needed.
-Dust-bag observations are currently available through `MaticGetOperations` only.
+Two LLM APIs serve Assist conversation agents and Home Assistant's MCP server.
+Only administrators get tools; anyone else gets no tools and a one-line prompt
+to ask an administrator.
 
-`MaticGetFirmware` reads the cached [firmware intelligence inbox](firmware-intelligence.md).
-Its claim and completion tools update research metadata only, with expiring
-ownership and no robot commands.
+**Matic: Robot status (administrators only)** reads robot status, a plan's next
+run, robot-reported history, recent events and command activity
+(`MaticGetOperations`, `MaticGetPlan`, `MaticGetNativeHistory`,
+`MaticGetRecentEvents`, `MaticGetActivity`, `MaticGetFirmware`). Its write tools
+use Matic Map's own actions and checks: `MaticRunPlan` (a plan name or the
+default plan), `MaticCleanRooms` (room names and a cleaning mode),
+`MaticStopCleaning` and `MaticResetSchedule` (mopping or vacuum rotation progress
+for one room or a whole plan). When Matic Map would refuse, the tool returns the
+same reason instead. Assist agents get these tools, prefixed `matic_robot__`,
+when the robot is exposed to Assist.
+Recent events keep room and final-state evidence separate from the
+[command and raw-state observation trail](activity-diagnostics.md).
+Dust-bag observations are available through `MaticGetOperations` only.
+
+**Matic: Firmware research (administrators only)** reads the
+[firmware intelligence inbox](firmware-intelligence.md) (`MaticGetFirmware`) and
+claims and completes research (`MaticClaimFirmwareInvestigation`,
+`MaticCompleteFirmwareInvestigation`). It writes research records only, never a
+robot command, and is reachable only from an MCP client that selects it.
