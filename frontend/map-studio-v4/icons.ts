@@ -1,6 +1,8 @@
 /*! Material Design Icons geometry: Apache-2.0. Original robot geometry: MIT. */
 import { html, type TemplateResult } from "lit";
 import {
+  mdiAlert,
+  mdiAlertCircle,
   mdiArrowDown,
   mdiArrowExpandAll,
   mdiArrowLeft,
@@ -12,6 +14,7 @@ import {
   mdiChevronRight,
   mdiChevronUp,
   mdiCircleOutline,
+  mdiClose,
   mdiContentCopy,
   mdiCursorMove,
   mdiDotsVertical,
@@ -77,6 +80,11 @@ export const iconCleaning = mdiPlay;
 export const iconPaused = mdiPause;
 export const iconCharging = mdiBatteryCharging50;
 export const iconOffline = mdiMapMarkerOff;
+export const iconClose = mdiClose;
+// Notice tones (design-system.md .ms-notice): info reuses iconDiagnostics.
+export const iconNoticeSuccess = mdiCheck;
+export const iconNoticeWarning = mdiAlert;
+export const iconNoticeError = mdiAlertCircle;
 
 // Sized by CSS (.ms-icon), never by width/height attributes -- an SVG geometry
 // attribute cannot take rem units. `d` is bound, so Lit prepares one template

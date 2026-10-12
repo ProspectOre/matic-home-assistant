@@ -169,3 +169,330 @@ test("a failed area save reports the area notice key", async ({ page }) => {
   expect((await snapshot(page)).notice?.tone).toBe("error");
   expect(await page.evaluate(() => window.__areaSaves)).toBe(1);
 });
+
+// ---- Notice surfaces: the slot, the toast and the two live regions ----------
+
+const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
+
+async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.evaluate(async () => {
+    await import("/map_studio_v4-review/review.js");
+  });
+  await page.evaluate(async ({ tag, selectedScenario, selectedNarrow }) => {
+    await customElements.whenDefined(tag);
+    const gallery = document.createElement(tag);
+    gallery.controls = false;
+    gallery.scenario = selectedScenario;
+    gallery.narrow = selectedNarrow;
+    document.body.style.margin = "0";
+    document.body.append(gallery);
+  }, { tag: GALLERY_TAG, selectedScenario: scenario, selectedNarrow: narrow });
+  const gallery = page.locator(GALLERY_TAG);
+  await expect(gallery.locator(".panel-heading h2")).toBeAttached();
+  return gallery;
+}
+
+const sampleNotice = (tone, fallback = `Sample ${tone} notice`) => ({
+  tone, key: `v4_notice_sample_${tone}`, fallback,
+});
+
+const galleryIntent = (page, intent) => page.evaluate(({ tag, detail }) => {
+  const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+  shell.dispatchEvent(new CustomEvent("matic-workspace-intent", { detail, bubbles: true, composed: true }));
+}, { tag: GALLERY_TAG, detail: intent });
+
+const setGalleryNotice = (page, notice) => galleryIntent(page, { type: "set-notice", notice });
+
+const galleryNotice = (page) => page.evaluate((tag) =>
+  document.querySelector(tag).getWorkspaceSnapshot().notice, GALLERY_TAG);
+
+test("the notice slot sits directly under the workflow heading in every workflow", async ({ page }) => {
+  for (const scenario of [
+    "ready", "rooms", "plans", "plan-saved-intelligent", "draw", "area-review-new", "history", "support",
+  ]) {
+    const gallery = await loadGallery(page, { scenario });
+    await setGalleryNotice(page, sampleNotice("warning", `Slot sample for ${scenario}`));
+    const slot = gallery.locator("[data-notice-slot]");
+    await expect(slot, scenario).toHaveCount(1);
+    await expect(slot, scenario).toContainText(`Slot sample for ${scenario}`);
+    const order = await slot.evaluate((element) => {
+      const root = element.getRootNode();
+      const heading = root.querySelector(".panel-heading h2");
+      const description = root.querySelector(".panel-description");
+      const follows = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      return {
+        afterHeading: follows(heading, element),
+        beforeDescription: follows(element, description),
+        previous: element.previousElementSibling?.className ?? null,
+        next: element.nextElementSibling?.className ?? null,
+      };
+    });
+    expect(order, scenario).toEqual({
+      afterHeading: true,
+      beforeDescription: true,
+      previous: "panel-heading",
+      next: "panel-description",
+    });
+  }
+});
+
+test("success and error notices toast at once", async ({ page }) => {
+  const gallery = await loadGallery(page);
+  const toast = gallery.locator("[data-notice-toast]");
+  await expect(toast).toBeAttached();
+  await expect(toast).toBeHidden();
+
+  await setGalleryNotice(page, sampleNotice("success", "Saved sample"));
+  await expect(toast).toBeVisible();
+  await expect(toast).toHaveAttribute("data-tone", "success");
+  await expect(toast).toContainText("Saved sample");
+
+  await setGalleryNotice(page, sampleNotice("error", "Failed sample"));
+  await expect(toast).toBeVisible();
+  await expect(toast).toHaveAttribute("data-tone", "error");
+  await expect(toast).toContainText("Failed sample");
+  await expect(toast).not.toContainText("Saved sample");
+
+  // The slot is on screen on a wide layout, so info stays out of the toast.
+  await setGalleryNotice(page, sampleNotice("info", "Info sample"));
+  await expect(toast).toBeHidden();
+  await expect(gallery.locator("[data-notice-slot]")).toContainText("Info sample");
+});
+
+test("@mobile info and warning notices toast only while the sheet is at peek", async ({ page }) => {
+  const gallery = await loadGallery(page, { narrow: true });
+  const sheet = gallery.locator(".mobile-sheet");
+  const toast = gallery.locator("[data-notice-toast]");
+  await expect(sheet).toHaveAttribute("data-detent", "half");
+
+  await setGalleryNotice(page, sampleNotice("info", "Info at half"));
+  await expect(gallery.locator("[data-notice-slot]")).toBeVisible();
+  await expect(toast).toBeHidden();
+
+  await gallery.getByRole("button", { name: "Show less of the map workspace" }).click();
+  await expect(sheet).toHaveAttribute("data-detent", "peek");
+  await setGalleryNotice(page, sampleNotice("warning", "Warning at peek"));
+  await expect(toast).toBeVisible();
+  await expect(toast).toHaveAttribute("data-tone", "warning");
+  await expect(toast).toContainText("Warning at peek");
+  // Anchored to the sheet's top edge.
+  await expect.poll(() => toast.evaluate((element) => {
+    const sheetTop = element.getRootNode().querySelector(".mobile-sheet").getBoundingClientRect().top;
+    const gap = sheetTop - element.getBoundingClientRect().bottom;
+    return gap >= 0 && gap <= 24;
+  })).toBe(true);
+
+  await setGalleryNotice(page, sampleNotice("info", "Info at peek"));
+  await expect(toast).toBeVisible();
+  await expect(toast).toContainText("Info at peek");
+
+  await gallery.getByRole("button", { name: "Show more of the map workspace" }).click();
+  await expect(sheet).toHaveAttribute("data-detent", "half");
+  await expect(toast).toBeHidden();
+  await expect(gallery.locator("[data-notice-slot]")).toContainText("Info at peek");
+});
+
+test("info notices toast in Full map", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "full-map" });
+  const toast = gallery.locator("[data-notice-toast]");
+  await setGalleryNotice(page, sampleNotice("info", "Info in full map"));
+  await expect(toast).toBeVisible();
+  await expect(toast).toHaveAttribute("data-tone", "info");
+  await expect(toast).toContainText("Info in full map");
+  // Anchored above the HUD.
+  const gap = await toast.evaluate((element) => {
+    const hud = element.getRootNode().querySelector(".full-map-hud").getBoundingClientRect();
+    return hud.top - element.getBoundingClientRect().bottom;
+  });
+  expect(gap).toBeGreaterThanOrEqual(0);
+});
+
+test("the toast hides on its timer but the slot keeps the notice", async ({ page }) => {
+  await page.clock.install();
+  const gallery = await loadGallery(page);
+  const toast = gallery.locator("[data-notice-toast]");
+  await setGalleryNotice(page, sampleNotice("success", "Timed sample"));
+  await expect(toast).toBeVisible();
+
+  await page.clock.runFor(3900);
+  await expect(toast).toBeVisible();
+  await page.clock.runFor(100);
+  await expect(toast).toBeHidden();
+  await expect(gallery.locator("[data-notice-slot]")).toContainText("Timed sample");
+  expect(await galleryNotice(page)).toMatchObject({ tone: "success", fallback: "Timed sample" });
+
+  // Errors stay for ten seconds.
+  await setGalleryNotice(page, sampleNotice("error", "Timed error"));
+  await expect(toast).toBeVisible();
+  await page.clock.runFor(9900);
+  await expect(toast).toBeVisible();
+  await page.clock.runFor(100);
+  await expect(toast).toBeHidden();
+  expect(await galleryNotice(page)).toMatchObject({ tone: "error", fallback: "Timed error" });
+});
+
+test("hovering or focusing the toast pauses its timer", async ({ page }) => {
+  await page.clock.install();
+  const gallery = await loadGallery(page);
+  const toast = gallery.locator("[data-notice-toast]");
+
+  await setGalleryNotice(page, sampleNotice("success", "Hovered sample"));
+  await expect(toast).toBeVisible();
+  await toast.hover();
+  await page.clock.runFor(8000);
+  await expect(toast).toBeVisible();
+  await page.mouse.move(1, 1);
+  await page.clock.runFor(3900);
+  await expect(toast).toBeVisible();
+  await page.clock.runFor(100);
+  await expect(toast).toBeHidden();
+
+  await setGalleryNotice(page, sampleNotice("success", "Focused sample"));
+  await expect(toast).toBeVisible();
+  const close = toast.getByRole("button", { name: "Close" });
+  await close.focus();
+  await page.clock.runFor(8000);
+  await expect(toast).toBeVisible();
+  await close.evaluate((element) => element.blur());
+  await page.clock.runFor(3900);
+  await expect(toast).toBeVisible();
+  await page.clock.runFor(100);
+  await expect(toast).toBeHidden();
+});
+
+test("slot Close clears the notice and toast Close hides only the toast", async ({ page }) => {
+  const gallery = await loadGallery(page);
+  const toast = gallery.locator("[data-notice-toast]");
+  const slot = gallery.locator("[data-notice-slot]");
+  await setGalleryNotice(page, sampleNotice("success", "Closable sample"));
+  await expect(toast).toBeVisible();
+  await expect(slot).toBeVisible();
+
+  const toastClose = toast.getByRole("button", { name: "Close", exact: true });
+  const slotClose = slot.getByRole("button", { name: "Close", exact: true });
+  for (const close of [toastClose, slotClose]) {
+    const box = await close.boundingBox();
+    expect(box.width).toBeGreaterThanOrEqual(44);
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  }
+
+  await toastClose.click();
+  await expect(toast).toBeHidden();
+  await expect(slot).toContainText("Closable sample");
+  expect(await galleryNotice(page)).toMatchObject({ tone: "success", fallback: "Closable sample" });
+
+  await slotClose.click();
+  await expect(slot).toHaveCount(0);
+  expect(await galleryNotice(page)).toBeNull();
+});
+
+test("Escape leaves the notice in place", async ({ page }) => {
+  const gallery = await loadGallery(page);
+  const toast = gallery.locator("[data-notice-toast]");
+  const slot = gallery.locator("[data-notice-slot]");
+  await setGalleryNotice(page, sampleNotice("error", "Escape sample"));
+  await expect(toast).toBeVisible();
+
+  for (const close of [slot.getByRole("button", { name: "Close" }), toast.getByRole("button", { name: "Close" })]) {
+    await close.focus();
+    await page.keyboard.press("Escape");
+    await expect(slot).toContainText("Escape sample");
+    await expect(toast).toBeVisible();
+    expect(await galleryNotice(page)).toMatchObject({ tone: "error", fallback: "Escape sample" });
+  }
+});
+
+test("@safety errors announce through the alert region and other tones through the polite region, once each", async ({ page }) => {
+  await loadGallery(page);
+  const setup = await page.evaluate((tag) => {
+    const root = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild.shadowRoot;
+    const alert = root.querySelector('.root > [role="alert"]');
+    const polite = root.querySelector('.root > [aria-live="polite"]');
+    window.__regionLog = { alert: [], polite: [] };
+    for (const [name, region] of [["alert", alert], ["polite", polite]]) {
+      if (!region) continue;
+      window.__regionLog[name].push(region.textContent.trim());
+      new MutationObserver(() => window.__regionLog[name].push(region.textContent.trim()))
+        .observe(region, { childList: true, characterData: true, subtree: true });
+    }
+    return {
+      alerts: root.querySelectorAll('[role="alert"]').length,
+      polite: root.querySelectorAll('.root > [aria-live="polite"]').length,
+      alert: alert && {
+        live: alert.getAttribute("aria-live"),
+        atomic: alert.getAttribute("aria-atomic"),
+        srOnly: alert.classList.contains("sr-only"),
+      },
+    };
+  }, GALLERY_TAG);
+  expect(setup).toEqual({ alerts: 1, polite: 1, alert: { live: null, atomic: "true", srOnly: true } });
+
+  // How many times a region's text changed to include `text`.
+  const announced = (region, text) => page.evaluate(({ name, value }) => {
+    let count = 0;
+    let before = false;
+    for (const entry of window.__regionLog[name]) {
+      const now = entry.includes(value);
+      if (now && !before) count += 1;
+      before = now;
+    }
+    return count;
+  }, { name: region, value: text });
+  const current = (region) => page.evaluate((name) => window.__regionLog[name].at(-1) ?? "", region);
+  const setLocalize = (translations) => page.evaluate(({ tag, map }) => {
+    const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+    shell.localize = map ? (key) => map[key] ?? key : undefined;
+    return shell.updateComplete;
+  }, { tag: GALLERY_TAG, map: translations });
+
+  await setGalleryNotice(page, sampleNotice("error", "Stop failed sample"));
+  await expect.poll(() => announced("alert", "Stop failed sample")).toBe(1);
+  // Re-renders and a language swap do not announce it again.
+  await galleryIntent(page, { type: "toggle-labels" });
+  await galleryIntent(page, { type: "toggle-labels" });
+  await setLocalize({ "component.matic_robot.common.v4_notice_sample_error": "Arrêt échoué" });
+  await expect(page.locator(GALLERY_TAG).locator("[data-notice-slot]")).toContainText("Arrêt échoué");
+  await setLocalize(null);
+  expect(await announced("alert", "Stop failed sample")).toBe(1);
+  expect(await announced("alert", "Arrêt échoué")).toBe(0);
+  expect(await announced("polite", "Stop failed sample")).toBe(0);
+
+  for (const tone of ["info", "success", "warning"]) {
+    const text = `Polite ${tone} sample`;
+    await setGalleryNotice(page, sampleNotice(tone, text));
+    await expect.poll(() => announced("polite", text)).toBe(1);
+    expect(await current("alert")).toBe("");
+    await galleryIntent(page, { type: "toggle-labels" });
+    expect(await announced("polite", text)).toBe(1);
+    expect(await announced("alert", text)).toBe(0);
+  }
+
+  await setGalleryNotice(page, null);
+  await expect.poll(() => current("polite")).toBe("");
+  expect(await current("alert")).toBe("");
+});
+
+test("slot, toast and canvas chip carry no live role", async ({ page }) => {
+  const gallery = await loadGallery(page);
+  await setGalleryNotice(page, sampleNotice("error", "Silent surfaces sample"));
+  for (const surface of [gallery.locator("[data-notice-slot]"), gallery.locator("[data-notice-toast]")]) {
+    await expect(surface).toBeVisible();
+    expect(await surface.evaluate((element) => {
+      const found = [];
+      for (const node of [element, ...element.querySelectorAll("*")]) {
+        found.push(node.getAttribute("role"), node.getAttribute("aria-live"));
+      }
+      for (let node = element.parentElement; node; node = node.parentElement) {
+        found.push(node.getAttribute("aria-live"));
+      }
+      return found.filter(Boolean);
+    })).toEqual([]);
+  }
+
+  const offline = await loadGallery(page, { scenario: "ha-offline" });
+  const chip = offline.locator("matic-map-canvas-v4 .map-message");
+  await expect(chip).toBeVisible();
+  expect(await chip.evaluate((element) => [element.getAttribute("role"), element.getAttribute("aria-live")]))
+    .toEqual([null, null]);
+});

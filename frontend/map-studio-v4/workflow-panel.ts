@@ -46,8 +46,7 @@ background: var(--ms-local);
 font-size: var(--ms-t-sm);
 line-height: var(--ms-lh-snug);
 }
-.problem, .notice[data-tone="error"] { --ms-local: color-mix(in srgb, var(--ms-danger) 9%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); background: var(--ms-local); }
-.notice[data-tone="success"] { --ms-local: color-mix(in srgb, var(--ms-success) 10%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-success) 82%, var(--ms-text)); background: var(--ms-local); }
+.problem { --ms-local: color-mix(in srgb, var(--ms-danger) 9%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); background: var(--ms-local); }
 .notice[data-tone="warning"] { --ms-local: color-mix(in srgb, var(--ms-warning) 11%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-warning) 82%, var(--ms-text)); background: var(--ms-local); }
 .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ms-space-2); }
 .list { display: grid; gap: var(--ms-space-2); }
@@ -165,15 +164,6 @@ line-height: var(--ms-lh-snug);
     }));
   }
 
-  #notice() {
-    const notice = this.state.notice;
-    return notice ? html`
-      <div class="notice" data-tone=${notice.tone} role=${notice.tone === "error" ? "alert" : "status"}>
-        ${this.#t(notice.key, notice.fallback, notice.placeholders)}
-      </div>
-    ` : nothing;
-  }
-
   #resourceCopy(): { readonly loading: string; readonly unavailable: string; readonly empty: string } {
     switch (this.state.workflow) {
       case "rooms":
@@ -283,7 +273,6 @@ line-height: var(--ms-lh-snug);
           </div>`
           : nothing}
         ${previewCurrent ? this.#manualRoomPreview(admitted.preview) : nothing}
-        ${this.#notice()}
       </div>
     `);
   }
@@ -766,7 +755,6 @@ line-height: var(--ms-lh-snug);
             >${this.#t("plan_delete", "Delete")}</button>
           ` : nothing}
         </div>
-        ${this.#notice()}
       </div>
     `);
   }
@@ -829,7 +817,6 @@ line-height: var(--ms-lh-snug);
             >${this.#t("area_delete", "Delete")}</button>
           ` : nothing}
         </div>
-        ${this.#notice()}
       </div>
     `;
   }

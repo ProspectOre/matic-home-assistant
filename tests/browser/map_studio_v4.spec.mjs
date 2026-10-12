@@ -3768,7 +3768,8 @@ test.describe("Map Studio v0.4 foundation", () => {
         resources: { ...state.resources, history: { status: "error", value: null, problem: "request-failed" } },
       });
     }, GALLERY_TAG);
-    await expect(gallery.getByRole("alert")).toContainText("Map history is unavailable right now. Try again shortly.");
+    // The shell's static alert region is always present, so filter to the panel's message.
+    await expect(gallery.getByRole("alert").filter({ hasText: "Map history is unavailable" })).toContainText("Map history is unavailable right now. Try again shortly.");
   });
 
   test("keeps a saved-area destination intact through cancel and discard", async ({ page }) => {
@@ -4466,7 +4467,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(mapLive).toContainText("Live map");
 
     await gallery.evaluate((element) => element.setScenario("transition"));
-    await expect(gallery.getByRole("status")).toContainText("Locating");
+    // The canvas chip carries no live role (shell.md §4); the map region announces.
+    await expect(gallery.locator("matic-map-canvas-v4 .map-message")).toContainText("Locating");
     const locating = gallery.getByRole("button", { name: "Finding the map" });
     await expect(locating).toHaveAttribute("aria-disabled", "true");
     await expect(locating).toHaveAccessibleDescription("Waiting for the robot to confirm which floor it is on.");

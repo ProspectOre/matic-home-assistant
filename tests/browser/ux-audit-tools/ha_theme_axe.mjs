@@ -20,6 +20,15 @@ const HA = {
   },
 };
 const SCENARIOS = ["ready", "rooms", "draw", "plan-saved-intelligent", "plans", "history", "cleaning", "problem", "area-review-new", "support", "full-map"];
+// The notice slot and toast in each tone, over `ready` (design-system.md: the notice-* patches).
+const CAPTURES = [
+  ...SCENARIOS.map((scenario) => ({ id: scenario, scenario, patch: null })),
+  ...["info", "success", "warning", "error"].map((tone) => ({
+    id: `notice-${tone}`,
+    scenario: "ready",
+    patch: { notice: { tone, key: "v4_notice_audit_sample", fallback: "Sample notice text" } },
+  })),
+];
 const VIEWPORTS = [[390, 844], [1440, 900]];
 
 const { browser, context } = await launch();
@@ -28,8 +37,8 @@ const agg = new Map();
 let captures = 0;
 for (const scheme of ["light", "dark"]) {
   for (const [w, h] of VIEWPORTS) {
-    for (const sc of SCENARIOS) {
-      await openScenario(page, sc, { width: w, height: h, theme: scheme });
+    for (const { id: sc, scenario, patch } of CAPTURES) {
+      await openScenario(page, scenario, { width: w, height: h, theme: scheme, patch });
       await page.evaluate((vars) => { for (const [k, v] of Object.entries(vars)) document.documentElement.style.setProperty(k, v); }, HA[scheme]);
       await page.waitForTimeout(250);
       captures += 1;

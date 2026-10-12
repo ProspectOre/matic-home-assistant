@@ -163,6 +163,11 @@ const NOTICE_BASES = [
   ["rooms", "rooms"],
   ["plan", "plan-saved-intelligent"],
   ["none", "ready"],
+  ["plans", "plans"],
+  ["draw", "draw"],
+  ["history", "history"],
+  ["support", "support"],
+  ["area-review", "area-review-new"],
 ];
 const HELP_BASES = ["ready", "plan-saved-intelligent"];
 // Scenarios whose collapsed "Room schedule" sections are the point of the state.

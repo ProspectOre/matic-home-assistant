@@ -6,9 +6,11 @@ import { isWorkspaceIntent } from "./contracts";
 
 import type {
   Localize,
+  NoticeTone,
   PrimaryAction,
   ResetCadenceAction,
   WorkspaceIntent,
+  WorkspaceNotice,
   WorkspaceState,
   Workflow,
 } from "./contracts";
@@ -29,11 +31,15 @@ import {
   iconChevronRight,
   iconChevronUp,
   iconCleaning,
+  iconClose,
   iconDiagnostics,
   iconHistory,
   iconMenu,
   iconPlan,
   iconNewArea,
+  iconNoticeError,
+  iconNoticeSuccess,
+  iconNoticeWarning,
   iconOffline,
   iconOverflow,
   iconPaused,
@@ -181,6 +187,15 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
 type SheetDetent = "peek" | "half" | "full";
 
 const DETENTS: readonly SheetDetent[] = ["peek", "half", "full"];
+
+// shell.md §4 notice rule: glyph per tone, and how long each toast stays.
+const NOTICE_ICONS: Readonly<Record<NoticeTone, string>> = {
+  info: iconDiagnostics,
+  success: iconNoticeSuccess,
+  warning: iconNoticeWarning,
+  error: iconNoticeError,
+};
+const TOAST_MS: Readonly<Record<NoticeTone, number>> = { info: 6000, success: 4000, warning: 6000, error: 10000 };
 
 // Where the sheet rests when a workflow opens. The map is the document, so a
 // drawing starts at peek; room choices stay visible at half height, while
@@ -355,6 +370,9 @@ export class MaticMapShellV4 extends LitElement {
     _browserFullscreen: { state: true },
     _sheetDetent: { state: true },
     _announcement: { state: true },
+    _politeNotice: { state: true },
+    _alertNotice: { state: true },
+    _toast: { state: true },
     _workflowLoadFailed: { state: true },
   };
 
@@ -381,7 +399,15 @@ export class MaticMapShellV4 extends LitElement {
   protected _browserFullscreen = false;
   protected _sheetDetent: SheetDetent = "half";
   protected _announcement = "";
+  protected _politeNotice = "";
+  protected _alertNotice = "";
+  protected _toast: WorkspaceNotice | null = null;
   protected _workflowLoadFailed = false;
+  #toastTimer: ReturnType<typeof setTimeout> | undefined;
+  #toastDeadline = 0;
+  #toastRemaining = 0;
+  #toastHover = false;
+  #toastFocus = false;
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
   #observedSheet: Element | null = null;
@@ -445,6 +471,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.#stopToast();
     this.#resizeObserver?.disconnect();
     this.#resizeObserver = null;
     this.#sheetResizeObserver?.disconnect();
@@ -453,6 +480,80 @@ export class MaticMapShellV4 extends LitElement {
     window.removeEventListener("pointerdown", this.#outsidePointer, true);
     document.removeEventListener("fullscreenchange", this.#fullscreenChange);
     super.disconnectedCallback();
+  }
+
+  // Each new notice object (never a re-render or a language swap) restarts
+  // the toast and is announced once: the region is cleared, then set after
+  // that render (shell.md §4 notice rule).
+  protected override willUpdate(changed: PropertyValues<this>): void {
+    if (!changed.has("state")) return;
+    const next = this.state.notice;
+    if (next === (changed.get("state") as WorkspaceState | undefined)?.notice) return;
+    this.#hideToast();
+    this._politeNotice = "";
+    this._alertNotice = "";
+    if (!next) return;
+    this._toast = next;
+    this.#toastRemaining = TOAST_MS[next.tone];
+    this.#armToast();
+    const text = this.#t(next.key, next.fallback, next.placeholders);
+    void this.updateComplete.then(() => {
+      if (this.state.notice !== next) return;
+      if (next.tone === "error") this._alertNotice = text;
+      else this._politeNotice = text;
+    });
+  }
+
+  #armToast(): void {
+    if (!this._toast || this.#toastTimer !== undefined || this.#toastHover || this.#toastFocus) return;
+    this.#toastDeadline = Date.now() + this.#toastRemaining;
+    this.#toastTimer = setTimeout(this.#hideToast, this.#toastRemaining);
+  }
+
+  #stopToast(): void {
+    clearTimeout(this.#toastTimer);
+    this.#toastTimer = undefined;
+  }
+
+  // Hides only the toast; state.notice and the slot are untouched.
+  readonly #hideToast = (): void => {
+    this.#stopToast();
+    this.#toastHover = false;
+    this.#toastFocus = false;
+    this._toast = null;
+  };
+
+  readonly #holdToast = (event: Event): void => {
+    if (event.type === "pointerenter") this.#toastHover = true;
+    else this.#toastFocus = true;
+    if (this.#toastTimer === undefined) return;
+    this.#stopToast();
+    this.#toastRemaining = Math.max(0, this.#toastDeadline - Date.now());
+  };
+
+  readonly #releaseToast = (event: Event): void => {
+    if (event.type === "pointerleave") this.#toastHover = false;
+    else if (!(event.currentTarget as Node).contains((event as FocusEvent).relatedTarget as Node | null)) this.#toastFocus = false;
+    this.#armToast();
+  };
+
+  readonly #closeToast = (): void => {
+    this.#hideToast();
+    void this.updateComplete.then(() => this.#focusPanel());
+  };
+
+  readonly #closeNotice = (): void => {
+    this.#intent({ type: "set-notice", notice: null });
+    void this.updateComplete.then(() => this.#focusPanel());
+  };
+
+  #noticeBody(notice: WorkspaceNotice, close: () => void) {
+    return html`${icon(NOTICE_ICONS[notice.tone])}<span class="notice-text">${this.#t(notice.key, notice.fallback, notice.placeholders)}</span><button
+      class="ms-btn ms-btn--icon"
+      type="button"
+      aria-label=${this.#t("v4_close", "Close")}
+      @click=${close}
+    >${icon(iconClose)}</button>`;
   }
 
   protected override updated(changed: PropertyValues<this>): void {
@@ -1255,6 +1356,7 @@ export class MaticMapShellV4 extends LitElement {
         ` : nothing}
         <h2 tabindex="-1">${workflow.title}</h2>
       </div>
+      ${state.notice ? html`<div class="notice" data-notice-slot data-tone=${state.notice.tone}>${this.#noticeBody(state.notice, this.#closeNotice)}</div>` : nothing}
       <p class="panel-description">${workflow.description}</p>
       ${this.#workflowBody(state, narrow)}
     `;
@@ -1351,6 +1453,10 @@ export class MaticMapShellV4 extends LitElement {
     const sheetOffset = narrow && !state.fullMap ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";
     const precisionOpen = state.precisionOpen && state.workflow === "draw";
+    // Success and error always toast; info and warning only while the slot is
+    // off-screen (sheet at peek, or Full map).
+    const toast = this._toast && (this._toast.tone === "success" || this._toast.tone === "error"
+      || state.fullMap || (narrow && this._sheetDetent === "peek")) ? this._toast : null;
     return html`
       <div class=${`root ${narrow ? "narrow" : "wide"}`} @keydown=${this.#keyboard}>
         <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToMap}>${this.#t("v4_skip_to_map", "Skip to the map")}</button>
@@ -1573,7 +1679,21 @@ export class MaticMapShellV4 extends LitElement {
           </main>
         </div>
 
-        <div class="sr-only" aria-live="polite" aria-atomic="true">${[this._announcement, state.notice ? this.#t(state.notice.key, state.notice.fallback, state.notice.placeholders) : ""].filter(Boolean).join(" ")}</div>
+        <div
+          class="notice notice-toast"
+          data-notice-toast
+          data-tone=${toast?.tone ?? nothing}
+          style=${sheetOffset}
+          ?hidden=${!toast}
+          ?inert=${Boolean(dialog) || this._helpOpen}
+          @pointerenter=${this.#holdToast}
+          @focusin=${this.#holdToast}
+          @pointerleave=${this.#releaseToast}
+          @focusout=${this.#releaseToast}
+        >${toast ? this.#noticeBody(toast, this.#closeToast) : nothing}</div>
+
+        <div class="sr-only" aria-live="polite" aria-atomic="true">${[this._announcement, this._politeNotice].filter(Boolean).join(" ")}</div>
+        <div class="sr-only" role="alert" aria-atomic="true">${this._alertNotice}</div>
 
         ${this._helpOpen ? this.#helpDialog() : nothing}
 

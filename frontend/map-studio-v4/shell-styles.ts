@@ -173,6 +173,45 @@ export const shellStyles = [tokens, base, controls, css`
     .panel-back { flex: none; }
     .panel-description { margin: var(--ms-space-1) 0 var(--ms-space-4); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
 
+    /* Notice slot and toast (shell.md §4). Tone rules moved unchanged from workflow-panel. */
+    .notice {
+    --ms-local: var(--ms-surface-sunken);
+    padding: var(--ms-space-3);
+    border-radius: var(--ms-radius-md);
+    background: var(--ms-local);
+    font-size: var(--ms-t-sm);
+    line-height: var(--ms-lh-snug);
+    }
+    .notice[data-tone="error"] { --ms-local: color-mix(in srgb, var(--ms-danger) 9%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); background: var(--ms-local); }
+    .notice[data-tone="success"] { --ms-local: color-mix(in srgb, var(--ms-success) 10%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-success) 82%, var(--ms-text)); background: var(--ms-local); }
+    .notice[data-tone="warning"] { --ms-local: color-mix(in srgb, var(--ms-warning) 11%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-warning) 82%, var(--ms-text)); background: var(--ms-local); }
+    .notice { display: flex; gap: var(--ms-space-2); align-items: center; padding-block: 0; padding-inline-end: 0; }
+    .notice > .ms-icon, .notice > .ms-btn { flex: none; }
+    .notice-text { flex: 1; min-inline-size: 0; padding-block: var(--ms-space-2); }
+    [data-notice-slot] { margin-block-start: var(--ms-space-3); }
+    /* Wide: bottom centre of the canvas, above the dock. */
+    .notice-toast {
+      position: absolute;
+      z-index: 10;
+      inset-inline: 0 22.5rem;
+      inset-block-end: calc(var(--ms-space-3) + 3.5rem + var(--ms-space-2));
+      inline-size: fit-content;
+      max-inline-size: min(28rem, calc(100% - 22.5rem - 2 * var(--ms-space-3)));
+      margin-inline: auto;
+      box-shadow: var(--ms-shadow-2);
+    }
+    .notice-toast[hidden] { display: none; }
+    /* Narrow: the sheet's top edge. */
+    .narrow > .notice-toast { inset-inline: 0; inset-block-end: calc(var(--map-sheet-offset, 0px) + var(--ms-space-2)); max-inline-size: calc(100% - 2 * var(--ms-space-3)); }
+    /* Full map: above the HUD, in its column. */
+    .root:has(.full-map-hud) > .notice-toast {
+      inset-inline: auto var(--ms-space-3);
+      inset-block-end: calc(max(var(--ms-space-3), var(--ms-safe-bottom)) + var(--ms-control-lg) + 3 * var(--ms-space-3));
+      inline-size: min(24rem, calc(100% - 1.5rem));
+      max-inline-size: none;
+    }
+    .wide:has(.full-map-hud.above-dock) > .notice-toast { inset-block-end: calc(max(var(--ms-space-3), var(--ms-safe-bottom)) + var(--ms-control-lg) + 4 * var(--ms-space-3) + 3.5rem + var(--ms-space-2)); }
+
     .quick-actions, .shelf { display: grid; gap: var(--ms-space-2); }
     .quick-actions .ms-row__body small { color: var(--ms-text-quiet); }
     /* The featured card is tinted with the accent, which drops the quiet
@@ -374,7 +413,7 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .precision-popover { position: static; inline-size: auto; block-size: auto; }
 
     @media (forced-colors: active) {
-      .dialog, .full-map-hud, .mobile-sheet, .host-state { border: 1px solid CanvasText; }
+      .dialog, .full-map-hud, .mobile-sheet, .host-state, .notice { border: 1px solid CanvasText; }
       .sheet-handle { background: CanvasText; }
     }
 
