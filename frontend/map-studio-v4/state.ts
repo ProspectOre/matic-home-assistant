@@ -954,13 +954,21 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   if ((state.workflow === "plan" || state.workflow === "rooms")
     && state.resources.plans.status !== "ready") {
     const unavailable = state.resources.plans.status === "error" || state.resources.plans.status === "empty";
-    return disabledAction(
-      "plans-unavailable",
-      unavailable ? "Rooms and plans unavailable" : "Loading rooms and plans…",
-      "Load the room and plan list before choosing a cleaning action.",
-      unavailable ? "v4_plans_unavailable_action" : "v4_loading_rooms_plans",
-      "v4_plans_required_reason",
-    );
+    return unavailable
+      ? disabledAction(
+        "plans-unavailable",
+        "Rooms and plans unavailable",
+        "Load the room and plan list before choosing a cleaning action.",
+        "v4_plans_unavailable_action",
+        "v4_plans_required_reason",
+      )
+      : disabledAction(
+        "plans-unavailable",
+        "Loading rooms and plans…",
+        "Load the room and plan list before choosing a cleaning action.",
+        "v4_loading_rooms_plans",
+        "v4_plans_required_reason",
+      );
   }
   if (state.workflow === "draw") {
     const drawFirst = { reason: "Draw the area first.", reasonKey: "v4_reason_save_area_draw" };
@@ -984,8 +992,9 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
     // `t(labelKey, label)`, so it ships without a key and falls back to English.
     return {
       id: "clean-rooms",
-      label: count ? `Clean ${count} room${count === 1 ? "" : "s"}` : "Clean selected rooms",
-      ...(count ? {} : { labelKey: "v4_action_clean_rooms" }),
+      ...(count
+        ? { label: `Clean ${count} room${count === 1 ? "" : "s"}` }
+        : { label: "Clean selected rooms", labelKey: "v4_action_clean_rooms" }),
       kind: "primary",
       enabled: ready,
       ...(ready
@@ -1048,8 +1057,9 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
         && state.draw.circles.length > 0;
       return {
         id: "save-area",
-        label: state.areaDraft.canRebind ? "Confirm on this map" : "Save area",
-        labelKey: state.areaDraft.canRebind ? "v4_action_save_area_confirm" : "v4_action_save_area",
+        ...(state.areaDraft.canRebind
+          ? { label: "Confirm on this map", labelKey: "v4_action_save_area_confirm" }
+          : { label: "Save area", labelKey: "v4_action_save_area" }),
         kind: "primary",
         enabled: valid,
         ...(valid
