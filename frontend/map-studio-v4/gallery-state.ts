@@ -589,8 +589,6 @@ export const GALLERY_DIALOGS: readonly DialogKind[] = [
   "confirmDeletePlan",
   "confirmDeleteArea",
   "confirmResetCadence",
-  "confirmStop",
-  "error",
 ];
 
 /** Every notice tone the workflow panels render. */

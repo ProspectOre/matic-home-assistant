@@ -22,7 +22,7 @@ import {
   WORKFLOW_TAG,
 } from "./element-tags";
 import { renderDrawTools } from "./draw-tools";
-import { LazyChunk, chunkStatus } from "./lazy-chunk";
+import { LazyChunk, chunkStatus, takeResume, type ChunkStatus } from "./lazy-chunk";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
 import {
@@ -298,7 +298,7 @@ interface DialogPresentation {
   readonly consequence?: string;
   readonly cancelLabel: string;
   readonly confirmLabel: string;
-  readonly action: "discard" | "delete-plan" | "delete-area" | "reset-room-cadence" | "stop" | null;
+  readonly action: "discard" | "delete-plan" | "delete-area" | "reset-room-cadence";
 }
 
 const dialogCopy = (
@@ -358,22 +358,6 @@ const dialogCopy = (
         cancelLabel: t("v4_cancel", "Cancel"),
         confirmLabel: t("v4_reset", "Reset"),
         action: "reset-room-cadence",
-      };
-    case "confirmStop":
-      return {
-        title: t("v4_stop_cleaning", "Stop cleaning?"),
-        detail: t("v4_stop_cleaning_detail", "The robot may take a moment to settle before another action is available."),
-        cancelLabel: t("v4_keep_cleaning", "Keep cleaning"),
-        confirmLabel: t("v4_stop", "Stop"),
-        action: "stop",
-      };
-    case "error":
-      return {
-        title: t("v4_error", "Something went wrong"),
-        detail: t("v4_error_detail", "No action was started. Close this message and try again when the map is ready."),
-        cancelLabel: t("v4_close", "Close"),
-        confirmLabel: t("v4_close", "Close"),
-        action: null,
       };
     case null:
       return null;
@@ -439,10 +423,14 @@ export class MaticMapShellV4 extends LitElement {
   #statusRow: string | null = null;
   #announced = new Set<"_polite" | "_alert">();
   protected _toast: WorkspaceNotice | null = null;
-  // The workflow views, and with them the map's outline editor: the canvas
-  // imports that chunk too, and the browser fetches a chunk once per page, so
-  // the sheet body is the one place a failure of either is said.
-  readonly #tools = new LazyChunk(this, () => Promise.all([import("./workflow-panel"), import("./outline-editor")]));
+  // A chunk loads when the first view that needs it opens: the workflow views
+  // with any workflow, the outline editor with Draw. The shell builds the
+  // editor and hands it to the canvas, so the sheet is the one place a failure
+  // of either, building included, is said.
+  readonly #views = new LazyChunk(this, () => import("./workflow-panel"));
+  readonly #outline = new LazyChunk(this, async () => new (await import("./outline-editor")).OutlineEditor());
+  // The workflow a Try again reload was pressed in (lazy-chunk.ts).
+  #resume = takeResume();
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #toastDeadline = 0;
   #toastRemaining = 0;
@@ -668,6 +656,7 @@ export class MaticMapShellV4 extends LitElement {
       }
     }
     if (changed.has("state")) {
+      this.#resumeWorkflow();
       const previous = changed.get("state") as WorkspaceState | undefined;
       if (previous?.precisionOpen && !this.state.precisionOpen) {
         this.#brushLauncher()?.focus();
@@ -785,6 +774,25 @@ export class MaticMapShellV4 extends LitElement {
     this.#intent(intent);
   }
 
+  // Reopens the resumed workflow once the floor is located, as the entry
+  // screen would. Opening anything first drops it.
+  #resumeWorkflow(): void {
+    const workflow = this.#resume;
+    const { coherence, workflow: open } = this.state;
+    if (!workflow || (open === "none" && (coherence === "booting" || coherence === "verifying"))) return;
+    this.#resume = null;
+    if (open === "none" && Object.hasOwn(DEFAULT_DETENT, workflow)) this.#workflow(workflow as Workflow);
+  }
+
+  // The worst of the chunks `workflow` needs, each requested as it opens.
+  #tools(workflow: Workflow): ChunkStatus {
+    this.#views.request();
+    if (workflow !== "draw") return this.#views.status;
+    this.#outline.request();
+    const views = this.#views.status, outline = this.#outline.status;
+    return views === "failed" || outline === "failed" ? "failed" : views === outline ? views : "loading";
+  }
+
   #discardAndContinue(): void {
     const pending = this.#pendingNavigation;
     this.#pendingNavigation = null;
@@ -847,19 +855,14 @@ export class MaticMapShellV4 extends LitElement {
       this.#confirmDelete(presentation.action);
       return;
     }
-    if (presentation.action === "reset-room-cadence") {
-      const resetRequest = this.state.cadenceResetRequest;
-      this.#intent({ type: "dismiss-top-layer" });
-      if (resetRequest) this.#dispatchAction({
-        id: "reset-room-cadence",
-        planId: resetRequest.planId,
-        roomId: resetRequest.roomId,
-        mode: resetRequest.mode,
-      });
-      return;
-    }
+    const resetRequest = this.state.cadenceResetRequest;
     this.#intent({ type: "dismiss-top-layer" });
-    if (presentation.action === "stop") this.#dispatchAction("stop");
+    if (resetRequest) this.#dispatchAction({
+      id: "reset-room-cadence",
+      planId: resetRequest.planId,
+      roomId: resetRequest.roomId,
+      mode: resetRequest.mode,
+    });
   }
 
   // ---- Bottom sheet -------------------------------------------------------
@@ -1412,13 +1415,13 @@ export class MaticMapShellV4 extends LitElement {
 
   #workflowBody(state: WorkspaceState, narrow: boolean, status: StatusPresentation) {
     if (state.workflow === "none") return this.#entry(state, narrow, status);
-    void this.#tools.request();
-    if (this.#tools.status !== "ready") {
+    const tools = this.#tools(state.workflow);
+    if (tools !== "ready") {
       // A phone's draw sheet rests at peek, below the body, so a failure is
       // said under the drawing tools in .sheet-tools instead.
-      return narrow && state.workflow === "draw" && this.#tools.status === "failed"
+      return narrow && state.workflow === "draw" && tools === "failed"
         ? nothing
-        : chunkStatus(this.#tools.status, (key, fallback) => this.#t(key, fallback));
+        : chunkStatus(tools, this.localize, state.workflow);
     }
     return html`<${workflowTag}
       .state=${state}
@@ -1655,6 +1658,7 @@ export class MaticMapShellV4 extends LitElement {
                 style=${sheetOffset}
                 .state=${state}
                 .localize=${this.localize}
+                .outlineEditor=${this.#outline.value}
                 .narrow=${narrow}
               >${this.#floorSwitcher(state)}
                 ${narrow && !state.fullMap && this._sheetDetent === "full" ? html`
@@ -1731,7 +1735,7 @@ export class MaticMapShellV4 extends LitElement {
                 ${showDrawTools ? html`
                   <div class="sheet-tools">
                     ${renderDrawTools(state, { intent: (intent) => this.#intent(intent), openBrush: () => this.#openBrush(), t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }, "grid")}
-                    ${this.#tools.status === "failed" ? chunkStatus("failed", (key, fallback) => this.#t(key, fallback)) : nothing}
+                    ${this.#tools("draw") === "failed" ? chunkStatus("failed", this.localize, "draw") : nothing}
                     ${precisionOpen ? html`
                       <div class="precision-popover">
                         <${precisionControlsTag} compact inline .state=${state} .localize=${this.localize}></${precisionControlsTag}>
@@ -1824,13 +1828,11 @@ export class MaticMapShellV4 extends LitElement {
                     ? this.#keepDraft
                     : this.#dismissDialog}
                 >${dialog.cancelLabel}</button>
-                ${dialog.action === null ? nothing : html`
-                  <button
-                    class="discard ms-btn ms-btn--primary ms-btn--danger"
-                    type="button"
-                    @click=${() => this.#confirmDialog(dialog)}
-                  >${dialog.confirmLabel}</button>
-                `}
+                <button
+                  class="discard ms-btn ms-btn--primary ms-btn--danger"
+                  type="button"
+                  @click=${() => this.#confirmDialog(dialog)}
+                >${dialog.confirmLabel}</button>
               </div>
             </section>
           </div>

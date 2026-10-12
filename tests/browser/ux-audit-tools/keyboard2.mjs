@@ -79,7 +79,7 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
 
 console.log("\n== P5 Pure Escape ordering (focus re-seeded to a shell button before each Esc)");
 for (const [w, h] of [[390, 844], [1440, 900]]) {
-  await openScenario(page, "draw", { width: w, height: h, patch: { workflow: "draw", precisionOpen: true, fullMap: true, dialog: "confirmStop" } });
+  await openScenario(page, "draw", { width: w, height: h, patch: { workflow: "draw", precisionOpen: true, fullMap: true, dialog: "discardDraft" } });
   await inject(page); await go();
   const seq = [await snap()];
   for (let i = 0; i < 5; i += 1) {

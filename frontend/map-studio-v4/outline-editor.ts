@@ -2,12 +2,19 @@ import { html, nothing } from "lit";
 import type { AreaOutline, AreaPoint } from "./area-outline";
 import { outlineCircles, validOutline } from "./area-outline";
 import type { CoordinateEditCapture, WorkspaceIntent, WorkspaceState } from "./contracts";
+import { translate } from "./localize";
+import type { MaticMapCanvasV4 } from "./map-canvas";
 import type { RendererController } from "./renderer-controller";
 import { captureCoordinateEdit, hasCoordinateEditAdmission } from "./state";
 
 /** Perimeter handles own only their pointer gesture. Map navigation, draft
- * history and persistence remain in the existing controllers. */
+ * history and persistence remain in the existing controllers. The shell builds
+ * the editor; the canvas showing it attaches before it renders or forwards a
+ * point. */
 export class OutlineEditor {
+  #canvas!: MaticMapCanvasV4;
+  #renderer!: () => RendererController | null;
+  #intent!: (intent: WorkspaceIntent) => void;
   #drag: {
     index: number;
     pointer: number;
@@ -18,71 +25,84 @@ export class OutlineEditor {
   } | null = null;
   #message = "";
   #selected: number | null = null;
-  constructor(
-    private readonly state: () => WorkspaceState,
-    private readonly renderer: () => RendererController | null,
-    private readonly intent: (intent: WorkspaceIntent) => void,
-    private readonly update: () => void,
-    private readonly t: (key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>) => string,
-    private readonly focusPoint: (index: number) => void,
-  ) {}
+  attach(
+    canvas: MaticMapCanvasV4,
+    renderer: () => RendererController | null,
+    intent: (intent: WorkspaceIntent) => void,
+  ): void {
+    this.#canvas = canvas;
+    this.#renderer = renderer;
+    this.#intent = intent;
+  }
 
-  #enabled(s = this.state()): boolean {
+  #t(key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>): string {
+    return translate(this.#canvas.localize, key, fallback, placeholders);
+  }
+
+  #focusPoint(index: number): void {
+    void this.#canvas.updateComplete.then(() => {
+      const root = this.#canvas.renderRoot;
+      (root.querySelector<HTMLElement>(`[data-zone-index="${index}"]`) ?? root.querySelector<HTMLElement>(".map-root"))
+        ?.focus({ preventScroll: true });
+    });
+  }
+
+  #enabled(s = this.#canvas.state): boolean {
     return captureCoordinateEdit(s, "outline") !== null;
   }
 
   #commit(outline: AreaOutline, capture?: CoordinateEditCapture): void {
-    const admitted = capture ?? captureCoordinateEdit(this.state(), "outline");
-    if (!hasCoordinateEditAdmission(this.state(), admitted)) return;
+    const admitted = capture ?? captureCoordinateEdit(this.#canvas.state, "outline");
+    if (!hasCoordinateEditAdmission(this.#canvas.state, admitted)) return;
     if (!validOutline(outline)) {
-      this.#message = this.t("v4_zone_invalid", "Keep the outline from crossing itself.");
-      this.update();
+      this.#message = this.#t("v4_zone_invalid", "Keep the outline from crossing itself.");
+      this.#canvas.requestUpdate();
       return;
     }
-    const circles = outlineCircles(outline, (p) => this.renderer()?.containsMapPoint(p) ?? false);
+    const circles = outlineCircles(outline, (p) => this.#renderer()?.containsMapPoint(p) ?? false);
     // Keep a small but valid outline editable so the next point can widen it.
     // Saving remains disabled until it contains verified cleaning coverage.
     this.#message = outline.closed && !circles.length
-      ? this.t("v4_zone_empty", "Make the outline wider and keep it on the mapped floor.") : "";
-    this.intent({ type: "set-draft-circles", circles, outline, coordinateEdit: admitted });
+      ? this.#t("v4_zone_empty", "Make the outline wider and keep it on the mapped floor.") : "";
+    this.#intent({ type: "set-draft-circles", circles, outline, coordinateEdit: admitted });
   }
 
   addPoint(point: AreaPoint, capture?: CoordinateEditCapture): void {
-    const admitted = capture ?? captureCoordinateEdit(this.state(), "outline");
-    if (!hasCoordinateEditAdmission(this.state(), admitted)
-      || admitted.tool !== "outline" || !this.renderer()?.containsMapPoint(point)) return;
-    const outline = this.state().draw.outline ?? { points: [], closed: false };
+    const admitted = capture ?? captureCoordinateEdit(this.#canvas.state, "outline");
+    if (!hasCoordinateEditAdmission(this.#canvas.state, admitted)
+      || admitted.tool !== "outline" || !this.#renderer()?.containsMapPoint(point)) return;
+    const outline = this.#canvas.state.draw.outline ?? { points: [], closed: false };
     if (outline.points.length >= 64) return;
     const points = [...outline.points, point];
     this.#commit({ points, closed: points.length >= 3 }, admitted);
   }
 
   #remove(index: number): void {
-    const outline = this.state().draw.outline;
+    const outline = this.#canvas.state.draw.outline;
     if (!outline) return;
     this.#selected = null;
     const points = outline.points.filter((_, i) => i !== index);
     this.#commit({ points, closed: outline.closed && points.length >= 3 });
-    this.focusPoint(Math.min(index, points.length - 1));
+    this.#focusPoint(Math.min(index, points.length - 1));
   }
 
   #insert(index: number): void {
-    const outline = this.state().draw.outline;
+    const outline = this.#canvas.state.draw.outline;
     if (!outline || outline.points.length >= 64) return;
     const a = outline.points[index], b = outline.points[(index + 1) % outline.points.length];
     if (!a || !b || (!outline.closed && index === outline.points.length - 1)) return;
     const midpoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     this.#commit({ ...outline, points: [...outline.points.slice(0, index + 1), midpoint, ...outline.points.slice(index + 1)] });
-    this.focusPoint(index + 1);
+    this.#focusPoint(index + 1);
   }
 
   #down(event: PointerEvent, index: number): void {
     if (event.button !== 0 || this.#drag || (event.pointerType === "touch" && !event.isPrimary)) return;
-    const capture = captureCoordinateEdit(this.state(), "outline");
+    const capture = captureCoordinateEdit(this.#canvas.state, "outline");
     if (!capture) return;
     this.#selected = index;
-    this.update();
-    const baseline = this.state().draw.outline;
+    this.#canvas.requestUpdate();
+    const baseline = this.#canvas.state.draw.outline;
     if (!baseline) return;
     event.stopPropagation(); event.preventDefault();
     const target = event.currentTarget as HTMLElement;
@@ -99,11 +119,11 @@ export class OutlineEditor {
     const drag = this.#drag;
     if (!drag || drag.pointer !== event.pointerId) return;
     event.stopPropagation(); event.preventDefault();
-    if (!hasCoordinateEditAdmission(this.state(), drag.capture)) { this.cancel(); return; }
-    const point = this.renderer()?.screenToMap(event.clientX, event.clientY);
-    if (!point || !this.renderer()?.containsMapPoint(point)) return;
+    if (!hasCoordinateEditAdmission(this.#canvas.state, drag.capture)) { this.cancel(); return; }
+    const point = this.#renderer()?.screenToMap(event.clientX, event.clientY);
+    if (!point || !this.#renderer()?.containsMapPoint(point)) return;
     drag.preview = { ...drag.baseline, points: drag.baseline.points.map((p, i) => i === drag.index ? point : p) };
-    this.update();
+    this.#canvas.requestUpdate();
   }
 
   #up(event: PointerEvent): void {
@@ -113,7 +133,7 @@ export class OutlineEditor {
     this.#drag = null;
     drag.target.releasePointerCapture(event.pointerId);
     if (drag.preview !== drag.baseline) this.#commit(drag.preview, drag.capture);
-    this.update();
+    this.#canvas.requestUpdate();
   }
 
   cancel(): void {
@@ -121,13 +141,13 @@ export class OutlineEditor {
     if (!drag) return;
     this.#drag = null;
     if (drag.target.hasPointerCapture(drag.pointer)) drag.target.releasePointerCapture(drag.pointer);
-    this.update();
+    this.#canvas.requestUpdate();
   }
 
   #key(event: KeyboardEvent, index: number): void {
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.key === "Escape") { event.stopPropagation(); this.cancel(); return; }
-    const outline = this.state().draw.outline;
+    const outline = this.#canvas.state.draw.outline;
     if (!outline || !this.#enabled()) return;
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault(); event.stopPropagation(); this.#remove(index); return;
@@ -138,15 +158,15 @@ export class OutlineEditor {
     if (!dx && !dy) return;
     event.preventDefault(); event.stopPropagation();
     const p = outline.points[index]!;
-    const point = this.renderer()?.offsetMapPoint(p, dx, dy);
-    if (point && this.renderer()?.containsMapPoint(point)) this.#commit({ ...outline, points: outline.points.map((p, i) => i === index ? point : p) });
+    const point = this.#renderer()?.offsetMapPoint(p, dx, dy);
+    if (point && this.#renderer()?.containsMapPoint(point)) this.#commit({ ...outline, points: outline.points.map((p, i) => i === index ? point : p) });
   }
 
   render() {
     if (!this.#enabled()) return nothing;
-    const outline = this.#drag?.preview ?? this.state().draw.outline;
+    const outline = this.#drag?.preview ?? this.#canvas.state.draw.outline;
     const points = outline?.points ?? [];
-    const projected = points.map((p) => this.renderer()?.mapToScreen(p));
+    const projected = points.map((p) => this.#renderer()?.mapToScreen(p));
     const path = projected.map((p, i) => p ? `${i ? "L" : "M"}${p.x},${p.y}` : "").join(" ");
     const valid = !outline || validOutline(outline);
     const selected = this.#selected !== null && this.#selected < points.length ? this.#selected : null;
@@ -155,12 +175,12 @@ export class OutlineEditor {
         <svg aria-hidden="true"><path d=${path + (outline?.closed ? " Z" : "")} class=${valid ? "" : "invalid"} fill=${outline?.closed ? "var(--ms-accent)" : "none"}></path></svg>
         ${projected.map((p, i) => p ? html`
           <button class="zone-point" type="button" data-zone-index=${i} data-selected=${String(this.#selected === i)} data-map-control style=${`left:${p.x}px;top:${p.y}px`}
-            aria-label=${this.t("v4_zone_point_number", "Point {number}", { number: i + 1 })} aria-describedby="zone-handle-help"
-            title=${this.t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}
+            aria-label=${this.#t("v4_zone_point_number", "Point {number}", { number: i + 1 })} aria-describedby="zone-handle-help"
+            title=${this.#t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}
             @pointerdown=${(e: PointerEvent) => this.#down(e, i)} @pointermove=${(e: PointerEvent) => this.#move(e)}
             @pointerup=${(e: PointerEvent) => this.#up(e)} @pointercancel=${() => this.cancel()}
             @lostpointercapture=${() => { if (this.#drag) this.cancel(); }}
-            @focus=${() => { this.#selected = i; this.update(); }}
+            @focus=${() => { this.#selected = i; this.#canvas.requestUpdate(); }}
             @keydown=${(e: KeyboardEvent) => this.#key(e, i)}
           >${i + 1}</button>
         ` : nothing)}
@@ -168,23 +188,23 @@ export class OutlineEditor {
           const b = points[(i + 1) % points.length];
           if (!b || (!outline?.closed && i === points.length - 1) || points.length >= 64) return nothing;
           const midpoint = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-          const p = this.renderer()?.mapToScreen(midpoint);
+          const p = this.#renderer()?.mapToScreen(midpoint);
           const start = projected[i], end = projected[(i + 1) % projected.length];
           return p && start && end && Math.hypot(start.x - end.x, start.y - end.y) >= 100 ? html`<button class="zone-point zone-midpoint" type="button" data-map-control
-            style=${`left:${p.x}px;top:${p.y}px`} aria-label=${this.t("v4_zone_add_point_after", "Add point after {number}", { number: i + 1 })}
+            style=${`left:${p.x}px;top:${p.y}px`} aria-label=${this.#t("v4_zone_add_point_after", "Add point after {number}", { number: i + 1 })}
             @click=${() => this.#insert(i)}>+</button>` : nothing;
         })}
         <div class="zone-help" data-map-control>
-          <span id="zone-handle-help" class="sr-only">${this.t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}</span>
+          <span id="zone-handle-help" class="sr-only">${this.#t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}</span>
           ${selected !== null ? html`
-            <div class="zone-point-actions ms-surface" role="group" aria-label=${this.t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}>
-              <span class="zone-selection">${this.t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}</span>
-              <button class="ms-btn" type="button" ?disabled=${points.length >= 64 || (!outline?.closed && selected === points.length - 1)} @click=${() => this.#insert(selected)}>${this.t("v4_zone_insert_point", "Insert point")}</button>
-              <button class="ms-btn" type="button" aria-label=${this.t("v4_zone_delete_point_number", "Delete point {number}", { number: selected + 1 })} @click=${() => this.#remove(selected)}>${this.t("v4_zone_delete_point", "Delete point")}</button>
+            <div class="zone-point-actions ms-surface" role="group" aria-label=${this.#t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}>
+              <span class="zone-selection">${this.#t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}</span>
+              <button class="ms-btn" type="button" ?disabled=${points.length >= 64 || (!outline?.closed && selected === points.length - 1)} @click=${() => this.#insert(selected)}>${this.#t("v4_zone_insert_point", "Insert point")}</button>
+              <button class="ms-btn" type="button" aria-label=${this.#t("v4_zone_delete_point_number", "Delete point {number}", { number: selected + 1 })} @click=${() => this.#remove(selected)}>${this.#t("v4_zone_delete_point", "Delete point")}</button>
             </div>` : nothing}
           ${selected === null || !outline?.closed ? html`
             <div class="zone-guidance ms-surface">
-              <span>${outline?.closed ? this.t("v4_zone_edit_help", "Tap to add points. Drag points to reshape.") : this.t("v4_zone_create_help", "Place points around the area. The edges join automatically.")}</span>
+              <span>${outline?.closed ? this.#t("v4_zone_edit_help", "Tap to add points. Drag points to reshape.") : this.#t("v4_zone_create_help", "Place points around the area. The edges join automatically.")}</span>
             </div>` : nothing}
           <span class="zone-feedback ms-surface" role="status" ?hidden=${!this.#message}>${this.#message}</span>
         </div>

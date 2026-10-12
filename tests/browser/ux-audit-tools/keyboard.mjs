@@ -95,7 +95,7 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
 
 // ---------- K4: Escape ordering dialog -> precision -> Full map -> workflow ----------
 for (const [w, h] of [[390, 844], [1440, 900]]) {
-  for (const dialog of ["confirmStop", "discardDraft"]) {
+  for (const dialog of ["discardDraft"]) {
     console.log(`\n--- K4 Escape ordering @${w}x${h} dialog=${dialog}`);
     await openScenario(page, "draw", { width: w, height: h, patch: { workflow: "draw", precisionOpen: true, fullMap: true, dialog } });
     await inject(page);
@@ -127,7 +127,7 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
 
 // ---------- K5: dialog focus trap + inert background ----------
 for (const [w, h] of [[390, 844]]) {
-  await openScenario(page, "cleaning", { width: w, height: h, patch: { dialog: "confirmStop" } });
+  await openScenario(page, "plan-dirty", { width: w, height: h, patch: { dialog: "discardDraft" } });
   await inject(page);
   await settleAll();
   const seen = [];

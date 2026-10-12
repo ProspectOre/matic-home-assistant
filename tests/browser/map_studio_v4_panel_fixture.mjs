@@ -94,7 +94,9 @@ export async function installPanelFixture(page, {
     }));
   }
   await page.goto("/");
-  await page.evaluate(async ({ module, scenes, plans, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates }) => {
+  // Home Assistant mounts the panel again on every page load; `remount` does
+  // the same after a test reloads the page.
+  const remount = () => page.evaluate(async ({ module, scenes, plans, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -295,8 +297,10 @@ export async function installPanelFixture(page, {
     initialCatalogEntries,
     initialRobotStates,
   });
+  await remount();
   return {
     panelTag: await page.evaluate(() => window.__panelFixture.panelTag),
     modulePath,
+    remount,
   };
 }

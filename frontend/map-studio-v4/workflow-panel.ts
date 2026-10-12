@@ -907,8 +907,8 @@ line-height: var(--ms-lh-snug);
   }
 
   #support() {
-    void this.#diagnostics.request();
-    if (this.#diagnostics.status !== "ready") return chunkStatus(this.#diagnostics.status, (key, fallback) => this.#t(key, fallback));
+    this.#diagnostics.request();
+    if (this.#diagnostics.status !== "ready") return chunkStatus(this.#diagnostics.status, this.localize, "support");
     return html`<matic-map-diagnostics-v4
       .state=${this.state}
       .localize=${this.localize}

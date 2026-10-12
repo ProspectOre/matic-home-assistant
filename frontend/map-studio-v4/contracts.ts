@@ -74,9 +74,7 @@ export type DialogKind =
   | "discardDraft"
   | "confirmDeletePlan"
   | "confirmDeleteArea"
-  | "confirmResetCadence"
-  | "confirmStop"
-  | "error";
+  | "confirmResetCadence";
 
 export interface ResetCadenceAction {
   readonly id: "reset-room-cadence";

@@ -156,8 +156,6 @@ const DIALOG_BASES = {
   confirmDeletePlan: "plan-saved-intelligent",
   confirmDeleteArea: "area-review-rebind",
   confirmResetCadence: "plan-cadence-shared",
-  confirmStop: "cleaning",
-  error: "ready",
 };
 const NOTICE_BASES = [
   ["rooms", "rooms"],

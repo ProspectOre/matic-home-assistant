@@ -176,7 +176,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   for (const narrow of [false, true]) {
-    test(`Draw ${narrow ? "on a phone" : "at desktop width"} shows its tools at once and says Loading once`, async ({ page }) => {
+    test(`Draw ${narrow ? "on a phone" : "at desktop width"} shows its tools at once and says Loading once${narrow ? " @mobile" : ""}`, async ({ page }) => {
       if (narrow) await page.setViewportSize({ width: 390, height: 844 });
       let release;
       const held = new Promise((resolve) => { release = resolve; });
@@ -206,17 +206,16 @@ test.describe("Map Studio v0.4 foundation", () => {
     ["outline-editor", "draw", "matic-map-workflow-v4", true],
     ["diagnostics-panel", "support", "matic-map-diagnostics-v4", false],
   ]) {
-    test(`a ${chunk} chunk that fails in ${workflow}${narrow ? " on a phone" : ""} says so once, and Try again reloads the page`, async ({ page }) => {
+    test(`a ${chunk} chunk that fails in ${workflow}${narrow ? " on a phone" : ""} says so once, and Try again reloads into it${narrow ? " @mobile" : ""}`, async ({ page }) => {
       if (narrow) await page.setViewportSize({ width: 390, height: 844 });
       const pattern = `**/chunks/${chunk}-*.js`;
       await page.route(pattern, (route) => route.abort());
       await page.goto("/map-studio-v4-audit");
       const gallery = page.locator(GALLERY_TAG);
-      const open = () => gallery.evaluate((element, [selected, phone]) => {
+      await gallery.evaluate((element, [selected, phone]) => {
         element.narrow = phone;
         element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: selected });
       }, [workflow, narrow]);
-      await open();
       const failure = gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." });
       await expect(failure).toHaveCount(1);
       await expect(failure).toBeInViewport();
@@ -227,13 +226,107 @@ test.describe("Map Studio v0.4 foundation", () => {
         page.waitForEvent("load"),
         failure.getByRole("button", { name: "Try again" }).click(),
       ]);
-      await open();
+      // The reload lands in the workflow Try again was pressed in.
+      await expect.poll(() => gallery.evaluate((element) => element.getWorkspaceSnapshot().workflow)).toBe(workflow);
       // A phone's draw sheet rests at peek, with the workflow body below it.
       await expect(gallery.locator(view)).toBeAttached();
       if (!narrow) await expect(gallery.locator(view)).toBeVisible();
       await expect(failure).toHaveCount(0);
+      expect(await page.evaluate(() => sessionStorage.length), "the resume marker lasts one reload").toBe(0);
     });
   }
+
+  // The shell loads and builds the outline editor, so a constructor that
+  // throws is a failure it says, not a map that ignores taps.
+  for (const narrow of [false, true]) {
+    test(`an outline editor that cannot be built says so in Draw${narrow ? " on a phone @mobile" : ""}`, async ({ page }) => {
+      if (narrow) await page.setViewportSize({ width: 390, height: 844 });
+      await page.route("**/chunks/outline-editor-*.js", (route) => route.fulfill({
+        contentType: "text/javascript",
+        body: "export class OutlineEditor { constructor() { throw new Error(\"synthetic\"); } }",
+      }));
+      const gallery = await loadGallery(page, { scenario: "ready", narrow });
+      await gallery.evaluate((element) => element.setScenario("draw"));
+      const failure = gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." });
+      await expect(failure).toHaveCount(1);
+      await expect(failure.getByRole("button", { name: "Try again" })).toBeInViewport();
+    });
+  }
+
+  test("only Draw needs the outline editor", async ({ page }) => {
+    const outlineRequests = [];
+    page.on("request", (request) => {
+      if (request.url().includes("/chunks/outline-editor-")) outlineRequests.push(request.url());
+    });
+    await page.route("**/chunks/outline-editor-*.js", (route) => route.abort());
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    const failure = gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." });
+    await gallery.evaluate((element) => {
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "plans" });
+    });
+    await expect(gallery.locator("matic-map-workflow-v4")).toBeVisible();
+    await expect(failure).toHaveCount(0);
+    expect(outlineRequests).toHaveLength(0);
+
+    await gallery.evaluate((element) => {
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "draw" });
+    });
+    await expect(failure).toHaveCount(1);
+  });
+
+  test("Try again in Draw reloads into Draw, and Back works as after a fresh entry", async ({ page }) => {
+    const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
+    const panel = page.locator(fixture.panelTag);
+    const snapshot = () => page.evaluate((tag) => {
+      const state = document.querySelector(tag)?.getWorkspaceSnapshot();
+      return { workflow: state?.workflow, ready: state?.map.available === true };
+    }, fixture.panelTag);
+    const mount = () => page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+    await mount();
+    await expect.poll(snapshot).toEqual({ workflow: "none", ready: true });
+    const entryLength = await page.evaluate(() => history.length);
+
+    await page.route("**/chunks/outline-editor-*.js", (route) => route.abort());
+    await panel.getByRole("button", { name: /Clean a custom area/ }).click();
+    const failure = panel.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." });
+    await expect(failure).toHaveCount(1);
+    expect(await page.evaluate(() => history.length)).toBe(entryLength + 1);
+
+    await page.unroute("**/chunks/outline-editor-*.js");
+    await Promise.all([
+      page.waitForEvent("load"),
+      failure.getByRole("button", { name: "Try again" }).click(),
+    ]);
+    await fixture.remount();
+    await mount();
+    await expect.poll(snapshot).toEqual({ workflow: "draw", ready: true });
+    await expect(panel.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
+    await expect(failure).toHaveCount(0);
+    expect(await page.evaluate(() => history.length), "no layer entry is left behind").toBe(entryLength + 1);
+
+    await page.evaluate(() => history.back());
+    await expect.poll(snapshot).toEqual({ workflow: "none", ready: true });
+    expect(await page.evaluate(() => history.state?.maticMapLayer ?? null)).toBeNull();
+  });
+
+  test("a chunk loading while the panel is detached gets its full 20 seconds after it returns", async ({ page }) => {
+    await page.clock.install();
+    await page.route("**/chunks/workflow-panel-*.js", () => {});
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.evaluate((element) => {
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "rooms" });
+    });
+    const loading = gallery.getByText("Loading workspace tools…");
+    await expect(loading).toHaveCount(1);
+    await gallery.evaluate((element) => { window.__detached = element; element.remove(); });
+    await page.clock.runFor(30_000);
+    await page.evaluate(() => document.body.append(window.__detached));
+    await expect(loading).toHaveCount(1);
+    await page.clock.runFor(19_000);
+    await expect(loading).toHaveCount(1);
+    await page.clock.runFor(1_000);
+    await expect(gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." })).toHaveCount(1);
+  });
 
   test("a chunk still loading after 20 seconds counts as failed", async ({ page }) => {
     await page.clock.install();
