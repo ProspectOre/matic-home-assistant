@@ -238,6 +238,7 @@ test("the notice slot sits directly under the workflow heading in every workflow
         afterHeading: follows(heading, element),
         beforeDescription: follows(element, description),
         previous: element.previousElementSibling?.className ?? null,
+        pinnedWith: element.parentElement.className,
         next: element.nextElementSibling?.className ?? null,
       };
     });
@@ -245,7 +246,8 @@ test("the notice slot sits directly under the workflow heading in every workflow
       afterHeading: true,
       beforeDescription: true,
       previous: "panel-heading",
-      next: "panel-description",
+      pinnedWith: "panel-top",
+      next: null,
     });
   }
 });
@@ -734,4 +736,37 @@ test("slot, toast and canvas chip carry no live role", async ({ page }) => {
   await expect(chip).toBeVisible();
   expect(await chip.evaluate((element) => [element.getAttribute("role"), element.getAttribute("aria-live")]))
     .toEqual([null, null]);
+});
+
+test("the heading and notice slot stay put while the plan editor body scrolls", async ({ page }) => {
+  for (const [width, height, narrow] of [[1024, 768, false], [390, 844, true]]) {
+    await page.setViewportSize({ width, height });
+    const gallery = await loadGallery(page, { scenario: "plan-saved-intelligent", narrow });
+    await setGalleryNotice(page, sampleNotice("warning", `Pinned at ${width}`));
+    await expect(gallery.locator("[data-notice-slot]")).toBeVisible();
+    const moved = await gallery.locator(".panel-heading h2").evaluate(async (heading) => {
+      const root = heading.getRootNode();
+      // Let the sheet finish opening to its detent before measuring.
+      await Promise.all(root.getAnimations().map((animation) => animation.finished));
+      const body = root.querySelector(".workflow-body, .sheet-body");
+      const tops = () => ({
+        heading: heading.getBoundingClientRect().top,
+        slot: root.querySelector("[data-notice-slot]").getBoundingClientRect().top,
+        description: root.querySelector(".panel-description").getBoundingClientRect().top,
+      });
+      const before = tops();
+      body.scrollTop = body.scrollHeight;
+      await new Promise(requestAnimationFrame);
+      const after = tops();
+      return {
+        scrolled: body.scrollTop,
+        heading: after.heading - before.heading,
+        slot: after.slot - before.slot,
+        description: after.description - before.description,
+      };
+    });
+    expect(moved.scrolled, `body scrolls at ${width}`).toBeGreaterThan(40);
+    expect(moved.description, `description scrolls at ${width}`).toBeLessThan(-40);
+    expect({ heading: moved.heading, slot: moved.slot }, `pinned at ${width}`).toEqual({ heading: 0, slot: 0 });
+  }
 });

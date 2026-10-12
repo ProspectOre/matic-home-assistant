@@ -83,4 +83,44 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
 
     await expect(sheet).toHaveAttribute("data-detent", "peek");
   });
+
+  test("keeps the toast on the sheet's top edge while the handle is dragged", async ({ page }) => {
+    const sheet = await loadNarrowGallery(page);
+    await page.evaluate((tag) => {
+      const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "set-notice", notice: { tone: "success", key: "v4_notice_sample", fallback: "Drag sample" } },
+        bubbles: true,
+        composed: true,
+      }));
+    }, GALLERY_TAG);
+    const toast = page.locator(`${GALLERY_TAG} [data-notice-toast]`);
+    await expect(toast).toBeVisible();
+
+    const gaps = await page.locator(`${GALLERY_TAG} .sheet-grip`).evaluate(async (grip) => {
+      const root = grip.getRootNode();
+      const sheetBox = () => root.querySelector(".mobile-sheet").getBoundingClientRect();
+      const toastBox = () => root.querySelector("[data-notice-toast]").getBoundingClientRect();
+      const pointer = (type, clientY) => new PointerEvent(type, {
+        bubbles: true, composed: true, pointerId: 9, pointerType: "touch", clientY, button: 0,
+      });
+      const gap = () => sheetBox().top - toastBox().bottom;
+      const startY = sheetBox().top + 10;
+      const measured = { rest: gap(), during: [] };
+      grip.dispatchEvent(pointer("pointerdown", startY));
+      for (const dy of [-80, 60, 160]) {
+        grip.dispatchEvent(pointer("pointermove", startY + dy));
+        await new Promise(requestAnimationFrame);
+        measured.during.push(gap());
+      }
+      grip.dispatchEvent(pointer("pointercancel", startY + 160));
+      return measured;
+    });
+    // At rest the toast sits 8 px (plus the sheet height's sub-pixel ceil)
+    // above the sheet, and it keeps that gap at every drag position.
+    expect(gaps.rest).toBeGreaterThanOrEqual(8);
+    expect(gaps.rest).toBeLessThan(9);
+    expect(gaps.during.map((during) => Math.round(during - gaps.rest))).toEqual([0, 0, 0]);
+    await expect(sheet).toHaveAttribute("data-detent", "half");
+  });
 });

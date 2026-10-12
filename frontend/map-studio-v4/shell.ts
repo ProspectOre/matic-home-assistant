@@ -844,6 +844,14 @@ export class MaticMapShellV4 extends LitElement {
     return this.renderRoot.querySelector<HTMLElement>(".mobile-sheet");
   }
 
+  // A drag moves the sheet by transform only, so the toast, anchored to the
+  // sheet's resting top edge, takes the same transform and rides with it.
+  #translateSheet(sheet: HTMLElement, transform: string): void {
+    sheet.style.transform = transform;
+    const toast = this.renderRoot.querySelector<HTMLElement>("[data-notice-toast]");
+    if (toast) toast.style.transform = transform;
+  }
+
   #startsOnInteractiveSheetDescendant(event: PointerEvent): boolean {
     const currentTarget = event.currentTarget;
     for (const target of event.composedPath()) {
@@ -886,7 +894,7 @@ export class MaticMapShellV4 extends LitElement {
     const min = drag.startHeight - drag.heights.full;
     const max = drag.startHeight - drag.heights.peek;
     const offset = Math.max(min, Math.min(max, dy));
-    sheet.style.transform = `translateY(${offset}px)`;
+    this.#translateSheet(sheet, `translateY(${offset}px)`);
   }
 
   #gripUp(event: PointerEvent): void {
@@ -895,7 +903,7 @@ export class MaticMapShellV4 extends LitElement {
     this.#drag = null;
     const sheet = this.#sheet();
     if (sheet) {
-      sheet.style.transform = "";
+      this.#translateSheet(sheet, "");
       sheet.classList.remove("dragging");
     }
     if (event.type === "pointercancel") return;
@@ -1370,23 +1378,31 @@ export class MaticMapShellV4 extends LitElement {
     this.#loadWorkflowPanel();
   };
 
-  #panel(state: WorkspaceState, narrow: boolean) {
-    const workflow = workflowCopy(state, this.localize);
+  // The heading and notice slot sit outside the scroller, so they stay put
+  // and never cover a control the body scrolls into view.
+  #panelTop(state: WorkspaceState) {
     return html`
-      <div class="panel-heading">
-        ${state.workflow !== "none" ? html`
-          <button
-            class="panel-back ms-btn ms-btn--secondary"
-            type="button"
-            aria-label=${state.workflow === "plan" ? this.#t("v4_back_to_plans", "Back to plans") : this.#t("v4_back_to_all_tasks", "Back to all tasks")}
-            data-dialog-launcher="discardDraft"
-            @click=${(event: Event) => this.#workflow(state.workflow === "plan" ? "plans" : "none", event.currentTarget)}
-          >${icon(iconBack)}<span class="ms-btn__label">${state.workflow === "plan" ? this.#t("v4_your_plans", "Your plans") : this.#t("v4_all_tasks", "All tasks")}</span></button>
-        ` : nothing}
-        <h2 tabindex="-1">${workflow.title}</h2>
+      <div class="panel-top">
+        <div class="panel-heading">
+          ${state.workflow !== "none" ? html`
+            <button
+              class="panel-back ms-btn ms-btn--secondary"
+              type="button"
+              aria-label=${state.workflow === "plan" ? this.#t("v4_back_to_plans", "Back to plans") : this.#t("v4_back_to_all_tasks", "Back to all tasks")}
+              data-dialog-launcher="discardDraft"
+              @click=${(event: Event) => this.#workflow(state.workflow === "plan" ? "plans" : "none", event.currentTarget)}
+            >${icon(iconBack)}<span class="ms-btn__label">${state.workflow === "plan" ? this.#t("v4_your_plans", "Your plans") : this.#t("v4_all_tasks", "All tasks")}</span></button>
+          ` : nothing}
+          <h2 tabindex="-1">${workflowCopy(state, this.localize).title}</h2>
+        </div>
+        ${state.notice ? html`<div class="notice" data-notice-slot data-tone=${state.notice.tone}>${this.#noticeBody(state.notice, this.#closeNotice)}</div>` : nothing}
       </div>
-      ${state.notice ? html`<div class="notice" data-notice-slot data-tone=${state.notice.tone}>${this.#noticeBody(state.notice, this.#closeNotice)}</div>` : nothing}
-      <p class="panel-description">${workflow.description}</p>
+    `;
+  }
+
+  #panel(state: WorkspaceState, narrow: boolean) {
+    return html`
+      <p class="panel-description">${workflowCopy(state, this.localize).description}</p>
       ${this.#workflowBody(state, narrow)}
     `;
   }
@@ -1671,6 +1687,7 @@ export class MaticMapShellV4 extends LitElement {
                     ` : nothing}
                   </div>
                 ` : nothing}
+                ${this.#panelTop(state)}
                 <div
                   class="sheet-body"
                   id="sheet-body"
@@ -1691,6 +1708,7 @@ export class MaticMapShellV4 extends LitElement {
                     : nothing}
                 </div>
                 <section class="workflow">
+                  ${this.#panelTop(state)}
                   <div class="workflow-body">${this.#panel(state, narrow)}</div>
                   ${this.#actionBar(state, footerPrimary, footerSecondary)}
                 </section>
