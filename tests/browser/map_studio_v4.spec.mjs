@@ -3307,6 +3307,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator("#sheet-body")).toBeHidden();
     await showMore.click();
     await expect(sheet).toHaveAttribute("data-detent", "half");
+    await expect(live).toContainText("Map workspace, half height");
     await expect(gallery.locator("#sheet-body")).toBeVisible();
 
     // Room choices are immediately visible; long forms start at full height.

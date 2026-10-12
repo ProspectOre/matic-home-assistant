@@ -15,7 +15,7 @@ export type DrawToolsLayout = "row" | "grid";
 export interface DrawToolsHandlers {
   readonly intent: (intent: WorkspaceIntent) => void;
   readonly openBrush: () => void;
-  readonly t: (key: string, fallback: string) => string;
+  readonly t: (key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>) => string;
 }
 
 const TOOLS = ["outline", "paint", "erase", "pan"] as const;
@@ -64,11 +64,11 @@ export const renderDrawTools = (
       ${draw.tool !== "outline" ? html`<button
         class="ms-btn draw-brush"
         type="button"
-        aria-label=${handlers.t("v4_brush_button", "Brush width, {brush}. Opens brush settings.").replace("{brush}", brush)}
+        aria-label=${handlers.t("v4_brush_button", "Brush width, {brush}. Opens brush settings.", { brush })}
         aria-expanded=${String(state.precisionOpen)}
         aria-haspopup="dialog"
         @click=${handlers.openBrush}
-      >${icon(iconBrush)}<span class="ms-btn__label">${handlers.t("v4_brush", "Brush {brush}").replace("{brush}", brush)}</span></button>` : nothing}
+      >${icon(iconBrush)}<span class="ms-btn__label">${handlers.t("v4_brush", "Brush {brush}", { brush })}</span></button>` : nothing}
     </div>
   `;
 };

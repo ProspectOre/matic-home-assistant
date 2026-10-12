@@ -23,7 +23,7 @@ export class OutlineEditor {
     private readonly renderer: () => RendererController | null,
     private readonly intent: (intent: WorkspaceIntent) => void,
     private readonly update: () => void,
-    private readonly t: (key: string, fallback: string) => string,
+    private readonly t: (key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>) => string,
     private readonly focusPoint: (index: number) => void,
   ) {}
 
@@ -155,7 +155,7 @@ export class OutlineEditor {
         <svg aria-hidden="true"><path d=${path + (outline?.closed ? " Z" : "")} class=${valid ? "" : "invalid"} fill=${outline?.closed ? "var(--ms-accent)" : "none"}></path></svg>
         ${projected.map((p, i) => p ? html`
           <button class="zone-point" type="button" data-zone-index=${i} data-selected=${String(this.#selected === i)} data-map-control style=${`left:${p.x}px;top:${p.y}px`}
-            aria-label=${`${this.t("v4_zone_point", "Zone point")} ${i + 1}`} aria-describedby="zone-handle-help"
+            aria-label=${this.t("v4_zone_point_number", "Zone point {number}", { number: i + 1 })} aria-describedby="zone-handle-help"
             title=${this.t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}
             @pointerdown=${(e: PointerEvent) => this.#down(e, i)} @pointermove=${(e: PointerEvent) => this.#move(e)}
             @pointerup=${(e: PointerEvent) => this.#up(e)} @pointercancel=${() => this.cancel()}
@@ -171,16 +171,16 @@ export class OutlineEditor {
           const p = this.renderer()?.mapToScreen(midpoint);
           const start = projected[i], end = projected[(i + 1) % projected.length];
           return p && start && end && Math.hypot(start.x - end.x, start.y - end.y) >= 100 ? html`<button class="zone-point zone-midpoint" type="button" data-map-control
-            style=${`left:${p.x}px;top:${p.y}px`} aria-label=${`${this.t("v4_zone_add_point", "Add point after")} ${i + 1}`}
+            style=${`left:${p.x}px;top:${p.y}px`} aria-label=${this.t("v4_zone_add_point_after", "Add point after {number}", { number: i + 1 })}
             @click=${() => this.#insert(i)}>+</button>` : nothing;
         })}
         <div class="zone-help" data-map-control>
           <span id="zone-handle-help" class="sr-only">${this.t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}</span>
           ${selected !== null ? html`
-            <div class="zone-point-actions ms-surface" role="group" aria-label=${`${this.t("v4_zone_point", "Zone point")} ${selected + 1}`}>
-              <span class="zone-selection">${this.t("v4_zone_point_short", "Point")} ${selected + 1}</span>
+            <div class="zone-point-actions ms-surface" role="group" aria-label=${this.t("v4_zone_point_number", "Zone point {number}", { number: selected + 1 })}>
+              <span class="zone-selection">${this.t("v4_zone_point_short_number", "Point {number}", { number: selected + 1 })}</span>
               <button class="ms-btn" type="button" ?disabled=${points.length >= 64 || (!outline?.closed && selected === points.length - 1)} @click=${() => this.#insert(selected)}>${this.t("v4_zone_insert_point", "Insert point")}</button>
-              <button class="ms-btn" type="button" aria-label=${`${this.t("v4_zone_delete_point", "Delete point")} ${selected + 1}`} @click=${() => this.#remove(selected)}>${this.t("v4_zone_delete_point", "Delete point")}</button>
+              <button class="ms-btn" type="button" aria-label=${this.t("v4_zone_delete_point_number", "Delete point {number}", { number: selected + 1 })} @click=${() => this.#remove(selected)}>${this.t("v4_zone_delete_point", "Delete point")}</button>
             </div>` : nothing}
           ${selected === null || !outline?.closed ? html`
             <div class="zone-guidance ms-surface">

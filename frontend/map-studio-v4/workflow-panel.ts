@@ -579,8 +579,10 @@ line-height: var(--ms-lh-snug);
           <button class="ms-row ms-row--card" type="button" @click=${() => this.#intent({ type: "select-plan", planId: plan.id })}>
             <span class="ms-row__body"><strong>${plan.name}</strong>
               <small>${plan.rooms.length === 1
-                ? this.#t("v4_plan_room_count_one", "1 room")
-                : this.#t("v4_plan_room_count", "{count} rooms", { count: plan.rooms.length })}${plan.enabled ? "" : ` · ${this.#t("v4_paused", "paused")}`}</small>
+                ? (plan.enabled ? this.#t("v4_plan_room_count_one", "1 room") : this.#t("v4_plan_room_count_one_paused", "1 room · paused"))
+                : (plan.enabled
+                  ? this.#t("v4_plan_room_count", "{count} rooms", { count: plan.rooms.length })
+                  : this.#t("v4_plan_room_count_paused", "{count} rooms · paused", { count: plan.rooms.length }))}</small>
             </span>
             <span class="ms-row__trail">${this.#t("v4_edit_plan", "Edit plan")}</span>
           </button>
@@ -882,7 +884,7 @@ line-height: var(--ms-lh-snug);
             <button class="snapshot ms-row ms-row" type="button" aria-current=${String(!this.state.selection.historyId && Boolean(floor?.active))} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>${liveLabel}</span><small>${this.#t("v4_current", "Current")}</small></button>
             ${snapshots.map((snapshot, index) => html`
               <button class="snapshot ms-row ms-row" type="button" aria-current=${String(snapshot.id === this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: snapshot.id })}>
-                <span>${this.#formatTime(snapshot.createdAt)}</span><small>${index + 1} of ${snapshots.length}</small>
+                <span>${this.#formatTime(snapshot.createdAt)}</span><small>${this.#t("v4_history_position", "{position} of {count}", { position: index + 1, count: snapshots.length })}</small>
               </button>
             `)}
           </div>

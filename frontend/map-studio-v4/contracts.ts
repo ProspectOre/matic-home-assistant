@@ -357,6 +357,8 @@ export interface PrimaryAction {
   readonly reason?: string;
   /** Translation key for `label`; the view resolves `t(labelKey, label)`. */
   readonly labelKey?: string;
+  /** Values for the `{name}` placeholders in `label`; passed to `t(labelKey, label, labelPlaceholders)`. */
+  readonly labelPlaceholders?: Readonly<Record<string, string | number>>;
   /** Translation key for `reason`; the view resolves `t(reasonKey, reason)`. */
   readonly reasonKey?: string;
 }

@@ -994,13 +994,11 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
     const previewCurrent = admitted !== null;
     const previewAllowed = previewCurrent && !admitted.preview.blocker && admitted.preview.rooms.length > 0;
     const ready = canStartMotion(state) && count > 0 && previewAllowed;
-    // The counted label carries a placeholder the view cannot fill through
-    // `t(labelKey, label)`, so it ships without a key and falls back to English.
     return {
       id: "clean-rooms",
-      ...(count
-        ? { label: `Clean ${count} room${count === 1 ? "" : "s"}` }
-        : { label: "Clean selected rooms", labelKey: "v4_action_clean_rooms" }),
+      ...(count === 0 ? { label: "Clean selected rooms", labelKey: "v4_action_clean_rooms" }
+        : count === 1 ? { label: "Clean 1 room", labelKey: "v4_action_clean_rooms_count_one" }
+        : { label: "Clean {count} rooms", labelKey: "v4_action_clean_rooms_count", labelPlaceholders: { count } }),
       kind: "primary",
       enabled: ready,
       ...(ready

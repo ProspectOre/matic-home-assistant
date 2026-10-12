@@ -279,7 +279,7 @@ export class MaticMapCanvasV4 extends LitElement {
     handleEvent: (event: PointerEvent) => { if (event.pointerType === "touch" && !event.isPrimary) this.#outlineEditor.cancel(); },
   };
   readonly #outlineEditor = new OutlineEditor(() => this.state, () => this.#renderer,
-    (intent) => this.#intent(intent), () => this.requestUpdate(), (key, fallback) => this.#t(key, fallback),
+    (intent) => this.#intent(intent), () => this.requestUpdate(), (key, fallback, placeholders) => this.#t(key, fallback, placeholders),
     (index) => { void this.updateComplete.then(() => {
       const target = this.renderRoot.querySelector<HTMLElement>(`[data-zone-index="${index}"]`) ?? this.renderRoot.querySelector<HTMLElement>(".map-root");
       target?.focus({ preventScroll: true });
@@ -679,7 +679,7 @@ export class MaticMapCanvasV4 extends LitElement {
           ${renderDrawTools(state, {
             intent: (intent) => this.#intent(intent),
             openBrush: () => this.#intent({ type: "set-precision-open", value: !state.precisionOpen }),
-            t: (key, fallback) => this.#t(key, fallback),
+            t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders),
           }, "row")}
         </div>
       `;
@@ -691,7 +691,7 @@ export class MaticMapCanvasV4 extends LitElement {
       return html`
         <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           <div class="selection-chip ms-surface ms-surface--floating" data-map-control>
-            <span>${this.#t("v4_rooms_selected", "Rooms selected: {count}").replace("{count}", String(count))}</span>
+            <span>${this.#t("v4_rooms_selected", "Rooms selected: {count}", { count })}</span>
             <button class="ms-btn ms-btn--sm" type="button" @click=${() => this.#clearSelection()}>${this.#t("v4_clear", "Clear")}</button>
           </div>
         </div>

@@ -143,7 +143,6 @@ _BASELINE_MISMATCH: frozenset[tuple[str, str]] = frozenset(
         ("plan_delete", "Delete plan"),
         ("plan_rooms", "Plan rooms"),
         ("v4_draw_area", "Draw an area"),
-        ("v4_paused", "paused"),
         ("v4_retry", "Try again"),
     }
 )
@@ -151,7 +150,6 @@ _BASELINE_MISMATCH: frozenset[tuple[str, str]] = frozenset(
 # ``v4_*`` keys stored in ``common`` that no shipped code references.
 _BASELINE_ORPHANS: frozenset[str] = frozenset(
     {
-        "v4_action_clean_rooms_count",
         "v4_clean",
         "v4_cleaning_plan",
         "v4_history_quick_detail",
@@ -229,15 +227,6 @@ _LEGACY_UNREFERENCED: frozenset[str] = frozenset(
     }
 )
 
-# ``(module, key)`` sites whose stored value has a placeholder the site omits.
-_BASELINE_UNSUPPLIED: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("draw-tools.ts", "v4_brush"),
-        ("draw-tools.ts", "v4_brush_button"),
-        ("map-canvas.ts", "v4_rooms_selected"),
-    }
-)
-
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _SIMPLE_PLACEHOLDER = re.compile(r"\{[a-z][a-z0-9_]*\}")
 
@@ -305,7 +294,9 @@ def test_every_placeholder_is_supplied_at_its_call_site() -> None:
         if not set(_PLACEHOLDER.findall(common.get(site.key, site.fallback)))
         <= site.supplied
     )
-    _assert_ratchet("sites that omit a placeholder", unsupplied, _BASELINE_UNSUPPLIED)
+    assert unsupplied == frozenset(), (
+        f"sites that omit a placeholder their stored value names: {sorted(unsupplied)}"
+    )
 
 
 def test_common_values_are_simple_message_format() -> None:
@@ -409,7 +400,6 @@ def test_effects_build_no_notice_text() -> None:
     assert holders == []
 
 
-@pytest.mark.xfail(strict=True, reason="Task 3")
 def test_no_manual_placeholder_substitution() -> None:
     holders = [m for m, source in shipped_modules().items() if '.replace("{' in source]
     assert holders == []

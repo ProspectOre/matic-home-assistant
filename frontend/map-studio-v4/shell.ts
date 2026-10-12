@@ -804,7 +804,9 @@ export class MaticMapShellV4 extends LitElement {
   #setDetent(detent: SheetDetent): void {
     if (detent === this._sheetDetent) return;
     this._sheetDetent = detent;
-    this._announcement = this.#t("v4_workspace_height", "Map workspace, {height} height", { height: detent });
+    this._announcement = detent === "peek" ? this.#t("v4_workspace_height_peek", "Map workspace, peek height")
+      : detent === "half" ? this.#t("v4_workspace_height_half", "Map workspace, half height")
+      : this.#t("v4_workspace_height_full", "Map workspace, full height");
   }
 
   #sheetStep(delta: 1 | -1, wrap = false): void {
@@ -1064,7 +1066,7 @@ export class MaticMapShellV4 extends LitElement {
 
   #actionButton(action: PrimaryAction, classes: string, reasonId: string) {
     if (action.id === "choose-cleaning") return nothing;
-    const label = action.labelKey ? this.#t(action.labelKey, action.label) : action.label;
+    const label = action.labelKey ? this.#t(action.labelKey, action.label, action.labelPlaceholders) : action.label;
     const reason = !action.enabled && action.reason
       ? (action.reasonKey ? this.#t(action.reasonKey, action.reason) : action.reason)
       : null;
@@ -1091,11 +1093,11 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #actionBar(state: WorkspaceState, primary: PrimaryAction | null, secondary: PrimaryAction | null) {
+    const rooms = this.#roomNames(state).join(", ");
     const summary = primary?.enabled && state.workflow === "rooms" && primary.id === "clean-rooms"
-      ? [
-        this.#roomNames(state).join(", "),
-        state.planDraft.returnToBase ? this.#t("v4_returns_to_dock", "returns to the dock") : "",
-      ].filter(Boolean).join(" · ")
+      ? (state.planDraft.returnToBase && rooms
+        ? this.#t("v4_rooms_summary_dock", "{rooms} · returns to the dock", { rooms })
+        : rooms)
       : "";
     return html`
       <div class="action-bar">
@@ -1383,7 +1385,10 @@ export class MaticMapShellV4 extends LitElement {
     const workflow = workflowCopy(state, this.localize);
     let line = workflow.title;
     if (state.workflow === "rooms" && state.selection.roomIds.length) {
-      line = `${this.#t("v4_rooms_selected", "Rooms selected: {count}", { count: state.selection.roomIds.length })} · ${this.#roomNames(state).join(", ")}`;
+      line = this.#t("v4_rooms_selected_names", "Rooms selected: {count} · {rooms}", {
+        count: state.selection.roomIds.length,
+        rooms: this.#roomNames(state).join(", "),
+      });
     }
     // With the body open the h2 already names the workflow, so the grip line
     // carries the robot instead of repeating the title directly above it.
@@ -1647,7 +1652,7 @@ export class MaticMapShellV4 extends LitElement {
                 </div>
                 ${showDrawTools ? html`
                   <div class="sheet-tools">
-                    ${renderDrawTools(state, { intent: (intent) => this.#intent(intent), openBrush: () => this.#openBrush(), t: (key, fallback) => this.#t(key, fallback) }, "grid")}
+                    ${renderDrawTools(state, { intent: (intent) => this.#intent(intent), openBrush: () => this.#openBrush(), t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }, "grid")}
                     ${precisionOpen ? html`
                       <div class="precision-popover">
                         <${precisionControlsTag} compact inline .state=${state} .localize=${this.localize}></${precisionControlsTag}>
