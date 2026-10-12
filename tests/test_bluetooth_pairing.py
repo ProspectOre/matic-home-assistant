@@ -554,7 +554,8 @@ async def test_grant_reports_the_issuing_candidates_passkey_bond(
                     device=SimpleNamespace(
                         address=TEST_ADDRESS,
                         details={"path": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"},
-                    )
+                    ),
+                    fresh=True,
                 )
             ]
         ),
@@ -736,7 +737,6 @@ async def test_a_stronger_paired_robot_is_never_contacted_or_unpaired(
     ("fresh", "bond_address"),
     [
         ((True, True), None),
-        ((False, False), None),
         # The recorded robot is not advertising and two others are.
         ((True, True), ":".join(("02",) * 6)),
     ],
@@ -763,19 +763,69 @@ async def test_replacement_refuses_to_guess_between_robots(
     assert home.bonded == {OTHER_PATH}
 
 
-@pytest.mark.parametrize("fresh", [True, False])
-async def test_replacement_with_one_robot_still_pairs_it(monkeypatch, fresh) -> None:
+@pytest.mark.parametrize(
+    ("fresh", "bond_address"),
+    [
+        # An entry paired by an earlier version: the robot is advertising.
+        (True, None),
+        # The recorded robot, even while its advertisement is only cached.
+        (False, TEST_ADDRESS),
+    ],
+)
+async def test_replacement_with_one_robot_still_pairs_it(
+    monkeypatch, fresh, bond_address
+) -> None:
     user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
     home = _install_two_robot_home(
         monkeypatch, user_id, [_candidate(TEST_ADDRESS, TARGET_PATH, fresh=fresh)]
     )
 
     grant = await async_request_bluetooth_credential(
-        object(), user_id, replace_existing_bond=True
+        object(), user_id, replace_existing_bond=True, bond_address=bond_address
     )
 
     assert grant.address == TEST_ADDRESS
     assert grant.reused_existing_bond is False
+    assert home.contacted == [TEST_ADDRESS]
+
+
+@pytest.mark.parametrize(
+    "cached",
+    [
+        # An entry paired by an earlier version recorded no address, and the
+        # only cached robot is another one outside Pairing mode.
+        [_candidate(OTHER_ADDRESS, OTHER_PATH, fresh=False)],
+        [
+            _candidate(OTHER_ADDRESS, OTHER_PATH, fresh=False),
+            _candidate(TEST_ADDRESS, TARGET_PATH, fresh=False),
+        ],
+    ],
+)
+async def test_replacement_never_unpairs_a_robot_outside_pairing_mode(
+    monkeypatch, cached
+) -> None:
+    user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
+    home = _install_two_robot_home(monkeypatch, user_id, cached)
+
+    with pytest.raises(PairingModeRequiredError):
+        await async_request_bluetooth_credential(
+            object(), user_id, replace_existing_bond=True
+        )
+
+    assert home.contacted == []
+    assert home.removed == []
+    assert home.bonded == {OTHER_PATH}
+
+
+async def test_first_setup_still_pairs_a_cached_robot(monkeypatch) -> None:
+    user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
+    home = _install_two_robot_home(
+        monkeypatch, user_id, [_candidate(TEST_ADDRESS, TARGET_PATH, fresh=False)]
+    )
+
+    grant = await async_request_bluetooth_credential(object(), user_id)
+
+    assert grant.address == TEST_ADDRESS
     assert home.contacted == [TEST_ADDRESS]
 
 
@@ -1488,6 +1538,24 @@ async def test_discovery_reports_unavailable_bluetooth_integration(
 
     with pytest.raises(BluetoothAdapterUnavailableError):
         await _async_matic_discoveries(hass)
+
+
+@pytest.mark.parametrize("fail_on", ["scan", "read"])
+async def test_discovery_reports_bluetooth_unloading_during_the_scan(
+    monkeypatch, fail_on
+) -> None:
+    scan = _install_bluetooth(monkeypatch, [_LocalScanner([_advertisement()])])
+    bluetooth = sys.modules["homeassistant.components.bluetooth"]
+    unloaded = RuntimeError("BluetoothManager has not been set")
+    if fail_on == "scan":
+        scan.side_effect = unloaded
+    else:
+        bluetooth.async_discovered_service_info.side_effect = [[], unloaded]
+
+    with pytest.raises(BluetoothAdapterUnavailableError) as raised:
+        await _async_matic_discoveries(object())
+
+    assert raised.value.__cause__ is unloaded
 
 
 async def test_discovery_never_probes_arbitrary_unnamed_devices(monkeypatch) -> None:

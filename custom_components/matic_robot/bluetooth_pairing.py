@@ -297,16 +297,22 @@ async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
         raise BluetoothAdapterUnavailableError(
             "Home Assistant has no directly attached connectable Bluetooth adapter"
         )
-    before_scan = {
-        info.address: info.time
-        for info in bluetooth.async_discovered_service_info(hass, connectable=False)
-    }
-    await bluetooth.async_request_active_scan(
-        hass, duration=BLUETOOTH_ACTIVE_SCAN_SECONDS
-    )
-    service_infos = tuple(
-        bluetooth.async_discovered_service_info(hass, connectable=False)
-    )
+    try:
+        before_scan = {
+            info.address: info.time
+            for info in bluetooth.async_discovered_service_info(hass, connectable=False)
+        }
+        await bluetooth.async_request_active_scan(
+            hass, duration=BLUETOOTH_ACTIVE_SCAN_SECONDS
+        )
+        service_infos = tuple(
+            bluetooth.async_discovered_service_info(hass, connectable=False)
+        )
+    except RuntimeError as err:
+        # Raised when Home Assistant's Bluetooth integration unloads mid-scan.
+        raise BluetoothAdapterUnavailableError(
+            "Home Assistant's Bluetooth integration is not available"
+        ) from err
 
     local_by_address: dict[str, _MaticDiscovery] = {}
     remote_matic = False
@@ -387,16 +393,17 @@ def _bind_replacement_candidate(
         bound = [d for d in discoveries if _same_address(d, (bond_address,))]
         if bound:
             return bound
-    if len(discoveries) > 1:
-        # A retained entry of a robot that is no longer advertising is not in
-        # Pairing mode, so it is never the robot the user is pairing.
-        discoveries = [discovery for discovery in discoveries if discovery.fresh]
-    if len(discoveries) != 1:
+    # A retained entry of a robot that is no longer advertising is not in
+    # Pairing mode, so it is never the robot the user is pairing.
+    advertising = [discovery for discovery in discoveries if discovery.fresh]
+    if not advertising:
+        raise PairingModeRequiredError("No Matic is advertising in Pairing mode")
+    if len(advertising) > 1:
         raise BluetoothCandidateAmbiguousError(
-            f"{len(discoveries)} Matic candidates could be replaced; "
+            f"{len(advertising)} Matic candidates could be replaced; "
             "refusing to choose one"
         )
-    return discoveries
+    return advertising
 
 
 def _has_adapter_access_error(err: BaseException) -> bool:
@@ -445,8 +452,8 @@ async def async_request_bluetooth_credential(
 
     Robots at ``excluded_addresses`` belong to other configured entries and are
     never contacted. ``replace_existing_bond`` deletes an existing bond, so it
-    proceeds only with a single candidate: the one at ``bond_address`` when
-    it is advertising, otherwise the only Matic in Pairing mode.
+    proceeds only with a single candidate: the one at ``bond_address``,
+    otherwise the only Matic heard advertising (in Pairing mode) during the scan.
     """
 
     def _stage(stage: str) -> None:
