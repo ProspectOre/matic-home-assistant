@@ -92,12 +92,16 @@ class MaticPairingAgent(ServiceInterface):
                 "No Home Assistant passkey prompt is active",
             )
         try:
-            return await self._passkey_exchange.async_request_passkey()
+            passkey = await self._passkey_exchange.async_request_passkey()
         except BluetoothPasskeyCancelledError as err:
             raise DBusError(
                 "org.bluez.Error.Canceled",
                 "The Matic passkey request ended",
             ) from err
+        # The freshness gate requires this: a submitted code alone does not
+        # prove that the bond BlueZ completed used it.
+        self._passkey_exchange.note_answered()
+        return passkey
 
     @method()
     def DisplayPinCode(self, device: DBusObjectPath, pincode: DBusString) -> DBusVoid:

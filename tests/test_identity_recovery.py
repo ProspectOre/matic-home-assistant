@@ -25,6 +25,8 @@ from custom_components.matic_robot.client.exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
     CertificateMismatchError,
+    EndpointUnsupportedError,
+    MaticError,
     PairingModeRequiredError,
 )
 from custom_components.matic_robot.client.models import RobotInfo
@@ -68,6 +70,7 @@ FRESH = {
     "reused_existing_bond": False,
     "passkey_requested": True,
     "passkey_submitted": True,
+    "passkey_answered": True,
 }
 
 
@@ -451,6 +454,12 @@ async def test_recovery_identity_compares_serial_before_hostname(monkeypatch) ->
             "invalid_certificate",
         ),
         (None, _Client(info=_info(serial="other-serial")), "invalid_certificate"),
+        (
+            None,
+            _Client(error=EndpointUnsupportedError("Handshake")),
+            "recover_cannot_connect",
+        ),
+        (None, _Client(error=MaticError("unexpected")), "recover_cannot_connect"),
     ],
 )
 async def test_final_check_failures_keep_the_old_pin(
@@ -489,6 +498,7 @@ async def test_final_check_reports_an_unreachable_robot(hass, robot) -> None:
         {"reused_existing_bond": None},
         {"passkey_requested": False},
         {"passkey_submitted": False},
+        {"passkey_answered": False},
     ],
 )
 async def test_unconfirmed_bluetooth_pairing_aborts_without_writing(
@@ -504,3 +514,76 @@ async def test_unconfirmed_bluetooth_pairing_aborts_without_writing(
     # The new credential never reaches the robot's endpoint.
     assert robot.clients == []
     _assert_nothing_written(hass, robot)
+
+
+async def test_an_unexpected_failure_is_logged_and_ends_the_dialog(
+    hass, robot, caplog
+) -> None:
+    robot.request_error = RuntimeError("synthetic bug")
+    flow = _flow(hass, robot)
+
+    result = await _recover(flow)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "pairing_session_expired"
+    assert "Matic pairing stopped unexpectedly" in caplog.text
+    assert "synthetic bug" in caplog.text
+    assert flow._pairing_task is None
+    _assert_nothing_written(hass, robot)
+
+
+async def test_finish_without_a_result_after_cancellation_ends_the_dialog(
+    hass, robot
+) -> None:
+    flow = _flow(hass, robot)
+    flow._pairing_task = hass.async_create_task(asyncio.sleep(3600))
+    flow._pairing_task.cancel()
+    await asyncio.gather(flow._pairing_task, return_exceptions=True)
+
+    result = await flow.async_step_finish()
+
+    assert result["reason"] == "pairing_session_expired"
+    assert flow._pairing_task is None
+
+
+async def test_a_second_dialog_for_the_same_robot_is_refused(hass, robot) -> None:
+    context = {
+        "source": config_entries.SOURCE_RECONFIGURE,
+        "entry_id": robot.entry.entry_id,
+    }
+    manager = hass.config_entries.flow
+    first = await manager.async_init(
+        DOMAIN, context=context, data={"recover_identity": True}
+    )
+
+    second = await manager.async_init(
+        DOMAIN, context=context, data={"recover_identity": True}
+    )
+    menu = await manager.async_init(DOMAIN, context=context)
+    refused = await manager.async_configure(
+        menu["flow_id"], {"next_step_id": "recover_identity"}
+    )
+
+    assert first["step_id"] == "recover_identity"
+    assert second["type"] is FlowResultType.ABORT
+    assert second["reason"] == "recovery_in_progress"
+    assert refused["reason"] == "recovery_in_progress"
+    [progress] = manager.async_progress_by_handler(DOMAIN)
+    assert progress["flow_id"] == first["flow_id"]
+    _assert_nothing_written(hass, robot)
+
+
+async def test_a_dialog_for_another_robot_does_not_block_recovery(hass, robot) -> None:
+    other = MockConfigEntry(domain=DOMAIN, title="Hall", unique_id="other-serial")
+    other.add_to_hass(hass)
+    await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={
+            "source": config_entries.SOURCE_RECONFIGURE,
+            "entry_id": other.entry_id,
+        },
+    )
+
+    result = await _flow(hass, robot).async_step_recover_identity()
+
+    assert result["step_id"] == "recover_identity"

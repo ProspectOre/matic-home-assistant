@@ -17,6 +17,7 @@ from custom_components.matic_robot.bluetooth_pairing import (
     MATIC_BLE_SERVICE_UUID,
     BluetoothAdapterUnavailableError,
     BluetoothBondRecoveryRequiredError,
+    BluetoothCredentialGrant,
     BluetoothPairingIncompleteError,
     BluetoothPairingResetError,
     BluetoothPairingUnavailableError,
@@ -30,6 +31,7 @@ from custom_components.matic_robot.bluetooth_pairing import (
     async_has_local_bluetooth_adapter,
     async_request_bluetooth_credential,
 )
+from custom_components.matic_robot.bluez_agent import MaticPairingAgent
 from custom_components.matic_robot.client.exceptions import (
     PairingModeRequiredError,
 )
@@ -466,11 +468,15 @@ async def test_passkey_facts_belong_to_one_candidate_and_never_replay() -> None:
     exchange.submit(123456)
     assert await request == 123456
     assert exchange.candidate_requested and exchange.candidate_submitted
+    assert not exchange.candidate_answered
+    exchange.note_answered()
+    assert exchange.candidate_answered
 
     exchange.begin_candidate()
 
     assert not exchange.candidate_requested
     assert not exchange.candidate_submitted
+    assert not exchange.candidate_answered
     # The next candidate never receives the code typed for the previous one.
     with pytest.raises(BluetoothPasskeyCancelledError):
         await exchange.async_request_passkey()
@@ -485,6 +491,9 @@ async def test_code_typed_before_a_candidate_request_is_not_attributed() -> None
 
     assert exchange.submitted
     assert not exchange.candidate_submitted
+    # An answer that no request of this candidate asked for is not attributed.
+    exchange.note_answered()
+    assert not exchange.candidate_answered
 
 
 def _credential_client(user_id: str) -> SimpleNamespace:
@@ -514,8 +523,10 @@ async def test_grant_reports_the_issuing_candidates_passkey_bond(
     user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
     exchange = BluetoothPasskeyExchange()
 
-    async def pair(_path, **_kwargs):
-        request = asyncio.create_task(exchange.async_request_passkey())
+    agent = MaticPairingAgent(TEST_ADDRESS, exchange)
+
+    async def pair(path, **_kwargs):
+        request = asyncio.create_task(agent.RequestPasskey.__wrapped__(agent, path))
         await exchange.async_wait_until_requested()
         exchange.submit(123456)
         await request
@@ -558,7 +569,21 @@ async def test_grant_reports_the_issuing_candidates_passkey_bond(
     )
 
     assert grant.passkey_requested and grant.passkey_submitted
+    assert grant.passkey_answered
     assert grant.fresh_passkey_bond is (reused is False)
+
+
+def test_a_submitted_code_that_never_reached_bluez_is_not_fresh() -> None:
+    grant = BluetoothCredentialGrant(
+        object(),
+        scoped_pairing=True,
+        reused_existing_bond=False,
+        passkey_requested=True,
+        passkey_submitted=True,
+    )
+
+    assert not grant.passkey_answered
+    assert not grant.fresh_passkey_bond
 
 
 async def test_grant_from_a_later_candidate_does_not_inherit_an_earlier_code(
@@ -613,6 +638,7 @@ async def test_grant_from_a_later_candidate_does_not_inherit_an_earlier_code(
     assert exchange.requested and exchange.submitted
     assert not grant.passkey_requested
     assert not grant.passkey_submitted
+    assert not grant.passkey_answered
     assert not grant.fresh_passkey_bond
 
 

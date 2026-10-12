@@ -8,6 +8,7 @@ from homeassistant import config_entries
 from homeassistant.components.repairs import RepairsFlow, RepairsFlowResult
 from homeassistant.components.repairs.const import FlowType
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
@@ -55,6 +56,10 @@ class RobotIdentityRepairFlow(RepairsFlow):
             },
             data={"recover_identity": True},
         )
+        if result["type"] is not FlowResultType.FORM:
+            # Recovery did not open (for example another dialog for this robot
+            # is running); the abort text still names the manual path.
+            return self.async_abort(reason="continue_in_reconfigure")
         return self.async_abort(
             reason="continue_in_reconfigure",
             next_flow=(FlowType.CONFIG_FLOW, result["flow_id"]),

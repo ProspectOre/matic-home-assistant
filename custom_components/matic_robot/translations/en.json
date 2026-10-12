@@ -481,6 +481,7 @@
       "pairing_not_confirmed": "Home Assistant could not confirm a new Bluetooth pairing, so nothing was changed. Use an adapter attached directly to Home Assistant and turn Pairing mode off and back on in the Matic app, then go to Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure > Robot was reset.",
       "pairing_session_expired": "Setup was interrupted. Start setup again.",
       "reauth_successful": "Pairing restored. Home Assistant is connected to the robot again.",
+      "recovery_in_progress": "Another dialog for this robot is still open. Close it, then try again.",
       "reconfigure_successful": "Robot address updated."
     },
     "error": {

@@ -735,9 +735,18 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Return the automatically verified pairing result."""
-        if self._pairing_task is None or self._pairing_result is None:
+        if self._pairing_task is None:
             return self.async_abort(reason="pairing_session_expired")
         try:
+            if self._pairing_result is None:
+                # Every runner records a result unless it failed unexpectedly;
+                # retrieve that failure so it is logged, not silently dropped.
+                task = self._pairing_task
+                if task.done() and not task.cancelled() and task.exception():
+                    _LOGGER.error(
+                        "Matic pairing stopped unexpectedly", exc_info=task.exception()
+                    )
+                return self.async_abort(reason="pairing_session_expired")
             self._pairing_task.result()
             return self._pairing_result
         finally:
@@ -875,6 +884,13 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._pairing_result = self._show_pairing_form(
                 "reauth_confirm", {"base": "invalid_certificate"}
             )
+        except MaticError as err:
+            _LOGGER.warning(
+                "Matic reauthentication could not verify the robot: %s", err
+            )
+            self._pairing_result = self._show_pairing_form(
+                "reauth_confirm", {"base": "cannot_connect"}
+            )
         else:
             await self.async_set_unique_id(entry.unique_id)
             self._abort_if_unique_id_mismatch()
@@ -1000,6 +1016,14 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._pairing_task is not None:
             return self._async_pairing_progress("recover_identity")
         if user_input is None:
+            # Recovery registers BlueZ's default agent; a dialog opened while
+            # another one for this robot is open (Repair and Reconfigure, or
+            # reauth) would race it, so the later one is refused.
+            if self._async_in_progress(
+                include_uninitialized=True,
+                match_context={"entry_id": self.context["entry_id"]},
+            ):
+                return self.async_abort(reason="recovery_in_progress")
             return self._show_recovery_form()
         entry = self._get_reconfigure_entry()
         address = user_input[CONF_ROBOT_ADDRESS]
@@ -1057,6 +1081,13 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             error = "recover_cannot_connect"
         except CertificateMismatchError, InvalidRobotCertificateError:
             error = "invalid_certificate"
+        except MaticError as err:
+            # For example an endpoint that does not implement Handshake: the
+            # robot at this address could not be verified, so nothing changes.
+            _LOGGER.warning(
+                "Matic identity recovery could not verify the robot: %s", err
+            )
+            error = "recover_cannot_connect"
         else:
             result = self.async_update_reload_and_abort(
                 entry,
@@ -1247,7 +1278,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             try:
                 credential = await self._async_request_credential()
-            except _PAIRING_ERRORS as err:
+            except MaticError as err:
                 return self._pairing_error_result(err, host, port, identity)
             retry_data = dict(data)
             retry_data[CONF_HERMES_CREDENTIAL] = credential.to_storage()
@@ -1262,6 +1293,11 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
         except _PAIRING_ERRORS as err:
             return self._pairing_error_result(err, host, port, identity)
+        except MaticError as err:
+            _LOGGER.warning("Matic setup could not verify the robot: %s", err)
+            return self.async_show_form(
+                step_id="pair", errors={"base": "cannot_connect"}
+            )
 
         if info.serial_number != identity.serial_number or info.hostname.rstrip(
             "."

@@ -88,3 +88,26 @@ async def test_identity_fix_flow_hands_off_to_robot_was_reset(hass) -> None:
     assert progress["context"]["source"] == config_entries.SOURCE_RECONFIGURE
     assert progress["context"]["entry_id"] == entry.entry_id
     assert progress["step_id"] == "recover_identity"
+
+
+async def test_identity_fix_flow_without_a_running_flow_names_the_manual_path(
+    hass,
+) -> None:
+    entry = _entry(hass)
+    context = {
+        "source": config_entries.SOURCE_RECONFIGURE,
+        "entry_id": entry.entry_id,
+    }
+    running = await hass.config_entries.flow.async_init(
+        DOMAIN, context=context, data={"recover_identity": True}
+    )
+    flow = RobotIdentityRepairFlow(entry.entry_id)
+    flow.hass = hass
+
+    result = await flow.async_step_init({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "continue_in_reconfigure"
+    assert result.get("next_flow") is None
+    [progress] = hass.config_entries.flow.async_progress_by_handler(DOMAIN)
+    assert progress["flow_id"] == running["flow_id"]

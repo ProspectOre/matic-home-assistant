@@ -59,7 +59,9 @@ def test_agent_declares_authenticated_pairing_capability() -> None:
 
 
 async def test_agent_confirms_only_the_selected_matic() -> None:
-    exchange = SimpleNamespace(async_request_passkey=AsyncMock(return_value=123456))
+    exchange = SimpleNamespace(
+        async_request_passkey=AsyncMock(return_value=123456), note_answered=MagicMock()
+    )
     agent = MaticPairingAgent(TEST_ADDRESS, exchange)
     expected_device = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
 
@@ -71,8 +73,10 @@ async def test_agent_confirms_only_the_selected_matic() -> None:
         request_confirmation(agent, expected_device, 123456)
     with pytest.raises(DBusError, match="Bluetooth PIN"):
         request_pin(agent, expected_device)
+    exchange.note_answered.assert_not_called()
     assert await request_passkey(agent, expected_device) == 123456
     exchange.async_request_passkey.assert_awaited_once_with()
+    exchange.note_answered.assert_called_once_with()
 
     with pytest.raises(DBusError, match="selected Matic"):
         await request_passkey(agent, "/org/bluez/hci0/dev_11_22_33_44_55_66")
@@ -100,6 +104,7 @@ async def test_agent_returns_typed_dbus_error_when_pairing_is_cancelled() -> Non
 
     with pytest.raises(DBusError, match="passkey request ended"):
         await request
+    assert not exchange.candidate_answered
 
 
 async def test_agent_release_leaves_the_passkey_prompt_usable() -> None:

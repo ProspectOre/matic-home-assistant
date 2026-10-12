@@ -103,6 +103,7 @@ class BluetoothPasskeyExchange:
         self._submitted = False
         self._candidate_requested = False
         self._candidate_submitted = False
+        self._candidate_answered = False
         self._on_state_change = on_state_change
 
     @property
@@ -126,6 +127,11 @@ class BluetoothPasskeyExchange:
         return self._candidate_submitted
 
     @property
+    def candidate_answered(self) -> bool:
+        """Return whether the current candidate's request returned a code to BlueZ."""
+        return self._candidate_answered
+
+    @property
     def can_submit(self) -> bool:
         """Return whether the live request can still accept a code."""
         return not self._passkey.done()
@@ -138,6 +144,7 @@ class BluetoothPasskeyExchange:
         """Attribute the next request and submission to a new candidate."""
         self._candidate_requested = False
         self._candidate_submitted = False
+        self._candidate_answered = False
 
     async def async_request_passkey(self) -> int:
         """Notify the config flow, then wait for its validated response."""
@@ -149,6 +156,10 @@ class BluetoothPasskeyExchange:
         if self._on_state_change is not None:
             self._on_state_change()
         return await asyncio.shield(self._passkey)
+
+    def note_answered(self) -> None:
+        """Record that the agent handed the code to this candidate's bond."""
+        self._candidate_answered = self._candidate_requested
 
     def submit(self, passkey: int) -> None:
         """Supply one validated six-digit passkey to the live BlueZ request."""
@@ -182,6 +193,7 @@ class BluetoothCredentialGrant:
     reused_existing_bond: bool | None = None
     passkey_requested: bool = False
     passkey_submitted: bool = False
+    passkey_answered: bool = False
 
     @property
     def fresh_passkey_bond(self) -> bool:
@@ -191,6 +203,7 @@ class BluetoothCredentialGrant:
             and self.reused_existing_bond is False
             and self.passkey_requested
             and self.passkey_submitted
+            and self.passkey_answered
         )
 
 
@@ -572,6 +585,8 @@ async def async_request_bluetooth_credential(
                         and passkey_exchange.candidate_requested,
                         passkey_submitted=passkey_exchange is not None
                         and passkey_exchange.candidate_submitted,
+                        passkey_answered=passkey_exchange is not None
+                        and passkey_exchange.candidate_answered,
                     )
         except (
             *BLEAK_RETRY_EXCEPTIONS,

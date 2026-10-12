@@ -19,13 +19,16 @@ from custom_components.matic_robot.bluetooth_pairing import (
     BluetoothPairingIncompleteError,
     BluetoothPairingResetError,
     BluetoothPairingUnavailableError,
+    BluetoothPasskeyCancelledError,
 )
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.client.exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
     CertificateMismatchError,
+    EndpointUnsupportedError,
     InvalidRobotCertificateError,
+    MaticError,
     PairingModeRequiredError,
 )
 from custom_components.matic_robot.client.models import RobotInfo
@@ -839,6 +842,8 @@ async def test_reauthentication_stops_after_submitted_code_fails(
         (CannotConnectError("offline"), "cannot_connect"),
         (CertificateMismatchError("changed"), "certificate_changed"),
         (InvalidRobotCertificateError("not a robot"), "invalid_certificate"),
+        (EndpointUnsupportedError("Handshake"), "cannot_connect"),
+        (MaticError("unexpected"), "cannot_connect"),
     ],
 )
 async def test_reauthentication_errors_are_actionable(
@@ -1031,3 +1036,40 @@ async def test_reauth_window_timeout_reports_closed_pairing_mode(
 
     assert flow._pairing_result is not None
     assert flow._pairing_result["errors"] == {"base": "robot_not_found"}
+
+
+@pytest.mark.parametrize(
+    ("info_error", "request_error", "expected"),
+    [
+        (EndpointUnsupportedError("Handshake"), None, "cannot_connect"),
+        (
+            AuthenticationRequiredError("credential required"),
+            BluetoothPasskeyCancelledError(),
+            "pairing_incomplete",
+        ),
+    ],
+)
+async def test_setup_maps_every_matic_error_to_a_form(
+    hass, monkeypatch, info_error, request_error, expected
+) -> None:
+    flow = _flow(hass)
+    identity = PeerIdentity("00" * 32, "robot.invalid", "synthetic", "robot_server")
+    client = _ClientContext(_info())
+    client._client.async_get_info = AsyncMock(side_effect=info_error)
+    monkeypatch.setattr(
+        flow_module, "async_fetch_peer_certificate", AsyncMock(return_value=b"c")
+    )
+    monkeypatch.setattr(
+        flow_module, "validate_certificate", lambda *args, **kwargs: identity
+    )
+    monkeypatch.setattr(flow_module, "MaticHermesClient", lambda *a, **k: client)
+    monkeypatch.setattr(
+        flow_module,
+        "async_request_bluetooth_credential",
+        AsyncMock(side_effect=request_error),
+    )
+
+    result = await flow._async_create_or_error({"host": "192.0.2.1", "port": 16320})
+
+    assert result["step_id"] == "pair"
+    assert result["errors"] == {"base": expected}
