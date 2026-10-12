@@ -160,7 +160,8 @@ class BlueZPairingSession:
     def __init__(self, bus: MessageBus, *, default_agent_ready: bool = True) -> None:
         self._bus = bus
         self._default_agent_ready = default_agent_ready
-        self.reused_existing_bond = False
+        # None until async_pair decides; only False proves a new bond.
+        self.reused_existing_bond: bool | None = None
 
     async def async_require_connection_agent(self, device_path: str | None) -> None:
         """Require the scoped agent for robot-initiated security on connection."""
@@ -222,7 +223,7 @@ class BlueZPairingSession:
         self, device_path: str, *, replace_existing: bool = False
     ) -> None:
         """Ask BlueZ to bond while this connection's agent is authoritative."""
-        self.reused_existing_bond = False
+        self.reused_existing_bond = None
         if await self._async_is_paired(device_path):
             if replace_existing:
                 await self.async_remove_bond(device_path)
@@ -249,6 +250,7 @@ class BlueZPairingSession:
                 device_path
             ):
                 _LOGGER.debug("Reusing the concurrently completed Matic bond")
+                self.reused_existing_bond = False
                 return
             if err.dbus_error == _BLUEZ_IN_PROGRESS:
                 # Matic's own Security Request already started this bond;
@@ -256,9 +258,11 @@ class BlueZPairingSession:
                 # pairing timeout bounds this wait.
                 _LOGGER.debug("Waiting for the Matic-initiated bond to finish")
                 await self._async_wait_until_paired(device_path)
+                self.reused_existing_bond = False
                 return
             raise
         _LOGGER.debug("BlueZ completed the scoped Matic bond")
+        self.reused_existing_bond = False
 
 
 @asynccontextmanager

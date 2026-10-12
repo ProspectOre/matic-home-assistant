@@ -37,6 +37,15 @@ from custom_components.matic_robot.const import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _local_bluetooth_adapter(monkeypatch) -> None:
+    """Pass the flow's adapter pre-check; tests that need a failure override it."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_has_local_bluetooth_adapter",
+        lambda _hass: True,
+    )
+
+
 def _certificate(
     hostname: str = "matic-example",
     serial: str = "synthetic-serial",
@@ -151,7 +160,7 @@ async def test_discovered_pairing_pins_the_canonical_certificate_identity(
     assert (await flow.async_step_zeroconf(_discovery(hostname, canonical)))[
         "step_id"
     ] == "pair"
-    result = await flow._async_create_or_error(flow._pairing_data, "pair")
+    result = await flow._async_create_or_error(flow._pairing_data)
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     fingerprint = hashlib.sha256(certificate).hexdigest()
@@ -199,7 +208,7 @@ async def test_unbound_discovery_never_reaches_protocol_or_bluetooth(
     flow = _flow(hass)
     await flow.async_step_zeroconf(discovery)
 
-    result = await flow._async_create_or_error(flow._pairing_data, "pair")
+    result = await flow._async_create_or_error(flow._pairing_data)
 
     assert result["errors"] == {"base": "invalid_certificate"}
     client.assert_not_called()
@@ -217,7 +226,7 @@ async def test_conflict_alias_does_not_relax_certificate_identity(
     flow = _flow(hass)
     await flow.async_step_zeroconf(_discovery())
 
-    result = await flow._async_create_or_error(flow._pairing_data, "pair")
+    result = await flow._async_create_or_error(flow._pairing_data)
 
     assert result["errors"] == {"base": "invalid_certificate"}
     client.assert_not_called()
@@ -231,7 +240,7 @@ async def test_conflict_alias_keeps_protocol_identity_checks(
     flow = _flow(hass)
     await flow.async_step_zeroconf(_discovery())
 
-    result = await flow._async_create_or_error(flow._pairing_data, "pair")
+    result = await flow._async_create_or_error(flow._pairing_data)
 
     assert result["errors"] == {"base": "invalid_certificate"}
 

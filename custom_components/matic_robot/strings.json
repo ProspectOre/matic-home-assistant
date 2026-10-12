@@ -471,107 +471,125 @@
     "v4_map_scale": "Scale {distance}"
   },
   "config": {
+    "flow_title": "{name}",
     "abort": {
       "already_configured": "This robot is already set up.",
       "already_in_progress": "Setup is already running — return to the open dialog.",
-      "bluetooth_unavailable": "Pairing needs a local Bluetooth adapter; proxies cannot complete setup. For Home Assistant Container, verify host BlueZ, /run/dbus, NET_ADMIN, and NET_RAW. Resolve any Bluetooth Repair, then retry.",
-      "cannot_connect": "Could not connect to the robot. Check that it is powered on and on the same network, then start setup again.",
-      "invalid_certificate": "The robot's identity could not be verified.",
-      "invalid_credential": "The robot rejected the saved local access.",
-      "pairing_session_expired": "The pairing session ended. Start setup again.",
-      "reauth_successful": "Local access restored.",
+      "identity_recovered": "Paired again. Home Assistant is connected to {name} and kept its plans, custom areas and history.",
+      "invalid_certificate": "Home Assistant can't confirm this is your robot, so it did not connect. Check that the address belongs to your robot, then start setup again.",
+      "invalid_credential": "The robot did not accept the pairing Home Assistant just set up. Turn Pairing mode off and back on in the Matic app, then start setup again.",
+      "pairing_not_confirmed": "Home Assistant could not confirm a new Bluetooth pairing, so nothing was changed. Use an adapter attached directly to Home Assistant and turn Pairing mode off and back on in the Matic app, then go to Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure > Robot was reset.",
+      "pairing_session_expired": "Setup was interrupted. Start setup again.",
+      "reauth_successful": "Pairing restored. Home Assistant is connected to the robot again.",
       "reconfigure_successful": "Robot address updated."
     },
     "error": {
-      "bluetooth_unavailable": "Pairing needs a local Bluetooth adapter; proxies cannot complete setup. For Home Assistant Container, verify host BlueZ, /run/dbus, NET_ADMIN, and NET_RAW. Resolve any Bluetooth Repair, then retry.",
+      "bluetooth_unavailable": "Home Assistant can't use a Bluetooth adapter on this device, or it can only reach the robot through a Bluetooth proxy. Pairing needs an adapter attached directly to Home Assistant: attach one, fix any Bluetooth issue under Settings > System > Repairs, then try again. [Bluetooth requirements]({help_url})",
+      "bond_reset_failed": "Home Assistant could not remove the saved pairing. Close this dialog, check the Bluetooth adapter and Settings > System > Logs, then start setup again.",
       "cannot_connect": "Could not connect to the robot. Check that it is powered on and on the same network, then try again.",
-      "invalid_certificate": "The robot's identity could not be verified.",
-      "invalid_credential": "The robot rejected the saved local access. Pairing again will issue a new one.",
+      "certificate_changed": "This robot no longer matches the one Home Assistant was set up with, so nothing was changed. If it was reset, close this dialog, then go to Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure > Robot was reset.",
+      "different_robot": "A different robot answered at this address, so nothing was changed. If your robot moved, enter its new address under Robot address; a replacement robot is added as a new robot.",
+      "invalid_certificate": "Home Assistant can't confirm this is your robot, so it did not connect. Check that the address belongs to your robot, then try again.",
+      "invalid_credential": "The robot did not accept Home Assistant's saved pairing. Pair again to replace it.",
       "invalid_passkey": "Enter all six digits shown on the robot's screen.",
-      "pairing_code_expired": "That code expired. Turn Pairing mode off and back on in the Matic app, confirm below, then enter the new code immediately.",
-      "pairing_code_rejected": "Matic did not accept that code. Turn Pairing mode off and back on in the Matic app, confirm below, then enter the new code immediately.",
-      "bond_reset_failed": "Home Assistant could not clear the selected Bluetooth pairing. Cancel setup, check the host's Bluetooth adapter and logs, then start setup again to retry. No further bond removals will be attempted in this setup session.",
-      "pairing_incomplete": "Home Assistant found a retained local Matic entry but could not complete the Bluetooth connection or credential request. Keep Matic near the local adapter, confirm Pairing mode is enabled, then retry. Check Settings → System → Logs for the failing stage.",
-      "pairing_mode_confirmation_required": "Turn on Pairing mode first, then check the box to continue.",
-      "pairing_mode_off": "Home Assistant's local Bluetooth scanner could not find a Matic candidate. Keep Matic within a few feet of the adapter and retry. Pairing mode must remain enabled for the later authorization step. Reload Bluetooth or replug the adapter only if the local scanner also cannot see nearby Bluetooth devices; otherwise compare with a phone scan.",
-      "pairing_timeout": "Pairing did not finish within five minutes. Review the last pairing stage in Settings → System → Logs, keep Matic near the local adapter, confirm Pairing mode is enabled, and retry. Reload Bluetooth or replug the adapter only if the local scanner also cannot see nearby devices."
+      "pairing_code_expired": "That code expired. In the Matic app, turn Pairing mode off and back on, then choose Start pairing and enter the new code right away.",
+      "pairing_code_rejected": "The robot did not accept that code. In the Matic app, turn Pairing mode off and back on, then choose Start pairing and enter the new code right away.",
+      "pairing_incomplete": "Home Assistant found the robot but could not finish pairing. Keep it near the adapter with Pairing mode on and try again; if it keeps failing, check Settings > System > Logs.",
+      "pairing_timeout": "Pairing did not finish within five minutes. Keep the robot near the adapter with Pairing mode on in the Matic app, then try again.",
+      "recover_cannot_connect": "Home Assistant could not reach a robot at this address. Check that it is on and on the same network, or enter the right address under Robot address.",
+      "recover_credential_rejected": "The robot did not accept the pairing it just issued. Turn Pairing mode off and back on in the Matic app, then choose Start pairing again.",
+      "robot_not_found": "Home Assistant can't see the robot over Bluetooth. Move the robot within a few feet of the adapter and keep Pairing mode on in the Matic app, then try again."
     },
     "step": {
       "discovery_failed": {
-        "description": "Check that the robot is powered on and on the same network as Home Assistant.",
-        "title": "No Matic robot found",
+        "title": "No robot found",
+        "description": "Check that the robot is on and on the same network as Home Assistant, and that this Home Assistant has a Bluetooth adapter. Pairing needs one.",
         "menu_options": {
           "retry": "Search again",
           "manual": "Enter address manually"
         }
       },
       "select_robot": {
-        "data": {
-          "robot": "Matic robot"
-        },
+        "title": "Choose your robot",
         "description": "More than one robot was found. Pick the one to add.",
-        "title": "Choose your Matic"
+        "data": {
+          "robot": "Robot"
+        }
       },
       "manual": {
+        "title": "Enter the robot's address",
+        "description": "Home Assistant checks that this is your robot before it saves anything.",
         "data": {
           "host": "IP address or hostname",
           "port": "Port"
-        },
-        "description": "Home Assistant verifies the robot's identity before anything is saved.",
-        "title": "Enter the robot's address"
-      },
-      "pair": {
-        "description": "Put Home Assistant's local Bluetooth adapter within a few feet of Matic. In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it.",
-        "data": {
-          "pairing_mode_enabled": "Pairing mode is on"
-        },
-        "title": "Connect your Matic"
-      },
-      "reset_bond": {
-        "title": "Reset an existing Bluetooth pairing",
-        "description": "A robot rejected the credential request after Home Assistant reused an existing Bluetooth pairing. The pairing may be stale, but other errors can cause this rejection too. Resetting may not resolve it. Choose only the robot you are setting up, using its Bluetooth name and address. Submitting removes that robot's bond on this host and retries with a fresh six-digit code. Enable Pairing mode first. Cancel if you cannot identify the robot. Restarting Home Assistant does not clear Bluetooth bonds.",
-        "data": {
-          "bluetooth_device": "Bluetooth robot to reset"
         }
       },
+      "pair": {
+        "title": "Connect your robot",
+        "description": "Pairing mode is a short window in the Matic app that lets Home Assistant connect to the robot over Bluetooth. Put Home Assistant's Bluetooth adapter within a few feet of the robot, then:\n\n1. In the Matic app, go to Settings > Connectivity > Add another user.\n2. Turn on Pairing mode.\n3. Come back here and choose Start pairing.",
+        "submit": "Start pairing"
+      },
+      "reset_bond": {
+        "title": "Remove the robot's saved pairing?",
+        "description": "Home Assistant reused an earlier Bluetooth pairing that the robot rejected. Removing it from this device pairs again with a new six-digit code, so turn on Pairing mode in the Matic app first and close this dialog if you can't tell which robot to choose.",
+        "data": {
+          "bluetooth_device": "Robot's saved pairing"
+        },
+        "submit": "Remove"
+      },
       "pairing_code": {
+        "title": "Enter the robot's code",
+        "description": "Type the six-digit code from the robot's screen now. It expires after about 20 seconds.",
         "data": {
           "passkey": "Six-digit code"
         },
         "data_description": {
           "passkey": "Home Assistant never saves the code."
         },
-        "description": "Type the six-digit code from the robot's screen now — it expires after about 20 seconds.",
-        "title": "Enter the code shown on Matic"
+        "submit": "Check code"
       },
       "reauth_confirm": {
-        "description": "Put Home Assistant's local Bluetooth adapter within a few feet of Matic. In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. Home Assistant will replace its saved credential after you enter the six-digit code shown on the robot. Matic does not expose individual credential revocation in the app.",
-        "data": {
-          "pairing_mode_enabled": "Pairing mode is on"
-        },
-        "title": "Restore local access"
+        "title": "Pair Home Assistant again",
+        "description": "Home Assistant can no longer connect to the robot, so it needs a new pairing that replaces the saved one. Put the adapter within a few feet of the robot, then:\n\n1. In the Matic app, go to Settings > Connectivity > Add another user.\n2. Turn on Pairing mode.\n3. Come back here and choose Start pairing.",
+        "submit": "Start pairing"
       },
       "reconfigure": {
-        "description": "Choose what to update without removing the integration.",
-        "title": "Manage Matic connection",
+        "title": "Change robot connection",
+        "description": "Choose what to update without removing the robot.",
         "menu_options": {
           "update_address": "Update robot address",
-          "replace_local_access": "Pair Home Assistant again"
+          "replace_local_access": "Pair Home Assistant again",
+          "recover_identity": "Robot was reset"
         }
       },
       "update_address": {
+        "title": "Update robot address",
+        "description": "Home Assistant checks that this is the same robot before it saves the new address.",
         "data": {
-          "host": "Host",
+          "host": "IP address or hostname",
           "port": "Port"
+        }
+      },
+      "recover_identity": {
+        "title": "Pair {name} again",
+        "description": "Use this only if {name} was reset: a replacement robot is added as a new robot, and plans do not move to it. Put the adapter within a few feet of the robot, then:\n\n1. In the Matic app, go to Settings > Connectivity > Add another user.\n2. Turn on Pairing mode.\n3. Come back here and choose Start pairing.",
+        "sections": {
+          "robot_address": {
+            "name": "Robot address (only if it changed)",
+            "data": {
+              "host": "IP address or hostname",
+              "port": "Port"
+            }
+          }
         },
-        "description": "Home Assistant verifies it is the same robot before saving.",
-        "title": "Update robot address"
+        "submit": "Start pairing"
       }
     },
     "progress": {
-      "wait_for_pairing": "Looking for your Matic… Keep Pairing mode open on the robot.",
-      "connecting": "Connecting to your Matic… When it displays a six-digit code, this screen will ask for it.",
-      "verifying": "Verifying the code and finishing setup…"
+      "discovering": "Looking for robots on your network…",
+      "wait_for_pairing": "Looking for the robot… Keep Pairing mode on in the Matic app. This can take up to five minutes.",
+      "connecting": "Connecting to the robot… When it shows a six-digit code, this screen will ask for it. You will have about 20 seconds to type it.",
+      "verifying": "Checking the code and finishing setup…"
     }
   },
   "options": {
@@ -1259,16 +1277,28 @@
   },
   "issues": {
     "firmware_regression": {
-      "title": "Matic firmware read checks need attention",
-      "description": "Repeated local checks on firmware {current} (protocol {current_protocol}) could not read {count} Hermes endpoint(s). The retained baseline is {previous} (protocol {previous_protocol}). A read failure does not prove a firmware defect. Open the Firmware compatibility sensor for evidence and recovery status."
+      "title": "{name}: some robot reads are failing",
+      "description": "Home Assistant repeatedly could not read {count} items from {name} on firmware {current}, and the saved comparison is from firmware {previous}. A read failure does not prove a firmware problem: open the [device page]({device_url}) and check the Firmware check status sensor to see which items failed."
     },
     "robot_identity_changed": {
-      "title": "Matic robot identity changed",
-      "description": "The device at the configured Matic address presented a TLS certificate that does not match the pinned robot identity. Communication is blocked until the certificate matches again. If the robot was factory reset or replaced, re-pair it through **Settings > Devices & Services > Matic Robot > Reconfigure**."
+      "title": "Can't confirm this is {name}",
+      "description": "Home Assistant stopped talking to {name}, which no longer matches the robot it was set up with. If its address changed, use Update robot address (Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure). If it was reset, choose Fix to pair; a replacement is added as a new robot. Removal erases plans, room settings, schedule progress, custom areas, history and saved maps.",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Pair {name} again over Bluetooth",
+            "description": "Stay next to the robot: you will turn on Pairing mode in the Matic app and type a six-digit code, and nothing is saved until the robot accepts it. If only the address changed, close this dialog and use Update robot address; removing the robot instead erases its plans, room settings, schedule progress, custom areas, history and saved maps.",
+            "submit": "Continue to pairing"
+          }
+        },
+        "abort": {
+          "continue_in_reconfigure": "Go to Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure > Robot was reset."
+        }
+      }
     },
     "custom_area_map_changed": {
-      "title": "Matic custom areas need map review",
-      "description": "Saved custom areas requiring recovery: {count}. Their floor identity changed, their saved data is invalid, or their outline cannot be reviewed on the current map. Home Assistant will not start them. Open **Matic Map > Custom areas** and redraw the affected areas. Same-map outlines that can be confirmed are shown only in that workspace, without this Repair."
+      "title": "{name}: custom areas need attention",
+      "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean a custom area, then confirm or redraw it."
     }
   },
   "services": {

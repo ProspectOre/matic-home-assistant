@@ -1,0 +1,506 @@
+"""Identity recovery: a reset robot is re-pinned only after a fresh passkey bond."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import ssl
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from homeassistant import config_entries
+from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers import issue_registry as ir
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from custom_components.matic_robot import config_flow as flow_module
+from custom_components.matic_robot.bluetooth_pairing import (
+    BluetoothCredentialGrant,
+    BluetoothPairingIncompleteError,
+    BluetoothPairingUnavailableError,
+)
+from custom_components.matic_robot.client.auth import HermesCredential
+from custom_components.matic_robot.client.exceptions import (
+    AuthenticationRequiredError,
+    CannotConnectError,
+    CertificateMismatchError,
+    PairingModeRequiredError,
+)
+from custom_components.matic_robot.client.models import RobotInfo
+from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
+from custom_components.matic_robot.config_flow import (
+    DifferentRobotError,
+    MaticRobotConfigFlow,
+    _async_fetch_recovery_certificate,
+    _async_recovery_identity,
+)
+from custom_components.matic_robot.const import (
+    CONF_CERTIFICATE_FINGERPRINT,
+    CONF_HERMES_CREDENTIAL,
+    CONF_HOSTNAME,
+    CONF_SERIAL_NUMBER,
+    DOMAIN,
+)
+from tests.test_config_flow_discovery_identity import _certificate
+
+SERIAL = "synthetic-serial"
+HOSTNAME = "matic-example.local"
+OLD_CREDENTIAL = HermesCredential(
+    b"old-token",
+    TokenRequest(user_id="40dd38c5-0492-49de-b333-41f16f67471e").SerializeToString(),
+)
+NEW_CREDENTIAL = HermesCredential(
+    b"new-token",
+    TokenRequest(user_id="4c908528-5e07-4618-b5f5-7cee90a34626").SerializeToString(),
+)
+ENTRY_DATA = {
+    "host": "192.0.2.1",
+    "port": 16320,
+    CONF_HOSTNAME: HOSTNAME,
+    CONF_SERIAL_NUMBER: SERIAL,
+    CONF_CERTIFICATE_FINGERPRINT: "00" * 32,
+    CONF_HERMES_CREDENTIAL: OLD_CREDENTIAL.to_storage(),
+}
+NEW_ADDRESS = {"robot_address": {"host": "192.0.2.9", "port": 16320}}
+FRESH = {
+    "scoped_pairing": True,
+    "reused_existing_bond": False,
+    "passkey_requested": True,
+    "passkey_submitted": True,
+}
+
+
+def _info(serial: str = SERIAL) -> RobotInfo:
+    return RobotInfo(
+        serial,
+        "Kitchen",
+        HOSTNAME,
+        16320,
+        "192.0.2.9",
+        "",
+        True,
+        True,
+        True,
+        "test-hardware",
+    )
+
+
+class _Client:
+    def __init__(self, info: RobotInfo | None = None, error: Exception | None = None):
+        self.info = info or _info()
+        self.error = error
+
+    async def __aenter__(self):
+        if self.error is not None:
+            raise self.error
+        return SimpleNamespace(async_get_info=AsyncMock(return_value=self.info))
+
+    async def __aexit__(self, *args):
+        return None
+
+
+@pytest.fixture
+def robot(hass, monkeypatch):
+    """A configured robot whose certificate changed, with its identity Repair."""
+    entry = MockConfigEntry(
+        domain=DOMAIN, title="Kitchen", unique_id=SERIAL, data=ENTRY_DATA
+    )
+    entry.add_to_hass(hass)
+    issue_id = f"robot_identity_changed_{entry.entry_id}"
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        data={"entry_id": entry.entry_id},
+        is_fixable=True,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="robot_identity_changed",
+    )
+    new_certificate = _certificate(hostname="MATIC-EXAMPLE", serial=SERIAL)
+    state = SimpleNamespace(
+        entry=entry,
+        issue_id=issue_id,
+        certificate=new_certificate,
+        fingerprint=hashlib.sha256(new_certificate).hexdigest(),
+        fetch=AsyncMock(return_value=new_certificate),
+        clients=[],
+        client=_Client(),
+        grant_facts=dict(FRESH),
+        request_error=None,
+        request_kwargs={},
+        reload=MagicMock(),
+    )
+
+    def client_factory(*args, **kwargs):
+        state.clients.append((args, kwargs))
+        return state.client
+
+    async def request_credential(
+        _hass, _user_id, passkey_exchange=None, stage_callback=None, **kwargs
+    ):
+        state.request_kwargs = kwargs
+        if state.request_error is not None:
+            raise state.request_error
+        passkey_exchange.begin_candidate()
+        stage_callback("connecting")
+        await passkey_exchange.async_request_passkey()
+        return BluetoothCredentialGrant(NEW_CREDENTIAL, **state.grant_facts)
+
+    monkeypatch.setattr(flow_module, "async_fetch_peer_certificate", state.fetch)
+    monkeypatch.setattr(flow_module, "MaticHermesClient", client_factory)
+    monkeypatch.setattr(
+        flow_module, "async_request_bluetooth_credential", request_credential
+    )
+    monkeypatch.setattr(
+        flow_module, "async_has_local_bluetooth_adapter", lambda _hass: True
+    )
+    monkeypatch.setattr(flow_module, "PAIRING_ATTEMPTS", 1)
+    monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(hass.config_entries, "async_schedule_reload", state.reload)
+    return state
+
+
+def _flow(hass, robot) -> MaticRobotConfigFlow:
+    flow = MaticRobotConfigFlow()
+    flow.hass = hass
+    flow.handler = DOMAIN
+    flow.context = {
+        "source": config_entries.SOURCE_RECONFIGURE,
+        "entry_id": robot.entry.entry_id,
+    }
+    return flow
+
+
+async def _recover(flow: MaticRobotConfigFlow, user_input=NEW_ADDRESS, code="012345"):
+    """Drive recovery like the dialog: progress, code entry, then the result."""
+    result = await flow.async_step_recover_identity(user_input)
+    while result["type"] is FlowResultType.SHOW_PROGRESS:
+        await result["progress_task"]
+        step = getattr(flow, f"async_step_{result['step_id']}")
+        result = await step()
+        if result["type"] is not FlowResultType.SHOW_PROGRESS_DONE:
+            continue
+        if result["step_id"] == "finish":
+            return await flow.async_step_finish()
+        form = await flow.async_step_pairing_code()
+        assert form["step_id"] == "pairing_code"
+        result = await flow.async_step_pairing_code({"passkey": code})
+    return result
+
+
+def _assert_nothing_written(hass, robot) -> None:
+    assert dict(robot.entry.data) == ENTRY_DATA
+    assert ir.async_get(hass).async_get_issue(DOMAIN, robot.issue_id) is not None
+    robot.reload.assert_not_called()
+
+
+async def test_repair_opens_recovery_and_reconfigure_offers_it(hass, robot) -> None:
+    flow = _flow(hass, robot)
+
+    menu = await flow.async_step_reconfigure()
+    form = await flow.async_step_reconfigure({"recover_identity": True})
+
+    assert "recover_identity" in menu["menu_options"]
+    assert form["step_id"] == "recover_identity"
+    assert form["description_placeholders"]["name"] == "Kitchen"
+    address = form["data_schema"].schema["robot_address"]
+    assert address.options["collapsed"] is True
+    defaults = {str(key): key.default() for key in address.schema.schema if key.default}
+    assert defaults == {"host": "192.0.2.1", "port": 16320}
+
+
+async def test_recovery_re_pins_after_fresh_pairing_and_clears_the_repair(
+    hass, robot
+) -> None:
+    flow = _flow(hass, robot)
+
+    result = await _recover(flow)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "identity_recovered"
+    assert result["description_placeholders"] == {"name": "Kitchen"}
+    assert dict(robot.entry.data) == {
+        **ENTRY_DATA,
+        "host": "192.0.2.9",
+        CONF_CERTIFICATE_FINGERPRINT: robot.fingerprint,
+        CONF_HERMES_CREDENTIAL: NEW_CREDENTIAL.to_storage(),
+    }
+    assert ir.async_get(hass).async_get_issue(DOMAIN, robot.issue_id) is None
+    robot.reload.assert_called_once_with(robot.entry.entry_id)
+    # Fresh passkey: any existing bond is removed first.
+    assert robot.request_kwargs == {"replace_existing_bond": True}
+    # Pre-flight and verification each fetch from the form's address.
+    assert [call.args for call in robot.fetch.await_args_list] == [
+        ("192.0.2.9", 16320),
+        ("192.0.2.9", 16320),
+    ]
+    # The only client is authenticated with the new credential and pinned to
+    # the newly fetched certificate under the stored identity.
+    [(args, kwargs)] = robot.clients
+    assert args == ("192.0.2.9", 16320)
+    assert kwargs == {
+        "hostname": HOSTNAME,
+        "serial_number": SERIAL,
+        "certificate_fingerprint": robot.fingerprint,
+        "credential": NEW_CREDENTIAL,
+    }
+
+
+async def test_recovery_rejects_a_malformed_code_and_keeps_the_prompt(
+    hass, robot
+) -> None:
+    flow = _flow(hass, robot)
+    progress = await flow.async_step_recover_identity(NEW_ADDRESS)
+    await progress["progress_task"]
+    assert (await flow.async_step_recover_identity())["step_id"] == "pairing_code"
+
+    result = await flow.async_step_pairing_code({"passkey": "12a45"})
+
+    assert result["errors"] == {"passkey": "invalid_passkey"}
+    flow.async_remove()
+    await asyncio.gather(flow._pairing_task, return_exceptions=True)
+    _assert_nothing_written(hass, robot)
+
+
+async def test_closing_the_dialog_cancels_recovery_and_writes_nothing(
+    hass, robot
+) -> None:
+    flow = _flow(hass, robot)
+    progress = await flow.async_step_recover_identity(NEW_ADDRESS)
+    await progress["progress_task"]
+    pairing_task = flow._pairing_task
+    assert flow._passkey_exchange is not None
+    assert flow._passkey_exchange.requested
+
+    flow.async_remove()
+    await asyncio.gather(pairing_task, return_exceptions=True)
+
+    assert pairing_task.cancelled()
+    _assert_nothing_written(hass, robot)
+
+
+@pytest.mark.parametrize(
+    ("submit", "expected"),
+    [(True, "pairing_code_rejected"), (False, "pairing_code_expired")],
+)
+async def test_recovery_reports_rejected_and_expired_codes(
+    hass, robot, monkeypatch, submit, expected
+) -> None:
+    async def request_credential(_hass, _user_id, passkey_exchange=None, **_kwargs):
+        request = asyncio.create_task(passkey_exchange.async_request_passkey())
+        await passkey_exchange.async_wait_until_requested()
+        if submit:
+            passkey_exchange.submit(123456)
+        else:
+            passkey_exchange.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        raise BluetoothPairingIncompleteError("bond failed")
+
+    monkeypatch.setattr(
+        flow_module, "async_request_bluetooth_credential", request_credential
+    )
+    flow = _flow(hass, robot)
+
+    result = await _recover(flow)
+
+    assert result["step_id"] == "recover_identity"
+    assert result["errors"] == {"base": expected}
+    _assert_nothing_written(hass, robot)
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (PairingModeRequiredError("no advertisement"), "robot_not_found"),
+        (BluetoothPairingUnavailableError("proxy only"), "bluetooth_unavailable"),
+        (BluetoothPairingIncompleteError("gatt failed"), "pairing_incomplete"),
+    ],
+)
+async def test_recovery_reports_bluetooth_failures_like_setup(
+    hass, robot, error, expected
+) -> None:
+    robot.request_error = error
+    flow = _flow(hass, robot)
+
+    result = await _recover(flow)
+
+    assert result["step_id"] == "recover_identity"
+    assert result["errors"] == {"base": expected}
+    _assert_nothing_written(hass, robot)
+
+
+async def test_recovery_needs_a_local_adapter_before_pairing(
+    hass, robot, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        flow_module, "async_has_local_bluetooth_adapter", lambda _hass: False
+    )
+    flow = _flow(hass, robot)
+
+    result = await flow.async_step_recover_identity(NEW_ADDRESS)
+
+    assert result["errors"] == {"base": "bluetooth_unavailable"}
+    assert "help_url" in result["description_placeholders"]
+    assert flow._pairing_task is None
+    _assert_nothing_written(hass, robot)
+
+
+@pytest.mark.parametrize(
+    ("certificate", "error", "expected", "address_open"),
+    [
+        (
+            _certificate(hostname="matic-example", serial="other-serial"),
+            None,
+            "different_robot",
+            True,
+        ),
+        (
+            _certificate(hostname="matic-other", serial=SERIAL),
+            None,
+            "invalid_certificate",
+            False,
+        ),
+        (
+            _certificate(hostname="matic-example", serial=SERIAL, role="robot_client"),
+            None,
+            "invalid_certificate",
+            False,
+        ),
+        (None, CannotConnectError("unreachable"), "recover_cannot_connect", True),
+    ],
+)
+async def test_pre_flight_refuses_before_any_code_is_requested(
+    hass, robot, certificate, error, expected, address_open
+) -> None:
+    robot.fetch.return_value = certificate
+    robot.fetch.side_effect = error
+    flow = _flow(hass, robot)
+
+    result = await flow.async_step_recover_identity(NEW_ADDRESS)
+
+    assert result["step_id"] == "recover_identity"
+    assert result["errors"] == {"base": expected}
+    address = result["data_schema"].schema["robot_address"]
+    assert address.options["collapsed"] is not address_open
+    assert flow._pairing_task is None
+    assert flow._passkey_exchange is None
+    _assert_nothing_written(hass, robot)
+
+
+async def test_pre_flight_names_a_failed_matic_ca_check(hass, robot) -> None:
+    unreachable = CannotConnectError("certificate verify failed")
+    unreachable.__cause__ = ssl.SSLCertVerificationError("not issued by Matic")
+    robot.fetch.side_effect = unreachable
+    flow = _flow(hass, robot)
+
+    result = await flow.async_step_recover_identity(NEW_ADDRESS)
+
+    assert result["errors"] == {"base": "invalid_certificate"}
+    _assert_nothing_written(hass, robot)
+
+
+async def test_recovery_fetch_wrapper_keeps_other_failures_unreachable(
+    monkeypatch,
+) -> None:
+    refused = CannotConnectError("refused")
+    refused.__cause__ = ConnectionRefusedError()
+    monkeypatch.setattr(
+        flow_module, "async_fetch_peer_certificate", AsyncMock(side_effect=refused)
+    )
+
+    with pytest.raises(CannotConnectError) as caught:
+        await _async_fetch_recovery_certificate("192.0.2.9", 16320)
+
+    assert caught.value is refused
+
+
+async def test_recovery_identity_compares_serial_before_hostname(monkeypatch) -> None:
+    monkeypatch.setattr(
+        flow_module,
+        "async_fetch_peer_certificate",
+        AsyncMock(return_value=_certificate(hostname="matic-other", serial="other")),
+    )
+
+    with pytest.raises(DifferentRobotError):
+        await _async_recovery_identity("192.0.2.9", 16320, ENTRY_DATA)
+
+
+@pytest.mark.parametrize(
+    ("second_certificate", "client", "expected"),
+    [
+        (
+            _certificate(hostname="matic-example", serial="other-serial"),
+            _Client(),
+            "different_robot",
+        ),
+        (
+            _certificate(hostname="matic-other", serial=SERIAL),
+            _Client(),
+            "invalid_certificate",
+        ),
+        (None, _Client(error=CannotConnectError("gone")), "recover_cannot_connect"),
+        (
+            None,
+            _Client(error=AuthenticationRequiredError("rejected")),
+            "recover_credential_rejected",
+        ),
+        (
+            None,
+            _Client(error=CertificateMismatchError("swapped")),
+            "invalid_certificate",
+        ),
+        (None, _Client(info=_info(serial="other-serial")), "invalid_certificate"),
+    ],
+)
+async def test_final_check_failures_keep_the_old_pin(
+    hass, robot, second_certificate, client, expected
+) -> None:
+    robot.fetch.side_effect = [
+        robot.certificate,
+        second_certificate or robot.certificate,
+    ]
+    robot.client = client
+    flow = _flow(hass, robot)
+
+    result = await _recover(flow)
+
+    assert result["step_id"] == "recover_identity"
+    assert result["errors"] == {"base": expected}
+    _assert_nothing_written(hass, robot)
+
+
+async def test_final_check_reports_an_unreachable_robot(hass, robot) -> None:
+    robot.fetch.side_effect = [robot.certificate, CannotConnectError("gone")]
+    flow = _flow(hass, robot)
+
+    result = await _recover(flow)
+
+    assert result["errors"] == {"base": "recover_cannot_connect"}
+    assert robot.clients == []
+    _assert_nothing_written(hass, robot)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        {"scoped_pairing": False},
+        {"reused_existing_bond": True},
+        {"reused_existing_bond": None},
+        {"passkey_requested": False},
+        {"passkey_submitted": False},
+    ],
+)
+async def test_unconfirmed_bluetooth_pairing_aborts_without_writing(
+    hass, robot, missing
+) -> None:
+    robot.grant_facts.update(missing)
+    flow = _flow(hass, robot)
+
+    result = await _recover(flow)
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "pairing_not_confirmed"
+    # The new credential never reaches the robot's endpoint.
+    assert robot.clients == []
+    _assert_nothing_written(hass, robot)

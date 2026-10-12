@@ -51,6 +51,7 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
 )
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
+from .repairs import repair_placeholders
 from .session_tracking import (
     CleaningSessionTracker,
     _parse_timestamp,
@@ -949,10 +950,14 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             self.hass,
             DOMAIN,
             f"robot_identity_changed_{self.config_entry.entry_id}",
-            is_fixable=False,
+            data={"entry_id": self.config_entry.entry_id},
+            is_fixable=True,
             is_persistent=False,
             severity=ir.IssueSeverity.ERROR,
             translation_key="robot_identity_changed",
+            translation_placeholders=repair_placeholders(
+                self.hass, self.config_entry.entry_id
+            ),
         )
 
     @callback
