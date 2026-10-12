@@ -51,7 +51,10 @@ max_exceeded: silent
 trigger_variables:
   household_entities: !input household
 
+# Trigger variables reach only trigger templates; the action's recheck needs
+# the household list too.
 variables:
+  household_entities: !input household
   vacuum_entity: !input vacuum
   plan_name: !input plan
 

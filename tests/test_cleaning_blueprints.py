@@ -133,6 +133,16 @@ async def test_away_waits_for_unknown_members_and_an_idle_robot(
     assert calls == []
 
 
+async def test_away_recheck_sees_the_household(hass: HomeAssistant) -> None:
+    """Trigger variables reach only triggers, so the action recheck needs its own."""
+    await setup_blueprint(
+        hass, "clean_when_away.yaml", {"vacuum": VACUUM, "household": PEOPLE}
+    )
+    blueprint = load_yaml(ROOT / "clean_when_away.yaml")
+    assert "household_entities" in blueprint["trigger_variables"]
+    assert "household_entities" in blueprint["variables"]
+
+
 async def test_away_passes_a_typed_plan_name(hass: HomeAssistant) -> None:
     hass.states.async_set(PEOPLE[0], "home")
     hass.states.async_set(VACUUM, "idle")
