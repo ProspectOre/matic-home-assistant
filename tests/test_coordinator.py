@@ -1869,7 +1869,11 @@ async def test_identity_mismatch_raises_repair_until_recovery(hass) -> None:
 
     registry = ir.async_get(hass)
     issue_id = "robot_identity_changed_entry"
-    assert registry.async_get_issue(DOMAIN, issue_id) is not None
+    issue = registry.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.is_fixable is True
+    assert issue.data == {"entry_id": "entry"}
+    assert set(issue.translation_placeholders) == {"name", "device_url"}
 
     client.async_get_state.side_effect = None
     await coordinator._async_update_data()

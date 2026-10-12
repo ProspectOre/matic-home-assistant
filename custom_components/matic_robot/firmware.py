@@ -21,11 +21,16 @@ from .client.exceptions import MaticError
 from .client.models import HermesCollectionEntry, RobotState
 from .client.wire import wire_shape
 from .const import DOMAIN, EVENT_FIRMWARE_ANALYZED, EVENT_FIRMWARE_CHANGED
+from .repairs import repair_placeholders
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.firmware"
 MAX_HISTORY = 52
 ANALYSIS_VERSION = 2
+FIRMWARE_REPAIR_LEARN_MORE_URL = (
+    "https://github.com/ProspectOre/matic-home-assistant/"
+    "blob/main/docs/firmware-intelligence.md"
+)
 
 # Length-delimited values are opaque unless their message nesting has direct
 # protocol evidence. Root fields are safe to fingerprint on every bounded
@@ -354,17 +359,13 @@ class FirmwareTracker:
                 self.issue_id(robot_id),
                 is_fixable=False,
                 is_persistent=True,
+                learn_more_url=FIRMWARE_REPAIR_LEARN_MORE_URL,
                 severity=ir.IssueSeverity.WARNING,
                 translation_key="firmware_regression",
                 translation_placeholders={
+                    **repair_placeholders(self.hass, robot_id),
                     "previous": str(report.get("previous_version") or "unknown"),
                     "current": str(report.get("firmware_version")),
-                    "previous_protocol": str(
-                        report.get("previous_protocol") or "unknown"
-                    ),
-                    "current_protocol": str(
-                        report.get("protocol_version") or "unknown"
-                    ),
                     "count": str(report["failed_endpoints"]),
                 },
             )

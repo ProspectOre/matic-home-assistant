@@ -362,12 +362,15 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(
     await hass.async_block_till_done()
     assert create_issue.call_args.kwargs["translation_key"] == "firmware_regression"
     assert create_issue.call_args.kwargs["translation_placeholders"] == {
+        "name": "Matic (Unofficial)",
+        "device_url": "/config/integrations/integration/matic_robot",
         "previous": "v169.0",
         "current": "v170",
-        "previous_protocol": "25",
-        "current_protocol": "25",
         "count": "1",
     }
+    assert create_issue.call_args.kwargs["learn_more_url"].endswith(
+        "docs/firmware-intelligence.md"
+    )
     assert "entry" not in create_issue.call_args.args[2]
     assert analysis_events[-1].data == {
         "entry_id": "entry",

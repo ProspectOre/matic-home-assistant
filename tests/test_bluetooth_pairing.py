@@ -27,6 +27,7 @@ from custom_components.matic_robot.bluetooth_pairing import (
     _async_matic_discoveries,
     _has_adapter_access_error,
     _is_matic_advertisement,
+    async_has_local_bluetooth_adapter,
     async_request_bluetooth_credential,
 )
 from custom_components.matic_robot.client.exceptions import (
@@ -120,10 +121,10 @@ async def test_stale_bond_recovery_is_scoped_and_bounded(
     discover.return_value = [candidate]
     if outcome == "success":
         client.write_gatt_char.side_effect = None
-        credential = await async_request_bluetooth_credential(
+        grant = await async_request_bluetooth_credential(
             object(), user_id, reset_bond_paths=budget, reset_bond_path=path
         )
-        assert credential.app_id == user_id
+        assert grant.credential.app_id == user_id
     else:
         with pytest.raises(BluetoothPairingIncompleteError, match=f"ATT=0x{code:02x}"):
             await async_request_bluetooth_credential(
@@ -268,10 +269,10 @@ async def test_multiple_robots_require_selection_only_if_all_fail(
     monkeypatch.setattr(bluetooth_pairing, "establish_connection", connect)
     budget = set()
     if healthy_last:
-        credential = await async_request_bluetooth_credential(
+        grant = await async_request_bluetooth_credential(
             object(), user_id, reset_bond_paths=budget
         )
-        assert credential.app_id == user_id
+        assert grant.credential.app_id == user_id
     else:
         with pytest.raises(BluetoothBondRecoveryRequiredError) as exc:
             await async_request_bluetooth_credential(
@@ -457,6 +458,192 @@ async def test_duplicate_passkey_submission_is_rejected() -> None:
     assert await request == 123456
 
 
+async def test_passkey_facts_belong_to_one_candidate_and_never_replay() -> None:
+    exchange = BluetoothPasskeyExchange()
+    exchange.begin_candidate()
+    request = asyncio.create_task(exchange.async_request_passkey())
+    await exchange.async_wait_until_requested()
+    exchange.submit(123456)
+    assert await request == 123456
+    assert exchange.candidate_requested and exchange.candidate_submitted
+
+    exchange.begin_candidate()
+
+    assert not exchange.candidate_requested
+    assert not exchange.candidate_submitted
+    # The next candidate never receives the code typed for the previous one.
+    with pytest.raises(BluetoothPasskeyCancelledError):
+        await exchange.async_request_passkey()
+    assert not exchange.candidate_requested
+    assert exchange.requested and exchange.submitted
+
+
+async def test_code_typed_before_a_candidate_request_is_not_attributed() -> None:
+    exchange = BluetoothPasskeyExchange()
+    exchange.begin_candidate()
+    exchange.submit(123456)
+
+    assert exchange.submitted
+    assert not exchange.candidate_submitted
+
+
+def _credential_client(user_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        is_connected=False,
+        services=SimpleNamespace(
+            characteristics={
+                1: SimpleNamespace(
+                    uuid=HERMES_TOKEN_CHARACTERISTIC, properties=["read", "write"]
+                )
+            }
+        ),
+        write_gatt_char=AsyncMock(),
+        read_gatt_char=AsyncMock(
+            return_value=BotToken(
+                hashed_token=b"synthetic-token",
+                user=TokenRequest(user_id=user_id).SerializeToString(),
+            ).SerializeToString()
+        ),
+    )
+
+
+@pytest.mark.parametrize("reused", [False, True, None])
+async def test_grant_reports_the_issuing_candidates_passkey_bond(
+    monkeypatch, reused
+) -> None:
+    user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
+    exchange = BluetoothPasskeyExchange()
+
+    async def pair(_path, **_kwargs):
+        request = asyncio.create_task(exchange.async_request_passkey())
+        await exchange.async_wait_until_requested()
+        exchange.submit(123456)
+        await request
+        session.reused_existing_bond = reused
+
+    session = SimpleNamespace(
+        async_require_connection_agent=AsyncMock(),
+        async_pair=pair,
+        reused_existing_bond=None,
+    )
+
+    @asynccontextmanager
+    async def pairing_agent(address, passkey_exchange=None):
+        del address, passkey_exchange
+        yield session
+
+    monkeypatch.setattr(bluetooth_pairing, "_async_bluez_pairing_agent", pairing_agent)
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "_async_matic_discoveries",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    device=SimpleNamespace(
+                        address=TEST_ADDRESS,
+                        details={"path": "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"},
+                    )
+                )
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "establish_connection",
+        AsyncMock(return_value=_credential_client(user_id)),
+    )
+
+    grant = await async_request_bluetooth_credential(
+        object(), user_id, exchange, replace_existing_bond=True
+    )
+
+    assert grant.passkey_requested and grant.passkey_submitted
+    assert grant.fresh_passkey_bond is (reused is False)
+
+
+async def test_grant_from_a_later_candidate_does_not_inherit_an_earlier_code(
+    monkeypatch,
+) -> None:
+    user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
+    exchange = BluetoothPasskeyExchange()
+    first_path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
+    second_path = "/org/bluez/hci0/dev_11_22_33_44_55_66"
+
+    async def pair(path, **_kwargs):
+        session.reused_existing_bond = False
+        if path == first_path:
+            request = asyncio.create_task(exchange.async_request_passkey())
+            await exchange.async_wait_until_requested()
+            exchange.submit(123456)
+            await request
+            raise BleakConnectionError("first robot rejected the code")
+
+    session = SimpleNamespace(
+        async_require_connection_agent=AsyncMock(),
+        async_pair=pair,
+        reused_existing_bond=None,
+    )
+
+    @asynccontextmanager
+    async def pairing_agent(address, passkey_exchange=None):
+        del address, passkey_exchange
+        yield session
+
+    monkeypatch.setattr(bluetooth_pairing, "_async_bluez_pairing_agent", pairing_agent)
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "_async_matic_discoveries",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    device=SimpleNamespace(address=TEST_ADDRESS, details={"path": p})
+                )
+                for p in (first_path, second_path)
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "establish_connection",
+        AsyncMock(return_value=_credential_client(user_id)),
+    )
+
+    grant = await async_request_bluetooth_credential(object(), user_id, exchange)
+
+    assert exchange.requested and exchange.submitted
+    assert not grant.passkey_requested
+    assert not grant.passkey_submitted
+    assert not grant.fresh_passkey_bond
+
+
+def test_local_adapter_check_ignores_proxies_and_missing_bluetooth(
+    monkeypatch,
+) -> None:
+    class RemoteScanner:
+        connectable = True
+
+    def install(scanners):
+        def current(_hass):
+            if scanners is None:
+                raise RuntimeError("bluetooth not set up")
+            return scanners
+
+        monkeypatch.setitem(
+            sys.modules,
+            "homeassistant.components.bluetooth",
+            SimpleNamespace(
+                async_current_scanners=current, BaseHaRemoteScanner=RemoteScanner
+            ),
+        )
+
+    install(None)
+    assert not async_has_local_bluetooth_adapter(object())
+    install([RemoteScanner(), SimpleNamespace(connectable=False)])
+    assert not async_has_local_bluetooth_adapter(object())
+    install([SimpleNamespace(connectable=True)])
+    assert async_has_local_bluetooth_adapter(object())
+
+
 def test_not_paired_is_not_misclassified_as_adapter_failure() -> None:
     assert not _has_adapter_access_error(
         BleakConnectionError("[org.bluez.Error.NotPermitted] Not paired")
@@ -553,6 +740,7 @@ async def test_requests_and_validates_bluetooth_credential(monkeypatch) -> None:
         async_pair=AsyncMock(
             side_effect=lambda _path, **_kwargs: pairing_events.append("pair")
         ),
+        reused_existing_bond=False,
     )
     monkeypatch.setattr(bluetooth_pairing.sys, "platform", "linux")
 
@@ -606,9 +794,13 @@ async def test_requests_and_validates_bluetooth_credential(monkeypatch) -> None:
         "_async_bluez_pairing_agent",
         pairing_agent,
     )
-    credential = await async_request_bluetooth_credential(hass, user_id)
+    grant = await async_request_bluetooth_credential(hass, user_id)
 
-    assert credential.app_id == user_id
+    assert grant.credential.app_id == user_id
+    assert grant.scoped_pairing is True
+    assert grant.reused_existing_bond is False
+    # No passkey exchange was attached, so the bond is not confirmed fresh.
+    assert not grant.fresh_passkey_bond
     assert pairing_agent_addresses == [TEST_ADDRESS]
     assert [
         call.kwargs["pair"]
@@ -709,9 +901,9 @@ async def test_disconnect_failure_does_not_discard_a_valid_credential(
         AsyncMock(return_value=client),
     )
 
-    credential = await async_request_bluetooth_credential(object(), user_id)
+    grant = await async_request_bluetooth_credential(object(), user_id)
 
-    assert credential.app_id == user_id
+    assert grant.credential.app_id == user_id
     client.disconnect.assert_awaited_once_with()
 
 
@@ -750,9 +942,9 @@ async def test_uses_os_pairing_for_identified_matic(monkeypatch) -> None:
         AsyncMock(return_value=client),
     )
 
-    credential = await async_request_bluetooth_credential(object(), user_id)
+    grant = await async_request_bluetooth_credential(object(), user_id)
 
-    assert credential.app_id == user_id
+    assert grant.credential.app_id == user_id
     assert [
         call.kwargs["pair"]
         for call in bluetooth_pairing.establish_connection.await_args_list

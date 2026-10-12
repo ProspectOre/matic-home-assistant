@@ -2258,12 +2258,14 @@ def test_area_issue_sync_deduplicates_updates_and_exposes_only_stale_count() -> 
         assert call.kwargs["is_persistent"] is True
         assert call.kwargs["severity"].value == "warning"
         assert call.kwargs["translation_key"] == "custom_area_map_changed"
-        assert call.kwargs["learn_more_url"].endswith("#drawn-custom-areas")
+        assert call.kwargs["learn_more_url"].endswith("docs/cleaning.md#custom-areas")
         serialized = repr(call)
         assert "Private litter location" not in serialized
         assert "private_area_name" not in serialized
         assert "circles" not in serialized
-    assert create.call_args.kwargs["translation_placeholders"] == {"count": "2"}
+    placeholders = create.call_args.kwargs["translation_placeholders"]
+    assert set(placeholders) == {"name", "device_url", "count"}
+    assert placeholders["count"] == "2"
     delete.assert_not_called()
 
 

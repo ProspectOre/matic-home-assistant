@@ -101,6 +101,8 @@ class BluetoothPasskeyExchange:
         self._requested = asyncio.Event()
         self._passkey: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self._submitted = False
+        self._candidate_requested = False
+        self._candidate_submitted = False
         self._on_state_change = on_state_change
 
     @property
@@ -114,6 +116,16 @@ class BluetoothPasskeyExchange:
         return self._submitted
 
     @property
+    def candidate_requested(self) -> bool:
+        """Return whether the current candidate's agent requested a code."""
+        return self._candidate_requested
+
+    @property
+    def candidate_submitted(self) -> bool:
+        """Return whether a code answered the current candidate's request."""
+        return self._candidate_submitted
+
+    @property
     def can_submit(self) -> bool:
         """Return whether the live request can still accept a code."""
         return not self._passkey.done()
@@ -122,8 +134,17 @@ class BluetoothPasskeyExchange:
         """Wait until BlueZ asks Home Assistant for Matic's displayed code."""
         await self._requested.wait()
 
+    def begin_candidate(self) -> None:
+        """Attribute the next request and submission to a new candidate."""
+        self._candidate_requested = False
+        self._candidate_submitted = False
+
     async def async_request_passkey(self) -> int:
         """Notify the config flow, then wait for its validated response."""
+        if self._passkey.done():
+            # A code answers one request only; never replay it to another bond.
+            raise BluetoothPasskeyCancelledError
+        self._candidate_requested = True
         self._requested.set()
         if self._on_state_change is not None:
             self._on_state_change()
@@ -136,6 +157,7 @@ class BluetoothPasskeyExchange:
         if self._passkey.done():
             raise RuntimeError("Bluetooth passkey was already submitted")
         self._submitted = True
+        self._candidate_submitted = self._candidate_requested
         self._passkey.set_result(passkey)
 
     def cancel(self) -> None:
@@ -145,6 +167,46 @@ class BluetoothPasskeyExchange:
                 self._passkey.set_exception(BluetoothPasskeyCancelledError())
             else:
                 self._passkey.cancel()
+
+
+@dataclass(frozen=True, slots=True)
+class BluetoothCredentialGrant:
+    """A robot-issued credential and the facts of the candidate that issued it.
+
+    The defaults describe an unconfirmed bond, so a fact that was never
+    observed for this candidate can never read as a fresh pairing.
+    """
+
+    credential: HermesCredential
+    scoped_pairing: bool = False
+    reused_existing_bond: bool | None = None
+    passkey_requested: bool = False
+    passkey_submitted: bool = False
+
+    @property
+    def fresh_passkey_bond(self) -> bool:
+        """Return whether a new passkey bond through the scoped agent issued it."""
+        return (
+            self.scoped_pairing
+            and self.reused_existing_bond is False
+            and self.passkey_requested
+            and self.passkey_submitted
+        )
+
+
+def async_has_local_bluetooth_adapter(hass: HomeAssistant) -> bool:
+    """Return whether a connectable adapter is attached directly to this host."""
+    from homeassistant.components import bluetooth
+
+    try:
+        scanners = bluetooth.async_current_scanners(hass)
+    except RuntimeError:
+        # Raised when Home Assistant's Bluetooth integration is not set up.
+        return False
+    return any(
+        scanner.connectable and not isinstance(scanner, bluetooth.BaseHaRemoteScanner)
+        for scanner in scanners
+    )
 
 
 @asynccontextmanager
@@ -211,33 +273,20 @@ async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
     """Return Matic advertisements retained by a local Bluetooth adapter."""
     from homeassistant.components import bluetooth
 
-    try:
-        scanners = list(bluetooth.async_current_scanners(hass))
-        local_scanners = [
-            scanner
-            for scanner in scanners
-            if scanner.connectable
-            and not isinstance(scanner, bluetooth.BaseHaRemoteScanner)
-        ]
-        if not local_scanners:
-            raise BluetoothAdapterUnavailableError(
-                "Home Assistant has no directly attached connectable Bluetooth adapter"
-            )
-        before_scan = {
-            info.address: info.time
-            for info in bluetooth.async_discovered_service_info(hass, connectable=False)
-        }
-        await bluetooth.async_request_active_scan(
-            hass, duration=BLUETOOTH_ACTIVE_SCAN_SECONDS
-        )
-        service_infos = tuple(
-            bluetooth.async_discovered_service_info(hass, connectable=False)
-        )
-    except RuntimeError as err:
-        # Raised when Home Assistant's Bluetooth integration is not set up.
+    if not async_has_local_bluetooth_adapter(hass):
         raise BluetoothAdapterUnavailableError(
-            "Home Assistant's Bluetooth integration is not available"
-        ) from err
+            "Home Assistant has no directly attached connectable Bluetooth adapter"
+        )
+    before_scan = {
+        info.address: info.time
+        for info in bluetooth.async_discovered_service_info(hass, connectable=False)
+    }
+    await bluetooth.async_request_active_scan(
+        hass, duration=BLUETOOTH_ACTIVE_SCAN_SECONDS
+    )
+    service_infos = tuple(
+        bluetooth.async_discovered_service_info(hass, connectable=False)
+    )
 
     local_by_address: dict[str, _MaticDiscovery] = {}
     remote_matic = False
@@ -338,7 +387,7 @@ async def async_request_bluetooth_credential(
     replace_existing_bond: bool = False,
     reset_bond_paths: set[str] | None = None,
     reset_bond_path: str | None = None,
-) -> HermesCredential:
+) -> BluetoothCredentialGrant:
     """Request one Hermes credential through Matic's private GATT endpoint."""
 
     def _stage(stage: str) -> None:
@@ -371,6 +420,8 @@ async def async_request_bluetooth_credential(
     for candidate_number, discovery in enumerate(discoveries, start=1):
         client = None
         failure_stage = "pairing-agent setup"
+        if passkey_exchange is not None:
+            passkey_exchange.begin_candidate()
         try:
             # Bond before requesting the credential over authenticated GATT.
             async with _async_bluez_pairing_agent(
@@ -508,7 +559,20 @@ async def async_request_bluetooth_credential(
                     )
                     if credential.app_id != user_id:
                         raise ValueError("Robot returned a credential for another user")
-                    return credential
+                    # Read this candidate's facts before its agent context exits.
+                    return BluetoothCredentialGrant(
+                        credential,
+                        scoped_pairing=not pair_with_bleak,
+                        reused_existing_bond=(
+                            None
+                            if bluez_session is None
+                            else bluez_session.reused_existing_bond
+                        ),
+                        passkey_requested=passkey_exchange is not None
+                        and passkey_exchange.candidate_requested,
+                        passkey_submitted=passkey_exchange is not None
+                        and passkey_exchange.candidate_submitted,
+                    )
         except (
             *BLEAK_RETRY_EXCEPTIONS,
             DecodeError,

@@ -328,10 +328,15 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             assert "turn pairing mode off and back on" in recovery
             assert "enter the new code" in recovery
 
-        pairing = translations["config"]["step"]["pair"]["description"]
-        assert "Confirm below only after the pairing window is open" in pairing
-        assert "will display a six-digit code" in pairing
-        assert "without a new code" not in pairing
+        pair_step = translations["config"]["step"]["pair"]
+        pairing = pair_step["description"]
+        assert "Pairing mode is a short window in the Matic app" in pairing
+        assert "2. Turn on Pairing mode." in pairing
+        assert "3. Come back here and choose Start pairing." in pairing
+        assert pair_step["submit"] == "Start pairing"
+        assert "data" not in pair_step
+        assert "pairing_mode_off" not in errors
+        assert "pairing_mode_confirmation_required" not in errors
 
         options = translations["options"]
         assert "choose the default plan" in options["step"]["init"]["description"]
@@ -417,7 +422,7 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert "payload-free compatibility record" in firmware_snapshot
         assert "value-free wire-shape changes" in firmware_snapshot
         assert (
-            "Open the Firmware compatibility sensor"
+            "check the Firmware check status sensor"
             in translations["issues"]["firmware_regression"]["description"]
         )
 

@@ -174,10 +174,10 @@ async def test_pairing_session_reuses_an_existing_pairing() -> None:
     assert message.interface == "org.freedesktop.DBus.Properties"
     assert message.member == "Get"
     assert message.body == ["org.bluez.Device1", "Paired"]
-    assert session.reused_existing_bond
+    assert session.reused_existing_bond is True
     bus.call.side_effect = [_paired(False), _method_return()]
     await session.async_pair(device_path)
-    assert not session.reused_existing_bond
+    assert session.reused_existing_bond is False
 
 
 async def test_pairing_session_removes_existing_pairing_for_reauth() -> None:
@@ -191,6 +191,9 @@ async def test_pairing_session_removes_existing_pairing_for_reauth() -> None:
         match="pairing was cleared",
     ):
         await session.async_pair(device_path, replace_existing=True)
+
+    # A cleared bond proves nothing about a new one.
+    assert session.reused_existing_bond is None
 
     message = bus.call.await_args_list[1].args[0]
     assert message.path == "/org/bluez/hci0"
@@ -223,9 +226,11 @@ async def test_pairing_session_accepts_a_bond_completed_during_pairing() -> None
     ]
     session = BlueZPairingSession(bus)
 
+    assert session.reused_existing_bond is None
     await session.async_pair("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
 
     assert bus.call.await_count == 3
+    assert session.reused_existing_bond is False
 
 
 async def test_pairing_session_rejects_unverified_already_exists() -> None:
@@ -256,6 +261,7 @@ async def test_pairing_session_waits_for_a_robot_initiated_bond(monkeypatch) -> 
     await session.async_pair("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
 
     assert bus.call.await_count == 4
+    assert session.reused_existing_bond is False
 
 
 async def test_pairing_agent_registers_and_unregisters_a_default_agent(

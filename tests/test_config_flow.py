@@ -37,7 +37,14 @@ from custom_components.matic_robot.plans import (
     MetadataAdmissionClosedError,
 )
 
-PAIRING_CONFIRMED = {"pairing_mode_enabled": True}
+
+@pytest.fixture(autouse=True)
+def _local_bluetooth_adapter(monkeypatch) -> None:
+    """Pass the flow's adapter pre-check; tests that need a failure override it."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_has_local_bluetooth_adapter",
+        lambda _hass: True,
+    )
 
 
 def _discovery_info(
@@ -54,65 +61,111 @@ def _discovery_info(
     )
 
 
-async def test_user_step_discovers_robot_and_opens_pairing(hass, monkeypatch) -> None:
+async def _discover(hass, monkeypatch, discoveries):
+    """Run the user step's discovery progress and return the next dialog."""
     monkeypatch.setattr(
         "custom_components.matic_robot.config_flow._async_discover_robots",
-        AsyncMock(return_value=[_discovery_info()]),
+        AsyncMock(return_value=discoveries),
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.config_flow._async_select_discovery_host",
         AsyncMock(return_value="192.0.2.1"),
     )
-    result = await hass.config_entries.flow.async_init(
+    progress = await hass.config_entries.flow.async_init(
         DOMAIN,
         context={"source": config_entries.SOURCE_USER},
+    )
+    assert progress["type"] is FlowResultType.SHOW_PROGRESS
+    assert progress["progress_action"] == "discovering"
+    await hass.async_block_till_done()
+    return await hass.config_entries.flow.async_configure(progress["flow_id"])
+
+
+def _advertised(info: ZeroconfServiceInfo, serial: str, name: str = ""):
+    record = BotInformation(
+        serial_number=serial,
+        name=name,
+        hostname=info.hostname.rstrip("."),
+        port=16320,
+    )
+    info.properties["bot_information"] = b64encode(record.SerializeToString()).decode()
+    return info
+
+
+async def test_user_step_discovers_robot_and_opens_pairing(hass, monkeypatch) -> None:
+    result = await _discover(
+        hass, monkeypatch, [_advertised(_discovery_info(), "serial-1", "Kitchen")]
     )
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "pair"
+    flow = hass.config_entries.flow.async_get(result["flow_id"])
+    assert flow["context"]["title_placeholders"] == {"name": "Kitchen"}
+
+
+async def test_unnamed_robot_title_uses_the_hostname_suffix(hass, monkeypatch) -> None:
+    result = await _discover(
+        hass, monkeypatch, [_discovery_info(hostname="matic-c0ffee.local.")]
+    )
+
+    flow = hass.config_entries.flow.async_get(result["flow_id"])
+    assert flow["context"]["title_placeholders"] == {"name": "Matic (Unofficial) ffee"}
 
 
 async def test_user_step_hides_recovery_until_discovery_fails(
     hass, monkeypatch
 ) -> None:
-    monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow._async_discover_robots",
-        AsyncMock(return_value=[]),
-    )
-
-    result = await hass.config_entries.flow.async_init(
-        DOMAIN,
-        context={"source": config_entries.SOURCE_USER},
-    )
+    result = await _discover(hass, monkeypatch, [])
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "discovery_failed"
     assert result["menu_options"] == ["retry", "manual"]
 
 
+async def test_configured_robots_are_omitted_from_discovery(hass, monkeypatch) -> None:
+    MockConfigEntry(domain=DOMAIN, unique_id="serial-1").add_to_hass(hass)
+    first = _advertised(_discovery_info(hostname="first.local."), "serial-1")
+    second = _advertised(
+        _discovery_info(address="192.0.2.2", hostname="second.local."), "serial-2"
+    )
+
+    result = await _discover(hass, monkeypatch, [first, second])
+
+    # The one robot left goes straight to pairing.
+    assert result["step_id"] == "pair"
+    flow = hass.config_entries.flow.async_get(result["flow_id"])
+    assert flow["context"]["unique_id"] == "serial-2"
+
+
+async def test_discovery_of_only_configured_robots_aborts(hass, monkeypatch) -> None:
+    MockConfigEntry(domain=DOMAIN, unique_id="serial-1").add_to_hass(hass)
+
+    result = await _discover(
+        hass, monkeypatch, [_advertised(_discovery_info(), "serial-1")]
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
 async def test_user_step_allows_selection_when_multiple_robots_are_found(
     hass, monkeypatch
 ) -> None:
-    first = _discovery_info(hostname="first.local.")
-    second = _discovery_info(address="192.0.2.2", hostname="second.local.")
-    monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow._async_discover_robots",
-        AsyncMock(return_value=[first, second]),
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow._async_select_discovery_host",
-        AsyncMock(return_value="192.0.2.2"),
-    )
-    flow = MaticRobotConfigFlow()
-    flow.hass = hass
-    flow.context = {}
+    first = _advertised(_discovery_info(hostname="first.local."), "serial-1", "Den")
+    second = _discovery_info(address="192.0.2.2", hostname="matic-beef.local.")
 
-    choose = await flow.async_step_user()
-    result = await flow.async_step_select_robot({"robot": second.name})
+    choose = await _discover(hass, monkeypatch, [first, second])
 
     assert choose["step_id"] == "select_robot"
+    options = choose["data_schema"].schema["robot"].config["options"]
+    assert [option["label"] for option in options] == [
+        "Den (first.local)",
+        "Matic (Unofficial) beef (matic-beef.local)",
+    ]
+    result = await hass.config_entries.flow.async_configure(
+        choose["flow_id"], {"robot": second.name}
+    )
     assert result["step_id"] == "pair"
-    assert flow._pairing_data["host"] == "192.0.2.2"
 
 
 async def test_discovery_recovery_navigation_is_failure_safe(hass, monkeypatch) -> None:
@@ -125,12 +178,11 @@ async def test_discovery_recovery_navigation_is_failure_safe(hass, monkeypatch) 
     flow.context = {}
 
     retry = await flow.async_step_retry()
-    empty_selection = await flow.async_step_select_robot()
     flow._manual_discoveries = {"robot": _discovery_info()}
     invalid_selection = await flow.async_step_select_robot({"robot": "missing"})
 
-    assert retry["step_id"] == "discovery_failed"
-    assert empty_selection["reason"] == "pairing_session_expired"
+    assert retry["type"] is FlowResultType.SHOW_PROGRESS
+    assert retry["step_id"] == "user"
     assert invalid_selection["reason"] == "pairing_session_expired"
 
 
@@ -632,13 +684,12 @@ async def test_automatic_pairing_retries_until_the_window_opens(monkeypatch) -> 
             {
                 "type": FlowResultType.FORM,
                 "step_id": "pair",
-                "errors": {"base": "pairing_mode_off"},
+                "errors": {"base": "robot_not_found"},
             },
             expected,
         ]
     )
     monkeypatch.setattr(flow, "_async_create_or_error", create)
-    monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
     monkeypatch.setattr(
         "custom_components.matic_robot.config_flow.asyncio.sleep", AsyncMock()
     )
@@ -654,7 +705,7 @@ async def test_expired_code_requires_a_fresh_pairing_window(monkeypatch) -> None
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
     exchanges = []
 
-    async def fake_create(_data, _step):
+    async def fake_create(_data):
         exchange = flow._passkey_exchange
         assert exchange is not None
         exchanges.append(exchange)
@@ -669,7 +720,6 @@ async def test_expired_code_requires_a_fresh_pairing_window(monkeypatch) -> None
         }
 
     monkeypatch.setattr(flow, "_async_create_or_error", fake_create)
-    monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
     monkeypatch.setattr(
         "custom_components.matic_robot.config_flow.asyncio.sleep", AsyncMock()
     )
@@ -687,7 +737,7 @@ async def test_rejected_code_requires_a_fresh_pairing_window(monkeypatch) -> Non
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
     attempts = []
 
-    async def fake_create(_data, _step):
+    async def fake_create(_data):
         exchange = flow._passkey_exchange
         assert exchange is not None
         attempts.append(exchange)
@@ -702,7 +752,6 @@ async def test_rejected_code_requires_a_fresh_pairing_window(monkeypatch) -> Non
         }
 
     monkeypatch.setattr(flow, "_async_create_or_error", fake_create)
-    monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
     monkeypatch.setattr(
         "custom_components.matic_robot.config_flow.asyncio.sleep", AsyncMock()
     )
@@ -730,7 +779,7 @@ async def test_pairing_form_progress_completion_and_finish(hass, monkeypatch) ->
     monkeypatch.setattr(flow, "_async_wait_for_pairing", finish_pairing)
 
     assert (await flow.async_step_pair())["step_id"] == "pair"
-    progress = await flow.async_step_pair(PAIRING_CONFIRMED)
+    progress = await flow.async_step_pair({})
     assert progress["type"] is FlowResultType.SHOW_PROGRESS
     release.set()
     assert flow._pairing_task is not None
@@ -748,12 +797,18 @@ async def test_pairing_requires_confirmation_before_starting(hass) -> None:
     flow.context = {}
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
 
-    form = await flow.async_step_pair()
-    unconfirmed = await flow.async_step_pair({"pairing_mode_enabled": False})
+    flow._async_wait_for_pairing = AsyncMock()
 
-    assert set(form["data_schema"].schema) == {"pairing_mode_enabled"}
-    assert unconfirmed["errors"] == {"base": "pairing_mode_confirmation_required"}
+    form = await flow.async_step_pair()
+
+    assert form["data_schema"] is None
     assert flow._pairing_task is None
+    # Submitting the empty form is the confirmation that Pairing mode is on.
+    progress = await flow.async_step_pair({})
+    assert progress["type"] is FlowResultType.SHOW_PROGRESS
+    assert progress["progress_action"] == "wait_for_pairing"
+    assert flow._pairing_task is not None
+    await flow._pairing_task
 
 
 async def test_pairing_pauses_for_the_code_shown_on_matic(hass, monkeypatch) -> None:
@@ -774,9 +829,7 @@ async def test_pairing_pauses_for_the_code_shown_on_matic(hass, monkeypatch) -> 
     monkeypatch.setattr(flow, "_async_wait_for_pairing", finish_pairing)
 
     assert (await flow.async_step_pair())["step_id"] == "pair"
-    assert (await flow.async_step_pair(PAIRING_CONFIRMED))[
-        "type"
-    ] is FlowResultType.SHOW_PROGRESS
+    assert (await flow.async_step_pair({}))["type"] is FlowResultType.SHOW_PROGRESS
     assert flow._pairing_checkpoint_task is not None
     await flow._pairing_checkpoint_task
 
@@ -873,8 +926,16 @@ async def test_pairing_code_skips_entry_when_pairing_already_finished(hass) -> N
     assert flow._pairing_task is None
 
 
+@pytest.mark.parametrize(
+    ("error", "result_type"),
+    [
+        ("bluetooth_unavailable", FlowResultType.FORM),
+        ("invalid_certificate", FlowResultType.ABORT),
+        ("invalid_credential", FlowResultType.ABORT),
+    ],
+)
 async def test_pairing_wait_refreshes_discovery_and_stops_on_terminal_error(
-    monkeypatch,
+    monkeypatch, error, result_type
 ) -> None:
     flow = MaticRobotConfigFlow()
     flow._pairing_data = {"host": "stale.invalid", "port": 16320}
@@ -883,7 +944,7 @@ async def test_pairing_wait_refreshes_discovery_and_stops_on_terminal_error(
     terminal = {
         "type": FlowResultType.FORM,
         "step_id": "pair",
-        "errors": {"base": "bluetooth_unavailable"},
+        "errors": {"base": error},
     }
     monkeypatch.setattr(flow_module, "_async_select_discovery_host", refresh)
     monkeypatch.setattr(
@@ -892,8 +953,13 @@ async def test_pairing_wait_refreshes_discovery_and_stops_on_terminal_error(
 
     await flow._async_wait_for_pairing()
     assert flow._pairing_result is not None
-    assert flow._pairing_result["type"] is FlowResultType.ABORT
-    assert flow._pairing_result["reason"] == "bluetooth_unavailable"
+    # Bluetooth faults stay on the form; certificate and credential faults end
+    # setup with one sentence.
+    assert flow._pairing_result["type"] is result_type
+    if result_type is FlowResultType.FORM:
+        assert flow._pairing_result["errors"] == {"base": error}
+    else:
+        assert flow._pairing_result["reason"] == error
     assert flow._pairing_data["host"] == "192.0.2.4"
 
 
@@ -926,29 +992,28 @@ async def test_pairing_timeout_logs_sanitized_bluetooth_detail(
     assert "robot.invalid" not in caplog.text
 
 
-async def test_pairing_progress_uses_elapsed_time(monkeypatch) -> None:
+async def test_unreachable_robot_is_reported_after_three_tries(monkeypatch) -> None:
     flow = MaticRobotConfigFlow()
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
     flow.async_update_progress = MagicMock()
-    monkeypatch.setattr(flow_module, "PAIRING_ATTEMPTS", 1)
-    monkeypatch.setattr(flow_module, "PAIRING_TIMEOUT_SECONDS", 300)
-    monkeypatch.setattr(flow_module, "monotonic", MagicMock(side_effect=[100, 160]))
     monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
-    monkeypatch.setattr(
-        flow,
-        "_async_create_or_error",
-        AsyncMock(
-            return_value={
-                "type": FlowResultType.FORM,
-                "step_id": "pair",
-                "errors": {"base": "pairing_mode_off"},
-            }
-        ),
+    create = AsyncMock(
+        return_value={
+            "type": FlowResultType.FORM,
+            "step_id": "pair",
+            "errors": {"base": "cannot_connect"},
+        }
     )
+    monkeypatch.setattr(flow, "_async_create_or_error", create)
 
     await flow._async_wait_for_pairing()
 
-    flow.async_update_progress.assert_called_once_with(0.2)
+    assert create.await_count == 3
+    assert flow._pairing_result is not None
+    assert flow._pairing_result["step_id"] == "pair"
+    assert flow._pairing_result["errors"] == {"base": "cannot_connect"}
+    # The bar is indeterminate: the 5-minute limit is in the progress text.
+    flow.async_update_progress.assert_not_called()
 
 
 async def test_pairing_wait_deadline_returns_actionable_abort(monkeypatch) -> None:

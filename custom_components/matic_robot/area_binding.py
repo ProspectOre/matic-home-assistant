@@ -18,6 +18,7 @@ from .area_geometry import AreaGeometry, GeometryTooComplex, RoomGeometryIndex
 from .client.floor_plan import MAX_FLOOR_PLAN_BOUNDARY_POINTS
 from .client.models import FloorPlan
 from .const import DOMAIN
+from .repairs import repair_placeholders
 
 AREA_SCHEMA_VERSION = 1
 MAP_BINDING_VERSION = 1
@@ -64,7 +65,7 @@ _MAX_TRANSLATION_ROOM_ANCHORS = 256
 _MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS = 8_192
 _AREA_REPAIR_LEARN_MORE_URL = (
     "https://github.com/ProspectOre/matic-home-assistant/"
-    "blob/main/docs/automation.md#drawn-custom-areas"
+    "blob/main/docs/cleaning.md#custom-areas"
 )
 
 MapBinding = dict[str, Any]
@@ -157,7 +158,10 @@ def async_sync_custom_area_issue(
             learn_more_url=_AREA_REPAIR_LEARN_MORE_URL,
             severity=ir.IssueSeverity.WARNING,
             translation_key="custom_area_map_changed",
-            translation_placeholders={"count": str(stale_count)},
+            translation_placeholders={
+                **repair_placeholders(hass, entry_id),
+                "count": str(stale_count),
+            },
         )
     else:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
