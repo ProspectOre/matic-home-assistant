@@ -189,7 +189,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
     document.body.append(gallery);
   }, { tag: GALLERY_TAG, selectedScenario: scenario, selectedNarrow: narrow });
   const gallery = page.locator(GALLERY_TAG);
-  await expect(gallery.locator(".panel-heading h2")).toBeAttached();
+  await expect(gallery.getByRole("heading", { level: 2 })).toBeAttached();
   return gallery;
 }
 
@@ -198,7 +198,7 @@ const sampleNotice = (tone, fallback = `Sample ${tone} notice`) => ({
 });
 
 const galleryIntent = (page, intent) => page.evaluate(({ tag, detail }) => {
-  const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+  const shell = document.querySelector(tag).shadowRoot.querySelector("matic-map-shell-v4");
   shell.dispatchEvent(new CustomEvent("matic-workspace-intent", { detail, bubbles: true, composed: true }));
 }, { tag: GALLERY_TAG, detail: intent });
 
@@ -214,12 +214,6 @@ const freezeClock = async (page) => {
   await page.clock.pauseAt(now + 1000);
 };
 
-const shellActive = (page) => page.evaluate((tag) => {
-  const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
-  const active = shell.shadowRoot.activeElement;
-  return active ? `${active.localName}${active.closest(".panel-heading") ? " in heading" : ""}` : null;
-}, GALLERY_TAG);
-
 test("the notice slot sits directly under the workflow heading in every workflow", async ({ page }) => {
   for (const scenario of [
     "ready", "rooms", "plans", "plan-saved-intelligent", "draw", "area-review-new", "history", "support",
@@ -231,7 +225,7 @@ test("the notice slot sits directly under the workflow heading in every workflow
     await expect(slot, scenario).toContainText(`Slot sample for ${scenario}`);
     const order = await slot.evaluate((element) => {
       const root = element.getRootNode();
-      const heading = root.querySelector(".panel-heading h2");
+      const heading = root.querySelector("h2");
       const description = root.querySelector(".panel-description");
       const follows = (a, b) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
       return {
@@ -277,7 +271,7 @@ test("success and error notices toast at once", async ({ page }) => {
 
 test("@mobile info and warning notices toast only while the sheet is at peek", async ({ page }) => {
   const gallery = await loadGallery(page, { narrow: true });
-  const sheet = gallery.locator(".mobile-sheet");
+  const sheet = gallery.getByRole("complementary", { name: "Map workspace" });
   const toast = gallery.locator("[data-notice-toast]");
   await expect(sheet).toHaveAttribute("data-detent", "half");
 
@@ -292,11 +286,11 @@ test("@mobile info and warning notices toast only while the sheet is at peek", a
   await expect(toast).toHaveAttribute("data-tone", "warning");
   await expect(toast).toContainText("Warning at peek");
   // Anchored to the sheet's top edge.
-  await expect.poll(() => toast.evaluate((element) => {
-    const sheetTop = element.getRootNode().querySelector(".mobile-sheet").getBoundingClientRect().top;
-    const gap = sheetTop - element.getBoundingClientRect().bottom;
+  await expect.poll(async () => {
+    const [sheetBox, toastBox] = [await sheet.boundingBox(), await toast.boundingBox()];
+    const gap = sheetBox.y - (toastBox.y + toastBox.height);
     return gap >= 0 && gap <= 24;
-  })).toBe(true);
+  }).toBe(true);
 
   await setGalleryNotice(page, sampleNotice("info", "Info at peek"));
   await expect(toast).toBeVisible();
@@ -309,21 +303,25 @@ test("@mobile info and warning notices toast only while the sheet is at peek", a
 });
 
 test("info notices toast in Full map", async ({ page }) => {
-  const gallery = await loadGallery(page, { scenario: "full-map" });
+  // A selected room gives the HUD its large Clean button, which the anchor clears.
+  const gallery = await loadGallery(page, { scenario: "rooms" });
+  const roomId = await page.evaluate((tag) =>
+    document.querySelector(tag).getWorkspaceSnapshot().resources.plans.value.rooms[0].roomId, GALLERY_TAG);
+  await galleryIntent(page, { type: "toggle-room", roomId });
+  await galleryIntent(page, { type: "enter-full-map" });
+  const hud = gallery.getByRole("region", { name: "Robot status and action" });
+  await expect(hud.getByRole("button", { name: /^Clean/u })).toBeVisible();
+
   const toast = gallery.locator("[data-notice-toast]");
   await setGalleryNotice(page, sampleNotice("info", "Info in full map"));
   await expect(toast).toBeVisible();
   await expect(toast).toHaveAttribute("data-tone", "info");
   await expect(toast).toContainText("Info in full map");
   // Anchored above the HUD.
-  const gap = await toast.evaluate((element) => {
-    const hud = element.getRootNode().querySelector(".full-map-hud").getBoundingClientRect();
-    return hud.top - element.getBoundingClientRect().bottom;
-  });
-  // The anchor clears a HUD holding a large action button; this HUD has no
-  // button (choose-cleaning renders none), so it sits about 31 px lower.
+  const [hudBox, toastBox] = [await hud.boundingBox(), await toast.boundingBox()];
+  const gap = hudBox.y - (toastBox.y + toastBox.height);
   expect(gap).toBeGreaterThanOrEqual(0);
-  expect(gap).toBeLessThanOrEqual(40);
+  expect(gap).toBeLessThanOrEqual(24);
 });
 
 test("the toast hides on its timer but the slot keeps the notice", async ({ page }) => {
@@ -448,6 +446,8 @@ test("Escape leaves a workflow without clearing its error notice", async ({ page
   const toast = gallery.locator("[data-notice-toast]");
   await setGalleryNotice(page, sampleNotice("error", "Workflow escape sample"));
   await expect(toast).toBeVisible();
+  expect((await page.evaluate((tag) =>
+    document.querySelector(tag).getWorkspaceSnapshot().workflow, GALLERY_TAG)), "workflow before Escape").not.toBe("none");
 
   await slot.getByRole("button", { name: "Close" }).focus();
   await page.keyboard.press("Escape");
@@ -467,10 +467,10 @@ test("a detached and reattached shell does not keep a stale toast", async ({ pag
   await expect(toast).toBeVisible();
 
   await page.evaluate(async (tag) => {
-    const stage = document.querySelector(tag).shadowRoot.querySelector(".stage");
-    const shell = stage.firstElementChild;
+    const shell = document.querySelector(tag).shadowRoot.querySelector("matic-map-shell-v4");
+    const parent = shell.parentElement;
     shell.remove();
-    stage.append(shell);
+    parent.append(shell);
     await shell.updateComplete;
   }, GALLERY_TAG);
   await expect(toast).toBeHidden();
@@ -502,18 +502,19 @@ test("focus leaves a toast that a cleared notice hides for the panel heading", a
   const gallery = await loadGallery(page);
   const toast = gallery.locator("[data-notice-toast]");
   await setGalleryNotice(page, sampleNotice("error", "Focused then cleared"));
-  await toast.getByRole("button", { name: "Hide notification" }).focus();
-  expect(await shellActive(page)).toBe("button");
+  const hide = toast.getByRole("button", { name: "Hide notification" });
+  await hide.focus();
+  await expect(hide).toBeFocused();
 
   await setGalleryNotice(page, null);
   await expect(toast).toBeHidden();
-  await expect.poll(() => shellActive(page)).toBe("h2 in heading");
+  await expect(gallery.getByRole("heading", { level: 2 })).toBeFocused();
 });
 
 test("@safety errors announce through the alert region and other tones through the polite region, once each", async ({ page }) => {
   await loadGallery(page);
   const setup = await page.evaluate((tag) => {
-    const root = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild.shadowRoot;
+    const root = document.querySelector(tag).shadowRoot.querySelector("matic-map-shell-v4").shadowRoot;
     const alert = root.querySelector('.root > [role="alert"]');
     const polite = root.querySelector('.root > [aria-live="polite"]');
     window.__regionLog = { alert: [], polite: [] };
@@ -548,7 +549,7 @@ test("@safety errors announce through the alert region and other tones through t
   }, { name: region, value: text });
   const current = (region) => page.evaluate((name) => window.__regionLog[name].at(-1) ?? "", region);
   const setLocalize = (translations) => page.evaluate(({ tag, map }) => {
-    const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+    const shell = document.querySelector(tag).shadowRoot.querySelector("matic-map-shell-v4");
     shell.localize = map ? (key) => map[key] ?? key : undefined;
     return shell.updateComplete;
   }, { tag: GALLERY_TAG, map: translations });
@@ -585,7 +586,7 @@ test("@safety errors announce through the alert region and other tones through t
 // returns that list for "polite" or "alert".
 const watchRegions = (page) => page.evaluate((tag) => {
   const shell = window.__noticePanel?.shadowRoot.querySelector("matic-map-shell-v4")
-    ?? document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+    ?? document.querySelector(tag).shadowRoot.querySelector("matic-map-shell-v4");
   window.__regionChanges = { alert: [], polite: [] };
   for (const [name, selector] of [["alert", '.root > [role="alert"]'], ["polite", '.root > [aria-live="polite"]']]) {
     const region = shell.shadowRoot.querySelector(selector);
@@ -713,7 +714,7 @@ test("an invalid notice is ignored alike through an intent and a state replaceme
   await setGalleryNotice(page, kept);
   const results = await page.evaluate(({ tag, invalid }) => {
     const gallery = document.querySelector(tag);
-    const shell = gallery.shadowRoot.querySelector(".stage").firstElementChild;
+    const shell = gallery.shadowRoot.querySelector("matic-map-shell-v4");
     shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
       detail: { type: "set-notice", notice: invalid }, bubbles: true, composed: true,
     }));
@@ -741,7 +742,7 @@ test("a language swap does not announce the status title again", async ({ page }
   await loadGallery(page);
   await watchRegions(page);
   await page.evaluate((tag) => {
-    const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+    const shell = document.querySelector(tag).shadowRoot.querySelector("matic-map-shell-v4");
     shell.localize = (key) => (key.endsWith(".v4_docked") ? "Angedockt" : key);
     return shell.updateComplete;
   }, GALLERY_TAG);
@@ -753,7 +754,7 @@ test("a notice is validated and stored from one read of each field", async ({ pa
   await loadGallery(page);
   const stored = await page.evaluate(async (tag) => {
     const gallery = document.querySelector(tag);
-    const shell = gallery.shadowRoot.querySelector(".stage").firstElementChild;
+    const shell = gallery.shadowRoot.querySelector("matic-map-shell-v4");
     const send = (notice) => shell.dispatchEvent(new CustomEvent(
       "matic-workspace-intent",
       { detail: { type: "set-notice", notice }, bubbles: true, composed: true },
@@ -903,7 +904,7 @@ test("the heading and notice slot stay put while the plan editor body scrolls", 
     const gallery = await loadGallery(page, { scenario: "plan-saved-intelligent", narrow });
     await setGalleryNotice(page, sampleNotice("warning", `Pinned at ${width}`));
     await expect(gallery.locator("[data-notice-slot]")).toBeVisible();
-    const moved = await gallery.locator(".panel-heading h2").evaluate(async (heading) => {
+    const moved = await gallery.getByRole("heading", { level: 2 }).evaluate(async (heading) => {
       const root = heading.getRootNode();
       // Let the sheet finish opening to its detent before measuring.
       await Promise.all(root.getAnimations().map((animation) => animation.finished));

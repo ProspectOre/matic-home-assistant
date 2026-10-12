@@ -2,8 +2,8 @@
 
 The shipped TypeScript names its keys and English fallbacks in code; Home
 Assistant serves the stored values from ``strings.json``. Every key must exist
-in ``common`` with the stored value equal to its fallback, and no ``v4_`` key may
-go unreferenced. Only the legacy unreferenced keys stay frozen, for UX1.
+in ``common`` with the stored value equal to its fallback, and every ``common``
+key must be referenced by shipped code: no key is stored that nothing reads.
 """
 
 from __future__ import annotations
@@ -22,80 +22,20 @@ from tests.frontend_sources import (
     backend_key_sites,
     common_strings,
     key_sites,
+    live_matches,
     scan_backend_module,
     scan_module,
+    scan_notice_text,
+    scan_text_references,
     shipped_modules,
     stray_backend_references,
-    stray_v4_literals,
-)
-
-_RATCHET = "Update the baseline in the same commit that fixes or adds this drift."
-
-# Non-``v4_`` keys stored in ``common`` that no shipped code references.
-# UX1 owns the decision to reuse or remove each of them.
-_LEGACY_UNREFERENCED: frozenset[str] = frozenset(
-    {
-        "all_rooms",
-        "area_added",
-        "area_draw_help",
-        "area_editor_intro",
-        "area_editor_title",
-        "area_erase_help",
-        "area_layer_photo",
-        "area_layer_rooms",
-        "area_map",
-        "area_map_controls",
-        "area_map_layer",
-        "area_marks",
-        "area_not_selected",
-        "area_outside_map",
-        "area_pan_help",
-        "area_photo_loading",
-        "area_photo_ready",
-        "area_photo_refresh",
-        "area_photo_unavailable",
-        "area_selected",
-        "area_settings",
-        "area_workspace_close",
-        "area_workspace_empty",
-        "area_workspace_redraw",
-        "cleaning_mode",
-        "clear",
-        "coverage",
-        "done_editing",
-        "drag_room",
-        "draw",
-        "expand_map",
-        "fit_map",
-        "focus_room",
-        "include_room",
-        "map_cleaning_areas",
-        "map_custom_areas_hint",
-        "map_more",
-        "map_scene_zoom",
-        "map_session_unverified",
-        "room_editor_intro",
-        "room_editor_load_failed",
-        "room_editor_loading",
-        "room_editor_retry",
-        "zoom_in",
-        "zoom_out",
-    }
+    stray_key_literals,
+    stray_notice_text,
+    text_referenced_keys,
 )
 
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 _SIMPLE_PLACEHOLDER = re.compile(r"\{[a-z][a-z0-9_]*\}")
-
-
-def _assert_ratchet[T: (str, tuple[str, str])](
-    what: str, actual: frozenset[T], baseline: frozenset[T]
-) -> None:
-    new = sorted(actual - baseline)
-    fixed = sorted(baseline - actual)
-    assert actual == baseline, (
-        f"{what}: new drift {new}; baseline entries no longer drifting {fixed}. "
-        f"{_RATCHET}"
-    )
 
 
 def test_en_translations_are_identical_to_strings() -> None:
@@ -103,18 +43,22 @@ def test_en_translations_are_identical_to_strings() -> None:
 
 
 def test_every_frontend_key_site_is_recognized() -> None:
-    assert stray_v4_literals() == []
+    strays = stray_key_literals()
+    assert strays == [], f"key literals outside a recognized site: {strays}"
 
 
 def _referenced_keys() -> set[str]:
-    """Keys named by the shipped TypeScript or by the integration's Python."""
-    return {site.key for site in key_sites()} | {
-        key for _, _, key in backend_key_sites()
-    }
+    """Keys named by shipped TypeScript, Python, services.yaml or blueprints."""
+    return (
+        {site.key for site in key_sites()}
+        | {key for _, _, key in backend_key_sites()}
+        | text_referenced_keys()
+    )
 
 
 def test_every_backend_key_reference_is_recognized() -> None:
-    assert stray_backend_references() == []
+    strays = stray_backend_references()
+    assert strays == [], f"backend cache keys built at run time: {strays}"
 
 
 def test_backend_keys_exist_in_common() -> None:
@@ -122,42 +66,25 @@ def test_backend_keys_exist_in_common() -> None:
     assert missing == set(), f"backend keys missing from common: {sorted(missing)}"
 
 
-def test_frontend_keys_exist_in_common_with_matching_fallbacks() -> None:
+def test_frontend_keys_exist_in_common() -> None:
     common = common_strings()
-    sites = key_sites()
-    missing = frozenset(site.key for site in sites if site.key not in common)
-    mismatch = frozenset(
+    missing = {site.key for site in key_sites() if site.key not in common}
+    assert missing == set(), f"keys missing from common: {sorted(missing)}"
+
+
+def test_frontend_fallbacks_equal_the_stored_values() -> None:
+    common = common_strings()
+    mismatch = {
         (site.key, site.fallback)
-        for site in sites
+        for site in key_sites()
         if site.key in common and common[site.key] != site.fallback
-    )
-    assert missing == frozenset(), f"keys missing from common: {sorted(missing)}"
-    assert mismatch == frozenset(), (
-        f"fallbacks that differ from common: {sorted(mismatch)}"
-    )
+    }
+    assert mismatch == set(), f"fallbacks that differ from common: {sorted(mismatch)}"
 
 
-def test_no_orphan_v4_keys_in_common() -> None:
-    referenced = _referenced_keys()
-    orphans = (
-        frozenset(key for key in common_strings() if key.startswith("v4_")) - referenced
-    )
-    assert orphans == frozenset(), (
-        f"v4 keys in common that no code references: {sorted(orphans)}"
-    )
-
-
-def test_unreferenced_legacy_common_keys_do_not_grow() -> None:
-    referenced = _referenced_keys()
-    unreferenced = (
-        frozenset(key for key in common_strings() if not key.startswith("v4_"))
-        - referenced
-    )
-    _assert_ratchet(
-        "legacy keys in common that no code references",
-        unreferenced,
-        _LEGACY_UNREFERENCED,
-    )
+def test_every_common_key_is_referenced() -> None:
+    orphans = set(common_strings()) - _referenced_keys()
+    assert orphans == set(), f"common keys that nothing references: {sorted(orphans)}"
 
 
 def test_every_placeholder_is_supplied_at_its_call_site() -> None:
@@ -240,10 +167,145 @@ _SITE_FORMS = {
         [],
         ["v4_height_"],
     ),
+    "translate through an optional-chained localize": (
+        'translate(this.hass?.localize, "v4_a", "A")',
+        [("call", "v4_a", "A", set())],
+        [],
+    ),
+    "translate through a private-field localize": (
+        'translate(this.#canvas.localize, "v4_a", "A")',
+        [("call", "v4_a", "A", set())],
+        [],
+    ),
+    "legacy key with a literal fallback is a site": (
+        't("plan_delete", "Delete")',
+        [("call", "plan_delete", "Delete", set())],
+        [],
+    ),
+    "legacy key with a variable fallback": (
+        't("plan_delete", label)',
+        [],
+        ["plan_delete"],
+    ),
+    "legacy key through translate with a variable fallback": (
+        'translate(this.hass?.localize, "area_name", name)',
+        [],
+        ["area_name"],
+    ),
+    "single-quoted legacy key": (
+        "this.#t('plan_delete', 'Delete')",
+        [],
+        ["plan_delete"],
+    ),
+    "static template legacy key": (
+        "t(`plan_delete`, 'Delete')",
+        [],
+        ["plan_delete"],
+    ),
+    "key passed as a variable": (
+        "t(key, fallback)",
+        [],
+        [],
+    ),
+    "method that ends in t is not a call": (
+        'set("plan_delete", "x"); test("plan_delete", y)',
+        [],
+        [],
+    ),
     "comparison is not a stray": (
         'if (id === "v4_x" || id !== "v4_y") return;',
         [],
         [],
+    ),
+    "comparison with the key first": (
+        'if ("v4_x" === id) return;',
+        [],
+        [],
+    ),
+    "case label": (
+        'switch (id) { case "v4_x": break; }',
+        [],
+        [],
+    ),
+    "key assigned, not compared": (
+        'const k = "v4_x";',
+        [],
+        ["v4_x"],
+    ),
+    "key after a comparison elsewhere in the expression": (
+        'const k = (a === b) ? "v4_x" : "v4_y";',
+        [],
+        ["v4_x", "v4_y"],
+    ),
+    "site in a line comment": (
+        '// t("v4_x", "Old")',
+        [],
+        [],
+    ),
+    "site in a block comment": (
+        '/* t("v4_x", "Old") */',
+        [],
+        [],
+    ),
+    "stray key in a comment": (
+        '// the old "v4_x" key',
+        [],
+        [],
+    ),
+    "site in static template text": (
+        'html`<code>t("v4_x", "A")</code>`',
+        [],
+        [],
+    ),
+    "stray key in static template text": (
+        'html`<i data-key="v4_x"></i>`',
+        [],
+        [],
+    ),
+    "site in an unrelated string": (
+        'const hint = \'call t("v4_x", "A")\';',
+        [],
+        [],
+    ),
+    "site after a comment and a template": (
+        '// c\nconst a = html`${1}`; /* d */ t("v4_a", "A")',
+        [("call", "v4_a", "A", set())],
+        [],
+    ),
+    "regex literal holding a key": (
+        'const re = /"v4_x"/u;',
+        [],
+        [],
+    ),
+    "regex literal holding a site": (
+        'const re = /t("v4_x", "A")/u;',
+        [],
+        [],
+    ),
+    "regex literal holding quotes": (
+        'const re = /[\'"`]/u; t("v4_a", "A")',
+        [("call", "v4_a", "A", set())],
+        [],
+    ),
+    "regex literal holding a slash in a class": (
+        'const re = /[/]"v4_x"/u; t("v4_a", "A")',
+        [("call", "v4_a", "A", set())],
+        [],
+    ),
+    "regex after return": (
+        'return /"v4_x"/u.test(s);',
+        [],
+        [],
+    ),
+    "division is not a regex": (
+        'const q = n / 2; const s = "v4_stray"; const m = k / 3;',
+        [],
+        ["v4_stray"],
+    ),
+    "division after a call is not a regex": (
+        'const q = f(n) / 2; const s = "v4_stray"; const m = k / 3;',
+        [],
+        ["v4_stray"],
     ),
 }
 
@@ -310,18 +372,97 @@ def test_backend_scanner_recognizes_each_form(
     assert [text for _, _, text in stray] == strays
 
 
-def test_effects_build_no_notice_text() -> None:
-    modules = shipped_modules()
-    assert not re.search(r"\btext\s*:", modules["effects.ts"])
-    holders = [
-        m for m, source in modules.items() if re.search(r"notice\??\.text", source)
-    ]
-    assert holders == []
+def test_scanner_reports_the_line_of_a_site_and_a_stray() -> None:
+    source = (
+        "// first\n"
+        "/* second\n"
+        "   third */\n"
+        "const a = html`\n"
+        "  <b>${1}</b>`;\n"
+        't("v4_site", "Site");\n'
+        'const k = "v4_stray";\n'
+    )
+    sites, strays = scan_module("snippet.ts", source)
+    assert [(site.key, site.line) for site in sites] == [("v4_site", 6)]
+    assert [(key, line) for _, line, key in strays] == [("v4_stray", 7)]
+
+
+_UNBALANCED = {
+    "unclosed brace": 'if (a) { t("v4_a", "A");',
+    "closer for the wrong opener": 'f(a]; t("v4_a", "A");',
+    "closer with no opener": 'a); t("v4_a", "A");',
+}
+
+
+@pytest.mark.parametrize("source", _UNBALANCED.values(), ids=_UNBALANCED.keys())
+def test_scanner_rejects_unbalanced_source(source: str) -> None:
+    with pytest.raises(ValueError, match="unbalanced"):
+        scan_module("snippet.ts", source)
+
+
+_TEXT_FORMS = {
+    "dotted reference": ("description: component.matic_robot.common.k_a", ["k_a"]),
+    "strings.json cross-reference": (
+        '"[%key:component::matic_robot::common::k_b%]"',
+        ["k_b"],
+    ),
+    "two references": (
+        "component.matic_robot.common.k_a component.matic_robot.common.k_c",
+        ["k_a", "k_c"],
+    ),
+    "other category": ("component.matic_robot.entity.vacuum.k_d", []),
+    "other integration": ("component.other.common.k_e", []),
+    "selector translation_key target": ("translation_key: cleaning_mode", []),
+    "bare mention of common": ("the common keys are shared", []),
+}
+
+
+@pytest.mark.parametrize(("text", "keys"), _TEXT_FORMS.values(), ids=_TEXT_FORMS.keys())
+def test_text_reference_scanner_recognizes_each_form(
+    text: str, keys: list[str]
+) -> None:
+    assert scan_text_references(text) == keys
+
+
+_NOTICE_TEXT_FORMS = {
+    "object with tone and text": ('const n = { tone: "info", text: "x" };', [1]),
+    "set-notice dispatch": (
+        'this.#intent({ type: "set-notice", notice: {\n  tone: "error",\n'
+        '  text: "x" } });',
+        [1],
+    ),
+    "text property read": ("const t = state.notice?.text;", [1]),
+    "ternary on a text variable": ("const v = cond ? text : other;", []),
+    "type annotation": ("interface Row { text: string }", []),
+    "placeholder named text": ('notice("info", "k", "F {text}", { text });', []),
+    "object with tone and key": ('const n = { tone: "info", key: "k" };', []),
+    "commented object": ('// { tone: "info", text: "x" }', []),
+    "text read on another name": ("const v = notices.text;", []),
+}
+
+
+@pytest.mark.parametrize(
+    ("source", "lines"), _NOTICE_TEXT_FORMS.values(), ids=_NOTICE_TEXT_FORMS.keys()
+)
+def test_notice_text_scanner_recognizes_each_form(
+    source: str, lines: list[int]
+) -> None:
+    assert [line for _, line in scan_notice_text("snippet.ts", source)] == lines
+
+
+def test_no_module_builds_notice_text() -> None:
+    holders = stray_notice_text()
+    assert holders == [], f"notices built with a text field or read from it: {holders}"
 
 
 def test_no_manual_placeholder_substitution() -> None:
-    holders = [m for m, source in shipped_modules().items() if '.replace("{' in source]
-    assert holders == []
+    manual = re.compile(r'\.replace\("\{')
+    holders = [
+        module
+        for module, source in shipped_modules().items()
+        if live_matches(manual, source)
+    ]
+    assert holders == [], f"modules that substitute placeholders by hand: {holders}"
 
 
 async def test_home_assistant_serves_matic_common_translations(hass) -> None:

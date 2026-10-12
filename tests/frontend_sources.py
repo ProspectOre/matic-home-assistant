@@ -9,14 +9,18 @@ and recognize the few forms in which a localization key reaches the UI:
 ``disabled``  ``disabledAction("id", "Label", "Reason", "labelKey", "reasonKey")``
 ``notice``    ``notice("tone", "key", "Fallback", { name })``
 
-A ``"v4_*"`` literal that is not at one of these sites is reported by
-``stray_v4_literals`` so a new form cannot slip past the guard unnoticed.
+Only real code counts: a match inside a comment, a regex literal, a string or the
+static part of a template literal is not a site. A ``"v4_*"`` literal, or a quoted
+first argument of ``t(``/``translate(``, that is not at one of these sites is
+reported by ``stray_key_literals`` so a new form cannot slip past the guard.
 
 The integration's Python names ``common`` keys in one form, a full cache key
 whose key part is literal: ``"component.matic_robot.common.key"`` or
 ``f"component.{DOMAIN}.common.key"``. ``backend_key_sites`` finds those string
 literals in the syntax tree (never comments or docstrings), and
 ``stray_backend_references`` reports a cache key built from a run-time name.
+``text_referenced_keys`` reads the same full cache key in ``services.yaml``, the
+blueprints and the other ``strings.json`` categories.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+from bisect import bisect_right
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cache
@@ -33,6 +38,7 @@ from typing import Literal
 REPO = Path(__file__).resolve().parents[1]
 STUDIO_SOURCE = REPO / "frontend" / "map-studio-v4"
 INTEGRATION = REPO / "custom_components" / "matic_robot"
+BLUEPRINTS = REPO / "blueprints"
 STRINGS_PATH = INTEGRATION / "strings.json"
 EN_PATH = INTEGRATION / "translations" / "en.json"
 
@@ -93,22 +99,43 @@ def shipped_modules() -> dict[str, str]:
 
 # --- structure scanner -----------------------------------------------------
 
-_CODE_TOKEN = re.compile(r"""["'`{}()\[\],]|//|/\*""")
+_CODE_TOKEN = re.compile(r"""["'`{}()\[\],/]""")
 _TEMPLATE_TOKEN = re.compile(r"""\\.|`|\$\{""", re.DOTALL)
 _QUOTED = {
     '"': re.compile(r'"(?:[^"\\\n]|\\.)*"'),
     "'": re.compile(r"'(?:[^'\\\n]|\\.)*'"),
 }
+_REGEX_LITERAL = re.compile(r"/(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\[\\\n])+/[a-z]*")
+_REGEX_AFTER = frozenset("(,=:[!&|?{};+-*%<>~^")
+_REGEX_AFTER_WORD = frozenset(
+    {"return", "typeof", "case", "in", "of", "delete", "void", "throw", "else", "new"}
+)
+_Token = tuple[str, int, int]
 
 
-def _structure(text: str, start: int = 0) -> Iterator[tuple[int, str]]:
-    """Yield ``(index, char)`` for each bracket and comma that is real code.
+def _starts_regex(text: str, slash: int) -> bool:
+    """Whether the ``/`` at ``slash`` opens a regex literal rather than divides."""
+    end = slash
+    while end and text[end - 1].isspace():
+        end -= 1
+    if end == 0 or text[end - 1] in _REGEX_AFTER:
+        return True
+    begin = end
+    while begin and (text[begin - 1].isalnum() or text[begin - 1] in "_$"):
+        begin -= 1
+    return text[begin:end] in _REGEX_AFTER_WORD
 
-    Strings, comments and template-literal text are skipped, and the braces of
-    ``${...}`` template expressions are balanced internally and not yielded.
+
+def _tokens(text: str, start: int = 0) -> Iterator[_Token]:
+    """Yield ``(kind, begin, end)`` for each lexical item of TypeScript source.
+
+    ``punct`` is one bracket or comma of real code; ``string``, ``comment``,
+    ``regex`` and ``text`` (the static part of a template literal) are the spans
+    in which code-like text is not code. The braces of ``${...}`` template
+    expressions are balanced internally and not yielded.
     """
     frames = ["code"]
-    i = start
+    i = chunk = start
     while True:
         if frames[-1] == "tpl":
             template = _TEMPLATE_TOKEN.search(text, i)
@@ -116,40 +143,82 @@ def _structure(text: str, start: int = 0) -> Iterator[tuple[int, str]]:
                 return
             i = template.end()
             if template.group() == "`":
+                yield "text", chunk, template.start()
                 frames.pop()
             elif template.group() == "${":
+                yield "text", chunk, template.start()
                 frames.append("expr")
             continue
         token = _CODE_TOKEN.search(text, i)
         if token is None:
             return
-        char, i = token.group(), token.end()
+        char, begin = token.group(), token.start()
+        i = token.end()
         if char in _QUOTED:
-            quoted = _QUOTED[char].match(text, token.start())
-            i = quoted.end() if quoted else i
+            quoted = _QUOTED[char].match(text, begin)
+            if quoted:
+                i = quoted.end()
+                yield "string", begin, i
         elif char == "`":
             frames.append("tpl")
-        elif char == "//":
-            newline = text.find("\n", i)
-            if newline < 0:
-                return
-            i = newline
-        elif char == "/*":
-            end = text.find("*/", i)
-            if end < 0:
-                return
-            i = end + 2
-        elif char == "{":
-            frames.append("code")
-            yield token.start(), char
+            chunk = i
+        elif char == "/":
+            if text.startswith("/", i):
+                newline = text.find("\n", i)
+                i = len(text) if newline < 0 else newline
+                yield "comment", begin, i
+            elif text.startswith("*", i):
+                end = text.find("*/", i)
+                if end < 0:
+                    return
+                i = end + 2
+                yield "comment", begin, i
+            elif _starts_regex(text, begin):
+                regex = _REGEX_LITERAL.match(text, begin)
+                if regex:
+                    i = regex.end()
+                    yield "regex", begin, i
         elif char == "}":
             closes_expression = frames[-1] == "expr"
             if len(frames) > 1:
                 frames.pop()
+            if frames[-1] == "tpl":
+                chunk = i
             if not closes_expression:
-                yield token.start(), char
+                yield "punct", begin, i
         else:
-            yield token.start(), char
+            if char == "{":
+                frames.append("code")
+            yield "punct", begin, i
+
+
+def _structure(text: str, start: int = 0) -> Iterator[tuple[int, str]]:
+    """Yield ``(index, char)`` for each bracket and comma that is real code."""
+    for kind, begin, _ in _tokens(text, start):
+        if kind == "punct":
+            yield begin, text[begin]
+
+
+@cache
+def _dead_spans(text: str) -> tuple[tuple[int, int], ...]:
+    """Source spans where code-shaped text is a comment, a regex or string content."""
+    return tuple(
+        (begin + 1 if kind == "string" else begin, end)
+        for kind, begin, end in _tokens(text)
+        if kind != "punct"
+    )
+
+
+def _is_code(text: str, offset: int) -> bool:
+    """Whether ``offset`` is real code: not inside a comment, regex or string."""
+    spans = _dead_spans(text)
+    index = bisect_right(spans, (offset, len(text))) - 1
+    return index < 0 or offset >= spans[index][1]
+
+
+def live_matches(pattern: re.Pattern[str], text: str) -> list[re.Match[str]]:
+    """Matches of ``pattern`` that start in real code."""
+    return [match for match in pattern.finditer(text) if _is_code(text, match.start())]
 
 
 _OPENERS = "{(["
@@ -193,7 +262,7 @@ _ENTRY_KEY = re.compile(r"""\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z_$][\w$]*))\s*(?::
 def _object_keys(text: str, open_index: int) -> frozenset[str]:
     keys: set[str] = set()
     for start, end in _object_entries(text, open_index):
-        match = _ENTRY_KEY.match(text[start:end])
+        match = _ENTRY_KEY.match(text, start, end)
         if match:
             keys.add(next(group for group in match.groups() if group))
     return frozenset(keys)
@@ -217,15 +286,20 @@ def _supplied_in_arguments(text: str, start: int) -> frozenset[str]:
 
 
 def _brace_ranges(text: str) -> list[tuple[int, int]]:
+    """Span of every ``{...}`` block; raises unless all brackets pair up."""
     ranges: list[tuple[int, int]] = []
     opened: list[tuple[str, int]] = []
     for index, char in _structure(text):
         if char in _OPENERS:
             opened.append((char, index))
-        elif char in _CLOSERS and opened:
+        elif char in _CLOSERS:
+            if not opened or _OPENERS.index(opened[-1][0]) != _CLOSERS.index(char):
+                raise ValueError(f"unbalanced {char!r} at offset {index}")
             opener, start = opened.pop()
             if opener == "{":
                 ranges.append((start, index))
+    if opened:
+        raise ValueError(f"unbalanced {opened[-1][0]!r} at offset {opened[-1][1]}")
     return ranges
 
 
@@ -243,8 +317,11 @@ def _placeholder_keys(text: str, open_index: int, field: str) -> frozenset[str]:
 
 _KEY = r'"([A-Za-z0-9_]+)"'
 _FALLBACK = r'"((?:[^"\\\n]|\\.)*)"'
+_LOCALIZE_ARGUMENT = r"(?:[\w$#]+(?:\??\.[\w$#]+)*\s*,\s*)?"
 _CALL = re.compile(
-    r"(?<![\w$])(?:t|translate)\(\s*(?:(?:this\.)?localize\s*,\s*)?"
+    r"(?<![\w$])(?:t\(|translate\(\s*"
+    + _LOCALIZE_ARGUMENT
+    + r")\s*"
     + _KEY
     + r"\s*,\s*"
     + _FALLBACK
@@ -283,6 +360,7 @@ def _line(text: str, offset: int) -> int:
 
 def _sites_in(module: str, text: str) -> list[tuple[KeySite, int]]:
     """Every recognized site in one module, with its key literal's offset."""
+    ranges = _brace_ranges(text)
     found: list[tuple[KeySite, int]] = []
 
     def add(
@@ -297,26 +375,23 @@ def _sites_in(module: str, text: str) -> list[tuple[KeySite, int]]:
         )
         found.append((site, key_offset))
 
-    for match in _CALL.finditer(text):
+    for match in live_matches(_CALL, text):
         supplied = _supplied_in_arguments(text, match.end())
         add("call", match.start(1) - 1, match[1], match[2], supplied)
-    for match in _NOTICE.finditer(text):
+    for match in live_matches(_NOTICE, text):
         supplied = _supplied_in_arguments(text, match.end())
         add("notice", match.start(1) - 1, match[1], match[2], supplied)
-    for match in _DISABLED.finditer(text):
+    for match in live_matches(_DISABLED, text):
         add("disabled", match.start(3) - 1, match[3], match[1], frozenset())
         if match[4]:
             add("disabled", match.start(4) - 1, match[4], match[2], frozenset())
-    pairs = list(_PAIR.finditer(text))
-    if pairs:
-        ranges = _brace_ranges(text)
-        for match in pairs:
-            enclosing = min(
-                (r for r in ranges if r[0] < match.start() < r[1]),
-                key=lambda r: r[1] - r[0],
-            )
-            supplied = _placeholder_keys(text, enclosing[0], f"{match[1]}Placeholders")
-            add("pair", match.start(4) - 1, match[4], match[2], supplied)
+    for match in live_matches(_PAIR, text):
+        enclosing = min(
+            (r for r in ranges if r[0] < match.start() < r[1]),
+            key=lambda r: r[1] - r[0],
+        )
+        supplied = _placeholder_keys(text, enclosing[0], f"{match[1]}Placeholders")
+        add("pair", match.start(4) - 1, match[4], match[2], supplied)
     return found
 
 
@@ -333,48 +408,118 @@ def key_sites() -> list[KeySite]:
     return [site for site, _ in _scan()]
 
 
+# A ``v4_*`` literal that is compared (``=== "v4_x"``, ``"v4_x" !==``, ``case``) is a
+# value, not a key. A template literal that starts with ``v4_`` and continues into
+# ``${`` counts as a stray: its key is built at run time, so no baseline could see it.
 _V4_LITERAL = re.compile(
-    r"""(["'])(v4_[A-Za-z0-9_]*)\1|`(v4_[A-Za-z0-9_]*)(?:`|\$\{)"""
+    r"""(?P<before>(?:[!=]==|\bcase)\s*)?"""
+    r"""(?:(?P<quote>["'])(?P<quoted>v4_\w*)(?P=quote)|`(?P<templated>v4_\w*)(?:`|\$\{))"""
+    r"""(?P<after>\s*[!=]==)?"""
 )
-_COMPARISON = re.compile(r"[!=]==\s*$")
+# Whatever its prefix, a quoted first argument of ``t(`` or ``translate(`` names a key.
+_QUOTED_ARGUMENT = re.compile(
+    r"(?<![\w$])(?:t\(|translate\(\s*"
+    + _LOCALIZE_ARGUMENT
+    + r")\s*(?P<quote>[\"'`])(?P<key>(?:(?!(?P=quote)|\$\{)[^\\]|\\.)*)",
+    re.DOTALL,
+)
 
 
 def _strays_in(
     module: str, text: str, sites: list[tuple[KeySite, int]]
 ) -> list[tuple[str, int, str]]:
-    at_site = {offset for _, offset in sites}
-    stray: list[tuple[str, int, str]] = []
+    found: dict[int, str] = {}
+    for match in live_matches(_QUOTED_ARGUMENT, text):
+        found[match.start("quote")] = match["key"]
     for match in _V4_LITERAL.finditer(text):
-        if match.start() in at_site:
+        if match["before"] or match["after"]:
             continue
-        if _COMPARISON.search(text[: match.start()]):
-            continue
-        stray.append((module, _line(text, match.start()), match[2] or match[3]))
-    return stray
+        group = "quoted" if match["quoted"] is not None else "templated"
+        offset = match.start(group) - 1
+        if _is_code(text, offset):
+            found.setdefault(offset, match[group])
+    at_site = {offset for _, offset in sites}
+    return [
+        (module, _line(text, offset), key)
+        for offset, key in sorted(found.items())
+        if offset not in at_site
+    ]
 
 
 def scan_module(
     module: str, text: str
 ) -> tuple[list[KeySite], list[tuple[str, int, str]]]:
-    """Recognized sites and stray ``v4_*`` literals of one module's source text."""
+    """Recognized sites and stray key literals of one module's source text."""
     sites = _sites_in(module, text)
     return [site for site, _ in sites], _strays_in(module, text, sites)
 
 
-def stray_v4_literals() -> list[tuple[str, int, str]]:
-    """``v4_*`` literals neither at a site nor compared with ``===``/``!==``.
-
-    A template literal that starts with ``v4_`` and continues into ``${`` counts:
-    its key is built at run time, so no baseline could see it.
-    """
-    by_module: dict[str, list[tuple[KeySite, int]]] = {}
-    for site, offset in _scan():
-        by_module.setdefault(site.module, []).append((site, offset))
+def stray_key_literals() -> list[tuple[str, int, str]]:
+    """Key literals that no recognized site accounts for, in the shipped modules."""
     return [
         stray
         for module, text in _modules().items()
-        for stray in _strays_in(module, text, by_module.get(module, []))
+        for stray in scan_module(module, text)[1]
     ]
+
+
+# --- notice text -----------------------------------------------------------
+
+_NOTICE_TEXT_READ = re.compile(r"(?<![\w$])notice\??\.text\b")
+
+
+def scan_notice_text(module: str, text: str) -> list[tuple[str, int]]:
+    """``(module, line)`` of each notice built with a ``text`` field or read from it.
+
+    A notice carries a ``key`` and ``fallback``; an object literal that has both a
+    ``tone`` and a ``text`` is the retired shape, wherever it is built.
+    """
+    found = {match.start() for match in live_matches(_NOTICE_TEXT_READ, text)}
+    found |= {
+        index
+        for index, char in _structure(text)
+        if char == "{" and {"tone", "text"} <= _object_keys(text, index)
+    }
+    return [(module, _line(text, offset)) for offset in sorted(found)]
+
+
+def stray_notice_text() -> list[tuple[str, int]]:
+    """Every retired-shape notice in the shipped modules."""
+    return [
+        built
+        for module, text in _modules().items()
+        for built in scan_notice_text(module, text)
+    ]
+
+
+# --- references outside the code -------------------------------------------
+
+# A ``common`` key named in YAML or in ``strings.json`` is named with its full
+# cache key, in the dotted form or Home Assistant's ``[%key:...::...%]`` form. A
+# ``translation_key`` resolves into the ``selector`` or ``entity`` category, so it
+# never names a ``common`` key.
+_TEXT_REFERENCE = re.compile(
+    r"component(?:\.|::)matic_robot(?:\.|::)common(?:\.|::)([a-z0-9_]+)"
+)
+
+
+def scan_text_references(text: str) -> list[str]:
+    """The ``common`` keys that one YAML or JSON text names."""
+    return _TEXT_REFERENCE.findall(text)
+
+
+def text_referenced_keys() -> set[str]:
+    """``common`` keys named by ``services.yaml``, the blueprints or other strings."""
+    others = {k: v for k, v in _strings().items() if k != "common"}
+    texts = [
+        json.dumps(others),
+        (INTEGRATION / "services.yaml").read_text(encoding="utf-8"),
+        *(
+            path.read_text(encoding="utf-8")
+            for path in sorted(BLUEPRINTS.rglob("*.yaml"))
+        ),
+    ]
+    return {key for text in texts for key in scan_text_references(text)}
 
 
 # --- backend references ----------------------------------------------------
@@ -459,8 +604,13 @@ def stray_backend_references() -> list[BackendSite]:
     return list(_backend_scan()[1])
 
 
+def _strings() -> dict[str, dict[str, object]]:
+    data: dict[str, dict[str, object]] = json.loads(
+        STRINGS_PATH.read_text(encoding="utf-8")
+    )
+    return data
+
+
 def common_strings() -> dict[str, str]:
     """The ``common`` block of ``strings.json``."""
-    data = json.loads(STRINGS_PATH.read_text(encoding="utf-8"))
-    common: dict[str, str] = data["common"]
-    return common
+    return {key: str(value) for key, value in _strings()["common"].items()}

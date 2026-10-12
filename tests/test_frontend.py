@@ -15,6 +15,11 @@ import pytest
 from custom_components.matic_robot import frontend
 from tests.frontend_sources import shipped_modules
 
+_COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.DOTALL)
+_MS_CUSTOM_PROPERTY_USE = re.compile(r"var\(\s*(--ms-[a-z0-9-]+)")
+_MS_CUSTOM_PROPERTY_DEFINED = re.compile(r"(--ms-[a-z0-9-]+)\s*:")
+_MS_CUSTOM_PROPERTY_SET = re.compile(r"""setProperty\(\s*["'`](--ms-[a-z0-9-]+)["'`]""")
+
 _REPOSITORY = Path(__file__).parents[1]
 _STUDIO_V4_DIRECTORY = frontend.MATIC_MAP_STUDIO_V4_DIRECTORY
 _SCENE_PARSER_SOURCE = (
@@ -146,19 +151,47 @@ def test_scene_parser_worker_stays_bounded_and_disposable() -> None:
     assert "URL.revokeObjectURL(this.#workerUrl)" in _SCENE_PARSER_SOURCE
 
 
-_MS_CUSTOM_PROPERTY_USE = re.compile(r"var\(\s*(--ms-[a-z0-9-]+)")
-_MS_CUSTOM_PROPERTY_DEFINED = re.compile(r"(--ms-[a-z0-9-]+)\s*:")
-_MS_CUSTOM_PROPERTY_SET = re.compile(r'setProperty\(\s*"(--ms-[a-z0-9-]+)"')
+def _ms_custom_properties(source: str) -> tuple[set[str], set[str]]:
+    """The ``--ms-*`` names a source uses and defines, ignoring comments."""
+    code = _COMMENT.sub("", source)
+    used = set(_MS_CUSTOM_PROPERTY_USE.findall(code))
+    defined = {
+        name
+        for pattern in (_MS_CUSTOM_PROPERTY_DEFINED, _MS_CUSTOM_PROPERTY_SET)
+        for name in pattern.findall(code)
+    }
+    return used, defined
+
+
+_MS_SOURCES = {
+    "declaration": ("a{--ms-x:1} b{c:var(--ms-x)}", {"--ms-x"}, {"--ms-x"}),
+    "double-quoted setProperty": ('s.setProperty("--ms-x", v)', set(), {"--ms-x"}),
+    "single-quoted setProperty": ("s.setProperty('--ms-x', v)", set(), {"--ms-x"}),
+    "backtick setProperty": ("s.setProperty(`--ms-x`, v)", set(), {"--ms-x"}),
+    "unquoted setProperty is not a name": ("s.setProperty(name, v)", set(), set()),
+    "definition in a block comment": (
+        "/* --ms-x: 1; */ var(--ms-x)",
+        {"--ms-x"},
+        set(),
+    ),
+    "definition in a line comment": ("// --ms-x: 1;\nvar(--ms-x)", {"--ms-x"}, set()),
+    "use in a comment": ("/* var(--ms-x) */ --ms-y: 1;", set(), {"--ms-y"}),
+    "url slashes are not a comment": ("u(https://x) --ms-x: 1;", set(), {"--ms-x"}),
+}
+
+
+@pytest.mark.parametrize(
+    ("source", "used", "defined"), _MS_SOURCES.values(), ids=_MS_SOURCES.keys()
+)
+def test_ms_custom_property_reader(
+    source: str, used: set[str], defined: set[str]
+) -> None:
+    assert _ms_custom_properties(source) == (used, defined)
 
 
 def test_every_ms_custom_property_is_defined() -> None:
     """A ``var(--ms-*)`` without a definition silently falls back to inheritance."""
-    sources = shipped_modules().values()
-    used = {name for text in sources for name in _MS_CUSTOM_PROPERTY_USE.findall(text)}
-    defined = {
-        name
-        for text in sources
-        for pattern in (_MS_CUSTOM_PROPERTY_DEFINED, _MS_CUSTOM_PROPERTY_SET)
-        for name in pattern.findall(text)
-    }
-    assert used - defined == set()
+    found = [_ms_custom_properties(text) for text in shipped_modules().values()]
+    used = set().union(*(names for names, _ in found))
+    defined = set().union(*(names for _, names in found))
+    assert used - defined == set(), f"--ms-* used but never defined: {used - defined}"

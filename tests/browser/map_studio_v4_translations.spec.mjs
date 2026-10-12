@@ -12,38 +12,69 @@ const PLAN_CATALOG = {
   plans: [],
 };
 
-// A fake `localize` that reorders each counted template the way a translation
-// may, and records the placeholders the panel handed it. Keys it does not
-// know come back unchanged, which is Home Assistant's own miss behaviour.
+// The templates a fake `localize` answers with, each reordered the way a
+// translation may. Keys it does not know come back unchanged, which is Home
+// Assistant's own miss behaviour.
+const TEMPLATES = {
+  v4_action_clean_rooms_count: "Räume reinigen: {count}",
+  v4_action_clean_rooms_count_one: "Einen Raum reinigen",
+  v4_brush_button: "Pinselbreite {brush}, Einstellungen",
+  v4_brush: "Pinsel {brush}",
+  v4_map_scale: "Maßstab {distance}",
+  v4_rooms_selected: "Gewählt: {count} Räume",
+  v4_rooms_selected_names: "Räume gewählt: {count} · {rooms}",
+  v4_rooms_summary_dock: "{rooms}, danach zurück zum Dock",
+  v4_zone_add_point_after: "Punkt nach {number} hinzufügen",
+  v4_history_position: "{position} von {count}",
+};
+
+// Installs `window.__localize`, which answers from TEMPLATES and records the
+// placeholders it is handed. Call it before the page loads.
+const installLocalize = (page) => page.addInitScript(({ prefix, templates }) => {
+  window.__localizeCalls = [];
+  window.__localize = (key, placeholders) => {
+    const name = key.slice(prefix.length);
+    window.__localizeCalls.push({ key: name, placeholders });
+    const template = templates[name];
+    return template ? template.replace(/\{(\w+)\}/gu, (_, field) => placeholders?.[field] ?? "") : key;
+  };
+}, { prefix: PREFIX, templates: TEMPLATES });
+
 async function mountPanel(page, fixtureOptions = {}) {
+  await installLocalize(page);
   const fixture = await installPanelFixture(page, { initialPlanCatalog: PLAN_CATALOG, ...fixtureOptions });
-  await page.evaluate((prefix) => {
-    const templates = {
-      v4_action_clean_rooms_count: (p) => `Räume reinigen: ${p.count}`,
-      v4_action_clean_rooms_count_one: () => "Einen Raum reinigen",
-      v4_brush_button: (p) => `Pinselbreite ${p.brush}, Einstellungen`,
-      v4_brush: (p) => `Pinsel ${p.brush}`,
-      v4_map_scale: (p) => `Maßstab ${p.distance}`,
-    };
-    window.__localizeCalls = [];
+  await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
-    panel.hass = {
-      ...panel.hass,
-      localize: (key, placeholders) => {
-        window.__localizeCalls.push({ key: key.slice(prefix.length), placeholders });
-        const template = templates[key.slice(prefix.length)];
-        return template ? template(placeholders ?? {}) : key;
-      },
-    };
+    panel.hass = { ...panel.hass, localize: window.__localize };
     window.__translationPanel = panel;
     document.body.append(panel);
-  }, PREFIX);
+  });
   const panel = page.locator(fixture.panelTag);
   await expect.poll(() => page.evaluate(() => {
     const state = window.__translationPanel.getWorkspaceSnapshot();
     return state.resources.scene.status === "ready" && state.resources.plans.status === "ready";
   })).toBe(true);
   return panel;
+}
+
+const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
+
+// Mounts a gallery scenario whose shell speaks through the fake localize.
+async function mountGallery(page, { scenario, narrow = false }) {
+  await installLocalize(page);
+  await page.goto("/");
+  await page.evaluate(async ({ tag, selectedScenario, selectedNarrow }) => {
+    await import("/map_studio_v4-review/review.js");
+    const gallery = document.createElement(tag);
+    gallery.controls = false;
+    gallery.scenario = selectedScenario;
+    gallery.narrow = selectedNarrow;
+    document.body.style.margin = "0";
+    document.body.append(gallery);
+    await gallery.updateComplete;
+    gallery.shadowRoot.querySelector("matic-map-shell-v4").localize = window.__localize;
+  }, { tag: GALLERY_TAG, selectedScenario: scenario, selectedNarrow: narrow });
+  return page.locator(GALLERY_TAG);
 }
 
 const sendIntent = (page, detail) => page.evaluate((intent) => {
@@ -64,13 +95,14 @@ test("counted labels take their numbers from placeholders", async ({ page }) => 
   await sendIntent(page, { type: "toggle-room", roomId: "room-a" });
   await sendIntent(page, { type: "toggle-room", roomId: "room-b" });
 
-  await expect(panel.getByRole("button", { name: "Räume reinigen: 2" }).first()).toBeAttached();
+  const actionBar = panel.locator(".action-bar");
+  await expect(actionBar.getByRole("button", { name: "Räume reinigen: 2" })).toBeVisible();
   const counted = await localizeCalls(page, "v4_action_clean_rooms_count");
   expect(counted.length).toBeGreaterThan(0);
   expect(counted.every((call) => call.placeholders?.count === 2)).toBe(true);
 
   await sendIntent(page, { type: "toggle-room", roomId: "room-b" });
-  await expect(panel.getByRole("button", { name: "Einen Raum reinigen" }).first()).toBeAttached();
+  await expect(actionBar.getByRole("button", { name: "Einen Raum reinigen" })).toBeVisible();
   expect((await localizeCalls(page, "v4_action_clean_rooms_count_one")).length).toBeGreaterThan(0);
 });
 
@@ -182,7 +214,10 @@ test("a new connection requests common translations again", async ({ page }) => 
   await expect.poll(() => loaderCalls(page)).toHaveLength(1);
 
   await patchHass(page, { connection: "__connection__" });
-  await expect.poll(() => loaderCalls(page)).toHaveLength(2);
+  await expect.poll(() => loaderCalls(page)).toEqual([
+    ["common", "matic_robot"],
+    ["common", "matic_robot"],
+  ]);
 });
 
 test("a missing, rejecting or never-settling loader leaves the panel usable", async ({ page }) => {
@@ -196,7 +231,7 @@ test("a missing, rejecting or never-settling loader leaves the panel usable", as
   await patchHass(page, { connection: "__connection__", language: "de", loadBackendTranslation: null });
   await sendIntent(page, { type: "open-workflow", workflow: "rooms" });
   await expect(panel.locator("h2").first()).toBeVisible();
-  await expect(panel.getByRole("button", { name: "Stop cleaning" }).first()).toBeAttached();
+  await expect(panel.getByRole("button", { name: "Stop cleaning" }).first()).toBeVisible();
 
   for (const mode of ["reject", "never"]) {
     await installLoader(page, mode);
@@ -204,7 +239,7 @@ test("a missing, rejecting or never-settling loader leaves the panel usable", as
     await expect.poll(() => loaderCalls(page)).toHaveLength(1);
     await page.waitForTimeout(100);
     await expect(panel.locator("h2").first()).toBeVisible();
-    await expect(panel.getByRole("button", { name: "Stop cleaning" }).first()).toBeAttached();
+    await expect(panel.getByRole("button", { name: "Stop cleaning" }).first()).toBeVisible();
     // No retry for the same connection and language.
     expect(await loaderCalls(page)).toHaveLength(1);
   }
@@ -234,36 +269,123 @@ test("a Home Assistant translation error string falls back to English", async ({
   await expect(brush).toContainText(/^Brush \d+\.\d{2} m$/);
 });
 
+test("a localize that throws falls back to English", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const panel = await mountPanel(page);
+  await page.evaluate(() => {
+    const element = window.__translationPanel;
+    element.hass = {
+      ...element.hass,
+      localize: () => { throw new Error("synthetic localize failure"); },
+    };
+  });
+  await sendIntent(page, { type: "open-workflow", workflow: "draw" });
+  await sendIntent(page, { type: "set-draw-tool", tool: "paint" });
+
+  const brush = panel.locator(".draw-brush").first();
+  await expect(brush).toHaveAttribute("aria-label", /^Brush width, \d+\.\d{2} m\. Opens brush settings\.$/);
+  await expect(brush).toContainText(/^Brush \d+\.\d{2} m$/);
+  expect(errors).toEqual([]);
+});
+
+// The gallery's Rooms scenario carries a ready room preview, so the action
+// summary lists the selected rooms.
+const selectRooms = (page, count) => page.evaluate(({ tag, wanted }) => {
+  const gallery = document.querySelector(tag);
+  const shell = gallery.shadowRoot.querySelector("matic-map-shell-v4");
+  const rooms = gallery.getWorkspaceSnapshot().resources.plans.value.rooms.slice(0, wanted);
+  for (const { roomId } of rooms) {
+    shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: { type: "toggle-room", roomId }, bubbles: true, composed: true,
+    }));
+  }
+  return rooms.map((room) => room.name);
+}, { tag: GALLERY_TAG, wanted: count });
+
+const joinRooms = (page, locale, rooms) => page.evaluate(({ language, names }) =>
+  new Intl.ListFormat(language, { style: "long", type: "conjunction" }).format(names),
+{ language: locale, names: rooms });
+
 test("room lists are joined for the panel language", async ({ page }) => {
-  // The gallery's Rooms scenario carries a ready room preview, so the action
-  // summary lists the selected rooms.
-  const tag = "matic-map-studio-gallery-v0-4-0";
   await page.goto("/");
-  const names = await page.evaluate(async (galleryTag) => {
+  await page.evaluate(async (tag) => {
     await import("/map_studio_v4-review/review.js");
-    const gallery = document.createElement(galleryTag);
+    const gallery = document.createElement(tag);
     gallery.controls = false;
     gallery.scenario = "rooms";
     document.body.append(gallery);
     await gallery.updateComplete;
-    const shell = gallery.shadowRoot.querySelector(".stage").firstElementChild;
-    const rooms = gallery.getWorkspaceSnapshot().resources.plans.value.rooms.slice(0, 3);
-    for (const { roomId } of rooms) {
-      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
-        detail: { type: "toggle-room", roomId }, bubbles: true, composed: true,
-      }));
-    }
-    return rooms.map((room) => room.name);
-  }, tag);
+  }, GALLERY_TAG);
+  const names = await selectRooms(page, 3);
   expect(names).toHaveLength(3);
   for (const language of ["de", "en"]) {
-    const list = await page.evaluate(({ galleryTag, locale, rooms }) => {
-      const gallery = document.querySelector(galleryTag);
+    await page.evaluate(({ tag, locale }) => {
+      const gallery = document.querySelector(tag);
       gallery.replaceWorkspaceState({ ...gallery.getWorkspaceSnapshot(), locale });
-      return new Intl.ListFormat(locale, { style: "long", type: "conjunction" }).format(rooms);
-    }, { galleryTag: tag, locale: language, rooms: names });
-    await expect(page.locator(tag).locator(".action-summary"), language).toHaveText(`${list} · returns to the dock`);
+    }, { tag: GALLERY_TAG, locale: language });
+    const list = await joinRooms(page, language, names);
+    await expect(page.locator(GALLERY_TAG).locator(".action-summary"), language)
+      .toHaveText(`${list} · returns to the dock`);
   }
+});
+
+test("the room summary and selection chip take their rooms and count from placeholders", async ({ page }) => {
+  const gallery = await mountGallery(page, { scenario: "rooms" });
+  const names = await selectRooms(page, 3);
+  const list = await joinRooms(page, "en", names);
+
+  await expect(gallery.locator(".action-summary")).toHaveText(`${list}, danach zurück zum Dock`);
+  await expect(gallery.locator(".selection-chip")).toContainText("Gewählt: 3 Räume");
+  const dock = await localizeCalls(page, "v4_rooms_summary_dock");
+  expect(dock.at(-1).placeholders).toEqual({ rooms: list });
+  const chip = await localizeCalls(page, "v4_rooms_selected");
+  expect(chip.at(-1).placeholders).toEqual({ count: 3 });
+});
+
+test("@mobile the sheet's status line names the selected rooms beside a paused robot", async ({ page }) => {
+  const gallery = await mountGallery(page, { scenario: "rooms", narrow: true });
+  const names = await selectRooms(page, 2);
+  const list = await joinRooms(page, "en", names);
+  await page.evaluate((tag) => {
+    const element = document.querySelector(tag);
+    element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), activity: "paused" });
+  }, GALLERY_TAG);
+  await gallery.getByRole("button", { name: "Show less of the map workspace" }).click();
+
+  await expect(gallery.getByRole("complementary", { name: "Map workspace" })).toContainText(`Paused · Räume gewählt: 2 · ${list}`);
+  const status = await localizeCalls(page, "v4_rooms_selected_names");
+  expect(status.at(-1).placeholders).toEqual({ count: 2, rooms: list });
+});
+
+test("the history list numbers its saved maps from placeholders", async ({ page }) => {
+  const gallery = await mountGallery(page, { scenario: "history" });
+  const count = await page.evaluate((tag) =>
+    document.querySelector(tag).getWorkspaceSnapshot().resources.history.value.floors
+      .find((floor) => floor.id === "saved-1").snapshots.length, GALLERY_TAG);
+
+  await expect(gallery.getByRole("button", { name: new RegExp(` 1 von ${count}$`, "u") })).toBeVisible();
+  const positions = (await localizeCalls(page, "v4_history_position")).map((call) => call.placeholders);
+  expect(positions).toContainEqual({ position: 1, count });
+  expect(positions).toContainEqual({ position: count, count });
+});
+
+test("an outline's add-point buttons take the point number from a placeholder", async ({ page }) => {
+  const gallery = await mountGallery(page, { scenario: "draw" });
+  await page.evaluate((tag) => {
+    const element = document.querySelector(tag), state = element.getWorkspaceSnapshot();
+    element.replaceWorkspaceState({ ...state, cameras: { top: { yaw: 0, pitch: 0, zoom: 2, targetX: 2.475, targetZ: -1.975 } },
+      draw: { ...state.draw, circles: [], outline: null, undo: [], redo: [], strokeCount: 0, dirty: false } });
+  }, GALLERY_TAG);
+  await gallery.getByRole("button", { name: "Points", exact: true }).click();
+  const box = await gallery.locator(".scene-canvas").boundingBox();
+  for (const [x, y] of [[-90, -70], [90, -70], [90, 70]]) {
+    await page.mouse.click(box.x + box.width * 0.5 + x, box.y + box.height * 0.5 + y);
+  }
+
+  await expect(gallery.getByRole("button", { name: "Punkt nach 1 hinzufügen" })).toBeVisible();
+  const calls = await localizeCalls(page, "v4_zone_add_point_after");
+  expect(calls.map((call) => call.placeholders)).toContainEqual({ number: 1 });
 });
 
 test("a rejected common load is retried once every 30 seconds", async ({ page }) => {
