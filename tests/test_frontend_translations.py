@@ -18,6 +18,7 @@ from tests.frontend_sources import (
     STRINGS_PATH,
     common_strings,
     key_sites,
+    scan_module,
     shipped_modules,
     stray_v4_literals,
 )
@@ -316,6 +317,87 @@ def test_common_values_are_simple_message_format() -> None:
         assert "<" not in value and ">" not in value, f"{key}: angle bracket"
         bare = _SIMPLE_PLACEHOLDER.sub("", value)
         assert "{" not in bare and "}" not in bare, f"{key}: not a {{snake_case}} brace"
+
+
+_SITE_FORMS = {
+    "call with this.localize": (
+        'translate(this.localize, "v4_a", "A {n}", { n })',
+        [("call", "v4_a", "A {n}", {"n"})],
+        [],
+    ),
+    "call through handlers.t": (
+        'handlers.t("v4_a", "A")',
+        [("call", "v4_a", "A", set())],
+        [],
+    ),
+    "call nested in a template": (
+        'html`<b>${this.#t("v4_a", "A {n}", { n: 1, ...rest })}</b>`',
+        [("call", "v4_a", "A {n}", {"n"})],
+        [],
+    ),
+    "pair with shorthand placeholders": (
+        '{ label: "L {n}", labelKey: "v4_l", labelPlaceholders: { n } }',
+        [("pair", "v4_l", "L {n}", {"n"})],
+        [],
+    ),
+    "pair without placeholders": (
+        '{ reason: "R", reasonKey: "v4_r" }',
+        [("pair", "v4_r", "R", set())],
+        [],
+    ),
+    "disabledAction with both keys": (
+        'disabledAction("id", "L", "R", "v4_l", "v4_r")',
+        [("disabled", "v4_l", "L", set()), ("disabled", "v4_r", "R", set())],
+        [],
+    ),
+    "disabledAction without a reason key": (
+        'disabledAction("id", "L", "R", "v4_l")',
+        [("disabled", "v4_l", "L", set())],
+        [],
+    ),
+    "notice with placeholders": (
+        'notice("info", "v4_n", "N {x}", { x: 1 })',
+        [("notice", "v4_n", "N {x}", {"x"})],
+        [],
+    ),
+    "notice without placeholders": (
+        'notice("info", "v4_n", "N")',
+        [("notice", "v4_n", "N", set())],
+        [],
+    ),
+    "notice with a concatenated fallback": (
+        'notice("info", "v4_n", "N" + suffix)',
+        [],
+        ["v4_n"],
+    ),
+    "template key with a substitution": (
+        't(`v4_height_${detent}`, "Height")',
+        [],
+        ["v4_height_"],
+    ),
+    "comparison is not a stray": (
+        'if (id === "v4_x" || id !== "v4_y") return;',
+        [],
+        [],
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("source", "expected", "strays"),
+    _SITE_FORMS.values(),
+    ids=_SITE_FORMS.keys(),
+)
+def test_scanner_recognizes_each_site_form(
+    source: str,
+    expected: list[tuple[str, str, str, set[str]]],
+    strays: list[str],
+) -> None:
+    sites, stray = scan_module("snippet.ts", source)
+    assert [
+        (site.kind, site.key, site.fallback, set(site.supplied)) for site in sites
+    ] == expected
+    assert [key for _, _, key in stray] == strays
 
 
 @pytest.mark.xfail(strict=True, reason="Task 2a")

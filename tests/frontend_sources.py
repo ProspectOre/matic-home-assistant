@@ -258,7 +258,11 @@ _DISABLED = re.compile(
     + r")?\s*,?\s*\)"
 )
 _NOTICE = re.compile(
-    r'(?<![\w$])notice\(\s*"[^"]*"\s*,\s*' + _KEY + r"\s*,\s*" + _FALLBACK
+    r'(?<![\w$])notice\(\s*"[^"]*"\s*,\s*'
+    + _KEY
+    + r"\s*,\s*"
+    + _FALLBACK
+    + r"(?=\s*[,)])"
 )
 
 
@@ -270,7 +274,7 @@ def _line(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def _scan_module(module: str, text: str) -> list[tuple[KeySite, int]]:
+def _sites_in(module: str, text: str) -> list[tuple[KeySite, int]]:
     """Every recognized site in one module, with its key literal's offset."""
     found: list[tuple[KeySite, int]] = []
 
@@ -312,9 +316,7 @@ def _scan_module(module: str, text: str) -> list[tuple[KeySite, int]]:
 @cache
 def _scan() -> tuple[tuple[KeySite, int], ...]:
     found = [
-        item
-        for module, text in _modules().items()
-        for item in _scan_module(module, text)
+        item for module, text in _modules().items() for item in _sites_in(module, text)
     ]
     return tuple(sorted(found, key=lambda item: (item[0].module, item[1])))
 
@@ -324,22 +326,48 @@ def key_sites() -> list[KeySite]:
     return [site for site, _ in _scan()]
 
 
-_V4_LITERAL = re.compile(r"""(["'`])(v4_[A-Za-z0-9_]*)\1""")
+_V4_LITERAL = re.compile(
+    r"""(["'])(v4_[A-Za-z0-9_]*)\1|`(v4_[A-Za-z0-9_]*)(?:`|\$\{)"""
+)
 _COMPARISON = re.compile(r"[!=]==\s*$")
 
 
-def stray_v4_literals() -> list[tuple[str, int, str]]:
-    """``"v4_*"`` literals that are neither at a site nor compared with ``===``."""
-    at_site = {(site.module, offset) for site, offset in _scan()}
+def _strays_in(
+    module: str, text: str, sites: list[tuple[KeySite, int]]
+) -> list[tuple[str, int, str]]:
+    at_site = {offset for _, offset in sites}
     stray: list[tuple[str, int, str]] = []
-    for module, text in _modules().items():
-        for match in _V4_LITERAL.finditer(text):
-            if (module, match.start()) in at_site:
-                continue
-            if _COMPARISON.search(text[: match.start()]):
-                continue
-            stray.append((module, _line(text, match.start()), match[2]))
+    for match in _V4_LITERAL.finditer(text):
+        if match.start() in at_site:
+            continue
+        if _COMPARISON.search(text[: match.start()]):
+            continue
+        stray.append((module, _line(text, match.start()), match[2] or match[3]))
     return stray
+
+
+def scan_module(
+    module: str, text: str
+) -> tuple[list[KeySite], list[tuple[str, int, str]]]:
+    """Recognized sites and stray ``v4_*`` literals of one module's source text."""
+    sites = _sites_in(module, text)
+    return [site for site, _ in sites], _strays_in(module, text, sites)
+
+
+def stray_v4_literals() -> list[tuple[str, int, str]]:
+    """``v4_*`` literals neither at a site nor compared with ``===``/``!==``.
+
+    A template literal that starts with ``v4_`` and continues into ``${`` counts:
+    its key is built at run time, so no baseline could see it.
+    """
+    by_module: dict[str, list[tuple[KeySite, int]]] = {}
+    for site, offset in _scan():
+        by_module.setdefault(site.module, []).append((site, offset))
+    return [
+        stray
+        for module, text in _modules().items()
+        for stray in _strays_in(module, text, by_module.get(module, []))
+    ]
 
 
 def common_strings() -> dict[str, str]:
