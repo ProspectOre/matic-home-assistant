@@ -1,7 +1,7 @@
-import type { OutlineEditor } from "./outline-editor";
 import { LitElement, css, html, nothing } from "lit";
 import { controls } from "./controls";
-import type { renderDrawTools } from "./draw-tools";
+import { renderDrawTools } from "./draw-tools";
+import { LazyChunk } from "./lazy-chunk";
 import { icon, iconFit, iconHelp, iconOrbitLeft, iconOrbitRight, iconRoomNames, iconTiltDown, iconTiltUp } from "./icons";
 import { RovingFocusController } from "./roving-focus";
 import { readCanvasPalette } from "./theme-probe";
@@ -276,35 +276,20 @@ export class MaticMapCanvasV4 extends LitElement {
   #paletteTimer: number | null = null;
   readonly #cancelSecondaryPointer = {
     capture: true,
-    handleEvent: (event: PointerEvent) => { if (event.pointerType === "touch" && !event.isPrimary) this.#outlineEditor?.cancel(); },
+    handleEvent: (event: PointerEvent) => { if (event.pointerType === "touch" && !event.isPrimary) this.#outline.value?.cancel(); },
   };
-  // Only the draw workflow uses the outline editor and the drawing tools, so
-  // they load when it opens rather than with the first paint.
-  #outlineEditor: OutlineEditor | null = null;
-  #drawTools: typeof renderDrawTools | null = null;
-  #drawToolsLoad: Promise<OutlineEditor | null> | null = null;
-
-  #loadDrawTools(): Promise<OutlineEditor | null> {
-    this.#drawToolsLoad ??= Promise.all([import("./outline-editor"), import("./draw-tools")]).then(([
-      { OutlineEditor: Editor },
-      { renderDrawTools: tools },
-    ]) => {
-      this.#drawTools = tools;
-      this.#outlineEditor = new Editor(() => this.state, () => this.#renderer,
-        (intent) => this.#intent(intent), () => this.requestUpdate(), (key, fallback, placeholders) => this.#t(key, fallback, placeholders),
-        (index) => { void this.updateComplete.then(() => {
-          const target = this.renderRoot.querySelector<HTMLElement>(`[data-zone-index="${index}"]`) ?? this.renderRoot.querySelector<HTMLElement>(".map-root");
-          target?.focus({ preventScroll: true });
-        }); });
-      this.requestUpdate();
-      return this.#outlineEditor;
-    }, () => {
-      // A failed load is asked again by the next update in draw.
-      this.#drawToolsLoad = null;
-      return null;
-    });
-    return this.#drawToolsLoad;
-  }
+  // Only the draw workflow edits outline points, so the editor loads when it
+  // opens rather than with the first paint. The sheet imports the same chunk
+  // and says once if it is loading or failed (shell.ts #tools).
+  readonly #outline = new LazyChunk(this, async () => {
+    const { OutlineEditor } = await import("./outline-editor");
+    return new OutlineEditor(() => this.state, () => this.#renderer,
+      (intent) => this.#intent(intent), () => this.requestUpdate(), (key, fallback, placeholders) => this.#t(key, fallback, placeholders),
+      (index) => { void this.updateComplete.then(() => {
+        const target = this.renderRoot.querySelector<HTMLElement>(`[data-zone-index="${index}"]`) ?? this.renderRoot.querySelector<HTMLElement>(".map-root");
+        target?.focus({ preventScroll: true });
+      }); });
+  });
 
   constructor() {
     super();
@@ -339,7 +324,7 @@ export class MaticMapCanvasV4 extends LitElement {
     const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".overlay-canvas");
     if (!root || !scene || !overlay) return;
     this.#renderer = new RendererController(scene, overlay, {
-      onViewport: () => { this.#outlineEditor?.cancel(); this.requestUpdate(); },
+      onViewport: () => { this.#outline.value?.cancel(); this.requestUpdate(); },
       onCamera: (camera, zoomPercent, origin) => {
         this.#intent({
           type: "set-camera",
@@ -372,8 +357,9 @@ export class MaticMapCanvasV4 extends LitElement {
     this.#gestures = new GestureController(root, this.#renderer, {
       state: () => this.state,
       onOutlinePoint: (point, coordinateEdit) => {
-        if (this.#outlineEditor) this.#outlineEditor.addPoint(point, coordinateEdit);
-        else void this.#loadDrawTools().then((editor) => editor?.addPoint(point, coordinateEdit));
+        const editor = this.#outline.value;
+        if (editor) editor.addPoint(point, coordinateEdit);
+        else void this.#outline.request().then((loaded) => loaded?.addPoint(point, coordinateEdit));
       },
       onCircles: (circles, coordinateEdit) => this.#intent({
         type: "set-draft-circles",
@@ -390,7 +376,7 @@ export class MaticMapCanvasV4 extends LitElement {
   override disconnectedCallback(): void {
     this.#unwatchTheme();
     this.#cancelScheduledPalette();
-    this.#outlineEditor?.cancel();
+    this.#outline.value?.cancel();
     this.#gestures?.dispose();
     this.#gestures = null;
     this.#renderer?.dispose();
@@ -405,8 +391,8 @@ export class MaticMapCanvasV4 extends LitElement {
     }
     if (!changed.has("state")) return;
     this.#gestures?.observeState(this.state);
-    if (this.state.workflow === "draw") void this.#loadDrawTools();
-    this.#outlineEditor?.observeState(this.state);
+    if (this.state.workflow === "draw") void this.#outline.request();
+    this.#outline.value?.observeState(this.state);
     this.#renderer?.setState(this.state);
   }
 
@@ -699,10 +685,9 @@ export class MaticMapCanvasV4 extends LitElement {
     const state = this.state;
     if (!showScene) return nothing;
     if (state.workflow === "draw" && !this.narrow) {
-      if (!this.#drawTools) return nothing;
       return html`
         <div class="map-dock ms-surface ms-surface--floating" data-map-control>
-          ${this.#drawTools(state, {
+          ${renderDrawTools(state, {
             intent: (intent) => this.#intent(intent),
             openBrush: () => this.#intent({ type: "set-precision-open", value: !state.precisionOpen }),
             t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders),
@@ -759,7 +744,7 @@ export class MaticMapCanvasV4 extends LitElement {
           ${showDraw ? html`<span class="keyboard-aim" aria-hidden="true"></span>` : nothing}
           <canvas class="scene-canvas"></canvas>
           <canvas class="overlay-canvas"></canvas>
-          ${showDraw ? this.#outlineEditor?.render() ?? nothing : nothing}
+          ${showDraw ? this.#outline.value?.render() ?? nothing : nothing}
         </div>
 
         ${showDraw ? html`

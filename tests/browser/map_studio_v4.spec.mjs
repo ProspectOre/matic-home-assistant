@@ -134,8 +134,10 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("loads workflow tools on first open and diagnostics only when requested", async ({ page }) => {
     const workflowRequests = [];
     const diagnosticsRequests = [];
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
     await page.route("**/chunks/workflow-panel-*.js", async (route) => {
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      await held;
       await route.continue();
     });
     page.on("request", (request) => {
@@ -151,6 +153,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "history" });
     }, GALLERY_TAG);
     await expect(gallery.getByRole("status")).toContainText("Loading workspace tools");
+    release();
     await expect(gallery.locator("matic-map-workflow-v4")).toBeVisible();
     expect(workflowRequests).toHaveLength(1);
     expect(diagnosticsRequests).toHaveLength(0);
@@ -171,6 +174,120 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator("matic-map-diagnostics-v4")).toBeVisible();
     expect(diagnosticsRequests).toHaveLength(1);
   });
+
+  for (const narrow of [false, true]) {
+    test(`Draw ${narrow ? "on a phone" : "at desktop width"} shows its tools at once and says Loading once`, async ({ page }) => {
+      if (narrow) await page.setViewportSize({ width: 390, height: 844 });
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      await page.route("**/chunks/{workflow-panel,outline-editor,draw-tools}-*.js", async (route) => {
+        await held;
+        await route.continue();
+      });
+      const gallery = await loadGallery(page, { scenario: "ready", narrow });
+      await gallery.evaluate((element) => element.setScenario("draw"));
+      const toolbar = gallery.getByRole("toolbar", { name: "Draw area tools" });
+      const loading = gallery.getByText("Loading workspace tools…");
+      await expect(toolbar).toBeVisible();
+      await expect(loading).toHaveCount(1);
+      const before = await toolbar.boundingBox();
+      release();
+      await expect(gallery.locator("matic-map-workflow-v4")).toBeAttached();
+      await expect(loading).toHaveCount(0);
+      expect(await toolbar.boundingBox(), "the tools must not move when the rest arrives").toEqual(before);
+    });
+  }
+
+  // A failed import is final for the page in every engine, so Try again
+  // reloads; the failure shows where the workflow is looked at, once.
+  for (const [chunk, workflow, view, narrow] of [
+    ["workflow-panel", "rooms", "matic-map-workflow-v4", false],
+    ["outline-editor", "draw", "matic-map-workflow-v4", false],
+    ["outline-editor", "draw", "matic-map-workflow-v4", true],
+    ["diagnostics-panel", "support", "matic-map-diagnostics-v4", false],
+  ]) {
+    test(`a ${chunk} chunk that fails in ${workflow}${narrow ? " on a phone" : ""} says so once, and Try again reloads the page`, async ({ page }) => {
+      if (narrow) await page.setViewportSize({ width: 390, height: 844 });
+      const pattern = `**/chunks/${chunk}-*.js`;
+      await page.route(pattern, (route) => route.abort());
+      await page.goto("/map-studio-v4-audit");
+      const gallery = page.locator(GALLERY_TAG);
+      const open = () => gallery.evaluate((element, [selected, phone]) => {
+        element.narrow = phone;
+        element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: selected });
+      }, [workflow, narrow]);
+      await open();
+      const failure = gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." });
+      await expect(failure).toHaveCount(1);
+      await expect(failure).toBeInViewport();
+      await expect(gallery.getByText("Loading workspace tools…")).toHaveCount(0);
+
+      await page.unroute(pattern);
+      await Promise.all([
+        page.waitForEvent("load"),
+        failure.getByRole("button", { name: "Try again" }).click(),
+      ]);
+      await open();
+      // A phone's draw sheet rests at peek, with the workflow body below it.
+      await expect(gallery.locator(view)).toBeAttached();
+      if (!narrow) await expect(gallery.locator(view)).toBeVisible();
+      await expect(failure).toHaveCount(0);
+    });
+  }
+
+  test("a chunk still loading after 20 seconds counts as failed", async ({ page }) => {
+    await page.clock.install();
+    await page.route("**/chunks/workflow-panel-*.js", () => {});
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.evaluate((element) => {
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "rooms" });
+    });
+    await expect(gallery.getByText("Loading workspace tools…")).toHaveCount(1);
+    await page.clock.runFor(19_000);
+    await expect(gallery.getByText("Loading workspace tools…")).toHaveCount(1);
+    await page.clock.runFor(1_000);
+    await expect(gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." })).toHaveCount(1);
+    await expect(gallery.getByText("Loading workspace tools…")).toHaveCount(0);
+  });
+
+  // MS-KEY-01: a control that leaves while focused hands focus to the heading,
+  // or in Full map, where no heading shows, to the control that leaves it.
+  for (const [layout, setup, target] of [
+    ["the status strip", async () => {}, ".panel-heading h2"],
+    ["the phone action bar", async (page, gallery) => {
+      await page.setViewportSize({ width: 390, height: 844 });
+      await gallery.evaluate((element) => { element.narrow = true; });
+    }, ".panel-heading h2"],
+    ["the Full map HUD", async (page, gallery) => {
+      await gallery.evaluate((element) => {
+        element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), fullMap: true });
+      });
+      // Full map entry focuses its exit control after a frame; let it land first.
+      await expect(gallery.locator(".workspace-toggle")).toBeFocused();
+    }, ".workspace-toggle"],
+  ]) {
+    test(`@safety Stop pressed in ${layout} keeps focus in the panel when it leaves`, async ({ page }) => {
+      const gallery = await loadGallery(page, { scenario: "cleaning" });
+      await setup(page, gallery);
+      await gallery.evaluate((element) => {
+        element.addEventListener("matic-workspace-action", (event) => {
+          if (event.detail.id !== "stop") return;
+          element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), activity: "stopping", command: "settling" });
+        });
+      });
+      const stop = gallery.getByRole("button", { name: "Stop cleaning" });
+      await stop.focus();
+      await page.keyboard.press("Enter");
+      await expect(stop).toHaveCount(0);
+      const focused = await gallery.evaluate((element, selector) => {
+        let active = element.shadowRoot.activeElement;
+        while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+        if (active?.matches(selector)) return selector;
+        return active ? active.outerHTML.slice(0, 80) : `document.activeElement ${document.activeElement?.localName}`;
+      }, target);
+      expect(focused).toBe(target);
+    });
+  }
 
   test("confirms a named room schedule reset and sends its exact saved identities", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
@@ -4592,8 +4709,11 @@ test.describe("Map Studio v0.4 foundation", () => {
     // the status title change (shell.md §4 rule 6).
     await expect(gallery.locator("matic-map-canvas-v4 .map-message")).toContainText("Locating");
     await expect(gallery.locator(".root > .sr-only[aria-live=polite]")).toHaveText("Locating");
-    // Locating has no footer button (shell.md §2 row 8).
+    // Locating has no footer button (shell.md §2 row 8); the sheet body gives
+    // the reason on the choices it holds back.
     await expect(gallery.getByRole("button", { name: "Finding the map" })).toHaveCount(0);
+    await expect(gallery.getByRole("button", { name: /^One-time clean/ }))
+      .toContainText("Waiting for the robot to confirm which floor it is on.");
     await expect(mapLive).toContainText("not available");
   });
 

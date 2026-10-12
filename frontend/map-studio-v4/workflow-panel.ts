@@ -23,6 +23,7 @@ import { WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import { admittedManualRoomPreview, initialWorkspaceState } from "./state";
 import { formatDateTime, translate } from "./localize";
+import { LazyChunk, chunkStatus } from "./lazy-chunk";
 // Draw's precision controls load with the other workflow tools; the shell
 // renders them only in the draw workflow.
 import "./precision-controls";
@@ -38,7 +39,6 @@ export class MaticMapWorkflowV4 extends LitElement {
     state: { attribute: false },
     localize: { attribute: false },
     dates: { attribute: false },
-    _diagnosticsLoadFailed: { state: true },
     _historyPreviewPosition: { state: true },
   };
 
@@ -107,9 +107,8 @@ line-height: var(--ms-lh-snug);
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
   dates?: DateFormat;
-  _diagnosticsLoadFailed = false;
   _historyPreviewPosition: number | null = null;
-  #diagnosticsLoad: Promise<void> | null = null;
+  readonly #diagnostics = new LazyChunk(this, () => import("./diagnostics-panel"));
   #historySelectionKey = "";
 
   protected override willUpdate(changed: PropertyValues<this>): void {
@@ -907,38 +906,14 @@ line-height: var(--ms-lh-snug);
     `);
   }
 
-  #loadDiagnostics(): void {
-    if (this.#diagnosticsLoad || customElements.get("matic-map-diagnostics-v4")) return;
-    this._diagnosticsLoadFailed = false;
-    this.#diagnosticsLoad = import("./diagnostics-panel")
-      .then(() => {
-        this.#diagnosticsLoad = null;
-        this.requestUpdate();
-      })
-      .catch(() => {
-        this.#diagnosticsLoad = null;
-        this._diagnosticsLoadFailed = true;
-      });
-  }
-
   #support() {
-    if (customElements.get("matic-map-diagnostics-v4")) {
-      return html`<matic-map-diagnostics-v4
-        .state=${this.state}
-        .localize=${this.localize}
-        .disabled=${this.state.command !== "idle" && this.state.command !== "failed"}
-      ></matic-map-diagnostics-v4>`;
-    }
-    if (this._diagnosticsLoadFailed) {
-      return html`<div class="problem" role="alert">
-        <p>${this.#t("v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p>
-        <button class="ms-btn ms-btn--secondary" type="button" @click=${this.#loadDiagnostics}>
-          ${this.#t("v4_retry", "Try again")}
-        </button>
-      </div>`;
-    }
-    this.#loadDiagnostics();
-    return html`<p class="loading" role="status" aria-live="polite">${this.#t("v4_workflow_loading", "Loading workspace tools…")}</p>`;
+    void this.#diagnostics.request();
+    if (this.#diagnostics.status !== "ready") return chunkStatus(this.#diagnostics.status, (key, fallback) => this.#t(key, fallback));
+    return html`<matic-map-diagnostics-v4
+      .state=${this.state}
+      .localize=${this.localize}
+      .disabled=${this.state.command !== "idle" && this.state.command !== "failed"}
+    ></matic-map-diagnostics-v4>`;
   }
 
   protected override render() {

@@ -1,4 +1,4 @@
-import{a as p,b as u,c as m,f as h}from"./chunk-347JVXN2.js";import{n as c}from"./chunk-ET5M3NET.js";import{L as v,y as f}from"./chunk-YNV3WCTZ.js";import{a as l,b as a,h as d}from"./chunk-MMLYFANH.js";var y="matic-map-diagnostics-v4",n=class extends d{constructor(){super(...arguments);this.state=c();this.disabled=!1;this._copyStatus="idle"}static{this.properties={state:{attribute:!1},localize:{attribute:!1},disabled:{type:Boolean},_copyStatus:{state:!0}}}static{this.styles=[p,u,h,l`
+import{E as f,R as v,a as p,b as u,c as m,f as h}from"./chunk-MUP5DRAA.js";import{J as l,K as a,Q as d,n as c}from"./chunk-SPPO3SA7.js";var y="matic-map-diagnostics-v4",n=class extends d{constructor(){super(...arguments);this.state=c();this.disabled=!1;this._copyStatus="idle"}static{this.properties={state:{attribute:!1},localize:{attribute:!1},disabled:{type:Boolean},_copyStatus:{state:!0}}}static{this.styles=[p,u,h,l`
 :host { display: block; min-inline-size: 0; }
 .stack { display: grid; gap: var(--ms-space-3); }
 .subtle { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }

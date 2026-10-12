@@ -21,7 +21,8 @@ import {
   SHELL_TAG,
   WORKFLOW_TAG,
 } from "./element-tags";
-import type { renderDrawTools } from "./draw-tools";
+import { renderDrawTools } from "./draw-tools";
+import { LazyChunk, chunkStatus } from "./lazy-chunk";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
 import {
@@ -64,8 +65,6 @@ import {
 const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 const workflowTag = unsafeStatic(WORKFLOW_TAG);
-// Set once the workspace tools load (#loadWorkflowPanel).
-let drawTools: typeof renderDrawTools | null = null;
 
 const isReadOnlyWorkspace = (state: WorkspaceState): boolean =>
   state.dataMode === "history" || state.floor.readOnly;
@@ -392,7 +391,6 @@ export class MaticMapShellV4 extends LitElement {
     _polite: { state: true },
     _alert: { state: true },
     _toast: { state: true },
-    _workflowLoadFailed: { state: true },
   };
 
   static override styles = shellStyles;
@@ -427,13 +425,16 @@ export class MaticMapShellV4 extends LitElement {
   #statusRow: string | null = null;
   #announced = new Set<"_polite" | "_alert">();
   protected _toast: WorkspaceNotice | null = null;
-  protected _workflowLoadFailed = false;
+  // The workflow views, and with them the map's outline editor: the canvas
+  // imports that chunk too, and the browser fetches a chunk once per page, so
+  // the sheet body is the one place a failure of either is said.
+  readonly #tools = new LazyChunk(this, () => Promise.all([import("./workflow-panel"), import("./outline-editor")]));
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
   #toastDeadline = 0;
   #toastRemaining = 0;
   #toastHover = false;
   #toastFocus = false;
-  #noticeFocus: "[data-notice-slot]" | "[data-notice-toast]" | null = null;
+  #focused: Element | null = null;
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
   #observedSheet: Element | null = null;
@@ -441,7 +442,6 @@ export class MaticMapShellV4 extends LitElement {
   #workspaceLauncher: HTMLElement | null = null;
   #helpLauncher: HTMLElement | null = null;
   #pendingNavigation: WorkspaceIntent | null = null;
-  #workflowPanelLoad: Promise<void> | null = null;
   #drag: SheetDrag | null = null;
   #bodySwipe: BodySwipe | null = null;
 
@@ -532,11 +532,11 @@ export class MaticMapShellV4 extends LitElement {
   // a language swap), is announced once; a new notice also restarts the toast
   // (shell.md §4 rules 3 and 6). Clearing a notice announces nothing.
   protected override willUpdate(changed: PropertyValues<this>): void {
-    // Which notice surface holds focus before this render; updated() moves
-    // focus to the panel if that surface is removed or hidden by it.
-    const active = this.shadowRoot?.activeElement ?? null;
-    this.#noticeFocus = (["[data-notice-slot]", "[data-notice-toast]"] as const)
-      .find((hook) => active?.closest(hook)) ?? null;
+    // The control holding focus before this render. If the render removes or
+    // hides it (Stop on its "No button" row, a closed notice or toast),
+    // updated() hands focus to the heading rather than let it fall to the
+    // page (shell.md §5 Focus, MS-KEY-01).
+    this.#focused = this.shadowRoot?.activeElement ?? null;
     if (!changed.has("state")) return;
     // The untranslated title names the status row, so only a new row is
     // announced, in the current language.
@@ -625,11 +625,9 @@ export class MaticMapShellV4 extends LitElement {
     // Protected reactive fields are not in `keyof this`, so the map is read
     // through the untyped view for those.
     const local = changed as PropertyValues;
-    if (this.#noticeFocus) {
-      const surface = this.renderRoot.querySelector<HTMLElement>(this.#noticeFocus);
-      this.#noticeFocus = null;
-      if (!surface || surface.hidden) this.#focusPanel();
-    }
+    const focused = this.#focused;
+    this.#focused = null;
+    if (focused && (!focused.isConnected || focused.closest("[hidden]"))) this.#focusPanel();
     const sheet = this.renderRoot.querySelector(".mobile-sheet");
     if (sheet !== this.#observedSheet) {
       this.#sheetResizeObserver?.disconnect();
@@ -722,14 +720,12 @@ export class MaticMapShellV4 extends LitElement {
     }
   }
 
+  // The heading, else the primary; in Full map neither shows, so the control
+  // that leaves it, which Full map entry focuses too.
   #focusPanel(): void {
-    const heading = this.renderRoot.querySelector<HTMLElement>(".panel-heading h2");
-    if (isVisible(heading)) {
-      heading.focus({ preventScroll: true });
-      return;
-    }
-    const primary = this.renderRoot.querySelector<HTMLElement>(".action-bar .ms-btn--primary");
-    if (isVisible(primary)) primary.focus({ preventScroll: true });
+    [".panel-heading h2", ".action-bar .ms-btn--primary", ".workspace-toggle"]
+      .map((selector) => this.renderRoot.querySelector<HTMLElement>(selector))
+      .find(isVisible)?.focus({ preventScroll: true });
   }
 
   #brushLauncher(): HTMLElement | null {
@@ -1395,19 +1391,13 @@ export class MaticMapShellV4 extends LitElement {
 
   #workflowBody(state: WorkspaceState, narrow: boolean, status: StatusPresentation) {
     if (state.workflow === "none") return this.#entry(state, narrow, status);
-    this.#loadWorkflowPanel();
-    if (!customElements.get(WORKFLOW_TAG)) {
-      if (this._workflowLoadFailed) {
-        return html`<div class="workflow-loading" role="alert">
-          <p>${this.#t("v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p>
-          <button class="ms-btn ms-btn--secondary" @click=${this.#retryWorkflowPanel}>
-            ${this.#t("v4_retry", "Try again")}
-          </button>
-        </div>`;
-      }
-      return html`<div class="workflow-loading" role="status" aria-live="polite">
-        ${this.#t("v4_workflow_loading", "Loading workspace tools…")}
-      </div>`;
+    void this.#tools.request();
+    if (this.#tools.status !== "ready") {
+      // A phone's draw sheet rests at peek, below the body, so a failure is
+      // said under the drawing tools in .sheet-tools instead.
+      return narrow && state.workflow === "draw" && this.#tools.status === "failed"
+        ? nothing
+        : chunkStatus(this.#tools.status, (key, fallback) => this.#t(key, fallback));
     }
     return html`<${workflowTag}
       .state=${state}
@@ -1416,28 +1406,6 @@ export class MaticMapShellV4 extends LitElement {
       @matic-workspace-intent=${this.#captureDialogLauncher}
     ></${workflowTag}>`;
   }
-
-  // The workflow panel and the sheet's drawing tools load together, as the
-  // workspace tools first paint does not need.
-  #loadWorkflowPanel(): void {
-    if (this.#workflowPanelLoad || (customElements.get(WORKFLOW_TAG) && drawTools)) return;
-    this._workflowLoadFailed = false;
-    this.#workflowPanelLoad = Promise.all([import("./workflow-panel"), import("./draw-tools")])
-      .then(([, tools]) => {
-        drawTools = tools.renderDrawTools;
-        this.#workflowPanelLoad = null;
-        this.requestUpdate();
-      })
-      .catch(() => {
-        this.#workflowPanelLoad = null;
-        this._workflowLoadFailed = true;
-      });
-  }
-
-  #retryWorkflowPanel = (): void => {
-    this._workflowLoadFailed = false;
-    this.#loadWorkflowPanel();
-  };
 
   // The heading and notice slot sit outside the scroller, so they stay put
   // and never cover a control the body scrolls into view.
@@ -1743,7 +1711,8 @@ export class MaticMapShellV4 extends LitElement {
                 </div>
                 ${showDrawTools ? html`
                   <div class="sheet-tools">
-                    ${drawTools?.(state, { intent: (intent) => this.#intent(intent), openBrush: () => this.#openBrush(), t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }, "grid")}
+                    ${renderDrawTools(state, { intent: (intent) => this.#intent(intent), openBrush: () => this.#openBrush(), t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }, "grid")}
+                    ${this.#tools.status === "failed" ? chunkStatus("failed", (key, fallback) => this.#t(key, fallback)) : nothing}
                     ${precisionOpen ? html`
                       <div class="precision-popover">
                         <${precisionControlsTag} compact inline .state=${state} .localize=${this.localize}></${precisionControlsTag}>

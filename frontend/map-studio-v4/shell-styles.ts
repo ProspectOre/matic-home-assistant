@@ -230,10 +230,10 @@ export const shellStyles = [tokens, base, controls, css`
     .quick-actions .ms-row[aria-disabled="true"] .ms-row__lead { color: var(--ms-text-disabled); background: color-mix(in srgb, var(--ms-text) 6%, var(--ms-local)); }
     .quick-actions .ms-row[aria-disabled="true"] .ms-row__body strong { color: var(--ms-text-disabled); }
     .shelf-heading { margin: var(--ms-space-5) 0 var(--ms-space-2); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
-    .host-state { display: grid; gap: var(--ms-space-2); padding: var(--ms-space-4); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); }
+    .host-state, .problem { display: grid; gap: var(--ms-space-2); padding: var(--ms-space-4); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); }
     .host-state h3 { margin: 0; font-size: var(--ms-t-md); }
-    .host-state p { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
-    .host-state .ms-btn { justify-self: start; text-decoration: none; }
+    .host-state p, .problem p, .loading { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
+    .host-state .ms-btn, .problem .ms-btn { justify-self: start; text-decoration: none; }
     .map-display { display: grid; gap: var(--ms-space-2); }
     .map-display .ms-segment { --ms-local: var(--ms-surface-sunken); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); background: var(--ms-local); }
     .map-display .ms-segment .ms-btn { flex: 1; }
@@ -425,7 +425,7 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .precision-popover { position: static; inline-size: auto; block-size: auto; }
 
     @media (forced-colors: active) {
-      .dialog, .full-map-hud, .mobile-sheet, .host-state, .notice { border: 1px solid CanvasText; }
+      .dialog, .full-map-hud, .mobile-sheet, .host-state, .problem, .notice { border: 1px solid CanvasText; }
       .sheet-handle { background: CanvasText; }
     }
 
