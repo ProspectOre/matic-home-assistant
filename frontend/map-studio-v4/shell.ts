@@ -371,7 +371,7 @@ export class MaticMapShellV4 extends LitElement {
     });
   }
 
-  #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
+  #t(key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>): string {
     return translate(this.localize, key, fallback, placeholders);
   }
   protected _measuredNarrow = false;
@@ -1573,7 +1573,7 @@ export class MaticMapShellV4 extends LitElement {
           </main>
         </div>
 
-        <div class="sr-only" aria-live="polite" aria-atomic="true">${[this._announcement, state.notice?.text ?? ""].filter(Boolean).join(" ")}</div>
+        <div class="sr-only" aria-live="polite" aria-atomic="true">${[this._announcement, state.notice ? this.#t(state.notice.key, state.notice.fallback, state.notice.placeholders) : ""].filter(Boolean).join(" ")}</div>
 
         ${this._helpOpen ? this.#helpDialog() : nothing}
 

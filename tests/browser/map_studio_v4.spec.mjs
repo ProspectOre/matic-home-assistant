@@ -484,11 +484,11 @@ test.describe("Map Studio v0.4 foundation", () => {
         await effects.refreshCatalog(true);
         useUpdatedPreview = true;
         await effects.executeAction("run-plan");
-        return { calls, notice: store.value.notice?.text, refreshedOrder: store.value.resources.plans.value?.plans[0]?.nextRunPreview?.rooms.map((room) => room.roomId) };
+        return { calls, notice: store.value.notice?.key, refreshedOrder: store.value.resources.plans.value?.plans[0]?.nextRunPreview?.rooms.map((room) => room.roomId) };
       } finally { effects.dispose(); }
     });
     expect(result.calls).toEqual([]);
-    expect(result.notice).toContain("preview changed");
+    expect(result.notice).toBe("v4_notice_plan_preview_changed");
     expect(result.refreshedOrder).toEqual(["room-c", "room-b", "room-a"]);
   });
 
@@ -905,7 +905,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         const effects = new EffectController(store, backend);
         effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
         await effects.executeAction("run-plan");
-        notices.push(store.value.notice?.text);
+        notices.push(store.value.notice?.key);
         effects.dispose();
       }
       const initial = { ...createGalleryState("ready"), workflow: "plan" };
@@ -918,17 +918,17 @@ test.describe("Map Studio v0.4 foundation", () => {
       const effects = new EffectController(store, backend);
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       await effects.executeAction("run-plan");
-      const untrustedNotice = store.value.notice?.text;
+      const untrustedNotice = store.value.notice?.key;
       effects.dispose();
       return { notices, untrustedNotice };
     });
     expect(result.notices).toEqual([
-      "Could not verify the current cleaning task. Check the robot status, then try again.",
-      "Could not verify whether the robot is cleaning. Check the robot status, then try again.",
-      "The robot already has a cleaning task. Wait for it to finish before starting another cleaning task.",
-      "The cleaning task changed during setup. Check the robot status, then try again.",
+      "v4_notice_coverage_task_unknown",
+      "v4_notice_coverage_activity_unknown",
+      "v4_notice_coverage_robot_busy",
+      "v4_notice_coverage_task_changed",
     ]);
-    expect(result.untrustedNotice).toBe("The action could not be confirmed. Check the robot status before trying again.");
+    expect(result.untrustedNotice).toBe("v4_notice_action_unconfirmed");
   });
   test("ends Starting when a managed service returns at the end of its run", async ({ page }) => {
     await loadEffectHarness(page);
@@ -1094,13 +1094,13 @@ test.describe("Map Studio v0.4 foundation", () => {
         reject = false;
         await effects.deletePlan();
         const deletedDraft = { selected: store.value.selection.planId, id: store.value.planDraft.id, dirty: store.value.planDraft.dirty, name: store.value.planDraft.name };
-        const deletionNotice = store.value.notice?.text;
+        const deletionNotice = store.value.notice?.key;
         effects.selectPlan(null);
         const nextNotice = store.value.notice;
         return { failed, deletionNotice, nextNotice, deleted: deletedDraft };
       } finally { effects.dispose(); }
     });
-    expect(result).toEqual({ deletionNotice: "Plan deleted", nextNotice: null, failed: { id: "daily", dirty: true, name: "Keep on failure" }, deleted: { selected: null, id: null, dirty: false, name: "" } });
+    expect(result).toEqual({ deletionNotice: "v4_notice_plan_deleted", nextNotice: null, failed: { id: "daily", dirty: true, name: "Keep on failure" }, deleted: { selected: null, id: null, dirty: false, name: "" } });
   });
   for (const pruned of ["snapshot", "floor", "all", "navigation"]) {
     test(`reconciles the scene and floor when history prunes the selected ${pruned}`, async ({ page }) => {
@@ -1254,7 +1254,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           await effects.refreshCatalog();
           for (const action of ["clean-rooms", "run-plan", "run-area"]) await effects.executeAction(action);
           window.__pausedMapState = store.value;
-          const paused = { available: store.value.map.available, exactPose: store.value.map.exactPose, scene: !!store.value.resources.scene.value, notice: store.value.notice?.text, commands };
+          const paused = { available: store.value.map.available, exactPose: store.value.map.exactPose, scene: !!store.value.resources.scene.value, notice: store.value.notice?.key ?? null, commands };
           entry = { ...initial.resources.entry, deltaUrl: null };
           await effects.refreshCatalog();
           for (let i = 0; i < 20 && store.value.resources.scene.value?.marker !== "live"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1264,7 +1264,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         } finally { effects.dispose(); }
       }, retained);
       expect(result.paused).toMatchObject({ available: true, exactPose: false, scene: true, commands: 0 });
-      expect(result.paused.notice).toContain(retained ? "rechecked" : "Saved map from");
+      expect(result.paused.notice).toBe(retained ? null : "v4_notice_saved_map");
       expect(result.commands).toBe(1);
       expect(result.recovered).toEqual({ available: true, readOnly: false, marker: "live" });
       await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
@@ -1278,7 +1278,8 @@ test.describe("Map Studio v0.4 foundation", () => {
         gallery.replaceWorkspaceState(window.__pausedMapState);
       }, GALLERY_TAG);
       await expect(page.locator(GALLERY_TAG).locator(".scene-window")).toBeVisible();
-      if (!retained) await expect(page.locator(GALLERY_TAG).locator(".map-message")).toContainText("Saved map from");
+      if (!retained) await expect(page.locator(GALLERY_TAG).locator(".map-message")).toContainText("Showing the saved map from");
+      else await expect(page.locator(GALLERY_TAG).getByText("Locating the current map").first()).toBeVisible();
       await page.screenshot({ path: testInfo.outputPath(`${retained ? "retained" : "saved"}-map.png`) });
 
     });
@@ -1316,10 +1317,11 @@ test.describe("Map Studio v0.4 foundation", () => {
         window.__deltaRecheckState = store.value;
         return { retained: store.value.resources.scene.value === initial.resources.scene.value,
           available: store.value.map.available, readOnly: store.value.floor.readOnly,
-          exactPose: store.value.map.exactPose, catalog: store.value.resources.catalog.status, commands };
+          exactPose: store.value.map.exactPose, catalog: store.value.resources.catalog.status, commands,
+          notice: store.value.notice };
       } finally { effects.dispose(); }
     });
-    expect(result).toEqual({ retained: true, available: true, readOnly: true, exactPose: false, catalog: "error", commands: 0 });
+    expect(result).toEqual({ retained: true, available: true, readOnly: true, exactPose: false, catalog: "error", commands: 0, notice: null });
     await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async tag => {
       await customElements.whenDefined(tag);
@@ -1329,7 +1331,10 @@ test.describe("Map Studio v0.4 foundation", () => {
       gallery.replaceWorkspaceState(window.__deltaRecheckState);
     }, GALLERY_TAG);
     await expect(page.locator(GALLERY_TAG).locator(".scene-window")).toBeVisible();
-    await expect(page.locator(GALLERY_TAG).locator(".map-message")).toContainText("rechecked");
+    // The catalog failure leaves coherence degraded, so the workspace, not a
+    // notice, says the live map is being located again.
+    await expect(page.locator(GALLERY_TAG).getByRole("heading", { name: "Saved map is read only" })).toBeVisible();
+    await expect(page.locator(GALLERY_TAG).getByRole("button", { name: "Finding the map" })).toBeDisabled();
   });
 
   test("returning to live keeps the saved map if the catalog is unavailable", async ({ page }) => {
@@ -1643,9 +1648,9 @@ test.describe("Map Studio v0.4 foundation", () => {
       await effects.refreshCatalog(true);
       effects.sync({ ...projection, host: { ...projection.host, connected: false, robotConnected: false } });
       effects.sync(projection);
-      const pending = { notice: store.value.notice?.text ?? null, reads };
+      const pending = { notice: store.value.notice?.key ?? null, reads };
       await new Promise((resolve) => window.setTimeout(resolve, 0));
-      const recovered = { notice: store.value.notice?.text ?? null, reads, coherence: store.value.coherence };
+      const recovered = { notice: store.value.notice?.key ?? null, reads, coherence: store.value.coherence };
       effects.dispose();
       return { pending, recovered };
     });
@@ -7432,7 +7437,7 @@ for (const refresh of ["delayed", "failed"]) {
         const saving = effects.saveArea();
         for (let i = 0; i < 20 && !reading; i++) await new Promise(resolve => setTimeout(resolve, 0));
         if (!reading) throw new Error("Save did not reach catalog refresh");
-        const acknowledged = { notice: store.value.notice.text, areaDirty: store.value.areaDraft.dirty, drawDirty: store.value.draw.dirty, id: store.value.areaDraft.id };
+        const acknowledged = { notice: store.value.notice.key, areaDirty: store.value.areaDraft.dirty, drawDirty: store.value.draw.dirty, id: store.value.areaDraft.id };
         store.dispatch({ type: "dismiss-top-layer" });
         const left = { workflow: store.value.workflow, dialog: store.value.dialog };
         finish();
@@ -7440,7 +7445,7 @@ for (const refresh of ["delayed", "failed"]) {
         return { acknowledged, left, afterRefresh: { workflow: store.value.workflow, dialog: store.value.dialog } };
       } finally { effects.dispose(); }
     }, refresh);
-    expect(result).toEqual({ acknowledged: { notice: "Area saved", areaDirty: false, drawDirty: false, id: "saved-zone" }, left: { workflow: "none", dialog: null }, afterRefresh: { workflow: "none", dialog: null } });
+    expect(result).toEqual({ acknowledged: { notice: "v4_notice_area_saved", areaDirty: false, drawDirty: false, id: "saved-zone" }, left: { workflow: "none", dialog: null }, afterRefresh: { workflow: "none", dialog: null } });
   });
 }
 
@@ -7497,10 +7502,10 @@ test("failed area write keeps the draft and leave confirmation", async ({ page }
     try {
       await effects.saveArea();
       store.dispatch({ type: "dismiss-top-layer" });
-      return { name: store.value.areaDraft.name, areaDirty: store.value.areaDraft.dirty, drawDirty: store.value.draw.dirty, dialog: store.value.dialog, notice: store.value.notice.text };
+      return { name: store.value.areaDraft.name, areaDirty: store.value.areaDraft.dirty, drawDirty: store.value.draw.dirty, dialog: store.value.dialog, notice: store.value.notice.key };
     } finally { effects.dispose(); }
   });
-  expect(result).toEqual({ name: "Keep this area", areaDirty: true, drawDirty: true, dialog: "discardDraft", notice: "Area could not be saved" });
+  expect(result).toEqual({ name: "Keep this area", areaDirty: true, drawDirty: true, dialog: "discardDraft", notice: "v4_notice_area_save_failed" });
 });
 
 test("area save clears an obsolete discard prompt opened while the write was pending", async ({ page }) => {
@@ -7522,10 +7527,10 @@ test("area save clears an obsolete discard prompt opened while the write was pen
       await saving;
       const savedDialog = store.value.dialog;
       store.dispatch({ type: "dismiss-top-layer" });
-      return { pendingDialog, savedDialog, workflow: store.value.workflow, notice: store.value.notice.text };
+      return { pendingDialog, savedDialog, workflow: store.value.workflow, notice: store.value.notice.key };
     } finally { effects.dispose(); }
   });
-  expect(result).toEqual({ pendingDialog: "discardDraft", savedDialog: null, workflow: "none", notice: "Area saved" });
+  expect(result).toEqual({ pendingDialog: "discardDraft", savedDialog: null, workflow: "none", notice: "v4_notice_area_saved" });
 });
 
 test("map taps select run and plan rooms in both views and clear old deletion notices", async ({ page }) => {
@@ -7573,7 +7578,7 @@ test("map taps select run and plan rooms in both views and clear old deletion no
       const afterCancel = workflow === "plan" ? store.value.planDraft.rooms.map(room => room.roomId) : store.value.selection.roomIds;
       tap();
       const remaining = workflow === "plan" ? store.value.planDraft.rooms.length : store.value.selection.roomIds.length;
-      store.patch({ notice: { tone: "success", text: "Plan deleted" } });
+      store.patch({ notice: { tone: "success", key: "v4_notice_plan_deleted", fallback: "Plan deleted" } });
       store.dispatch({ type: "select-plan", planId: "daily" });
       results.push({ selected, afterCancel, remaining, room: hit.room, notice: store.value.notice });
       gestures.dispose(); renderer.dispose(); canvas.remove(); overlay.remove();

@@ -339,7 +339,7 @@ for (const outcome of ["success", "failure", "settle-timer"]) {
       const pending = effects.executeAction("run-area");
       if (outcome === "settle-timer") { finish(); await pending; }
       await effects.refreshCatalog(true);
-      store.patch({ command: "starting", notice: { tone: "info", text: "New floor action" } });
+      store.patch({ command: "starting", notice: { tone: "info", key: "v4_notice_new_floor_action", fallback: "New floor action" } });
       if (outcome !== "settle-timer") { finish(); await pending; }
       window.qualityMotion = { store, effects };
       return store.value.command;
@@ -348,10 +348,10 @@ for (const outcome of ["success", "failure", "settle-timer"]) {
     await page.clock.fastForward(16000);
     expect(await page.evaluate(() => {
       const { store, effects } = window.qualityMotion;
-      const result = { command: store.value.command, text: store.value.notice?.text };
+      const result = { command: store.value.command, key: store.value.notice?.key };
       effects.dispose(); delete window.qualityMotion;
       return result;
-    })).toEqual({ command: "starting", text: "New floor action" });
+    })).toEqual({ command: "starting", key: "v4_notice_new_floor_action" });
   });
 }
 
@@ -480,7 +480,7 @@ test("external Area deletion preserves a dirty draft and turns later save into a
     draft: { id: null, name: "Edited Entryway", cleaningMode: "mop", dirty: true },
     circles: result.expectedCircles,
     drawDirty: true,
-    notice: { tone: "warning", text: "This saved Area was removed elsewhere. Your edits are preserved as a new Area draft; saving will create a new Area." },
+    notice: { tone: "warning", key: "v4_notice_area_removed", fallback: "This saved Area was removed elsewhere. Your edits are preserved as a new Area draft; saving will create a new Area." },
   });
   expect(result.areaReads).toBeGreaterThan(0);
   expect(result.deleteCalls).toBe(0);

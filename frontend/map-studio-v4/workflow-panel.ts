@@ -112,7 +112,7 @@ line-height: var(--ms-lh-snug);
     super.disconnectedCallback();
   }
 
-  #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
+  #t(key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>): string {
     return translate(this.localize, key, fallback, placeholders);
   }
 
@@ -166,9 +166,10 @@ line-height: var(--ms-lh-snug);
   }
 
   #notice() {
-    return this.state.notice ? html`
-      <div class="notice" data-tone=${this.state.notice.tone} role=${this.state.notice.tone === "error" ? "alert" : "status"}>
-        ${this.state.notice.text}
+    const notice = this.state.notice;
+    return notice ? html`
+      <div class="notice" data-tone=${notice.tone} role=${notice.tone === "error" ? "alert" : "status"}>
+        ${this.#t(notice.key, notice.fallback, notice.placeholders)}
       </div>
     ` : nothing;
   }

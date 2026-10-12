@@ -192,9 +192,54 @@ export interface WorkspaceSelection {
   readonly areaId: string | null;
 }
 
+export type NoticeTone = "info" | "success" | "warning" | "error";
+export type NoticePlaceholders = Readonly<Record<string, string | number>>;
+
+/**
+ * A workspace notice names its copy; views translate it at render time with
+ * `translate(localize, key, fallback, placeholders)`.
+ */
 export interface WorkspaceNotice {
-  readonly tone: "info" | "success" | "warning" | "error";
-  readonly text: string;
+  readonly tone: NoticeTone;
+  readonly key: string;
+  readonly fallback: string;
+  readonly placeholders?: NoticePlaceholders;
+}
+
+export const notice = (
+  tone: NoticeTone,
+  key: string,
+  fallback: string,
+  placeholders?: NoticePlaceholders,
+): WorkspaceNotice => placeholders ? { tone, key, fallback, placeholders } : { tone, key, fallback };
+
+const NOTICE_TONES: ReadonlySet<unknown> = new Set<NoticeTone>(["info", "success", "warning", "error"]);
+const NOTICE_KEY = /^v4_[a-z0-9_]+$/u;
+const NOTICE_PLACEHOLDER = /^[a-z][a-z0-9_]*$/u;
+const NOTICE_FALLBACK_MAX = 400;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+  if (!value || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
+const isNoticePlaceholders = (value: unknown): value is NoticePlaceholders =>
+  isPlainObject(value) && Reflect.ownKeys(value).every((name) => {
+    if (typeof name !== "string" || !NOTICE_PLACEHOLDER.test(name)) return false;
+    const entry = Object.getOwnPropertyDescriptor(value, name);
+    if (!entry || !("value" in entry)) return false;
+    return typeof entry.value === "string"
+      || (typeof entry.value === "number" && Number.isFinite(entry.value));
+  });
+
+export function isWorkspaceNotice(value: unknown): value is WorkspaceNotice {
+  if (!isPlainObject(value)) return false;
+  const { tone, key, fallback, placeholders } = value;
+  return NOTICE_TONES.has(tone)
+    && typeof key === "string" && NOTICE_KEY.test(key)
+    && typeof fallback === "string" && fallback.length > 0 && fallback.length <= NOTICE_FALLBACK_MAX
+    && (placeholders === undefined || isNoticePlaceholders(placeholders));
 }
 
 export interface WorkspaceState {

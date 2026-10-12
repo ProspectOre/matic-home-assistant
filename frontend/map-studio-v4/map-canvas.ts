@@ -297,7 +297,7 @@ export class MaticMapCanvasV4 extends LitElement {
     });
   }
 
-  #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
+  #t(key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>): string {
     return translate(this.localize, key, fallback, placeholders);
   }
 
@@ -511,9 +511,13 @@ export class MaticMapCanvasV4 extends LitElement {
     if (this.state.host.robotCount === 0) {
       return { title: this.#t("v4_no_robot", "No Matic robot set up"), detail: this.#t("v4_no_robot_detail", "Set up a robot before opening its map.") };
     }
+    const notice = this.state.notice;
     if (this.state.dataMode === "live" && this.state.floor.readOnly
-      && this.state.map.available && this.state.notice) {
-      return { title: this.#t("v4_saved_map_read_only_title", "Saved map is read only"), detail: this.state.notice.text };
+      && this.state.map.available && notice?.key === "v4_notice_saved_map") {
+      return {
+        title: this.#t("v4_saved_map_read_only_title", "Saved map is read only"),
+        detail: this.#t(notice.key, notice.fallback, notice.placeholders),
+      };
     }
     if (this.state.dataMode === "history") {
       if (!this.state.map.available && this.state.resources.scene.status === "loading") {

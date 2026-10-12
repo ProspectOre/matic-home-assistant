@@ -190,7 +190,7 @@ const ITEMS = [
     id: `notice-${label}-${tone}`,
     scenario,
     variants: EXTRA_VARIANTS,
-    patch: { notice: { tone, text: SAMPLE_NOTICE } },
+    patch: { notice: { tone, key: "v4_notice_audit_sample", fallback: SAMPLE_NOTICE } },
   }))),
   ...HELP_BASES.map((scenario) => ({
     id: `help-${scenario}`,

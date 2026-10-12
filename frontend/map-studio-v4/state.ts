@@ -17,7 +17,7 @@ import {
   type WorkspaceState,
 } from "./contracts";
 import type { AreaCircle, SavedPlan } from "./backend-contracts";
-import type { CameraPreference } from "./contracts";
+import { isWorkspaceNotice, notice, type CameraPreference } from "./contracts";
 
 const emptyResource = <T>(): { status: "idle"; value: T | null; problem: null } => ({
   status: "idle",
@@ -550,8 +550,14 @@ export const reduceWorkspace = (
           dirty: intent.patch.dirty ?? true,
         },
       };
-    case "set-notice":
-      return { ...state, notice: intent.notice };
+    case "set-notice": {
+      const next: unknown = intent.notice;
+      if (next === null) return { ...state, notice: null };
+      if (!isWorkspaceNotice(next)) return state;
+      return { ...state, notice: notice(
+        next.tone, next.key, next.fallback, next.placeholders && { ...next.placeholders },
+      ) };
+    }
     case "open-dialog":
       return { ...state, dialog: intent.dialog };
     case "dismiss-top-layer":

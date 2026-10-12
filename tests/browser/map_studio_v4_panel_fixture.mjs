@@ -149,6 +149,7 @@ export async function installPanelFixture(page, {
     })) };
     const pendingHistoryScenes = [];
     const serviceCalls = [];
+    const serviceFailures = [];
     let planReads = 0;
     let deltaReads = 0;
     let deltaPayloadResponses = 0;
@@ -248,6 +249,8 @@ export async function installPanelFixture(page, {
         fetchWithAuth,
         callService: async (domain, service, data, target) => {
           serviceCalls.push({ domain, service, data: structuredClone(data), target: structuredClone(target) });
+          const failure = serviceFailures.findIndex((candidate) => candidate.service === service);
+          if (failure >= 0) throw serviceFailures.splice(failure, 1)[0].error;
           if (domain === "matic_robot" && service === "save_plan") {
             applySavedPlan(data);
           }
@@ -268,6 +271,10 @@ export async function installPanelFixture(page, {
       pendingCatalogCount: () => pendingCatalogs.length,
       get catalogReads() { return catalogReads; },
       serviceCalls,
+      // Record the next call to `service`, then reject it once with `error`.
+      failNextService: (service, error = new Error("synthetic failure")) => {
+        serviceFailures.push({ service, error });
+      },
       pendingHistoryScenes,
       get planReads() { return planReads; },
       stats: () => ({

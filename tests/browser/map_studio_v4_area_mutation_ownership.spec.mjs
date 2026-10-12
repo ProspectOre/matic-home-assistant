@@ -107,7 +107,7 @@ test.describe("area save ownership across map transitions", () => {
         const afterTransition = {
           aborted: save.signal.aborted,
           workflow: run.store.value.workflow,
-          notice: run.store.value.notice?.text,
+          notice: run.store.value.notice?.key,
         };
         if (outcome === "success") save.resolve("old-session-area");
         else save.reject(new Error("late old-session failure"));
@@ -115,7 +115,7 @@ test.describe("area save ownership across map transitions", () => {
         const afterLateResult = {
           workflow: run.store.value.workflow,
           command: run.store.value.command,
-          notice: run.store.value.notice?.text,
+          notice: run.store.value.notice?.key,
           areaId: run.store.value.areaDraft.id,
         };
         run.effects.dispose();
@@ -125,12 +125,12 @@ test.describe("area save ownership across map transitions", () => {
       expect(result.afterTransition).toMatchObject({
         aborted: true,
         workflow: "none",
-        notice: "The active map changed. Choose a task on this map.",
+        notice: "v4_notice_map_changed",
       });
       expect(result.afterLateResult).toEqual({
         workflow: "none",
         command: "idle",
-        notice: "The active map changed. Choose a task on this map.",
+        notice: "v4_notice_map_changed",
         areaId: null,
       });
     });
@@ -147,7 +147,7 @@ test.describe("area save ownership across map transitions", () => {
       const value = {
         aborted: save.signal.aborted,
         workflow: run.store.value.workflow,
-        notice: run.store.value.notice?.text,
+        notice: run.store.value.notice?.key,
         areaId: run.store.value.areaDraft.id,
         areaDirty: run.store.value.areaDraft.dirty,
       };
@@ -157,7 +157,7 @@ test.describe("area save ownership across map transitions", () => {
     expect(result).toEqual({
       aborted: false,
       workflow: "areaReview",
-      notice: "Area saved",
+      notice: "v4_notice_area_saved",
       areaId: "same-session-area",
       areaDirty: false,
     });
@@ -209,7 +209,7 @@ test.describe("area save ownership across map transitions", () => {
       const value = {
         aborted: save.signal.aborted,
         workflow: run.store.value.workflow,
-        notice: run.store.value.notice?.text,
+        notice: run.store.value.notice?.key,
         areaId: run.store.value.areaDraft.id,
       };
       run.effects.dispose();
@@ -218,7 +218,7 @@ test.describe("area save ownership across map transitions", () => {
     expect(result).toEqual({
       aborted: true,
       workflow: "none",
-      notice: "The active map changed. Choose a task on this map.",
+      notice: "v4_notice_map_changed",
       areaId: null,
     });
   });
@@ -234,7 +234,7 @@ test.describe("area save ownership across map transitions", () => {
       await run.saving;
       const value = {
         draft: run.store.value.areaDraft,
-        notice: run.store.value.notice?.text,
+        notice: run.store.value.notice?.key,
         workflow: run.store.value.workflow,
       };
       run.effects.dispose();
@@ -242,7 +242,7 @@ test.describe("area save ownership across map transitions", () => {
     });
     expect(result).toEqual({
       draft: expect.objectContaining({ id: null, name: "Later area", dirty: true }),
-      notice: "Area saved",
+      notice: "v4_notice_area_saved",
       workflow: "areaReview",
     });
   });

@@ -1,10 +1,12 @@
-import type {
-  HassProjection,
-  ResourceStamp,
-  ResourceState,
-  ResetCadenceAction,
-  WorkspaceState,
-  Workflow,
+import {
+  notice,
+  type HassProjection,
+  type ResourceStamp,
+  type ResourceState,
+  type ResetCadenceAction,
+  type WorkspaceNotice,
+  type WorkspaceState,
+  type Workflow,
 } from "./contracts";
 import {
   parseSavedPlanId,
@@ -55,9 +57,51 @@ const problemCode = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
-const coverageGuardNotice = (error: unknown): string | null => {
-  return error instanceof BackendError ? error.recoveryMessage : null;
+// Effects name every notice by its key; views translate it at render time.
+const NOTICES = {
+  stopUnconfirmed: notice("error", "v4_notice_stop_unconfirmed", "Home Assistant can't confirm the robot stopped, so press Stop again if it's still moving."),
+  actionUnconfirmed: notice("error", "v4_notice_action_unconfirmed", "Home Assistant can't confirm that command, so check the robot before trying again."),
+  mapChanged: notice("info", "v4_notice_map_changed", "The map changed, so choose what to clean again."),
+  statusRefreshed: notice("info", "v4_notice_status_refreshed", "Status refreshed, so check the robot before trying again."),
+  saving: notice("info", "v4_notice_saving", "Saving…"),
+  planSaved: notice("success", "v4_notice_plan_saved", "Plan saved"),
+  planSaveFailed: notice("error", "v4_notice_plan_save_failed", "Home Assistant can't confirm the plan was saved, so check your plans, then try again."),
+  planDeleted: notice("success", "v4_notice_plan_deleted", "Plan deleted"),
+  planDeleteFailed: notice("error", "v4_notice_plan_delete_failed", "The plan wasn't deleted; try again."),
+  planPreviewMissing: notice("warning", "v4_notice_plan_preview_missing", "The next-run preview isn't ready; reload your plans, then try again."),
+  planPreviewRefreshFailed: notice("warning", "v4_notice_plan_preview_refresh_failed", "The next-run preview didn't refresh; check the plan, then try again."),
+  planPreviewNone: notice("warning", "v4_notice_plan_preview_none", "This plan has no next-run preview; review its rooms and schedules."),
+  planPreviewChanged: notice("info", "v4_notice_plan_preview_changed", "The next run changed; check it before you run the plan."),
+  roomPreviewBlocked: notice("warning", "v4_notice_room_preview_blocked", "A room can't use these settings, so check the note above the rooms."),
+  roomPreviewChanged: notice("info", "v4_notice_room_preview_changed", "The room settings changed, so check them and start again."),
+  roomPreviewFailed: notice("warning", "v4_notice_room_preview_failed", "Home Assistant couldn't check the room settings, so try starting again."),
+  areaRemoved: notice("warning", "v4_notice_area_removed", "This saved Area was removed elsewhere. Your edits are preserved as a new Area draft; saving will create a new Area."),
+  areaSaving: notice("info", "v4_notice_area_saving", "Saving area…"),
+  areaSaved: notice("success", "v4_notice_area_saved", "Area saved"),
+  areaSaveFailed: notice("error", "v4_notice_area_save_failed", "Home Assistant can't confirm the area was saved, so try again."),
+  areaDeleted: notice("success", "v4_notice_area_deleted", "Area deleted"),
+  areaDeleteFailed: notice("error", "v4_notice_area_delete_failed", "Home Assistant can't confirm the area was deleted, so try again."),
+  resetMop: notice("success", "v4_notice_reset_mop", "Mopping progress reset"),
+  resetVacuum: notice("success", "v4_notice_reset_vacuum", "Vacuum rotation progress reset"),
+  resetMopFailed: notice("error", "v4_notice_reset_mop_failed", "Mopping progress wasn't reset; try again."),
+  resetVacuumFailed: notice("error", "v4_notice_reset_vacuum_failed", "Vacuum rotation progress wasn't reset; try again."),
+} as const;
+
+const savedMapNotice = (date: string): WorkspaceNotice =>
+  notice("warning", "v4_notice_saved_map", "Showing the saved map from {date} without the robot's position.", { date });
+
+/** Coverage guard rejections, keyed by `BackendError.code`. */
+const COVERAGE_GUARD_NOTICES: Readonly<Record<string, WorkspaceNotice>> = {
+  coverage_identity_unavailable: notice("error", "v4_notice_coverage_task_unknown", "Home Assistant can't confirm the current clean, so check the robot first."),
+  coverage_activity_unavailable: notice("error", "v4_notice_coverage_activity_unknown", "Home Assistant can't confirm whether the robot is cleaning, so check it first."),
+  coverage_native_session_active: notice("error", "v4_notice_coverage_robot_busy", "The robot is already cleaning, so wait for it to finish."),
+  coverage_identity_changed: notice("error", "v4_notice_coverage_task_changed", "The clean changed while starting, so check the robot first."),
 };
+
+const coverageGuardNotice = (error: unknown): WorkspaceNotice | null =>
+  error instanceof BackendError && Object.hasOwn(COVERAGE_GUARD_NOTICES, error.code)
+    ? COVERAGE_GUARD_NOTICES[error.code] ?? null
+    : null;
 
 const entryFloorKey = (entry: MapEntry): string => [
   entry.selectedFloorOrdinal ?? "none",
@@ -101,9 +145,6 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
   && left.floorKey === right.floorKey
   && left.missionKey === right.missionKey;
 
-const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map is rechecked.";
-const SAVED_MAP_NOTICE_PREFIX = "Saved map from ";
-const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.";
 const POSE_POLL_INTERVAL_MS = 1_000;
 const SPATIAL_READ_RECOVERY_INTERVAL_MS = 5_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "draw", "areaReview"];
@@ -497,7 +538,6 @@ export class EffectController {
           available: retainedScene !== null,
           exactPose: false,
         },
-        notice: retainedScene ? { tone: "warning", text: RECONNECT_NOTICE } : state.notice,
       });
       return;
     }
@@ -545,11 +585,7 @@ export class EffectController {
     if (!wasConnected || robotReconnected || authorizationRestored) {
       // Host or robot reconnection only restores access after a new catalog
       // proof. Authorization recovery also needs a fresh read when the same
-      // selected entry remains in place. Clear the host-offline notice and use
-      // one shared recovery read.
-      if (this.#store.value.notice?.text === RECONNECT_NOTICE) {
-        this.#store.patch({ notice: null });
-      }
+      // selected entry remains in place. Use one shared recovery read.
       void this.refreshCatalog(true, true);
       return;
     }
@@ -680,7 +716,6 @@ export class EffectController {
         }
         this.#acceptWorkspaceInvalidation(event.invalidation, entryId, transport);
       },
-      onError: () => this.#store.patch({ notice: { tone: "warning", text: RECONNECT_NOTICE } }),
     });
     this.#workspaceTransport = transport;
     this.#workspaceTransportEntry = entryId;
@@ -1402,7 +1437,7 @@ export class EffectController {
         draw: empty.draw,
         planDraft: empty.planDraft,
         areaDraft: empty.areaDraft,
-        notice: { tone: "info" as const, text: "The active map changed. Choose a task on this map." },
+        notice: NOTICES.mapChanged,
       } : {}),
       draftFloorOrdinal: verifiedFloor ?? previousDraftFloor,
       draftMapSessionKey: verifiedSession ?? previousDraftSession,
@@ -1410,7 +1445,6 @@ export class EffectController {
       generation: stamp.generation,
       coherence: coherent ? (degraded ? "degraded" : retainedReadOnly ? "verifying" : "current") : "verifying",
       dataMode: "live",
-      ...(!coherent && retainedScene ? { notice: { tone: "warning" as const, text: LIVE_MAP_RECHECK_NOTICE } } : {}),
       resources: {
         ...state.resources,
         entry,
@@ -1481,7 +1515,6 @@ export class EffectController {
           },
           map: { ...state.map, available: state.resources.scene.value !== null, floorCoherent: false, exactPose: false },
           floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
-          notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
         });
         this.#finishSpatialReplacementRead(entry);
         return;
@@ -1511,7 +1544,7 @@ export class EffectController {
           displayName: state.resources.history.value?.floors.find((floor) => floor.active)?.label
             || (settledEntry.selectedFloorOrdinal ? `Floor ${settledEntry.selectedFloorOrdinal}` : "Current floor"),
         },
-        notice: state.notice?.text === LIVE_MAP_RECHECK_NOTICE || state.notice?.text.startsWith(SAVED_MAP_NOTICE_PREFIX) ? null : state.notice,
+        notice: state.notice?.key === "v4_notice_saved_map" ? null : state.notice,
       });
       const plans = this.#store.value.resources.plans;
       if (plans.status === "idle" || plans.problem === "map-rechecking") {
@@ -1624,7 +1657,6 @@ export class EffectController {
                 scene: resource("error", state.resources.scene.value, "map-rechecking"),
                 pose: resource("idle", null),
               },
-              notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
             });
             this.#recordSpatialReadFailure("delta", entry);
             return;
@@ -1665,12 +1697,6 @@ export class EffectController {
         || this.#disposed
         || generation !== this.#deltaGeneration
         || !this.#coherence.accepts(stamp)) return;
-      this.#store.patch({
-        notice: {
-          tone: "warning",
-          text: LIVE_MAP_RECHECK_NOTICE,
-        },
-      });
       this.#recordSpatialReadFailure("delta", entry);
     } finally {
       if (this.#activeDeltaOwner === owner) this.#activeDeltaOwner = null;
@@ -1724,7 +1750,7 @@ export class EffectController {
             floor: { ...currentState.floor, readOnly: true, displayName: safeFloorName(saved.floor, 1) },
             resources: { ...currentState.resources, scene: resource("ready", response.scene), pose: resource("idle", null) },
             map: { ...currentState.map, available: true, exactPose: false },
-            notice: { tone: "warning", text: `${SAVED_MAP_NOTICE_PREFIX}${new Date(saved.snapshot.createdAt).toLocaleString()}. Live position is unavailable.` },
+            notice: savedMapNotice(new Date(saved.snapshot.createdAt).toLocaleString()),
           });
           break;
         }
@@ -1882,9 +1908,6 @@ export class EffectController {
         map: { ...state.map, available: state.resources.scene.value !== null, exactPose: false },
         coherence: "verifying",
         floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
-        notice: state.resources.scene.value
-          ? { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE }
-          : state.notice,
         workflow: "none",
         precisionOpen: false,
       });
@@ -2155,10 +2178,7 @@ export class EffectController {
             canRebind: false,
             dirty: true,
           },
-          notice: {
-            tone: "warning",
-            text: "This saved Area was removed elsewhere. Your edits are preserved as a new Area draft; saving will create a new Area.",
-          },
+          notice: NOTICES.areaRemoved,
         });
       } else if (reconcileDraft && !current.draw.dirty && !current.areaDraft.dirty) {
         this.selectArea(selectedExists ? selectedId : null);
@@ -2226,7 +2246,7 @@ export class EffectController {
     if (!entry || state.command === "pending" || !canEditCoordinates(state) || !draft.name.trim() || !state.draw.circles.length) return;
     const controller = this.#controller("area-mutation");
     const current = (): boolean => !this.#disposed && !controller.signal.aborted;
-    this.#store.patch({ command: "pending", notice: { tone: "info", text: "Saving area…" } });
+    this.#store.patch({ command: "pending", notice: NOTICES.areaSaving });
     try {
       const id = await this.#backend.saveArea(entry.areasUrl, {
         areaId: draft.id,
@@ -2248,7 +2268,7 @@ export class EffectController {
       // The write acknowledgement is the save boundary. Refreshing the list
       // must not leave a successfully saved draft dirty or restore it after Back.
       this.#store.patch({
-        command: "idle", notice: { tone: "success", text: "Area saved" },
+        command: "idle", notice: NOTICES.areaSaved,
         ...(savedDraft ? {
           dialog: latest.dialog === "discardDraft" ? null : latest.dialog,
           selection: { ...latest.selection, areaId: id },
@@ -2266,7 +2286,7 @@ export class EffectController {
         && areas.areas.some((area) => area.id === id)) this.selectArea(id);
     } catch (error) {
       if (isAbort(error) || !current()) return;
-      this.#store.patch({ command: "failed", notice: { tone: "error", text: "Area could not be saved" } });
+      this.#store.patch({ command: "failed", notice: NOTICES.areaSaveFailed });
     } finally {
       this.#release("area-mutation", controller);
     }
@@ -2282,10 +2302,10 @@ export class EffectController {
     try {
       await this.#backend.deleteArea(entry.areasUrl, areaId, controller.signal);
       if (!current()) return;
-      this.#store.patch({ command: "idle", notice: { tone: "success", text: "Area deleted" } });
+      this.#store.patch({ command: "idle", notice: NOTICES.areaDeleted });
       await this.loadAreas();
     } catch (error) {
-      if (!isAbort(error) && current()) this.#store.patch({ command: "failed", notice: { tone: "error", text: "Area could not be deleted" } });
+      if (!isAbort(error) && current()) this.#store.patch({ command: "failed", notice: NOTICES.areaDeleteFailed });
     } finally {
       this.#release("area-mutation", controller);
     }
@@ -2322,7 +2342,7 @@ export class EffectController {
       finish_current_room: draft.finishCurrentRoom,
       finish_current_room_threshold: draft.finishCurrentRoomThreshold,
       select: !draft.id || plans.selectedPlan === draft.id,
-    }, "Plan saved", "Plan save could not be confirmed. Check saved plans before trying again.", (response) => {
+    }, NOTICES.planSaved, NOTICES.planSaveFailed, (response) => {
       const acknowledgedId = response === undefined && draft.id ? draft.id : parseSavedPlanId(response);
       if (draft.id && acknowledgedId !== draft.id) throw new BackendError("invalid-plan-save-response");
       savedId = acknowledgedId;
@@ -2350,7 +2370,7 @@ export class EffectController {
     const planId = this.#store.value.selection.planId;
     const entryId = this.#store.value.selection.entryId;
     if (!planId) return;
-    const deleted = await this.#serviceMutation("delete_plan", { plan: planId }, "Plan deleted", "Plan could not be deleted");
+    const deleted = await this.#serviceMutation("delete_plan", { plan: planId }, NOTICES.planDeleted, NOTICES.planDeleteFailed);
     if (deleted) {
       const current = this.#store.value;
       if (current.selection.entryId === entryId && current.planDraft.id === planId) {
@@ -2377,7 +2397,7 @@ export class EffectController {
           && state.resources.catalog.status === "ready"
           && state.host.connected && state.host.robotConnected
           && state.coherence === "current" && state.command === "failed") {
-          this.#store.patch({ command: "idle", notice: { tone: "info", text: "Status refreshed. Review the robot state before trying again." } });
+          this.#store.patch({ command: "idle", notice: NOTICES.statusRefreshed });
         }
         return;
       }
@@ -2400,7 +2420,7 @@ export class EffectController {
         const displayedPreview = initial.resources.plans.value?.plans
           .find((candidate) => candidate.id === plan)?.nextRunPreview;
         if (!displayedPreview || !/^[0-9a-f]{64}$/u.test(displayedPreview.previewToken ?? "")) {
-          this.#store.patch({ notice: { tone: "warning", text: "A verified next-run preview is unavailable. Refresh the saved plan before starting it." } });
+          this.#store.patch({ notice: NOTICES.planPreviewMissing });
           return;
         }
         this.#store.patch({ command: "pending", notice: null });
@@ -2431,7 +2451,7 @@ export class EffectController {
         if (refreshed.resources.plans.status !== "ready") {
           releasePreflight();
           this.#store.patch({
-            notice: { tone: "warning", text: "Plan preview could not be refreshed. Check the plan and try again." },
+            notice: NOTICES.planPreviewRefreshFailed,
           });
           return;
         }
@@ -2441,14 +2461,14 @@ export class EffectController {
           || !/^[0-9a-f]{64}$/u.test(refreshedPreview.previewToken ?? "")) {
           releasePreflight();
           this.#store.patch({
-            notice: { tone: "warning", text: "This plan has no valid next-run preview. Review its rooms and schedule." },
+            notice: NOTICES.planPreviewNone,
           });
           return;
         }
         if (!displayedPreview || JSON.stringify(displayedPreview) !== JSON.stringify(refreshedPreview)) {
           releasePreflight();
           this.#store.patch({
-            notice: { tone: "info", text: "The next-run preview changed. Review the updated settings before starting." },
+            notice: NOTICES.planPreviewChanged,
           });
           return;
         }
@@ -2492,8 +2512,8 @@ export class EffectController {
         const reset = await this.#serviceMutation(
           "reset_room_cadence",
           { plan: idOrAction.planId, room_id: idOrAction.roomId, modes: [idOrAction.mode] },
-          idOrAction.mode === "mop" ? "Mopping progress reset" : "Coverage progress reset",
-          idOrAction.mode === "mop" ? "Mopping progress could not be reset" : "Coverage progress could not be reset",
+          idOrAction.mode === "mop" ? NOTICES.resetMop : NOTICES.resetVacuum,
+          idOrAction.mode === "mop" ? NOTICES.resetMopFailed : NOTICES.resetVacuumFailed,
         );
         if (!reset) return;
         const catalog = await this.loadPlans({ force: true });
@@ -2542,14 +2562,14 @@ export class EffectController {
       if (latestPreview.blocker || latestPreview.rooms.length === 0) {
         this.#store.patch({
           manualRoomPreview: resource("ready", latestAdmission),
-          notice: { tone: "warning", text: "The room preview is blocked. Review the current map and schedule before starting." },
+          notice: NOTICES.roomPreviewBlocked,
         });
         return;
       }
       if (manualPreviewValue(admitted.preview) !== manualPreviewValue(latestPreview)) {
         this.#store.patch({
           manualRoomPreview: resource("ready", latestAdmission),
-          notice: { tone: "info", text: "The room preview changed. Review the updated settings before starting." },
+          notice: NOTICES.roomPreviewChanged,
         });
         return;
       }
@@ -2566,7 +2586,7 @@ export class EffectController {
       if (!isAbort(error) && !controller.signal.aborted && this.#manualPreviewCaptureCurrent(capture)) {
         this.#store.patch({
           manualRoomPreview: resource("error", null, problemCode(error, "preview-unavailable")),
-          notice: { tone: "warning", text: "The room preview could not be refreshed. No cleaning was started." },
+          notice: NOTICES.roomPreviewFailed,
         });
       }
     } finally {
@@ -2579,8 +2599,8 @@ export class EffectController {
   async #serviceMutation(
     service: string,
     data: Readonly<Record<string, unknown>>,
-    success: string,
-    failure: string,
+    success: WorkspaceNotice,
+    failure: WorkspaceNotice,
     onAcknowledged?: (response: unknown) => void,
   ): Promise<boolean> {
     const entityId = this.#projection?.vacuumEntityId;
@@ -2590,7 +2610,7 @@ export class EffectController {
     const userKey = this.#projection?.userKey;
     const current = (): boolean => !this.#disposed && !controller.signal.aborted
       && entryKey === this.#projection?.entryKey && userKey === this.#projection?.userKey;
-    this.#store.patch({ command: "pending", notice: { tone: "info", text: "Saving…" } });
+    this.#store.patch({ command: "pending", notice: NOTICES.saving });
     try {
       const response = await this.#backend.service("matic_robot", service, data, entityId, {
         acknowledgementTimeout: "mutation",
@@ -2598,10 +2618,10 @@ export class EffectController {
       });
       if (!current()) return false;
       onAcknowledged?.(response);
-      this.#store.patch({ command: "idle", notice: { tone: "success", text: success } });
+      this.#store.patch({ command: "idle", notice: success });
       return true;
     } catch {
-      if (current()) this.#store.patch({ command: "failed", notice: { tone: "error", text: failure } });
+      if (current()) this.#store.patch({ command: "failed", notice: failure });
       return false;
     } finally {
       this.#release("plan-mutation", controller);
@@ -2646,8 +2666,10 @@ export class EffectController {
       }, 15_000);
     } catch (error) {
       if (!current()) return;
-      this.#store.patch({ command: "failed", notice: { tone: "error", text: coverageGuardNotice(error)
-        ?? "The action could not be confirmed. Check the robot status before trying again." } });
+      this.#store.patch({
+        command: "failed",
+        notice: stopping ? NOTICES.stopUnconfirmed : coverageGuardNotice(error) ?? NOTICES.actionUnconfirmed,
+      });
     }
   }
 

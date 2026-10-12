@@ -400,7 +400,6 @@ def test_scanner_recognizes_each_site_form(
     assert [key for _, _, key in stray] == strays
 
 
-@pytest.mark.xfail(strict=True, reason="Task 2a")
 def test_effects_build_no_notice_text() -> None:
     modules = shipped_modules()
     assert not re.search(r"\btext\s*:", modules["effects.ts"])

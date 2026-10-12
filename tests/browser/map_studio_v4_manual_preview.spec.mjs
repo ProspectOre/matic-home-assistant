@@ -627,12 +627,12 @@ test("@safety changed server preview is shown and blocks motion", async ({ page 
   const result = await page.evaluate(async () => {
     const h = window.manualPreviewHarness;
     await h.effects.executeAction("clean-rooms");
-    const output = { serviceCalls: h.calls.length, notice: h.store.value.notice?.text,
+    const output = { serviceCalls: h.calls.length, notice: h.store.value.notice?.key,
       mode: h.store.value.manualRoomPreview.value?.preview.rooms[0]?.cleaningMode };
     h.effects.dispose();
     return output;
   });
-  expect(result).toEqual({ serviceCalls: 0, notice: "The room preview changed. Review the updated settings before starting.", mode: "mop" });
+  expect(result).toEqual({ serviceCalls: 0, notice: "v4_notice_room_preview_changed", mode: "mop" });
 });
 
 test("@safety administrator loss discards a late preview without state or notices", async ({ page }) => {
@@ -669,7 +669,7 @@ test("@safety retrying a failed preview admits a fresh response without exposing
     for (let i = 0; i < 20 && h.store.value.manualRoomPreview.status !== "ready"; i += 1) await new Promise(resolve => setTimeout(resolve, 0));
     const after = h.store.value.manualRoomPreview;
     const output = { before: before.status, attempts: h.attempts, after: after.status,
-      token: after.value?.preview.previewToken, notice: h.store.value.notice?.text ?? null };
+      token: after.value?.preview.previewToken, notice: h.store.value.notice?.key ?? null };
     h.effects.dispose();
     return output;
   });
@@ -711,7 +711,7 @@ test("@safety saved-plan dispatch carries the refreshed authoritative preview to
     try {
       await effects.refreshCatalog(true);
       await effects.executeAction("run-plan");
-      return { calls, notice: store.value.notice?.text ?? null };
+      return { calls, notice: store.value.notice?.key ?? null };
     } finally { effects.dispose(); }
   });
   expect(result.calls).toHaveLength(1);
@@ -751,12 +751,12 @@ test("@safety a changed saved-plan preview token updates the preview without sta
     try {
       await effects.refreshCatalog(true);
       await effects.executeAction("run-plan");
-      return { calls, notice: store.value.notice?.text,
+      return { calls, notice: store.value.notice?.key,
         token: store.value.resources.plans.value?.plans[0]?.nextRunPreview?.previewToken };
     } finally { effects.dispose(); }
   });
   expect(result).toEqual({ calls: [],
-    notice: "The next-run preview changed. Review the updated settings before starting.",
+    notice: "v4_notice_plan_preview_changed",
     token: "b".repeat(64) });
 });
 
@@ -780,9 +780,9 @@ test("@safety a saved-plan preview without an authoritative token cannot start",
     const effects = new EffectController(store, { service: async () => { calls += 1; }, dispose() {} });
     try {
       await effects.executeAction("run-plan");
-      return { calls, notice: store.value.notice?.text };
+      return { calls, notice: store.value.notice?.key };
     } finally { effects.dispose(); }
   });
   expect(result).toEqual({ calls: 0,
-    notice: "A verified next-run preview is unavailable. Refresh the saved plan before starting it." });
+    notice: "v4_notice_plan_preview_missing" });
 });

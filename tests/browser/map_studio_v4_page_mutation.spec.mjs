@@ -189,7 +189,7 @@ async function suspendPendingMutation(page) {
     const run = window.__pageMutation;
     return {
       command: run.store.value.command,
-      notice: run.store.value.notice?.text,
+      notice: run.store.value.notice?.key,
       writes: run.writes.length,
       aborted: run.pending.signal?.aborted ?? false,
       draft: run.kind === "area" || run.kind === "area-update"
@@ -208,7 +208,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
       const suspended = await suspendPendingMutation(page);
       expect(suspended).toEqual({
         command: "pending",
-        notice: "Saving area…",
+        notice: "v4_notice_area_saving",
         writes: 1,
         aborted: false,
         draft: { id: null, name: "New area draft", dirty: true },
@@ -223,7 +223,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
         const value = {
           writes: run.writes.length,
           command: state.command,
-          notice: state.notice?.text,
+          notice: state.notice?.key,
           draft: { id: state.areaDraft.id, name: state.areaDraft.name, dirty: state.areaDraft.dirty },
         };
         run.effects.dispose();
@@ -233,13 +233,13 @@ test.describe("page suspension preserves transmitted map mutations", () => {
       if (outcome === "success") {
         expect(settled).toMatchObject({
           command: "idle",
-          notice: "Area saved",
+          notice: "v4_notice_area_saved",
           draft: { id: "created-area", name: "New area draft", dirty: false },
         });
       } else {
         expect(settled).toMatchObject({
           command: "failed",
-          notice: "Area could not be saved",
+          notice: "v4_notice_area_save_failed",
           draft: { id: null, name: "New area draft", dirty: true },
         });
       }
@@ -252,7 +252,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
       const suspended = await suspendPendingMutation(page);
       expect(suspended).toEqual({
         command: "pending",
-        notice: "Saving…",
+        notice: "v4_notice_saving",
         writes: 1,
         aborted: false,
         draft: { id: "daily", name: "Updated daily draft", dirty: true },
@@ -268,7 +268,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
           writes: run.writes.length,
           write: run.writes[0],
           command: state.command,
-          notice: state.notice?.text,
+          notice: state.notice?.key,
           draft: { id: state.planDraft.id, name: state.planDraft.name, dirty: state.planDraft.dirty },
         };
         run.effects.dispose();
@@ -284,13 +284,13 @@ test.describe("page suspension preserves transmitted map mutations", () => {
       if (outcome === "success") {
         expect(settled).toMatchObject({
           command: "idle",
-          notice: "Plan saved",
+          notice: "v4_notice_plan_saved",
           draft: { id: "daily", name: "Updated daily draft", dirty: false },
         });
       } else {
         expect(settled).toMatchObject({
           command: "failed",
-          notice: "Plan save could not be confirmed. Check saved plans before trying again.",
+          notice: "v4_notice_plan_save_failed",
           draft: { id: "daily", name: "Updated daily draft", dirty: true },
         });
       }
@@ -304,7 +304,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
     const suspended = await suspendPendingMutation(page);
     expect(suspended).toEqual({
       command: "pending",
-      notice: "Saving…",
+      notice: "v4_notice_saving",
       writes: 1,
       aborted: false,
       draft: { id: null, name: "New plan draft", dirty: true },
@@ -321,7 +321,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
         writes: run.writes.length,
         write: run.writes[0],
         command: state.command,
-        notice: state.notice?.text,
+        notice: state.notice?.key,
         selection: state.selection.planId,
         draft: { id: state.planDraft.id, name: state.planDraft.name, dirty: state.planDraft.dirty },
       };
@@ -337,7 +337,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
     expect(settled.write.data).not.toHaveProperty("plan_id");
     expect(settled).toMatchObject({
       command: "idle",
-      notice: "Plan saved",
+      notice: "v4_notice_plan_saved",
       selection: "created-plan",
       draft: { id: "created-plan", name: "New plan draft", dirty: false },
     });
@@ -350,7 +350,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
     const suspended = await suspendPendingMutation(page);
     expect(suspended).toMatchObject({
       command: "pending",
-      notice: "Saving area…",
+      notice: "v4_notice_area_saving",
       writes: 1,
       aborted: false,
       draft: { id: "entryway", name: "Updated entryway", dirty: true },
@@ -365,7 +365,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
         writes: run.writes.length,
         write: run.writes[0],
         command: state.command,
-        notice: state.notice?.text,
+        notice: state.notice?.key,
         areaDraft: {
           id: state.areaDraft.id,
           name: state.areaDraft.name,
@@ -385,7 +385,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
     });
     expect(settled).toMatchObject({
       command: "idle",
-      notice: "Area saved",
+      notice: "v4_notice_area_saved",
       areaDraft: { id: "entryway", name: "Updated entryway", dirty: false },
       circles: [{ x: 2.4, y: 2.1, radius: 0.55 }],
       drawDirty: false,
@@ -437,7 +437,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
         writes: run.writes.length,
         write: run.writes[0],
         command: state.command,
-        notice: state.notice?.text,
+        notice: state.notice?.key,
         draftName: state.planDraft.name,
         draftDirty: state.planDraft.dirty,
         draftRoomMode: state.planDraft.rooms[0]?.cleaningMode,
@@ -459,7 +459,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
       writes: 1,
       write: expect.objectContaining({ service: "reset_room_cadence" }),
       command: "idle",
-      notice: "Mopping progress reset",
+      notice: "v4_notice_reset_mop",
       draftName: "Retained clean editor",
       draftDirty: false,
       draftRoomMode: "vacuum",
@@ -654,7 +654,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
       const run = window.__boundedPlanMutation;
       return {
         command: run.store.value.command,
-        notice: run.store.value.notice?.text,
+        notice: run.store.value.notice?.key,
         calls: run.calls.map((args) => args.slice()),
         timeoutCount: run.timerIds.filter(({ delay }) => delay === 20_000).length,
         timeoutCleared: run.timerIds.filter(({ delay, timerId }) => delay === 20_000
@@ -663,7 +663,7 @@ test.describe("page suspension preserves transmitted map mutations", () => {
     });
     expect(timedOut).toEqual({
       command: "failed",
-      notice: "Plan could not be deleted",
+      notice: "v4_notice_plan_delete_failed",
       calls: [["matic_robot", "delete_plan", { plan: "daily" }, { entity_id: "vacuum.synthetic" }]],
       timeoutCount: 1,
       timeoutCleared: 1,
@@ -673,13 +673,13 @@ test.describe("page suspension preserves transmitted map mutations", () => {
       const run = window.__boundedPlanMutation;
       run.resolveService({});
       await run.deleting;
-      const value = { command: run.store.value.command, notice: run.store.value.notice?.text, calls: run.calls.length };
+      const value = { command: run.store.value.command, notice: run.store.value.notice?.key, calls: run.calls.length };
       run.effects.dispose();
       window.setTimeout = run.nativeSetTimeout;
       window.clearTimeout = run.nativeClearTimeout;
       return value;
     });
-    expect(afterLateAck).toEqual({ command: "failed", notice: "Plan could not be deleted", calls: 1 });
+    expect(afterLateAck).toEqual({ command: "failed", notice: "v4_notice_plan_delete_failed", calls: 1 });
   });
 
   test("disposing a bounded service wait rejects with AbortError and clears its timer", async ({ page }) => {
