@@ -438,6 +438,21 @@ _NOTICE_TEXT_FORMS = {
     "object with tone and key": ('const n = { tone: "info", key: "k" };', []),
     "commented object": ('// { tone: "info", text: "x" }', []),
     "text read on another name": ("const v = notices.text;", []),
+    # The shape is retired for every component, so a chip is flagged as well:
+    # a chip names its words `label`.
+    "chip with tone and text": ('const chip = { tone: "info", text: "x" };', [1]),
+    "tone and text beside a spread": (
+        'const n = { ...base, tone: "info", text: "x" };',
+        [1],
+    ),
+    # tsc rejects `text` on a WorkspaceNotice, so these escape only through a
+    # spread that may carry the tone, or a name the scan cannot type.
+    "text beside a spread alone": ('const n = { ...base, text: "x" };', []),
+    "text read through a longer chain": (
+        "const t = this.store.value.notice.text;",
+        [1],
+    ),
+    "text read on a differently named value": ("const t = toast.text;", []),
 }
 
 

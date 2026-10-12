@@ -95,14 +95,13 @@ test("counted labels take their numbers from placeholders", async ({ page }) => 
   await sendIntent(page, { type: "toggle-room", roomId: "room-a" });
   await sendIntent(page, { type: "toggle-room", roomId: "room-b" });
 
-  const actionBar = panel.locator(".action-bar");
-  await expect(actionBar.getByRole("button", { name: "Räume reinigen: 2" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Räume reinigen: 2", exact: true })).toBeVisible();
   const counted = await localizeCalls(page, "v4_action_clean_rooms_count");
   expect(counted.length).toBeGreaterThan(0);
   expect(counted.every((call) => call.placeholders?.count === 2)).toBe(true);
 
   await sendIntent(page, { type: "toggle-room", roomId: "room-b" });
-  await expect(actionBar.getByRole("button", { name: "Einen Raum reinigen" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Einen Raum reinigen", exact: true })).toBeVisible();
   expect((await localizeCalls(page, "v4_action_clean_rooms_count_one")).length).toBeGreaterThan(0);
 });
 
@@ -336,7 +335,8 @@ test("the room summary and selection chip take their rooms and count from placeh
   const list = await joinRooms(page, "en", names);
 
   await expect(gallery.locator(".action-summary")).toHaveText(`${list}, danach zurück zum Dock`);
-  await expect(gallery.locator(".selection-chip")).toContainText("Gewählt: 3 Räume");
+  // The chip has no role or name of its own; its text is the contract.
+  await expect(gallery.getByText("Gewählt: 3 Räume", { exact: true })).toBeVisible();
   const dock = await localizeCalls(page, "v4_rooms_summary_dock");
   expect(dock.at(-1).placeholders).toEqual({ rooms: list });
   const chip = await localizeCalls(page, "v4_rooms_selected");
@@ -378,7 +378,7 @@ test("an outline's add-point buttons take the point number from a placeholder", 
       draw: { ...state.draw, circles: [], outline: null, undo: [], redo: [], strokeCount: 0, dirty: false } });
   }, GALLERY_TAG);
   await gallery.getByRole("button", { name: "Points", exact: true }).click();
-  const box = await gallery.locator(".scene-canvas").boundingBox();
+  const box = await gallery.getByRole("region", { name: "Interactive Matic 3D map" }).boundingBox();
   for (const [x, y] of [[-90, -70], [90, -70], [90, 70]]) {
     await page.mouse.click(box.x + box.width * 0.5 + x, box.y + box.height * 0.5 + y);
   }

@@ -221,6 +221,26 @@ def live_matches(pattern: re.Pattern[str], text: str) -> list[re.Match[str]]:
     return [match for match in pattern.finditer(text) if _is_code(text, match.start())]
 
 
+_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def without_comments(text: str) -> str:
+    """``text`` with its comments removed: script comments, and the ``/* */``
+    comments inside template literals (the styles), which the lexer reads as text."""
+    kept: list[str] = []
+    last = 0
+    for kind, begin, end in _tokens(text):
+        if kind == "comment":
+            kept.append(text[last:begin])
+            last = end
+        elif kind == "text":
+            kept.append(text[last:begin])
+            kept.append(_BLOCK_COMMENT.sub("", text[begin:end]))
+            last = end
+    kept.append(text[last:])
+    return "".join(kept)
+
+
 _OPENERS = "{(["
 _CLOSERS = "})]"
 
@@ -471,8 +491,12 @@ _NOTICE_TEXT_READ = re.compile(r"(?<![\w$])notice\??\.text\b")
 def scan_notice_text(module: str, text: str) -> list[tuple[str, int]]:
     """``(module, line)`` of each notice built with a ``text`` field or read from it.
 
-    A notice carries a ``key`` and ``fallback``; an object literal that has both a
-    ``tone`` and a ``text`` is the retired shape, wherever it is built.
+    A notice carries a ``key`` and ``fallback``. One rule: an object literal that
+    has both a ``tone`` and a ``text`` is the retired shape, wherever it is built
+    and whatever it is (a chip is flagged too and names its words ``label``), and
+    ``notice.text`` is the retired read. Names the scan cannot type (``toast.text``)
+    and a spread that may carry the tone are left to ``tsc``, which rejects ``text``
+    on a ``WorkspaceNotice``.
     """
     found = {match.start() for match in live_matches(_NOTICE_TEXT_READ, text)}
     found |= {

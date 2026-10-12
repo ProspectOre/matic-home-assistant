@@ -332,6 +332,8 @@ test.describe("Map Studio v0.4 foundation", () => {
 
     await retry.click();
     await expect(dialog).toBeVisible();
+    // shell.md §5: a Draw draft's primary is Name and save, so the dialog offers no Save.
+    await expect(dialog.getByRole("button", { name: "Save" }), "a Draw draft has no Save").toHaveCount(0);
     await dialog.getByRole("button", { name: "Keep editing" }).click();
     await expect(dialog).toHaveCount(0);
     await expect(retry, "Keep editing hands focus back to Try again").toBeFocused();
@@ -7386,6 +7388,28 @@ test("zone keyboard creation and point editing stay local and undoable", async (
   await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
 });
 
+// shell.md §2 row 8: a map Home Assistant cannot confirm well enough cannot be
+// edited, so Name and save is disabled and says why, as the strip's body does.
+// (A degraded map shows no action button at all: `locating` is in NO_BUTTON.)
+for (const flag of ["complete", "floorCoherent", "sessionVerified"]) test(`Name and save explains itself when the map is not ${flag}`, async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "draw" });
+  await gallery.getByRole("button", { name: "Points", exact: true }).click();
+  const map = gallery.locator(".map-root");
+  await map.focus();
+  await map.press("ArrowDown"); await map.press("Enter");
+  await map.press("ArrowLeft"); await map.press("Enter");
+  await map.press("ArrowDown"); await map.press("Enter");
+  await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
+  const save = gallery.locator(".action-bar").getByRole("button", { name: "Name and save", exact: true });
+  await expect(save).toBeEnabled();
+  await gallery.evaluate((element, flag) => {
+    const state = element.getWorkspaceSnapshot();
+    element.replaceWorkspaceState({ ...state, map: { ...state.map, [flag]: false } });
+  }, flag);
+  await expect(save).toBeDisabled();
+  await expect(save).toHaveAccessibleDescription("Home Assistant can show this map but can't confirm it well enough to start cleaning.");
+});
+
 for (const change of ["revision", "floor", "session"]) test(`slow initial scene survives only a ${change} catalog update`, async ({ page }) => {
   await loadEffectHarness(page);
   await page.evaluate(async () => {
@@ -8404,6 +8428,7 @@ test.describe("Map Studio resolved theme colours", () => {
     if ((await enabled.getAttribute("aria-checked")) !== "true") await enabled.click();
     await expect(enabled).toHaveAttribute("aria-checked", "true");
     await expect.poll(() => enabled.evaluate((element) => getComputedStyle(element, "::before").backgroundColor), "checked switch").toBe(indicator);
+    await expect.poll(() => style(gallery.getByRole("checkbox", { name: /^Return to the dock when finished/ }), "accentColor"), "plan option").toBe(indicator);
 
     // The Room names checkbox sits in the phone sheet's Map display section.
     await page.setViewportSize({ width: 390, height: 844 });

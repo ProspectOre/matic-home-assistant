@@ -13,9 +13,8 @@ from pathlib import Path
 import pytest
 
 from custom_components.matic_robot import frontend
-from tests.frontend_sources import shipped_modules
+from tests.frontend_sources import shipped_modules, without_comments
 
-_COMMENT = re.compile(r"/\*.*?\*/|(?<![:\w])//[^\n]*", re.DOTALL)
 _MS_CUSTOM_PROPERTY_USE = re.compile(r"var\(\s*(--ms-[a-z0-9-]+)")
 _MS_CUSTOM_PROPERTY_DEFINED = re.compile(r"(--ms-[a-z0-9-]+)\s*:")
 _MS_CUSTOM_PROPERTY_SET = re.compile(r"""setProperty\(\s*["'`](--ms-[a-z0-9-]+)["'`]""")
@@ -153,7 +152,7 @@ def test_scene_parser_worker_stays_bounded_and_disposable() -> None:
 
 def _ms_custom_properties(source: str) -> tuple[set[str], set[str]]:
     """The ``--ms-*`` names a source uses and defines, ignoring comments."""
-    code = _COMMENT.sub("", source)
+    code = without_comments(source)
     used = set(_MS_CUSTOM_PROPERTY_USE.findall(code))
     defined = {
         name
@@ -164,19 +163,32 @@ def _ms_custom_properties(source: str) -> tuple[set[str], set[str]]:
 
 
 _MS_SOURCES = {
-    "declaration": ("a{--ms-x:1} b{c:var(--ms-x)}", {"--ms-x"}, {"--ms-x"}),
+    "declaration": ("css`a{--ms-x:1} b{c:var(--ms-x)}`", {"--ms-x"}, {"--ms-x"}),
     "double-quoted setProperty": ('s.setProperty("--ms-x", v)', set(), {"--ms-x"}),
     "single-quoted setProperty": ("s.setProperty('--ms-x', v)", set(), {"--ms-x"}),
     "backtick setProperty": ("s.setProperty(`--ms-x`, v)", set(), {"--ms-x"}),
     "unquoted setProperty is not a name": ("s.setProperty(name, v)", set(), set()),
-    "definition in a block comment": (
-        "/* --ms-x: 1; */ var(--ms-x)",
+    "definition in a style comment": (
+        "css`/* --ms-x: 1; */ b{c:var(--ms-x)}`",
         {"--ms-x"},
         set(),
     ),
-    "definition in a line comment": ("// --ms-x: 1;\nvar(--ms-x)", {"--ms-x"}, set()),
-    "use in a comment": ("/* var(--ms-x) */ --ms-y: 1;", set(), {"--ms-y"}),
-    "url slashes are not a comment": ("u(https://x) --ms-x: 1;", set(), {"--ms-x"}),
+    "use in a style comment": ("css`/* var(--ms-x) */ a{--ms-y:1}`", set(), {"--ms-y"}),
+    "definition in a script block comment": (
+        '/* s.setProperty("--ms-x", v) */ var_(css`c{c:var(--ms-x)}`)',
+        {"--ms-x"},
+        set(),
+    ),
+    "definition in a script line comment": (
+        '// s.setProperty("--ms-x", v)\ncss`c{c:var(--ms-x)}`',
+        {"--ms-x"},
+        set(),
+    ),
+    "url slashes are not a comment": (
+        "css`u(https://x) a{--ms-x:1}`",
+        set(),
+        {"--ms-x"},
+    ),
 }
 
 

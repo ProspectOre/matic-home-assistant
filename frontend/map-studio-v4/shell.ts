@@ -456,7 +456,7 @@ export class MaticMapShellV4 extends LitElement {
   #helpLauncher: HTMLElement | null = null;
   // What Discard goes on to: the intent that asked, or Try again's reload.
   #pendingNavigation: WorkspaceIntent | "reload" | null = null;
-  // The workflows the entry screen's enabled rows opened at its last render
+  // The workflows the entry screen's enabled rows offered at its last render
   // (#launch), plus Map diagnostics, which Map options offers on any screen.
   #launchers = new Set<string>();
   #drag: SheetDrag | null = null;
