@@ -4,11 +4,9 @@
 
 Requires Python 3.14 and Node.js for frontend work.
 
-The test extra pins `pytest-homeassistant-custom-component==0.13.366`, which
-requires stable Home Assistant `2026.9.3`. Plugin `0.13.368` selects Home
-Assistant `2026.10.0b0`, so beta compatibility is qualified separately before
-changing this baseline. This test pin does not change the integration's Home
-Assistant 2026.7+ runtime support.
+The test extra pins `pytest-homeassistant-custom-component==0.13.372`, which
+requires stable Home Assistant `2026.10.1`. The integration supports Home
+Assistant 2026.10 and later (`hacs.json`).
 
 ```sh
 python -m venv .venv

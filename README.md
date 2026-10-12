@@ -36,7 +36,7 @@ locally in Home Assistant. [Matic Cues](docs/privacy.md#matic-cues) uses Matic's
 
 ## Install
 
-Requires **Home Assistant 2026.7+** and a Bluetooth adapter built into or attached
+Requires **Home Assistant 2026.10+** and a Bluetooth adapter built into or attached
 to the Home Assistant host for pairing. Bluetooth proxies cannot complete setup.
 
 1. In HACS, add [this repository](https://github.com/ProspectOre/matic-home-assistant) as a custom **Integration** repository.

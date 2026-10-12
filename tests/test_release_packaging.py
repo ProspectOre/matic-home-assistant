@@ -34,7 +34,7 @@ def test_release_versions_and_links_are_consistent() -> None:
 
     assert manifest["version"] == "0.5.0rc22"
     assert project["version"] == manifest["version"]
-    assert hacs["homeassistant"] == "2026.7.0"
+    assert hacs["homeassistant"] == "2026.10.0"
     assert manifest["documentation"].startswith("https://github.com/")
     assert manifest["issue_tracker"].endswith("/issues")
     assert manifest["codeowners"]

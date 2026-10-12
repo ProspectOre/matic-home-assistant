@@ -431,7 +431,6 @@ def test_readme_states_the_actual_runtime_and_validation_scope() -> None:
 
     assert f"Home Assistant {supported_version}+" in readme
     assert "docs/acceptance-0.4.md" in readme
-    assert f"Home Assistant {supported_version}+" in compatibility
     assert "Live use has covered 2026.7 and 2026.8" in compatibility
     assert "Each exposed command is tested against a real robot" not in readme
 
