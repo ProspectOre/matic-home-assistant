@@ -4921,7 +4921,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
       });
     });
+    // evaluateAll does not wait, and the Draw list renders in the lazily
+    // loaded workflow chunk, so wait for the rows before measuring them.
     const expectContrast = async (selector) => {
+      await gallery.locator(selector).first().waitFor();
       const ratios = await contrastRatios(selector);
       expect(ratios.length, `${selector} rendered`).toBeGreaterThan(0);
       expect(Math.min(...ratios), `${selector} contrast ${JSON.stringify(ratios)}`).toBeGreaterThanOrEqual(4.5);
