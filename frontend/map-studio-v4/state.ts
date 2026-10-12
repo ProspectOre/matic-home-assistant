@@ -17,7 +17,7 @@ import {
   type WorkspaceState,
 } from "./contracts";
 import type { AreaCircle, SavedPlan } from "./backend-contracts";
-import { isWorkspaceNotice, notice, type CameraPreference } from "./contracts";
+import { readWorkspaceNotice, type CameraPreference } from "./contracts";
 
 const emptyResource = <T>(): { status: "idle"; value: T | null; problem: null } => ({
   status: "idle",
@@ -551,12 +551,9 @@ export const reduceWorkspace = (
         },
       };
     case "set-notice": {
-      const next: unknown = intent.notice;
-      if (next === null) return { ...state, notice: null };
-      if (!isWorkspaceNotice(next)) return state;
-      return { ...state, notice: notice(
-        next.tone, next.key, next.fallback, next.placeholders && { ...next.placeholders },
-      ) };
+      if (intent.notice === null) return { ...state, notice: null };
+      const notice = readWorkspaceNotice(intent.notice);
+      return notice ? { ...state, notice } : state;
     }
     case "open-dialog":
       return { ...state, dialog: intent.dialog };
@@ -602,17 +599,19 @@ export class WorkspaceStore {
   }
 
   dispatch(intent: WorkspaceIntent): WorkspaceState {
-    const next = reduceWorkspace(this.#state, intent);
-    if (next === this.#state) return next;
-    this.#state = next;
-    this.#publish();
-    return next;
+    return this.replace(reduceWorkspace(this.#state, intent));
   }
 
-  replace(next: WorkspaceState): void {
-    if (next === this.#state) return;
-    this.#state = next;
+  // Every notice committed in place of another is its own frozen object, so
+  // a repeated notice toasts and announces again (shell.md §4 rule 1).
+  replace(next: WorkspaceState): WorkspaceState {
+    if (next === this.#state) return next;
+    const committed = next.notice && next.notice !== this.#state.notice
+      ? { ...next, notice: readWorkspaceNotice(next.notice) }
+      : next;
+    this.#state = committed;
     this.#publish();
+    return committed;
   }
 
   #publish(): void {
@@ -627,9 +626,7 @@ export class WorkspaceStore {
   }
 
   patch(patch: Partial<WorkspaceState>): WorkspaceState {
-    const next = { ...this.#state, ...patch };
-    this.replace(next);
-    return next;
+    return this.replace({ ...this.#state, ...patch });
   }
 
   subscribe(listener: (state: WorkspaceState) => void): () => void {

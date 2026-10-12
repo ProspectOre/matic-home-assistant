@@ -548,15 +548,113 @@ test("@safety errors announce through the alert region and other tones through t
     const text = `Polite ${tone} sample`;
     await setGalleryNotice(page, sampleNotice(tone, text));
     await expect.poll(() => announced("polite", text)).toBe(1);
-    expect(await current("alert")).toBe("");
     await galleryIntent(page, { type: "toggle-labels" });
     expect(await announced("polite", text)).toBe(1);
     expect(await announced("alert", text)).toBe(0);
   }
 
+  // Clearing announces nothing: both regions keep their last message.
   await setGalleryNotice(page, null);
-  await expect.poll(() => current("polite")).toBe("");
-  expect(await current("alert")).toBe("");
+  await expect(page.locator(GALLERY_TAG).locator("[data-notice-slot]")).toHaveCount(0);
+  expect(await current("polite")).toBe("Polite warning sample");
+  expect(await current("alert")).toBe("Stop failed sample");
+});
+
+// Starts recording each text a shell live region changes to; readRegion()
+// returns that list for "polite" or "alert".
+const watchRegions = (page) => page.evaluate((tag) => {
+  const shell = window.__noticePanel?.shadowRoot.querySelector("matic-map-shell-v4")
+    ?? document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+  window.__regionChanges = { alert: [], polite: [] };
+  for (const [name, selector] of [["alert", '.root > [role="alert"]'], ["polite", '.root > [aria-live="polite"]']]) {
+    const region = shell.shadowRoot.querySelector(selector);
+    let last = region.textContent.trim();
+    new MutationObserver(() => {
+      const now = region.textContent.trim();
+      if (now !== last) window.__regionChanges[name].push(now);
+      last = now;
+    }).observe(region, { childList: true, characterData: true, subtree: true });
+  }
+}, GALLERY_TAG);
+const readRegion = (page, name) => page.evaluate((region) => window.__regionChanges[region], name);
+
+test("@mobile the polite region holds only the newest message and a cleared notice writes nothing", async ({ page }) => {
+  const gallery = await loadGallery(page, { narrow: true });
+  await gallery.getByRole("button", { name: "Show less of the map workspace" }).click();
+  await expect(gallery.locator('.root > [aria-live="polite"]')).toHaveText("Map workspace, peek height");
+  await watchRegions(page);
+
+  await setGalleryNotice(page, sampleNotice("info", "Newest sample"));
+  await expect.poll(() => readRegion(page, "polite")).toEqual(["Newest sample"]);
+  await setGalleryNotice(page, null);
+  await galleryIntent(page, { type: "toggle-labels" });
+  await expect(gallery.locator("[data-notice-slot]")).toHaveCount(0);
+  expect(await readRegion(page, "polite")).toEqual(["Newest sample"]);
+});
+
+test("a repeated workspace notice toasts and announces again", async ({ page }) => {
+  const catalog = structuredClone(PLAN_CATALOG);
+  catalog.plans[0].next_run_preview = null;
+  const panel = await mountPanel(page, { initialPlanCatalog: catalog });
+  await expect.poll(() => page.evaluate(() =>
+    window.__noticePanel.getWorkspaceSnapshot().resources.plans.status)).toBe("ready");
+  await sendIntent(page, { type: "open-workflow", workflow: "plan" });
+  await expect.poll(async () => (await snapshot(page)).workflow).toBe("plan");
+  // Full map hides the slot, so a warning toasts (shell.md §4 rule 3).
+  await sendIntent(page, { type: "enter-full-map" });
+  await watchRegions(page);
+  const runPlan = () => page.evaluate(() => {
+    window.__noticePanel.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent(
+      "matic-workspace-action",
+      { detail: { id: "run-plan" }, bubbles: true, composed: true },
+    ));
+  });
+  const toast = panel.locator("[data-notice-toast]");
+  const missing = "The next-run preview isn't ready; reload your plans, then try again.";
+
+  await runPlan();
+  await expect(toast).toContainText(missing);
+  await toast.getByRole("button", { name: "Close" }).click();
+  await expect(toast).toBeHidden();
+  await runPlan();
+  await expect(toast).toContainText(missing);
+  await expect.poll(async () => (await readRegion(page, "polite")).filter((text) => text === missing).length)
+    .toBe(2);
+});
+
+test("a status title change is announced once through the polite region", async ({ page }) => {
+  await loadGallery(page);
+  await watchRegions(page);
+  await page.evaluate((tag) => document.querySelector(tag).setScenario("transition"), GALLERY_TAG);
+  await expect.poll(() => readRegion(page, "polite")).toEqual(["Locating"]);
+  await galleryIntent(page, { type: "toggle-labels" });
+  await galleryIntent(page, { type: "toggle-labels" });
+  expect(await readRegion(page, "polite")).toEqual(["Locating"]);
+});
+
+test("a notice is validated and stored from one read of each field", async ({ page }) => {
+  await loadGallery(page);
+  const stored = await page.evaluate(async (tag) => {
+    const gallery = document.querySelector(tag);
+    const shell = gallery.shadowRoot.querySelector(".stage").firstElementChild;
+    const send = (notice) => shell.dispatchEvent(new CustomEvent(
+      "matic-workspace-intent",
+      { detail: { type: "set-notice", notice }, bubbles: true, composed: true },
+    ));
+    const shifting = (first, later) => {
+      let reads = 0;
+      return () => (reads++ === 0 ? first : later);
+    };
+    const tone = shifting("success", "evil");
+    send({ get tone() { return tone(); }, key: "v4_notice_sample_success", fallback: "Tone sample" });
+    const afterTone = gallery.getWorkspaceSnapshot().notice;
+    const placeholders = shifting({ name: "Kitchen" }, { name: { evil: true } });
+    send({ tone: "info", key: "v4_notice_sample_info", fallback: "{name} sample", get placeholders() { return placeholders(); } });
+    return { afterTone, afterPlaceholders: gallery.getWorkspaceSnapshot().notice };
+  }, GALLERY_TAG);
+  expect([null, "success"], JSON.stringify(stored.afterTone)).toContain(stored.afterTone?.tone ?? null);
+  expect([null, "Kitchen"], JSON.stringify(stored.afterPlaceholders))
+    .toContain(stored.afterPlaceholders?.placeholders?.name ?? null);
 });
 
 test("slot, toast and canvas chip carry no live role", async ({ page }) => {

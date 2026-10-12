@@ -51,7 +51,6 @@ import {
   WORKSPACE_INTENT_EVENT,
 } from "./map-canvas";
 import "./map-canvas";
-import "./precision-controls";
 import { translate } from "./localize";
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
@@ -369,9 +368,8 @@ export class MaticMapShellV4 extends LitElement {
     _helpOpen: { state: true },
     _browserFullscreen: { state: true },
     _sheetDetent: { state: true },
-    _announcement: { state: true },
-    _politeNotice: { state: true },
-    _alertNotice: { state: true },
+    _polite: { state: true },
+    _alert: { state: true },
     _toast: { state: true },
     _workflowLoadFailed: { state: true },
   };
@@ -398,9 +396,12 @@ export class MaticMapShellV4 extends LitElement {
   protected _helpOpen = false;
   protected _browserFullscreen = false;
   protected _sheetDetent: SheetDetent = "half";
-  protected _announcement = "";
-  protected _politeNotice = "";
-  protected _alertNotice = "";
+  // The two live regions (shell.md §4 rule 6). Each holds only its newest
+  // message: the polite one for detent, status title and non-error notices,
+  // the alert one for error notices.
+  protected _polite = "";
+  protected _alert = "";
+  #statusTitle: string | null = null;
   protected _toast: WorkspaceNotice | null = null;
   protected _workflowLoadFailed = false;
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -484,25 +485,41 @@ export class MaticMapShellV4 extends LitElement {
     super.disconnectedCallback();
   }
 
-  // Each new notice object (never a re-render or a language swap) restarts
-  // the toast and is announced once: the region is cleared, then set after
-  // that render (shell.md §4 notice rule).
+  // A live region speaks when its text changes, so the same message twice is
+  // written as empty first and set again after that render.
+  #announce(region: "_polite" | "_alert", text: string): void {
+    if (this[region] !== text) {
+      this[region] = text;
+      return;
+    }
+    this[region] = "";
+    void this.updateComplete.then(() => {
+      if (!this[region]) this[region] = text;
+    });
+  }
+
+  // A status title change, then each new notice object (never a re-render or
+  // a language swap), is announced once; a new notice also restarts the toast
+  // (shell.md §4 rules 3 and 6). Clearing a notice announces nothing.
   protected override willUpdate(changed: PropertyValues<this>): void {
     // Which notice surface holds focus before this render; updated() moves
     // focus to the panel if that surface is removed or hidden by it.
     const active = this.shadowRoot?.activeElement ?? null;
     this.#noticeFocus = (["[data-notice-slot]", "[data-notice-toast]"] as const)
       .find((hook) => active?.closest(hook)) ?? null;
+    if (changed.has("state") || changed.has("localize")) {
+      const title = statusCopy(this.state, this.localize).title;
+      if (this.#statusTitle !== null && title !== this.#statusTitle) this.#announce("_polite", title);
+      this.#statusTitle = title;
+    }
     if (!changed.has("state")) return;
     const next = this.state.notice;
     if (next === (changed.get("state") as WorkspaceState | undefined)?.notice) return;
     this.#hideToast();
-    this._politeNotice = "";
-    this._alertNotice = "";
     if (!next) return;
     this._toast = next;
     this.#toastRemaining = TOAST_MS[next.tone];
-    const text = this.#t(next.key, next.fallback, next.placeholders);
+    this.#announce(next.tone === "error" ? "_alert" : "_polite", this.#t(next.key, next.fallback, next.placeholders));
     void this.updateComplete.then(() => {
       if (this.state.notice !== next) return;
       // A toast replaced in place gets no new pointerenter or focusin, so
@@ -511,8 +528,6 @@ export class MaticMapShellV4 extends LitElement {
       this.#toastHover = Boolean(toast?.matches(":hover"));
       this.#toastFocus = Boolean(toast?.contains(this.shadowRoot?.activeElement ?? null));
       this.#armToast();
-      if (next.tone === "error") this._alertNotice = text;
-      else this._politeNotice = text;
     });
   }
 
@@ -804,9 +819,9 @@ export class MaticMapShellV4 extends LitElement {
   #setDetent(detent: SheetDetent): void {
     if (detent === this._sheetDetent) return;
     this._sheetDetent = detent;
-    this._announcement = detent === "peek" ? this.#t("v4_workspace_height_peek", "Map workspace, peek height")
+    this.#announce("_polite", detent === "peek" ? this.#t("v4_workspace_height_peek", "Map workspace, peek height")
       : detent === "half" ? this.#t("v4_workspace_height_half", "Map workspace, half height")
-      : this.#t("v4_workspace_height_full", "Map workspace, full height");
+      : this.#t("v4_workspace_height_full", "Map workspace, full height"));
   }
 
   #sheetStep(delta: 1 | -1, wrap = false): void {
@@ -1714,8 +1729,8 @@ export class MaticMapShellV4 extends LitElement {
           @focusout=${this.#releaseToast}
         >${toast ? this.#noticeBody(toast, this.#closeToast) : nothing}</div>
 
-        <div class="sr-only" aria-live="polite" aria-atomic="true">${[this._announcement, this._politeNotice].filter(Boolean).join(" ")}</div>
-        <div class="sr-only" role="alert" aria-atomic="true">${this._alertNotice}</div>
+        <div class="sr-only" aria-live="polite" aria-atomic="true">${this._polite}</div>
+        <div class="sr-only" role="alert" aria-atomic="true">${this._alert}</div>
 
         ${this._helpOpen ? this.#helpDialog() : nothing}
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 import re
 import shutil
 import subprocess
@@ -14,22 +15,18 @@ import pytest
 from custom_components.matic_robot import frontend
 from tests.frontend_sources import shipped_modules
 
+_REPOSITORY = Path(__file__).parents[1]
 _STUDIO_V4_DIRECTORY = frontend.MATIC_MAP_STUDIO_V4_DIRECTORY
 _SCENE_PARSER_SOURCE = (
-    Path(__file__).parents[1] / "frontend" / "map-studio-v4" / "scene-parser.ts"
+    _REPOSITORY / "frontend" / "map-studio-v4" / "scene-parser.ts"
 ).read_text(encoding="utf-8")
-_STUDIO_V4_PATH = _STUDIO_V4_DIRECTORY / "index.js"
 _STUDIO_V4_CHUNK_DIRECTORY = _STUDIO_V4_DIRECTORY / "chunks"
-_STUDIO_V4_SHARED_CHUNK_PATHS = tuple(
-    sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("chunk-*.js"))
-)
 _STUDIO_V4_WORKFLOW_CHUNK_PATHS = tuple(
     sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("workflow-panel-*.js"))
 )
 _STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS = tuple(
     sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("diagnostics-panel-*.js"))
 )
-_STUDIO_V4_EAGER_PATHS = (_STUDIO_V4_PATH, *_STUDIO_V4_SHARED_CHUNK_PATHS)
 _STUDIO_V4_JS = "\n".join(
     path.read_text(encoding="utf-8")
     for path in sorted(_STUDIO_V4_DIRECTORY.rglob("*.js"))
@@ -58,19 +55,31 @@ def test_v4_cache_key_tracks_packaged_module_tree() -> None:
     assert not hasattr(frontend, "ROOM_PLAN_EDITOR_PATH")
 
 
+def _startup_graph() -> tuple[int, dict[str, int]]:
+    """Read the startup graph and budget from their one definition."""
+    node = shutil.which("node")
+    assert node is not None, "node measures the startup graph"
+    result = subprocess.run(
+        [node, str(_REPOSITORY / "scripts" / "startup_graph.mjs")],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    graph = json.loads(result.stdout)
+    return graph["budget"], graph["assets"]
+
+
 def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
-    """Keep eager assets and lazy workflow code within their private budgets."""
-    assert all(path.is_file() for path in _STUDIO_V4_EAGER_PATHS)
-    assert _STUDIO_V4_SHARED_CHUNK_PATHS
+    """Keep the startup graph and lazy workflow code within their budgets."""
+    budget, startup = _startup_graph()
+    assert sum(startup.values()) <= budget, startup
     assert len(_STUDIO_V4_WORKFLOW_CHUNK_PATHS) == 1
     assert len(_STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS) == 1
-    eager_bytes = [path.read_bytes() for path in _STUDIO_V4_EAGER_PATHS]
+    startup_bytes = [
+        (_STUDIO_V4_DIRECTORY.parent / path).read_bytes() for path in startup
+    ]
     workflow_bytes = _STUDIO_V4_WORKFLOW_CHUNK_PATHS[0].read_bytes()
     diagnostics_bytes = _STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS[0].read_bytes()
-    eager_gzip_bytes = sum(
-        len(gzip.compress(contents, mtime=0)) for contents in eager_bytes
-    )
-    assert eager_gzip_bytes <= 90 * 1024
     assert len(gzip.compress(workflow_bytes, mtime=0)) <= 30 * 1024
     assert len(gzip.compress(diagnostics_bytes, mtime=0)) <= 30 * 1024
 
@@ -81,9 +90,9 @@ def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
     assert b"MaticMapDiagnosticsV4" in diagnostics_bytes
     assert all(
         b"MaticMapDiagnosticsV4" not in contents
-        for contents in [*eager_bytes, workflow_bytes]
+        for contents in [*startup_bytes, workflow_bytes]
     )
-    assert all(b"MaticMapWorkflowV4" not in contents for contents in eager_bytes)
+    assert all(b"MaticMapWorkflowV4" not in contents for contents in startup_bytes)
     assert re.search(
         rb"customElements\.get\((\w+)\)\|\|customElements\.define\(\1,",
         workflow_bytes,

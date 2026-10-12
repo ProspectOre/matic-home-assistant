@@ -4468,8 +4468,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(mapLive).toContainText("Live map");
 
     await gallery.evaluate((element) => element.setScenario("transition"));
-    // The canvas chip carries no live role (shell.md §4); the map region announces.
+    // The canvas chip carries no live role; the shell's polite region announces
+    // the status title change (shell.md §4 rule 6).
     await expect(gallery.locator("matic-map-canvas-v4 .map-message")).toContainText("Locating");
+    await expect(gallery.locator(".root > .sr-only[aria-live=polite]")).toHaveText("Locating");
     const locating = gallery.getByRole("button", { name: "Finding the map" });
     await expect(locating).toHaveAttribute("aria-disabled", "true");
     await expect(locating).toHaveAccessibleDescription("Waiting for the robot to confirm which floor it is on.");

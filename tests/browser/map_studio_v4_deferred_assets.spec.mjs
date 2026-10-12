@@ -1,8 +1,8 @@
-import { gzipSync } from "node:zlib";
 import { expect, test } from "@playwright/test";
+import { STARTUP_BUDGET_BYTES, startupGraph } from "../../scripts/startup_graph.mjs";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
-test("Map Studio loads its registered startup graph without legacy editor assets", async ({ page }) => {
+test("Map Studio loads exactly its startup graph within budget and no legacy editor assets", async ({ page }) => {
   await page.goto("/");
   const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
   await page.evaluate(async () => import("/matic_icons.js"));
@@ -11,18 +11,16 @@ test("Map Studio loads its registered startup graph without legacy editor assets
     document.querySelector(tag)?.getWorkspaceSnapshot().map.available === true,
   fixture.panelTag)).toBe(true);
 
-  const scriptResources = await page.evaluate(() => performance.getEntriesByType("resource")
-    .map(({ name }) => name)
-    .filter((name) => name.endsWith(".js") || name.includes(".js?")));
-  expect(scriptResources.some((url) => url.includes("/map_studio_v4/index.js"))).toBe(true);
-  expect(scriptResources.some((url) => url.includes("matic_icons.js"))).toBe(true);
-  expect(scriptResources.some((url) => /room-plan-editor|matic_map_studio\.js/u.test(url))).toBe(false);
-  const resources = scriptResources.filter((name) => name.includes("matic_icons.js")
-      || name.includes("/map_studio_v4/"));
-  const sizes = await Promise.all(resources.map(async (url) => {
-    const response = await page.request.get(url);
-    expect(response.ok(), `could not read startup asset ${url}`).toBe(true);
-    return gzipSync(await response.body(), { level: 9 }).byteLength;
-  }));
-  expect(sizes.reduce((total, size) => total + size, 0)).toBeLessThanOrEqual(90 * 1024);
+  const scriptPaths = await page.evaluate(() => performance.getEntriesByType("resource")
+    .map(({ name }) => new URL(name).pathname)
+    .filter((path) => path.endsWith(".js")));
+  expect(scriptPaths.some((path) => /room-plan-editor|matic_map_studio\.js/u.test(path))).toBe(false);
+  const loaded = scriptPaths
+    .filter((path) => path === "/matic_icons.js" || path.startsWith("/map_studio_v4/"))
+    .map((path) => path.slice(1))
+    .sort();
+  const graph = startupGraph();
+  expect(loaded).toEqual(Object.keys(graph).sort());
+  const total = Object.values(graph).reduce((sum, size) => sum + size, 0);
+  expect(total, JSON.stringify(graph)).toBeLessThanOrEqual(STARTUP_BUDGET_BYTES);
 });

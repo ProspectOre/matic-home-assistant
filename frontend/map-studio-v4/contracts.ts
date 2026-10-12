@@ -224,22 +224,31 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return prototype === Object.prototype || prototype === null;
 };
 
-const isNoticePlaceholders = (value: unknown): value is NoticePlaceholders =>
-  isPlainObject(value) && Reflect.ownKeys(value).every((name) => {
-    if (typeof name !== "string" || !NOTICE_PLACEHOLDER.test(name)) return false;
-    const entry = Object.getOwnPropertyDescriptor(value, name);
-    if (!entry || !("value" in entry)) return false;
-    return typeof entry.value === "string"
-      || (typeof entry.value === "number" && Number.isFinite(entry.value));
-  });
+const readNoticePlaceholders = (value: unknown): NoticePlaceholders | null => {
+  if (!isPlainObject(value)) return null;
+  const values: Record<string, string | number> = {};
+  for (const name of Reflect.ownKeys(value)) {
+    if (typeof name !== "string" || !NOTICE_PLACEHOLDER.test(name)) return null;
+    // Own data values only: an accessor has no `value` and is rejected.
+    const entry: unknown = Object.getOwnPropertyDescriptor(value, name)?.value;
+    if (typeof entry !== "string" && !(typeof entry === "number" && Number.isFinite(entry))) return null;
+    values[name] = entry;
+  }
+  return Object.freeze(values);
+};
 
-export function isWorkspaceNotice(value: unknown): value is WorkspaceNotice {
-  if (!isPlainObject(value)) return false;
+/**
+ * Reads each field of an untrusted notice once and returns a frozen copy built
+ * from those reads, or null when any of them is invalid.
+ */
+export function readWorkspaceNotice(value: unknown): WorkspaceNotice | null {
+  if (!isPlainObject(value)) return null;
   const { tone, key, fallback, placeholders } = value;
-  return NOTICE_TONES.has(tone)
-    && typeof key === "string" && NOTICE_KEY.test(key)
-    && typeof fallback === "string" && fallback.length > 0 && fallback.length <= NOTICE_FALLBACK_MAX
-    && (placeholders === undefined || isNoticePlaceholders(placeholders));
+  if (!NOTICE_TONES.has(tone) || typeof key !== "string" || !NOTICE_KEY.test(key)
+    || typeof fallback !== "string" || fallback.length === 0 || fallback.length > NOTICE_FALLBACK_MAX) return null;
+  if (placeholders === undefined) return Object.freeze(notice(tone as NoticeTone, key, fallback));
+  const values = readNoticePlaceholders(placeholders);
+  return values && Object.freeze(notice(tone as NoticeTone, key, fallback, values));
 }
 
 export interface WorkspaceState {

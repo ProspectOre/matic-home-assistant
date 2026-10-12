@@ -17,6 +17,9 @@ import { WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import { admittedManualRoomPreview, initialWorkspaceState } from "./state";
 import { translate } from "./localize";
+// Draw's precision controls load with the other workflow tools; the shell
+// renders them only in the draw workflow.
+import "./precision-controls";
 
 const modes: readonly CleaningMode[] = ["vacuum", "mop", "vacuum_and_mop"];
 const coverage: readonly CoverageSetting[] = ["quick", "standard", "heavy_duty"];
