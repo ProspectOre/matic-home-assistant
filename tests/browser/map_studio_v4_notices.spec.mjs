@@ -106,6 +106,10 @@ test("a notice date placeholder holds exactly one valid timestamp", async ({ pag
   const valid = dated({ date: "2026-09-25T12:00:00Z" });
   await sendIntent(page, { type: "set-notice", notice: valid });
   expect((await snapshot(page)).notice).toEqual(valid);
+  expect(await page.evaluate(() => {
+    const { placeholders } = window.__noticePanel.getWorkspaceSnapshot().notice;
+    return Object.isFrozen(placeholders) && Object.isFrozen(placeholders.date);
+  }), "the stored placeholders and their date are frozen").toBe(true);
   const shown = await page.evaluate(() => new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" })
     .format(new Date("2026-09-25T12:00:00Z")));
   await expect(panel.getByText(`Showing the saved map from ${shown} without the robot's position.`).first()).toBeAttached();
