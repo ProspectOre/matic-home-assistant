@@ -32,6 +32,21 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
     def _entry_unavailable(self) -> config_entries.ConfigFlowResult:
         return self.async_abort(reason="entry_not_loaded")
 
+    def _done(
+        self, reason: str, *, plan_name: str | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """End with a message naming what changed.
+
+        Home Assistant shows no step text for an options flow's create entry, so
+        completed changes end in a translated abort, like reconfigure_successful.
+        """
+        return self.async_abort(
+            reason=reason,
+            description_placeholders=(
+                None if plan_name is None else {"plan_name": plan_name}
+            ),
+        )
+
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
@@ -41,9 +56,10 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         options: list[str] = []
         plans = self._manager.plans(self._serial_number)
         if plans:
-            options.extend(("default_plan", "reset_history"))
-        options.append("workspace_transport")
-        options.append("finish")
+            options.extend(
+                ("default_plan", "reset_history", "confirm_reset_all_history")
+            )
+        options.extend(("advanced", "finish"))
         return self.async_show_menu(
             step_id="init",
             menu_options=options,
@@ -86,8 +102,9 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 else:
                     if not self._is_loaded():
                         return self._entry_unavailable()
-                    return self.async_create_entry(
-                        title="", data=dict(self.config_entry.options)
+                    return self._done(
+                        "default_plan_set",
+                        plan_name=str(plans[plan_id].get("name", plan_id)),
                     )
         plans = self._manager.plans(self._serial_number)
         if not plans:
@@ -161,7 +178,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
     async def async_step_confirm_reset_history(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
-        """Require a named confirmation before resetting rotation history."""
+        """Ask by name before resetting one plan's room cleaning history."""
         if not self._is_loaded():
             return self._entry_unavailable()
         plans = self._manager.plans(self._serial_number)
@@ -170,47 +187,56 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             return await self.async_step_init()
         plan_id = self._reset_plan_id
         plan_name = str(plans[plan_id].get("name", plan_id))
-        if user_input is not None:
-            all_plans = user_input.get("all_plans")
-            if type(all_plans) is not bool:
-                return self.async_show_form(
-                    step_id="confirm_reset_history",
-                    data_schema=self._reset_history_schema(),
-                    errors={"base": "invalid_reset_scope"},
-                    description_placeholders={"plan_name": plan_name},
-                )
-            try:
-                await self._manager.async_reset_history(
-                    self._serial_number, None if all_plans else plan_id
-                )
-            except MetadataAdmissionClosedError:
-                return self._entry_unavailable()
-            except KeyError:
-                if not self._is_loaded():
-                    return self._entry_unavailable()
-                self._reset_plan_id = None
-                current_plans = self._manager.plans(self._serial_number)
-                if not current_plans:
-                    return await self.async_step_init()
-                return self._show_reset_plan_form(
-                    current_plans, errors={"base": "plan_unavailable"}
-                )
+        if user_input is None:
+            return self.async_show_form(
+                step_id="confirm_reset_history",
+                description_placeholders={"plan_name": plan_name},
+            )
+        try:
+            await self._manager.async_reset_history(self._serial_number, plan_id)
+        except MetadataAdmissionClosedError:
+            return self._entry_unavailable()
+        except KeyError:
             if not self._is_loaded():
                 return self._entry_unavailable()
             self._reset_plan_id = None
-            return self.async_create_entry(
-                title="", data=dict(self.config_entry.options)
+            current_plans = self._manager.plans(self._serial_number)
+            if not current_plans:
+                return await self.async_step_init()
+            return self._show_reset_plan_form(
+                current_plans, errors={"base": "plan_unavailable"}
             )
-        return self.async_show_form(
-            step_id="confirm_reset_history",
-            data_schema=self._reset_history_schema(),
-            description_placeholders={"plan_name": plan_name},
-        )
+        if not self._is_loaded():
+            return self._entry_unavailable()
+        self._reset_plan_id = None
+        return self._done("history_reset", plan_name=plan_name)
 
-    @staticmethod
-    def _reset_history_schema() -> vol.Schema:
-        return vol.Schema(
-            {vol.Required("all_plans", default=False): selector.BooleanSelector()}
+    async def async_step_confirm_reset_all_history(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Ask once before resetting room cleaning history for every plan."""
+        if not self._is_loaded():
+            return self._entry_unavailable()
+        if not self._manager.plans(self._serial_number):
+            return await self.async_step_init()
+        if user_input is None:
+            return self.async_show_form(step_id="confirm_reset_all_history")
+        try:
+            await self._manager.async_reset_history(self._serial_number)
+        except MetadataAdmissionClosedError:
+            return self._entry_unavailable()
+        if not self._is_loaded():
+            return self._entry_unavailable()
+        return self._done("all_history_reset")
+
+    async def async_step_advanced(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Group experimental settings away from everyday maintenance."""
+        if not self._is_loaded():
+            return self._entry_unavailable()
+        return self.async_show_menu(
+            step_id="advanced", menu_options=["workspace_transport"]
         )
 
     async def async_step_workspace_transport(
@@ -225,9 +251,14 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             if type(enabled) is not bool:
                 errors["base"] = "invalid_workspace_transport"
             else:
-                options = dict(self.config_entry.options)
-                options[CONF_LIVE_WORKSPACE_TRANSPORT] = enabled
-                return self.async_create_entry(title="", data=options)
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry,
+                    options={
+                        **self.config_entry.options,
+                        CONF_LIVE_WORKSPACE_TRANSPORT: enabled,
+                    },
+                )
+                return self._done("live_updates_on" if enabled else "live_updates_off")
 
         return self.async_show_form(
             step_id="workspace_transport",
