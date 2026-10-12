@@ -40,7 +40,7 @@ from homeassistant.helpers import target
 from homeassistant.util import slugify
 
 from .area_binding import AreaBindingStatus, area_binding_status
-from .cadence import validate_cadence_interval
+from .cadence import MAX_CADENCE_INTERVAL, validate_cadence_interval
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.endpoints import HERMES_ENDPOINT_MAP, HERMES_ENDPOINT_NAMES
 from .client.exceptions import MaticError
@@ -57,6 +57,7 @@ from .firmware import (
     async_build_firmware_snapshot,
     fingerprint_entry,
 )
+from .firmware_reports import valid_investigator
 from .managed_executor import (
     _async_execute_rooms,
     _async_managed_user_command,
@@ -64,8 +65,13 @@ from .managed_executor import (
     _validation_error,
 )
 from .plans import (
+    CadenceBindingError,
     CleaningPlanManager,
     CleaningRoom,
+    DuplicateRoomError,
+    EmptyPlanError,
+    PlanDisabledError,
+    RoomSequenceLimitError,
     SavedPlanLimitError,
     async_get_plan_manager,
     plan_floor_token,
@@ -136,7 +142,9 @@ def _cadence_interval_validator(field: str) -> Callable[[object], int | None]:
         try:
             return validate_cadence_interval(value, field)
         except ValueError as err:
-            raise vol.Invalid(str(err)) from err
+            raise vol.Invalid(
+                f"Use a whole number from 1 to {MAX_CADENCE_INTERVAL}"
+            ) from err
 
     return validate
 
@@ -383,12 +391,19 @@ async def async_register_services(hass: HomeAssistant) -> None:
     async def async_firmware_investigator(call: ServiceCall) -> None:
         """Change research routing without changing any robot behavior."""
         entry = firmware_entry(call)
+        if not valid_investigator(call.data["provider"]):
+            raise _validation_error(
+                "Investigator names are lowercase slugs", "invalid_investigator"
+            )
         try:
             await firmware_tracker.async_configure_investigator(
                 entry.entry_id, call.data["provider"]
             )
         except ValueError as err:
-            raise ServiceValidationError(str(err)) from err
+            raise _validation_error(
+                "Firmware evidence is not available yet",
+                "firmware_evidence_unavailable",
+            ) from err
 
     async def async_firmware_notification(call: ServiceCall) -> None:
         """Apply a revision-bound notification action from trusted HA code."""
@@ -401,13 +416,17 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 call.data["action"],
             )
         except ValueError as err:
-            raise ServiceValidationError(str(err)) from err
+            raise _validation_error(
+                "The firmware notification is no longer current",
+                "firmware_notification_stale",
+            ) from err
 
     def firmware_entry(call: ServiceCall) -> ConfigEntry[Any]:
         entity_ids = _resolve_loaded_matic_vacuums(hass, call, require_available=False)
         if len(entity_ids) != 1:
-            raise ServiceValidationError(
-                "Firmware actions require exactly one Matic robot"
+            raise _validation_error(
+                "Firmware actions require exactly one Matic robot",
+                "single_robot_required",
             )
         return _entry_for_entity(hass, entity_ids[0])
 
@@ -627,7 +646,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             if preview_token is not None and preview_token != initial_preview_token:
                 raise _validation_error(
                     "The saved-plan preview is stale; refresh it before starting",
-                    "invalid_plan",
+                    "plan_preview_changed",
                 )
             plan, rooms, cadence_by_room = _saved_plan_execution(
                 manager, serial_number, execution_floor_plan, preview
@@ -639,9 +658,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 {"plan": str(err.args[0])},
             ) from err
         except ValueError as err:
-            raise _validation_error(
-                str(err), "invalid_plan", {"error": str(err)}
-            ) from err
+            raise _plan_request_error(err) from err
 
         def validate_prepared_run() -> None:
             """Revalidate authoritative saved-plan inputs after executor waits."""
@@ -658,12 +675,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 )
             except (KeyError, TypeError, ValueError) as err:
                 raise _validation_error(
-                    str(err), "invalid_plan", {"error": str(err)}
+                    "The saved plan can no longer run", "invalid_plan"
                 ) from err
             if current_token != initial_preview_token:
                 raise _validation_error(
                     "The saved-plan resolution changed before starting",
-                    "invalid_plan",
+                    "plan_preview_changed",
                 )
 
         data = {
@@ -753,14 +770,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 room_resolver=_resolve_room_id,
             )
         except ValueError as err:
-            raise _validation_error(
-                str(err), "invalid_plan", {"error": str(err)}
-            ) from err
+            raise _plan_request_error(err) from err
         preview_token = call.data.get("preview_token")
         if preview_token is not None and preview_token != resolved["preview_token"]:
             raise _validation_error(
                 "The room-sequence preview is stale; refresh it before starting",
-                "invalid_plan",
+                "room_sequence_preview_changed",
             )
         rooms = resolved["effective_rooms"]
         cadence_by_room = resolved["cadence_by_room"]
@@ -826,13 +841,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
                         room_resolver=_resolve_room_id,
                     )
                 except ValueError as err:
-                    raise _validation_error(
-                        str(err), "invalid_plan", {"error": str(err)}
-                    ) from err
+                    raise _plan_request_error(err) from err
                 if current["preview_token"] != initial_sequence_token:
                     raise _validation_error(
                         "The room-sequence resolution changed before starting",
-                        "invalid_plan",
+                        "room_sequence_preview_changed",
                     )
 
             await _async_execute_rooms(
@@ -910,9 +923,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 room_resolver=_resolve_room_id,
             )
         except ValueError as err:
-            raise _validation_error(
-                str(err), "invalid_plan", {"error": str(err)}
-            ) from err
+            raise _plan_request_error(err) from err
         return {
             "entry_id": resolved["entry_id"],
             "floor_token": resolved["floor_token"],
@@ -985,9 +996,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 {"plan": str(err.args[0])},
             ) from err
         except ValueError as err:
-            raise _validation_error(
-                str(err), "invalid_plan", {"error": str(err)}
-            ) from err
+            raise _plan_request_error(err) from err
         return {"entity_id": entity_id, **preview, "preview_token": preview_token}
 
     hass.services.async_register(
@@ -1100,13 +1109,21 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
         room_ids = [call.data["room_id"]] if call.data.get("room_id") else None
+        if room_ids and room_ids[0] not in {room["room_id"] for room in plan["rooms"]}:
+            raise _validation_error(
+                "The room is not part of the selected plan",
+                "room_not_in_plan",
+                {"room": room_ids[0], "plan": plan["name"]},
+            )
         modes = call.data.get("modes")
         try:
             receipt = await manager.async_reset_cadence(
                 serial_number, plan["id"], room_ids=room_ids, modes=modes
             )
         except ValueError as err:
-            raise _validation_error(str(err), "cadence_reset_blocked") from err
+            raise _validation_error(
+                "Room schedule progress is in use by a run", "cadence_reset_blocked"
+            ) from err
         return {
             "plan_id": plan["id"],
             **receipt,
@@ -1151,9 +1168,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
         plan_id = call.data.get("plan_id") or slugify(call.data["name"])
         if not plan_id or plan_id == "unknown":
-            raise _validation_error(
-                "Plan ID is empty", "invalid_plan", {"error": "Plan ID is empty"}
-            )
+            raise _validation_error("Plan ID is empty", "plan_name_unusable")
         rooms = [_normalize_saved_room(room, room_map) for room in call.data["rooms"]]
         plan = {
             "name": call.data["name"],
@@ -1178,9 +1193,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 room_identities=room_identities,
             )
         except SavedPlanLimitError as err:
-            raise _validation_error(str(err), "plan_limit_reached") from err
+            raise _validation_error(
+                "The saved-plan limit is reached", "plan_limit_reached"
+            ) from err
         except ValueError as err:
-            raise _validation_error(str(err), "invalid_plan") from err
+            raise _plan_request_error(err) from err
         return {"plan": manager.plan(serial_number, plan_id)}
 
     hass.services.async_register(
@@ -1200,7 +1217,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
         try:
             await manager.async_delete_plan(serial_number, plan["id"])
         except ValueError as err:
-            raise _validation_error(str(err), "plan_locked") from err
+            raise _validation_error(
+                "The plan is in use by a run", "plan_locked"
+            ) from err
         return {"deleted_plan_id": plan["id"]}
 
     hass.services.async_register(
@@ -1260,7 +1279,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 room_identities=room_identities,
             )
         except ValueError as err:
-            raise _validation_error(str(err), "invalid_plan") from err
+            raise _plan_request_error(err) from err
         persisted = manager.plan(serial_number, plan_id)
         persisted_room = next(
             saved for saved in persisted["rooms"] if saved["room_id"] == room["room_id"]
@@ -1477,9 +1496,7 @@ def _validated_area_command(
         coverage = CoverageSetting(coverage_value)
     except (KeyError, TypeError, ValueError) as err:
         raise _validation_error(
-            "The saved custom area is invalid",
-            "invalid_area",
-            {"error": str(err)},
+            "The saved custom area is invalid", "invalid_area"
         ) from err
     return floor_plan, circles, mode, coverage
 
@@ -1597,6 +1614,28 @@ def _saved_plan_execution(
     return plan, rooms, cadence_by_room
 
 
+def _plan_request_error(err: ValueError) -> ServiceValidationError:
+    """Translate a rejected plan or room sequence without exposing its text."""
+    if isinstance(err, RoomSequenceLimitError):
+        return _validation_error(
+            "The room limit is exceeded",
+            "room_sequence_limit",
+            {"limit": str(MAX_ROOM_SEQUENCE_SIZE)},
+        )
+    if isinstance(err, PlanDisabledError):
+        return _validation_error("The plan is turned off", "plan_disabled")
+    if isinstance(err, EmptyPlanError):
+        return _validation_error("The plan has no rooms", "plan_empty")
+    if isinstance(err, DuplicateRoomError):
+        return _validation_error("A room appears more than once", "duplicate_room")
+    if isinstance(err, CadenceBindingError):
+        return _validation_error(
+            "A shared room schedule has no confirmed map room",
+            "room_schedule_map_unconfirmed",
+        )
+    return _validation_error("The plan request cannot run", "invalid_plan")
+
+
 def _resolve_saved_plan(
     manager: CleaningPlanManager, serial_number: str, reference: str
 ) -> dict[str, Any]:
@@ -1616,16 +1655,8 @@ def _normalize_saved_room(
 ) -> dict[str, Any]:
     """Resolve one mapped room and preserve its individual preferences."""
     raw = dict(room)
-    try:
-        room_id, _room_name = resolve_room_reference(str(raw["room"]), room_map)
-        raw["room_id"] = room_id
-        resolved = resolve_rooms([raw], room_map)[0]
-    except ValueError as err:
-        raise _validation_error(
-            f"Unknown Matic room(s): {err}",
-            "unknown_rooms",
-            {"rooms": str(err)},
-        ) from err
+    raw["room_id"] = _resolve_room_id(str(raw["room"]), room_map)
+    resolved = resolve_rooms([raw], room_map)[0]
     return {
         "room_id": resolved.room_id,
         "cleaning_mode": resolved.cleaning_mode,
@@ -1643,16 +1674,16 @@ def _resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
     try:
         room_id, _room_name = resolve_room_reference(identifier, room_map)
     except ValueError as err:
-        detail = str(err)
-        message = (
-            f"Ambiguous Matic room: {identifier}"
-            if detail.startswith("ambiguous ")
-            else f"Unknown Matic room: {identifier}"
-        )
+        if str(err).startswith("ambiguous "):
+            raise _validation_error(
+                f"Ambiguous Matic room: {identifier}",
+                "ambiguous_room",
+                {"room": identifier},
+            ) from err
         raise _validation_error(
-            message,
+            f"Unknown Matic room: {identifier}",
             "unknown_rooms",
-            {"rooms": detail},
+            {"rooms": identifier},
         ) from err
     return room_id
 
@@ -1660,8 +1691,8 @@ def _resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
 def _invalid_room_position(position: int, room_count: int) -> ServiceValidationError:
     return _validation_error(
         f"Room position {position} is invalid; expected 1 through {room_count}",
-        "invalid_plan",
-        {"error": f"room position must be between 1 and {room_count}"},
+        "invalid_room_position",
+        {"count": str(room_count)},
     )
 
 

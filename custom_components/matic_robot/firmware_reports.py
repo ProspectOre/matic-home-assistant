@@ -573,9 +573,14 @@ def _pending_notification(item: dict[str, Any], consumed: int, revision: int) ->
     )
 
 
+def valid_investigator(provider: str) -> bool:
+    """Return whether a name can route firmware research."""
+    return _PROVIDER.fullmatch(provider) is not None
+
+
 def configure_investigator(robot: dict[str, Any], provider: str) -> None:
     """Change routing while invalidating every previous investigator lease."""
-    if not _PROVIDER.fullmatch(provider):
+    if not valid_investigator(provider):
         raise ValueError("Use a lowercase investigator name of at most 48 characters")
     if provider == robot.get("investigator", "manual"):
         return

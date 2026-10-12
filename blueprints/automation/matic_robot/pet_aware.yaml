@@ -1,35 +1,50 @@
 blueprint:
-  name: Matic — Pet-aware cleaning plan
+  name: "Matic: Clean after pets leave"
   description: >-
-    Wait until a pet occupancy sensor has been clear for a configurable period,
-    then run a saved Matic plan. Pair with the pet-waste avoidance switch for
-    an additional robot-side safeguard.
+    Waits until a pet presence sensor has been clear for a time you set, then
+    runs a saved plan. It runs at most once a day, and only when the robot is
+    docked or idle. Also turn on the pet-waste avoidance switch for an extra
+    safeguard on the robot.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/pet_aware.yaml
   input:
     vacuum:
-      name: Matic vacuum
+      name: Robot
+      description: The robot that cleans, for example vacuum.matic.
       selector:
         entity:
           integration: matic_robot
           domain: vacuum
     pet_presence:
       name: Pet presence sensor
+      description: >-
+        A sensor that is on while a pet is present, for example a litter box
+        occupancy sensor.
       selector:
         entity:
           domain: binary_sensor
     plan:
-      name: Saved pet-aware plan
+      name: Plan
+      description: >-
+        Name of a plan saved in Matic Map, for example Main floor. Leave empty
+        to use the default plan.
+      default: ""
       selector:
         text:
     clear_time:
-      name: Clear time before cleaning
+      name: Delay before cleaning
+      description: >-
+        How long the pet sensor must stay clear before cleaning starts. Default
+        10 minutes.
       default:
         minutes: 10
       selector:
         duration:
 
 mode: single
+
+variables:
+  plan_name: !input plan
 
 triggers:
   - trigger: state
@@ -41,10 +56,18 @@ conditions:
   - condition: state
     entity_id: !input pet_presence
     state: "off"
+  - condition: state
+    entity_id: !input vacuum
+    state: [docked, idle]
+  # At most once a day: skip when this automation already ran today.
+  - condition: template
+    value_template: >-
+      {{ this.attributes.last_triggered is none
+         or as_local(this.attributes.last_triggered).date() != now().date() }}
 
 actions:
   - action: matic_robot.intelligent_clean
     target:
       entity_id: !input vacuum
-    data:
-      plan: !input plan
+    data: >-
+      {{ {'plan': plan_name | trim} if (plan_name or '') | trim else {} }}

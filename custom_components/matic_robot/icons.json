@@ -82,5 +82,29 @@
       "voice_assistant": { "default": "mdi:microphone-message" },
       "deep_mop": { "default": "mdi:water-plus" }
     }
+  },
+  "services": {
+    "clean": { "service": "mdi:robot-vacuum" },
+    "clean_area": { "service": "mdi:vector-square" },
+    "clean_room_sequence": { "service": "mdi:format-list-numbered" },
+    "clean_entire_plan": { "service": "mdi:format-list-numbered" },
+    "preview_room_sequence": { "service": "mdi:eye-outline" },
+    "preview_plan": { "service": "mdi:eye-outline" },
+    "intelligent_clean": { "service": "mdi:sort-clock-ascending-outline" },
+    "run_selected_plan": { "service": "mdi:play-circle-outline" },
+    "stop_intelligent_cleaning": { "service": "mdi:stop-circle-outline" },
+    "reset_plan_history": { "service": "mdi:history" },
+    "reset_room_cadence": { "service": "mdi:calendar-refresh" },
+    "list_plans": { "service": "mdi:format-list-bulleted" },
+    "save_plan": { "service": "mdi:content-save-outline" },
+    "delete_plan": { "service": "mdi:delete-outline" },
+    "select_plan": { "service": "mdi:playlist-check" },
+    "save_plan_room": { "service": "mdi:plus-box-outline" },
+    "delete_plan_room": { "service": "mdi:minus-box-outline" },
+    "move_plan_room": { "service": "mdi:swap-vertical" },
+    "inspect_hermes_endpoint": { "service": "mdi:wrench-outline" },
+    "firmware_snapshot": { "service": "mdi:wrench-outline" },
+    "firmware_investigator": { "service": "mdi:wrench-outline" },
+    "firmware_notification": { "service": "mdi:wrench-outline" }
   }
 }

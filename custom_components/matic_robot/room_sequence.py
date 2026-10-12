@@ -12,6 +12,7 @@ from .const import MAX_ROOM_SEQUENCE_SIZE
 from .plans import (
     CleaningPlanManager,
     CleaningRoom,
+    DuplicateRoomError,
     RoomSequenceLimitError,
     plan_floor_token,
     resolve_room_reference,
@@ -44,9 +45,7 @@ def resolve_room_sequence(
     for item in requested_rooms:
         room_id = resolve_room(str(item["room"]), room_map)
         if room_id in seen_room_ids:
-            raise ValueError(
-                "Each room can appear only once. Remove repeated rooms and try again."
-            )
+            raise DuplicateRoomError(f"duplicate room: {room_id}")
         seen_room_ids.add(room_id)
         requested_item = {
             "room_id": room_id,

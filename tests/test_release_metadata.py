@@ -363,7 +363,7 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert selects["saved_cleaning_plan"]["name"] == "Default cleaning plan"
         assert selects["custom_cleaning_area"]["name"] == "Custom cleaning area"
         assert translations["selector"]["coverage_setting"]["options"] == {
-            "heavy_duty": "Heavy Duty",
+            "heavy_duty": "Heavy duty",
             "quick": "Quick",
             "standard": "Optimal",
         }
@@ -379,21 +379,15 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
 
         services = translations["services"]
         assert (
-            "least recently confirmed as the current cleaning area"
-            in services["intelligent_clean"]["description"]
-        )
-        assert "continues until stopped" in services["intelligent_clean"]["description"]
-        assert (
-            "rooms that started remain due"
+            "starting with the ones that have waited longest"
             in services["intelligent_clean"]["description"]
         )
         assert (
-            "Rejected commands and lingering prior-room state"
-            in (services["intelligent_clean"]["description"])
+            "started but not finished stay due"
+            in services["intelligent_clean"]["description"]
         )
-        assert "without monopolizing" in services["intelligent_clean"]["description"]
         assert "top to bottom" in services["clean_entire_plan"]["description"]
-        assert "saved cleaning behavior" in services["run_selected_plan"]["description"]
+        assert "the way it is saved" in services["run_selected_plan"]["description"]
         assert (
             "after all selected rooms finish successfully"
             in services["save_plan"]["fields"]["return_to_base"]["description"]
@@ -411,11 +405,10 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert "room map" in exceptions["room_plan_unavailable"]["message"]
         assert "reported an error" in exceptions["robot_error"]["message"]
         inspection = services["inspect_hermes_endpoint"]
-        assert "payload-free" in inspection["description"]
+        assert "without reading its contents" in inspection["description"]
         assert set(inspection["fields"]) == {"endpoint", "limit"}
         firmware_snapshot = services["firmware_snapshot"]["description"]
-        assert "payload-free compatibility record" in firmware_snapshot
-        assert "value-free wire-shape changes" in firmware_snapshot
+        assert "without the data itself" in firmware_snapshot
         assert (
             "Open the Firmware compatibility sensor"
             in translations["issues"]["firmware_regression"]["description"]
