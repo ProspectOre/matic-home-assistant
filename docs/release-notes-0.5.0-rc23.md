@@ -59,3 +59,40 @@ To restore them, downgrade to RC22.
   installs it itself.
 
 Existing installs keep their current enabled or disabled choices.
+
+## Requirements
+
+Home Assistant 2026.10 or later.
+
+## Setup, Reconfigure and Repairs
+
+- Adding a robot shows progress while it searches, skips robots already added,
+  and asks only to turn on Pairing mode; the code field accepts the six-digit
+  code directly. Errors name one cause and one next step.
+- Reconfigure gains **Robot was reset**. It pairs the robot again over
+  Bluetooth with a fresh code and keeps plans, custom areas and history. The
+  "Can't confirm this is …" Repair now has a Fix button that leads there.
+  Nothing is saved until the robot accepts the new pairing, and a different
+  robot is never accepted in its place
+  ([details](hermes-pairing.md#robot-was-reset)).
+- Configure: reset room cleaning history for one plan or for all plans, each
+  with its own confirmation; live updates move under **Advanced**.
+
+## Actions and automations
+
+- Everyday actions use the button names (Run plan, Stop cleaning, …);
+  developer actions start with "Advanced:". Run and preview IDs are Advanced
+  fields. Action errors are plain translated messages.
+- New device triggers: Room finished, Plan finished and Cleaning finished.
+- The five blueprints are renamed "Matic: …", describe every input, count a
+  named zone as away, and run only when the robot is docked or idle. Re-import
+  them to pick up the changes.
+
+## Assistants
+
+- "Matic: Robot status (administrators only)" can also run a plan, clean
+  rooms, stop and reset a room schedule, through the same checks as Matic Map,
+  and is offered to Assist. Firmware claim and complete move to a separate
+  "Matic: Firmware research (administrators only)" API; agents that used them
+  must select it.
+- Non-administrators get no tools and a plain explanation.
