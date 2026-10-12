@@ -101,6 +101,8 @@ export class HassAdapter {
       : "unknown";
     const batteryPercent = boundedBattery(selectedVacuum?.attributes?.battery_level);
     const language = hass?.selectedLanguage || hass?.language || "en";
+    const dateLanguage = hass?.locale?.language || language;
+    const timeZone = hass?.locale?.time_zone === "server" ? hass.config?.time_zone : undefined;
     const userKey = safeUserKey(hass?.user?.id);
     const robotLabel = safeRobotLabel(selectedVacuum?.attributes?.friendly_name);
     const robotChoices = [...robots.values()].sort((left, right) =>
@@ -113,6 +115,8 @@ export class HassAdapter {
       activity,
       batteryPercent ?? "none",
       language,
+      dateLanguage,
+      timeZone ?? "browser",
       userKey,
       selectedVacuumEntityId ?? "none",
       selectedEntryKey ?? "none",
@@ -129,6 +133,8 @@ export class HassAdapter {
       activity,
       batteryPercent,
       language,
+      dateLanguage,
+      timeZone,
       userKey,
       vacuumEntityId: selectedVacuumEntityId,
       entryKey: selectedEntryKey,

@@ -23,3 +23,22 @@ export const translate = (
     fallback,
   );
 };
+
+/** Joins names as the language does, e.g. "Kitchen, Hall and Bath" (home-rooms.md). */
+export const formatList = (language: string, items: readonly string[]): string =>
+  new Intl.ListFormat(language, { style: "long", type: "conjunction" }).format(items);
+
+const DATE_TIME: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" };
+
+/**
+ * Formats a valid timestamp in Home Assistant's language and time zone, or in
+ * the browser's own when its Intl rejects either of them.
+ */
+export const formatDateTime = (value: string, language?: string, timeZone?: string): string => {
+  const date = new Date(value);
+  try {
+    return new Intl.DateTimeFormat(language, timeZone ? { ...DATE_TIME, timeZone } : DATE_TIME).format(date);
+  } catch {
+    return new Intl.DateTimeFormat(undefined, DATE_TIME).format(date);
+  }
+};

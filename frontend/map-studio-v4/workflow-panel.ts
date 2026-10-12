@@ -16,7 +16,7 @@ import { MAX_ROOM_SEQUENCE_SIZE, type Localize, type WorkspaceIntent, type Works
 import { WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import { admittedManualRoomPreview, initialWorkspaceState } from "./state";
-import { translate } from "./localize";
+import { formatDateTime, translate } from "./localize";
 // Draw's precision controls load with the other workflow tools; the shell
 // renders them only in the draw workflow.
 import "./precision-controls";
@@ -871,7 +871,7 @@ line-height: var(--ms-lh-snug);
               max=${String(snapshots.length)}
               step="1"
               .value=${String(displayPosition)}
-              aria-valuetext=${selectedSnapshot ? this.#formatTime(selectedSnapshot.createdAt) : liveLabel}
+              aria-valuetext=${selectedSnapshot ? formatDateTime(selectedSnapshot.createdAt, this.state.locale) : liveLabel}
               ?disabled=${!snapshots.length}
               @input=${(event: Event) => {
                 this._historyPreviewPosition = Number(eventValue(event));
@@ -887,7 +887,7 @@ line-height: var(--ms-lh-snug);
             <button class="snapshot ms-row ms-row" type="button" aria-current=${String(!this.state.selection.historyId && Boolean(floor?.active))} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>${liveLabel}</span><small>${this.#t("v4_current", "Current")}</small></button>
             ${snapshots.map((snapshot, index) => html`
               <button class="snapshot ms-row ms-row" type="button" aria-current=${String(snapshot.id === this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: snapshot.id })}>
-                <span>${this.#formatTime(snapshot.createdAt)}</span><small>${this.#t("v4_history_position", "{position} of {count}", { position: index + 1, count: snapshots.length })}</small>
+                <span>${formatDateTime(snapshot.createdAt, this.state.locale)}</span><small>${this.#t("v4_history_position", "{position} of {count}", { position: index + 1, count: snapshots.length })}</small>
               </button>
             `)}
           </div>
@@ -895,14 +895,6 @@ line-height: var(--ms-lh-snug);
         <p class="subtle">${this.#t("v4_history_privacy", "Saved maps are floor-scoped and never show a live robot position.")}</p>
       </div>
     `);
-  }
-
-  #formatTime(value: string): string {
-    try {
-      return new Intl.DateTimeFormat(this.state.locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-    } catch {
-      return this.#t("v4_saved_map", "Saved map");
-    }
   }
 
   #loadDiagnostics(): void {

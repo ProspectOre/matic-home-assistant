@@ -51,7 +51,7 @@ import {
   WORKSPACE_INTENT_EVENT,
 } from "./map-canvas";
 import "./map-canvas";
-import { translate } from "./localize";
+import { formatList, translate } from "./localize";
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
   initialWorkspaceState,
@@ -1099,16 +1099,16 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
-  #roomNames(state: WorkspaceState): string[] {
+  #rooms(state: WorkspaceState): string {
     const rooms = state.resources.plans.value?.rooms
       ?? state.resources.areas.value?.rooms
       ?? [];
-    return state.selection.roomIds.map((roomId) =>
-      rooms.find((room) => room.roomId === roomId)?.name ?? roomId);
+    return formatList(state.locale, state.selection.roomIds.map((roomId) =>
+      rooms.find((room) => room.roomId === roomId)?.name ?? roomId));
   }
 
   #actionBar(state: WorkspaceState, primary: PrimaryAction | null, secondary: PrimaryAction | null) {
-    const rooms = this.#roomNames(state).join(", ");
+    const rooms = this.#rooms(state);
     const summary = primary?.enabled && state.workflow === "rooms" && primary.id === "clean-rooms"
       ? (state.planDraft.returnToBase && rooms
         ? this.#t("v4_rooms_summary_dock", "{rooms} · returns to the dock", { rooms })
@@ -1402,7 +1402,7 @@ export class MaticMapShellV4 extends LitElement {
     if (state.workflow === "rooms" && state.selection.roomIds.length) {
       line = this.#t("v4_rooms_selected_names", "Rooms selected: {count} · {rooms}", {
         count: state.selection.roomIds.length,
-        rooms: this.#roomNames(state).join(", "),
+        rooms: this.#rooms(state),
       });
     }
     // With the body open the h2 already names the workflow, so the grip line

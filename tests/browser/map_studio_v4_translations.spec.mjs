@@ -202,3 +202,152 @@ test("a Home Assistant translation error string falls back to English", async ({
   await expect(brush).toHaveAttribute("aria-label", /^Brush width, \d+\.\d{2} m\. Opens brush settings\.$/);
   await expect(brush).toContainText(/^Brush \d+\.\d{2} m$/);
 });
+
+test("room lists are joined for the panel language", async ({ page }) => {
+  // The gallery's Rooms scenario carries a ready room preview, so the action
+  // summary lists the selected rooms.
+  const tag = "matic-map-studio-gallery-v0-4-0";
+  await page.goto("/");
+  const names = await page.evaluate(async (galleryTag) => {
+    await import("/map_studio_v4-review/review.js");
+    const gallery = document.createElement(galleryTag);
+    gallery.controls = false;
+    gallery.scenario = "rooms";
+    document.body.append(gallery);
+    await gallery.updateComplete;
+    const shell = gallery.shadowRoot.querySelector(".stage").firstElementChild;
+    const rooms = gallery.getWorkspaceSnapshot().resources.plans.value.rooms.slice(0, 3);
+    for (const { roomId } of rooms) {
+      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "toggle-room", roomId }, bubbles: true, composed: true,
+      }));
+    }
+    return rooms.map((room) => room.name);
+  }, tag);
+  expect(names).toHaveLength(3);
+  for (const language of ["de", "en"]) {
+    const list = await page.evaluate(({ galleryTag, locale, rooms }) => {
+      const gallery = document.querySelector(galleryTag);
+      gallery.replaceWorkspaceState({ ...gallery.getWorkspaceSnapshot(), locale });
+      return new Intl.ListFormat(locale, { style: "long", type: "conjunction" }).format(rooms);
+    }, { galleryTag: tag, locale: language, rooms: names });
+    await expect(page.locator(tag).locator(".action-summary"), language).toHaveText(`${list} · returns to the dock`);
+  }
+});
+
+test("a rejected common load is retried once every 30 seconds", async ({ page }) => {
+  await page.clock.install();
+  await mountPanel(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
+  await page.evaluate(() => {
+    window.__loaderCalls = [];
+    window.__loader = function load(...args) {
+      window.__loaderCalls.push({ args, boundToHass: this?.loadBackendTranslation === load });
+      return Promise.reject(new Error("synthetic loader failure"));
+    };
+  });
+  await patchHass(page, { connection: "__connection__", language: "de", loadBackendTranslation: "__loader__" });
+  await expect.poll(() => loaderCalls(page)).toEqual([{ args: ["common", "matic_robot"], boundToHass: true }]);
+
+  // Hass updates while the retry waits never ask again.
+  for (let battery = 50; battery < 60; battery += 1) {
+    await patchHass(page, { states: { "vacuum.synthetic": { state: "idle", attributes: { matic_entry_id: "synthetic-entry", battery_level: battery } } } });
+  }
+  await page.clock.runFor(29_000);
+  expect(await loaderCalls(page)).toHaveLength(1);
+  await page.clock.runFor(1_000);
+  await expect.poll(() => loaderCalls(page)).toHaveLength(2);
+  expect((await loaderCalls(page))[1]).toEqual({ args: ["common", "matic_robot"], boundToHass: true });
+
+  // The retry rejected as well, so the next one waits another 30 seconds.
+  await page.clock.runFor(29_000);
+  expect(await loaderCalls(page)).toHaveLength(2);
+  await page.clock.runFor(1_000);
+  await expect.poll(() => loaderCalls(page)).toHaveLength(3);
+});
+
+test("a language that fails while an older retry waits gets its own retry", async ({ page }) => {
+  await page.clock.install();
+  await mountPanel(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
+  await page.evaluate(() => {
+    window.__loaderCalls = [];
+    window.__loader = function load() {
+      window.__loaderCalls.push(this.language);
+      return Promise.reject(new Error("synthetic loader failure"));
+    };
+  });
+  await patchHass(page, { connection: "__connection__", language: "de", loadBackendTranslation: "__loader__" });
+  await expect.poll(() => loaderCalls(page)).toEqual(["de"]);
+  await page.clock.runFor(10_000);
+  await patchHass(page, { language: "fr" });
+  await expect.poll(() => loaderCalls(page)).toEqual(["de", "fr"]);
+  await page.clock.runFor(30_000);
+  await expect.poll(() => loaderCalls(page)).toEqual(["de", "fr", "fr"]);
+});
+
+test("a never-settling common load is not retried", async ({ page }) => {
+  await page.clock.install();
+  await mountPanel(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
+  await installLoader(page, "never");
+  await patchHass(page, { connection: "__connection__", language: "de", loadBackendTranslation: "__loader__" });
+  await expect.poll(() => loaderCalls(page)).toHaveLength(1);
+  await page.clock.runFor(120_000);
+  await patchHass(page, { language: "de" });
+  expect(await loaderCalls(page)).toHaveLength(1);
+});
+
+// Shows the saved map after the live scene fails, which raises the saved-map
+// notice with its {date}. `hass` adds Home Assistant's locale and config.
+async function showSavedMap(page, hass) {
+  const fixture = await installPanelFixture(page, { initialPlanCatalog: PLAN_CATALOG });
+  await page.evaluate((extra) => {
+    const panel = window.__panelFixture.createPanel();
+    const fetchWithAuth = panel.hass.fetchWithAuth;
+    panel.hass = {
+      ...panel.hass,
+      ...extra,
+      fetchWithAuth: (path, init) => (/slam_scene\/synthetic$/u.test(path)
+        ? Promise.resolve(new Response("", { status: 503 }))
+        : fetchWithAuth(path, init)),
+    };
+    window.__translationPanel = panel;
+    document.body.append(panel);
+  }, hass);
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingHistoryScenes.length)).toBeGreaterThan(0);
+  await page.evaluate(() => window.__panelFixture.pendingHistoryScenes.shift()());
+  await expect.poll(() => page.evaluate(() =>
+    window.__translationPanel.getWorkspaceSnapshot().notice?.key ?? null)).toBe("v4_notice_saved_map");
+  return {
+    panel: page.locator(fixture.panelTag),
+    notice: await page.evaluate(() => window.__translationPanel.getWorkspaceSnapshot().notice),
+  };
+}
+
+test("the saved-map date follows Home Assistant's language and server time zone", async ({ page }) => {
+  const { notice } = await showSavedMap(page, {
+    language: "en", locale: { language: "de", time_zone: "server" }, config: { time_zone: "Asia/Tokyo" },
+  });
+  const expected = await page.evaluate(() => new Intl.DateTimeFormat("de", {
+    dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Tokyo",
+  }).format(new Date("2026-09-25T12:00:00Z")));
+  expect(notice).toEqual({
+    tone: "warning",
+    key: "v4_notice_saved_map",
+    fallback: "Showing the saved map from {date} without the robot's position.",
+    placeholders: { date: expected },
+  });
+});
+
+test("a server time zone the browser can't use falls back to the browser's date format", async ({ page }) => {
+  const { panel, notice } = await showSavedMap(page, {
+    locale: { language: "en", time_zone: "server" }, config: { time_zone: "Not/A_Zone" },
+  });
+  const expected = await page.evaluate(() => new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium", timeStyle: "short",
+  }).format(new Date("2026-09-25T12:00:00Z")));
+  expect(notice?.placeholders).toEqual({ date: expected });
+  await expect(panel.getByText(expected, { exact: false }).first()).toBeAttached();
+  await expect(panel.getByText("Invalid Date")).toHaveCount(0);
+});

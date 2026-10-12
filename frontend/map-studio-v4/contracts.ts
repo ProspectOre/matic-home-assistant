@@ -382,6 +382,9 @@ export interface HassLike {
   readonly connected?: boolean;
   readonly language?: string;
   readonly selectedLanguage?: string;
+  /** The user's number and date formatting; `time_zone: "server"` means config.time_zone. */
+  readonly locale?: { readonly language?: string; readonly time_zone?: string };
+  readonly config?: { readonly time_zone?: string };
   readonly states?: Readonly<Record<string, HassEntityLike>>;
   readonly user?: {
     readonly id?: string;
@@ -414,6 +417,9 @@ export interface HassProjection {
   readonly activity: RobotActivity;
   readonly batteryPercent: number | null;
   readonly language: string;
+  /** Home Assistant's date language, and its time zone when the user picked the server's. */
+  readonly dateLanguage: string;
+  readonly timeZone: string | undefined;
   readonly userKey: string;
   readonly vacuumEntityId: string | null;
   readonly entryKey: string | null;
