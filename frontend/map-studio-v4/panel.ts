@@ -24,9 +24,10 @@ const shellTag = unsafeStatic(SHELL_TAG);
 
 // Home Assistant never loads an integration's `common` translations for a
 // custom panel, so the panel asks once per connection and language. A rejected
-// load keeps its pair recorded until a single retry 30 s later (or, on a
-// detached panel, until it is attached again), so hass updates never ask more
-// often; a load that never settles is left alone.
+// load keeps its pair recorded and is asked again 30 s later, so while loads
+// keep rejecting the panel sends one request every 30 s, with one retry timer
+// at a time; a detached panel waits until it is attached again. Hass updates
+// never ask more often, and a load that never settles is left alone.
 // One request per (connection, language) is enough because Home Assistant's
 // frontend changes language in one synchronous call: `_selectLanguage`
 // (src/state/translations-mixin.ts) writes the language into hass through

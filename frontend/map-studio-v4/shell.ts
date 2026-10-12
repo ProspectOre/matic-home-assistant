@@ -8,6 +8,7 @@ import type {
   DateFormat,
   Localize,
   NoticeTone,
+  NoButtonAction,
   PrimaryAction,
   ResetCadenceAction,
   WorkspaceIntent,
@@ -202,15 +203,6 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
 };
 
 type SheetDetent = "peek" | "half" | "full";
-
-// shell.md §2 "No button": these branches still return their disabled action
-// (the policy is unchanged), but the view renders nothing for them; the strip,
-// canvas and sheet already say the state. choose-cleaning is the idle prompt
-// the body answers.
-const NO_BUTTON: ReadonlySet<string> = new Set([
-  "choose-cleaning", "reconnecting", "administrator", "setup", "choose-robot",
-  "problem", "robot-offline", "map-unavailable", "locating", "stopping",
-]);
 
 const DETENTS: readonly SheetDetent[] = ["peek", "half", "full"];
 
@@ -1243,8 +1235,8 @@ export class MaticMapShellV4 extends LitElement {
 
   // ---- Templates ----------------------------------------------------------
 
-  #actionButton(action: PrimaryAction, classes: string, reasonId: string) {
-    if (NO_BUTTON.has(action.id)) return nothing;
+  #actionButton(action: PrimaryAction | NoButtonAction, classes: string, reasonId: string) {
+    if (!("label" in action)) return nothing;
     const label = action.labelKey ? this.#t(action.labelKey, action.label, action.labelPlaceholders) : action.label;
     const reason = !action.enabled && action.reason
       ? (action.reasonKey ? this.#t(action.reasonKey, action.reason) : action.reason)
@@ -1271,7 +1263,7 @@ export class MaticMapShellV4 extends LitElement {
       rooms.find((room) => room.roomId === roomId)?.name ?? roomId));
   }
 
-  #actionBar(state: WorkspaceState, primary: PrimaryAction | null, secondary: PrimaryAction | null) {
+  #actionBar(state: WorkspaceState, primary: PrimaryAction | NoButtonAction | null, secondary: PrimaryAction | null) {
     const rooms = this.#rooms(state);
     const summary = primary?.enabled && state.workflow === "rooms" && primary.id === "clean-rooms"
       ? (state.planDraft.returnToBase && rooms

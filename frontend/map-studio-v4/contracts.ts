@@ -372,6 +372,15 @@ export interface PrimaryAction {
   readonly reasonKey?: string;
 }
 
+/**
+ * A branch shell.md §2 marks "No button": the policy holds, the view renders
+ * nothing (the strip, canvas and sheet say the state), so it carries no copy.
+ */
+export interface NoButtonAction {
+  readonly id: string;
+  readonly enabled: false;
+}
+
 export interface HassEntityLike {
   readonly state: string;
   readonly attributes?: Readonly<Record<string, unknown>>;

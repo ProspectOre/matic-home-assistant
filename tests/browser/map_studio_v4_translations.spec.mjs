@@ -110,6 +110,7 @@ test("the brush label and its accessible name take the width from placeholders",
   await sendIntent(page, { type: "open-workflow", workflow: "draw" });
   await sendIntent(page, { type: "set-draw-tool", tool: "paint" });
 
+  // Found by class: its accessible name is the translated text under test.
   const brush = panel.locator(".draw-brush").first();
   await expect(brush).toHaveAttribute("aria-label", /^Pinselbreite \d+\.\d{2} m, Einstellungen$/);
   await expect(brush).toContainText(/^Pinsel \d+\.\d{2} m$/);
@@ -125,6 +126,7 @@ test("the scale bar's accessible name takes its distance from a placeholder", as
   const panel = await mountPanel(page);
   await sendIntent(page, { type: "open-workflow", workflow: "draw" });
 
+  // Found by class: its accessible name is the translated text under test.
   const scale = panel.locator(".map-scale");
   await expect(scale).toHaveAttribute("aria-label", /^Maßstab [\d.]+ c?m$/);
   const calls = await localizeCalls(page, "v4_map_scale");
@@ -239,7 +241,8 @@ test("a missing, rejecting or never-settling loader leaves the panel usable", as
     await page.waitForTimeout(100);
     await expect(panel.locator("h2").first()).toBeVisible();
     await expect(panel.getByRole("button", { name: "Stop cleaning" }).first()).toBeVisible();
-    // No retry for the same connection and language.
+    // No immediate retry for the same connection and language; a rejected
+    // load waits 30 s ("a rejected common load is retried once every 30 seconds").
     expect(await loaderCalls(page)).toHaveLength(1);
   }
   expect(errors).toEqual([]);
@@ -263,6 +266,7 @@ test("a Home Assistant translation error string falls back to English", async ({
   await sendIntent(page, { type: "open-workflow", workflow: "draw" });
   await sendIntent(page, { type: "set-draw-tool", tool: "paint" });
 
+  // Found by class: its accessible name is the translated text under test.
   const brush = panel.locator(".draw-brush").first();
   await expect(brush).toHaveAttribute("aria-label", /^Brush width, \d+\.\d{2} m\. Opens brush settings\.$/);
   await expect(brush).toContainText(/^Brush \d+\.\d{2} m$/);
@@ -282,6 +286,7 @@ test("a localize that throws falls back to English", async ({ page }) => {
   await sendIntent(page, { type: "open-workflow", workflow: "draw" });
   await sendIntent(page, { type: "set-draw-tool", tool: "paint" });
 
+  // Found by class: its accessible name is the translated text under test.
   const brush = panel.locator(".draw-brush").first();
   await expect(brush).toHaveAttribute("aria-label", /^Brush width, \d+\.\d{2} m\. Opens brush settings\.$/);
   await expect(brush).toContainText(/^Brush \d+\.\d{2} m$/);
@@ -324,6 +329,7 @@ test("room lists are joined for the panel language", async ({ page }) => {
       gallery.replaceWorkspaceState({ ...gallery.getWorkspaceSnapshot(), locale });
     }, { tag: GALLERY_TAG, locale: language });
     const list = await joinRooms(page, language, names);
+    // Found by class: the summary is a plain paragraph with no role or name.
     await expect(page.locator(GALLERY_TAG).locator(".action-summary"), language)
       .toHaveText(`${list} · returns to the dock`);
   }
@@ -334,6 +340,7 @@ test("the room summary and selection chip take their rooms and count from placeh
   const names = await selectRooms(page, 3);
   const list = await joinRooms(page, "en", names);
 
+  // Found by class: the summary is a plain paragraph with no role or name.
   await expect(gallery.locator(".action-summary")).toHaveText(`${list}, danach zurück zum Dock`);
   // The chip has no role or name of its own; its text is the contract.
   await expect(gallery.getByText("Gewählt: 3 Räume", { exact: true })).toBeVisible();

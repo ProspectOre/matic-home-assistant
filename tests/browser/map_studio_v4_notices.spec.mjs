@@ -666,6 +666,24 @@ test("Try again on a limited map rereads the catalog once and is disabled meanwh
   await expect(retry).not.toHaveAttribute("aria-disabled", "true");
   await expect(strip).toContainText("Cleaning can't start");
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
+
+  // The controller that set the flag clears it when it ends: a detach in
+  // mid-recheck leaves Try again working for the reattached panel.
+  await page.evaluate(() => window.__panelFixture.deferNextCatalog());
+  await retry.click();
+  await expect(retry).toHaveAttribute("aria-disabled", "true");
+  await page.evaluate(() => {
+    window.__noticePanel.remove();
+    document.body.append(window.__noticePanel);
+  });
+  await expect.poll(() => page.evaluate(() => window.__noticePanel.getWorkspaceSnapshot().rechecking),
+    "rechecking after a detach mid-recheck").toBe(false);
+  await expect(retry).not.toHaveAttribute("aria-disabled", "true");
+  const before = await page.evaluate(() => window.__panelFixture.catalogReads);
+  await retry.click();
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.catalogReads),
+    "catalog reads after Try again on the reattached panel").toBeGreaterThan(before);
+  await page.evaluate(() => window.__panelFixture.releaseCatalog());
 });
 
 test("a repeated workspace notice toasts and announces again", async ({ page }) => {
@@ -815,23 +833,30 @@ test("notice text keeps 4.5:1 contrast in every tone with Home Assistant's palet
 });
 
 // shell.md §2: on a "No button" row the policy still returns its disabled
-// action, but the view renders no button for it; the strip says the state.
-test("rows the spec marks No button render no footer button", async ({ page }) => {
-  for (const [scenario, label] of [
-    ["ha-offline", "Reconnecting"],
-    ["access", "Administrator access required"],
-    ["empty", "Set up a Matic robot"],
-    ["robot-offline", "Robot offline"],
-    ["problem", "Check the robot"],
-    ["map-unavailable", "Map unavailable"],
-    ["map-limited", "Finding the map"],
-    ["transition", "Finding the map"],
-    ["stopping", "Stopping"],
+// branch, but it carries no copy, since no view renders it; the strip says
+// the state.
+test("rows the spec marks No button render no footer button and carry no copy", async ({ page }) => {
+  for (const [scenario, id] of [
+    ["ready", "choose-cleaning"],
+    ["ha-offline", "reconnecting"],
+    ["access", "administrator"],
+    ["empty", "setup"],
+    ["robot-offline", "robot-offline"],
+    ["problem", "problem"],
+    ["map-unavailable", "map-unavailable"],
+    ["map-limited", "locating"],
+    ["transition", "locating"],
+    ["stopping", "stopping"],
   ]) {
     const gallery = await loadGallery(page, { scenario });
     await expect(gallery.locator(".status-strip"), scenario).toBeVisible();
-    await expect(gallery.locator(".action-bar").getByRole("button", { name: label, exact: true }), scenario).toHaveCount(0);
+    await expect(gallery.locator(".action-bar button"), scenario).toHaveCount(0);
     await expect(gallery.locator(".action-bar .action-reason"), scenario).toHaveCount(0);
+    const action = await gallery.evaluate(async (element) => {
+      const { selectPrimaryAction } = await import("/map_studio_v4-review/review.js");
+      return selectPrimaryAction(element.getWorkspaceSnapshot());
+    });
+    expect(action, scenario).toEqual({ id, enabled: false });
   }
 });
 

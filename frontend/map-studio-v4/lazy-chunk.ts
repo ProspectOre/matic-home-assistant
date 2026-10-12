@@ -70,17 +70,21 @@ export class LazyChunk<T> implements ReactiveController {
 }
 
 const RESUME_KEY = "matic-map-resume";
+// A reload reaches the shell in seconds; a marker older than this was left by
+// a reload that never got there (an offline error page, another page first).
+const RESUME_MS = 30_000;
 
 // Try again's reload, which the shell runs once no draft would be lost
 // (shell.ts #retry). It lands back in `workflow`: the marker lives for the
-// one reload and the shell takes it at startup (takeResume). The page's
+// one reload, stamped with its time, and the shell takes it at startup
+// (takeResume). The page's
 // layer entries (layer-history.ts) are stepped back over first, so Back after
 // the reload behaves as after a fresh entry. That step's popstate is the
 // reload's alone, so it stops there before the layer controller reads it as a
 // Back press.
 export const reloadInto = (workflow: Workflow): void => {
   try {
-    sessionStorage.setItem(RESUME_KEY, workflow);
+    sessionStorage.setItem(RESUME_KEY, JSON.stringify({ workflow, at: Date.now() }));
   } catch {
     // Without storage the reload opens on the entry screen.
   }
@@ -96,12 +100,17 @@ export const reloadInto = (workflow: Workflow): void => {
   history.go(-depth);
 };
 
-/** Reads and clears the workflow a Try again reload was pressed in, unchecked. */
+/**
+ * Reads and clears the workflow a Try again reload was pressed in, if it was
+ * pressed within the last 30 s; the workflow itself is unchecked.
+ */
 export const takeResume = (): string | null => {
   try {
-    const workflow = sessionStorage.getItem(RESUME_KEY);
+    const stored = sessionStorage.getItem(RESUME_KEY);
     sessionStorage.removeItem(RESUME_KEY);
-    return workflow;
+    const { workflow, at } = JSON.parse(stored ?? "null") ?? {};
+    const age = Date.now() - at;
+    return typeof workflow === "string" && age >= 0 && age <= RESUME_MS ? workflow : null;
   } catch {
     return null;
   }

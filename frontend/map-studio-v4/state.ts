@@ -10,6 +10,7 @@ import {
   type CoordinateEditCapture,
   type CoordinateEditTool,
   type CommandState,
+  type NoButtonAction,
   type PrimaryAction,
   type ResourceStamp,
   type AdmittedManualRoomPreview,
@@ -856,6 +857,8 @@ const disabledAction = (
   reasonKey,
 });
 
+const noButton = (id: string): NoButtonAction => ({ id, enabled: false });
+
 const hasStoppableWork = (state: WorkspaceState): boolean =>
   state.command === "starting"
   || state.activity === "cleaning" || state.activity === "paused"
@@ -882,7 +885,7 @@ const stopAction = (state: WorkspaceState): PrimaryAction => {
   };
 };
 
-export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
+export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction | NoButtonAction => {
   if (state.dataMode === "history") {
     return {
       id: "return-live",
@@ -919,13 +922,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
     };
   }
   if (state.activity === "stopping" || state.command === "settling") {
-    return disabledAction(
-      "stopping",
-      "Stopping",
-      "Waiting for the robot to settle.",
-      "v4_action_stopping",
-      "v4_reason_stopping",
-    );
+    return noButton("stopping");
   }
   if (state.command === "starting") {
     return disabledAction("starting", "Starting", "Waiting for the robot to begin.", "v4_action_starting", "v4_reason_starting");
@@ -940,52 +937,28 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
     };
   }
   if (!state.host.connected) {
-    return disabledAction(
-      "reconnecting",
-      "Reconnecting",
-      "Home Assistant is offline.",
-      "v4_action_reconnecting",
-      "v4_reason_reconnecting",
-    );
+    return noButton("reconnecting");
   }
   if (!state.host.administrator) {
-    return disabledAction(
-      "administrator",
-      "Administrator access required",
-      "Ask a Home Assistant administrator to open this map.",
-      "v4_action_administrator",
-      "v4_reason_administrator",
-    );
+    return noButton("administrator");
   }
   if (state.host.robotCount === 0) {
-    return disabledAction("setup", "Set up a Matic robot", "Add the Matic integration to get started.", "v4_set_up_robot", "v4_setup_reason");
+    return noButton("setup");
   }
   if (isSelectedRobotUnavailable(state)) {
-    return disabledAction("choose-robot", "Selected robot unavailable", "Choose another robot to open its map.", "v4_selected_robot_unavailable", "v4_choose_another_robot");
+    return noButton("choose-robot");
   }
   if (state.activity === "problem") {
-    return disabledAction("problem", "Check the robot", "Resolve the robot's problem before starting another task.", "v4_check_robot", "v4_problem_reason");
+    return noButton("problem");
   }
   if (!state.host.robotConnected) {
-    return disabledAction(
-      "robot-offline",
-      "Robot offline",
-      "Reconnect the robot to start cleaning.",
-      "v4_action_robot_offline",
-      "v4_reason_robot_offline",
-    );
+    return noButton("robot-offline");
   }
   if (state.coherence === "unavailable" || state.coherence === "blocked") {
-    return disabledAction("map-unavailable", "Map unavailable", "Open Map diagnostics to check why the map is unavailable.", "v4_map_unavailable", "v4_map_unavailable_reason");
+    return noButton("map-unavailable");
   }
   if (state.coherence !== "current") {
-    return disabledAction(
-      "locating",
-      "Finding the map",
-      "Waiting for the robot to confirm which floor it is on.",
-      "v4_action_locating",
-      "v4_reason_locating",
-    );
+    return noButton("locating");
   }
   if ((state.workflow === "plan" || state.workflow === "rooms")
     && state.resources.plans.status !== "ready") {
@@ -1118,15 +1091,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
         : { reason: "Can't clean this area until you save it on the current map.", reasonKey: "v4_reason_run_area" }),
     };
   }
-  return {
-    id: "choose-cleaning",
-    label: "Choose what to clean",
-    labelKey: "v4_action_choose_cleaning",
-    kind: "neutral",
-    enabled: false,
-    reason: "Choose rooms, a plan, or a custom area.",
-    reasonKey: "v4_reason_choose_cleaning",
-  };
+  return noButton("choose-cleaning");
 };
 
 export const selectStopSecondaryAction = (

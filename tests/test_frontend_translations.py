@@ -9,6 +9,7 @@ key must be referenced by shipped code: no key is stored that nothing reads.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from homeassistant.helpers.translation import async_get_translations
@@ -16,6 +17,7 @@ from homeassistant.helpers.translation import async_get_translations
 # Importing the integration first makes ``custom_components`` resolve to this
 # repository, which is what lets Home Assistant's loader find ``matic_robot``.
 from custom_components.matic_robot.const import DOMAIN
+from tests import frontend_sources
 from tests.frontend_sources import (
     EN_PATH,
     STRINGS_PATH,
@@ -385,6 +387,40 @@ def test_scanner_reports_the_line_of_a_site_and_a_stray() -> None:
     sites, strays = scan_module("snippet.ts", source)
     assert [(site.key, site.line) for site in sites] == [("v4_site", 6)]
     assert [(key, line) for _, line, key in strays] == [("v4_stray", 7)]
+
+
+def test_the_walk_scans_every_module_a_shipped_entry_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shipped code is what the entry points reach; no module name is exempt."""
+    (tmp_path / "mockups").mkdir()
+    (tmp_path / "index.ts").write_text(
+        'import "./gallery-state";\nimport("./review");\n'
+    )
+    (tmp_path / "ha-icons.ts").write_text(
+        'import { x } from "./synthetic-fixtures";\nimport "./mockups/copy";\n'
+    )
+    for name in (
+        "gallery-state.ts",
+        "review.ts",
+        "synthetic-fixtures.ts",
+        "mockups/copy.ts",
+    ):
+        (tmp_path / name).write_text("")
+    monkeypatch.setattr(frontend_sources, "STUDIO_SOURCE", tmp_path)
+    frontend_sources._modules.cache_clear()
+    try:
+        walked = sorted(shipped_modules())
+    finally:
+        frontend_sources._modules.cache_clear()
+    assert walked == [
+        "gallery-state.ts",
+        "ha-icons.ts",
+        "index.ts",
+        "mockups/copy.ts",
+        "review.ts",
+        "synthetic-fixtures.ts",
+    ], f"modules the walk scanned: {walked}"
 
 
 _UNBALANCED = {

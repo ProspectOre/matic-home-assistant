@@ -198,57 +198,6 @@ test("history slider previews on input and loads only on settled change, includi
   expect(await page.evaluate(() => window.__historyIntents)).toHaveLength(2);
 });
 
-test("normalizes only the four allowlisted Matic coverage guard service errors", async ({ page }) => {
-  const module = await bundledModule(page, "interaction-bounds-backend.js", `
-    export { MaticBackend } from "./frontend/map-studio-v4/backend";
-  `);
-  await page.goto("/", { waitUntil: "domcontentloaded" });
-  const result = await page.evaluate(async (path) => {
-    const { MaticBackend } = await import(path);
-    const keys = [
-      "coverage_identity_unavailable",
-      "coverage_activity_unavailable",
-      "coverage_native_session_active",
-      "coverage_identity_changed",
-    ];
-    const errors = [];
-    const backend = new MaticBackend(() => ({ localize: (key) => `Localized ${key}`, callService: async () => {
-      const key = keys[errors.length];
-      throw Object.assign(new Error("secret arbitrary server text"), {
-        translation_domain: "matic_robot", translation_key: key,
-      });
-    } }));
-    for (const key of keys) {
-      try { await backend.service("matic_robot", "run_selected_plan", {}, "vacuum.synthetic"); }
-      catch (error) { errors.push({ code: error.code, message: error.message }); }
-    }
-    const malicious = new MaticBackend(() => ({ callService: async () => {
-      throw Object.assign(new Error("secret arbitrary server text"), {
-        translation_domain: "other_domain", translation_key: keys[0],
-      });
-    } }));
-    let untrusted;
-    try { await malicious.service("matic_robot", "run_selected_plan", {}, "vacuum.synthetic"); }
-    catch (error) { untrusted = error.message; }
-    backend.dispose();
-    malicious.dispose();
-    return { errors, untrusted };
-  }, module);
-  expect(result.errors.map(({ code }) => code)).toEqual([
-    "coverage_identity_unavailable",
-    "coverage_activity_unavailable",
-    "coverage_native_session_active",
-    "coverage_identity_changed",
-  ]);
-  expect(result.errors.map(({ message }) => message)).toEqual([
-    "Localized component.matic_robot.exceptions.coverage_identity_unavailable.message",
-    "Localized component.matic_robot.exceptions.coverage_activity_unavailable.message",
-    "Localized component.matic_robot.exceptions.coverage_native_session_active.message",
-    "Localized component.matic_robot.exceptions.coverage_identity_changed.message",
-  ]);
-  expect(result.untrusted).toBe("secret arbitrary server text");
-});
-
 test("keeps keyboard dismissal on the shell after unfocused Full map activation", async ({ page }) => {
   const module = await bundledModule(page, "interaction-bounds-shell-focus.js", `
     export { MaticMapShellV4 } from "./frontend/map-studio-v4/shell";

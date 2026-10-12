@@ -91,7 +91,7 @@ const NOTICES = {
 const savedMapNotice = (date: string): WorkspaceNotice =>
   notice("warning", "v4_notice_saved_map", "Showing the saved map from {date} without the robot's position.", { date });
 
-/** Coverage guard rejections, keyed by `BackendError.code`. */
+/** Coverage guard rejections, keyed by the service error's Matic `translation_key`. */
 const COVERAGE_GUARD_NOTICES: Readonly<Record<string, WorkspaceNotice>> = {
   coverage_identity_unavailable: notice("error", "v4_notice_coverage_task_unknown", "Home Assistant can't confirm the current clean, so check the robot first."),
   coverage_activity_unavailable: notice("error", "v4_notice_coverage_activity_unknown", "Home Assistant can't confirm whether the robot is cleaning, so check it first."),
@@ -99,10 +99,12 @@ const COVERAGE_GUARD_NOTICES: Readonly<Record<string, WorkspaceNotice>> = {
   coverage_identity_changed: notice("error", "v4_notice_coverage_task_changed", "The clean changed while starting, so check the robot first."),
 };
 
-const coverageGuardNotice = (error: unknown): WorkspaceNotice | null =>
-  error instanceof BackendError && Object.hasOwn(COVERAGE_GUARD_NOTICES, error.code)
-    ? COVERAGE_GUARD_NOTICES[error.code] ?? null
+const coverageGuardNotice = (error: unknown): WorkspaceNotice | null => {
+  const { translation_domain: domain, translation_key: key } = (error ?? {}) as Record<string, unknown>;
+  return domain === "matic_robot" && typeof key === "string" && Object.hasOwn(COVERAGE_GUARD_NOTICES, key)
+    ? COVERAGE_GUARD_NOTICES[key] ?? null
     : null;
+};
 
 const entryFloorKey = (entry: MapEntry): string => [
   entry.selectedFloorOrdinal ?? "none",
@@ -2686,11 +2688,12 @@ export class EffectController {
     this.#pageLifecycle.dispose();
     // The store survives a detached panel. Revoke its public action admission
     // before aborting requests so neither stale controls nor late results can
-    // reuse the prior controller's proof during the remount gap.
+    // reuse the prior controller's proof during the remount gap. Flags this
+    // controller sets end with it.
     this.#invalidateSpatialFence(false);
     this.#storeUnsubscribe?.();
     this.#storeUnsubscribe = null;
-    this.#store.patch({ manualRoomPreview: resource("idle", null) });
+    this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false });
     this.#stopPolling();
     this.#abortResources();
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);

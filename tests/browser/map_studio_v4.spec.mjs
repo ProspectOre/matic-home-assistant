@@ -74,7 +74,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { BackendError } from "./frontend/map-studio-v4/backend"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -372,6 +372,30 @@ test.describe("Map Studio v0.4 foundation", () => {
       return { workflow, notice };
     })).toEqual({ workflow: "none", notice: null });
     expect(await page.evaluate(() => sessionStorage.length), "the refused marker is dropped").toBe(0);
+  });
+
+  // The marker belongs to the reload Try again started: one the map does not
+  // open within 30 seconds (an offline error page, another page first) is
+  // dropped, and the map opens on the entry screen.
+  test("Try again's resume is dropped when the map opens more than 30 seconds later", async ({ page }) => {
+    await page.clock.install({ time: new Date("2026-10-12T12:00:00Z") });
+    await page.route("**/chunks/workflow-panel-*.js", (route) => route.abort());
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.evaluate((element) => {
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "rooms" });
+    });
+    const failure = gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." });
+    await Promise.all([
+      page.waitForEvent("load"),
+      failure.getByRole("button", { name: "Try again" }).click(),
+    ]);
+    await page.unroute("**/chunks/workflow-panel-*.js");
+    await page.clock.setSystemTime(new Date("2026-10-12T12:00:31Z"));
+    const later = await loadGallery(page, { scenario: "ready" });
+    await expect(later.getByRole("heading", { level: 2 })).toBeAttached();
+    expect(await later.evaluate((element) => element.getWorkspaceSnapshot().workflow), "workflow after a stale resume")
+      .toBe("none");
+    expect(await page.evaluate(() => sessionStorage.length), "stored markers after a stale resume").toBe(0);
   });
 
   test("a chunk loading while the panel is detached gets its full 20 seconds after it returns", async ({ page }) => {
@@ -1253,7 +1277,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("ignores an old start response, including a late coverage guard, after changing robots or closing the panel @safety", async ({ page }) => {
     await loadEffectHarness(page);
     const results = await page.evaluate(async () => {
-      const { EffectController, BackendError, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
       const results = [];
       for (const close of [false, true]) {
         for (const rejectLate of [false, true]) {
@@ -1273,7 +1297,7 @@ test.describe("Map Studio v0.4 foundation", () => {
               if (service !== "run_selected_plan") return Promise.resolve();
               return new Promise((resolve, reject) => {
               completeStart = () => rejectLate
-                ? reject(new BackendError("coverage_identity_changed", null, "The cleaning task changed during setup. Check the robot status, then try again."))
+                ? reject(Object.assign(new Error("late guard"), { translation_domain: "matic_robot", translation_key: "coverage_identity_changed" }))
                 : resolve();
               });
             },
@@ -1314,23 +1338,31 @@ test.describe("Map Studio v0.4 foundation", () => {
       preserved: true,
     }))));
   });
-  test("shows allowlisted guard recovery text and keeps generic service errors generic", async ({ page }) => {
+  // Home Assistant's service error carries the integration's translation key;
+  // effects.ts maps a Matic coverage guard key to its notice and treats any
+  // other error, whatever its text or domain, as an unconfirmed action.
+  test("maps Matic coverage guard rejections to their notices and keeps other service errors generic", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
-      const { EffectController, BackendError, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const messages = {
-        coverage_identity_unavailable: "Could not verify the current cleaning task. Check the robot status, then try again.",
-        coverage_activity_unavailable: "Could not verify whether the robot is cleaning. Check the robot status, then try again.",
-        coverage_native_session_active: "The robot already has a cleaning task. Wait for it to finish before starting another cleaning task.",
-        coverage_identity_changed: "The cleaning task changed during setup. Check the robot status, then try again.",
-      };
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const rejection = (domain, key) => Object.assign(new Error("secret untrusted service text"), {
+        translation_domain: domain, translation_key: key,
+      });
       const notices = [];
-      for (const [code, message] of Object.entries(messages)) {
+      for (const error of [
+        rejection("matic_robot", "coverage_identity_unavailable"),
+        rejection("matic_robot", "coverage_activity_unavailable"),
+        rejection("matic_robot", "coverage_native_session_active"),
+        rejection("matic_robot", "coverage_identity_changed"),
+        rejection("other_domain", "coverage_identity_unavailable"),
+        rejection("matic_robot", "toString"),
+        new Error("secret untrusted service text"),
+      ]) {
         const initial = { ...createGalleryState("ready"), workflow: "plan" };
         const store = new WorkspaceStore(initial);
         const backend = {
           plans: async () => initial.resources.plans.value,
-          service: async () => { throw new BackendError(code, null, message); },
+          service: async () => { throw error; },
           dispose() {},
         };
         const effects = new EffectController(store, backend);
@@ -1339,27 +1371,17 @@ test.describe("Map Studio v0.4 foundation", () => {
         notices.push(store.value.notice?.key);
         effects.dispose();
       }
-      const initial = { ...createGalleryState("ready"), workflow: "plan" };
-      const store = new WorkspaceStore(initial);
-      const backend = {
-        plans: async () => initial.resources.plans.value,
-        service: async () => { throw new Error("secret untrusted service text"); },
-        dispose() {},
-      };
-      const effects = new EffectController(store, backend);
-      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
-      await effects.executeAction("run-plan");
-      const untrustedNotice = store.value.notice?.key;
-      effects.dispose();
-      return { notices, untrustedNotice };
+      return notices;
     });
-    expect(result.notices).toEqual([
+    expect(result, "notice keys for each service rejection").toEqual([
       "v4_notice_coverage_task_unknown",
       "v4_notice_coverage_activity_unknown",
       "v4_notice_coverage_robot_busy",
       "v4_notice_coverage_task_changed",
+      "v4_notice_action_unconfirmed",
+      "v4_notice_action_unconfirmed",
+      "v4_notice_action_unconfirmed",
     ]);
-    expect(result.untrustedNotice).toBe("v4_notice_action_unconfirmed");
   });
   test("ends Starting when a managed service returns at the end of its run", async ({ page }) => {
     await loadEffectHarness(page);
@@ -7390,7 +7412,7 @@ test("zone keyboard creation and point editing stay local and undoable", async (
 
 // shell.md §2 row 8: a map Home Assistant cannot confirm well enough cannot be
 // edited, so Name and save is disabled and says why, as the strip's body does.
-// (A degraded map shows no action button at all: `locating` is in NO_BUTTON.)
+// (A degraded map shows no action button at all: `locating` has no button.)
 for (const flag of ["complete", "floorCoherent", "sessionVerified"]) test(`Name and save explains itself when the map is not ${flag}`, async ({ page }) => {
   const gallery = await loadGallery(page, { scenario: "draw" });
   await gallery.getByRole("button", { name: "Points", exact: true }).click();

@@ -43,8 +43,6 @@ STRINGS_PATH = INTEGRATION / "strings.json"
 EN_PATH = INTEGRATION / "translations" / "en.json"
 
 _ENTRY_POINTS = ("index.ts", "ha-icons.ts")
-_EXCLUDED_PREFIXES = ("gallery", "mockups")
-_EXCLUDED_MODULES = frozenset({"review.ts", "synthetic-fixtures.ts"})
 
 
 @dataclass(frozen=True)
@@ -64,10 +62,6 @@ class KeySite:
 _IMPORT = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(?\s*)["'](\.{1,2}/[^"']+)["']""")
 
 
-def _is_excluded(module: str) -> bool:
-    return module in _EXCLUDED_MODULES or module.startswith(_EXCLUDED_PREFIXES)
-
-
 def _resolve(importer: Path, specifier: str) -> Path:
     base = importer.parent / specifier
     for candidate in (base.with_name(base.name + ".ts"), base / "index.ts"):
@@ -84,7 +78,7 @@ def _modules() -> dict[str, str]:
     while pending:
         path = pending.pop()
         module = path.relative_to(root).as_posix()
-        if module in found or _is_excluded(module):
+        if module in found:
             continue
         source = path.read_text(encoding="utf-8")
         found[module] = source
