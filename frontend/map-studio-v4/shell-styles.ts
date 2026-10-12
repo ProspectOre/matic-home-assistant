@@ -15,7 +15,8 @@ export const shellStyles = [tokens, base, controls, css`
       container-type: size;
     }
 
-    .root { position: relative; min-block-size: 0; block-size: 100%; }
+    /* The wide inspector's width, shared by its grid column and the toast's offset. */
+    .root { --ms-inspector: 22.5rem; position: relative; min-block-size: 0; block-size: 100%; }
 
     .sr-only, .skip-link:not(:focus) {
       position: absolute;
@@ -98,7 +99,7 @@ export const shellStyles = [tokens, base, controls, css`
     .workspace {
       position: relative;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(19rem, 22.5rem);
+      grid-template-columns: minmax(0, 1fr) minmax(19rem, var(--ms-inspector));
       min-inline-size: 0;
       min-block-size: 0;
     }
@@ -173,30 +174,38 @@ export const shellStyles = [tokens, base, controls, css`
     .panel-back { flex: none; }
     .panel-description { margin: var(--ms-space-1) 0 var(--ms-space-4); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
 
-    /* Notice slot and toast (shell.md §4). Tone rules moved unchanged from workflow-panel. */
+    /* Notice slot and toast (shell.md §4, design-system.md .ms-notice): the
+       text stays --ms-text on the tone's tint; the glyph and the inline-start
+       rule carry the tone, never the text colour. */
     .notice {
-    --ms-local: var(--ms-surface-sunken);
-    padding: var(--ms-space-3);
-    border-radius: var(--ms-radius-md);
-    background: var(--ms-local);
-    font-size: var(--ms-t-sm);
-    line-height: var(--ms-lh-snug);
+      --notice-tone: var(--ms-accent);
+      --ms-local: color-mix(in srgb, var(--notice-tone) 12%, var(--ms-surface-card));
+      display: flex;
+      gap: var(--ms-space-2);
+      align-items: center;
+      padding-inline-start: var(--ms-space-3);
+      border-inline-start: 3px solid var(--notice-tone);
+      border-radius: var(--ms-radius-md);
+      background: var(--ms-local);
+      color: var(--ms-text);
+      font-size: var(--ms-t-sm);
+      line-height: var(--ms-lh-snug);
     }
-    .notice[data-tone="error"] { --ms-local: color-mix(in srgb, var(--ms-danger) 9%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); background: var(--ms-local); }
-    .notice[data-tone="success"] { --ms-local: color-mix(in srgb, var(--ms-success) 10%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-success) 82%, var(--ms-text)); background: var(--ms-local); }
-    .notice[data-tone="warning"] { --ms-local: color-mix(in srgb, var(--ms-warning) 11%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-warning) 82%, var(--ms-text)); background: var(--ms-local); }
-    .notice { display: flex; gap: var(--ms-space-2); align-items: center; padding-block: 0; padding-inline-end: 0; }
-    .notice > .ms-icon, .notice > .ms-btn { flex: none; }
+    .notice[data-tone="success"] { --notice-tone: var(--ms-success); }
+    .notice[data-tone="warning"] { --notice-tone: var(--ms-warning); }
+    .notice[data-tone="error"] { --notice-tone: var(--ms-danger); }
+    .notice > .ms-icon { color: var(--notice-tone); }
+    .notice > .ms-btn { flex: none; }
     .notice-text { flex: 1; min-inline-size: 0; padding-block: var(--ms-space-2); }
     [data-notice-slot] { margin-block-start: var(--ms-space-3); }
     /* Wide: bottom centre of the canvas, above the dock. */
     .notice-toast {
       position: absolute;
       z-index: 10;
-      inset-inline: 0 22.5rem;
+      inset-inline: 0 var(--ms-inspector);
       inset-block-end: calc(var(--ms-space-3) + 3.5rem + var(--ms-space-2));
       inline-size: fit-content;
-      max-inline-size: min(28rem, calc(100% - 22.5rem - 2 * var(--ms-space-3)));
+      max-inline-size: min(28rem, calc(100% - var(--ms-inspector) - 2 * var(--ms-space-3)));
       margin-inline: auto;
       box-shadow: var(--ms-shadow-2);
     }

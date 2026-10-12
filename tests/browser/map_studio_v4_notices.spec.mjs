@@ -657,6 +657,61 @@ test("a notice is validated and stored from one read of each field", async ({ pa
     .toContain(stored.afterPlaceholders?.placeholders?.name ?? null);
 });
 
+// Home Assistant's default palettes (home-assistant/frontend color.globals.ts),
+// the colours ha_theme_axe.mjs audits with.
+const HA_PALETTES = {
+  light: {
+    "--primary-color": "#009ac7", "--card-background-color": "#ffffff", "--secondary-background-color": "#e5e5e5",
+    "--primary-text-color": "#141414", "--error-color": "#db4437", "--warning-color": "#ffa600", "--success-color": "#43a047",
+  },
+  dark: {
+    "--primary-color": "#009ac7", "--card-background-color": "#1c1c1c", "--secondary-background-color": "#282828",
+    "--primary-text-color": "#e1e1e1", "--error-color": "#db4437", "--warning-color": "#ffa600", "--success-color": "#43a047",
+  },
+};
+
+test("notice text keeps 4.5:1 contrast in every tone with Home Assistant's palettes", async ({ page }) => {
+  for (const [scheme, palette] of Object.entries(HA_PALETTES)) {
+    await page.emulateMedia({ colorScheme: scheme });
+    const gallery = await loadGallery(page);
+    await page.evaluate((colors) => {
+      for (const [name, value] of Object.entries(colors)) document.documentElement.style.setProperty(name, value);
+    }, palette);
+    for (const tone of ["info", "success", "warning", "error"]) {
+      await setGalleryNotice(page, sampleNotice(tone, `${tone} contrast sample`));
+      const ratios = await gallery.locator(".notice-text").evaluateAll((elements) => elements.map((element) => {
+        const luminance = (color) => {
+          const values = color.match(/[\d.]+/g).slice(0, 3).map(Number);
+          const rgb = color.startsWith("color(srgb") ? values : values.map((value) => value / 255);
+          const [r, g, b] = rgb.map((c) => (c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+          return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        };
+        const text = luminance(getComputedStyle(element).color);
+        const surface = luminance(getComputedStyle(element.parentElement).backgroundColor);
+        return (Math.max(text, surface) + 0.05) / (Math.min(text, surface) + 0.05);
+      }));
+      expect(ratios.length, `${scheme} ${tone} rendered`).toBeGreaterThan(0);
+      expect(Math.min(...ratios), `${scheme} ${tone} ${JSON.stringify(ratios)}`).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+});
+
+test("a wide toast is centred over the canvas", async ({ page }) => {
+  for (const [width, height] of [[1024, 768], [1440, 900]]) {
+    await page.setViewportSize({ width, height });
+    const gallery = await loadGallery(page);
+    await setGalleryNotice(page, sampleNotice("success", `Centred at ${width}`));
+    const toast = gallery.locator("[data-notice-toast]");
+    await expect(toast).toBeVisible();
+    const offset = await toast.evaluate((element) => {
+      const centre = (box) => box.left + box.width / 2;
+      const canvas = element.getRootNode().querySelector(".canvas").getBoundingClientRect();
+      return centre(element.getBoundingClientRect()) - centre(canvas);
+    });
+    expect(Math.abs(offset), `toast centre offset at ${width}`).toBeLessThanOrEqual(1);
+  }
+});
+
 test("slot, toast and canvas chip carry no live role", async ({ page }) => {
   const gallery = await loadGallery(page);
   await setGalleryNotice(page, sampleNotice("error", "Silent surfaces sample"));
