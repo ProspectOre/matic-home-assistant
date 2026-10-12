@@ -115,7 +115,7 @@ Strip titles and details are in §4; dialog copy is in §5. Glossary: `docs/ux-a
 ## 10. Decisions needed
 - **D1 Locating escalation (MS-HOST-04).** Offer "Try again" in the sheet after a bounded wait? *Recommended:* 20 s, with the fail-closed timer rules in §5 and the HUD gaining text only. *Alternative:* also offer Copy support info (the audit Direction), at the cost of a second verb.
 - **Owner decisions (2026-10-11):** all recommendations accepted. D1 "Try again" after 20 s with the §5 timer rules; the HUD gains text only; no Copy support info.
-- **Build decisions (UX0, 2026-10-12):** the slot's Close (`v4_close`) clears the notice and the toast's control is named "Hide notification" (`v4_hide_notification`) because it only hides the toast (rule 3); a workflow change clears a success notice from the slot but lets a showing toast finish its timer (rule 5).
+- **Build decisions (UX0, 2026-10-12):** the slot's Close (`v4_close`) clears the notice and the toast's control is named "Hide notification" (`v4_hide_notification`) because it only hides the toast (rule 3); a workflow change clears a success notice from the slot but lets a showing toast finish its timer (rule 5). UX0 Fix 9: a delete dialog closes on proof, not doubt; a failed catalog reload keeps it, and only a ready catalog without the item (or a reset that empties it) closes it.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

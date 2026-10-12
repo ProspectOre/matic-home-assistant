@@ -2107,10 +2107,13 @@ export class EffectController {
       const problem = error instanceof BackendError && error.code === "map-rechecking"
         ? "map-rechecking"
         : problemCode(error, "plans-unavailable");
+      // A failed read proves nothing about the saved plans, so it keeps the
+      // last catalog as a reload does; an open delete dialog still names its
+      // plan (WorkspaceStore.replace).
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
-          plans: resource("error", null, problem),
+          plans: resource("error", this.#store.value.resources.plans.value, problem),
         },
       });
       return null;
@@ -2190,10 +2193,11 @@ export class EffectController {
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
       if (isAbort(error) || controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return null;
+      // Like plans, a failed read keeps the last catalog.
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
-          areas: resource("error", null, problemCode(error, "areas-unavailable")),
+          areas: resource("error", this.#store.value.resources.areas.value, problemCode(error, "areas-unavailable")),
         },
       });
       return null;

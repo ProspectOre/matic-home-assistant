@@ -8353,6 +8353,33 @@ test.describe("Map Studio resolved theme colours", () => {
     }, "#db4437 is 3.97:1 on #1c1c1c").toEqual({ color: "rgb(223, 87, 75)", card: 4.55 });
   });
 
+  // The indicator is checked on every surface it sits on. A light card over
+  // a dark sunken surface needs a step away from the card's far end; when no
+  // step reaches 3:1 on both, the end colour with the greater minimum wins.
+  test("the indicator reaches 3:1 on a light card and a dark sunken surface, or is the end colour that contrasts more", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    await settleWorkspace(gallery);
+    const tool = gallery.getByRole("button", { name: "Paint", exact: true });
+    await tool.click();
+    await expect(tool).toHaveAttribute("aria-pressed", "true");
+    const measure = (card, sunken) => async () => {
+      const color = await style(tool, "borderTopColor");
+      return { color, card: ratio(color, card), sunken: ratio(color, sunken) };
+    };
+    await theme(page, { ...HA_LIGHT, "--primary-color": "#000000", "--card-background-color": "#ffffff", "--secondary-background-color": "#000000" });
+    await expect.poll(measure("rgb(255, 255, 255)", "rgb(0, 0, 0)"), "black is 1:1 on the black surface; the first step toward white that passes both")
+      .toEqual({ color: "rgb(102, 102, 102)", card: 5.74, sunken: 3.66 });
+    // #767676 sends the search toward black first, but white's minimum
+    // (4.54 on the card) beats black's (4 on #6c6c6c).
+    await theme(page, { ...HA_LIGHT, "--primary-color": "#767676", "--card-background-color": "#767676", "--secondary-background-color": "#6c6c6c" });
+    await expect.poll(measure("rgb(118, 118, 118)", "rgb(108, 108, 108)"), "no step passes; the end colour with the greater minimum")
+      .toEqual({ color: "rgb(255, 255, 255)", card: 4.54, sunken: 5.25 });
+    expect(errors).toEqual([]);
+  });
+
   // A filled button's hover and press mix away from its label, so the label
   // keeps 4.5:1 in a dark theme too.
   test("hovered and pressed primary and Stop keep their label at 4.5:1 in HA's dark palette", async ({ page }) => {

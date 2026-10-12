@@ -146,9 +146,14 @@ export const resolveFill = (fill: Channel, label: Channel): readonly [fill: Chan
 
 // The indicator (3:1) and danger text (4.5:1) keep HA's colour when it
 // reaches `ratio` on every surface; otherwise the same search runs toward
-// black on a light first surface and white on a dark one. If no step
-// reaches it, that end colour itself is used (the spec names no last step).
+// black on a light first surface and white on a dark one, then toward the
+// other end, and every step is checked on every surface. If no step reaches
+// it, the end colour (black or white) whose lowest contrast across the
+// surfaces is higher is used (the spec names no last step).
 export const resolveTone = (color: Channel, ratio: number, surfaces: readonly [Channel, ...Channel[]]): Channel => {
-  const end = contrast(surfaces[0], BLACK) > contrast(surfaces[0], WHITE) ? BLACK : WHITE;
-  return search(color, end[0], (step) => surfaces.every((surface) => contrast(step, surface) >= ratio)) ?? end;
+  const passes = (step: Channel): boolean => surfaces.every((surface) => contrast(step, surface) >= ratio);
+  const lowest = (tone: Channel): number => Math.min(...surfaces.map((surface) => contrast(tone, surface)));
+  const [end, other] = contrast(surfaces[0], BLACK) > contrast(surfaces[0], WHITE) ? [BLACK, WHITE] : [WHITE, BLACK];
+  return search(color, end[0], passes) ?? search(color, other[0], passes)
+    ?? (lowest(BLACK) >= lowest(WHITE) ? BLACK : WHITE);
 };

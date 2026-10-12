@@ -434,7 +434,7 @@ for (const sameFloor of [true, false]) {
 }
 
 for (const kind of ["plan", "area"]) {
-  test(`a ${kind} delete dialog stays open through a catalog reload that still holds the ${kind}`, async ({ page }) => {
+  test(`a ${kind} delete dialog stays open through a catalog reload, even a failed one, that does not prove the ${kind} gone`, async ({ page }) => {
     await loadQualityModules(page);
     const result = await page.evaluate(async (kind) => {
       const { EffectController, WorkspaceStore, createGalleryState, SHELL_TAG, WORKFLOW_TAG } = await import("/quality-modules.js");
@@ -442,9 +442,10 @@ for (const kind of ["plan", "area"]) {
       const initial = createGalleryState(plan ? "plans" : "area-review-rebind");
       const store = new WorkspaceStore(initial);
       let catalog = plan ? initial.resources.plans.value : initial.resources.areas.value;
-      const gate = { held: false, release: null };
+      const gate = { held: false, release: null, fail: false };
       const read = async () => {
         if (gate.held) await new Promise((resolve) => { gate.release = resolve; });
+        if (gate.fail) throw Object.assign(new Error("synthetic offline"), { code: "request-failed" });
         return structuredClone(catalog);
       };
       const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
@@ -498,6 +499,15 @@ for (const kind of ["plan", "area"]) {
       gate.release();
       await reload;
       const reloaded = await observe();
+      gate.fail = true;
+      await load();
+      gate.fail = false;
+      const failedView = await observe();
+      const failed = {
+        status: (plan ? store.value.resources.plans : store.value.resources.areas).status,
+        problem: shell.shadowRoot.querySelector(WORKFLOW_TAG)?.shadowRoot?.querySelector(".problem")?.textContent.replace(/\s+/gu, " ").trim() ?? null,
+        ...failedView,
+      };
       catalog = plan
         ? { ...catalog, plans: catalog.plans.filter((candidate) => candidate.id !== "daily"), selectedPlan: "weekend" }
         : { ...catalog, areas: [], selectedArea: null };
@@ -505,7 +515,7 @@ for (const kind of ["plan", "area"]) {
       const removed = { dialog: store.value.dialog };
       effects.dispose();
       shell.remove();
-      return { opened, loading, reloaded, removed };
+      return { opened, loading, reloaded, failed, removed };
     }, kind);
     const detail = kind === "plan"
       ? "Automations that run \"Daily clean\" will stop working, and the robot won't move. Weekend refresh becomes your default plan."
@@ -514,6 +524,11 @@ for (const kind of ["plan", "area"]) {
     expect(result.opened, "the dialog opens over its Delete button").toEqual({ dialog, detail, sameButton: true });
     expect(result.loading, "while the catalog reloads, the dialog and its Delete button stay").toEqual({ status: "loading", dialog, detail, sameButton: true });
     expect(result.reloaded, "after a reload that still holds the item").toEqual({ dialog, detail, sameButton: true });
+    // A failed read proves nothing: the dialog still names the item, and the
+    // plan view behind it shows the problem (area review lists no catalog).
+    expect(result.failed, "after a reload that fails").toEqual(kind === "plan"
+      ? { status: "error", problem: "Rooms and plans are unavailable right now. Try again shortly.", dialog, detail, sameButton: false }
+      : { status: "error", problem: null, dialog, detail, sameButton: true });
     expect(result.removed, "a ready catalog without the item closes the dialog").toEqual({ dialog: null });
   });
 }

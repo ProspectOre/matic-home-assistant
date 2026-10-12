@@ -635,7 +635,10 @@ export class WorkspaceStore {
   // another is its own frozen object, so a repeated notice toasts and
   // announces again (shell.md §4 rule 1); an invalid one is ignored and the
   // current notice stays. A delete dialog stands only while the catalog holds
-  // the saved item it names (copy-style-0.5.md:90, 96).
+  // the saved item it names (copy-style-0.5.md:90, 96). A reload, failed or
+  // not, keeps the last catalog (effects.ts loadPlans, loadAreas), so only a
+  // ready read without the item, or a reset that empties the catalog, closes
+  // it; a dialog left with nothing to name would block the workspace unseen.
   replace(next: WorkspaceState): WorkspaceState {
     if (next === this.#state) return next;
     const noticed = next.notice && next.notice !== this.#state.notice
