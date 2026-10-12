@@ -1178,15 +1178,13 @@ class MaticRunPlanTool(_MaticTool):
         if reason := robot.start_block_reason():
             return await _async_refusal(hass, llm_context, "common", reason)
         manager = robot.entry.runtime_data.cleaning_plans
+        plan_id = _resolve_plan_id(manager, robot.serial_number, args.get("plan"))
         try:
-            plan = manager.plan(robot.serial_number, args.get("plan"))
+            plan = manager.plan(robot.serial_number, plan_id)
         except KeyError:
+            # No plan was named and the robot has no saved plan to default to.
             return await _async_refusal(
-                hass,
-                llm_context,
-                "exceptions",
-                "unknown_plan",
-                {"plan": args.get("plan") or ""},
+                hass, llm_context, "exceptions", "unknown_plan", {"plan": ""}
             )
         if not plan.get("enabled", True):
             return await _async_refusal(
@@ -1377,15 +1375,13 @@ class MaticResetScheduleTool(_MaticTool):
         if reason := robot.edit_block_reason():
             return await _async_refusal(hass, llm_context, "common", reason)
         manager = robot.entry.runtime_data.cleaning_plans
+        plan_id = _resolve_plan_id(manager, robot.serial_number, args.get("plan"))
         try:
-            plan = manager.plan(robot.serial_number, args.get("plan"))
+            plan = manager.plan(robot.serial_number, plan_id)
         except KeyError:
+            # No plan was named and the robot has no saved plan to default to.
             return await _async_refusal(
-                hass,
-                llm_context,
-                "exceptions",
-                "unknown_plan",
-                {"plan": args.get("plan") or ""},
+                hass, llm_context, "exceptions", "unknown_plan", {"plan": ""}
             )
         data: dict[str, Any] = {
             ATTR_ENTITY_ID: robot.entity_id,

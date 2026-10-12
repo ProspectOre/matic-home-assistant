@@ -1317,6 +1317,7 @@ def _control_hass(
                 return {"id": plan_id, **value}
         raise KeyError(reference)
 
+    manager.plans.return_value = saved
     manager.plan.side_effect = plan
     hass = _hass(entry)
     hass.config = SimpleNamespace(language="en")
@@ -1526,12 +1527,16 @@ async def test_run_plan_reports_quick_outcomes_and_refusals() -> None:
         await _run(hass, patches, MaticRunPlanTool(), {})
 
     hass, _registry, patches = _control_hass()
+    with pytest.raises(HomeAssistantError, match="No plan is named Missing"):
+        await _run(hass, patches, MaticRunPlanTool(), {"plan": "Missing"})
+    hass, _registry, patches = _control_hass(plans={})
     _refused(
-        await _run(hass, patches, MaticRunPlanTool(), {"plan": "Missing"}),
+        await _run(hass, patches, MaticRunPlanTool(), {}),
         "exceptions",
         "unknown_plan",
-        plan="Missing",
+        plan="",
     )
+    hass.services.async_call.assert_not_awaited()
     hass, _registry, patches = _control_hass(
         plans={"home": {"name": "Home", "enabled": False}}
     )
@@ -1802,16 +1807,25 @@ async def test_reset_schedule_uses_the_panel_reset() -> None:
             MaticResetScheduleTool(),
             {"room": "Attic", "schedule": "mop"},
         )
-    _refused(
+    with pytest.raises(HomeAssistantError, match="No plan is named Missing"):
         await _run(
             hass,
             patches,
             MaticResetScheduleTool(),
             {"plan": "Missing", "schedule": "mop", "scope": "plan"},
+        )
+    hass.services.async_call.assert_not_awaited()
+    hass, _registry, patches = _control_hass(plans={}, floor_plan=floor_plan)
+    _refused(
+        await _run(
+            hass,
+            patches,
+            MaticResetScheduleTool(),
+            {"schedule": "mop", "scope": "plan"},
         ),
         "exceptions",
         "unknown_plan",
-        plan="Missing",
+        plan="",
     )
     hass.services.async_call.assert_not_awaited()
 
@@ -1832,6 +1846,33 @@ async def test_reset_schedule_uses_the_panel_reset() -> None:
             "common",
             reason,
         )
+
+
+@pytest.mark.parametrize(
+    ("tool", "args"),
+    [
+        (MaticRunPlanTool(), {"plan": "home"}),
+        (
+            MaticResetScheduleTool(),
+            {"plan": "home", "schedule": "mop", "scope": "plan"},
+        ),
+    ],
+)
+async def test_plan_tools_refuse_a_name_two_plans_share(tool, args) -> None:
+    hass, _registry, patches = _control_hass(
+        plans={
+            "home-a": {"name": "Home", "enabled": True},
+            "home-b": {"name": "Home", "enabled": True},
+        }
+    )
+    with pytest.raises(HomeAssistantError) as raised:
+        await _run(hass, patches, tool, args)
+    assert raised.value.translation_key == "llm_plan_ambiguous"
+    assert (
+        str(raised.value)
+        == "More than one plan is named home. Use the plan's ID instead."
+    )
+    hass.services.async_call.assert_not_awaited()
 
 
 async def test_refusals_use_the_conversation_language() -> None:
