@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from custom_components.matic_robot import frontend
+from tests.frontend_sources import shipped_modules
 
 _STUDIO_V4_DIRECTORY = frontend.MATIC_MAP_STUDIO_V4_DIRECTORY
 _SCENE_PARSER_SOURCE = (
@@ -127,3 +128,23 @@ def test_scene_parser_worker_stays_bounded_and_disposable() -> None:
     assert "#queued: CodecRun | null = null" in _SCENE_PARSER_SOURCE
     assert 'new ContractError("scene-parser-busy")' in _SCENE_PARSER_SOURCE
     assert "URL.revokeObjectURL(this.#workerUrl)" in _SCENE_PARSER_SOURCE
+
+
+_MS_CUSTOM_PROPERTY_USE = re.compile(r"var\(\s*(--ms-[a-z0-9-]+)")
+_MS_CUSTOM_PROPERTY_DEFINED = re.compile(r"(--ms-[a-z0-9-]+)\s*:")
+_MS_CUSTOM_PROPERTY_SET = re.compile(r'setProperty\(\s*"(--ms-[a-z0-9-]+)"')
+
+
+def test_every_ms_custom_property_is_defined() -> None:
+    """A ``var(--ms-*)`` without a definition silently falls back to inheritance."""
+    sources = shipped_modules().values()
+    used = {
+        name for text in sources for name in _MS_CUSTOM_PROPERTY_USE.findall(text)
+    }
+    defined = {
+        name
+        for text in sources
+        for pattern in (_MS_CUSTOM_PROPERTY_DEFINED, _MS_CUSTOM_PROPERTY_SET)
+        for name in pattern.findall(text)
+    }
+    assert used - defined == set()
