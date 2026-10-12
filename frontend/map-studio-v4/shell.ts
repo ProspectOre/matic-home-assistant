@@ -408,6 +408,7 @@ export class MaticMapShellV4 extends LitElement {
   #toastRemaining = 0;
   #toastHover = false;
   #toastFocus = false;
+  #noticeFocus: "[data-notice-slot]" | "[data-notice-toast]" | null = null;
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
   #observedSheet: Element | null = null;
@@ -471,7 +472,8 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   override disconnectedCallback(): void {
-    this.#stopToast();
+    // Nothing re-arms a toast on reconnect, so it must not outlive the detach.
+    this.#hideToast();
     this.#resizeObserver?.disconnect();
     this.#resizeObserver = null;
     this.#sheetResizeObserver?.disconnect();
@@ -486,6 +488,11 @@ export class MaticMapShellV4 extends LitElement {
   // the toast and is announced once: the region is cleared, then set after
   // that render (shell.md §4 notice rule).
   protected override willUpdate(changed: PropertyValues<this>): void {
+    // Which notice surface holds focus before this render; updated() moves
+    // focus to the panel if that surface is removed or hidden by it.
+    const active = this.shadowRoot?.activeElement ?? null;
+    this.#noticeFocus = (["[data-notice-slot]", "[data-notice-toast]"] as const)
+      .find((hook) => active?.closest(hook)) ?? null;
     if (!changed.has("state")) return;
     const next = this.state.notice;
     if (next === (changed.get("state") as WorkspaceState | undefined)?.notice) return;
@@ -495,10 +502,15 @@ export class MaticMapShellV4 extends LitElement {
     if (!next) return;
     this._toast = next;
     this.#toastRemaining = TOAST_MS[next.tone];
-    this.#armToast();
     const text = this.#t(next.key, next.fallback, next.placeholders);
     void this.updateComplete.then(() => {
       if (this.state.notice !== next) return;
+      // A toast replaced in place gets no new pointerenter or focusin, so
+      // read the live hover and focus before the timer starts.
+      const toast = this.renderRoot.querySelector<HTMLElement>("[data-notice-toast]");
+      this.#toastHover = Boolean(toast?.matches(":hover"));
+      this.#toastFocus = Boolean(toast?.contains(this.shadowRoot?.activeElement ?? null));
+      this.#armToast();
       if (next.tone === "error") this._alertNotice = text;
       else this._politeNotice = text;
     });
@@ -560,6 +572,11 @@ export class MaticMapShellV4 extends LitElement {
     // Protected reactive fields are not in `keyof this`, so the map is read
     // through the untyped view for those.
     const local = changed as PropertyValues;
+    if (this.#noticeFocus) {
+      const surface = this.renderRoot.querySelector<HTMLElement>(this.#noticeFocus);
+      this.#noticeFocus = null;
+      if (!surface || surface.hidden) this.#focusPanel();
+    }
     const sheet = this.renderRoot.querySelector(".mobile-sheet");
     if (sheet !== this.#observedSheet) {
       this.#sheetResizeObserver?.disconnect();

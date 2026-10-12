@@ -207,6 +207,19 @@ const setGalleryNotice = (page, notice) => galleryIntent(page, { type: "set-noti
 const galleryNotice = (page) => page.evaluate((tag) =>
   document.querySelector(tag).getWorkspaceSnapshot().notice, GALLERY_TAG);
 
+// After install() fake time still follows the wall clock. Pause it once the
+// page is up, so runFor() is the only thing that moves it.
+const freezeClock = async (page) => {
+  const now = await page.evaluate(() => Date.now());
+  await page.clock.pauseAt(now + 1000);
+};
+
+const shellActive = (page) => page.evaluate((tag) => {
+  const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+  const active = shell.shadowRoot.activeElement;
+  return active ? `${active.localName}${active.closest(".panel-heading") ? " in heading" : ""}` : null;
+}, GALLERY_TAG);
+
 test("the notice slot sits directly under the workflow heading in every workflow", async ({ page }) => {
   for (const scenario of [
     "ready", "rooms", "plans", "plan-saved-intelligent", "draw", "area-review-new", "history", "support",
@@ -305,12 +318,16 @@ test("info notices toast in Full map", async ({ page }) => {
     const hud = element.getRootNode().querySelector(".full-map-hud").getBoundingClientRect();
     return hud.top - element.getBoundingClientRect().bottom;
   });
+  // The anchor clears a HUD holding a large action button; this HUD has no
+  // button (choose-cleaning renders none), so it sits about 31 px lower.
   expect(gap).toBeGreaterThanOrEqual(0);
+  expect(gap).toBeLessThanOrEqual(40);
 });
 
 test("the toast hides on its timer but the slot keeps the notice", async ({ page }) => {
   await page.clock.install();
   const gallery = await loadGallery(page);
+  await freezeClock(page);
   const toast = gallery.locator("[data-notice-toast]");
   await setGalleryNotice(page, sampleNotice("success", "Timed sample"));
   await expect(toast).toBeVisible();
@@ -335,6 +352,7 @@ test("the toast hides on its timer but the slot keeps the notice", async ({ page
 test("hovering or focusing the toast pauses its timer", async ({ page }) => {
   await page.clock.install();
   const gallery = await loadGallery(page);
+  await freezeClock(page);
   const toast = gallery.locator("[data-notice-toast]");
 
   await setGalleryNotice(page, sampleNotice("success", "Hovered sample"));
@@ -401,6 +419,74 @@ test("Escape leaves the notice in place", async ({ page }) => {
     await expect(toast).toBeVisible();
     expect(await galleryNotice(page)).toMatchObject({ tone: "error", fallback: "Escape sample" });
   }
+});
+
+test("Escape leaves a workflow without clearing its error notice", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "rooms" });
+  const slot = gallery.locator("[data-notice-slot]");
+  const toast = gallery.locator("[data-notice-toast]");
+  await setGalleryNotice(page, sampleNotice("error", "Workflow escape sample"));
+  await expect(toast).toBeVisible();
+
+  await slot.getByRole("button", { name: "Close" }).focus();
+  await page.keyboard.press("Escape");
+  await expect.poll(() => page.evaluate((tag) =>
+    document.querySelector(tag).getWorkspaceSnapshot().workflow, GALLERY_TAG)).toBe("none");
+  expect(await galleryNotice(page)).toMatchObject({ tone: "error", fallback: "Workflow escape sample" });
+  await expect(slot).toContainText("Workflow escape sample");
+  await expect(toast).toBeVisible();
+});
+
+test("a detached and reattached shell does not keep a stale toast", async ({ page }) => {
+  await page.clock.install();
+  const gallery = await loadGallery(page);
+  await freezeClock(page);
+  const toast = gallery.locator("[data-notice-toast]");
+  await setGalleryNotice(page, sampleNotice("success", "Detached sample"));
+  await expect(toast).toBeVisible();
+
+  await page.evaluate(async (tag) => {
+    const stage = document.querySelector(tag).shadowRoot.querySelector(".stage");
+    const shell = stage.firstElementChild;
+    shell.remove();
+    stage.append(shell);
+    await shell.updateComplete;
+  }, GALLERY_TAG);
+  await expect(toast).toBeHidden();
+  await expect(gallery.locator("[data-notice-slot]")).toContainText("Detached sample");
+  expect(await galleryNotice(page)).toMatchObject({ tone: "success", fallback: "Detached sample" });
+});
+
+test("a toast replaced under the pointer keeps its timer paused", async ({ page }) => {
+  await page.clock.install();
+  const gallery = await loadGallery(page);
+  await freezeClock(page);
+  const toast = gallery.locator("[data-notice-toast]");
+  await setGalleryNotice(page, sampleNotice("success", "First under pointer"));
+  await expect(toast).toBeVisible();
+  await toast.hover();
+
+  await setGalleryNotice(page, sampleNotice("success", "Second under pointer"));
+  await expect(toast).toContainText("Second under pointer");
+  await page.clock.runFor(8000);
+  await expect(toast).toBeVisible();
+  await page.mouse.move(1, 1);
+  await page.clock.runFor(3900);
+  await expect(toast).toBeVisible();
+  await page.clock.runFor(100);
+  await expect(toast).toBeHidden();
+});
+
+test("focus leaves a toast that a cleared notice hides for the panel heading", async ({ page }) => {
+  const gallery = await loadGallery(page);
+  const toast = gallery.locator("[data-notice-toast]");
+  await setGalleryNotice(page, sampleNotice("error", "Focused then cleared"));
+  await toast.getByRole("button", { name: "Close" }).focus();
+  expect(await shellActive(page)).toBe("button");
+
+  await setGalleryNotice(page, null);
+  await expect(toast).toBeHidden();
+  await expect.poll(() => shellActive(page)).toBe("h2 in heading");
 });
 
 test("@safety errors announce through the alert region and other tones through the polite region, once each", async ({ page }) => {
