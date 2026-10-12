@@ -1092,6 +1092,9 @@ class MaticAreasView(HomeAssistantView):
                 "scene_url": scene_api_url(entry_id),
                 "rooms": self._rooms(floor_plan),
                 "areas": areas,
+                "selected_area": runtime.cleaning_plans.snapshot(serial_number).get(
+                    "selected_area"
+                ),
             },
             headers=PRIVATE_NO_STORE_HEADERS,
         )

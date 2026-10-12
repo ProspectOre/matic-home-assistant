@@ -1,4 +1,4 @@
-import{J as M,K as i}from"./chunk-SPPO3SA7.js";var Y=M`
+import{K as M,L as i}from"./chunk-XMC3KVBH.js";var Y=M`
 :host {
 --ms-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
 --ms-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));

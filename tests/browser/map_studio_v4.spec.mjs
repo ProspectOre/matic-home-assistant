@@ -752,6 +752,85 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(areaDialog.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
   });
 
+  // The backend promotes the first remaining item in saved order, paused or
+  // not, or none (plans.py:2623-2624, 2159-2160); the dialog says which.
+  const openDelete = (gallery, { kind, id, selected, order }) => gallery.evaluate((element, request) => {
+    const state = element.getWorkspaceSnapshot();
+    const plan = request.kind === "plan";
+    const resource = plan ? state.resources.plans : state.resources.areas;
+    const scenario = window.__galleryModule.createGalleryState(plan ? "plans" : "area-review-rebind").resources;
+    const pool = plan ? scenario.plans.value.plans : scenario.areas.value.areas;
+    const extra = (itemId) => ({ ...pool[0], id: itemId, name: itemId[0].toUpperCase() + itemId.slice(1) });
+    const items = request.order.map((itemId) => pool.find((item) => item.id === itemId) ?? extra(itemId));
+    const name = items.find((item) => item.id === request.id).name;
+    const value = { ...resource.value, [plan ? "plans" : "areas"]: items, [plan ? "selectedPlan" : "selectedArea"]: request.selected };
+    element.replaceWorkspaceState({
+      ...state,
+      resources: { ...state.resources, [plan ? "plans" : "areas"]: { ...resource, value } },
+      ...(plan
+        ? { planDraft: { ...state.planDraft, id: request.id, name }, selection: { ...state.selection, planId: request.id } }
+        : { areaDraft: { ...state.areaDraft, id: request.id, name }, selection: { ...state.selection, areaId: request.id } }),
+      dialog: plan ? "confirmDeletePlan" : "confirmDeleteArea",
+    });
+  }, { kind, id, selected, order });
+
+  test("deleting the default plan says which plan becomes the default", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "plans" });
+    const dialog = gallery.getByRole("dialog", { name: "Delete plan?" });
+    for (const [id, order, expected] of [
+      ["weekend", ["daily", "weekend", "guest"], "Daily clean becomes your default plan."],
+      ["daily", ["daily", "guest", "weekend"], "Guest prep becomes your default plan."],
+      ["daily", ["daily"], "You'll have no default plan."],
+    ]) {
+      await openDelete(gallery, { kind: "plan", id, selected: id, order });
+      await expect(dialog, `deleting default ${id} of ${order}`).toContainText(expected);
+    }
+    await openDelete(gallery, { kind: "plan", id: "weekend", selected: "daily", order: ["daily", "weekend"] });
+    await expect(dialog).toContainText("Automations that run \"Weekend refresh\" will stop working, and the robot won't move.");
+    await expect(dialog, "a plan that is not the default changes no default").not.toContainText("default plan");
+  });
+
+  test("deleting the selected custom area says which area becomes selected", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "area-review-rebind" });
+    const dialog = gallery.getByRole("dialog", { name: "Delete area?" });
+    for (const [id, order, expected] of [
+      ["entryway", ["porch", "entryway", "desk"], "Porch becomes the selected custom area."],
+      ["porch", ["entryway", "desk", "porch"], "Entryway becomes the selected custom area."],
+      ["entryway", ["entryway"], "No custom area will be selected."],
+    ]) {
+      await openDelete(gallery, { kind: "area", id, selected: id, order });
+      await expect(dialog, `deleting selected ${id} of ${order}`).toContainText(expected);
+    }
+    await openDelete(gallery, { kind: "area", id: "entryway", selected: "porch", order: ["porch", "entryway"] });
+    await expect(dialog).toContainText("Automations that clean \"Entryway\" will stop working, and the robot won't move.");
+    await expect(dialog, "an area that is not selected changes no selection").not.toContainText("custom area");
+  });
+
+  test("Delete shows and its dialog stands only while the catalog holds the saved item", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "area-review-rebind" });
+    const unresolved = (patch) => gallery.evaluate((element, { patch: kind }) => {
+      const state = element.getWorkspaceSnapshot();
+      const resources = kind === "area-loading"
+        ? { ...state.resources, areas: { status: "loading", value: null, problem: null } }
+        : { ...state.resources, plans: { ...state.resources.plans, value: { ...state.resources.plans.value, plans: [] } } };
+      element.replaceWorkspaceState({ ...state, resources, ...(kind === "plan-gone" ? { planDraft: { ...state.planDraft, dirty: true } } : {}) });
+      const dialog = kind === "area-loading" ? "confirmDeleteArea" : "confirmDeletePlan";
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), dialog });
+      return element.getWorkspaceSnapshot().dialog;
+    }, { patch });
+
+    await expect(gallery.getByRole("button", { name: "Delete area" })).toBeVisible();
+    expect(await unresolved("area-loading"), "a delete dialog for an area the catalog has not loaded").toBeNull();
+    await expect(gallery.getByRole("button", { name: "Delete area" })).toHaveCount(0);
+    await expect(gallery.getByRole("dialog")).toHaveCount(0);
+
+    await page.evaluate((tag) => document.querySelector(tag).setScenario("plan-saved-intelligent"), GALLERY_TAG);
+    await expect(gallery.getByRole("button", { name: "Delete plan", exact: true })).toBeVisible();
+    expect(await unresolved("plan-gone"), "a delete dialog for a plan deleted elsewhere").toBeNull();
+    await expect(gallery.getByRole("button", { name: "Delete plan", exact: true })).toHaveCount(0);
+    await expect(gallery.getByRole("dialog")).toHaveCount(0);
+  });
+
   test("a room settings check that fails says so and offers Try again", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "rooms" });
     // The gallery always admits a synthetic preview, so the failed check is

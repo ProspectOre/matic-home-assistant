@@ -151,6 +151,8 @@ export interface AreasCatalog {
   readonly sceneUrl: string;
   readonly rooms: readonly MapRoom[];
   readonly areas: readonly SavedArea[];
+  /** The area the "Custom cleaning area" select and Clean selected area button use (`selected_area`). */
+  readonly selectedArea: string | null;
 }
 
 export interface PlanRoom {
@@ -281,6 +283,10 @@ const boundedString = (value: unknown, maximum: number, code: string): string =>
   }
   return text;
 };
+
+// The plan or area native entities use; absent or null means none.
+const selectedId = (value: unknown, code: string): string | null =>
+  value === null || value === undefined ? null : boundedString(value, 128, code);
 
 const optionalLabel = (value: unknown): string | null => {
   if (value === null || value === undefined || value === "") return null;
@@ -737,6 +743,7 @@ export const parseAreasCatalog = (value: unknown): AreasCatalog => {
         canRebind: booleanValue(area.can_rebind, "invalid-area-rebind"),
       } satisfies SavedArea;
     }),
+    selectedArea: selectedId(payload.selected_area, "invalid-selected-area"),
   };
 };
 
@@ -772,9 +779,7 @@ export const parsePlansCatalog = (value: unknown): PlansCatalog => {
   });
   return {
     rooms,
-    selectedPlan: payload.selected_plan === null || payload.selected_plan === undefined
-      ? null
-      : boundedString(payload.selected_plan, 128, "invalid-selected-plan"),
+    selectedPlan: selectedId(payload.selected_plan, "invalid-selected-plan"),
     plans: payload.plans.map((candidate) => {
       const plan = objectValue(candidate, "invalid-plan");
       if (!Array.isArray(plan.rooms) || plan.rooms.length > MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE || !Array.isArray(plan.room_order)) {

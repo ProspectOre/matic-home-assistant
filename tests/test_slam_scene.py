@@ -1284,6 +1284,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
         },
         "legacy": {"name": "Legacy"},
     }
+    runtime.cleaning_plans.snapshot.return_value = {"selected_area": "review"}
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
@@ -1339,6 +1340,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
                 "can_rebind": False,
             },
         ],
+        "selected_area": "review",
     }
     assert areas_api_url("entry") == AREAS_API_URL.format(entry_id="entry")
     with pytest.raises(Unauthorized):

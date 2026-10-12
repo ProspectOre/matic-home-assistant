@@ -56,10 +56,12 @@ import "./map-canvas";
 import { formatList, translate } from "./localize";
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
+  deleteSubject,
   initialWorkspaceState,
   isSelectedRobotUnavailable,
   selectStopSecondaryAction,
   selectPrimaryAction,
+  type DeleteSubject,
 } from "./state";
 
 const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
@@ -276,7 +278,7 @@ interface SheetDrag {
 interface BodySwipe {
   readonly pointerId: number;
   readonly startY: number;
-  readonly atTop: boolean;
+  readonly scroller: HTMLElement | null;
   consumed: boolean;
 }
 
@@ -292,6 +294,8 @@ const FOCUSABLE = [
 interface DialogPresentation {
   readonly title: string;
   readonly detail: string;
+  /** What else the delete changes: the default plan or the selected custom area. */
+  readonly consequence?: string;
   readonly cancelLabel: string;
   readonly confirmLabel: string;
   readonly action: "discard" | "delete-plan" | "delete-area" | "reset-room-cadence" | "stop" | null;
@@ -304,7 +308,7 @@ const dialogCopy = (
   resetRoomName = "room",
   sharedCadence = false,
   resetMode: "mop" | "coverage" = "mop",
-  savedName = "",
+  subject: DeleteSubject | null = null,
 ): DialogPresentation | null => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
     translate(localize, key, fallback, placeholders);
@@ -318,17 +322,27 @@ const dialogCopy = (
         action: "discard",
       };
     case "confirmDeletePlan":
-      return {
+      return subject && {
         title: t("v4_delete_plan", "Delete plan?"),
-        detail: t("v4_delete_plan_detail", "Automations that run \"{name}\" will stop working, and the robot won't move.", { name: savedName }),
+        detail: t("v4_delete_plan_detail", "Automations that run \"{name}\" will stop working, and the robot won't move.", { name: subject.name }),
+        ...(subject.successor === undefined ? {} : {
+          consequence: subject.successor === null
+            ? t("v4_delete_plan_none", "You'll have no default plan.")
+            : t("v4_delete_plan_default", "{new_default} becomes your default plan.", { new_default: subject.successor }),
+        }),
         cancelLabel: t("v4_cancel", "Cancel"),
         confirmLabel: t("plan_delete", "Delete"),
         action: "delete-plan",
       };
     case "confirmDeleteArea":
-      return {
+      return subject && {
         title: t("v4_delete_area", "Delete area?"),
-        detail: t("v4_delete_area_detail", "Automations that clean \"{name}\" will stop working, and the robot won't move.", { name: savedName }),
+        detail: t("v4_delete_area_detail", "Automations that clean \"{name}\" will stop working, and the robot won't move.", { name: subject.name }),
+        ...(subject.successor === undefined ? {} : {
+          consequence: subject.successor === null
+            ? t("v4_delete_area_none", "No custom area will be selected.")
+            : t("v4_delete_area_selected", "{area} becomes the selected custom area.", { area: subject.successor }),
+        }),
         cancelLabel: t("v4_cancel", "Cancel"),
         confirmLabel: t("area_delete", "Delete"),
         action: "delete-area",
@@ -973,27 +987,34 @@ export class MaticMapShellV4 extends LitElement {
     this.#setDetent(nearest);
   }
 
-  // A swipe that starts anywhere in the panel column, pinned heading and slot
-  // included, follows the body scroller's position.
-  #bodyScroller(event: PointerEvent): HTMLElement {
-    return (event.currentTarget as HTMLElement).querySelector(".sheet-body")!;
+  // A swipe follows what the finger scrolls: the nearest scrollable ancestor
+  // of where it starts inside the panel (the capped pinned top or the body).
+  // It steps the sheet only while that scroller is at its top, or with none.
+  #swipeScroller(event: PointerEvent): HTMLElement | null {
+    for (const node of event.composedPath()) {
+      if (node === event.currentTarget) break;
+      if (node instanceof HTMLElement && node.scrollHeight > node.clientHeight
+        && /auto|scroll/u.test(getComputedStyle(node).overflowY)) return node;
+    }
+    return null;
   }
 
   #bodyDown(event: PointerEvent): void {
     if (event.pointerType === "mouse") return;
     if (this.#startsOnInteractiveSheetDescendant(event)) return;
-    this.#bodySwipe = {
+    const scroller = this.#swipeScroller(event);
+    this.#bodySwipe = scroller?.scrollTop ? null : {
       pointerId: event.pointerId,
       startY: event.clientY,
-      atTop: this.#bodyScroller(event).scrollTop === 0,
+      scroller,
       consumed: false,
     };
   }
 
   #bodyMove(event: PointerEvent): void {
     const swipe = this.#bodySwipe;
-    if (!swipe || swipe.consumed || !swipe.atTop || event.pointerId !== swipe.pointerId) return;
-    if (this.#bodyScroller(event).scrollTop > 0) {
+    if (!swipe || swipe.consumed || event.pointerId !== swipe.pointerId) return;
+    if (swipe.scroller?.scrollTop) {
       this.#bodySwipe = null;
       return;
     }
@@ -1527,9 +1548,7 @@ export class MaticMapShellV4 extends LitElement {
       resetPlanRoom?.cadence?.scope === "shared",
       state.cadenceResetRequest?.mode,
       // Automations name the saved plan or area, never an unsaved rename.
-      (state.dialog === "confirmDeletePlan"
-        ? state.resources.plans.value?.plans.find((plan) => plan.id === state.planDraft.id)
-        : state.resources.areas.value?.areas.find((area) => area.id === state.areaDraft.id))?.name,
+      deleteSubject(state),
     );
     const sheetOffset = narrow && !state.fullMap ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";
@@ -1792,7 +1811,10 @@ export class MaticMapShellV4 extends LitElement {
               @keydown=${this.#dialogKeyboard}
             >
               <h2 id="dialog-title">${dialog.title}</h2>
-              <p id="dialog-detail">${dialog.detail}</p>
+              <div id="dialog-detail">
+                <p>${dialog.detail}</p>
+                ${dialog.consequence ? html`<p>${dialog.consequence}</p>` : nothing}
+              </div>
               <div class="dialog-actions">
                 <button
                   class="ms-btn ms-btn--secondary"

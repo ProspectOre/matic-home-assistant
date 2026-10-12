@@ -21,7 +21,7 @@ import {
 } from "./contracts";
 import { WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
-import { admittedManualRoomPreview, initialWorkspaceState } from "./state";
+import { admittedManualRoomPreview, deleteSubject, initialWorkspaceState } from "./state";
 import { formatDateTime, translate } from "./localize";
 import { LazyChunk, chunkStatus } from "./lazy-chunk";
 // Draw's precision controls load with the other workflow tools; the shell
@@ -759,7 +759,7 @@ line-height: var(--ms-lh-snug);
           ` : nothing}
         </div>
         <div class="toolbar">
-          ${draft.id ? html`
+          ${deleteSubject(this.state, "confirmDeletePlan") ? html`
             <button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
@@ -821,7 +821,7 @@ line-height: var(--ms-lh-snug);
         ${this.#mopCoverageHint(draft.cleaningMode)}
         <div class="toolbar">
           <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>${this.#t("v4_edit_outline", "Redraw")}</button>
-          ${draft.id ? html`
+          ${deleteSubject(this.state, "confirmDeleteArea") ? html`
             <button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"

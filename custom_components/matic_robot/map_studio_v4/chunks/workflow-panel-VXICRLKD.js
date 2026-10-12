@@ -1,4 +1,4 @@
-import{B as z,b as q,c as H,x as Y,y as J}from"./chunk-FPJWM4NO.js";import"./chunk-L62ENE4N.js";import{B as Q,C as Z,D as X,R as T,a as P,b as N,c as M,e as W,f as I}from"./chunk-MUP5DRAA.js";import{J as S,K as o,N as K,O as d,P as G,Q as C,c as k,e as B,f as V,n as E,p as F}from"./chunk-SPPO3SA7.js";var ee={ATTRIBUTE:1,CHILD:2,PROPERTY:3,BOOLEAN_ATTRIBUTE:4,EVENT:5,ELEMENT:6},te=r=>(...h)=>({_$litDirective$:r,values:h}),A=class{constructor(h){}get _$AU(){return this._$AM._$AU}_$AT(h,e,s){this._$Ct=h,this._$AM=e,this._$Ci=s}_$AS(h,e){return this.update(h,e)}update(h,e){return this.render(...e)}};var{I:le}=G,se=r=>r;var ae=()=>document.createComment(""),w=(r,h,e)=>{let s=r._$AA.parentNode,t=h===void 0?r._$AB:h._$AA;if(e===void 0){let a=s.insertBefore(ae(),t),i=s.insertBefore(ae(),t);e=new le(a,i,r,r.options)}else{let a=e._$AB.nextSibling,i=e._$AM,l=i!==r;if(l){let c;e._$AQ?.(r),e._$AM=r,e._$AP!==void 0&&(c=r._$AU)!==i._$AU&&e._$AP(c)}if(a!==t||l){let c=e._$AA;for(;c!==a;){let f=se(c).nextSibling;se(s).insertBefore(c,t),c=f}}}return e},y=(r,h,e=r)=>(r._$AI(h,e),r),ce={},ie=(r,h=ce)=>r._$AH=h,oe=r=>r._$AH,D=r=>{r._$AR(),r._$AA.remove()};var ne=(r,h,e)=>{let s=new Map;for(let t=h;t<=e;t++)s.set(r[t],t);return s},re=te(class extends A{constructor(r){if(super(r),r.type!==ee.CHILD)throw Error("repeat() can only be used in text expressions")}dt(r,h,e){let s;e===void 0?e=h:h!==void 0&&(s=h);let t=[],a=[],i=0;for(let l of r)t[i]=s?s(l,i):i,a[i]=e(l,i),i++;return{values:a,keys:t}}render(r,h,e){return this.dt(r,h,e).values}update(r,[h,e,s]){let t=oe(r),{values:a,keys:i}=this.dt(h,e,s);if(!Array.isArray(t))return this.ut=i,a;let l=this.ut??=[],c=[],f,u,p=0,n=t.length-1,m=0,v=a.length-1;for(;p<=n&&m<=v;)if(t[p]===null)p++;else if(t[n]===null)n--;else if(l[p]===i[m])c[m]=y(t[p],a[m]),p++,m++;else if(l[n]===i[v])c[v]=y(t[n],a[v]),n--,v--;else if(l[p]===i[v])c[v]=y(t[p],a[v]),w(r,c[v+1],t[p]),p++,v--;else if(l[n]===i[m])c[m]=y(t[n],a[m]),w(r,t[p],t[n]),n--,m++;else if(f===void 0&&(f=ne(i,m,v),u=ne(l,p,n)),f.has(l[p]))if(f.has(l[n])){let g=u.get(i[m]),_=g!==void 0?t[g]:null;if(_===null){let R=w(r,t[p]);y(R,a[m]),c[m]=R}else c[m]=y(_,a[m]),w(r,t[p],_),t[g]=null;m++}else D(t[n]),n--;else D(t[p]),p++;for(;m<=v;){let g=w(r,c[v+1]);y(g,a[m]),c[m++]=g}for(;p<=n;){let g=t[p++];g!==null&&D(g)}return this.ut=i,ie(r,c),K}});var O=class extends C{constructor(){super(...arguments);this.state=E();this.compact=!1;this.inline=!1}static{this.properties={state:{attribute:!1},localize:{attribute:!1},compact:{type:Boolean,reflect:!0},inline:{type:Boolean,reflect:!0}}}static{this.styles=[P,N,I,S`
+import{B as A,b as H,c as W,x as J,y as ee}from"./chunk-7MVRYZT4.js";import"./chunk-L62ENE4N.js";import{B as Z,C as X,D as Y,R as T,a as P,b as N,c as M,e as O,f as I}from"./chunk-M274S3YL.js";import{K as S,L as o,O as G,P as d,Q,R as C,c as k,e as B,f as V,n as E,p as K,s as q}from"./chunk-XMC3KVBH.js";var te={ATTRIBUTE:1,CHILD:2,PROPERTY:3,BOOLEAN_ATTRIBUTE:4,EVENT:5,ELEMENT:6},se=r=>(...h)=>({_$litDirective$:r,values:h}),z=class{constructor(h){}get _$AU(){return this._$AM._$AU}_$AT(h,e,s){this._$Ct=h,this._$AM=e,this._$Ci=s}_$AS(h,e){return this.update(h,e)}update(h,e){return this.render(...e)}};var{I:ce}=Q,ae=r=>r;var ie=()=>document.createComment(""),w=(r,h,e)=>{let s=r._$AA.parentNode,t=h===void 0?r._$AB:h._$AA;if(e===void 0){let a=s.insertBefore(ie(),t),i=s.insertBefore(ie(),t);e=new ce(a,i,r,r.options)}else{let a=e._$AB.nextSibling,i=e._$AM,l=i!==r;if(l){let c;e._$AQ?.(r),e._$AM=r,e._$AP!==void 0&&(c=r._$AU)!==i._$AU&&e._$AP(c)}if(a!==t||l){let c=e._$AA;for(;c!==a;){let f=ae(c).nextSibling;ae(s).insertBefore(c,t),c=f}}}return e},y=(r,h,e=r)=>(r._$AI(h,e),r),de={},oe=(r,h=de)=>r._$AH=h,ne=r=>r._$AH,D=r=>{r._$AR(),r._$AA.remove()};var re=(r,h,e)=>{let s=new Map;for(let t=h;t<=e;t++)s.set(r[t],t);return s},le=se(class extends z{constructor(r){if(super(r),r.type!==te.CHILD)throw Error("repeat() can only be used in text expressions")}dt(r,h,e){let s;e===void 0?e=h:h!==void 0&&(s=h);let t=[],a=[],i=0;for(let l of r)t[i]=s?s(l,i):i,a[i]=e(l,i),i++;return{values:a,keys:t}}render(r,h,e){return this.dt(r,h,e).values}update(r,[h,e,s]){let t=ne(r),{values:a,keys:i}=this.dt(h,e,s);if(!Array.isArray(t))return this.ut=i,a;let l=this.ut??=[],c=[],f,u,p=0,n=t.length-1,m=0,v=a.length-1;for(;p<=n&&m<=v;)if(t[p]===null)p++;else if(t[n]===null)n--;else if(l[p]===i[m])c[m]=y(t[p],a[m]),p++,m++;else if(l[n]===i[v])c[v]=y(t[n],a[v]),n--,v--;else if(l[p]===i[v])c[v]=y(t[p],a[v]),w(r,c[v+1],t[p]),p++,v--;else if(l[n]===i[m])c[m]=y(t[n],a[m]),w(r,t[p],t[n]),n--,m++;else if(f===void 0&&(f=re(i,m,v),u=re(l,p,n)),f.has(l[p]))if(f.has(l[n])){let g=u.get(i[m]),_=g!==void 0?t[g]:null;if(_===null){let R=w(r,t[p]);y(R,a[m]),c[m]=R}else c[m]=y(_,a[m]),w(r,t[p],_),t[g]=null;m++}else D(t[n]),n--;else D(t[p]),p++;for(;m<=v;){let g=w(r,c[v+1]);y(g,a[m]),c[m++]=g}for(;p<=n;){let g=t[p++];g!==null&&D(g)}return this.ut=i,oe(r,c),G}});var U=class extends C{constructor(){super(...arguments);this.state=E();this.compact=!1;this.inline=!1}static{this.properties={state:{attribute:!1},localize:{attribute:!1},compact:{type:Boolean,reflect:!0},inline:{type:Boolean,reflect:!0}}}static{this.styles=[P,N,I,S`
 :host { display: block; color: var(--ms-text); }
 .controls { display: grid; gap: var(--ms-space-3); padding: var(--ms-space-3); }
 .stepper { display: grid; grid-template-columns: var(--ms-control) minmax(0, 1fr) var(--ms-control); gap: var(--ms-space-1); align-items: stretch; }
@@ -17,7 +17,7 @@ inset-inline-end: 0;
 inline-size: min(18rem, calc(100vw - 1.5rem));
 }
 :host([compact][inline]) { margin-block-start: var(--ms-space-2); }
-`]}#s(e,s){return M(this.localize,e,s)}#i(e){this.dispatchEvent(new CustomEvent(z,{detail:e,bubbles:!0,composed:!0}))}#e(e){let s=e.currentTarget.valueAsNumber;Number.isFinite(s)&&this.#i({type:"set-brush",value:s})}render(){let{draw:e}=this.state;return o`
+`]}#s(e,s){return M(this.localize,e,s)}#i(e){this.dispatchEvent(new CustomEvent(A,{detail:e,bubbles:!0,composed:!0}))}#e(e){let s=e.currentTarget.valueAsNumber;Number.isFinite(s)&&this.#i({type:"set-brush",value:s})}render(){let{draw:e}=this.state;return o`
       <div class="controls ms-surface ms-surface--overlay" aria-label=${this.#s("v4_drawing_precision","Drawing precision")}>
         <div class="row ms-field">
           <label for="brush">${this.#s("brush_size","Brush width")}</label>
@@ -63,7 +63,7 @@ inline-size: min(18rem, calc(100vw - 1.5rem));
         </div>
         <p class="hint">${this.#s("v4_precision_hint","Strokes follow the map's resolution. Zooming changes the view, not the area.")}</p>
       </div>
-    `}};customElements.get(q)||customElements.define(q,O);var U=["vacuum","mop","vacuum_and_mop"],L=["quick","standard","heavy_duty"],$=r=>r.currentTarget.value,x=r=>r.currentTarget.checked,j=class extends C{constructor(){super(...arguments);this.state=E();this._historyPreviewPosition=null;this.#s=new Y(this,()=>import("./diagnostics-panel-3YMH5UXV.js"));this.#i=""}static{this.properties={state:{attribute:!1},localize:{attribute:!1},dates:{attribute:!1},_historyPreviewPosition:{state:!0}}}static{this.styles=[P,N,I,S`
+    `}};customElements.get(H)||customElements.define(H,U);var j=["vacuum","mop","vacuum_and_mop"],L=["quick","standard","heavy_duty"],$=r=>r.currentTarget.value,x=r=>r.currentTarget.checked,F=class extends C{constructor(){super(...arguments);this.state=E();this._historyPreviewPosition=null;this.#s=new J(this,()=>import("./diagnostics-panel-EES2RTMK.js"));this.#i=""}static{this.properties={state:{attribute:!1},localize:{attribute:!1},dates:{attribute:!1},_historyPreviewPosition:{state:!0}}}static{this.styles=[P,N,I,S`
 .workflow-fields { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 :host { display: block; min-inline-size: 0; container-type: inline-size; }
 button, select, input[type="checkbox"] { cursor: pointer; }
@@ -123,14 +123,14 @@ line-height: var(--ms-lh-snug);
 @media (max-width: 25rem) { .split { grid-template-columns: 1fr; } }
 @container (max-width: 38rem) { .plan-meta { grid-template-columns: 1fr; } }
 .ms-chip { display: inline-flex; align-items: center; block-size: 1.5rem; padding-inline: var(--ms-space-2); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-pill); background: var(--ms-surface-sunken); color: var(--ms-text); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); vertical-align: middle; }
-`]}#s;#i;willUpdate(e){if(!e.has("state"))return;let{workflow:s,selection:t}=this.state,a=`${s}:${t.floorId}:${t.historyId??"live"}`;a!==this.#i&&(this.#i=a,this._historyPreviewPosition=null)}disconnectedCallback(){super.disconnectedCallback()}#e(e,s,t){return M(this.localize,e,s,t)}#r(e){return e==="vacuum"?this.#e("vacuum","Vacuum"):e==="mop"?this.#e("mop","Mop"):this.#e("vacuum_and_mop","Vacuum + mop")}#o(e){return e==="quick"?this.#e("quick","Quick"):e==="standard"?this.#e("standard","Optimal"):this.#e("heavy_duty","Heavy Duty")}#m(e){let s=this.#r(e.cleaningMode);return e.cleaningMode==="mop"?s:`${s} \xB7 ${this.#e("v4_vacuum_coverage_summary","{coverage} vacuum coverage",{coverage:this.#o(e.coverageSetting)})}`}#l(e){return e==="vacuum"?d:o`<p class="subtle">${this.#e("v4_mop_coverage_hint","Vacuum coverage applies only when vacuuming. Use the robot's Double-pass mopping setting for an extra mop pass.")}</p>`}#p(e){return e==="mop_due"?this.#e("v4_cadence_mop_due_reason","Vacuum and mop are due"):e==="coverage_due"?this.#e("v4_cadence_coverage_due_reason","Periodic coverage is due"):e==="mop_progress_unverified"?this.#e("v4_cadence_mop_progress_unverified","Can't run this schedule until you reset its mopping progress, which Home Assistant can't confirm."):e==="coverage_progress_unverified"?this.#e("v4_cadence_coverage_progress_unverified","Can't run this schedule until you reset its vacuum rotation progress, which Home Assistant can't confirm."):this.#e("v4_cadence_due_unknown_reason","Schedule setting due")}#c(e){return e==="coverage_requires_vacuum"?this.#e("v4_cadence_coverage_requires_vacuum","Periodic vacuum coverage requires a vacuum cleaning mode. Clear this room's rule or select Vacuum or Vacuum + mop."):e==="plan_disabled"?this.#e("v4_preview_plan_disabled","This plan is paused. Enable it to preview and run."):e==="shared_schedule_unavailable"?this.#e("v4_preview_shared_unavailable","The shared room schedule cannot be verified on this map."):e==="cadence_progress_unverified"?this.#e("v4_preview_cadence_progress_unverified","A room schedule has progress that cannot be verified. Reset the affected interval in its room schedule before running this plan."):e==="cadence_identity_changed"||e==="cadence_identity_unavailable"?this.#e("v4_preview_identity_unavailable","Room identity could not be verified. Check the current map before running."):e==="plan_has_no_rooms"?this.#e("v4_preview_no_rooms","Add at least one room to this plan."):e==="plan_room_limit"?this.#e("v4_preview_room_limit","This saved plan exceeds the 100-room limit. Remove rooms and save it before running."):this.#e("v4_preview_invalid","The saved plan preview is invalid. Review the plan and try again.")}#t(e){this.dispatchEvent(new CustomEvent(z,{detail:e,bubbles:!0,composed:!0}))}#_(){switch(this.state.workflow){case"rooms":case"plans":case"plan":return{loading:this.#e("v4_loading_rooms_plans","Loading rooms and plans\u2026"),unavailable:this.#e("v4_rooms_plans_unavailable","Rooms and plans are unavailable right now."),empty:this.#e("v4_no_rooms_plans","No rooms or plans are available yet.")};case"draw":case"areaReview":return{loading:this.#e("v4_loading_areas","Loading saved areas\u2026"),unavailable:this.#e("v4_areas_unavailable","Saved areas are unavailable right now."),empty:this.#e("v4_no_saved_areas","No saved areas yet. Draw one on the map.")};case"history":return{loading:this.#e("v4_loading_history","Loading map history\u2026"),unavailable:this.#e("v4_history_unavailable","Map history is unavailable right now."),empty:this.#e("v4_no_map_history","No saved map snapshots yet.")};default:return{loading:this.#e("map_loading","Loading\u2026"),unavailable:this.#e("v4_workspace_unavailable","This workspace is unavailable right now."),empty:this.#e("v4_nothing_saved","Nothing saved yet.")}}}#n(e,s,t){let a=this.#_();if(e==="loading"||e==="idle")return o`<div class="loading" role="status">${a.loading}</div>`;if(e==="error"){let i=this.state.workflow;return o`
+`]}#s;#i;willUpdate(e){if(!e.has("state"))return;let{workflow:s,selection:t}=this.state,a=`${s}:${t.floorId}:${t.historyId??"live"}`;a!==this.#i&&(this.#i=a,this._historyPreviewPosition=null)}disconnectedCallback(){super.disconnectedCallback()}#e(e,s,t){return M(this.localize,e,s,t)}#r(e){return e==="vacuum"?this.#e("vacuum","Vacuum"):e==="mop"?this.#e("mop","Mop"):this.#e("vacuum_and_mop","Vacuum + mop")}#o(e){return e==="quick"?this.#e("quick","Quick"):e==="standard"?this.#e("standard","Optimal"):this.#e("heavy_duty","Heavy Duty")}#m(e){let s=this.#r(e.cleaningMode);return e.cleaningMode==="mop"?s:`${s} \xB7 ${this.#e("v4_vacuum_coverage_summary","{coverage} vacuum coverage",{coverage:this.#o(e.coverageSetting)})}`}#l(e){return e==="vacuum"?d:o`<p class="subtle">${this.#e("v4_mop_coverage_hint","Vacuum coverage applies only when vacuuming. Use the robot's Double-pass mopping setting for an extra mop pass.")}</p>`}#p(e){return e==="mop_due"?this.#e("v4_cadence_mop_due_reason","Vacuum and mop are due"):e==="coverage_due"?this.#e("v4_cadence_coverage_due_reason","Periodic coverage is due"):e==="mop_progress_unverified"?this.#e("v4_cadence_mop_progress_unverified","Can't run this schedule until you reset its mopping progress, which Home Assistant can't confirm."):e==="coverage_progress_unverified"?this.#e("v4_cadence_coverage_progress_unverified","Can't run this schedule until you reset its vacuum rotation progress, which Home Assistant can't confirm."):this.#e("v4_cadence_due_unknown_reason","Schedule setting due")}#c(e){return e==="coverage_requires_vacuum"?this.#e("v4_cadence_coverage_requires_vacuum","Periodic vacuum coverage requires a vacuum cleaning mode. Clear this room's rule or select Vacuum or Vacuum + mop."):e==="plan_disabled"?this.#e("v4_preview_plan_disabled","This plan is paused. Enable it to preview and run."):e==="shared_schedule_unavailable"?this.#e("v4_preview_shared_unavailable","The shared room schedule cannot be verified on this map."):e==="cadence_progress_unverified"?this.#e("v4_preview_cadence_progress_unverified","A room schedule has progress that cannot be verified. Reset the affected interval in its room schedule before running this plan."):e==="cadence_identity_changed"||e==="cadence_identity_unavailable"?this.#e("v4_preview_identity_unavailable","Room identity could not be verified. Check the current map before running."):e==="plan_has_no_rooms"?this.#e("v4_preview_no_rooms","Add at least one room to this plan."):e==="plan_room_limit"?this.#e("v4_preview_room_limit","This saved plan exceeds the 100-room limit. Remove rooms and save it before running."):this.#e("v4_preview_invalid","The saved plan preview is invalid. Review the plan and try again.")}#t(e){this.dispatchEvent(new CustomEvent(A,{detail:e,bubbles:!0,composed:!0}))}#_(){switch(this.state.workflow){case"rooms":case"plans":case"plan":return{loading:this.#e("v4_loading_rooms_plans","Loading rooms and plans\u2026"),unavailable:this.#e("v4_rooms_plans_unavailable","Rooms and plans are unavailable right now."),empty:this.#e("v4_no_rooms_plans","No rooms or plans are available yet.")};case"draw":case"areaReview":return{loading:this.#e("v4_loading_areas","Loading saved areas\u2026"),unavailable:this.#e("v4_areas_unavailable","Saved areas are unavailable right now."),empty:this.#e("v4_no_saved_areas","No saved areas yet. Draw one on the map.")};case"history":return{loading:this.#e("v4_loading_history","Loading map history\u2026"),unavailable:this.#e("v4_history_unavailable","Map history is unavailable right now."),empty:this.#e("v4_no_map_history","No saved map snapshots yet.")};default:return{loading:this.#e("map_loading","Loading\u2026"),unavailable:this.#e("v4_workspace_unavailable","This workspace is unavailable right now."),empty:this.#e("v4_nothing_saved","Nothing saved yet.")}}}#n(e,s,t){let a=this.#_();if(e==="loading"||e==="idle")return o`<div class="loading" role="status">${a.loading}</div>`;if(e==="error"){let i=this.state.workflow;return o`
         <div class="stack">
           <div class="problem" role="alert">${a.unavailable} ${s==="request-failed"?this.#e("v4_try_again","Try again shortly."):this.#e("v4_return_live_retry","Return to the live map and retry.")}</div>
           <div class="toolbar">
             <button class="ms-btn ms-btn--secondary" type="button" @click=${()=>this.#t({type:"open-workflow",workflow:i})}>${this.#e("v4_retry","Try again")}</button>
           </div>
         </div>
-      `}return e==="empty"?o`<div class="empty">${a.empty}</div>`:t}#b(){let e=this.state.resources.plans,s=F(this.state),t=s!==null,a=this.state.selection.roomIds.length>=100;return this.#n(e.status,e.problem,o`
+      `}return e==="empty"?o`<div class="empty">${a.empty}</div>`:t}#b(){let e=this.state.resources.plans,s=K(this.state),t=s!==null,a=this.state.selection.roomIds.length>=100;return this.#n(e.status,e.problem,o`
       <div class="stack">
         <h3 class="group-heading" id="rooms-heading">${this.#e("v4_rooms_to_clean","Rooms to clean")}</h3>
         <div class="list" role="group" aria-labelledby="rooms-heading">
@@ -191,7 +191,7 @@ line-height: var(--ms-lh-snug);
             aria-label=${this.#e("v4_room_cleaning_system_named","Cleaning system for {room}",{room:t})}
             .value=${s.cleaningMode}
             @change=${a=>this.#t({type:"patch-room-settings",roomId:e,cleaningMode:$(a)})}
-          >${U.map(a=>o`<option value=${a} ?selected=${a===s.cleaningMode}>${this.#r(a)}</option>`)}</select>
+          >${j.map(a=>o`<option value=${a} ?selected=${a===s.cleaningMode}>${this.#r(a)}</option>`)}</select>
         </label>
         <label class="field ms-field">${this.#e("vacuum_coverage","Vacuum coverage")}
           <select
@@ -266,7 +266,7 @@ line-height: var(--ms-lh-snug);
     `}#w(e){this.#t({type:"toggle-room",roomId:e})}#d(e,s){let t=this.state.planDraft.rooms.map((a,i)=>i===e?{...a,...s}:a);this.#t({type:"patch-plan-draft",patch:{rooms:t}})}#g(e,s){let t=e+s,a=[...this.state.planDraft.rooms];if(t<0||t>=a.length)return;let[i]=a.splice(e,1);i&&(a.splice(t,0,i),this.#t({type:"patch-plan-draft",patch:{rooms:a}}))}#k(){let e=this.state.resources.plans;return this.#n(e.status,e.problem,o`
       <div class="stack">
         <button class="ms-btn ms-btn--primary" type="button" @click=${()=>this.#t({type:"select-plan",planId:null})}>
-          ${T(Q)}<span>${this.#e("v4_create_plan","Create a plan")}</span>
+          ${T(Z)}<span>${this.#e("v4_create_plan","Create a plan")}</span>
         </button>
         ${(e.value?.plans||[]).map(s=>o`
           <button class="ms-row ms-row--card" type="button" @click=${()=>this.#t({type:"select-plan",planId:s.id})}>
@@ -320,7 +320,7 @@ line-height: var(--ms-lh-snug);
           </p>
         `:d}
         <div class="list" role="group" aria-labelledby="plan-rooms-heading">
-          ${re(l,({room:n})=>n.roomId,({room:n,label:m,selected:v})=>{let g=v?t.rooms.findIndex(_=>_.roomId===n.roomId):-1;return o`
+          ${le(l,({room:n})=>n.roomId,({room:n,label:m,selected:v})=>{let g=v?t.rooms.findIndex(_=>_.roomId===n.roomId):-1;return o`
               <div class="room plan-room ms-row ms-row--stack" data-selected=${String(v)}>
                 <div class="room-choice">
                   <label class="plan-room-label">
@@ -329,15 +329,15 @@ line-height: var(--ms-lh-snug);
                   </label>
                   ${v?o`
                     <span>
-                      <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#e("move_room_up","Move {room} earlier",{room:m})} ?disabled=${g===0} @click=${_=>{_.preventDefault(),this.#g(g,-1)}}>${T(Z)}</button>
-                      <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#e("move_room_down","Move {room} later",{room:m})} ?disabled=${g===t.rooms.length-1} @click=${_=>{_.preventDefault(),this.#g(g,1)}}>${T(X)}</button>
+                      <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#e("move_room_up","Move {room} earlier",{room:m})} ?disabled=${g===0} @click=${_=>{_.preventDefault(),this.#g(g,-1)}}>${T(X)}</button>
+                      <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#e("move_room_down","Move {room} later",{room:m})} ?disabled=${g===t.rooms.length-1} @click=${_=>{_.preventDefault(),this.#g(g,1)}}>${T(Y)}</button>
                     </span>
                   `:d}
                 </div>
                 ${v?o`
                   <div class="split room-settings">
                     <label class="field ms-field">${this.#e("v4_cleaning_system","Cleaning system")}
-                      <select aria-label=${this.#e("v4_room_cleaning_system_named","Cleaning system for {room}",{room:m})} .value=${n.cleaningMode} @change=${_=>this.#d(g,{cleaningMode:$(_)})}>${U.map(_=>o`<option value=${_} ?selected=${_===n.cleaningMode} ?disabled=${!!("cadence"in n&&n.cadence?.mopEveryN&&_!=="vacuum")}>${this.#r(_)}</option>`)}</select>
+                      <select aria-label=${this.#e("v4_room_cleaning_system_named","Cleaning system for {room}",{room:m})} .value=${n.cleaningMode} @change=${_=>this.#d(g,{cleaningMode:$(_)})}>${j.map(_=>o`<option value=${_} ?selected=${_===n.cleaningMode} ?disabled=${!!("cadence"in n&&n.cadence?.mopEveryN&&_!=="vacuum")}>${this.#r(_)}</option>`)}</select>
                     </label>
                     <label class="field ms-field">${this.#e("vacuum_coverage","Vacuum coverage")}
                       <select aria-label=${this.#e("v4_room_vacuum_coverage_named","Vacuum coverage for {room}",{room:m})} ?disabled=${n.cleaningMode==="mop"} .value=${n.coverageSetting} @change=${_=>this.#d(g,{coverageSetting:$(_)})}>${L.map(_=>o`<option value=${_} ?selected=${_===n.coverageSetting}>${this.#o(_)}</option>`)}</select>
@@ -393,7 +393,7 @@ line-height: var(--ms-lh-snug);
           `:d}
         </div>
         <div class="toolbar">
-          ${t.id?o`
+          ${q(this.state,"confirmDeletePlan")?o`
             <button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
@@ -432,7 +432,7 @@ line-height: var(--ms-lh-snug);
         </label>
         <div class="split">
           <label class="field ms-field">${this.#e("v4_cleaning_system","Cleaning system")}
-            <select .value=${e.cleaningMode} @change=${a=>this.#t({type:"patch-area-draft",patch:{cleaningMode:$(a)}})}>${U.map(a=>o`<option value=${a} ?selected=${a===e.cleaningMode}>${this.#r(a)}</option>`)}</select>
+            <select .value=${e.cleaningMode} @change=${a=>this.#t({type:"patch-area-draft",patch:{cleaningMode:$(a)}})}>${j.map(a=>o`<option value=${a} ?selected=${a===e.cleaningMode}>${this.#r(a)}</option>`)}</select>
           </label>
           <label class="field ms-field">${this.#e("vacuum_coverage","Vacuum coverage")}
             <select ?disabled=${e.cleaningMode==="mop"} .value=${e.coverageSetting} @change=${a=>this.#t({type:"patch-area-draft",patch:{coverageSetting:$(a)}})}>${L.map(a=>o`<option value=${a} ?selected=${a===e.coverageSetting}>${this.#o(a)}</option>`)}</select>
@@ -441,7 +441,7 @@ line-height: var(--ms-lh-snug);
         ${this.#l(e.cleaningMode)}
         <div class="toolbar">
           <button class="ms-btn ms-btn--secondary" type="button" @click=${()=>this.#t({type:"open-workflow",workflow:"draw"})}>${this.#e("v4_edit_outline","Redraw")}</button>
-          ${e.id?o`
+          ${q(this.state,"confirmDeleteArea")?o`
             <button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
@@ -480,7 +480,7 @@ line-height: var(--ms-lh-snug);
               max=${String(a.length)}
               step="1"
               .value=${String(c)}
-              aria-valuetext=${f?W(f.createdAt,this.dates):l}
+              aria-valuetext=${f?O(f.createdAt,this.dates):l}
               ?disabled=${!a.length}
               @input=${u=>{this._historyPreviewPosition=Number($(u))}}
               @change=${u=>{let p=Number($(u));this._historyPreviewPosition=null,this.#t({type:"set-history",historyId:p===a.length?null:a[p]?.id||null})}}
@@ -490,18 +490,18 @@ line-height: var(--ms-lh-snug);
             <button class="snapshot ms-row ms-row" type="button" aria-current=${String(!this.state.selection.historyId&&!!t?.active)} @click=${()=>this.#t({type:"set-history",historyId:null})}><span>${l}</span><small>${this.#e("v4_current","Current")}</small></button>
             ${a.map((u,p)=>o`
               <button class="snapshot ms-row ms-row" type="button" aria-current=${String(u.id===this.state.selection.historyId)} @click=${()=>this.#t({type:"set-history",historyId:u.id})}>
-                <span>${W(u.createdAt,this.dates)}</span><small>${this.#e("v4_history_position","{position} of {count}",{position:p+1,count:a.length})}</small>
+                <span>${O(u.createdAt,this.dates)}</span><small>${this.#e("v4_history_position","{position} of {count}",{position:p+1,count:a.length})}</small>
               </button>
             `)}
           </div>
         </div>
         <p class="subtle">${this.#e("v4_history_privacy","Saved maps are floor-scoped and never show a live robot position.")}</p>
       </div>
-    `)}#C(){return this.#s.request(),this.#s.status!=="ready"?J(this.#s.status,(e,s)=>this.#e(e,s)):o`<matic-map-diagnostics-v4
+    `)}#C(){return this.#s.request(),this.#s.status!=="ready"?ee(this.#s.status,(e,s)=>this.#e(e,s)):o`<matic-map-diagnostics-v4
       .state=${this.state}
       .localize=${this.localize}
       .disabled=${this.state.command!=="idle"&&this.state.command!=="failed"}
-    ></matic-map-diagnostics-v4>`}render(){return o`<fieldset class="workflow-fields" ?disabled=${this.state.command!=="idle"&&this.state.command!=="failed"}>${this.#P()}</fieldset>`}#P(){switch(this.state.workflow){case"rooms":return this.#b();case"plans":return this.#k();case"plan":return this.#x();case"draw":return this.#R();case"areaReview":return this.#E();case"history":return this.#S();case"support":return this.#C();case"none":return d}}};customElements.get(H)||customElements.define(H,j);export{j as MaticMapWorkflowV4};
+    ></matic-map-diagnostics-v4>`}render(){return o`<fieldset class="workflow-fields" ?disabled=${this.state.command!=="idle"&&this.state.command!=="failed"}>${this.#P()}</fieldset>`}#P(){switch(this.state.workflow){case"rooms":return this.#b();case"plans":return this.#k();case"plan":return this.#x();case"draw":return this.#R();case"areaReview":return this.#E();case"history":return this.#S();case"support":return this.#C();case"none":return d}}};customElements.get(W)||customElements.define(W,F);export{F as MaticMapWorkflowV4};
 /*! Bundled license information:
 
 lit-html/directive.js:

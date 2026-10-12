@@ -43,6 +43,24 @@ test("catalog, pose, history, and area parsers reject their own malformed root s
   ]);
 });
 
+test("the area catalog names the selected custom area, or none", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async () => {
+    const { parseAreasCatalog } = await import("/backend-contracts.js");
+    const payload = (selected) => ({ scene_url: "/api/matic_robot/scene", rooms: [], areas: [], selected_area: selected });
+    const selected = (value) => {
+      try {
+        return parseAreasCatalog(payload(value)).selectedArea;
+      } catch (error) {
+        return error.code;
+      }
+    };
+    return [selected("porch"), selected(null), selected("")];
+  });
+  expect(result, `selected_area "porch", null and "" parsed as ${JSON.stringify(result)}`)
+    .toEqual(["porch", null, "invalid-selected-area"]);
+});
+
 test("catalog live workspace capability defaults off and validates explicit booleans", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async () => {

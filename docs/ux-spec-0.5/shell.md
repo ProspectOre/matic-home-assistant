@@ -109,6 +109,7 @@ Strip titles and details are in §4; dialog copy is in §5. Glossary: `docs/ux-a
 ## 9. Backend needs
 - **Rooms done of total** (MS-STATUS-05): the current room already exists as `current_area` (`vacuum.py:121`; reading it is frontend work); only progress is missing, and today the entry carries just `active_plan` as a boolean (`custom_components/matic_robot/slam_scene.py:222`). Owner `slam_scene.py` + `plans.py`, parsed in `backend-contracts.ts`. Fallback: the battery detail.
 - **Problem reason** (MS-HOST-02): a translated plain-language mapping of `error_codes`, which today become only `problem: bool` (`vacuum.py:120`). Owner `vacuum.py` and the coordinator. Fallback: "Check the robot".
+- **Selected custom area** (MS-DLG-04, provided in UX0): the areas catalog carries `selected_area` (`slam_scene.py` `MaticAreasView.get`, `AreasCatalog.selectedArea` in `backend-contracts.ts`), as the plans catalog carries `selected_plan`; both delete dialogs name the first remaining item in catalog order, the backend's saved order.
 - **Unsupported map** (MS-HOST-07): a `map_block_reason` value for an unsupported robot or map; today four values only (`slam_scene.py:179-192`, `backend-contracts.ts:18-19`). Owner `slam_scene.py`. Fallback: row 16, whose copy promises nothing.
 
 ## 10. Decisions needed

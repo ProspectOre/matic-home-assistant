@@ -585,6 +585,36 @@ export const reduceWorkspace = (
   }
 };
 
+/**
+ * What a delete dialog names and changes (shell.md §5): the saved item, and,
+ * when it is the default plan or the selected custom area, the one the backend
+ * promotes in its place: the first remaining in saved order, or null for none
+ * (plans.py:2623-2624, 2159-2160). Null while the catalog does not hold it.
+ */
+export interface DeleteSubject {
+  readonly name: string;
+  readonly successor?: string | null;
+}
+
+export const deleteSubject = (
+  state: WorkspaceState,
+  dialog: WorkspaceState["dialog"] = state.dialog,
+): DeleteSubject | null => {
+  const plans = state.resources.plans.value;
+  const areas = state.resources.areas.value;
+  const catalog = dialog === "confirmDeletePlan"
+    ? { items: plans?.plans, id: state.planDraft.id, selected: plans?.selectedPlan }
+    : dialog === "confirmDeleteArea"
+      ? { items: areas?.areas, id: state.areaDraft.id, selected: areas?.selectedArea }
+      : null;
+  const items: readonly { readonly id: string; readonly name: string }[] = catalog?.items ?? [];
+  const item = items.find((candidate) => candidate.id === catalog?.id);
+  if (!item) return null;
+  return item.id === catalog?.selected
+    ? { name: item.name, successor: items.find((candidate) => candidate !== item)?.name ?? null }
+    : { name: item.name };
+};
+
 export class WorkspaceStore {
   readonly #listeners = new Set<(state: WorkspaceState) => void>();
   #state: WorkspaceState;
@@ -604,12 +634,15 @@ export class WorkspaceStore {
   // The one place a notice is validated. Every notice committed in place of
   // another is its own frozen object, so a repeated notice toasts and
   // announces again (shell.md §4 rule 1); an invalid one is ignored and the
-  // current notice stays.
+  // current notice stays. A delete dialog stands only while the catalog holds
+  // the saved item it names (copy-style-0.5.md:90, 96).
   replace(next: WorkspaceState): WorkspaceState {
     if (next === this.#state) return next;
-    const committed = next.notice && next.notice !== this.#state.notice
+    const noticed = next.notice && next.notice !== this.#state.notice
       ? { ...next, notice: readWorkspaceNotice(next.notice) ?? this.#state.notice }
       : next;
+    const committed = (noticed.dialog === "confirmDeletePlan" || noticed.dialog === "confirmDeleteArea")
+      && !deleteSubject(noticed) ? { ...noticed, dialog: null } : noticed;
     this.#state = committed;
     this.#publish();
     return committed;

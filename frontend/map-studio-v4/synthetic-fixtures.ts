@@ -173,6 +173,7 @@ export const syntheticAreas = (): AreasCatalog => ({
     status: "current",
     canRebind: false,
   }],
+  selectedArea: "entryway",
 });
 
 export const syntheticHistory = (): HistoryCatalog => ({

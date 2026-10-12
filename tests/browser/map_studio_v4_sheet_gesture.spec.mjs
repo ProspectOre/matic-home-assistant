@@ -104,6 +104,33 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
     await expect(sheet).toHaveAttribute("data-detent", "peek");
   });
 
+  test("a swipe on the heading scrolls a scrolled pinned top back before it steps the sheet down @mobile", async ({ page }) => {
+    const sheet = await loadNarrowGallery(page);
+    await page.evaluate((tag) => {
+      const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "set-notice", notice: { tone: "warning", key: "v4_notice_sample", fallback: "A tall notice. ".repeat(26) } },
+        bubbles: true,
+        composed: true,
+      }));
+    }, GALLERY_TAG);
+    await expect(page.locator(`${GALLERY_TAG} [data-notice-slot]`)).toBeVisible();
+    const top = page.locator(`${GALLERY_TAG} .panel-top`);
+    const scrolled = await top.evaluate((element) => {
+      element.scrollTop = 40;
+      return { scrollTop: element.scrollTop, overflow: element.scrollHeight - element.clientHeight };
+    });
+    expect(scrolled.scrollTop, `the pinned top must scroll (overflow ${scrolled.overflow} px)`).toBe(40);
+    await expect(page.locator(`${GALLERY_TAG} .sheet-body`)).toHaveJSProperty("scrollTop", 0);
+
+    await dispatchTouchDrag(page.locator(`${GALLERY_TAG} .panel-heading h2`), 100, 170);
+    await expect(sheet, "the pinned top is scrolled, so the swipe scrolls it, not the sheet").toHaveAttribute("data-detent", "half");
+
+    await top.evaluate((element) => { element.scrollTop = 0; });
+    await dispatchTouchDrag(page.locator(`${GALLERY_TAG} .panel-heading h2`), 100, 170);
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+  });
+
   test("keeps the toast on the sheet's top edge while the handle is dragged", async ({ page }) => {
     const sheet = await loadNarrowGallery(page);
     await page.evaluate((tag) => {
