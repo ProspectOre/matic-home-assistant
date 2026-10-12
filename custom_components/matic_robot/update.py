@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Final
+
 from homeassistant.components.update import (
     UpdateDeviceClass,
     UpdateEntity,
@@ -14,6 +16,8 @@ from . import MaticConfigEntry
 from .entity import MaticEntity
 
 PARALLEL_UPDATES = 0
+
+PENDING_FIRMWARE_VERSION: Final = "Newer firmware"
 
 UPDATE_DESCRIPTION = UpdateEntityDescription(
     key="firmware",
@@ -35,7 +39,8 @@ class MaticFirmwareUpdate(MaticEntity, UpdateEntity):
     """Surface robot-managed OTA state in Home Assistant's update UI.
 
     The robot never reports the target version over Hermes, so a pending
-    OTA shows as an unknown latest version; installs stay robot-managed.
+    OTA reads as a generic "Newer firmware" latest version; installs stay
+    robot-managed.
     """
 
     entity_description = UPDATE_DESCRIPTION
@@ -52,9 +57,9 @@ class MaticFirmwareUpdate(MaticEntity, UpdateEntity):
 
     @property
     def latest_version(self) -> str | None:
-        """Return the installed version unless the robot reports a pending OTA."""
+        """Return a generic pending marker while the robot reports an OTA."""
         if self.coordinator.data.telemetry.update_state == "available":
-            return None
+            return PENDING_FIRMWARE_VERSION
         return self.installed_version
 
     @property

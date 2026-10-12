@@ -11,6 +11,7 @@ from uuid import UUID
 
 import pytest
 from homeassistant.components.vacuum.const import VacuumActivity
+from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.matic_robot import (
@@ -976,7 +977,8 @@ async def test_update_entity_mirrors_robot_managed_ota_state() -> None:
     entity = update.MaticFirmwareUpdate(entry)
 
     assert entity.installed_version == "v-test"
-    assert entity.latest_version == "v-test"
+    assert entity.latest_version == entity.installed_version
+    assert entity.state == STATE_OFF
     assert entity.extra_state_attributes == {
         "update_state": "idle",
         "update_channel": "stable",
@@ -987,7 +989,15 @@ async def test_update_entity_mirrors_robot_managed_ota_state() -> None:
         coordinator.data,
         telemetry=replace(coordinator.data.telemetry, update_state="available"),
     )
-    assert entity.latest_version is None
+    assert entity.latest_version == "Newer firmware"
+    assert entity.state == STATE_ON
+
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(coordinator.data.telemetry, update_state="complete"),
+    )
+    assert entity.latest_version == entity.installed_version
+    assert entity.state == STATE_OFF
 
 
 def test_sensor_and_binary_sensor_values() -> None:

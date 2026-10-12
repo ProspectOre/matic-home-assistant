@@ -41,9 +41,10 @@ fully charged, problem, update available, active session, Matter pairing,
 robot SSH permission, robot diagnostic upload, and following-person state.
 **Fully charged** is on when the battery is full.
 
-The firmware update entity is read-only; Matic manages its own updates. The
-latest version may be unknown while an update is pending. Diagnostic entities
-are generally disabled by default.
+The firmware update entity is read-only; Matic manages its own updates. While
+the robot reports an update, the latest version reads "Newer firmware"; the
+robot does not publish the version number in advance. Diagnostic entities are
+generally disabled by default.
 
 If **Problem** turns on, inspect `sensor.matic_activity`:
 
