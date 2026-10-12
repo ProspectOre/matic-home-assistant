@@ -1224,12 +1224,15 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("distinguishes setup, robot problems and unavailable maps from localization", async ({ page }) => {
+    // shell.md §2: these rows have no footer button; the strip says the state.
     const gallery = await loadGallery(page, { scenario: "empty" });
-    await expect(gallery.locator(".action-bar")).toContainText("Set up a Matic robot");
+    await expect(gallery.locator(".status-copy strong")).toHaveText("No robot");
+    await expect(gallery.locator(".action-bar")).not.toContainText("Set up a Matic robot");
     await page.evaluate((tag) => document.querySelector(tag).setScenario("problem"), GALLERY_TAG);
-    await expect(gallery.locator(".action-bar")).toContainText("Check the robot");
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Needs attention");
+    await expect(gallery.locator(".action-bar")).not.toContainText("Check the robot");
     await page.evaluate((tag) => document.querySelector(tag).setScenario("unsupported"), GALLERY_TAG);
-    await expect(gallery.locator(".action-bar")).toContainText("Map unavailable");
+    await expect(gallery.locator(".action-bar")).not.toContainText("Map unavailable");
     await expect(gallery.locator(".action-bar")).not.toContainText("Finding the map");
     await expect(gallery.locator(".status-copy strong")).toHaveText("Map unavailable");
     await expect(gallery.locator(".status-copy small")).toContainText(/new cleaning is disabled/i);
@@ -1374,9 +1377,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, GALLERY_TAG);
     await expect(page.locator(GALLERY_TAG).locator(".scene-window")).toBeVisible();
     // The catalog failure leaves coherence degraded, so the workspace, not a
-    // notice, says the live map is being located again.
+    // notice, says the map is limited; the row has no footer button (shell.md §2).
     await expect(page.locator(GALLERY_TAG).getByRole("heading", { name: "Saved map is read only" })).toBeVisible();
-    await expect(page.locator(GALLERY_TAG).getByRole("button", { name: "Finding the map" })).toBeDisabled();
+    await expect(page.locator(GALLERY_TAG).locator(".status-copy strong")).toHaveText("Map limited");
+    await expect(page.locator(GALLERY_TAG).getByRole("button", { name: "Finding the map" })).toHaveCount(0);
   });
 
   test("returning to live keeps the saved map if the catalog is unavailable", async ({ page }) => {
@@ -4514,9 +4518,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     // the status title change (shell.md §4 rule 6).
     await expect(gallery.locator("matic-map-canvas-v4 .map-message")).toContainText("Locating");
     await expect(gallery.locator(".root > .sr-only[aria-live=polite]")).toHaveText("Locating");
-    const locating = gallery.getByRole("button", { name: "Finding the map" });
-    await expect(locating).toHaveAttribute("aria-disabled", "true");
-    await expect(locating).toHaveAccessibleDescription("Waiting for the robot to confirm which floor it is on.");
+    // Locating has no footer button (shell.md §2 row 8).
+    await expect(gallery.getByRole("button", { name: "Finding the map" })).toHaveCount(0);
     await expect(mapLive).toContainText("not available");
   });
 

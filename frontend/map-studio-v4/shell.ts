@@ -5,6 +5,7 @@ import type { PropertyValues } from "lit";
 import { isWorkspaceIntent } from "./contracts";
 
 import type {
+  DateFormat,
   Localize,
   NoticeTone,
   PrimaryAction,
@@ -20,7 +21,7 @@ import {
   SHELL_TAG,
   WORKFLOW_TAG,
 } from "./element-tags";
-import { renderDrawTools } from "./draw-tools";
+import type { renderDrawTools } from "./draw-tools";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
 import {
@@ -63,6 +64,8 @@ import {
 const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 const workflowTag = unsafeStatic(WORKFLOW_TAG);
+// Set once the workspace tools load (#loadWorkflowPanel).
+let drawTools: typeof renderDrawTools | null = null;
 
 const isReadOnlyWorkspace = (state: WorkspaceState): boolean =>
   state.dataMode === "history" || state.floor.readOnly;
@@ -197,6 +200,15 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
 };
 
 type SheetDetent = "peek" | "half" | "full";
+
+// shell.md §2 "No button": these branches still return their disabled action
+// (the policy is unchanged), but the view renders nothing for them; the strip,
+// canvas and sheet already say the state. choose-cleaning is the idle prompt
+// the body answers.
+const NO_BUTTON: ReadonlySet<string> = new Set([
+  "choose-cleaning", "reconnecting", "administrator", "setup", "choose-robot",
+  "problem", "robot-offline", "map-unavailable", "locating", "stopping",
+]);
 
 const DETENTS: readonly SheetDetent[] = ["peek", "half", "full"];
 
@@ -370,6 +382,7 @@ export class MaticMapShellV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
     localize: { attribute: false },
+    dates: { attribute: false },
     _measuredNarrow: { state: true },
     _sheetOffset: { state: true },
     _overflowOpen: { state: true },
@@ -386,6 +399,8 @@ export class MaticMapShellV4 extends LitElement {
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
+  /** How the panel shows timestamps; set by the panel, not part of the snapshot. */
+  dates?: DateFormat;
 
   constructor() {
     super();
@@ -409,7 +424,8 @@ export class MaticMapShellV4 extends LitElement {
   // the alert one for error notices.
   protected _polite = "";
   protected _alert = "";
-  #statusTitle: string | null = null;
+  #statusRow: string | null = null;
+  #announced = new Set<"_polite" | "_alert">();
   protected _toast: WorkspaceNotice | null = null;
   protected _workflowLoadFailed = false;
   #toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -494,15 +510,21 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   // A live region speaks when its text changes, so the same message twice is
-  // written as empty first and set again after that render.
+  // written as empty first and set again after that render. A region gets one
+  // message per render; a second one waits for the next render, so both are
+  // spoken in order.
   #announce(region: "_polite" | "_alert", text: string): void {
-    if (this[region] !== text) {
-      this[region] = text;
+    if (this.#announced.has(region)) {
+      void this.updateComplete.then(() => this.#announce(region, text));
       return;
     }
-    this[region] = "";
+    this.#announced.add(region);
+    const repeat = this[region] === text;
+    this[region] = repeat ? "" : text;
+    // Read after the write, so this is the render that shows it.
     void this.updateComplete.then(() => {
-      if (!this[region]) this[region] = text;
+      this.#announced.delete(region);
+      if (repeat && !this[region]) this.#announce(region, text);
     });
   }
 
@@ -515,12 +537,14 @@ export class MaticMapShellV4 extends LitElement {
     const active = this.shadowRoot?.activeElement ?? null;
     this.#noticeFocus = (["[data-notice-slot]", "[data-notice-toast]"] as const)
       .find((hook) => active?.closest(hook)) ?? null;
-    if (changed.has("state") || changed.has("localize")) {
-      const title = statusCopy(this.state, this.localize).title;
-      if (this.#statusTitle !== null && title !== this.#statusTitle) this.#announce("_polite", title);
-      this.#statusTitle = title;
-    }
     if (!changed.has("state")) return;
+    // The untranslated title names the status row, so only a new row is
+    // announced, in the current language.
+    const row = statusCopy(this.state).title;
+    if (this.#statusRow !== null && row !== this.#statusRow) {
+      this.#announce("_polite", statusCopy(this.state, this.localize).title);
+    }
+    this.#statusRow = row;
     const next = this.state.notice;
     const previous = changed.get("state") as WorkspaceState | undefined;
     if (next === previous?.notice) return;
@@ -1102,7 +1126,7 @@ export class MaticMapShellV4 extends LitElement {
   // ---- Templates ----------------------------------------------------------
 
   #actionButton(action: PrimaryAction, classes: string, reasonId: string) {
-    if (action.id === "choose-cleaning") return nothing;
+    if (NO_BUTTON.has(action.id)) return nothing;
     const label = action.labelKey ? this.#t(action.labelKey, action.label, action.labelPlaceholders) : action.label;
     const reason = !action.enabled && action.reason
       ? (action.reasonKey ? this.#t(action.reasonKey, action.reason) : action.reason)
@@ -1368,8 +1392,8 @@ export class MaticMapShellV4 extends LitElement {
 
   #workflowBody(state: WorkspaceState, narrow: boolean) {
     if (state.workflow === "none") return this.#entry(state, narrow);
+    this.#loadWorkflowPanel();
     if (!customElements.get(WORKFLOW_TAG)) {
-      this.#loadWorkflowPanel();
       if (this._workflowLoadFailed) {
         return html`<div class="workflow-loading" role="alert">
           <p>${this.#t("v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p>
@@ -1385,15 +1409,19 @@ export class MaticMapShellV4 extends LitElement {
     return html`<${workflowTag}
       .state=${state}
       .localize=${this.localize}
+      .dates=${this.dates}
       @matic-workspace-intent=${this.#captureDialogLauncher}
     ></${workflowTag}>`;
   }
 
+  // The workflow panel and the sheet's drawing tools load together, as the
+  // workspace tools first paint does not need.
   #loadWorkflowPanel(): void {
-    if (this.#workflowPanelLoad || customElements.get(WORKFLOW_TAG)) return;
+    if (this.#workflowPanelLoad || (customElements.get(WORKFLOW_TAG) && drawTools)) return;
     this._workflowLoadFailed = false;
-    this.#workflowPanelLoad = import("./workflow-panel")
-      .then(() => {
+    this.#workflowPanelLoad = Promise.all([import("./workflow-panel"), import("./draw-tools")])
+      .then(([, tools]) => {
+        drawTools = tools.renderDrawTools;
         this.#workflowPanelLoad = null;
         this.requestUpdate();
       })
@@ -1709,7 +1737,7 @@ export class MaticMapShellV4 extends LitElement {
                 </div>
                 ${showDrawTools ? html`
                   <div class="sheet-tools">
-                    ${renderDrawTools(state, { intent: (intent) => this.#intent(intent), openBrush: () => this.#openBrush(), t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }, "grid")}
+                    ${drawTools?.(state, { intent: (intent) => this.#intent(intent), openBrush: () => this.#openBrush(), t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }, "grid")}
                     ${precisionOpen ? html`
                       <div class="precision-popover">
                         <${precisionControlsTag} compact inline .state=${state} .localize=${this.localize}></${precisionControlsTag}>

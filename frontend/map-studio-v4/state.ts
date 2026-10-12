@@ -550,11 +550,9 @@ export const reduceWorkspace = (
           dirty: intent.patch.dirty ?? true,
         },
       };
-    case "set-notice": {
-      if (intent.notice === null) return { ...state, notice: null };
-      const notice = readWorkspaceNotice(intent.notice);
-      return notice ? { ...state, notice } : state;
-    }
+    case "set-notice":
+      // Validated where every notice is committed (WorkspaceStore.replace).
+      return { ...state, notice: intent.notice };
     case "open-dialog":
       return { ...state, dialog: intent.dialog };
     case "dismiss-top-layer":
@@ -602,12 +600,14 @@ export class WorkspaceStore {
     return this.replace(reduceWorkspace(this.#state, intent));
   }
 
-  // Every notice committed in place of another is its own frozen object, so
-  // a repeated notice toasts and announces again (shell.md §4 rule 1).
+  // The one place a notice is validated. Every notice committed in place of
+  // another is its own frozen object, so a repeated notice toasts and
+  // announces again (shell.md §4 rule 1); an invalid one is ignored and the
+  // current notice stays.
   replace(next: WorkspaceState): WorkspaceState {
     if (next === this.#state) return next;
     const committed = next.notice && next.notice !== this.#state.notice
-      ? { ...next, notice: readWorkspaceNotice(next.notice) }
+      ? { ...next, notice: readWorkspaceNotice(next.notice) ?? this.#state.notice }
       : next;
     this.#state = committed;
     this.#publish();

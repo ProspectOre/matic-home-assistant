@@ -304,6 +304,60 @@ test("a language that fails while an older retry waits gets its own retry", asyn
   await expect.poll(() => loaderCalls(page)).toEqual(["de", "fr", "fr"]);
 });
 
+// A loader whose calls are recorded by language and settle only when the test
+// says: window.__settleLoad(index, "reject" | "resolve").
+const installHeldLoader = (page) => page.evaluate(() => {
+  window.__loaderCalls = [];
+  const settlers = [];
+  window.__settleLoad = (index, outcome) => settlers[index][outcome]();
+  window.__loader = function load() {
+    window.__loaderCalls.push(this.language);
+    return new Promise((resolve, reject) => {
+      settlers.push({ resolve: () => resolve({}), reject: () => reject(new Error("synthetic loader failure")) });
+    });
+  };
+});
+const reattach = (page, step) => page.evaluate(async (which) => {
+  const panel = window.__translationPanel;
+  if (which === "detach") panel.remove();
+  else document.body.append(panel);
+  await panel.updateComplete;
+}, step);
+const settleLoad = (page, index, outcome) => page.evaluate(async ({ at, how }) => {
+  window.__settleLoad(at, how);
+  for (let tick = 0; tick < 5; tick += 1) await Promise.resolve();
+}, { at: index, how: outcome });
+
+test("a load that rejects after the panel is detached is asked again on reattach", async ({ page }) => {
+  await page.clock.install();
+  await mountPanel(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
+  await installHeldLoader(page);
+  await patchHass(page, { connection: "__connection__", language: "de", loadBackendTranslation: "__loader__" });
+  await expect.poll(() => loaderCalls(page)).toEqual(["de"]);
+  await reattach(page, "detach");
+  await settleLoad(page, 0, "reject");
+  await reattach(page, "attach");
+  await expect.poll(() => loaderCalls(page)).toEqual(["de", "de"]);
+});
+
+test("detaching while a newer language loads does not ask for it twice", async ({ page }) => {
+  await page.clock.install();
+  await mountPanel(page);
+  await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
+  await installHeldLoader(page);
+  await patchHass(page, { connection: "__connection__", language: "de", loadBackendTranslation: "__loader__" });
+  await expect.poll(() => loaderCalls(page)).toEqual(["de"]);
+  // "de" fails and waits for its retry; "fr" is then asked and stays pending.
+  await settleLoad(page, 0, "reject");
+  await patchHass(page, { language: "fr" });
+  await expect.poll(() => loaderCalls(page)).toEqual(["de", "fr"]);
+  await reattach(page, "detach");
+  await reattach(page, "attach");
+  await patchHass(page, { language: "fr" });
+  expect(await loaderCalls(page)).toEqual(["de", "fr"]);
+});
+
 test("a never-settling common load is not retried", async ({ page }) => {
   await page.clock.install();
   await mountPanel(page);
@@ -358,14 +412,34 @@ test("the saved-map date follows Home Assistant's language and server time zone"
   });
 });
 
-test("a server time zone the browser can't use falls back to the browser's date format", async ({ page }) => {
+test("the saved-map notice and the history list show one snapshot's time alike", async ({ page }) => {
   const { panel, notice } = await showSavedMap(page, {
-    locale: { language: "en", time_zone: "server" }, config: { time_zone: "Not/A_Zone" },
+    language: "en", locale: { language: "de", time_zone: "server" }, config: { time_zone: "Asia/Tokyo" },
   });
-  const expected = await page.evaluate(() => new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium", timeStyle: "short",
-  }).format(new Date("2026-09-25T12:00:00Z")));
-  expect(notice?.placeholders).toEqual({ date: expected });
-  await expect(panel.getByText(expected, { exact: false }).first()).toBeAttached();
-  await expect(panel.getByText("Invalid Date")).toHaveCount(0);
+  const snapshotId = await page.evaluate(() => window.__translationPanel.getWorkspaceSnapshot()
+    .resources.history.value.floors.flatMap((floor) => floor.snapshots)
+    .find((snapshot) => snapshot.createdAt === "2026-09-25T12:00:00Z").id);
+  await sendIntent(page, { type: "open-workflow", workflow: "history" });
+  await sendIntent(page, { type: "set-history", historyId: snapshotId });
+  await expect(panel.locator('.snapshot[aria-current="true"] > span')).toHaveText(notice.placeholders.date);
+  await expect(panel.locator('.timeline input[type="range"]')).toHaveAttribute("aria-valuetext", notice.placeholders.date);
 });
+
+// A rejected zone drops only the zone; a rejected language drops to the
+// browser's own format.
+for (const [name, language, expectedLanguage] of [
+  ["a server time zone the browser can't use keeps Home Assistant's language", "de", "de"],
+  ["a language the browser can't use falls back to the browser's date format", "not a language", undefined],
+]) {
+  test(name, async ({ page }) => {
+    const { panel, notice } = await showSavedMap(page, {
+      locale: { language, time_zone: "server" }, config: { time_zone: "Not/A_Zone" },
+    });
+    const expected = await page.evaluate((tag) => new Intl.DateTimeFormat(tag, {
+      dateStyle: "medium", timeStyle: "short",
+    }).format(new Date("2026-09-25T12:00:00Z")), expectedLanguage);
+    expect(notice?.placeholders).toEqual({ date: expected });
+    await expect(panel.getByText(expected, { exact: false }).first()).toBeAttached();
+    await expect(panel.getByText("Invalid Date")).toHaveCount(0);
+  });
+}

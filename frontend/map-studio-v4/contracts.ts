@@ -412,14 +412,21 @@ export interface HassLike {
   ) => Promise<unknown>;
 }
 
+/**
+ * Home Assistant's date language, and its time zone when the user picked the
+ * server's (undefined is the browser's). Every timestamp the panel shows uses it.
+ */
+export interface DateFormat {
+  readonly language: string;
+  readonly timeZone: string | undefined;
+}
+
 export interface HassProjection {
   readonly host: HostState;
   readonly activity: RobotActivity;
   readonly batteryPercent: number | null;
   readonly language: string;
-  /** Home Assistant's date language, and its time zone when the user picked the server's. */
-  readonly dateLanguage: string;
-  readonly timeZone: string | undefined;
+  readonly dates: DateFormat;
   readonly userKey: string;
   readonly vacuumEntityId: string | null;
   readonly entryKey: string | null;

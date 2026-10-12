@@ -1751,8 +1751,7 @@ export class EffectController {
             floor: { ...currentState.floor, readOnly: true, displayName: safeFloorName(saved.floor, 1) },
             resources: { ...currentState.resources, scene: resource("ready", response.scene), pose: resource("idle", null) },
             map: { ...currentState.map, available: true, exactPose: false },
-            notice: savedMapNotice(formatDateTime(
-              saved.snapshot.createdAt, this.#projection?.dateLanguage, this.#projection?.timeZone)),
+            notice: savedMapNotice(formatDateTime(saved.snapshot.createdAt, this.#projection?.dates)),
           });
           break;
         }

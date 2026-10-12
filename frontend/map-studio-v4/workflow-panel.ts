@@ -12,7 +12,13 @@ import type {
   PlanRoom,
   RoomCadencePolicy,
 } from "./backend-contracts";
-import { MAX_ROOM_SEQUENCE_SIZE, type Localize, type WorkspaceIntent, type WorkspaceState } from "./contracts";
+import {
+  MAX_ROOM_SEQUENCE_SIZE,
+  type DateFormat,
+  type Localize,
+  type WorkspaceIntent,
+  type WorkspaceState,
+} from "./contracts";
 import { WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import { admittedManualRoomPreview, initialWorkspaceState } from "./state";
@@ -31,6 +37,7 @@ export class MaticMapWorkflowV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
     localize: { attribute: false },
+    dates: { attribute: false },
     _diagnosticsLoadFailed: { state: true },
     _historyPreviewPosition: { state: true },
   };
@@ -49,8 +56,11 @@ background: var(--ms-local);
 font-size: var(--ms-t-sm);
 line-height: var(--ms-lh-snug);
 }
-.problem { --ms-local: color-mix(in srgb, var(--ms-danger) 9%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); background: var(--ms-local); }
-.notice[data-tone="warning"] { --ms-local: color-mix(in srgb, var(--ms-warning) 11%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-warning) 82%, var(--ms-text)); background: var(--ms-local); }
+/* As the shell's notices: the text keeps the primary colour and the tone is
+   the inline-start rule and the tint (design-system.md). */
+.problem, .notice[data-tone="warning"] { --ms-local: color-mix(in srgb, var(--notice-tone) 12%, var(--ms-surface-card)); border-inline-start: 3px solid var(--notice-tone); color: var(--ms-text); }
+.problem { --notice-tone: var(--ms-danger); }
+.notice[data-tone="warning"] { --notice-tone: var(--ms-warning); }
 .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ms-space-2); }
 .list { display: grid; gap: var(--ms-space-2); }
 .group { display: grid; gap: var(--ms-space-2); }
@@ -95,6 +105,7 @@ line-height: var(--ms-lh-snug);
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
+  dates?: DateFormat;
   _diagnosticsLoadFailed = false;
   _historyPreviewPosition: number | null = null;
   #diagnosticsLoad: Promise<void> | null = null;
@@ -869,7 +880,7 @@ line-height: var(--ms-lh-snug);
               max=${String(snapshots.length)}
               step="1"
               .value=${String(displayPosition)}
-              aria-valuetext=${selectedSnapshot ? formatDateTime(selectedSnapshot.createdAt, this.state.locale) : liveLabel}
+              aria-valuetext=${selectedSnapshot ? formatDateTime(selectedSnapshot.createdAt, this.dates) : liveLabel}
               ?disabled=${!snapshots.length}
               @input=${(event: Event) => {
                 this._historyPreviewPosition = Number(eventValue(event));
@@ -885,7 +896,7 @@ line-height: var(--ms-lh-snug);
             <button class="snapshot ms-row ms-row" type="button" aria-current=${String(!this.state.selection.historyId && Boolean(floor?.active))} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>${liveLabel}</span><small>${this.#t("v4_current", "Current")}</small></button>
             ${snapshots.map((snapshot, index) => html`
               <button class="snapshot ms-row ms-row" type="button" aria-current=${String(snapshot.id === this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: snapshot.id })}>
-                <span>${formatDateTime(snapshot.createdAt, this.state.locale)}</span><small>${this.#t("v4_history_position", "{position} of {count}", { position: index + 1, count: snapshots.length })}</small>
+                <span>${formatDateTime(snapshot.createdAt, this.dates)}</span><small>${this.#t("v4_history_position", "{position} of {count}", { position: index + 1, count: snapshots.length })}</small>
               </button>
             `)}
           </div>

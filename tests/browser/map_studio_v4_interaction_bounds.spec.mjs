@@ -319,6 +319,9 @@ test("outline state changes render in one Lit update", async ({ page }) => {
     element.state = createGalleryState("draw");
     document.body.append(element);
     await element.updateComplete;
+    // The drawing tools load with the draw workflow; count from once they show.
+    while (!element.shadowRoot.querySelector(".map-dock")) await new Promise((resolve) => setTimeout(resolve, 10));
+    await element.updateComplete;
     const requestUpdate = element.requestUpdate.bind(element);
     element.updateRequests = 0;
     element.requestUpdate = (...args) => {

@@ -1,4 +1,4 @@
-import{b as q,c as W,z}from"./chunk-KGPEUTE5.js";import{Ga as T,J as S,K as o,N as K,O as d,P as G,Q as C,R as P,S as M,T as N,V as H,W as I,c as k,e as B,f as V,n as R,p as j,qa as Q,ra as Z,sa as X}from"./chunk-IXCAOXMZ.js";var Y={ATTRIBUTE:1,CHILD:2,PROPERTY:3,BOOLEAN_ATTRIBUTE:4,EVENT:5,ELEMENT:6},J=n=>(...v)=>({_$litDirective$:n,values:v}),A=class{constructor(v){}get _$AU(){return this._$AM._$AU}_$AT(v,e,s){this._$Ct=v,this._$AM=e,this._$Ci=s}_$AS(v,e){return this.update(v,e)}update(v,e){return this.render(...e)}};var{I:re}=G,ee=n=>n;var te=()=>document.createComment(""),w=(n,v,e)=>{let s=n._$AA.parentNode,t=v===void 0?n._$AB:v._$AA;if(e===void 0){let a=s.insertBefore(te(),t),i=s.insertBefore(te(),t);e=new re(a,i,n,n.options)}else{let a=e._$AB.nextSibling,i=e._$AM,l=i!==n;if(l){let c;e._$AQ?.(n),e._$AM=n,e._$AP!==void 0&&(c=n._$AU)!==i._$AU&&e._$AP(c)}if(a!==t||l){let c=e._$AA;for(;c!==a;){let f=ee(c).nextSibling;ee(s).insertBefore(c,t),c=f}}}return e},y=(n,v,e=n)=>(n._$AI(v,e),n),ne={},se=(n,v=ne)=>n._$AH=v,ae=n=>n._$AH,D=n=>{n._$AR(),n._$AA.remove()};var ie=(n,v,e)=>{let s=new Map;for(let t=v;t<=e;t++)s.set(n[t],t);return s},oe=J(class extends A{constructor(n){if(super(n),n.type!==Y.CHILD)throw Error("repeat() can only be used in text expressions")}dt(n,v,e){let s;e===void 0?e=v:v!==void 0&&(s=v);let t=[],a=[],i=0;for(let l of n)t[i]=s?s(l,i):i,a[i]=e(l,i),i++;return{values:a,keys:t}}render(n,v,e){return this.dt(n,v,e).values}update(n,[v,e,s]){let t=ae(n),{values:a,keys:i}=this.dt(v,e,s);if(!Array.isArray(t))return this.ut=i,a;let l=this.ut??=[],c=[],f,u,p=0,r=t.length-1,m=0,h=a.length-1;for(;p<=r&&m<=h;)if(t[p]===null)p++;else if(t[r]===null)r--;else if(l[p]===i[m])c[m]=y(t[p],a[m]),p++,m++;else if(l[r]===i[h])c[h]=y(t[r],a[h]),r--,h--;else if(l[p]===i[h])c[h]=y(t[p],a[h]),w(n,c[h+1],t[p]),p++,h--;else if(l[r]===i[m])c[m]=y(t[r],a[m]),w(n,t[p],t[r]),r--,m++;else if(f===void 0&&(f=ie(i,m,h),u=ie(l,p,r)),f.has(l[p]))if(f.has(l[r])){let g=u.get(i[m]),_=g!==void 0?t[g]:null;if(_===null){let E=w(n,t[p]);y(E,a[m]),c[m]=E}else c[m]=y(_,a[m]),w(n,t[p],_),t[g]=null;m++}else D(t[r]),r--;else D(t[p]),p++;for(;m<=h;){let g=w(n,c[h+1]);y(g,a[m]),c[m++]=g}for(;p<=r;){let g=t[p++];g!==null&&D(g)}return this.ut=i,se(n,c),K}});var U=class extends C{constructor(){super(...arguments);this.state=R();this.compact=!1;this.inline=!1}static{this.properties={state:{attribute:!1},localize:{attribute:!1},compact:{type:Boolean,reflect:!0},inline:{type:Boolean,reflect:!0}}}static{this.styles=[P,M,I,S`
+import{b as q,c as W,y as z}from"./chunk-WBV42537.js";import"./chunk-L62ENE4N.js";import{a as P,b as M,c as N,e as H,f as I}from"./chunk-TYQ5ABVD.js";import{c as k,e as B,f as V,n as R,p as j}from"./chunk-Y57SSVTW.js";import{L as T,v as Q,w as Z,x as X}from"./chunk-YNV3WCTZ.js";import{a as S,b as o,e as K,f as d,g as G,h as C}from"./chunk-MMLYFANH.js";var Y={ATTRIBUTE:1,CHILD:2,PROPERTY:3,BOOLEAN_ATTRIBUTE:4,EVENT:5,ELEMENT:6},J=n=>(...h)=>({_$litDirective$:n,values:h}),A=class{constructor(h){}get _$AU(){return this._$AM._$AU}_$AT(h,e,s){this._$Ct=h,this._$AM=e,this._$Ci=s}_$AS(h,e){return this.update(h,e)}update(h,e){return this.render(...e)}};var{I:re}=G,ee=n=>n;var te=()=>document.createComment(""),w=(n,h,e)=>{let s=n._$AA.parentNode,t=h===void 0?n._$AB:h._$AA;if(e===void 0){let a=s.insertBefore(te(),t),i=s.insertBefore(te(),t);e=new re(a,i,n,n.options)}else{let a=e._$AB.nextSibling,i=e._$AM,l=i!==n;if(l){let c;e._$AQ?.(n),e._$AM=n,e._$AP!==void 0&&(c=n._$AU)!==i._$AU&&e._$AP(c)}if(a!==t||l){let c=e._$AA;for(;c!==a;){let f=ee(c).nextSibling;ee(s).insertBefore(c,t),c=f}}}return e},y=(n,h,e=n)=>(n._$AI(h,e),n),ne={},se=(n,h=ne)=>n._$AH=h,ae=n=>n._$AH,D=n=>{n._$AR(),n._$AA.remove()};var ie=(n,h,e)=>{let s=new Map;for(let t=h;t<=e;t++)s.set(n[t],t);return s},oe=J(class extends A{constructor(n){if(super(n),n.type!==Y.CHILD)throw Error("repeat() can only be used in text expressions")}dt(n,h,e){let s;e===void 0?e=h:h!==void 0&&(s=h);let t=[],a=[],i=0;for(let l of n)t[i]=s?s(l,i):i,a[i]=e(l,i),i++;return{values:a,keys:t}}render(n,h,e){return this.dt(n,h,e).values}update(n,[h,e,s]){let t=ae(n),{values:a,keys:i}=this.dt(h,e,s);if(!Array.isArray(t))return this.ut=i,a;let l=this.ut??=[],c=[],f,u,p=0,r=t.length-1,m=0,v=a.length-1;for(;p<=r&&m<=v;)if(t[p]===null)p++;else if(t[r]===null)r--;else if(l[p]===i[m])c[m]=y(t[p],a[m]),p++,m++;else if(l[r]===i[v])c[v]=y(t[r],a[v]),r--,v--;else if(l[p]===i[v])c[v]=y(t[p],a[v]),w(n,c[v+1],t[p]),p++,v--;else if(l[r]===i[m])c[m]=y(t[r],a[m]),w(n,t[p],t[r]),r--,m++;else if(f===void 0&&(f=ie(i,m,v),u=ie(l,p,r)),f.has(l[p]))if(f.has(l[r])){let g=u.get(i[m]),_=g!==void 0?t[g]:null;if(_===null){let E=w(n,t[p]);y(E,a[m]),c[m]=E}else c[m]=y(_,a[m]),w(n,t[p],_),t[g]=null;m++}else D(t[r]),r--;else D(t[p]),p++;for(;m<=v;){let g=w(n,c[v+1]);y(g,a[m]),c[m++]=g}for(;p<=r;){let g=t[p++];g!==null&&D(g)}return this.ut=i,se(n,c),K}});var U=class extends C{constructor(){super(...arguments);this.state=R();this.compact=!1;this.inline=!1}static{this.properties={state:{attribute:!1},localize:{attribute:!1},compact:{type:Boolean,reflect:!0},inline:{type:Boolean,reflect:!0}}}static{this.styles=[P,M,I,S`
 :host { display: block; color: var(--ms-text); }
 .controls { display: grid; gap: var(--ms-space-3); padding: var(--ms-space-3); }
 .stepper { display: grid; grid-template-columns: var(--ms-control) minmax(0, 1fr) var(--ms-control); gap: var(--ms-space-1); align-items: stretch; }
@@ -63,7 +63,7 @@ inline-size: min(18rem, calc(100vw - 1.5rem));
         </div>
         <p class="hint">${this.#s("v4_precision_hint","Strokes follow the map's resolution. Zooming changes the view, not the area.")}</p>
       </div>
-    `}};customElements.get(q)||customElements.define(q,U);var O=["vacuum","mop","vacuum_and_mop"],L=["quick","standard","heavy_duty"],$=n=>n.currentTarget.value,x=n=>n.currentTarget.checked,F=class extends C{constructor(){super(...arguments);this.state=R();this._diagnosticsLoadFailed=!1;this._historyPreviewPosition=null;this.#s=null;this.#i=""}static{this.properties={state:{attribute:!1},localize:{attribute:!1},_diagnosticsLoadFailed:{state:!0},_historyPreviewPosition:{state:!0}}}static{this.styles=[P,M,I,S`
+    `}};customElements.get(q)||customElements.define(q,U);var O=["vacuum","mop","vacuum_and_mop"],L=["quick","standard","heavy_duty"],$=n=>n.currentTarget.value,x=n=>n.currentTarget.checked,F=class extends C{constructor(){super(...arguments);this.state=R();this._diagnosticsLoadFailed=!1;this._historyPreviewPosition=null;this.#s=null;this.#i=""}static{this.properties={state:{attribute:!1},localize:{attribute:!1},dates:{attribute:!1},_diagnosticsLoadFailed:{state:!0},_historyPreviewPosition:{state:!0}}}static{this.styles=[P,M,I,S`
 .workflow-fields { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 :host { display: block; min-inline-size: 0; container-type: inline-size; }
 button, select, input[type="checkbox"] { cursor: pointer; }
@@ -77,8 +77,11 @@ background: var(--ms-local);
 font-size: var(--ms-t-sm);
 line-height: var(--ms-lh-snug);
 }
-.problem { --ms-local: color-mix(in srgb, var(--ms-danger) 9%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); background: var(--ms-local); }
-.notice[data-tone="warning"] { --ms-local: color-mix(in srgb, var(--ms-warning) 11%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-warning) 82%, var(--ms-text)); background: var(--ms-local); }
+/* As the shell's notices: the text keeps the primary colour and the tone is
+   the inline-start rule and the tint (design-system.md). */
+.problem, .notice[data-tone="warning"] { --ms-local: color-mix(in srgb, var(--notice-tone) 12%, var(--ms-surface-card)); border-inline-start: 3px solid var(--notice-tone); color: var(--ms-text); }
+.problem { --notice-tone: var(--ms-danger); }
+.notice[data-tone="warning"] { --notice-tone: var(--ms-warning); }
 .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ms-space-2); }
 .list { display: grid; gap: var(--ms-space-2); }
 .group { display: grid; gap: var(--ms-space-2); }
@@ -156,7 +159,7 @@ line-height: var(--ms-lh-snug);
           </span>
         </label>
         <div class="stack" aria-label=${this.#e("v4_shared_schedule_status","Shared room schedule status")}>
-          ${this.state.selection.roomIds.map(i=>{let l=e.value?.rooms.find(c=>c.roomId===i);return l?.sharedCadence||l?.sharedCadenceProgress||l?.sharedCadenceReasons?.length?o`<p class="subtle">${l.name}: ${this.#v(l.sharedCadence,l.sharedCadenceProgress,l.sharedCadenceReasons)}</p>`:d})}
+          ${this.state.selection.roomIds.map(i=>{let l=e.value?.rooms.find(c=>c.roomId===i);return l?.sharedCadence||l?.sharedCadenceProgress||l?.sharedCadenceReasons?.length?o`<p class="subtle">${l.name}: ${this.#h(l.sharedCadence,l.sharedCadenceProgress,l.sharedCadenceReasons)}</p>`:d})}
         </div>
         ${this.state.manualRoomPreview.status==="loading"?o`<p role="status" class="subtle">${this.#e("v4_room_preview_loading","Verifying the effective room settings\u2026")}</p>`:d}
         ${this.state.manualRoomPreview.status==="error"?o`<div class="stack">
@@ -199,7 +202,7 @@ line-height: var(--ms-lh-snug);
         </label>
       </div>
       ${this.#l(s.cleaningMode)}
-    `}#u(e){return e.cadence||{scope:"plan",mopEveryN:null,coverageEveryN:null,periodicCoverageSetting:null,doMopNext:!1,doCoverageNext:!1}}#v(e,s,t=s?.reasons||[]){if(t.includes("coverage_requires_vacuum"))return this.#c("coverage_requires_vacuum");if(t.includes("identity_changed")||t.includes("room_not_on_current_map"))return this.#e("v4_cadence_identity_blocked","Schedule identity does not match the current room map. Review this room before cleaning.");if(t.includes("shared_schedule_unavailable"))return this.#e("v4_cadence_shared_unavailable","The shared room schedule is unavailable. Review its settings before cleaning.");if(t.includes("mop_progress_unverified")||t.includes("coverage_progress_unverified")){let c=[];return t.includes("mop_progress_unverified")&&c.push(this.#e("v4_cadence_mop_progress_unverified","Mopping progress must be reset before this schedule can run.")),t.includes("coverage_progress_unverified")&&c.push(this.#e("v4_cadence_coverage_progress_unverified","Coverage progress must be reset before this schedule can run.")),c.join(" ")}if(t.includes("invalid_cadence_policy"))return this.#e("v4_cadence_policy_invalid","The room schedule needs review before it can be applied.");if(!e||!e.mopEveryN&&!e.coverageEveryN)return this.#e("v4_cadence_not_enabled","No recurring room schedule is enabled.");let a=[],i=s?.mopDue||s?.reasons.includes("mop_due"),l=s?.coverageDue||s?.reasons.includes("coverage_due");return e.mopEveryN&&a.push(i?this.#e("v4_cadence_mop_due","Vacuum and mop is due on this clean."):this.#e("v4_cadence_mop_progress","Mop every {interval} cleans; {completed} qualifying cleans since the last mop.",{interval:e.mopEveryN,completed:s?.mopProgress??0})),e.coverageEveryN&&a.push(l?this.#e("v4_cadence_coverage_due","{coverage} periodic coverage is due on this clean.",{coverage:this.#o(e.periodicCoverageSetting||"standard")}):this.#e("v4_cadence_coverage_progress","Periodic coverage every {interval} cleans; {completed} qualifying cleans so far.",{interval:e.coverageEveryN,completed:s?.coverageProgress??0})),a.join(" ")}#a(e,s){let t=this.state.planDraft.rooms[e];t&&this.#d(e,{cadence:{...this.#u(t),...s}})}#h(e,s,t){let a=e.currentTarget,i=a.value;if(i===""){t==="mopEveryN"?this.#a(s,{mopEveryN:null,doMopNext:!1}):this.#a(s,{coverageEveryN:null,doCoverageNext:!1});return}let l=Number(i);if(!Number.isInteger(l)||l<1||l>100){a.reportValidity();return}let c=this.state.planDraft.rooms[s];if(c){if(t==="coverageEveryN"){this.#a(s,{coverageEveryN:l,periodicCoverageSetting:c.cadence?.periodicCoverageSetting||c.coverageSetting});return}this.#a(s,{[t]:l})}}#w(e,s,t){let a=this.state.planDraft,i=this.#u(e),l=e.cadenceProgress,f=(a.id?this.state.resources.plans.value?.plans.find(b=>b.id===a.id)?.rooms.find(b=>b.roomId===e.roomId):void 0)?.cadence?.scope??null,u=this.state.resources.plans.value?.rooms.find(b=>b.roomId===e.roomId),p=!!(u?.sharedCadence||u?.sharedCadenceProgress),r=!!(i.mopEveryN||i.coverageEveryN),m=!!(l?.mopProgress||i.doMopNext||e.cadenceReasons?.includes("mop_progress_unverified")),h=!!(l?.coverageProgress||i.doCoverageNext||e.cadenceReasons?.includes("coverage_progress_unverified")),g=a.dirty||this.state.command!=="idle"||this.state.managedLock||this.state.activity!=="idle"&&this.state.activity!=="docked"||this.state.dataMode!=="live",_=f!==null&&f!==i.scope?i.scope==="shared"?this.#e("v4_cadence_shared_join_effect","Saving makes this schedule shared across participating plans and opted-in room cleans. It adopts existing shared progress when available; a new shared schedule starts at zero."):this.#e("v4_cadence_shared_leave_effect","Saving starts fresh private progress for this plan. The existing shared schedule remains unchanged for other participating plans."):f===null&&r?i.scope==="shared"?p?this.#e("v4_cadence_shared_join_effect","Saving makes this schedule shared across participating plans and opted-in room cleans. It adopts existing shared progress when available; a new shared schedule starts at zero."):this.#e("v4_cadence_new_shared_effect","Saving creates a shared schedule for participating plans and opted-in room cleans. Its progress starts at zero."):this.#e("v4_cadence_new_private_effect","Saving creates private progress for this plan only. It starts at zero when enabled."):this.#e("v4_cadence_existing_effect","Interval edits keep progress, and disabling pauses it. Mopping and coverage have separate progress and resets."),E=this.#e("v4_room_cadence_named","Room schedule for {room}",{room:t});return o`
+    `}#u(e){return e.cadence||{scope:"plan",mopEveryN:null,coverageEveryN:null,periodicCoverageSetting:null,doMopNext:!1,doCoverageNext:!1}}#h(e,s,t=s?.reasons||[]){if(t.includes("coverage_requires_vacuum"))return this.#c("coverage_requires_vacuum");if(t.includes("identity_changed")||t.includes("room_not_on_current_map"))return this.#e("v4_cadence_identity_blocked","Schedule identity does not match the current room map. Review this room before cleaning.");if(t.includes("shared_schedule_unavailable"))return this.#e("v4_cadence_shared_unavailable","The shared room schedule is unavailable. Review its settings before cleaning.");if(t.includes("mop_progress_unverified")||t.includes("coverage_progress_unverified")){let c=[];return t.includes("mop_progress_unverified")&&c.push(this.#e("v4_cadence_mop_progress_unverified","Mopping progress must be reset before this schedule can run.")),t.includes("coverage_progress_unverified")&&c.push(this.#e("v4_cadence_coverage_progress_unverified","Coverage progress must be reset before this schedule can run.")),c.join(" ")}if(t.includes("invalid_cadence_policy"))return this.#e("v4_cadence_policy_invalid","The room schedule needs review before it can be applied.");if(!e||!e.mopEveryN&&!e.coverageEveryN)return this.#e("v4_cadence_not_enabled","No recurring room schedule is enabled.");let a=[],i=s?.mopDue||s?.reasons.includes("mop_due"),l=s?.coverageDue||s?.reasons.includes("coverage_due");return e.mopEveryN&&a.push(i?this.#e("v4_cadence_mop_due","Vacuum and mop is due on this clean."):this.#e("v4_cadence_mop_progress","Mop every {interval} cleans; {completed} qualifying cleans since the last mop.",{interval:e.mopEveryN,completed:s?.mopProgress??0})),e.coverageEveryN&&a.push(l?this.#e("v4_cadence_coverage_due","{coverage} periodic coverage is due on this clean.",{coverage:this.#o(e.periodicCoverageSetting||"standard")}):this.#e("v4_cadence_coverage_progress","Periodic coverage every {interval} cleans; {completed} qualifying cleans so far.",{interval:e.coverageEveryN,completed:s?.coverageProgress??0})),a.join(" ")}#a(e,s){let t=this.state.planDraft.rooms[e];t&&this.#d(e,{cadence:{...this.#u(t),...s}})}#v(e,s,t){let a=e.currentTarget,i=a.value;if(i===""){t==="mopEveryN"?this.#a(s,{mopEveryN:null,doMopNext:!1}):this.#a(s,{coverageEveryN:null,doCoverageNext:!1});return}let l=Number(i);if(!Number.isInteger(l)||l<1||l>100){a.reportValidity();return}let c=this.state.planDraft.rooms[s];if(c){if(t==="coverageEveryN"){this.#a(s,{coverageEveryN:l,periodicCoverageSetting:c.cadence?.periodicCoverageSetting||c.coverageSetting});return}this.#a(s,{[t]:l})}}#w(e,s,t){let a=this.state.planDraft,i=this.#u(e),l=e.cadenceProgress,f=(a.id?this.state.resources.plans.value?.plans.find(b=>b.id===a.id)?.rooms.find(b=>b.roomId===e.roomId):void 0)?.cadence?.scope??null,u=this.state.resources.plans.value?.rooms.find(b=>b.roomId===e.roomId),p=!!(u?.sharedCadence||u?.sharedCadenceProgress),r=!!(i.mopEveryN||i.coverageEveryN),m=!!(l?.mopProgress||i.doMopNext||e.cadenceReasons?.includes("mop_progress_unverified")),v=!!(l?.coverageProgress||i.doCoverageNext||e.cadenceReasons?.includes("coverage_progress_unverified")),g=a.dirty||this.state.command!=="idle"||this.state.managedLock||this.state.activity!=="idle"&&this.state.activity!=="docked"||this.state.dataMode!=="live",_=f!==null&&f!==i.scope?i.scope==="shared"?this.#e("v4_cadence_shared_join_effect","Saving makes this schedule shared across participating plans and opted-in room cleans. It adopts existing shared progress when available; a new shared schedule starts at zero."):this.#e("v4_cadence_shared_leave_effect","Saving starts fresh private progress for this plan. The existing shared schedule remains unchanged for other participating plans."):f===null&&r?i.scope==="shared"?p?this.#e("v4_cadence_shared_join_effect","Saving makes this schedule shared across participating plans and opted-in room cleans. It adopts existing shared progress when available; a new shared schedule starts at zero."):this.#e("v4_cadence_new_shared_effect","Saving creates a shared schedule for participating plans and opted-in room cleans. Its progress starts at zero."):this.#e("v4_cadence_new_private_effect","Saving creates private progress for this plan only. It starts at zero when enabled."):this.#e("v4_cadence_existing_effect","Interval edits keep progress, and disabling pauses it. Mopping and coverage have separate progress and resets."),E=this.#e("v4_room_cadence_named","Room schedule for {room}",{room:t});return o`
       <details class="plan-option cadence-config">
         <summary>${E}</summary>
         <p class="subtle">${this.#e("v4_cadence_description","Only verified room cleans count toward these intervals. Due work stays due until it is verified.")}</p>
@@ -211,10 +214,10 @@ line-height: var(--ms-lh-snug);
             </select>
           </label>
           <label class="field ms-field">${this.#e("v4_cadence_mop_interval","Vacuum and mop every N cleans")}
-            <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#e("v4_cadence_mop_interval_named","Vacuum and mop interval for {room}, from 1 to 100",{room:t})} .value=${i.mopEveryN?.toString()||""} ?disabled=${e.cleaningMode!=="vacuum"} @change=${b=>this.#h(b,s,"mopEveryN")}>
+            <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#e("v4_cadence_mop_interval_named","Vacuum and mop interval for {room}, from 1 to 100",{room:t})} .value=${i.mopEveryN?.toString()||""} ?disabled=${e.cleaningMode!=="vacuum"} @change=${b=>this.#v(b,s,"mopEveryN")}>
           </label>
           <label class="field ms-field">${this.#e("v4_cadence_coverage_interval","Use periodic vacuum coverage every N cleans")}
-            <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#e("v4_cadence_coverage_interval_named","Periodic vacuum coverage interval for {room}, from 1 to 100",{room:t})} ?disabled=${e.cleaningMode==="mop"} .value=${i.coverageEveryN?.toString()||""} @change=${b=>this.#h(b,s,"coverageEveryN")}>
+            <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#e("v4_cadence_coverage_interval_named","Periodic vacuum coverage interval for {room}, from 1 to 100",{room:t})} ?disabled=${e.cleaningMode==="mop"} .value=${i.coverageEveryN?.toString()||""} @change=${b=>this.#v(b,s,"coverageEveryN")}>
           </label>
           ${i.coverageEveryN?o`
             <label class="field ms-field">${this.#e("v4_cadence_periodic_coverage","Periodic vacuum coverage setting")}
@@ -236,8 +239,8 @@ line-height: var(--ms-lh-snug);
           <label class="plan-option"><input type="checkbox" aria-label=${this.#e("v4_cadence_do_coverage_next_named","Use periodic vacuum coverage on the next clean for {room}",{room:t})} .checked=${i.doCoverageNext} ?disabled=${!i.coverageEveryN||e.cleaningMode==="mop"} @change=${b=>this.#a(s,{doCoverageNext:x(b)})}><span class="plan-option-copy"><strong>${this.#e("v4_cadence_do_coverage_next","Use periodic vacuum coverage on the next clean")}</strong></span></label>
         </div>
         ${i.coverageEveryN?o`<p class="subtle">${this.#e("v4_cadence_coverage_verification_hint","Periodic coverage is credited only after the robot confirms the requested vacuum coverage and completed clean. If those settings cannot be verified, coverage stays due for the next clean.")}</p>`:d}
-        <p class="subtle" aria-live="polite">${this.#v(i,l,e.cadenceReasons)}</p>
-        ${a.id&&(i.mopEveryN||i.coverageEveryN||m||h)?o`
+        <p class="subtle" aria-live="polite">${this.#h(i,l,e.cadenceReasons)}</p>
+        ${a.id&&(i.mopEveryN||i.coverageEveryN||m||v)?o`
           <div class="toolbar">
             ${i.mopEveryN||m?o`<button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
@@ -247,7 +250,7 @@ line-height: var(--ms-lh-snug);
               ?disabled=${g}
               @click=${()=>this.#t({type:"request-room-cadence-reset",planId:a.id,roomId:e.roomId,mode:"mop"})}
             >${this.#e("v4_reset_mop_cadence_button","Reset mopping")}</button>`:d}
-            ${i.coverageEveryN||h?o`<button
+            ${i.coverageEveryN||v?o`<button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
               aria-label=${this.#e("v4_reset_coverage_cadence_button_named","Reset vacuum rotation progress for {room}",{room:t})}
@@ -316,21 +319,21 @@ line-height: var(--ms-lh-snug);
           </p>
         `:d}
         <div class="list" role="group" aria-labelledby="plan-rooms-heading">
-          ${oe(l,({room:r})=>r.roomId,({room:r,label:m,selected:h})=>{let g=h?t.rooms.findIndex(_=>_.roomId===r.roomId):-1;return o`
-              <div class="room plan-room ms-row ms-row--stack" data-selected=${String(h)}>
+          ${oe(l,({room:r})=>r.roomId,({room:r,label:m,selected:v})=>{let g=v?t.rooms.findIndex(_=>_.roomId===r.roomId):-1;return o`
+              <div class="room plan-room ms-row ms-row--stack" data-selected=${String(v)}>
                 <div class="room-choice">
                   <label class="plan-room-label">
-                  <input type="checkbox" .checked=${h} ?disabled=${!h&&c} @change=${()=>this.#k(r.roomId)}>
-                  <strong>${h?`${g+1}. `:""}${m}</strong>
+                  <input type="checkbox" .checked=${v} ?disabled=${!v&&c} @change=${()=>this.#k(r.roomId)}>
+                  <strong>${v?`${g+1}. `:""}${m}</strong>
                   </label>
-                  ${h?o`
+                  ${v?o`
                     <span>
                       <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#e("move_room_up","Move {room} earlier",{room:m})} ?disabled=${g===0} @click=${_=>{_.preventDefault(),this.#g(g,-1)}}>${T(Z)}</button>
                       <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#e("move_room_down","Move {room} later",{room:m})} ?disabled=${g===t.rooms.length-1} @click=${_=>{_.preventDefault(),this.#g(g,1)}}>${T(X)}</button>
                     </span>
                   `:d}
                 </div>
-                ${h?o`
+                ${v?o`
                   <div class="split room-settings">
                     <label class="field ms-field">${this.#e("v4_cleaning_system","Cleaning system")}
                       <select aria-label=${this.#e("v4_room_cleaning_system_named","Cleaning system for {room}",{room:m})} .value=${r.cleaningMode} @change=${_=>this.#d(g,{cleaningMode:$(_)})}>${O.map(_=>o`<option value=${_} ?selected=${_===r.cleaningMode} ?disabled=${!!("cadence"in r&&r.cadence?.mopEveryN&&_!=="vacuum")}>${this.#n(_)}</option>`)}</select>
@@ -352,8 +355,8 @@ line-height: var(--ms-lh-snug);
           ${t.id?p?p.blocker?o`<p class="problem" role="alert">${this.#c(p.blocker)}</p>`:/^[0-9a-f]{64}$/u.test(p.previewToken??"")?o`
                   ${t.dirty?o`<p class="notice" role="status">${this.#e("v4_next_run_preview_stale","This preview shows the saved plan. Save your edits to calculate the updated order and settings before starting.")}</p>`:d}
                   <ol class="list" aria-label=${this.#e("v4_next_run_preview_order","Next-run room order and effective settings")}>
-                    ${p.rooms.map((r,m)=>{let h=1+p.missionBoundaries.filter(g=>g<=m).length;return o`<li class="ms-row ms-row--stack">
-                        <span class="subtle">${this.#e("v4_next_run_mission","Mission {number}",{number:h})}</span>
+                    ${p.rooms.map((r,m)=>{let v=1+p.missionBoundaries.filter(g=>g<=m).length;return o`<li class="ms-row ms-row--stack">
+                        <span class="subtle">${this.#e("v4_next_run_mission","Mission {number}",{number:v})}</span>
                         <strong>${m+1}. ${r.name}</strong>
                         <span>${this.#m(r)}</span>
                         ${r.cadenceReasons.length?o`<small>${r.cadenceReasons.map(g=>this.#p(g)).join(" \xB7 ")}</small>`:d}
@@ -476,7 +479,7 @@ line-height: var(--ms-lh-snug);
               max=${String(a.length)}
               step="1"
               .value=${String(c)}
-              aria-valuetext=${f?H(f.createdAt,this.state.locale):l}
+              aria-valuetext=${f?H(f.createdAt,this.dates):l}
               ?disabled=${!a.length}
               @input=${u=>{this._historyPreviewPosition=Number($(u))}}
               @change=${u=>{let p=Number($(u));this._historyPreviewPosition=null,this.#t({type:"set-history",historyId:p===a.length?null:a[p]?.id||null})}}
@@ -486,14 +489,14 @@ line-height: var(--ms-lh-snug);
             <button class="snapshot ms-row ms-row" type="button" aria-current=${String(!this.state.selection.historyId&&!!t?.active)} @click=${()=>this.#t({type:"set-history",historyId:null})}><span>${l}</span><small>${this.#e("v4_current","Current")}</small></button>
             ${a.map((u,p)=>o`
               <button class="snapshot ms-row ms-row" type="button" aria-current=${String(u.id===this.state.selection.historyId)} @click=${()=>this.#t({type:"set-history",historyId:u.id})}>
-                <span>${H(u.createdAt,this.state.locale)}</span><small>${this.#e("v4_history_position","{position} of {count}",{position:p+1,count:a.length})}</small>
+                <span>${H(u.createdAt,this.dates)}</span><small>${this.#e("v4_history_position","{position} of {count}",{position:p+1,count:a.length})}</small>
               </button>
             `)}
           </div>
         </div>
         <p class="subtle">${this.#e("v4_history_privacy","Saved maps are floor-scoped and never show a live robot position.")}</p>
       </div>
-    `)}#_(){this.#s||customElements.get("matic-map-diagnostics-v4")||(this._diagnosticsLoadFailed=!1,this.#s=import("./diagnostics-panel-4H3GW5LL.js").then(()=>{this.#s=null,this.requestUpdate()}).catch(()=>{this.#s=null,this._diagnosticsLoadFailed=!0}))}#P(){return customElements.get("matic-map-diagnostics-v4")?o`<matic-map-diagnostics-v4
+    `)}#_(){this.#s||customElements.get("matic-map-diagnostics-v4")||(this._diagnosticsLoadFailed=!1,this.#s=import("./diagnostics-panel-UW6RIKOL.js").then(()=>{this.#s=null,this.requestUpdate()}).catch(()=>{this.#s=null,this._diagnosticsLoadFailed=!0}))}#P(){return customElements.get("matic-map-diagnostics-v4")?o`<matic-map-diagnostics-v4
         .state=${this.state}
         .localize=${this.localize}
         .disabled=${this.state.command!=="idle"&&this.state.command!=="failed"}

@@ -1,4 +1,4 @@
-import type { Localize } from "./contracts";
+import type { DateFormat, Localize } from "./contracts";
 
 const PREFIX = "component.matic_robot.common.";
 const HA_ERROR = /^Translation error/iu;
@@ -31,14 +31,21 @@ export const formatList = (language: string, items: readonly string[]): string =
 const DATE_TIME: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" };
 
 /**
- * Formats a valid timestamp in Home Assistant's language and time zone, or in
- * the browser's own when its Intl rejects either of them.
+ * Formats a valid timestamp in Home Assistant's language and time zone. A zone
+ * the browser's Intl rejects is dropped for the browser's own; a rejected
+ * language falls back to the browser's whole format.
  */
-export const formatDateTime = (value: string, language?: string, timeZone?: string): string => {
+export const formatDateTime = (value: string, dates?: DateFormat): string => {
   const date = new Date(value);
+  const format = (locale?: string, zone?: string): string =>
+    new Intl.DateTimeFormat(locale, { ...DATE_TIME, timeZone: zone }).format(date);
   try {
-    return new Intl.DateTimeFormat(language, timeZone ? { ...DATE_TIME, timeZone } : DATE_TIME).format(date);
+    return format(dates?.language, dates?.timeZone);
   } catch {
-    return new Intl.DateTimeFormat(undefined, DATE_TIME).format(date);
+    try {
+      return format(dates?.language);
+    } catch {
+      return format();
+    }
   }
 };

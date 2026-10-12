@@ -24,8 +24,9 @@ const shellTag = unsafeStatic(SHELL_TAG);
 
 // Home Assistant never loads an integration's `common` translations for a
 // custom panel, so the panel asks once per connection and language. A rejected
-// load keeps its pair recorded until a single retry 30 s later, so hass updates
-// never ask more often; a load that never settles is left alone.
+// load keeps its pair recorded until a single retry 30 s later (or, on a
+// detached panel, until it is attached again), so hass updates never ask more
+// often; a load that never settles is left alone.
 // One request per (connection, language) is enough because Home Assistant's
 // frontend changes language in one synchronous call: `_selectLanguage`
 // (src/state/translations-mixin.ts) writes the language into hass through
@@ -36,6 +37,11 @@ const shellTag = unsafeStatic(SHELL_TAG);
 const commonTranslationsRequested = new WeakMap<object, string>();
 const NO_CONNECTION: object = {};
 const COMMON_RETRY_MS = 30_000;
+// Forgets a failed pair so the next update asks again, unless a newer
+// language has already replaced it (that load may still be pending).
+const forgetFailedPair = (owner: object, language: string): void => {
+  if (commonTranslationsRequested.get(owner) === language) commonTranslationsRequested.delete(owner);
+};
 
 export class MaticMapPanelV4 extends LitElement {
   static override styles = [tokens, base, css`
@@ -63,7 +69,11 @@ export class MaticMapPanelV4 extends LitElement {
   #backend: MaticBackend | null = null;
   #effects: EffectController | null = null;
   #layers: LayerHistoryController | null = null;
-  #commonRetry: { readonly owner: object; readonly timer: ReturnType<typeof setTimeout> } | null = null;
+  #commonRetry: {
+    readonly owner: object;
+    readonly language: string;
+    readonly timer: ReturnType<typeof setTimeout>;
+  } | null = null;
 
   #project(
     hass: HassLike | undefined = this.hass,
@@ -84,14 +94,20 @@ export class MaticMapPanelV4 extends LitElement {
     if (commonTranslationsRequested.get(owner) === language) return;
     commonTranslationsRequested.set(owner, language);
     void Promise.resolve().then(() => load.call(hass, "common", "matic_robot")).catch(() => {
-      if (!this.isConnected) return;
+      if (commonTranslationsRequested.get(owner) !== language) return;
+      // A detached panel cannot retry, so it forgets the pair for its reattach.
+      if (!this.isConnected) {
+        forgetFailedPair(owner, language);
+        return;
+      }
       // The newest failure owns the one retry timer.
       if (this.#commonRetry) clearTimeout(this.#commonRetry.timer);
       this.#commonRetry = {
         owner,
+        language,
         timer: setTimeout(() => {
           this.#commonRetry = null;
-          if (commonTranslationsRequested.get(owner) === language) commonTranslationsRequested.delete(owner);
+          forgetFailedPair(owner, language);
           this.#requestCommonTranslations();
         }, COMMON_RETRY_MS),
       };
@@ -132,7 +148,7 @@ export class MaticMapPanelV4 extends LitElement {
     // reattaching asks again.
     if (this.#commonRetry) {
       clearTimeout(this.#commonRetry.timer);
-      commonTranslationsRequested.delete(this.#commonRetry.owner);
+      forgetFailedPair(this.#commonRetry.owner, this.#commonRetry.language);
       this.#commonRetry = null;
     }
     this.#unsubscribe?.();
@@ -268,6 +284,7 @@ export class MaticMapPanelV4 extends LitElement {
       <${shellTag}
         .state=${this._workspace}
         .localize=${this.hass?.localize}
+        .dates=${this.#projection?.dates}
         @matic-workspace-intent=${this.#intent}
         @matic-workspace-action=${this.#action}
       ></${shellTag}>

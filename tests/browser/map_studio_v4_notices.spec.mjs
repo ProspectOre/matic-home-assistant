@@ -707,6 +707,48 @@ test("a status title change is announced once through the polite region", async 
   expect(await readRegion(page, "polite")).toEqual(["Locating"]);
 });
 
+test("an invalid notice is ignored alike through an intent and a state replacement", async ({ page }) => {
+  await loadGallery(page);
+  const kept = sampleNotice("info", "Kept sample");
+  await setGalleryNotice(page, kept);
+  const results = await page.evaluate(({ tag, invalid }) => {
+    const gallery = document.querySelector(tag);
+    const shell = gallery.shadowRoot.querySelector(".stage").firstElementChild;
+    shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: { type: "set-notice", notice: invalid }, bubbles: true, composed: true,
+    }));
+    const viaIntent = gallery.getWorkspaceSnapshot().notice;
+    gallery.replaceWorkspaceState({ ...gallery.getWorkspaceSnapshot(), notice: invalid });
+    return { viaIntent, viaReplace: gallery.getWorkspaceSnapshot().notice };
+  }, { tag: GALLERY_TAG, invalid: { tone: "error", key: "__proto__", fallback: "x" } });
+  expect(results.viaIntent).toEqual(kept);
+  expect(results.viaReplace).toEqual(kept);
+});
+
+test("a status title and a notice committed together are both announced once, in order", async ({ page }) => {
+  await loadGallery(page);
+  await watchRegions(page);
+  await page.evaluate(({ tag, notice }) => {
+    const gallery = document.querySelector(tag);
+    gallery.replaceWorkspaceState({ ...gallery.getWorkspaceSnapshot(), coherence: "verifying", notice });
+  }, { tag: GALLERY_TAG, notice: sampleNotice("info", "Together sample") });
+  await expect.poll(() => readRegion(page, "polite")).toEqual(["Locating", "Together sample"]);
+  await galleryIntent(page, { type: "toggle-labels" });
+  expect(await readRegion(page, "polite")).toEqual(["Locating", "Together sample"]);
+});
+
+test("a language swap does not announce the status title again", async ({ page }) => {
+  await loadGallery(page);
+  await watchRegions(page);
+  await page.evaluate((tag) => {
+    const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+    shell.localize = (key) => (key.endsWith(".v4_docked") ? "Angedockt" : key);
+    return shell.updateComplete;
+  }, GALLERY_TAG);
+  await expect(page.locator(GALLERY_TAG).locator(".status-strip strong")).toHaveText("Angedockt");
+  expect(await readRegion(page, "polite")).toEqual([]);
+});
+
 test("a notice is validated and stored from one read of each field", async ({ page }) => {
   await loadGallery(page);
   const stored = await page.evaluate(async (tag) => {
@@ -768,6 +810,48 @@ test("notice text keeps 4.5:1 contrast in every tone with Home Assistant's palet
       expect(ratios.length, `${scheme} ${tone} rendered`).toBeGreaterThan(0);
       expect(Math.min(...ratios), `${scheme} ${tone} ${JSON.stringify(ratios)}`).toBeGreaterThanOrEqual(4.5);
     }
+  }
+});
+
+// shell.md §2: on a "No button" row the policy still returns its disabled
+// action, but the view renders no button for it; the strip says the state.
+test("rows the spec marks No button render no footer button", async ({ page }) => {
+  for (const [scenario, label] of [
+    ["ha-offline", "Reconnecting"],
+    ["access", "Administrator access required"],
+    ["empty", "Set up a Matic robot"],
+    ["robot-offline", "Robot offline"],
+    ["problem", "Check the robot"],
+    ["map-unavailable", "Map unavailable"],
+    ["map-limited", "Finding the map"],
+    ["transition", "Finding the map"],
+    ["stopping", "Stopping"],
+  ]) {
+    const gallery = await loadGallery(page, { scenario });
+    await expect(gallery.locator(".status-strip"), scenario).toBeVisible();
+    await expect(gallery.locator(".action-bar").getByRole("button", { name: label, exact: true }), scenario).toHaveCount(0);
+    await expect(gallery.locator(".action-bar .action-reason"), scenario).toHaveCount(0);
+  }
+});
+
+// design-system.md: text never uses a raw tone colour; the tone is the rule
+// and the tint.
+test("workflow problems and warnings keep their text in the primary text colour", async ({ page }) => {
+  for (const [scenario, selector] of [["plan-cadence-blocked", ".problem"], ["area-review-rebind", '.notice[data-tone="warning"]']]) {
+    const gallery = await loadGallery(page, { scenario });
+    const box = gallery.locator(selector).first();
+    await expect(box, scenario).toBeVisible();
+    const colours = await box.evaluate((element) => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--ms-text)";
+      element.after(probe);
+      const style = getComputedStyle(element);
+      const result = { text: style.color, primary: getComputedStyle(probe).color, rule: style.borderInlineStartWidth };
+      probe.remove();
+      return result;
+    });
+    expect(colours.text, scenario).toBe(colours.primary);
+    expect(colours.rule, scenario).toBe("3px");
   }
 });
 

@@ -650,7 +650,7 @@ for (const width of [320, 390, 820, 1280]) {
       await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveCount(0);
       await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toHaveCount(0);
       const create = gallery.getByRole("button", { name: "Create a plan", exact: true });
-      const choice = gallery.getByRole("button", { name: /Evening routine.*paused.*Edit plan/ });
+      const choice = gallery.getByRole("button", { name: /Evening routine.*Paused.*Edit plan/ });
       const appearance = await choice.evaluate((element) => {
         const context = document.createElement("canvas").getContext("2d");
         const luminance = color => {

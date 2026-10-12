@@ -19,7 +19,9 @@ const HA = {
     "--error-color": "#db4437", "--warning-color": "#ffa600", "--success-color": "#43a047",
   },
 };
-const SCENARIOS = ["ready", "rooms", "draw", "plan-saved-intelligent", "plans", "history", "cleaning", "problem", "area-review-new", "support", "full-map"];
+// plan-cadence-blocked and area-review-rebind show the workflow panel's
+// problem and warning boxes.
+const SCENARIOS = ["ready", "rooms", "draw", "plan-saved-intelligent", "plans", "history", "cleaning", "problem", "area-review-new", "area-review-rebind", "plan-cadence-blocked", "support", "full-map"];
 // The notice slot and toast in each tone, over `ready` (design-system.md: the notice-* patches).
 const CAPTURES = [
   ...SCENARIOS.map((scenario) => ({ id: scenario, scenario, patch: null })),
