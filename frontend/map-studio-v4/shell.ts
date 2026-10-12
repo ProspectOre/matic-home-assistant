@@ -25,6 +25,7 @@ import { renderDrawTools } from "./draw-tools";
 import { LazyChunk, chunkStatus, reloadInto, takeResume, type ChunkStatus } from "./lazy-chunk";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
+import { readColors, resolveFill, rgba, watchTheme, type Channel } from "./theme-probe";
 import {
   icon,
   iconBack,
@@ -448,6 +449,7 @@ export class MaticMapShellV4 extends LitElement {
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
   #scrollerResizeObserver: ResizeObserver | null = null;
+  #unwatchTheme: (() => void) | null = null;
   #observedSheet: Element | null = null;
   #dialogLauncher: HTMLElement | null = null;
   #workspaceLauncher: HTMLElement | null = null;
@@ -510,6 +512,26 @@ export class MaticMapShellV4 extends LitElement {
       if (next !== this._sheetOffset) this._sheetOffset = next;
     });
     this.#scrollerResizeObserver = new ResizeObserver(() => this.#syncScrollers());
+    this.#resolveTheme();
+    this.#unwatchTheme = watchTheme(() => this.#resolveTheme());
+  }
+
+  // MS-AXE-03: the primary and Stop fills read a 4.5:1 pair resolved from HA's
+  // theme colours (theme-probe.ts resolveFill). Forced colours bypass it.
+  #resolveTheme(): void {
+    const forced = window.matchMedia("(forced-colors: active)").matches;
+    const { accent, danger, label } = readColors(this.renderRoot, {
+      accent: "var(--ms-accent)", danger: "var(--ms-danger)", label: "var(--ms-on-accent)",
+    });
+    const pair = (fill: Channel | null) => (forced || !fill || !label ? [] : resolveFill(fill, label));
+    // An empty value removes the property, so the button falls back to HA's colour.
+    const value = (channel?: Channel): string => (channel ? rgba(channel, 1) : "");
+    const [accentFill, onAccentFill] = pair(accent);
+    const [dangerFill, onDangerFill] = pair(danger);
+    this.style.setProperty("--ms-resolved-accent-fill", value(accentFill));
+    this.style.setProperty("--ms-resolved-on-accent-fill", value(onAccentFill));
+    this.style.setProperty("--ms-resolved-danger-fill", value(dangerFill));
+    this.style.setProperty("--ms-resolved-on-danger-fill", value(onDangerFill));
   }
 
   override disconnectedCallback(): void {
@@ -521,6 +543,8 @@ export class MaticMapShellV4 extends LitElement {
     this.#sheetResizeObserver = null;
     this.#scrollerResizeObserver?.disconnect();
     this.#scrollerResizeObserver = null;
+    this.#unwatchTheme?.();
+    this.#unwatchTheme = null;
     this.#observedSheet = null;
     window.removeEventListener("pointerdown", this.#outsidePointer, true);
     document.removeEventListener("fullscreenchange", this.#fullscreenChange);

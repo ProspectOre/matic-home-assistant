@@ -3,7 +3,7 @@ import { controls } from "./controls";
 import { renderDrawTools } from "./draw-tools";
 import { icon, iconFit, iconHelp, iconOrbitLeft, iconOrbitRight, iconRoomNames, iconTiltDown, iconTiltUp } from "./icons";
 import { RovingFocusController } from "./roving-focus";
-import { readCanvasPalette } from "./theme-probe";
+import { readCanvasPalette, watchTheme } from "./theme-probe";
 import { base, tokens } from "./tokens";
 import type { PropertyValues } from "lit";
 
@@ -273,8 +273,7 @@ export class MaticMapCanvasV4 extends LitElement {
   #gestures: GestureController | null = null;
   #navigationHelp = false;
   #focusHelpOnUpdate = false;
-  #themeObserver: MutationObserver | null = null;
-  #themeQueries: MediaQueryList[] = [];
+  #unwatchTheme: (() => void) | null = null;
   #paletteFrame: number | null = null;
   #paletteTimer: number | null = null;
   readonly #cancelSecondaryPointer = {
@@ -300,7 +299,7 @@ export class MaticMapCanvasV4 extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
-    this.#watchTheme();
+    this.#unwatchTheme ??= watchTheme(() => this.#schedulePalette());
     void this.updateComplete.then(() => this.#startControllers());
   }
 
@@ -363,7 +362,8 @@ export class MaticMapCanvasV4 extends LitElement {
   }
 
   override disconnectedCallback(): void {
-    this.#unwatchTheme();
+    this.#unwatchTheme?.();
+    this.#unwatchTheme = null;
     this.#cancelScheduledPalette();
     this.outlineEditor?.cancel();
     this.#gestures?.dispose();
@@ -416,28 +416,6 @@ export class MaticMapCanvasV4 extends LitElement {
     if (this.#paletteTimer !== null) window.clearTimeout(this.#paletteTimer);
     this.#paletteFrame = null;
     this.#paletteTimer = null;
-  }
-
-  readonly #onThemeChange = (): void => { this.#schedulePalette(); };
-
-  #watchTheme(): void {
-    if (typeof document === "undefined" || this.#themeObserver) return;
-    this.#themeObserver = new MutationObserver(this.#onThemeChange);
-    this.#themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class"] });
-    if (typeof window.matchMedia !== "function") return;
-    this.#themeQueries = [
-      window.matchMedia("(prefers-color-scheme: dark)"),
-      window.matchMedia("(forced-colors: active)"),
-    ];
-    for (const query of this.#themeQueries) query.addEventListener("change", this.#onThemeChange);
-  }
-
-  #unwatchTheme(): void {
-    this.#cancelScheduledPalette();
-    this.#themeObserver?.disconnect();
-    this.#themeObserver = null;
-    for (const query of this.#themeQueries) query.removeEventListener("change", this.#onThemeChange);
-    this.#themeQueries = [];
   }
 
   #intent(intent: WorkspaceIntent): void {

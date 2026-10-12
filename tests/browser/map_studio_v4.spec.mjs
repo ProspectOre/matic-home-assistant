@@ -8148,4 +8148,40 @@ test.describe("Map Studio accessibility baselines", () => {
     expect(await scroller("paused", 844, 390, "top"), "paused pinned top on a landscape phone").toEqual({ overflows: true, focusableChild: false, tabindex: "0" });
     expect(await scroller("ready", 844, 390, "top"), "ready pinned top on a landscape phone").toEqual({ overflows: false, focusableChild: false, tabindex: null });
   });
+
+  // MS-AXE-03 (design-system.md §5): HA's fill pair is kept at 4.5:1, else the
+  // fill steps 5% toward black (white under a darker label) until it reaches
+  // it, else the label becomes whichever of black or white contrasts more.
+  test("primary and Stop resolve HA's theme colours to a 4.5:1 pair @mobile", async ({ page }) => {
+    const luminance = (rgb) => rgb.reduce((sum, channel, index) => {
+      const value = channel / 255;
+      return sum + [0.2126, 0.7152, 0.0722][index] * (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+    }, 0);
+    const pair = async (button) => {
+      const [label, fill] = await button.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return [style.color, style.backgroundColor];
+      });
+      const [high, low] = [label, fill].map((color) => luminance(color.match(/\d+/gu).slice(0, 3).map(Number))).sort((x, y) => y - x);
+      return { label, fill, ratio: Math.round(((high + 0.05) / (low + 0.05)) * 100) / 100 };
+    };
+    const theme = (vars) => page.evaluate((values) => {
+      for (const [name, value] of Object.entries(values)) document.documentElement.style.setProperty(name, value);
+    }, vars);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const gallery = await loadGallery(page, { scenario: "cleaning", narrow: true });
+    await settleWorkspace(gallery);
+    await theme({ "--primary-color": "#009ac7", "--text-primary-color": "#ffffff", "--error-color": "#db4437" });
+    const stop = gallery.getByRole("button", { name: "Stop cleaning" });
+    await expect.poll(() => pair(stop), "Stop: white on #db4437 is 4.29:1").toEqual({ label: "rgb(255, 255, 255)", fill: "rgb(208, 65, 52)", ratio: 4.68 });
+
+    await gallery.evaluate((element) => element.setScenario("plans"));
+    await settleWorkspace(gallery);
+    const create = gallery.getByRole("button", { name: "Create a plan" });
+    await expect.poll(() => pair(create), "primary: white on #009ac7 is 3.26:1").toEqual({ label: "rgb(255, 255, 255)", fill: "rgb(0, 123, 159)", ratio: 4.85 });
+    await theme({ "--primary-color": "#0b5394" });
+    await expect.poll(() => pair(create), "a passing pair is kept").toEqual({ label: "rgb(255, 255, 255)", fill: "rgb(11, 83, 148)", ratio: 7.84 });
+    await theme({ "--primary-color": "#808080", "--text-primary-color": "#777777" });
+    await expect.poll(() => pair(create), "no 5% step reaches 4.5:1").toEqual({ label: "rgb(0, 0, 0)", fill: "rgb(128, 128, 128)", ratio: 5.32 });
+  });
 });
