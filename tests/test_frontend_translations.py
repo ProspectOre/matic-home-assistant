@@ -19,10 +19,13 @@ from custom_components.matic_robot.const import DOMAIN
 from tests.frontend_sources import (
     EN_PATH,
     STRINGS_PATH,
+    backend_key_sites,
     common_strings,
     key_sites,
+    scan_backend_module,
     scan_module,
     shipped_modules,
+    stray_backend_references,
     stray_v4_literals,
 )
 
@@ -103,6 +106,22 @@ def test_every_frontend_key_site_is_recognized() -> None:
     assert stray_v4_literals() == []
 
 
+def _referenced_keys() -> set[str]:
+    """Keys named by the shipped TypeScript or by the integration's Python."""
+    return {site.key for site in key_sites()} | {
+        key for _, _, key in backend_key_sites()
+    }
+
+
+def test_every_backend_key_reference_is_recognized() -> None:
+    assert stray_backend_references() == []
+
+
+def test_backend_keys_exist_in_common() -> None:
+    missing = {key for _, _, key in backend_key_sites()} - set(common_strings())
+    assert missing == set(), f"backend keys missing from common: {sorted(missing)}"
+
+
 def test_frontend_keys_exist_in_common_with_matching_fallbacks() -> None:
     common = common_strings()
     sites = key_sites()
@@ -119,7 +138,7 @@ def test_frontend_keys_exist_in_common_with_matching_fallbacks() -> None:
 
 
 def test_no_orphan_v4_keys_in_common() -> None:
-    referenced = {site.key for site in key_sites()}
+    referenced = _referenced_keys()
     orphans = (
         frozenset(key for key in common_strings() if key.startswith("v4_")) - referenced
     )
@@ -129,7 +148,7 @@ def test_no_orphan_v4_keys_in_common() -> None:
 
 
 def test_unreferenced_legacy_common_keys_do_not_grow() -> None:
-    referenced = {site.key for site in key_sites()}
+    referenced = _referenced_keys()
     unreferenced = (
         frozenset(key for key in common_strings() if not key.startswith("v4_"))
         - referenced
@@ -244,6 +263,35 @@ def test_scanner_recognizes_each_site_form(
         (site.kind, site.key, site.fallback, set(site.supplied)) for site in sites
     ] == expected
     assert [key for _, _, key in stray] == strays
+
+
+_BACKEND_FORMS = {
+    "plain literal": ('KEY = "component.matic_robot.common.k_a"', ["k_a"], []),
+    "f-string with the domain": (
+        'KEY: Final = f"component.{DOMAIN}.common.k_b"',
+        ["k_b"],
+        [],
+    ),
+    "f-string with a run-time key": (
+        'cached[f"component.{DOMAIN}.common.{name}"]',
+        [],
+        ["{name}"],
+    ),
+    "other category": ('"component.matic_robot.entity.vacuum.x"', [], []),
+}
+
+
+@pytest.mark.parametrize(
+    ("source", "keys", "strays"),
+    _BACKEND_FORMS.values(),
+    ids=_BACKEND_FORMS.keys(),
+)
+def test_backend_scanner_recognizes_each_form(
+    source: str, keys: list[str], strays: list[str]
+) -> None:
+    sites, stray = scan_backend_module("snippet.py", source)
+    assert [key for _, _, key in sites] == keys
+    assert [text for _, _, text in stray] == strays
 
 
 def test_effects_build_no_notice_text() -> None:

@@ -613,6 +613,60 @@ test("@mobile the polite region holds only the newest message and a cleared noti
   expect(await readRegion(page, "polite")).toEqual(["Newest sample"]);
 });
 
+test("Try again on a limited map rereads the catalog once and is disabled meanwhile", async ({ page }) => {
+  const limited = {
+    entry_id: "synthetic-entry",
+    scene_url: "/api/matic_robot/slam_scene/synthetic",
+    delta_url: null,
+    pose_url: "/api/matic_robot/slam_pose/synthetic",
+    history_url: "/api/matic_robot/slam_history/synthetic",
+    areas_url: "/api/matic_robot/areas/synthetic",
+    plans_url: "/api/matic_robot/plans/synthetic",
+    map_revision: 7,
+    map_floor_coherent: true,
+    map_session_verified: true,
+    map_session_key: "a".repeat(64),
+    map_complete: true,
+    map_truncated: false,
+    selected_floor_ordinal: 1,
+    map_floor_ordinal: 1,
+    history_count: 1,
+    history_floor_count: 2,
+    map_health: "limited",
+    stream_failures: 0,
+    bootstrap_state: "complete",
+    bootstrap_photo_seen: true,
+    bootstrap_structure_seen: true,
+    bootstrap_failures: 0,
+    runner_locked: false,
+    stop_settle_pending: false,
+    active_plan: false,
+    native_reconciliation_pending: false,
+    native_session_active: false,
+  };
+  const panel = await mountPanel(page, { initialCatalogEntries: [limited] });
+  // The fixture panel lays out narrow, so the strip is the sheet's status line.
+  const strip = panel.locator(".sheet-status");
+  await expect(strip).toContainText("Map limited");
+  await expect(strip).toContainText("Cleaning can't start");
+  const retry = panel.locator(".host-state").getByRole("button", { name: "Try again", exact: true });
+  await expect(retry).not.toHaveAttribute("aria-disabled", "true");
+
+  await page.evaluate(() => window.__panelFixture.deferNextCatalog());
+  const reads = await page.evaluate(() => window.__panelFixture.catalogReads);
+  await retry.click();
+  await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingCatalogCount())).toBe(1);
+  await expect(retry).toHaveAttribute("aria-disabled", "true");
+  await expect(strip).toContainText("Checking again");
+  await retry.dispatchEvent("click");
+  expect(await page.evaluate(() => window.__panelFixture.catalogReads)).toBe(reads + 1);
+
+  await page.evaluate(() => window.__panelFixture.releaseCatalog());
+  await expect(retry).not.toHaveAttribute("aria-disabled", "true");
+  await expect(strip).toContainText("Cleaning can't start");
+  expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
+});
+
 test("a repeated workspace notice toasts and announces again", async ({ page }) => {
   const catalog = structuredClone(PLAN_CATALOG);
   catalog.plans[0].next_run_preview = null;

@@ -110,8 +110,9 @@ class RobotOperationalState:
             return RobotActivity.RETURNING
         # Firmware can retain task and warning flags while the robot is
         # physically docked, both during recharge-and-resume and ordinary
-        # charging.  Physical charging must win as the HA vacuum activity;
-        # raw warning evidence remains available through ``error_codes``.
+        # charging.  Unless the robot is paused or returning (checked above),
+        # physical charging wins as the HA vacuum activity; raw warning
+        # evidence remains available through ``error_codes``.
         if self.charging:
             return RobotActivity.CHARGING
         if self.charging_idle:

@@ -522,7 +522,13 @@
     "v4_reset_shared_cadence_detail": "The count for {room} starts again in every plan that shares its schedule, and work brought forward to the next clean goes back to its schedule. Other work and cleaning history don't change.",
     "v4_reset_private_cadence_detail": "The count for {room} starts again in this plan only, and work brought forward to the next clean goes back to its schedule. Other work and cleaning history don't change.",
     "v4_reset": "Reset",
-    "v4_hide_notification": "Hide notification"
+    "v4_hide_notification": "Hide notification",
+    "v4_map_limited": "Map limited",
+    "v4_cleaning_blocked": "Cleaning can't start",
+    "v4_locating_rechecking": "Checking again",
+    "v4_map_limited_body": "Home Assistant can show this map but can't confirm it well enough to start cleaning.",
+    "pending_firmware_version": "Newer than {installed}",
+    "pending_firmware_version_unknown": "Newer firmware"
   },
   "config": {
     "abort": {

@@ -26,6 +26,13 @@ const shellTag = unsafeStatic(SHELL_TAG);
 // custom panel, so the panel asks once per connection and language. A rejected
 // load keeps its pair recorded until a single retry 30 s later, so hass updates
 // never ask more often; a load that never settles is left alone.
+// One request per (connection, language) is enough because Home Assistant's
+// frontend changes language in one synchronous call: `_selectLanguage`
+// (src/state/translations-mixin.ts) writes the language into hass through
+// `_updateHass` (src/state/hass-base-mixin.ts, synchronous assignment) and then
+// clears its loaded-integration cache via `_refetchCachedHassTranslations`,
+// before Lit delivers that hass to this panel. A request for the new language
+// therefore always reaches the backend; no localize-identity guard is needed.
 const commonTranslationsRequested = new WeakMap<object, string>();
 const NO_CONNECTION: object = {};
 const COMMON_RETRY_MS = 30_000;

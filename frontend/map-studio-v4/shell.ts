@@ -73,6 +73,8 @@ interface StatusPresentation {
   readonly icon: string;
   /** True when the robot is doing something the workspace title alone would hide. */
   readonly notable: boolean;
+  /** True for the idle "Map limited" row, whose sheet body offers Try again. */
+  readonly recheck?: boolean;
 }
 
 const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentation => {
@@ -138,6 +140,17 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
     detail: t("v4_map_unavailable_status", "New cleaning is disabled until the live map is verified."),
     icon: iconOffline,
     notable: true,
+  };
+  // shell.md §4 row 8: a degraded map while idle can persist, so say so and
+  // offer the recheck at once rather than a Ready beside "Finding the map".
+  if (state.coherence === "degraded") return {
+    title: t("v4_map_limited", "Map limited"),
+    detail: state.resources.catalog.status === "loading"
+      ? t("v4_locating_rechecking", "Checking again")
+      : t("v4_cleaning_blocked", "Cleaning can't start"),
+    icon: iconRobot,
+    notable: true,
+    recheck: true,
   };
   const battery = state.batteryPercent === null
     ? t("v4_ready", "Ready")
@@ -1252,10 +1265,21 @@ export class MaticMapShellV4 extends LitElement {
     const customAreaReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
       : t("v4_areas_quick_detail", "Create or choose a saved area");
+    const checking = state.resources.catalog.status === "loading";
     return html`
       ${state.activity === "problem"
         ? this.#hostState(t("v4_attention_title", "The robot needs attention"), t("v4_attention_body", "Check the robot, then start a new task."))
-        : html`
+        : statusCopy(state).recheck ? html`
+          <div class="host-state">
+            <p>${t("v4_map_limited_body", "Home Assistant can show this map but can't confirm it well enough to start cleaning.")}</p>
+            <button
+              class="ms-btn ms-btn--secondary"
+              type="button"
+              aria-disabled=${checking ? "true" : nothing}
+              @click=${() => { if (!checking) this.#dispatchAction("recheck-status"); }}
+            >${t("v4_retry", "Try again")}</button>
+          </div>
+        ` : html`
           <div class="quick-actions" aria-label=${t("v4_cleaning_choices", "Cleaning choices")}>
             <button
               class="ms-row ms-row--card ms-row--featured"

@@ -1191,6 +1191,38 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("button", { name: "Delete plan", exact: true })).toBeInViewport();
   });
 
+  test("a limited map while idle says so and offers one Try again that rechecks", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "map-limited" });
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Map limited");
+    await expect(gallery.locator(".status-copy small")).toHaveText("Cleaning can't start");
+    const body = gallery.locator(".host-state");
+    await expect(body).toContainText("Home Assistant can show this map but can't confirm it well enough to start cleaning.");
+    await expect(gallery.locator(".quick-actions")).toHaveCount(0);
+    const retry = body.getByRole("button", { name: "Try again", exact: true });
+    await expect(retry).not.toHaveAttribute("aria-disabled", "true");
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.__actions = [];
+      element.addEventListener("matic-workspace-action", (event) => element.__actions.push(event.detail));
+    }, GALLERY_TAG);
+    await retry.click();
+    expect(await page.evaluate((tag) => document.querySelector(tag).__actions, GALLERY_TAG))
+      .toEqual([{ id: "recheck-status" }]);
+
+    // While the catalog is re-read the button stays, disabled, and the strip says so.
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({
+        ...state,
+        resources: { ...state.resources, catalog: { ...state.resources.catalog, status: "loading" } },
+      });
+    });
+    await expect(retry).toHaveAttribute("aria-disabled", "true");
+    await expect(gallery.locator(".status-copy small")).toHaveText("Checking again");
+    await retry.dispatchEvent("click");
+    expect(await page.evaluate((tag) => document.querySelector(tag).__actions.length, GALLERY_TAG)).toBe(1);
+  });
+
   test("distinguishes setup, robot problems and unavailable maps from localization", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "empty" });
     await expect(gallery.locator(".action-bar")).toContainText("Set up a Matic robot");

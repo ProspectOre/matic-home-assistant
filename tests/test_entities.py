@@ -13,6 +13,7 @@ import pytest
 from homeassistant.components.vacuum.const import VacuumActivity
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import translation
 
 from custom_components.matic_robot import (
     binary_sensor,
@@ -45,6 +46,7 @@ from custom_components.matic_robot.client.models import (
     Room,
     WifiNetwork,
 )
+from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.coordinator import MaticCuesEvent
 from custom_components.matic_robot.entity import MaticEntity
 from custom_components.matic_robot.plans import (
@@ -56,6 +58,7 @@ from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     SlamMapStore,
 )
+from tests.frontend_sources import common_strings
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
@@ -972,11 +975,30 @@ def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
     assert sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_value() is None
 
 
-async def test_update_entity_mirrors_robot_managed_ota_state() -> None:
+def _update_entity(hass, version: str | None = "v178.8"):
     entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, software_version=version),
+        telemetry=replace(coordinator.data.telemetry, software_version=version),
+    )
     entity = update.MaticFirmwareUpdate(entry)
+    entity.hass = hass
+    return entity, coordinator
 
-    assert entity.installed_version == "v-test"
+
+def _set_update_state(coordinator, update_state: str) -> None:
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(coordinator.data.telemetry, update_state=update_state),
+    )
+
+
+async def test_update_entity_mirrors_robot_managed_ota_state(hass) -> None:
+    entity, coordinator = _update_entity(hass)
+
+    assert entity.installed_version == "v178.8"
     assert entity.latest_version == entity.installed_version
     assert entity.state == STATE_OFF
     assert entity.extra_state_attributes == {
@@ -984,20 +1006,50 @@ async def test_update_entity_mirrors_robot_managed_ota_state() -> None:
         "update_channel": "stable",
     }
 
-    coordinator = entry.runtime_data.coordinator
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(coordinator.data.telemetry, update_state="available"),
-    )
-    assert entity.latest_version == "Newer firmware"
+    _set_update_state(coordinator, "available")
+    assert entity.latest_version == "Newer than v178.8"
     assert entity.state == STATE_ON
 
-    coordinator.data = replace(
-        coordinator.data,
-        telemetry=replace(coordinator.data.telemetry, update_state="complete"),
-    )
+    _set_update_state(coordinator, "complete")
     assert entity.latest_version == entity.installed_version
     assert entity.state == STATE_OFF
+
+
+async def test_pending_firmware_reads_the_loaded_translation(hass) -> None:
+    """The marker comes from Home Assistant's cache, which core fills at setup."""
+    await translation.async_load_integrations(hass, {DOMAIN})
+    entity, coordinator = _update_entity(hass)
+    _set_update_state(coordinator, "available")
+    common = common_strings()
+    assert common["pending_firmware_version"] == update.PENDING_FIRMWARE_VERSION
+    assert (
+        common["pending_firmware_version_unknown"]
+        == update.PENDING_FIRMWARE_VERSION_UNKNOWN
+    )
+    assert entity.latest_version == "Newer than v178.8"
+
+    hass.config.language = "de"
+    german = {
+        update.PENDING_FIRMWARE_VERSION_KEY: "Neuer als {installed}",
+        update.PENDING_FIRMWARE_VERSION_UNKNOWN_KEY: "Neuere Firmware",
+    }
+    with patch.object(
+        update.translation, "async_get_cached_translations", return_value=german
+    ) as cached:
+        assert entity.latest_version == "Neuer als v178.8"
+        assert entity.state == STATE_ON
+        cached.assert_called_with(hass, "de", "common", DOMAIN)
+        unknown, unknown_coordinator = _update_entity(hass, None)
+        _set_update_state(unknown_coordinator, "available")
+        assert unknown.latest_version == "Neuere Firmware"
+
+
+async def test_pending_firmware_without_an_installed_version(hass) -> None:
+    entity, coordinator = _update_entity(hass, None)
+    _set_update_state(coordinator, "available")
+
+    assert entity.installed_version is None
+    assert entity.latest_version == "Newer firmware"
 
 
 def test_sensor_and_binary_sensor_values() -> None:

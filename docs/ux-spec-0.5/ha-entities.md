@@ -20,7 +20,7 @@ A household administrator builds automations and dashboards on Matic (Unofficial
 ## 4. States (HA entity and picker states; "branch" is not a `state.ts` step)
 | State | What the user sees | Primary action → source (line) | Secondary | Notice/feedback |
 |---|---|---|---|---|
-| Firmware update pending | Update entity "Firmware" shows update available, "Newer firmware" version, summary | none; read-only → `update.py:54-58` | none (no install or skip) | the robot installs updates itself |
+| Firmware update pending | Update entity "Firmware" shows update available, "Newer than {installed}" version (`pending_firmware_version`; "Newer firmware" when the installed version is unknown), summary | none; read-only → `update.py:72-86` | none (no install or skip) | the robot installs updates itself |
 | Firmware check status | Checking / Checks recorded for comparison / Compatible / Some robot reads are failing / Up to date | none → `sensor.py` | Repair link (`ha-native.md`) | state and Repair title share one phrase |
 | Stop pressed | Button "Stop cleaning", no dialog | Stop cleaning → `stop_intelligent_cleaning` | none | description says what happens to the current room (CP-1004) |
 | Upgrade, removed entity used | Automations referencing a removed entity show it unavailable | replace per table in section 6 | none | release note lists the four replacements |
@@ -46,7 +46,7 @@ In sentences the robot is "the robot" and "Matic" stays a brand prefix: device f
 | `update_channel`, `protocol_version`; `paused`, `returning`, `fully_charged` | keep | diagnostic · off; none · off | off by default (the last three repeat Activity) |
 | `ssh_tunnel_permission`, `diagnostic_upload`; `water_flow`; `voice_assistant` | Support tunnel permission; Diagnostic upload; Mopping water flow (unit "×"); Cues voice assistant | diagnostic · off; CONFIG · on | rename (drops "Robot", "SSH", the doubled device name); tests pinning "Robot ..." names change (`copy-style-0.5.md:119`) |
 | buttons `run_selected_plan`, `intelligent_clean`, `clean_entire_plan`, `stop_intelligent_cleaning` | Run plan; Run intelligent rotation; Run saved order; Stop cleaning | as today | CP-0667, 0670; CP-0668/0669 shortened to 3 words (`copy-style-0.5.md:88,119`); each button has its action's name (§6 `services`); descriptions say "default plan" and the stop policy |
-| `firmware` (update) | Firmware; `latest_version` "Newer firmware" while `update_state == "available"` (`update.py:54-58`); `release_summary` "The robot installs firmware updates itself; Home Assistant only reports that one is waiting." | FIRMWARE · on | read-only; `tests/test_entities.py:988-990` and `entities.md` change |
+| `firmware` (update) | Firmware; `latest_version` "Newer than {installed}" (translated `common` key `pending_firmware_version`; `pending_firmware_version_unknown` "Newer firmware" without an installed version) while `update_state == "available"` (`update.py:72-86`); `release_summary` "The robot installs firmware updates itself; Home Assistant only reports that one is waiting." | FIRMWARE · on | read-only; `tests/test_entities.py:998-1053` and `entities.md` change |
 | device; dust-bag strings | name fallback "Matic (Unofficial) {suffix}" (suffix = last 4 hostname characters, `entity.py:26-28`), model see Decision 2; `bag_full`, `bag_missing` strings and icons deleted, four bag sensors stay unregistered (`sensor.py:101-134`) | n/a | HA-ENT-06, HA-ENT-07 |
 
 Removed entities (one-time registry cleanup; Decision 3):
@@ -91,6 +91,7 @@ HA supplies 44 px targets, focus order, forced colors and reduced motion; add no
 3. **Removed entities: release-note mechanics only.** Already decided (duplicates are removed, owner decision). Remaining: remove on first load, list the four replacements in the release note, no deprecation Repair. Recommended as written.
 4. **Blueprint plan input.** The guide (`copy-style-0.5.md:123`) keeps a typed name with a description, an example and a blank-valid default (blank means the default plan), because the plan select entity holds one robot-wide selection (`select.py:103-145`) and a picker cannot express a different plan per automation. Recommended: as the guide says; the alternative is a default-plan-only blueprint, which would change the guide's UX1 check.
 - **Owner decisions (2026-10-11):** all recommendations accepted. D1 split the LLM API now, MaticGetFirmware in both; D2 model "Robot" and no `model_id`; D3 remove on first load, list the replacements in the release note, no deprecation Repair; D4 the blueprint plan input stays a typed name as the guide says.
+- **Build decisions (UX0, 2026-10-12):** the pending `latest_version` is the translated `common` key `pending_firmware_version` "Newer than {installed}" (or `pending_firmware_version_unknown` "Newer firmware" without an installed version), read from Home Assistant's translation cache, so it follows the user's language and changes after every real update, and skipping one pending update never hides the next.
 
 ## 11. Resolves
 | Audit ID | How this spec resolves it |

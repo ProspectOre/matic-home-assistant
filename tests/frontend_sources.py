@@ -11,6 +11,11 @@ and recognize the few forms in which a localization key reaches the UI:
 
 A ``"v4_*"`` literal that is not at one of these sites is reported by
 ``stray_v4_literals`` so a new form cannot slip past the guard unnoticed.
+
+The integration's Python names ``common`` keys in one form, a full cache key
+whose key part is literal: ``"component.matic_robot.common.key"`` or
+``f"component.{DOMAIN}.common.key"``. ``backend_key_sites`` finds those, and
+``stray_backend_references`` reports a cache key built from a run-time name.
 """
 
 from __future__ import annotations
@@ -368,6 +373,53 @@ def stray_v4_literals() -> list[tuple[str, int, str]]:
         for module, text in _modules().items()
         for stray in _strays_in(module, text, by_module.get(module, []))
     ]
+
+
+# --- backend references ----------------------------------------------------
+
+BackendSite = tuple[str, int, str]
+
+_BACKEND_REFERENCE = re.compile(
+    r"""(?<![\w"'])(?P<f>f?)(?P<q>["'])component\.(?P<domain>matic_robot|\{DOMAIN\})"""
+    r"""\.common\.(?P<tail>[^"'\n]*)(?P=q)"""
+)
+_BACKEND_KEY = re.compile(r"[a-z0-9_]+")
+
+
+def scan_backend_module(
+    module: str, text: str
+) -> tuple[list[BackendSite], list[BackendSite]]:
+    """``(module, line, key)`` of each backend key, and each non-literal key part."""
+    sites: list[BackendSite] = []
+    strays: list[BackendSite] = []
+    for match in _BACKEND_REFERENCE.finditer(text):
+        if match["domain"] != "matic_robot" and not match["f"]:
+            continue
+        found = sites if _BACKEND_KEY.fullmatch(match["tail"]) else strays
+        found.append((module, _line(text, match.start()), match["tail"]))
+    return sites, strays
+
+
+@cache
+def _backend_scan() -> tuple[tuple[BackendSite, ...], tuple[BackendSite, ...]]:
+    sites: list[BackendSite] = []
+    strays: list[BackendSite] = []
+    for path in sorted(INTEGRATION.rglob("*.py")):
+        module = path.relative_to(INTEGRATION).as_posix()
+        found, stray = scan_backend_module(module, path.read_text(encoding="utf-8"))
+        sites.extend(found)
+        strays.extend(stray)
+    return tuple(sites), tuple(strays)
+
+
+def backend_key_sites() -> list[BackendSite]:
+    """``(module, line, key)`` of every ``common`` key the integration names."""
+    return list(_backend_scan()[0])
+
+
+def stray_backend_references() -> list[BackendSite]:
+    """Backend cache keys whose key part is not a literal key name."""
+    return list(_backend_scan()[1])
 
 
 def common_strings() -> dict[str, str]:

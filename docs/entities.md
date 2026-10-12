@@ -42,8 +42,10 @@ robot SSH permission, robot diagnostic upload, and following-person state.
 **Fully charged** is on when the battery is full.
 
 The firmware update entity is read-only; Matic manages its own updates. While
-the robot reports an update, the latest version reads "Newer firmware"; the
-robot does not publish the version number in advance. Diagnostic entities are
+the robot reports an update, the latest version reads "Newer than" the installed
+version (or "Newer firmware" if that is unknown), in Home Assistant's language;
+the robot does not publish the new version number in advance. Because the text
+names the installed version, skipping one update never hides the next. Diagnostic entities are
 generally disabled by default.
 
 If **Problem** turns on, inspect `sensor.matic_activity`:

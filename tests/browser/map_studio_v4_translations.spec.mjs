@@ -129,6 +129,24 @@ test("the panel requests matic common translations once per connection and langu
   expect(await loaderCalls(page)).toEqual([["common", "matic_robot"]]);
 });
 
+// Home Assistant resets its loaded-integration set in the same synchronous
+// call that writes a new language into hass (see the comment in panel.ts), so
+// a new localize or resources object for the same language needs no request.
+test("a new localize or resources for the same language does not ask again", async ({ page }) => {
+  await mountPanel(page);
+  await installLoader(page);
+  await patchHass(page, { connection: "__connection__", language: "de", loadBackendTranslation: "__loader__" });
+  await expect.poll(() => loaderCalls(page)).toHaveLength(1);
+
+  await page.evaluate(async () => {
+    const panel = window.__translationPanel;
+    panel.hass = { ...panel.hass, localize: (key) => key, resources: { de: {} } };
+    for (let attempt = 0; attempt < 5; attempt += 1) await panel.updateComplete;
+  });
+  await page.waitForTimeout(100);
+  expect(await loaderCalls(page)).toEqual([["common", "matic_robot"]]);
+});
+
 test("a language change requests common translations again", async ({ page }) => {
   await mountPanel(page);
   await installLoader(page);
