@@ -509,7 +509,11 @@ export class MaticMapShellV4 extends LitElement {
     }
     if (!changed.has("state")) return;
     const next = this.state.notice;
-    if (next === (changed.get("state") as WorkspaceState | undefined)?.notice) return;
+    const previous = changed.get("state") as WorkspaceState | undefined;
+    if (next === previous?.notice) return;
+    // A workflow change clears a success notice from the slot, but a toast
+    // already showing it finishes its timer (shell.md §4 rule 5).
+    if (!next && previous?.notice?.tone === "success" && previous.workflow !== this.state.workflow) return;
     this.#hideToast();
     if (!next) return;
     this._toast = next;
@@ -569,11 +573,13 @@ export class MaticMapShellV4 extends LitElement {
     void this.updateComplete.then(() => this.#focusPanel());
   };
 
-  #noticeBody(notice: WorkspaceNotice, close: () => void) {
+  // The slot's Close clears the notice; the toast's control only hides the
+  // toast, so it is named for that (shell.md §4 rule 3).
+  #noticeBody(notice: WorkspaceNotice, close: () => void, label: string) {
     return html`${icon(NOTICE_ICONS[notice.tone])}<span class="notice-text">${this.#t(notice.key, notice.fallback, notice.placeholders)}</span><button
       class="ms-btn ms-btn--icon"
       type="button"
-      aria-label=${this.#t("v4_close", "Close")}
+      aria-label=${label}
       @click=${close}
     >${icon(iconClose)}</button>`;
   }
@@ -1395,7 +1401,7 @@ export class MaticMapShellV4 extends LitElement {
           ` : nothing}
           <h2 tabindex="-1">${workflowCopy(state, this.localize).title}</h2>
         </div>
-        ${state.notice ? html`<div class="notice" data-notice-slot data-tone=${state.notice.tone}>${this.#noticeBody(state.notice, this.#closeNotice)}</div>` : nothing}
+        ${state.notice ? html`<div class="notice" data-notice-slot data-tone=${state.notice.tone}>${this.#noticeBody(state.notice, this.#closeNotice, this.#t("v4_close", "Close"))}</div>` : nothing}
       </div>
     `;
   }
@@ -1741,7 +1747,7 @@ export class MaticMapShellV4 extends LitElement {
           @focusin=${this.#holdToast}
           @pointerleave=${this.#releaseToast}
           @focusout=${this.#releaseToast}
-        >${toast ? this.#noticeBody(toast, this.#closeToast) : nothing}</div>
+        >${toast ? this.#noticeBody(toast, this.#closeToast, this.#t("v4_hide_notification", "Hide notification")) : nothing}</div>
 
         <div class="sr-only" aria-live="polite" aria-atomic="true">${this._polite}</div>
         <div class="sr-only" role="alert" aria-atomic="true">${this._alert}</div>

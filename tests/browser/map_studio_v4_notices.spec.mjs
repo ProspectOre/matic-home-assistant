@@ -351,6 +351,25 @@ test("the toast hides on its timer but the slot keeps the notice", async ({ page
   expect(await galleryNotice(page)).toMatchObject({ tone: "error", fallback: "Timed error" });
 });
 
+test("a success toast finishes its timer after Back clears the slot", async ({ page }) => {
+  await page.clock.install();
+  const gallery = await loadGallery(page, { scenario: "rooms" });
+  await freezeClock(page);
+  const toast = gallery.locator("[data-notice-toast]");
+  await setGalleryNotice(page, sampleNotice("success", "Saved then Back"));
+  await expect(toast).toBeVisible();
+  await page.clock.runFor(1000);
+
+  await galleryIntent(page, { type: "open-workflow", workflow: "none" });
+  await expect(gallery.locator("[data-notice-slot]")).toHaveCount(0);
+  expect(await galleryNotice(page)).toBeNull();
+  await expect(toast).toContainText("Saved then Back");
+  await page.clock.runFor(2900);
+  await expect(toast).toBeVisible();
+  await page.clock.runFor(100);
+  await expect(toast).toBeHidden();
+});
+
 test("hovering or focusing the toast pauses its timer", async ({ page }) => {
   await page.clock.install();
   const gallery = await loadGallery(page);
@@ -370,7 +389,7 @@ test("hovering or focusing the toast pauses its timer", async ({ page }) => {
 
   await setGalleryNotice(page, sampleNotice("success", "Focused sample"));
   await expect(toast).toBeVisible();
-  const close = toast.getByRole("button", { name: "Close" });
+  const close = toast.getByRole("button", { name: "Hide notification" });
   await close.focus();
   await page.clock.runFor(8000);
   await expect(toast).toBeVisible();
@@ -381,7 +400,7 @@ test("hovering or focusing the toast pauses its timer", async ({ page }) => {
   await expect(toast).toBeHidden();
 });
 
-test("slot Close clears the notice and toast Close hides only the toast", async ({ page }) => {
+test("slot Close clears the notice and the toast's Hide notification hides only the toast", async ({ page }) => {
   const gallery = await loadGallery(page);
   const toast = gallery.locator("[data-notice-toast]");
   const slot = gallery.locator("[data-notice-slot]");
@@ -389,7 +408,7 @@ test("slot Close clears the notice and toast Close hides only the toast", async 
   await expect(toast).toBeVisible();
   await expect(slot).toBeVisible();
 
-  const toastClose = toast.getByRole("button", { name: "Close", exact: true });
+  const toastClose = toast.getByRole("button", { name: "Hide notification", exact: true });
   const slotClose = slot.getByRole("button", { name: "Close", exact: true });
   for (const close of [toastClose, slotClose]) {
     const box = await close.boundingBox();
@@ -414,7 +433,7 @@ test("Escape leaves the notice in place", async ({ page }) => {
   await setGalleryNotice(page, sampleNotice("error", "Escape sample"));
   await expect(toast).toBeVisible();
 
-  for (const close of [slot.getByRole("button", { name: "Close" }), toast.getByRole("button", { name: "Close" })]) {
+  for (const close of [slot.getByRole("button", { name: "Close" }), toast.getByRole("button", { name: "Hide notification" })]) {
     await close.focus();
     await page.keyboard.press("Escape");
     await expect(slot).toContainText("Escape sample");
@@ -483,7 +502,7 @@ test("focus leaves a toast that a cleared notice hides for the panel heading", a
   const gallery = await loadGallery(page);
   const toast = gallery.locator("[data-notice-toast]");
   await setGalleryNotice(page, sampleNotice("error", "Focused then cleared"));
-  await toast.getByRole("button", { name: "Close" }).focus();
+  await toast.getByRole("button", { name: "Hide notification" }).focus();
   expect(await shellActive(page)).toBe("button");
 
   await setGalleryNotice(page, null);
@@ -616,7 +635,7 @@ test("a repeated workspace notice toasts and announces again", async ({ page }) 
 
   await runPlan();
   await expect(toast).toContainText(missing);
-  await toast.getByRole("button", { name: "Close" }).click();
+  await toast.getByRole("button", { name: "Hide notification" }).click();
   await expect(toast).toBeHidden();
   await runPlan();
   await expect(toast).toContainText(missing);
