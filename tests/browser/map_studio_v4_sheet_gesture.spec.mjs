@@ -142,7 +142,9 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
     await expect(page.locator(`${GALLERY_TAG} .panel-top`)).toHaveAttribute("tabindex", "0");
     const detent = await sheet.getAttribute("data-detent");
     await dispatchTouchDrag(page.locator(`${GALLERY_TAG} .panel-heading h2`), 100, 170);
-    await expect(sheet).not.toHaveAttribute("data-detent", detent);
+    const lower = { full: "half", half: "peek" }[detent];
+    expect(lower, `the sheet starts above peek (${detent})`).toBeDefined();
+    await expect(sheet, "a downward swipe steps the sheet down").toHaveAttribute("data-detent", lower);
   });
 
   test("keeps the toast on the sheet's top edge while the handle is dragged", async ({ page }) => {

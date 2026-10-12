@@ -15,8 +15,8 @@ import { themeStyle, type ThemeName } from "./themes";
 const forcedCss = css`
 @media (hover: hover) { .force-note { display: none; } }
 .ms-btn[data-force="hover"] { background: color-mix(in srgb, var(--ms-text) 7%, var(--ms-local)); }
-.ms-btn--primary[data-force="hover"] { background: color-mix(in srgb, var(--ms-accent-fill) 86%, var(--ms-text)); }
-.ms-btn--primary.ms-btn--danger[data-force="hover"] { background: color-mix(in srgb, var(--ms-danger-fill) 86%, var(--ms-text)); }
+.ms-btn--primary[data-force="hover"] { background: color-mix(in srgb, var(--ms-accent-fill) 86%, rgb(from currentColor calc(255 - r) calc(255 - g) calc(255 - b))); }
+.ms-btn--primary.ms-btn--danger[data-force="hover"] { background: color-mix(in srgb, var(--ms-danger-fill) 86%, rgb(from currentColor calc(255 - r) calc(255 - g) calc(255 - b))); }
 .ms-btn--danger:not(.ms-btn--primary)[data-force="hover"] { background: color-mix(in srgb, var(--ms-danger) 10%, var(--ms-local)); }
 .ms-row[data-force="hover"] { border-color: color-mix(in srgb, var(--ms-accent) 45%, var(--ms-line)); background: color-mix(in srgb, var(--ms-text) 7%, var(--ms-local)); }
 [data-force="focus"]:not(.ms-switch):not(.ms-stepper) { outline: 2px solid var(--ms-indicator); outline-offset: 2px; }

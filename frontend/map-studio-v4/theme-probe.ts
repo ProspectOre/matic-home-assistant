@@ -2,10 +2,12 @@
 // drawing, and Home Assistant's theme colours for the contrast resolver.
 //
 // Canvas 2D cannot read `var(--ms-accent)`, so a hidden probe span is coloured
-// with each token and its computed colour read back as a canvas pixel. Under forced colours
-// the system palette is probed instead so the overlay follows the OS theme.
+// with each token and its computed colour read back as a canvas pixel. Under
+// forced colours the system palette is probed instead so the overlay follows
+// the OS theme.
 
 export type Channel = readonly [number, number, number];
+export type Rgba = readonly [red: number, green: number, blue: number, alpha: number];
 
 export interface CanvasPalette {
   readonly accent: Channel;
@@ -19,20 +21,22 @@ export interface CanvasPalette {
 
 type PaletteKey = Exclude<keyof CanvasPalette, "forced">;
 
-const SOURCES: Readonly<Record<PaletteKey, readonly [token: string, forced: string, fallback: Channel]>> = {
-  accent: ["--ms-accent", "Highlight", [6, 120, 206]],
-  onAccent: ["--ms-on-accent", "HighlightText", [255, 255, 255]],
-  text: ["--ms-text", "CanvasText", [38, 50, 56]],
-  quiet: ["--ms-text-quiet", "GrayText", [75, 92, 105]],
-  plate: ["--ms-surface-card", "Canvas", [250, 252, 253]],
-  roomFill: ["--ms-surface-sunken", "Canvas", [231, 238, 242]],
+// The accent strokes the selected room, so it is the resolved indicator
+// (design-system.md §7).
+const SOURCES: Readonly<Record<PaletteKey, readonly [color: string, forced: string, fallback: Channel]>> = {
+  accent: ["var(--ms-resolved-indicator, var(--ms-accent))", "Highlight", [6, 120, 206]],
+  onAccent: ["var(--ms-on-accent)", "HighlightText", [255, 255, 255]],
+  text: ["var(--ms-text)", "CanvasText", [38, 50, 56]],
+  quiet: ["var(--ms-text-quiet)", "GrayText", [75, 92, 105]],
+  plate: ["var(--ms-surface-card)", "Canvas", [250, 252, 253]],
+  roomFill: ["var(--ms-surface-sunken)", "Canvas", [231, 238, 242]],
 };
 
 export const rgba = (channel: Channel, alpha: number): string =>
   `rgba(${channel[0]},${channel[1]},${channel[2]},${alpha})`;
 
-// Each CSS colour as opaque sRGB channels, or null when it is unparsable,
-// transparent or translucent (no single colour to measure or draw). CSS
+// Each CSS colour as sRGB channels with its alpha (0-255), or null when it is
+// unparsable or fully transparent (nothing is painted). CSS
 // custom properties keep their authored syntax (for example `hsl()` or a
 // named colour) when read directly, so each colour goes through the
 // browser's colour parser on a probe inside `host`, which inherits the
@@ -40,16 +44,17 @@ export const rgba = (channel: Channel, alpha: number): string =>
 // inherited, so an unparsable value computes to transparent instead of the
 // inherited text colour, and one pixel drawn on a canvas brings CSS Color 4
 // values (oklch, display-p3) into sRGB.
-export const readColors = <K extends string>(host: ParentNode, colors: Readonly<Record<K, string>>): Record<K, Channel | null> => {
+export const readColors = <K extends string>(host: ParentNode, colors: Readonly<Record<K, string>>): Record<K, Rgba | null> => {
   const probe = document.createElement("span");
   const canvas = document.createElement("canvas");
   canvas.width = 1;
   canvas.height = 1;
   const context = canvas.getContext("2d", { colorSpace: "srgb", willReadFrequently: true });
-  probe.setAttribute("aria-hidden", "true");
-  probe.style.cssText = "position:absolute;inline-size:0;block-size:0;overflow:hidden;visibility:hidden;pointer-events:none";
+  // Not rendered, so it never shifts layout or reaches assistive tech; its
+  // computed style still inherits the host's custom properties.
+  probe.style.display = "none";
   host.append(probe);
-  const read = (color: string): Channel | null => {
+  const read = (color: string): Rgba | null => {
     if (!context) return null;
     probe.style.backgroundColor = color;
     context.clearRect(0, 0, 1, 1);
@@ -57,24 +62,31 @@ export const readColors = <K extends string>(host: ParentNode, colors: Readonly<
     context.fillStyle = getComputedStyle(probe).backgroundColor;
     context.fillRect(0, 0, 1, 1);
     const [red = 0, green = 0, blue = 0, alpha = 0] = context.getImageData(0, 0, 1, 1).data;
-    return alpha === 255 ? [red, green, blue] : null;
+    return alpha ? [red, green, blue, alpha] : null;
   };
   try {
-    return Object.fromEntries(Object.entries<string>(colors).map(([key, color]) => [key, read(color)])) as Record<K, Channel | null>;
+    return Object.fromEntries(Object.entries<string>(colors).map(([key, color]) => [key, read(color)])) as Record<K, Rgba | null>;
   } finally {
     probe.remove();
   }
 };
 
+const rgb = ([red, green, blue]: Rgba): Channel => [red, green, blue];
+
+// A colour with one contrast ratio: opaque, as sRGB channels, else null.
+export const opaque = (color: Rgba | null): Channel | null => (color?.[3] === 255 ? rgb(color) : null);
+
+// The canvas draws a translucent theme colour's RGB; only the contrast
+// resolver needs it opaque.
 export const readCanvasPalette = (host: HTMLElement): CanvasPalette => {
   const forced = window.matchMedia?.("(forced-colors: active)").matches ?? false;
   const keys = Object.keys(SOURCES) as PaletteKey[];
   const colors = readColors(host, Object.fromEntries(keys.map((key) => {
-    const [token, system] = SOURCES[key];
-    return [key, forced ? system : `var(${token}, transparent)`];
+    const [color, system] = SOURCES[key];
+    return [key, forced ? system : color];
   })) as Record<PaletteKey, string>);
   return {
-    ...Object.fromEntries(keys.map((key) => [key, colors[key] ?? SOURCES[key][2]])) as Record<PaletteKey, Channel>,
+    ...Object.fromEntries(keys.map((key) => [key, colors[key] ? rgb(colors[key]) : SOURCES[key][2]])) as Record<PaletteKey, Channel>,
     forced,
   };
 };

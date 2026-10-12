@@ -8355,4 +8355,80 @@ test.describe("Map Studio resolved theme colours", () => {
     await theme(page, { "--primary-color": "rgba(0, 154, 199, 0.5)" });
     await expect.poll(state, "translucent").toEqual({ property: "", fill: "rgba(0, 154, 199, 0.5)" });
   });
+
+  // Only the contrast resolver needs an opaque colour. The canvas palette
+  // draws a translucent theme colour's RGB, and its accent (the selected-room
+  // stroke) is the resolved indicator (design-system.md §7).
+  test("the canvas palette keeps a translucent colour's RGB and strokes with the indicator", async ({ page }) => {
+    const bundle = await build({
+      stdin: { contents: 'export { readCanvasPalette } from "./frontend/map-studio-v4/theme-probe";', resolveDir: process.cwd() },
+      bundle: true, format: "esm", write: false,
+    });
+    await page.route("**/theme-probe-harness.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const palette = await page.evaluate(async () => {
+      const { readCanvasPalette } = await import("/theme-probe-harness.js");
+      const host = document.createElement("div");
+      for (const [name, value] of Object.entries({
+        "--ms-accent": "#009ac7",
+        "--ms-resolved-indicator": "rgba(0,139,179,1)",
+        "--ms-surface-card": "rgba(28, 28, 28, 0.5)",
+        "--ms-surface-sunken": "rgba(40, 40, 40, 0.8)",
+      })) host.style.setProperty(name, value);
+      document.body.append(host);
+      const { accent, plate, roomFill } = readCanvasPalette(host);
+      return { accent, plate, roomFill };
+    });
+    expect(palette).toEqual({ accent: [0, 139, 179], plate: [28, 28, 28], roomFill: [40, 40, 40] });
+  });
+
+  // design-system.md §3 and §7: every selection and checked state reads the
+  // indicator, so with HA's light palette (#009ac7 is 2.59:1 on #e5e5e5)
+  // they all show the resolved #008bb3.
+  test("pressed buttons, checkboxes, the slider and a checked switch show the resolved indicator", async ({ page }) => {
+    await page.setViewportSize({ width: 1180, height: 760 });
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    await settleWorkspace(gallery);
+    await theme(page, HA_LIGHT);
+    const indicator = "rgb(0, 139, 179)";
+    const paint = gallery.getByRole("button", { name: "Paint", exact: true });
+    await paint.click();
+    await expect(paint).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => style(paint, "borderTopColor"), "pressed tool").toBe(indicator);
+    await gallery.getByRole("button", { name: /^Brush width, / }).click();
+    await expect.poll(() => style(gallery.getByRole("slider", { name: "Brush width slider" }), "accentColor"), "brush slider").toBe(indicator);
+
+    await gallery.evaluate((element) => element.setScenario("plan-new"));
+    await settleWorkspace(gallery);
+    const enabled = gallery.getByRole("switch", { name: "Plan enabled" });
+    if ((await enabled.getAttribute("aria-checked")) !== "true") await enabled.click();
+    await expect(enabled).toHaveAttribute("aria-checked", "true");
+    await expect.poll(() => enabled.evaluate((element) => getComputedStyle(element, "::before").backgroundColor), "checked switch").toBe(indicator);
+
+    // The Room names checkbox sits in the phone sheet's Map display section.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const phone = await loadGallery(page, { scenario: "ready", narrow: true });
+    await settleWorkspace(phone);
+    await theme(page, HA_LIGHT);
+    await expect.poll(() => style(phone.getByRole("checkbox", { name: "Room names" }), "accentColor"), "Room names").toBe(indicator);
+  });
+
+  // One ordering rule: a press always shows over hover, for every variant.
+  test("a pressed button shows its pressed colour, not its hover colour", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.setViewportSize({ width: 1024, height: 768 });
+    const gallery = await loadGallery(page, { scenario: "rooms" });
+    await settleWorkspace(gallery);
+    const states = async (button) => {
+      await button.hover();
+      const hover = await style(button, "backgroundColor");
+      await page.mouse.down();
+      const pressed = await style(button, "backgroundColor");
+      await page.mouse.move(0, 0);
+      await page.mouse.up();
+      return { differ: hover !== pressed };
+    };
+    expect(await states(gallery.getByRole("button", { name: "Fit the whole map on screen" })), "plain").toEqual({ differ: true });
+    expect(await states(gallery.getByRole("button", { name: "Back to all tasks" })), "secondary").toEqual({ differ: true });
+  });
 });

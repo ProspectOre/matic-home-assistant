@@ -48,12 +48,12 @@ a.ms-btn { text-decoration: none; }
 .ms-btn--block { white-space: normal; text-align: center; }
 @media (any-pointer: coarse) { .ms-btn--sm { min-block-size: var(--ms-control); min-inline-size: var(--ms-control); } }
 .ms-btn:focus-visible, .ms-row:focus-visible, .ms-check:has(:focus-visible) { outline: 2px solid var(--ms-indicator); outline-offset: 2px; }
-/* Fills read the resolved pair; hover and active start from the fill. */
+/* Fills read the resolved pair; hover and active start from the fill and mix away from the label. */
 .ms-btn--primary { --ms-local: var(--ms-accent-fill); color: var(--ms-on-accent-fill); background: var(--ms-accent-fill); }
 .ms-btn--primary.ms-btn--danger { --ms-local: var(--ms-danger-fill); color: var(--ms-on-danger-fill); background: var(--ms-danger-fill); border-color: transparent; }
 @media (hover: hover) {
-.ms-btn--primary:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-accent-fill) 86%, var(--ms-text)); }
-.ms-btn--primary.ms-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-danger-fill) 86%, var(--ms-text)); }
+.ms-btn--primary:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-accent-fill) 86%, rgb(from currentColor calc(255 - r) calc(255 - g) calc(255 - b))); }
+.ms-btn--primary.ms-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-danger-fill) 86%, rgb(from currentColor calc(255 - r) calc(255 - g) calc(255 - b))); }
 }
 .ms-btn--danger:not(.ms-btn--primary) { color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); }
 /* Disabled keeps the variant's own border; fills turn sunken with a disabled label. */

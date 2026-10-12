@@ -60,17 +60,17 @@ white-space: nowrap;
 .ms-btn--secondary { --ms-local: var(--ms-surface-card); border-color: var(--ms-line-strong); background: var(--ms-local); }
 .ms-btn--danger { color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); border-color: currentColor; }
 .ms-btn--primary.ms-btn--danger { --ms-local: var(--ms-resolved-danger-fill, var(--ms-danger)); color: var(--ms-resolved-on-danger-fill, var(--ms-on-accent)); border-color: transparent; }
-.ms-btn:active:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-text) 14%, var(--ms-local)); }
 @media (hover: hover) {
 .ms-btn:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-text) 7%, var(--ms-local)); }
 .ms-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-danger) 10%, var(--ms-local)); }
 .ms-btn--primary:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-local) 86%, rgb(from currentColor calc(255 - r) calc(255 - g) calc(255 - b))); }
 }
+.ms-btn:active:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-text) 14%, var(--ms-local)); }
 .ms-btn--primary:active:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-local) 74%, rgb(from currentColor calc(255 - r) calc(255 - g) calc(255 - b))); box-shadow: none; }
 .ms-btn[aria-pressed="true"], .ms-btn[aria-checked="true"] {
 color: var(--ms-text);
 background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local));
-border-color: color-mix(in srgb, var(--ms-accent) 45%, var(--ms-line));
+border-color: var(--ms-resolved-indicator, var(--ms-accent));
 }
 @media (hover: hover) {
 .ms-btn[aria-pressed="true"]:hover, .ms-btn[aria-checked="true"]:hover { background: color-mix(in srgb, var(--ms-accent) 20%, var(--ms-local)); }
@@ -149,7 +149,7 @@ background: var(--ms-surface-card);
 box-shadow: var(--ms-shadow-1);
 transition: translate var(--ms-fast) var(--ms-ease);
 }
-.ms-switch[aria-checked="true"]::before { border-color: var(--ms-accent); background: var(--ms-accent); }
+.ms-switch[aria-checked="true"]::before { border-color: var(--ms-resolved-indicator, var(--ms-accent)); background: var(--ms-resolved-indicator, var(--ms-accent)); }
 .ms-switch[aria-checked="true"]::after { translate: 1.25rem -50%; background: var(--ms-on-accent); }
 .ms-switch:focus-visible { outline: 0; }
 .ms-switch:focus-visible::before { outline: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: 2px; }

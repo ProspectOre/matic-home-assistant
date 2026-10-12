@@ -25,7 +25,7 @@ import { renderDrawTools } from "./draw-tools";
 import { LazyChunk, chunkStatus, reloadInto, takeResume, type ChunkStatus } from "./lazy-chunk";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
-import { readColors, resolveFill, resolveTone, rgba, watchTheme, type Channel } from "./theme-probe";
+import { opaque, readColors, resolveFill, resolveTone, rgba, watchTheme, type Channel } from "./theme-probe";
 import {
   icon,
   iconBack,
@@ -522,12 +522,15 @@ export class MaticMapShellV4 extends LitElement {
   // danger text (4.5:1 on the card). Forced colours bypass it.
   #resolveTheme(): void {
     const forced = window.matchMedia("(forced-colors: active)").matches;
-    const { accent, danger, label, card, sunken } = readColors(this.renderRoot, {
+    const read = readColors(this.renderRoot, {
       accent: "var(--ms-accent)", danger: "var(--ms-danger)", label: "var(--ms-on-accent)",
       card: "var(--ms-surface-card)", sunken: "var(--ms-surface-sunken)",
     });
-    const pair = (fill: Channel | null) => (forced || !fill || !label ? [] : resolveFill(fill, label));
-    const tone = (color: Channel | null, ratio: number, surface = card) =>
+    // In the order read. A translucent colour has no single contrast, so it
+    // resolves nothing.
+    const [accent, danger, label, card, sunken] = Object.values(read).map(opaque);
+    const pair = (fill?: Channel | null) => (forced || !fill || !label ? [] : resolveFill(fill, label));
+    const tone = (color: Channel | null | undefined, ratio: number, surface = card) =>
       (forced || !color || !card || !surface ? undefined : resolveTone(color, ratio, [card, surface]));
     // An empty value removes the property, so the CSS falls back to HA's colour.
     const value = (channel?: Channel): string => (channel ? rgba(channel, 1) : "");
