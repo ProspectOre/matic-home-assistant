@@ -95,34 +95,32 @@ for (const [w, h] of [[390, 844], [1440, 900]]) {
 
 // ---------- K4: Escape ordering dialog -> precision -> Full map -> workflow ----------
 for (const [w, h] of [[390, 844], [1440, 900]]) {
-  for (const dialog of ["discardDraft"]) {
-    console.log(`\n--- K4 Escape ordering @${w}x${h} dialog=${dialog}`);
-    await openScenario(page, "draw", { width: w, height: h, patch: { workflow: "draw", precisionOpen: true, fullMap: true, dialog } });
-    await inject(page);
-    // put focus inside the shell via the dialog's own initial focus (what a user would have)
+  console.log(`\n--- K4 Escape ordering @${w}x${h} dialog=discardDraft`);
+  await openScenario(page, "draw", { width: w, height: h, patch: { workflow: "draw", precisionOpen: true, fullMap: true, dialog: "discardDraft" } });
+  await inject(page);
+  // put focus inside the shell via the dialog's own initial focus (what a user would have)
+  await settleAll();
+  let a = await active();
+  console.log("   initial focus:", fmt(a), JSON.stringify(await snap()));
+  const seq = [];
+  for (let i = 0; i < 5; i += 1) {
+    await page.keyboard.press("Escape");
     await settleAll();
-    let a = await active();
-    console.log("   initial focus:", fmt(a), JSON.stringify(await snap()));
-    const seq = [];
-    for (let i = 0; i < 5; i += 1) {
-      await page.keyboard.press("Escape");
-      await settleAll();
-      const s = await snap();
-      a = await active();
-      seq.push({ s, a: fmt(a), inShell: a.inShell });
-      console.log(`   Esc#${i + 1} -> ${JSON.stringify(s)} focus=${fmt(a)}`);
-    }
-    const order = seq.map((x) => x.s);
-    const dialogGone = order[0].dialog === null;
-    const precisionNext = dialogGone && order[1].precisionOpen === false;
-    const fullMapNext = order[2].fullMap === false;
-    const workflowNext = order[3].workflow === "none";
-    log(`K4 ${dialog} @${w}: Esc1 closes dialog`, dialogGone, JSON.stringify(order[0]));
-    log(`K4 ${dialog} @${w}: Esc2 closes precision`, precisionNext, JSON.stringify(order[1]));
-    log(`K4 ${dialog} @${w}: Esc3 leaves Full map`, fullMapNext, JSON.stringify(order[2]));
-    log(`K4 ${dialog} @${w}: Esc4 leaves workflow`, workflowNext, JSON.stringify(order[3]));
-    log(`K4 ${dialog} @${w}: focus stays inside the shell after every Esc (so the next Esc works)`, seq.every((x) => x.inShell), seq.map((x) => x.a).join(" | "));
+    const s = await snap();
+    a = await active();
+    seq.push({ s, a: fmt(a), inShell: a.inShell });
+    console.log(`   Esc#${i + 1} -> ${JSON.stringify(s)} focus=${fmt(a)}`);
   }
+  const order = seq.map((x) => x.s);
+  const dialogGone = order[0].dialog === null;
+  const precisionNext = dialogGone && order[1].precisionOpen === false;
+  const fullMapNext = order[2].fullMap === false;
+  const workflowNext = order[3].workflow === "none";
+  log(`K4 discardDraft @${w}: Esc1 closes dialog`, dialogGone, JSON.stringify(order[0]));
+  log(`K4 discardDraft @${w}: Esc2 closes precision`, precisionNext, JSON.stringify(order[1]));
+  log(`K4 discardDraft @${w}: Esc3 leaves Full map`, fullMapNext, JSON.stringify(order[2]));
+  log(`K4 discardDraft @${w}: Esc4 leaves workflow`, workflowNext, JSON.stringify(order[3]));
+  log(`K4 discardDraft @${w}: focus stays inside the shell after every Esc (so the next Esc works)`, seq.every((x) => x.inShell), seq.map((x) => x.a).join(" | "));
 }
 
 // ---------- K5: dialog focus trap + inert background ----------

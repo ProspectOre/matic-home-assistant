@@ -1,4 +1,4 @@
-import { html, type ReactiveController, type ReactiveControllerHost } from "lit";
+import { html, nothing, type ReactiveController, type ReactiveControllerHost } from "lit";
 import type { Localize, Workflow } from "./contracts";
 import { translate } from "./localize";
 
@@ -71,13 +71,14 @@ export class LazyChunk<T> implements ReactiveController {
 
 const RESUME_KEY = "matic-map-resume";
 
-// Try again lands back in the workflow it was pressed in: the marker lives for
-// the one reload and the shell takes it at startup (takeResume). The page's
+// Try again's reload, which the shell runs once no draft would be lost
+// (shell.ts #retry). It lands back in `workflow`: the marker lives for the
+// one reload and the shell takes it at startup (takeResume). The page's
 // layer entries (layer-history.ts) are stepped back over first, so Back after
 // the reload behaves as after a fresh entry. That step's popstate is the
 // reload's alone, so it stops there before the layer controller reads it as a
 // Back press.
-const retry = (workflow: Workflow): void => {
+export const reloadInto = (workflow: Workflow): void => {
   try {
     sessionStorage.setItem(RESUME_KEY, workflow);
   } catch {
@@ -106,11 +107,13 @@ export const takeResume = (): string | null => {
   }
 };
 
-/** The one line a surface shows for a chunk `workflow` needs that is not ready yet. */
+/** The one line a surface shows for a chunk it needs, until the chunk is ready. */
 export const chunkStatus = (
-  status: Exclude<ChunkStatus, "ready">,
+  status: ChunkStatus,
   localize: Localize | undefined,
-  workflow: Workflow,
-) => status === "failed"
-  ? html`<div class="problem" role="alert"><p>${translate(localize, "v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p><button class="ms-btn ms-btn--secondary" type="button" @click=${() => retry(workflow)}>${translate(localize, "v4_retry", "Try again")}</button></div>`
-  : html`<p class="loading" role="status">${translate(localize, "v4_workflow_loading", "Loading workspace tools…")}</p>`;
+  retry: (event: Event) => void,
+) => status === "ready"
+  ? nothing
+  : status === "failed"
+    ? html`<div class="problem" role="alert"><p>${translate(localize, "v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p><button class="ms-btn ms-btn--secondary" type="button" data-dialog-launcher="discardDraft" @click=${retry}>${translate(localize, "v4_retry", "Try again")}</button></div>`
+    : html`<p class="loading" role="status">${translate(localize, "v4_workflow_loading", "Loading workspace tools…")}</p>`;

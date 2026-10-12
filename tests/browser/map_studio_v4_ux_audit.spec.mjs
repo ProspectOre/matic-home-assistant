@@ -180,7 +180,7 @@ const ITEMS = [
   })),
   ...GALLERY_DIALOGS.map((kind) => ({
     id: `dialog-${kind}`,
-    scenario: DIALOG_BASES[kind] ?? "ready",
+    scenario: DIALOG_BASES[kind],
     variants: EXTRA_VARIANTS,
     patch: {
       dialog: kind,

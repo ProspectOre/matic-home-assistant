@@ -364,6 +364,7 @@ export const shellStyles = [tokens, base, controls, css`
       white-space: nowrap;
     }
     .narrow .sheet-tools { display: block; padding-block: var(--ms-space-1) var(--ms-space-2); }
+    .sheet-tools > :is(.loading, .problem) { margin-block-end: var(--ms-space-2); }
     .narrow .draw-tools--grid {
       display: grid;
       grid-template-columns: repeat(12, minmax(0, 1fr));

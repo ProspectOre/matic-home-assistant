@@ -108,6 +108,8 @@ line-height: var(--ms-lh-snug);
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
   dates?: DateFormat;
+  /** The shell's Try again (shell.ts #retry), for the diagnostics chunk. */
+  retry!: (event: Event) => void;
   _historyPreviewPosition: number | null = null;
   readonly #diagnostics = new LazyChunk(this, () => import("./diagnostics-panel"));
   #historySelectionKey = "";
@@ -910,7 +912,7 @@ line-height: var(--ms-lh-snug);
 
   #support() {
     this.#diagnostics.request();
-    if (this.#diagnostics.status !== "ready") return chunkStatus(this.#diagnostics.status, this.localize, "support");
+    if (this.#diagnostics.status !== "ready") return chunkStatus(this.#diagnostics.status, this.localize, this.retry);
     return html`<matic-map-diagnostics-v4
       .state=${this.state}
       .localize=${this.localize}

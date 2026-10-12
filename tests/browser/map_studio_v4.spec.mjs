@@ -190,6 +190,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       const loading = gallery.getByText("Loading workspace tools…");
       await expect(toolbar).toBeVisible();
       await expect(loading).toHaveCount(1);
+      // A phone's draw sheet rests at peek: the line sits by the tools it is about.
+      await expect(loading).toBeInViewport();
       const before = await toolbar.boundingBox();
       release();
       await expect(gallery.locator("matic-map-workflow-v4")).toBeAttached();
@@ -274,7 +276,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(failure).toHaveCount(1);
   });
 
-  test("Try again in Draw reloads into Draw, and Back works as after a fresh entry", async ({ page }) => {
+  test("Try again in Draw reloads into Draw, and Back works as after a fresh entry @safety", async ({ page }) => {
     const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
     const panel = page.locator(fixture.panelTag);
     const snapshot = () => page.evaluate((tag) => {
@@ -307,6 +309,66 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => history.back());
     await expect.poll(snapshot).toEqual({ workflow: "none", ready: true });
     expect(await page.evaluate(() => history.state?.maticMapLayer ?? null)).toBeNull();
+  });
+
+  // A reload loses the draft, so Try again asks first, as Back does.
+  test("Try again with an unsaved area asks before the reload discards it @safety", async ({ page }) => {
+    await page.route("**/chunks/outline-editor-*.js", (route) => route.abort());
+    await page.goto("/map-studio-v4-audit");
+    const gallery = page.locator(GALLERY_TAG);
+    const draft = () => gallery.evaluate((element) => {
+      const { workflow, draw } = element.getWorkspaceSnapshot();
+      return { workflow, dirty: draw.dirty };
+    });
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, workflow: "draw", draw: { ...state.draw, dirty: true } });
+    });
+    const failure = gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." });
+    const retry = failure.getByRole("button", { name: "Try again" });
+    const dialog = gallery.getByRole("dialog", { name: "Discard area changes?" });
+    await page.evaluate(() => { window.__samePage = true; });
+
+    await retry.click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep editing" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(retry, "Keep editing hands focus back to Try again").toBeFocused();
+    expect(await draft()).toEqual({ workflow: "draw", dirty: true });
+    expect(await page.evaluate(() => window.__samePage), "Keep editing must not reload").toBe(true);
+
+    await page.unroute("**/chunks/outline-editor-*.js");
+    await retry.click();
+    await Promise.all([
+      page.waitForEvent("load"),
+      dialog.getByRole("button", { name: "Discard" }).click(),
+    ]);
+    await expect.poll(draft).toEqual({ workflow: "draw", dirty: false });
+    await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
+    await expect(failure).toHaveCount(0);
+  });
+
+  // A resumed Try again opens only what the entry screen would: a limited map
+  // offers no room choice, so the reload stays on the entry screen.
+  test("Try again in Rooms reloads onto the entry screen when the map is then limited", async ({ page }) => {
+    await page.route("**/chunks/workflow-panel-*.js", (route) => route.abort());
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.evaluate((element) => {
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "rooms" });
+    });
+    const failure = gallery.getByRole("alert").filter({ hasText: "Workspace tools could not be loaded." });
+    await Promise.all([
+      page.waitForEvent("load"),
+      failure.getByRole("button", { name: "Try again" }).click(),
+    ]);
+    await page.unroute("**/chunks/workflow-panel-*.js");
+    const limited = await loadGallery(page, { scenario: "map-limited" });
+    await expect(limited.locator(".host-state")).toContainText("Home Assistant can show this map but can't confirm it well enough to start cleaning.");
+    expect(await limited.evaluate((element) => {
+      const { workflow, notice } = element.getWorkspaceSnapshot();
+      return { workflow, notice };
+    })).toEqual({ workflow: "none", notice: null });
+    expect(await page.evaluate(() => sessionStorage.length), "the refused marker is dropped").toBe(0);
   });
 
   test("a chunk loading while the panel is detached gets its full 20 seconds after it returns", async ({ page }) => {

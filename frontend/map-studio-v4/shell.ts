@@ -22,7 +22,7 @@ import {
   WORKFLOW_TAG,
 } from "./element-tags";
 import { renderDrawTools } from "./draw-tools";
-import { LazyChunk, chunkStatus, takeResume, type ChunkStatus } from "./lazy-chunk";
+import { LazyChunk, chunkStatus, reloadInto, takeResume, type ChunkStatus } from "./lazy-chunk";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
 import {
@@ -443,7 +443,11 @@ export class MaticMapShellV4 extends LitElement {
   #dialogLauncher: HTMLElement | null = null;
   #workspaceLauncher: HTMLElement | null = null;
   #helpLauncher: HTMLElement | null = null;
-  #pendingNavigation: WorkspaceIntent | null = null;
+  // What Discard goes on to: the intent that asked, or Try again's reload.
+  #pendingNavigation: WorkspaceIntent | "reload" | null = null;
+  // The workflows the entry screen's enabled rows opened at its last render
+  // (#launch), plus Map diagnostics, which Map options offers on any screen.
+  #launchers = new Set<string>();
   #drag: SheetDrag | null = null;
   #bodySwipe: BodySwipe | null = null;
 
@@ -774,15 +778,28 @@ export class MaticMapShellV4 extends LitElement {
     this.#intent(intent);
   }
 
-  // Reopens the resumed workflow once the floor is located, as the entry
-  // screen would. Opening anything first drops it.
+  // Once the floor is located, reopens the resumed workflow as a tap on its
+  // entry row would, only while that row is offered; otherwise the user stays
+  // on the entry screen. Opening anything first drops it.
   #resumeWorkflow(): void {
     const workflow = this.#resume;
     const { coherence, workflow: open } = this.state;
     if (!workflow || (open === "none" && (coherence === "booting" || coherence === "verifying"))) return;
     this.#resume = null;
-    if (open === "none" && Object.hasOwn(DEFAULT_DETENT, workflow)) this.#workflow(workflow as Workflow);
+    if (open === "none" && this.#launchers.has(workflow)) this.#workflow(workflow as Workflow);
   }
+
+  // Every Try again (chunkStatus) reloads the page, which loses a dirty
+  // draft, so it asks first, as every other way out of the workflow does.
+  readonly #retry = (event: Event): void => {
+    if (!needsDraftConfirmation(this.state, { type: "open-workflow", workflow: "none" })) {
+      reloadInto(this.state.workflow);
+      return;
+    }
+    this.#dialogLauncher = event.currentTarget as HTMLElement;
+    this.#pendingNavigation = "reload";
+    this.#intent({ type: "open-dialog", dialog: "discardDraft" });
+  };
 
   // The worst of the chunks `workflow` needs, each requested as it opens.
   #tools(workflow: Workflow): ChunkStatus {
@@ -796,6 +813,10 @@ export class MaticMapShellV4 extends LitElement {
   #discardAndContinue(): void {
     const pending = this.#pendingNavigation;
     this.#pendingNavigation = null;
+    if (pending === "reload") {
+      reloadInto(this.state.workflow);
+      return;
+    }
     if (pending?.type === "select-plan" || pending?.type === "select-area") {
       this.#intent({ type: "patch-plan-draft", patch: { dirty: false } });
       this.#intent({ type: "patch-area-draft", patch: { dirty: false } });
@@ -1203,13 +1224,19 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
-  #shelfRow(label: string, glyph: string, onClick: () => void, detail?: string, disabled = false) {
+  // An entry row's tap; an enabled row also records it for a resumed Try again.
+  #launch(workflow: Workflow, disabled = false): () => void {
+    if (!disabled) this.#launchers.add(workflow);
+    return () => { if (!disabled) this.#workflow(workflow); };
+  }
+
+  #shelfRow(label: string, glyph: string, workflow: Workflow, detail?: string, disabled = false) {
     return html`
       <button
         class="ms-row"
         type="button"
         aria-disabled=${disabled ? "true" : nothing}
-        @click=${() => { if (!disabled) onClick(); }}
+        @click=${this.#launch(workflow, disabled)}
       >
         <span class="ms-row__lead">${icon(glyph)}</span>
         <span class="ms-row__body"><strong>${label}</strong>${detail ? html`<small>${detail}</small>` : nothing}</span>
@@ -1255,16 +1282,18 @@ export class MaticMapShellV4 extends LitElement {
   #entry(state: WorkspaceState, narrow: boolean, status: StatusPresentation) {
     const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
       this.#t(key, fallback, placeholders);
-    const historyRow = this.#shelfRow(
+    this.#launchers = new Set(["support"]);
+    // Built where shown, so only a shown row counts as a launcher.
+    const historyRow = () => this.#shelfRow(
       t("v4_map_history", "Map history"),
       iconHistory,
-      () => this.#workflow("history"),
+      "history",
       t("v4_map_history_detail", "Saved maps are floor-scoped and read only."),
     );
-    const diagnosticsRow = this.#shelfRow(
+    const diagnosticsRow = () => this.#shelfRow(
       t("v4_map_diagnostics", "Map diagnostics"),
       iconDiagnostics,
-      () => this.#workflow("support"),
+      "support",
       t("v4_map_support_detail", "Private geometry is never included."),
     );
     const { host } = state;
@@ -1284,15 +1313,15 @@ export class MaticMapShellV4 extends LitElement {
       return html`
         ${this.#hostState(t("v4_robot_offline_title", "Robot offline"), t("v4_robot_offline_body", "Showing the last verified map. Cleaning is unavailable until the robot reconnects."))}
         <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
-        <div class="shelf">${historyRow}${diagnosticsRow}</div>
+        <div class="shelf">${historyRow()}${diagnosticsRow()}</div>
       `;
     }
     if (isReadOnlyWorkspace(state)) {
       return html`
         <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
         <div class="shelf">
-          ${historyRow}
-          ${diagnosticsRow}
+          ${historyRow()}
+          ${diagnosticsRow()}
         </div>
       `;
     }
@@ -1332,7 +1361,7 @@ export class MaticMapShellV4 extends LitElement {
               class="ms-row ms-row--card ms-row--featured"
               type="button"
               aria-disabled=${roomsDisabled ? "true" : nothing}
-              @click=${() => { if (!roomsDisabled) this.#workflow("rooms"); }}
+              @click=${this.#launch("rooms", roomsDisabled)}
             >
               <span class="ms-row__lead">${icon(iconRobot)}</span>
               <span class="ms-row__body">
@@ -1345,7 +1374,7 @@ export class MaticMapShellV4 extends LitElement {
               class="ms-row ms-row--card"
               type="button"
               aria-disabled=${locating ? "true" : nothing}
-              @click=${() => { if (!locating) this.#workflow("plans"); }}
+              @click=${this.#launch("plans", locating)}
             >
               <span class="ms-row__lead">${icon(iconPlan)}</span>
               <span class="ms-row__body">
@@ -1373,11 +1402,11 @@ export class MaticMapShellV4 extends LitElement {
         ${this.#shelfRow(
           t("v4_custom_areas", "Clean a custom area"),
           iconNewArea,
-          () => this.#workflow("draw"),
+          "draw",
           customAreaReason,
           locating,
         )}
-        ${historyRow}
+        ${historyRow()}
 
       </div>
       ${narrow ? html`
@@ -1417,16 +1446,18 @@ export class MaticMapShellV4 extends LitElement {
     if (state.workflow === "none") return this.#entry(state, narrow, status);
     const tools = this.#tools(state.workflow);
     if (tools !== "ready") {
-      // A phone's draw sheet rests at peek, below the body, so a failure is
-      // said under the drawing tools in .sheet-tools instead.
-      return narrow && state.workflow === "draw" && tools === "failed"
+      // A phone's draw sheet rests at peek, with the body below it, so the
+      // line, loading or failed, sits in .sheet-tools, above the drawing tools
+      // so they stay put when it goes.
+      return narrow && state.workflow === "draw"
         ? nothing
-        : chunkStatus(tools, this.localize, state.workflow);
+        : chunkStatus(tools, this.localize, this.#retry);
     }
     return html`<${workflowTag}
       .state=${state}
       .localize=${this.localize}
       .dates=${this.dates}
+      .retry=${this.#retry}
       @matic-workspace-intent=${this.#captureDialogLauncher}
     ></${workflowTag}>`;
   }
@@ -1734,8 +1765,8 @@ export class MaticMapShellV4 extends LitElement {
                 </div>
                 ${showDrawTools ? html`
                   <div class="sheet-tools">
+                    ${chunkStatus(this.#tools("draw"), this.localize, this.#retry)}
                     ${renderDrawTools(state, { intent: (intent) => this.#intent(intent), openBrush: () => this.#openBrush(), t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders) }, "grid")}
-                    ${this.#tools("draw") === "failed" ? chunkStatus("failed", this.localize, "draw") : nothing}
                     ${precisionOpen ? html`
                       <div class="precision-popover">
                         <${precisionControlsTag} compact inline .state=${state} .localize=${this.localize}></${precisionControlsTag}>
