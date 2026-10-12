@@ -1061,7 +1061,9 @@ async def test_options_flow_aborts_when_entry_is_not_loaded(hass) -> None:
         ("finish", None),
         ("default_plan", {"plan": "whole_home"}),
         ("reset_history", {"plan": "whole_home"}),
-        ("confirm_reset_history", {"all_plans": False}),
+        ("confirm_reset_history", {}),
+        ("confirm_reset_all_history", {}),
+        ("advanced", None),
         ("workspace_transport", {CONF_LIVE_WORKSPACE_TRANSPORT: True}),
     ],
 )
@@ -1096,9 +1098,11 @@ async def test_options_flow_keeps_only_native_settings_and_maintenance(hass) -> 
     assert result["menu_options"] == [
         "default_plan",
         "reset_history",
-        "workspace_transport",
+        "confirm_reset_all_history",
+        "advanced",
         "finish",
     ]
+    assert result["description_placeholders"] == {"plan_count": "1"}
 
 
 async def test_options_flow_finish_preserves_existing_preferences(hass) -> None:
@@ -1119,27 +1123,36 @@ async def test_live_workspace_transport_option_defaults_off_and_is_reversible(
         hass, options={"existing_option": "preserved"}
     )
 
-    form = await _start_options_step(hass, entry, "workspace_transport")
+    advanced = await _start_options_step(hass, entry, "advanced")
+    assert advanced["type"] is FlowResultType.MENU
+    assert advanced["menu_options"] == ["workspace_transport"]
+    form = await hass.config_entries.options.async_configure(
+        advanced["flow_id"], {"next_step_id": "workspace_transport"}
+    )
 
     assert form["step_id"] == "workspace_transport"
     assert _form_defaults(form) == {CONF_LIVE_WORKSPACE_TRANSPORT: False}
     enabled = await hass.config_entries.options.async_configure(
         form["flow_id"], {CONF_LIVE_WORKSPACE_TRANSPORT: True}
     )
-    assert enabled["type"] is FlowResultType.CREATE_ENTRY
-    assert enabled["data"] == {
+    assert enabled["type"] is FlowResultType.ABORT
+    assert enabled["reason"] == "live_updates_on"
+    assert dict(entry.options) == {
         "existing_option": "preserved",
         CONF_LIVE_WORKSPACE_TRANSPORT: True,
     }
 
-    persisted_entry, _manager = await _options_entry(hass, options=dict(entry.options))
-    form = await _start_options_step(hass, persisted_entry, "workspace_transport")
+    advanced = await _start_options_step(hass, entry, "advanced")
+    form = await hass.config_entries.options.async_configure(
+        advanced["flow_id"], {"next_step_id": "workspace_transport"}
+    )
     assert _form_defaults(form) == {CONF_LIVE_WORKSPACE_TRANSPORT: True}
     disabled = await hass.config_entries.options.async_configure(
         form["flow_id"], {CONF_LIVE_WORKSPACE_TRANSPORT: False}
     )
-    assert disabled["type"] is FlowResultType.CREATE_ENTRY
-    assert disabled["data"] == {
+    assert disabled["type"] is FlowResultType.ABORT
+    assert disabled["reason"] == "live_updates_off"
+    assert dict(entry.options) == {
         "existing_option": "preserved",
         CONF_LIVE_WORKSPACE_TRANSPORT: False,
     }
@@ -1215,8 +1228,10 @@ async def test_options_flow_sets_existing_plan_as_default(hass) -> None:
         form["flow_id"], {"plan": "second_plan"}
     )
 
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert result["data"] == {"keep": "value"}
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "default_plan_set"
+    assert result["description_placeholders"] == {"plan_name": "Second plan"}
+    assert dict(entry.options) == {"keep": "value"}
     assert manager.snapshot("synthetic-serial")["selected_plan"] == "second_plan"
 
 
@@ -1245,7 +1260,9 @@ async def test_options_flow_recovers_from_stale_plan_input(hass, step) -> None:
     assert _form_defaults(result)["plan"] == "whole_home"
 
 
-@pytest.mark.parametrize("step", ["default_plan", "reset_history"])
+@pytest.mark.parametrize(
+    "step", ["default_plan", "reset_history", "confirm_reset_all_history"]
+)
 async def test_options_flow_returns_to_settings_when_no_plans_exist(hass, step) -> None:
     entry, manager = await _options_entry(hass, options={"keep": "value"})
     manager._robot("synthetic-serial")["plans"].clear()
@@ -1255,7 +1272,7 @@ async def test_options_flow_returns_to_settings_when_no_plans_exist(hass, step) 
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["workspace_transport", "finish"]
+    assert result["menu_options"] == ["advanced", "finish"]
     assert result["description_placeholders"]["plan_count"] == "0"
     assert dict(entry.options) == {"keep": "value"}
 
@@ -1280,16 +1297,17 @@ async def test_options_flow_refreshes_default_choices_after_manager_keyerror(
     assert _form_defaults(result)["plan"] == "second_plan"
 
 
-@pytest.mark.parametrize("all_plans", [False, True])
-async def test_options_flow_confirms_named_plan_history_reset_scope(
-    hass, all_plans
-) -> None:
-    entry, manager = await _options_entry(hass)
+async def _seed_two_plan_history(manager: CleaningPlanManager) -> None:
     await _add_second_plan(manager)
     manager._robot("synthetic-serial")["rotations"] = {
         "whole_home": {"rooms": {"room-1": {}}},
         "second_plan": {"rooms": {"room-1": {}}},
     }
+
+
+async def test_options_flow_resets_one_named_plan_after_confirmation(hass) -> None:
+    entry, manager = await _options_entry(hass, options={"keep": "value"})
+    await _seed_two_plan_history(manager)
 
     choose = await _start_options_step(hass, entry, "reset_history")
     confirmation = await hass.config_entries.options.async_configure(
@@ -1297,32 +1315,35 @@ async def test_options_flow_confirms_named_plan_history_reset_scope(
     )
     assert confirmation["step_id"] == "confirm_reset_history"
     assert confirmation["description_placeholders"] == {"plan_name": "Whole home"}
-    assert _form_defaults(confirmation) == {"all_plans": False}
+    assert confirmation["data_schema"] is None
 
     result = await hass.config_entries.options.async_configure(
-        confirmation["flow_id"], {"all_plans": all_plans}
+        confirmation["flow_id"], {}
     )
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    remaining = manager.snapshot("synthetic-serial")["plan_history"]
-    assert set(remaining) == (set() if all_plans else {"second_plan"})
-
-
-@pytest.mark.parametrize("malformed", ["true", 1, None])
-async def test_options_flow_rejects_malformed_history_reset_scope(
-    hass, malformed
-) -> None:
-    entry, manager = await _options_entry(hass)
-    flow = _direct_options_flow(hass, entry)
-    flow._reset_plan_id = "whole_home"
-    history_before = manager.snapshot("synthetic-serial")["plan_history"]
-
-    result = await flow.async_step_confirm_reset_history({"all_plans": malformed})
-
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "confirm_reset_history"
-    assert result["errors"] == {"base": "invalid_reset_scope"}
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "history_reset"
     assert result["description_placeholders"] == {"plan_name": "Whole home"}
-    assert manager.snapshot("synthetic-serial")["plan_history"] == history_before
+    assert set(manager.snapshot("synthetic-serial")["plan_history"]) == {"second_plan"}
+    assert dict(entry.options) == {"keep": "value"}
+
+
+async def test_options_flow_resets_all_plans_after_confirmation(hass) -> None:
+    entry, manager = await _options_entry(hass, options={"keep": "value"})
+    await _seed_two_plan_history(manager)
+
+    confirmation = await _start_options_step(hass, entry, "confirm_reset_all_history")
+    assert confirmation["type"] is FlowResultType.FORM
+    assert confirmation["step_id"] == "confirm_reset_all_history"
+    assert confirmation["data_schema"] is None
+
+    result = await hass.config_entries.options.async_configure(
+        confirmation["flow_id"], {}
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "all_history_reset"
+    assert result["description_placeholders"] is None
+    assert manager.snapshot("synthetic-serial")["plan_history"] == {}
+    assert dict(entry.options) == {"keep": "value"}
 
 
 async def test_options_flow_refreshes_reset_choices_after_manager_keyerror(
@@ -1339,7 +1360,7 @@ async def test_options_flow_refreshes_reset_choices_after_manager_keyerror(
         raise KeyError(plan_id)
 
     monkeypatch.setattr(manager, "async_reset_history", deleted_during_reset)
-    result = await flow.async_step_confirm_reset_history({"all_plans": False})
+    result = await flow.async_step_confirm_reset_history({})
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "reset_history"
@@ -1363,12 +1384,12 @@ async def test_options_flow_returns_to_settings_if_raced_plan_was_last(
 
     method = "async_select_plan" if step == "default_plan" else "async_reset_history"
     monkeypatch.setattr(manager, method, deleted_during_commit)
-    payload = {"plan": "whole_home"} if step == "default_plan" else {"all_plans": False}
+    payload = {"plan": "whole_home"} if step == "default_plan" else {}
     result = await getattr(flow, f"async_step_{step}")(payload)
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["workspace_transport", "finish"]
+    assert result["menu_options"] == ["advanced", "finish"]
     assert result["description_placeholders"]["plan_count"] == "0"
     assert flow._reset_plan_id is None
     assert dict(entry.options) == {"keep": "value"}
@@ -1386,7 +1407,7 @@ async def test_options_flow_returns_to_settings_when_reset_plan_disappears(
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["workspace_transport", "finish"]
+    assert result["menu_options"] == ["advanced", "finish"]
     assert flow._reset_plan_id is None
 
 
@@ -1417,7 +1438,7 @@ async def test_options_flow_handles_manager_unloading_during_history_reset(
         raise MetadataAdmissionClosedError("unloading")
 
     monkeypatch.setattr(manager, "async_reset_history", closing)
-    result = await flow.async_step_confirm_reset_history({"all_plans": False})
+    result = await flow.async_step_confirm_reset_history({})
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "entry_not_loaded"
@@ -1437,7 +1458,7 @@ async def test_options_flow_aborts_if_entry_unloads_after_manager_write(
     monkeypatch.setattr(manager, method, unload_after_write)
     if step == "confirm_reset_history":
         flow._reset_plan_id = "whole_home"
-    payload = {"plan": "whole_home"} if step == "default_plan" else {"all_plans": False}
+    payload = {"plan": "whole_home"} if step == "default_plan" else {}
 
     result = await getattr(flow, f"async_step_{step}")(payload)
 
@@ -1460,7 +1481,7 @@ async def test_options_flow_aborts_on_raced_plan_removal_during_unload(
     monkeypatch.setattr(manager, method, remove_while_unloading)
     if step == "confirm_reset_history":
         flow._reset_plan_id = "whole_home"
-    payload = {"plan": "whole_home"} if step == "default_plan" else {"all_plans": False}
+    payload = {"plan": "whole_home"} if step == "default_plan" else {}
 
     result = await getattr(flow, f"async_step_{step}")(payload)
 
@@ -1482,10 +1503,30 @@ async def test_options_flow_propagates_manager_persistence_failures(
     monkeypatch.setattr(manager, method, fail_to_persist)
     if step == "confirm_reset_history":
         flow._reset_plan_id = "whole_home"
-    payload = {"plan": "whole_home"} if step == "default_plan" else {"all_plans": False}
+    payload = {"plan": "whole_home"} if step == "default_plan" else {}
 
     with pytest.raises(OSError, match="store failed"):
         await getattr(flow, f"async_step_{step}")(payload)
+
+
+@pytest.mark.parametrize("unload_after_write", [False, True])
+async def test_options_flow_all_history_reset_aborts_when_entry_unloads(
+    hass, monkeypatch, unload_after_write
+) -> None:
+    entry, manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    async def reset(serial_number):
+        assert serial_number == "synthetic-serial"
+        if not unload_after_write:
+            raise MetadataAdmissionClosedError("unloading")
+        entry.mock_state(hass, config_entries.ConfigEntryState.NOT_LOADED)
+
+    monkeypatch.setattr(manager, "async_reset_history", reset)
+    result = await flow.async_step_confirm_reset_all_history({})
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
 
 
 async def test_pairing_code_shows_progress_while_a_new_code_is_prepared(hass) -> None:

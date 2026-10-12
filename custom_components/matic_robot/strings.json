@@ -575,21 +575,26 @@
   },
   "options": {
     "abort": {
-      "entry_not_loaded": "Reconnect the robot before changing its settings."
+      "entry_not_loaded": "The robot is not connected, so settings can't open. Check that it is on and on the same network, then reload Matic (Unofficial) under Settings > Devices & services.",
+      "default_plan_set": "Default plan: {plan_name}",
+      "history_reset": "Room cleaning history reset for {plan_name}",
+      "all_history_reset": "Room cleaning history reset for all plans",
+      "live_updates_on": "Live updates on the Matic Map page: on",
+      "live_updates_off": "Live updates on the Matic Map page: off"
     },
     "error": {
-      "invalid_workspace_transport": "Choose on or off for live workspace updates.",
-      "plan_unavailable": "That saved plan is no longer available. Choose another plan.",
-      "invalid_reset_scope": "Choose whether to reset one plan or every plan."
+      "invalid_workspace_transport": "Choose on or off for live updates on the Matic Map page.",
+      "plan_unavailable": "That plan no longer exists. Choose another plan."
     },
     "step": {
       "init": {
         "title": "Matic settings",
-        "description": "Edit saved plans and Areas in Map Studio at /matic-map. These settings let you choose the default plan, reset cleaning history, or enable live workspace updates. Saved plans: {plan_count}.",
+        "description": "Edit plans and custom areas on the [Matic Map](/matic-map) page in the sidebar. Choosing a default plan or resetting room cleaning history needs a saved plan (saved plans: {plan_count}).",
         "menu_options": {
           "default_plan": "Choose the default plan",
-          "reset_history": "Reset cleaning history",
-          "workspace_transport": "Live workspace updates",
+          "reset_history": "Reset room cleaning history for one plan",
+          "confirm_reset_all_history": "Reset room cleaning history for all plans",
+          "advanced": "Advanced",
           "finish": "Done"
         }
       },
@@ -604,33 +609,39 @@
         }
       },
       "reset_history": {
-        "title": "Reset cleaning history",
-        "description": "Choose a saved plan to review its rotation history reset. The next screen asks you to confirm the reset scope.",
+        "title": "Reset room cleaning history",
+        "description": "Choose the plan to reset. The next screen asks you to confirm.",
         "data": {
           "plan": "Plan"
         },
         "data_description": {
-          "plan": "Choose the plan whose rotation history you want to reset."
+          "plan": "The plan whose room cleaning history you want to reset."
         }
       },
       "confirm_reset_history": {
-        "title": "Confirm cleaning history reset",
-        "description": "Submitting clears rotation history for {plan_name}. Saved plans and their settings remain. Turn on the option below to reset history for every plan.",
-        "data": {
-          "all_plans": "Reset history for every plan"
-        },
-        "data_description": {
-          "all_plans": "Off resets only {plan_name}. On resets all plan rotation history."
+        "title": "Reset history for {plan_name}?",
+        "description": "The next run of {plan_name} starts again from its first room, and plans and settings are kept. This can't be undone.",
+        "submit": "Reset"
+      },
+      "confirm_reset_all_history": {
+        "title": "Reset history for all plans?",
+        "description": "Every plan starts again from its first room and each room's last-cleaned record is cleared, while plans and settings are kept. This can't be undone.",
+        "submit": "Reset"
+      },
+      "advanced": {
+        "title": "Advanced",
+        "menu_options": {
+          "workspace_transport": "Live updates on the Matic Map page (experimental)"
         }
       },
       "workspace_transport": {
-        "title": "Live workspace updates",
-        "description": "Allow the administrator-only Map Studio to receive live updates from Home Assistant. This is disabled by default, does not control the robot, and can be turned off at any time.",
+        "title": "Live updates on the Matic Map page (experimental)",
+        "description": "Let the Matic Map page receive live updates from Home Assistant. This is off by default, doesn't control the robot, and can be turned off at any time.",
         "data": {
-          "live_workspace_transport": "Enable live workspace updates"
+          "live_workspace_transport": "Turn on live updates"
         },
         "data_description": {
-          "live_workspace_transport": "Reversible per-robot setting. Server-side administrator checks remain required for every workspace request."
+          "live_workspace_transport": "Only administrators can use the Matic Map page."
         }
       }
     }

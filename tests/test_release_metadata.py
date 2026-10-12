@@ -241,16 +241,16 @@ def test_generated_proto_has_no_newer_runtime_guard() -> None:
     assert "ValidateProtobufRuntimeVersion" not in generated
 
 
-def test_options_flow_titles_do_not_require_description_placeholders() -> None:
-    """HA renders step titles without the flow's description placeholders."""
+def test_options_flow_titles_use_only_placeholders_the_step_supplies() -> None:
+    """Only the named reset confirmation carries its plan in the title."""
     for filename in ("strings.json", "translations/en.json"):
         translations = json.loads((INTEGRATION / filename).read_text())
-        titles = [
-            step["title"]
-            for step in translations["options"]["step"].values()
-            if "title" in step
-        ]
-        assert all("{" not in title for title in titles)
+        titled = {
+            step_name: step["title"]
+            for step_name, step in translations["options"]["step"].items()
+            if "{" in step.get("title", "")
+        }
+        assert titled == {"confirm_reset_history": "Reset history for {plan_name}?"}
 
 
 def test_every_options_flow_field_has_inline_guidance() -> None:
@@ -289,15 +289,16 @@ def test_options_flow_directs_editing_to_the_single_map_workspace() -> None:
             "default_plan",
             "reset_history",
             "confirm_reset_history",
+            "confirm_reset_all_history",
+            "advanced",
             "workspace_transport",
         }
-        assert "Map Studio at /matic-map" in steps["init"]["description"]
+        assert "[Matic Map](/matic-map)" in steps["init"]["description"]
         assert "actions that do not name a plan" in steps["default_plan"]["description"]
         assert "{plan_name}" in steps["confirm_reset_history"]["description"]
-        assert (
-            "Saved plans and their settings remain"
-            in steps["confirm_reset_history"]["description"]
-        )
+        for step in ("confirm_reset_history", "confirm_reset_all_history"):
+            assert "plans and settings are kept" in steps[step]["description"]
+            assert steps[step]["submit"] == "Reset"
 
 
 def test_action_metadata_matches_the_room_native_public_api() -> None:
@@ -334,11 +335,8 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert "without a new code" not in pairing
 
         options = translations["options"]
-        assert "choose the default plan" in options["step"]["init"]["description"]
-        assert (
-            "Reset history for every plan"
-            == options["step"]["confirm_reset_history"]["data"]["all_plans"]
-        )
+        assert "Choosing a default plan" in options["step"]["init"]["description"]
+        assert "data" not in options["step"]["confirm_reset_history"]
 
         entities = translations["entity"]["binary_sensor"]
         assert entities["diagnostic_upload"]["name"].startswith("Robot ")
