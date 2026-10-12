@@ -165,12 +165,13 @@ export const shellStyles = [tokens, base, controls, css`
       overflow: hidden;
     }
     .workflow-body { flex: 1; min-block-size: 0; overflow: auto; overscroll-behavior: contain; }
+    .panel-top:focus-visible, .sheet-body:focus-visible, .workflow-body:focus-visible { outline: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: -2px; }
     .workflow > .action-bar { flex: none; }
 
     .panel-heading { display: flex; gap: var(--ms-space-2); align-items: center; min-inline-size: 0; }
     .panel-heading h2 { margin: 0; min-inline-size: 0; font-size: var(--ms-t-xl); letter-spacing: var(--ms-track-tight); }
     .panel-heading h2:focus { outline: none; }
-    .panel-heading h2:focus-visible { outline: 2px solid var(--ms-accent); outline-offset: 4px; border-radius: var(--ms-radius-xs); }
+    .panel-heading h2:focus-visible { outline: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: 4px; border-radius: var(--ms-radius-xs); }
     .panel-back { flex: none; }
     .panel-description { margin: var(--ms-space-1) 0 var(--ms-space-4); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
 
@@ -422,7 +423,7 @@ export const shellStyles = [tokens, base, controls, css`
       background: color-mix(in srgb, #000 18%, transparent);
       cursor: pointer;
     }
-    .narrow .sheet-scrim:focus-visible { outline: 3px solid var(--ms-accent); outline-offset: -3px; }
+    .narrow .sheet-scrim:focus-visible { outline: 3px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: -3px; }
     .narrow .precision-popover { position: static; inline-size: auto; block-size: auto; }
 
     @media (forced-colors: active) {

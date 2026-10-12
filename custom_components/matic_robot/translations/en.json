@@ -525,7 +525,8 @@
     "v4_delete_plan_none": "You'll have no default plan.",
     "v4_delete_area_selected": "{area} becomes the selected custom area.",
     "v4_delete_area_none": "No custom area will be selected.",
-    "v4_notifications": "Notifications"
+    "v4_notifications": "Notifications",
+    "v4_map_scale": "Scale {distance}"
   },
   "config": {
     "abort": {

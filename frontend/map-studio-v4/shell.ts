@@ -25,7 +25,7 @@ import { renderDrawTools } from "./draw-tools";
 import { LazyChunk, chunkStatus, reloadInto, takeResume, type ChunkStatus } from "./lazy-chunk";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
-import { readColors, resolveFill, rgba, watchTheme, type Channel } from "./theme-probe";
+import { readColors, resolveFill, resolveTone, rgba, watchTheme, type Channel } from "./theme-probe";
 import {
   icon,
   iconBack,
@@ -516,15 +516,20 @@ export class MaticMapShellV4 extends LitElement {
     this.#unwatchTheme = watchTheme(() => this.#resolveTheme());
   }
 
-  // MS-AXE-03: the primary and Stop fills read a 4.5:1 pair resolved from HA's
-  // theme colours (theme-probe.ts resolveFill). Forced colours bypass it.
+  // MS-AXE-03 (design-system.md §5): the six D1 colours, resolved from HA's
+  // theme colours (theme-probe.ts): the primary and Stop fill pairs, the
+  // focus and selection indicator (3:1 on the card and sunken surfaces) and
+  // danger text (4.5:1 on the card). Forced colours bypass it.
   #resolveTheme(): void {
     const forced = window.matchMedia("(forced-colors: active)").matches;
-    const { accent, danger, label } = readColors(this.renderRoot, {
+    const { accent, danger, label, card, sunken } = readColors(this.renderRoot, {
       accent: "var(--ms-accent)", danger: "var(--ms-danger)", label: "var(--ms-on-accent)",
+      card: "var(--ms-surface-card)", sunken: "var(--ms-surface-sunken)",
     });
     const pair = (fill: Channel | null) => (forced || !fill || !label ? [] : resolveFill(fill, label));
-    // An empty value removes the property, so the button falls back to HA's colour.
+    const tone = (color: Channel | null, ratio: number, surface = card) =>
+      (forced || !color || !card || !surface ? undefined : resolveTone(color, ratio, [card, surface]));
+    // An empty value removes the property, so the CSS falls back to HA's colour.
     const value = (channel?: Channel): string => (channel ? rgba(channel, 1) : "");
     const [accentFill, onAccentFill] = pair(accent);
     const [dangerFill, onDangerFill] = pair(danger);
@@ -532,6 +537,8 @@ export class MaticMapShellV4 extends LitElement {
     this.style.setProperty("--ms-resolved-on-accent-fill", value(onAccentFill));
     this.style.setProperty("--ms-resolved-danger-fill", value(dangerFill));
     this.style.setProperty("--ms-resolved-on-danger-fill", value(onDangerFill));
+    this.style.setProperty("--ms-resolved-indicator", value(tone(accent, 3, sunken)));
+    this.style.setProperty("--ms-resolved-danger-text", value(tone(danger, 4.5)));
   }
 
   override disconnectedCallback(): void {
@@ -770,13 +777,25 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   // MS-AXE-02: a scroller that overflows with nothing inside to Tab to is
-  // itself a tab stop, so a keyboard can scroll it.
-  #syncScrollers(): void {
+  // itself a tab stop, so a keyboard can scroll it. The pinned top is then a
+  // group named by the h2; the body below it is already the region of that
+  // name, and landmark names must be unique. A focused scroller
+  // keeps its stop until it loses focus, so focus never falls to the page.
+  #syncScrollers = (): void => {
     for (const scroller of this.renderRoot.querySelectorAll<HTMLElement>(SCROLLERS)) {
-      if (scroller.scrollHeight > scroller.clientHeight && !hasFocusable(scroller)) scroller.tabIndex = 0;
-      else scroller.removeAttribute("tabindex");
+      const stop = scroller.scrollHeight > scroller.clientHeight && !hasFocusable(scroller);
+      if (!stop && scroller.matches(":focus")) {
+        scroller.addEventListener("blur", this.#syncScrollers, { once: true });
+        continue;
+      }
+      const set = (name: string, value: string) => (stop ? scroller.setAttribute(name, value) : scroller.removeAttribute(name));
+      set("tabindex", "0");
+      if (scroller.classList.contains("panel-top")) {
+        set("role", "group");
+        set("aria-labelledby", "workspace-title");
+      }
     }
-  }
+  };
 
   // The heading, else the primary; in Full map neither shows, so the control
   // that leaves it, which Full map entry focuses too.

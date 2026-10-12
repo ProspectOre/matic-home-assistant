@@ -2,7 +2,7 @@
 // drawing, and Home Assistant's theme colours for the contrast resolver.
 //
 // Canvas 2D cannot read `var(--ms-accent)`, so a hidden probe span is coloured
-// with each token and its computed colour parsed back. Under forced colours
+// with each token and its computed colour read back as a canvas pixel. Under forced colours
 // the system palette is probed instead so the overlay follows the OS theme.
 
 export type Channel = readonly [number, number, number];
@@ -28,41 +28,18 @@ const SOURCES: Readonly<Record<PaletteKey, readonly [token: string, forced: stri
   roomFill: ["--ms-surface-sunken", "Canvas", [231, 238, 242]],
 };
 
-const clampChannel = (value: number): number =>
-  Math.max(0, Math.min(255, Math.round(value)));
-
-// Accepts `rgb(r, g, b)`, `rgba(r, g, b, a)`, `rgb(r g b / a)` and
-// `color(srgb r g b / a)` (0..1 channels, scaled to 255).
-export const parseColor = (value: string): Channel | null => {
-  const normalized = value.trim();
-  const hex = normalized.match(/^#([\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})$/i)?.[1];
-  if (hex) {
-    const channels = hex.length <= 4
-      ? [hex[0], hex[1], hex[2]].map((part) => Number.parseInt(`${part}${part}`, 16))
-      : [hex.slice(0, 2), hex.slice(2, 4), hex.slice(4, 6)].map((part) => Number.parseInt(part, 16));
-    const [r, g, b] = channels;
-    return r === undefined || g === undefined || b === undefined ? null : [r, g, b];
-  }
-  const srgb = normalized.startsWith("color(srgb");
-  const numbers = normalized.slice(normalized.indexOf("(") + 1).match(/-?\d*\.?\d+/g);
-  if (!numbers || numbers.length < 3) return null;
-  const scale = srgb ? 255 : 1;
-  const channels = numbers.slice(0, 3).map((part) => clampChannel(Number(part) * scale));
-  const [r, g, b] = channels;
-  return r === undefined || g === undefined || b === undefined
-    || [r, g, b].some((channel) => Number.isNaN(channel))
-    ? null
-    : [r, g, b];
-};
-
 export const rgba = (channel: Channel, alpha: number): string =>
   `rgba(${channel[0]},${channel[1]},${channel[2]},${alpha})`;
 
-// Each CSS colour as sRGB channels, or null when it does not parse. CSS
-// custom properties preserve their authored syntax (for example `hsl()` or a
+// Each CSS colour as opaque sRGB channels, or null when it is unparsable,
+// transparent or translucent (no single colour to measure or draw). CSS
+// custom properties keep their authored syntax (for example `hsl()` or a
 // named colour) when read directly, so each colour goes through the
 // browser's colour parser on a probe inside `host`, which inherits the
-// host's custom properties.
+// host's custom properties. The probe sets `background-color`, which is not
+// inherited, so an unparsable value computes to transparent instead of the
+// inherited text colour, and one pixel drawn on a canvas brings CSS Color 4
+// values (oklch, display-p3) into sRGB.
 export const readColors = <K extends string>(host: ParentNode, colors: Readonly<Record<K, string>>): Record<K, Channel | null> => {
   const probe = document.createElement("span");
   const canvas = document.createElement("canvas");
@@ -73,21 +50,14 @@ export const readColors = <K extends string>(host: ParentNode, colors: Readonly<
   probe.style.cssText = "position:absolute;inline-size:0;block-size:0;overflow:hidden;visibility:hidden;pointer-events:none";
   host.append(probe);
   const read = (color: string): Channel | null => {
-    probe.style.color = color;
-    const serialized = getComputedStyle(probe).color;
-    if (context) {
-      // Reading one pixel forces CSS Color 4 values (including oklch and
-      // display-p3) through the canvas' sRGB backing store before parsing.
-      context.clearRect(0, 0, 1, 1);
-      context.fillStyle = "transparent";
-      context.fillStyle = serialized;
-      context.fillRect(0, 0, 1, 1);
-      const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
-      if (red !== undefined && green !== undefined && blue !== undefined && alpha !== undefined && alpha !== 0) {
-        return [red, green, blue];
-      }
-    }
-    return parseColor(serialized);
+    if (!context) return null;
+    probe.style.backgroundColor = color;
+    context.clearRect(0, 0, 1, 1);
+    context.fillStyle = "transparent";
+    context.fillStyle = getComputedStyle(probe).backgroundColor;
+    context.fillRect(0, 0, 1, 1);
+    const [red = 0, green = 0, blue = 0, alpha = 0] = context.getImageData(0, 0, 1, 1).data;
+    return alpha === 255 ? [red, green, blue] : null;
   };
   try {
     return Object.fromEntries(Object.entries<string>(colors).map(([key, color]) => [key, read(color)])) as Record<K, Channel | null>;
@@ -111,7 +81,9 @@ export const readCanvasPalette = (host: HTMLElement): CanvasPalette => {
 
 // Calls `onChange` whenever the page theme may have changed: Home Assistant
 // rewrites the document element's style or class, or the colour scheme or
-// forced colours flip. Returns the function that stops watching.
+// forced colours flip. Returns the function that stops watching. Callers
+// run it from connectedCallback, so `document` and `matchMedia` exist: the
+// panel only runs in browsers Home Assistant supports, which all have both.
 export const watchTheme = (onChange: () => void): (() => void) => {
   const observer = new MutationObserver(onChange);
   observer.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class"] });
@@ -140,18 +112,31 @@ const contrast = (a: Channel, b: Channel): number => {
 const BLACK: Channel = [0, 0, 0];
 const WHITE: Channel = [255, 255, 255];
 
+// The first 5% step of `color` toward `toward`, from 100% down to 50%, that
+// `passes`, or null.
+const search = (color: Channel, toward: number, passes: (step: Channel) => boolean): Channel | null => {
+  for (let weight = 100; weight >= 50; weight -= 5) {
+    const step = color.map((value) => Math.round((value * weight + toward * (100 - weight)) / 100)) as unknown as Channel;
+    if (passes(step)) return step;
+  }
+  return null;
+};
+
 // design-system.md §5 (MS-AXE-03): a fill keeps HA's colour and label when
 // they reach 4.5:1. Otherwise the first 5% step of the fill toward black
 // (toward white under a darker label), from 95% down to 50%, that reaches it
 // wins; failing that the fill stays and the label is black or white,
 // whichever contrasts more.
 export const resolveFill = (fill: Channel, label: Channel): readonly [fill: Channel, label: Channel] => {
-  const toward = luminance(label) < luminance(fill) ? 255 : 0;
-  const [red, green, blue] = fill;
-  for (let weight = 100; weight >= 50; weight -= 5) {
-    const mix = (value: number): number => Math.round((value * weight + toward * (100 - weight)) / 100);
-    const step: Channel = [mix(red), mix(green), mix(blue)];
-    if (contrast(step, label) >= 4.5) return [step, label];
-  }
-  return [fill, contrast(fill, BLACK) > contrast(fill, WHITE) ? BLACK : WHITE];
+  const step = search(fill, luminance(label) < luminance(fill) ? 255 : 0, (candidate) => contrast(candidate, label) >= 4.5);
+  return step ? [step, label] : [fill, contrast(fill, BLACK) > contrast(fill, WHITE) ? BLACK : WHITE];
+};
+
+// The indicator (3:1) and danger text (4.5:1) keep HA's colour when it
+// reaches `ratio` on every surface; otherwise the same search runs toward
+// black on a light first surface and white on a dark one. If no step
+// reaches it, that end colour itself is used (the spec names no last step).
+export const resolveTone = (color: Channel, ratio: number, surfaces: readonly [Channel, ...Channel[]]): Channel => {
+  const end = contrast(surfaces[0], BLACK) > contrast(surfaces[0], WHITE) ? BLACK : WHITE;
+  return search(color, end[0], (step) => surfaces.every((surface) => contrast(step, surface) >= ratio)) ?? end;
 };

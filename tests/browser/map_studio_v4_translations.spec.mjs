@@ -23,6 +23,7 @@ async function mountPanel(page, fixtureOptions = {}) {
       v4_action_clean_rooms_count_one: () => "Einen Raum reinigen",
       v4_brush_button: (p) => `Pinselbreite ${p.brush}, Einstellungen`,
       v4_brush: (p) => `Pinsel ${p.brush}`,
+      v4_map_scale: (p) => `Maßstab ${p.distance}`,
     };
     window.__localizeCalls = [];
     const panel = window.__panelFixture.createPanel();
@@ -86,6 +87,18 @@ test("the brush label and its accessible name take the width from placeholders",
     expect(calls.length, key).toBeGreaterThan(0);
     expect(calls.every((call) => /^\d+\.\d{2} m$/.test(call.placeholders?.brush)), key).toBe(true);
   }
+});
+
+// map-surfaces.md §5: the scale bar stays with a translated label.
+test("the scale bar's accessible name takes its distance from a placeholder", async ({ page }) => {
+  const panel = await mountPanel(page);
+  await sendIntent(page, { type: "open-workflow", workflow: "draw" });
+
+  const scale = panel.locator(".map-scale");
+  await expect(scale).toHaveAttribute("aria-label", /^Maßstab [\d.]+ c?m$/);
+  const calls = await localizeCalls(page, "v4_map_scale");
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls.every((call) => /^[\d.]+ c?m$/.test(call.placeholders?.distance))).toBe(true);
 });
 
 // Patches the mounted panel the way Home Assistant does when it swaps the

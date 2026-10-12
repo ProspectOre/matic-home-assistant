@@ -8115,38 +8115,93 @@ test.describe("Map Studio accessibility baselines", () => {
     expect(axeFindings(violations)).toEqual([]);
   });
 
+  // The help popover's title continues the outline under the app's h1, so it
+  // is an h2; its size comes from its class, not its level.
+  test("the help popover's title is an h2 that keeps the heading order valid", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await settleWorkspace(gallery);
+    await gallery.getByRole("button", { name: "How to move the map" }).click();
+    const title = gallery.getByRole("dialog", { name: "How to move the map" }).getByRole("heading", { name: "How to move the map" });
+    await expect(title).toHaveJSProperty("tagName", "H2");
+    await expect(title).toHaveCSS("font-size", "13px");
+    const { violations } = await new AxeBuilder({ page }).withRules(["heading-order"]).analyze();
+    expect(axeFindings(violations)).toEqual([]);
+  });
+
   // MS-AXE-02: a scrolling body is a region named by the h2, and it and the
   // capped pinned top above it (which holds the h2) are tab stops only while
-  // they overflow with nothing inside to Tab to. The stage fills the
-  // viewport, so a resize after the first layout must be caught too.
+  // they overflow with nothing inside to Tab to; a pinned top that is a tab
+  // stop is a group named by the h2 (a second region of that name would make
+  // the landmark ambiguous). The stage fills the viewport, so a
+  // resize after the first layout must be caught too.
+  const openScroller = async (page, scenario, width, height) => {
+    await page.setViewportSize({ width, height });
+    const gallery = await loadGallery(page, { scenario, narrow: width < 1024 });
+    await settleWorkspace(gallery);
+    await gallery.locator(".stage").evaluate((stage) => {
+      Object.assign(stage.style, { blockSize: "100dvh", minBlockSize: "0", maxInlineSize: "none" });
+    });
+    await settleWorkspace(gallery);
+    const heading = gallery.getByRole("heading", { level: 2 }).first();
+    const title = (await heading.textContent()).trim();
+    return { gallery, heading, body: gallery.getByRole("region", { name: title, exact: true }).last() };
+  };
+  const scrollerState = (element, top) => element.evaluate((node, pinned) => {
+    const target = pinned ? node.closest(".panel-top") : node;
+    const tabbable = "a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
+    const nested = [...target.querySelectorAll("*")].some((child) => child.shadowRoot?.querySelector(tabbable));
+    return {
+      overflows: target.scrollHeight > target.clientHeight,
+      focusableChild: Boolean(target.querySelector(tabbable)) || nested,
+      tabindex: target.getAttribute("tabindex"),
+      role: target.getAttribute("role"),
+      named: target.getAttribute("aria-labelledby") === "workspace-title",
+    };
+  }, top);
+
   test("a scroller is a tab stop only while it overflows without a focusable child @mobile", async ({ page }) => {
     const scroller = async (scenario, width, height, which) => {
-      await page.setViewportSize({ width, height });
-      const gallery = await loadGallery(page, { scenario, narrow: width < 1024 });
-      await settleWorkspace(gallery);
-      await gallery.locator(".stage").evaluate((stage) => {
-        Object.assign(stage.style, { blockSize: "100dvh", minBlockSize: "0", maxInlineSize: "none" });
-      });
-      await settleWorkspace(gallery);
-      const heading = gallery.getByRole("heading", { level: 2 }).first();
-      const title = (await heading.textContent()).trim();
-      const element = which === "body" ? gallery.getByRole("region", { name: title, exact: true }) : heading;
-      return element.evaluate((node, top) => {
-        const target = top ? node.closest(".panel-top") : node;
-        const tabbable = "a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex='-1'])";
-        const nested = [...target.querySelectorAll("*")].some((child) => child.shadowRoot?.querySelector(tabbable));
-        return {
-          overflows: target.scrollHeight > target.clientHeight,
-          focusableChild: Boolean(target.querySelector(tabbable)) || nested,
-          tabindex: target.getAttribute("tabindex"),
-        };
-      }, which === "top");
+      const { heading, body } = await openScroller(page, scenario, width, height);
+      return scrollerState(which === "body" ? body : heading, which === "top");
     };
-    expect(await scroller("access", 844, 390, "body"), "access body on a landscape phone").toEqual({ overflows: true, focusableChild: false, tabindex: "0" });
-    expect(await scroller("plans", 844, 390, "body"), "plans body on a landscape phone").toEqual({ overflows: true, focusableChild: true, tabindex: null });
-    expect(await scroller("access", 1440, 900, "body"), "access body on a desktop").toEqual({ overflows: false, focusableChild: false, tabindex: null });
-    expect(await scroller("paused", 844, 390, "top"), "paused pinned top on a landscape phone").toEqual({ overflows: true, focusableChild: false, tabindex: "0" });
-    expect(await scroller("ready", 844, 390, "top"), "ready pinned top on a landscape phone").toEqual({ overflows: false, focusableChild: false, tabindex: null });
+    expect(await scroller("access", 844, 390, "body"), "access body on a landscape phone").toEqual({ overflows: true, focusableChild: false, tabindex: "0", role: "region", named: true });
+    expect(await scroller("plans", 844, 390, "body"), "plans body on a landscape phone").toEqual({ overflows: true, focusableChild: true, tabindex: null, role: "region", named: true });
+    expect(await scroller("access", 1440, 900, "body"), "access body on a desktop").toEqual({ overflows: false, focusableChild: false, tabindex: null, role: "region", named: true });
+    expect(await scroller("paused", 844, 390, "top"), "paused pinned top on a landscape phone").toEqual({ overflows: true, focusableChild: false, tabindex: "0", role: "group", named: true });
+    expect(await scroller("ready", 844, 390, "top"), "ready pinned top on a landscape phone").toEqual({ overflows: false, focusableChild: false, tabindex: null, role: null, named: false });
+  });
+
+  test("a focused tab-stop scroller shows a 2 px ring inset 2 px and stays a tab stop until it loses focus @mobile", async ({ page }) => {
+    const { gallery, body } = await openScroller(page, "access", 844, 390);
+    await expect(body).toHaveAttribute("tabindex", "0");
+    await body.focus();
+    expect(await body.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return [style.outlineStyle, style.outlineWidth, style.outlineOffset, style.outlineColor];
+    })).toEqual(["solid", "2px", "-2px", "rgb(6, 120, 206)"]);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await settleWorkspace(gallery);
+    await expect.poll(() => scrollerState(body, false), "no longer overflowing, but focused").toMatchObject({ overflows: false, tabindex: "0" });
+    await gallery.getByRole("heading", { level: 2 }).first().focus();
+    await expect.poll(() => scrollerState(body, false), "after blur").toMatchObject({ overflows: false, tabindex: null });
+  });
+
+  // The pinned top is re-checked when its content changes: a notice brings a
+  // Close button, so it stops being a tab stop until the notice goes.
+  test("the pinned top is a tab stop only while no notice gives it a control @mobile", async ({ page }) => {
+    const { gallery, heading } = await openScroller(page, "paused", 844, 390);
+    const notice = (value) => gallery.locator("matic-map-shell-v4").evaluate((shell, next) => shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: { type: "set-notice", notice: next }, bubbles: true, composed: true,
+    })), value);
+    await expect.poll(() => scrollerState(heading, true)).toMatchObject({ focusableChild: false, tabindex: "0", role: "group", named: true });
+    const { violations } = await new AxeBuilder({ page }).withRules(["landmark-unique", "aria-allowed-role"]).analyze();
+    expect(axeFindings(violations), "the body stays the only region named by the h2").toEqual([]);
+    await notice({ tone: "warning", key: "v4_notice_sample", fallback: "Sample notice text" });
+    await expect(gallery.locator("[data-notice-slot]")).toBeVisible();
+    await expect.poll(() => scrollerState(heading, true), "with a notice").toMatchObject({ focusableChild: true, tabindex: null, role: null, named: false });
+    await notice(null);
+    await expect.poll(() => scrollerState(heading, true), "after the notice").toMatchObject({ focusableChild: false, tabindex: "0", role: "group", named: true });
   });
 
   // MS-AXE-03 (design-system.md §5): HA's fill pair is kept at 4.5:1, else the
@@ -8183,5 +8238,121 @@ test.describe("Map Studio accessibility baselines", () => {
     await expect.poll(() => pair(create), "a passing pair is kept").toEqual({ label: "rgb(255, 255, 255)", fill: "rgb(11, 83, 148)", ratio: 7.84 });
     await theme({ "--primary-color": "#808080", "--text-primary-color": "#777777" });
     await expect.poll(() => pair(create), "no 5% step reaches 4.5:1").toEqual({ label: "rgb(0, 0, 0)", fill: "rgb(128, 128, 128)", ratio: 5.32 });
+  });
+});
+
+// design-system.md §5 (MS-AXE-03): the other D1 colours, measured with HA's
+// default palettes (the values ha_theme_axe.mjs applies).
+test.describe("Map Studio resolved theme colours", () => {
+  const HA_LIGHT = { "--primary-color": "#009ac7", "--text-primary-color": "#ffffff", "--error-color": "#db4437", "--card-background-color": "#ffffff", "--secondary-background-color": "#e5e5e5", "--primary-text-color": "#141414" };
+  const HA_DARK = { ...HA_LIGHT, "--card-background-color": "#1c1c1c", "--secondary-background-color": "#282828", "--primary-text-color": "#e1e1e1" };
+  // `rgb()` and `color(srgb …)` (color-mix results) as 0-255 channels.
+  const channels = (css) => {
+    const values = css.match(/[\d.]+/gu).map(Number);
+    return css.startsWith("color(srgb") ? values.slice(0, 3).map((value) => value * 255) : values.slice(0, 3);
+  };
+  const luminance = (rgb) => rgb.reduce((sum, channel, index) => {
+    const value = channel / 255;
+    return sum + [0.2126, 0.7152, 0.0722][index] * (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  }, 0);
+  const ratio = (a, b) => {
+    const [high, low] = [a, b].map((css) => luminance(channels(css))).sort((x, y) => y - x);
+    return Math.round(((high + 0.05) / (low + 0.05)) * 100) / 100;
+  };
+  const theme = (page, vars) => page.evaluate((values) => {
+    for (const [name, value] of Object.entries(values)) document.documentElement.style.setProperty(name, value);
+  }, vars);
+  const style = (locator, property) => locator.evaluate((element, name) => getComputedStyle(element)[name], property);
+  // A computed colour in any syntax (color-mix gives oklab or color()) as
+  // the sRGB pixel the browser paints.
+  const paint = (locator, property) => locator.evaluate((element, name) => {
+    const context = Object.assign(document.createElement("canvas"), { width: 1, height: 1 }).getContext("2d", { colorSpace: "srgb" });
+    context.fillStyle = getComputedStyle(element)[name];
+    context.fillRect(0, 0, 1, 1);
+    const [red, green, blue] = context.getImageData(0, 0, 1, 1).data;
+    return `rgb(${red}, ${green}, ${blue})`;
+  }, property);
+
+  test("the focus ring reaches 3:1 on both surfaces and danger text 4.5:1 on the card", async ({ page }) => {
+    await page.setViewportSize({ width: 1024, height: 768 });
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    await settleWorkspace(gallery);
+    await gallery.getByRole("button", { name: "Points", exact: true }).click();
+    const feedback = gallery.locator(".zone-feedback");
+    const ring = async () => {
+      const button = gallery.getByRole("button", { name: "Your plans" }).or(gallery.getByRole("button", { name: "All tasks" })).first();
+      // A Tab first, so the focus is keyboard focus (:focus-visible).
+      await page.keyboard.press("Tab");
+      await button.focus();
+      return style(button, "outlineColor");
+    };
+    await theme(page, HA_LIGHT);
+    await expect.poll(async () => {
+      const color = await ring();
+      return { color, sunken: ratio(color, "rgb(229, 229, 229)"), card: ratio(color, "rgb(255, 255, 255)") };
+    }, "#009ac7 is 2.59:1 on #e5e5e5").toEqual({ color: "rgb(0, 139, 179)", sunken: 3.12, card: 3.93 });
+    await expect.poll(async () => {
+      const color = await style(feedback, "color");
+      return { color, card: ratio(color, "rgb(255, 255, 255)") };
+    }, "#db4437 is 4.29:1 on #fff").toEqual({ color: "rgb(208, 65, 52)", card: 4.68 });
+
+    await theme(page, HA_DARK);
+    await expect.poll(async () => {
+      const color = await ring();
+      return { color, sunken: ratio(color, "rgb(40, 40, 40)"), card: ratio(color, "rgb(28, 28, 28)") };
+    }, "a passing indicator is kept").toEqual({ color: "rgb(0, 154, 199)", sunken: 4.53, card: 5.23 });
+    await expect.poll(async () => {
+      const color = await style(feedback, "color");
+      return { color, card: ratio(color, "rgb(28, 28, 28)") };
+    }, "#db4437 is 3.97:1 on #1c1c1c").toEqual({ color: "rgb(223, 87, 75)", card: 4.55 });
+  });
+
+  // A filled button's hover and press mix away from its label, so the label
+  // keeps 4.5:1 in a dark theme too.
+  test("hovered and pressed primary and Stop keep their label at 4.5:1 in HA's dark palette", async ({ page }) => {
+    // Reduced motion makes the state colours land at once (tokens.ts).
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.setViewportSize({ width: 390, height: 844 });
+    const gallery = await loadGallery(page, { scenario: "cleaning", narrow: true });
+    await settleWorkspace(gallery);
+    await theme(page, HA_DARK);
+    const states = async (button) => {
+      await expect.poll(() => style(button, "backgroundColor")).not.toBe("rgb(219, 68, 55)");
+      await expect.poll(() => style(button, "backgroundColor")).not.toBe("rgb(0, 154, 199)");
+      await button.hover();
+      const label = await paint(button, "color");
+      const hover = ratio(label, await paint(button, "backgroundColor"));
+      await page.mouse.down();
+      const active = ratio(label, await paint(button, "backgroundColor"));
+      await page.mouse.move(0, 0);
+      await page.mouse.up();
+      return { label, hover, active };
+    };
+    expect(await states(gallery.getByRole("button", { name: "Stop cleaning" }))).toEqual({ label: "rgb(255, 255, 255)", hover: 5.97, active: 7.43 });
+    await gallery.evaluate((element) => element.setScenario("plans"));
+    await settleWorkspace(gallery);
+    expect(await states(gallery.getByRole("button", { name: "Create a plan" }))).toEqual({ label: "rgb(255, 255, 255)", hover: 6.14, active: 7.61 });
+  });
+
+  // An unparsable, transparent or translucent theme colour is never written
+  // as a fill: the resolved property goes, so the button shows HA's colour.
+  test("a theme colour the resolver cannot measure leaves HA's own colour in place @mobile", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const gallery = await loadGallery(page, { scenario: "plans", narrow: true });
+    await settleWorkspace(gallery);
+    const shell = gallery.locator("matic-map-shell-v4");
+    const create = gallery.getByRole("button", { name: "Create a plan" });
+    const state = async () => ({
+      property: await shell.evaluate((element) => element.style.getPropertyValue("--ms-resolved-accent-fill")),
+      fill: await style(create, "backgroundColor"),
+    });
+    await theme(page, HA_LIGHT);
+    await expect.poll(state, "HA's default is resolved").toEqual({ property: "rgba(0,123,159,1)", fill: "rgb(0, 123, 159)" });
+    await theme(page, { "--primary-color": "not-a-colour" });
+    await expect.poll(state, "unparsable").toEqual({ property: "", fill: "rgba(0, 0, 0, 0)" });
+    await theme(page, { "--primary-color": "rgba(0, 0, 0, 0)" });
+    await expect.poll(state, "transparent").toEqual({ property: "", fill: "rgba(0, 0, 0, 0)" });
+    await theme(page, { "--primary-color": "rgba(0, 154, 199, 0.5)" });
+    await expect.poll(state, "translucent").toEqual({ property: "", fill: "rgba(0, 154, 199, 0.5)" });
   });
 });

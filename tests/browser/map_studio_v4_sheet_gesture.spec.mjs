@@ -3,7 +3,7 @@ import { build } from "esbuild";
 
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
 
-async function loadNarrowGallery(page) {
+async function loadNarrowGallery(page, scenario = "ready") {
   const bundle = await build({
     stdin: {
       contents: 'export * from "./frontend/map-studio-v4/review";',
@@ -26,15 +26,15 @@ async function loadNarrowGallery(page) {
   await page.evaluate(async () => {
     await import("/sheet-gesture-review.js");
   });
-  await page.evaluate(async (tag) => {
+  await page.evaluate(async ({ tag, scenario }) => {
     await customElements.whenDefined(tag);
     const gallery = document.createElement(tag);
     gallery.controls = false;
-    gallery.scenario = "ready";
+    gallery.scenario = scenario;
     gallery.narrow = true;
     document.body.style.margin = "0";
     document.body.append(gallery);
-  }, GALLERY_TAG);
+  }, { tag: GALLERY_TAG, scenario });
   return page.locator(`${GALLERY_TAG} .mobile-sheet`);
 }
 
@@ -129,6 +129,20 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
     await top.evaluate((element) => { element.scrollTop = 0; });
     await dispatchTouchDrag(page.locator(`${GALLERY_TAG} .panel-heading h2`), 100, 170);
     await expect(sheet).toHaveAttribute("data-detent", "peek");
+  });
+
+  // A scroller is a tab stop only for the keyboard (MS-AXE-02); it is not a
+  // control, so a swipe that starts inside one still steps the sheet.
+  test("a swipe that starts inside a pinned top that is a tab stop steps the sheet down @mobile", async ({ page }) => {
+    const sheet = await loadNarrowGallery(page, "paused");
+    await page.setViewportSize({ width: 844, height: 390 });
+    await page.locator(`${GALLERY_TAG} .stage`).evaluate((stage) => {
+      Object.assign(stage.style, { blockSize: "100dvh", minBlockSize: "0", maxInlineSize: "none" });
+    });
+    await expect(page.locator(`${GALLERY_TAG} .panel-top`)).toHaveAttribute("tabindex", "0");
+    const detent = await sheet.getAttribute("data-detent");
+    await dispatchTouchDrag(page.locator(`${GALLERY_TAG} .panel-heading h2`), 100, 170);
+    await expect(sheet).not.toHaveAttribute("data-detent", detent);
   });
 
   test("keeps the toast on the sheet's top edge while the handle is dragged", async ({ page }) => {

@@ -95,7 +95,7 @@ export class MaticMapCanvasV4 extends LitElement {
     .map-root[data-workflow="draw"][data-draw-tool="pan"].navigating { cursor: grabbing; }
 
     .map-root:focus-visible {
-      outline: 3px solid var(--primary-color, #03a9f4);
+      outline: 3px solid var(--ms-resolved-indicator, var(--ms-accent));
       outline-offset: -3px;
     }
 
@@ -151,20 +151,20 @@ export class MaticMapCanvasV4 extends LitElement {
       line-height: 1.45;
     }
     .navigation-help header { display: flex; align-items: center; justify-content: space-between; gap: var(--ms-space-2); margin-block-end: 0.5rem; }
-    .navigation-help h3 { margin: 0; font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
+    .navigation-help h2 { margin: 0; font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
     .navigation-help dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.35rem 0.65rem; margin: 0; }
     .navigation-help dt { font-weight: 750; }
     .navigation-help dd { margin: 0; color: var(--ms-text-quiet); }
 
     .zone-overlay { position: absolute; inset: 0; z-index: 4; pointer-events: none; overflow: hidden; }
     .zone-overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-    .zone-overlay path { stroke: var(--ms-accent); stroke-width: 2; fill-opacity: .08; }
+    .zone-overlay path { stroke: var(--ms-resolved-indicator, var(--ms-accent)); stroke-width: 2; fill-opacity: .08; }
     .zone-overlay path.invalid { stroke: var(--error-color, #b3261e); }
     .zone-point { position: absolute; translate: -50% -50%; width: 44px; height: 44px; border: 0; border-radius: 50%; background: transparent; color: var(--ms-accent); pointer-events: auto; touch-action: none; cursor: grab; font: 700 12px system-ui; isolation: isolate; }
-    .zone-point::before { content: ""; position: absolute; inset: 10px; z-index: -1; border-radius: 50%; background: var(--ms-surface-card); border: 2px solid var(--ms-accent); box-shadow: 0 1px 4px #0008; }
+    .zone-point::before { content: ""; position: absolute; inset: 10px; z-index: -1; border-radius: 50%; background: var(--ms-surface-card); border: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); box-shadow: 0 1px 4px #0008; }
     .zone-point[data-selected="true"] { color: var(--ms-on-accent); }
     .zone-point[data-selected="true"]::before { background: var(--ms-accent); border-color: var(--ms-surface-card); }
-    .zone-point:focus-visible { outline: 3px solid var(--ms-accent); outline-offset: 0; }
+    .zone-point:focus-visible { outline: 3px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: 0; }
     .zone-midpoint { font-size: 18px; }
     .zone-midpoint::before { inset: 13px; background: var(--ms-surface-card); }
     .zone-midpoint { color: var(--ms-accent); }
@@ -175,7 +175,7 @@ export class MaticMapCanvasV4 extends LitElement {
     .zone-point-actions .ms-btn + .ms-btn { border-inline-start: 1px solid var(--ms-line); }
     .zone-guidance { padding: 6px 12px; gap: 8px; color: var(--ms-text-quiet); line-height: 1.4; }
     .zone-guidance .ms-btn { flex-shrink: 0; }
-    .zone-feedback { max-width: 100%; padding: 8px 12px; border-radius: 12px; color: var(--error-color, #b3261e); pointer-events: auto; }
+    .zone-feedback { max-width: 100%; padding: 8px 12px; border-radius: 12px; color: var(--ms-resolved-danger-text, var(--ms-danger)); pointer-events: auto; }
     .zone-feedback[hidden] { display: none; }
     .map-root[data-narrow="true"] .zone-help { bottom: 12px; }
     .keyboard-aim { display: none; position: absolute; z-index: 3; inset: 50% auto auto 50%; inline-size: 20px; block-size: 20px; translate: -50% -50%; border: 2px solid white; outline: 2px solid #111; border-radius: 50%; pointer-events: none; }
@@ -634,7 +634,7 @@ export class MaticMapCanvasV4 extends LitElement {
             aria-label=${helpTitle}
           >
             <header>
-              <h3>${helpTitle}</h3>
+              <h2>${helpTitle}</h2>
               <button class="ms-btn ms-btn--sm" type="button" @click=${() => this.#closeHelp()}>${this.#t("v4_close", "Close")}</button>
             </header>
             <dl>
@@ -720,7 +720,7 @@ export class MaticMapCanvasV4 extends LitElement {
         ${showDraw ? html`
           <p id="zone-keyboard-help" class="sr-only">${this.#t("v4_zone_keyboard_help", "Focus the map, aim with arrow keys, and press Enter to place points. The edges join automatically after three points. Keep adding points or Tab to a point; arrows move it, Delete removes it, and Escape cancels a drag.")}</p>
           <p id="keyboard-draw-help" class="sr-only">${this.#t("v4_keyboard_draw_help", "Keyboard: focus the map, use arrow keys to aim, then Enter to paint or erase at the crosshair. D selects Paint; E selects Erase.")}</p>
-          <div class="map-scale" role="img" aria-label=${`Scale ${scale.label}`}>
+          <div class="map-scale" role="img" aria-label=${this.#t("v4_map_scale", "Scale {distance}", { distance: scale.label })}>
             <span class="scale-line" style=${`--scale-width:${scale.pixels}px`}></span>
             <span>${scale.label}</span>
           </div>
