@@ -9,7 +9,7 @@ from collections import deque
 from collections.abc import Mapping
 from typing import Any, cast, override
 
-import voluptuous as vol
+import probatio
 from homeassistant.auth import EVENT_USER_ADDED, EVENT_USER_REMOVED, EVENT_USER_UPDATED
 from homeassistant.components.homeassistant.exposed_entities import (
     async_should_expose,
@@ -430,8 +430,8 @@ class _MaticTool(llm.Tool):
         )
 
 
-_ROBOT_FIELD: dict[vol.Marker, Any] = {
-    vol.Optional("robot"): vol.All(cv.string, vol.Length(min=1, max=128))
+_ROBOT_FIELD: dict[probatio.Marker, Any] = {
+    probatio.Optional("robot"): probatio.All(cv.string, probatio.Length(min=1, max=128))
 }
 
 
@@ -449,7 +449,10 @@ class MaticGetFirmwareTool(_MaticTool):
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(
-        {**_ROBOT_FIELD, vol.Optional("include_history", default=False): cv.boolean}
+        {
+            **_ROBOT_FIELD,
+            probatio.Optional("include_history", default=False): cv.boolean,
+        }
     )
 
     @override
@@ -480,12 +483,20 @@ class MaticGetFirmwareTool(_MaticTool):
         )
 
 
-_FIRMWARE_CLAIM_FIELDS: dict[vol.Marker, Any] = {
+_FIRMWARE_CLAIM_FIELDS: dict[probatio.Marker, Any] = {
     **_ROBOT_FIELD,
-    vol.Required("report_id"): vol.All(cv.string, vol.Length(min=24, max=24)),
-    vol.Required("evidence_revision"): vol.All(vol.Coerce(int), vol.Range(min=1)),
-    vol.Required("routing_revision"): vol.All(vol.Coerce(int), vol.Range(min=0)),
-    vol.Required("provider"): vol.All(cv.string, vol.Length(min=1, max=48)),
+    probatio.Required("report_id"): probatio.All(
+        cv.string, probatio.Length(min=24, max=24)
+    ),
+    probatio.Required("evidence_revision"): probatio.All(
+        probatio.Coerce(int), probatio.Range(min=1)
+    ),
+    probatio.Required("routing_revision"): probatio.All(
+        probatio.Coerce(int), probatio.Range(min=0)
+    ),
+    probatio.Required("provider"): probatio.All(
+        cv.string, probatio.Length(min=1, max=48)
+    ),
 }
 
 
@@ -540,11 +551,16 @@ class MaticCompleteFirmwareInvestigationTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_FIRMWARE_CLAIM_FIELDS,
-            vol.Required("token"): vol.All(cv.string, vol.Length(min=16, max=128)),
-            vol.Required("disposition"): vol.In(ASSESSMENTS),
-            vol.Required("summary"): vol.All(cv.string, vol.Length(min=1, max=2000)),
-            vol.Optional("sources", default=[]): vol.All(
-                [vol.All(cv.string, vol.Length(max=512))], vol.Length(max=5)
+            probatio.Required("token"): probatio.All(
+                cv.string, probatio.Length(min=16, max=128)
+            ),
+            probatio.Required("disposition"): probatio.In(ASSESSMENTS),
+            probatio.Required("summary"): probatio.All(
+                cv.string, probatio.Length(min=1, max=2000)
+            ),
+            probatio.Optional("sources", default=[]): probatio.All(
+                [probatio.All(cv.string, probatio.Length(max=512))],
+                probatio.Length(max=5),
             ),
         }
     )
@@ -609,7 +625,9 @@ class MaticGetPlanTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_ROBOT_FIELD,
-            vol.Optional("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
+            probatio.Optional("plan"): probatio.All(
+                cv.string, probatio.Length(min=1, max=128)
+            ),
         }
     )
 
@@ -769,10 +787,13 @@ class MaticGetNativeHistoryTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_ROBOT_FIELD,
-            vol.Optional("limit", default=5): vol.All(
-                vol.Coerce(int), vol.Range(min=1, max=MAX_NATIVE_HISTORY_RESULTS)
+            probatio.Optional("limit", default=5): probatio.All(
+                probatio.Coerce(int),
+                probatio.Range(min=1, max=MAX_NATIVE_HISTORY_RESULTS),
             ),
-            vol.Optional("cleaning_mode"): vol.In(("vacuum", "mop", "vacuum_and_mop")),
+            probatio.Optional("cleaning_mode"): probatio.In(
+                ("vacuum", "mop", "vacuum_and_mop")
+            ),
         }
     )
 
@@ -918,10 +939,10 @@ class MaticGetRecentEventsTool(_MaticTool):
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(
         {
-            vol.Optional("limit", default=20): vol.All(
-                vol.Coerce(int), vol.Range(min=1, max=MAX_RECENT_EVENTS)
+            probatio.Optional("limit", default=20): probatio.All(
+                probatio.Coerce(int), probatio.Range(min=1, max=MAX_RECENT_EVENTS)
             ),
-            vol.Optional("include_activity", default=False): cv.boolean,
+            probatio.Optional("include_activity", default=False): cv.boolean,
         }
     )
 
@@ -977,15 +998,17 @@ class MaticGetActivityTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_ROBOT_FIELD,
-            vol.Optional("kind", default="commands"): vol.In(
+            probatio.Optional("kind", default="commands"): probatio.In(
                 ("all", "commands", "states", "stream")
             ),
-            vol.Optional("limit", default=50): vol.All(
-                vol.Coerce(int), vol.Range(min=1, max=MAX_ACTIVITY_RESULTS)
+            probatio.Optional("limit", default=50): probatio.All(
+                probatio.Coerce(int), probatio.Range(min=1, max=MAX_ACTIVITY_RESULTS)
             ),
-            vol.Optional("before_sequence"): vol.All(vol.Coerce(int), vol.Range(min=1)),
-            vol.Optional("observation_session"): vol.All(
-                cv.string, vol.Match(r"^[a-f0-9]{32}$")
+            probatio.Optional("before_sequence"): probatio.All(
+                probatio.Coerce(int), probatio.Range(min=1)
+            ),
+            probatio.Optional("observation_session"): probatio.All(
+                cv.string, probatio.Match(r"^[a-f0-9]{32}$")
             ),
         }
     )
@@ -1092,7 +1115,9 @@ class MaticRunPlanTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_ROBOT_FIELD,
-            vol.Optional("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
+            probatio.Optional("plan"): probatio.All(
+                cv.string, probatio.Length(min=1, max=128)
+            ),
         }
     )
 
@@ -1157,14 +1182,14 @@ class MaticCleanRoomsTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_ROBOT_FIELD,
-            vol.Required("rooms"): vol.All(
+            probatio.Required("rooms"): probatio.All(
                 cv.ensure_list,
-                [vol.All(cv.string, vol.Length(min=1, max=128))],
-                vol.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
+                [probatio.All(cv.string, probatio.Length(min=1, max=128))],
+                probatio.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
             ),
-            vol.Optional("cleaning_mode", default=CleaningMode.VACUUM.value): vol.In(
-                [mode.value for mode in CleaningMode]
-            ),
+            probatio.Optional(
+                "cleaning_mode", default=CleaningMode.VACUUM.value
+            ): probatio.In([mode.value for mode in CleaningMode]),
         }
     )
 
@@ -1276,10 +1301,14 @@ class MaticResetScheduleTool(_MaticTool):
     parameters = llm.Tool.parameters.extend(
         {
             **_ROBOT_FIELD,
-            vol.Optional("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
-            vol.Optional("room"): vol.All(cv.string, vol.Length(min=1, max=128)),
-            vol.Required("schedule"): vol.In(("mop", "coverage")),
-            vol.Optional("scope", default="room"): vol.In(("room", "plan")),
+            probatio.Optional("plan"): probatio.All(
+                cv.string, probatio.Length(min=1, max=128)
+            ),
+            probatio.Optional("room"): probatio.All(
+                cv.string, probatio.Length(min=1, max=128)
+            ),
+            probatio.Required("schedule"): probatio.In(("mop", "coverage")),
+            probatio.Optional("scope", default="room"): probatio.In(("room", "plan")),
         }
     )
 
@@ -1459,7 +1488,6 @@ async def _async_service_refusal(
             "exceptions",
             err.translation_key,
             err.translation_placeholders,
-            fallback=str(err),
         )
     return await _async_refusal(hass, llm_context, "exceptions", "robot_command_failed")
 
@@ -1470,14 +1498,8 @@ async def _async_refusal(
     category: str,
     key: str,
     placeholders: Mapping[str, str] | None = None,
-    *,
-    fallback: str = "",
 ) -> llm.ToolResult:
-    """Return the strip's or action's reason in the conversation's language.
-
-    An action error without a translation, or with a missing placeholder,
-    falls back to its own message, which the integration wrote.
-    """
+    """Return the strip's or action's reason in the conversation's language."""
     language = llm_context.language
     if language is None or language == "*":
         language = hass.config.language
@@ -1485,11 +1507,8 @@ async def _async_refusal(
         hass, language, category, [DOMAIN]
     )
     suffix = ".message" if category == "exceptions" else ""
-    template = translations.get(f"component.{DOMAIN}.{category}.{key}{suffix}")
-    try:
-        reason = template.format(**(placeholders or {})) if template else fallback
-    except KeyError:
-        reason = fallback
+    template = translations[f"component.{DOMAIN}.{category}.{key}{suffix}"]
+    reason = template.format(**(placeholders or {}))
     return llm.ToolResult(data={"done": False, "reason": reason}, error=True)
 
 

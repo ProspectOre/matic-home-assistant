@@ -7,8 +7,8 @@ from ipaddress import ip_address
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import probatio
 import pytest
-import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
@@ -1251,7 +1251,7 @@ def _form_defaults(result) -> dict[str, object]:
     return {
         str(marker.schema): marker.default()
         for marker in result["data_schema"].schema
-        if marker.default is not vol.UNDEFINED
+        if marker.default is not probatio.UNDEFINED
     }
 
 

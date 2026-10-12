@@ -11,8 +11,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import probatio
 import pytest
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import Context, Event, State
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -852,7 +852,7 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
             hass, llm.ToolInput(tool.name, {"plan": "Shared name"}), _context()
         )
 
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         await tool.async_call(hass, llm.ToolInput(tool.name, {"plan": ""}), _context())
 
 
@@ -1025,7 +1025,7 @@ async def test_native_history_is_bounded_sanitized_and_failure_safe() -> None:
     )
     with pytest.raises(HomeAssistantError, match="cleaning history is unavailable"):
         await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         await tool.async_call(
             hass, llm.ToolInput(tool.name, {"limit": MAX_RECENT_EVENTS}), _context()
         )
@@ -1140,7 +1140,7 @@ async def test_native_history_scopes_completion_to_the_requested_mode() -> None:
         ] == durations
         assert "Do not infer the requested mode" in result["completion_authority"]
         assert "not why cleaning ended" in result["completion_authority"]
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         await tool.async_call(
             hass, llm.ToolInput(tool.name, {"cleaning_mode": "unknown"}), _context()
         )
@@ -1204,7 +1204,7 @@ async def test_activity_journal_pagination_filtering_and_restart_guards() -> Non
         {"observation_session": "bad"},
         {"before_sequence": 0},
     ):
-        with pytest.raises(vol.Invalid):
+        with pytest.raises(probatio.Invalid):
             await read(**invalid)
     entry.runtime_data.client.async_get_cleaning_session_records.assert_not_called()
 
@@ -1563,16 +1563,16 @@ async def test_run_plan_reports_quick_outcomes_and_refusals() -> None:
     )
 
 
-async def test_action_errors_without_translation_relay_their_own_message() -> None:
+async def test_action_errors_relay_their_translated_reason() -> None:
     hass, _registry, patches = _control_hass()
     hass.services.async_call.side_effect = ServiceValidationError(
         "The saved-plan preview is stale; refresh it before starting",
         translation_domain=DOMAIN,
-        translation_key="invalid_plan",
+        translation_key="plan_preview_changed",
     )
     result = await _run(hass, patches, MaticRunPlanTool(), {})
     assert result.data["reason"] == (
-        "The saved-plan preview is stale; refresh it before starting"
+        "The plan changed after you previewed it. Preview it again, then run the plan."
     )
     hass, _registry, patches = _control_hass()
     hass.services.async_call.side_effect = ServiceValidationError(
@@ -1583,8 +1583,9 @@ async def test_action_errors_without_translation_relay_their_own_message() -> No
     result = await _run(
         hass, patches, MaticResetScheduleTool(), {"schedule": "mop", "scope": "plan"}
     )
-    assert (
-        result.data["reason"] == "room cadence cannot reset while its plan is running"
+    assert result.data["reason"] == (
+        "This room schedule progress is in use by a running plan. Wait for the run "
+        "to finish, then try again."
     )
 
 

@@ -22,8 +22,7 @@
     "grpclib==0.4.9",
     "h2>=4",
     "numpy>=2.3.2",
-    "protobuf>=6",
-    "voluptuous>=0.15"
+    "protobuf>=6"
   ],
   "version": "0.5.0rc22",
   "zeroconf": [

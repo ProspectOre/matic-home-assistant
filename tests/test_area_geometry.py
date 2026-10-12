@@ -1,7 +1,7 @@
 """Validation tests for bounded private-area geometry."""
 
+import probatio
 import pytest
-import voluptuous as vol
 
 from custom_components.matic_robot.area_geometry import (
     AreaGeometry,
@@ -43,7 +43,7 @@ def test_area_geometry_preserves_private_geometry() -> None:
     ],
 )
 def test_area_geometry_rejects_malformed_room_context(rooms) -> None:
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         AreaGeometry(rooms)
 
 
@@ -59,7 +59,7 @@ def test_area_geometry_rejects_malformed_room_context(rooms) -> None:
     ],
 )
 def test_area_geometry_rejects_invalid_geometry(value) -> None:
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         _geometry().validate(value)
 
 
@@ -447,7 +447,7 @@ def test_area_geometry_rejects_geometry_budget_exhaustion() -> None:
     room_geometry = RoomGeometryIndex(area_geometry.rooms)
     room_geometry._query_work_remaining = 0
 
-    with pytest.raises(vol.Invalid, match="query budget exhausted"):
+    with pytest.raises(probatio.Invalid, match="query budget exhausted"):
         area_geometry.validate(
             [{"x": 128.5, "y": 0.0, "radius": 0.3}], geometry=room_geometry
         )

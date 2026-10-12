@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-import voluptuous as vol
+import probatio
 from homeassistant import config_entries
 from homeassistant.helpers import selector
 
@@ -137,16 +137,16 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
 
     def _plan_selection_schema(
         self, plans: dict[str, Any], selected: Any
-    ) -> vol.Schema:
+    ) -> probatio.Schema:
         """Build a current plan chooser after re-reading manager state."""
         default = (
             selected
             if isinstance(selected, str) and selected in plans
             else next(iter(plans))
         )
-        return vol.Schema(
+        return probatio.Schema(
             {
-                vol.Required("plan", default=default): selector.SelectSelector(
+                probatio.Required("plan", default=default): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
                             selector.SelectOptionDict(
@@ -262,9 +262,9 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="workspace_transport",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_LIVE_WORKSPACE_TRANSPORT,
                         default=(
                             self.config_entry.options.get(CONF_LIVE_WORKSPACE_TRANSPORT)

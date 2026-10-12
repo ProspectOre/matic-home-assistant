@@ -79,7 +79,7 @@ IMPORT_ROOT_TO_DISTRIBUTION = {
     "grpclib": "grpclib",
     "h2": "h2",
     "numpy": "numpy",
-    "voluptuous": "voluptuous",
+    "probatio": "probatio",
     "zeroconf": "zeroconf",
 }
 

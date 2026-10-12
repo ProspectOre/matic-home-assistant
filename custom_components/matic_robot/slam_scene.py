@@ -13,7 +13,7 @@ from http import HTTPStatus
 from time import monotonic
 from typing import TYPE_CHECKING, cast
 
-import voluptuous as vol
+import probatio
 from aiohttp import web
 from google.protobuf.message import DecodeError
 from homeassistant.components.http.decorators import require_admin
@@ -1144,7 +1144,7 @@ class MaticAreasView(HomeAssistantView):
             cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
             coverage_setting = CoverageSetting(str(body["coverage_setting"]))
             binding = binding_for_area(floor_plan, circles)
-        except KeyError, TypeError, ValueError, vol.Invalid:
+        except KeyError, TypeError, ValueError, probatio.Invalid:
             return web.Response(
                 status=HTTPStatus.BAD_REQUEST, headers=PRIVATE_NO_STORE_HEADERS
             )

@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 from uuid import uuid4
 
-import voluptuous as vol
+import probatio
 from homeassistant.components import websocket_api
 from homeassistant.components.websocket_api.connection import ActiveConnection
 from homeassistant.components.websocket_api.decorators import websocket_command
@@ -802,9 +802,9 @@ def _require_admin(connection: ActiveConnection) -> None:
 
 @websocket_command(
     {
-        vol.Required("type"): COMMAND_SNAPSHOT,
-        vol.Required("version"): vol.In([PROTOCOL_VERSION]),
-        vol.Required("entry_id"): str,
+        probatio.Required("type"): COMMAND_SNAPSHOT,
+        probatio.Required("version"): probatio.In([PROTOCOL_VERSION]),
+        probatio.Required("entry_id"): str,
     }
 )
 @callback
@@ -821,9 +821,9 @@ def websocket_snapshot(
 
 @websocket_command(
     {
-        vol.Required("type"): COMMAND_SUBSCRIBE,
-        vol.Required("version"): vol.In([PROTOCOL_VERSION]),
-        vol.Required("entry_id"): str,
+        probatio.Required("type"): COMMAND_SUBSCRIBE,
+        probatio.Required("version"): probatio.In([PROTOCOL_VERSION]),
+        probatio.Required("entry_id"): str,
     }
 )
 @callback

@@ -10,7 +10,7 @@ from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any
 
-import voluptuous as vol
+import probatio
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
@@ -1914,7 +1914,7 @@ def _validate_area_circles(
             center_tolerance=center_tolerance,
             geometry=room_geometry,
         )
-    except vol.Invalid as err:
+    except probatio.Invalid as err:
         raise ValueError("area circles are invalid for the mapped floor") from err
 
 

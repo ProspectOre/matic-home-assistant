@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from ipaddress import ip_address
 from typing import Any
 
-import voluptuous as vol
+import probatio
 from homeassistant import config_entries
 from homeassistant.components.zeroconf import async_get_async_instance
 from homeassistant.const import CONF_HOST, CONF_PORT
@@ -55,6 +55,7 @@ from .const import (
     DOMAIN,
     SERVICE_TYPE,
 )
+from .entity import hostname_suffix
 from .options_flow import MaticRobotOptionsFlow
 
 PAIRING_RETRY_SECONDS = 2
@@ -93,8 +94,7 @@ class DifferentRobotError(MaticError):
 
 def fallback_robot_name(hostname: str) -> str:
     """Name an unnamed robot the same way in every dialog and on its device."""
-    suffix = hostname.rstrip(".").removesuffix(".local")[-4:]
-    return f"Matic (Unofficial) {suffix}"
+    return f"Matic (Unofficial) {hostname_suffix(hostname)}"
 
 
 def _robot_label(discovery_info: ZeroconfServiceInfo) -> str:
@@ -422,10 +422,10 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Ask for the six-digit code displayed by the active Matic bond."""
         return self.async_show_form(
             step_id="pairing_code",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
                     # A text field keeps leading zeros; TEL opens a keypad.
-                    vol.Required(CONF_PASSKEY): selector.TextSelector(
+                    probatio.Required(CONF_PASSKEY): selector.TextSelector(
                         selector.TextSelectorConfig(
                             type=selector.TextSelectorType.TEL,
                             autocomplete="one-time-code",
@@ -518,9 +518,9 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return await self.async_step_zeroconf(discovery)
         return self.async_show_form(
             step_id="select_robot",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required("robot"): selector.SelectSelector(
+                    probatio.Required("robot"): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=[
                                 selector.SelectOptionDict(
@@ -569,10 +569,10 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 }
                 return self._show_pairing_form("pair")
 
-        schema = vol.Schema(
+        schema = probatio.Schema(
             {
-                vol.Required(CONF_HOST): str,
-                vol.Optional(CONF_PORT, default=DEFAULT_PORT): int,
+                probatio.Required(CONF_HOST): str,
+                probatio.Optional(CONF_PORT, default=DEFAULT_PORT): int,
             }
         )
         return self.async_show_form(step_id="manual", data_schema=schema, errors=errors)
@@ -674,9 +674,9 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Offer only candidates that rejected a write on a reused bond."""
         return self.async_show_form(
             step_id="reset_bond",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required("bluetooth_device"): vol.In(
+                    probatio.Required("bluetooth_device"): probatio.In(
                         self._bond_recovery_candidates
                     )
                 }
@@ -940,13 +940,13 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="update_address",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(
+                    probatio.Required(
                         CONF_HOST,
                         default=(user_input or entry.data)[CONF_HOST],
                     ): str,
-                    vol.Required(
+                    probatio.Required(
                         CONF_PORT,
                         default=(user_input or entry.data)[CONF_PORT],
                     ): int,
@@ -973,13 +973,13 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         address_suspect = (errors or {}).get("base") in _RECOVERY_ADDRESS_ERRORS
         return self.async_show_form(
             step_id="recover_identity",
-            data_schema=vol.Schema(
+            data_schema=probatio.Schema(
                 {
-                    vol.Required(CONF_ROBOT_ADDRESS): section(
-                        vol.Schema(
+                    probatio.Required(CONF_ROBOT_ADDRESS): section(
+                        probatio.Schema(
                             {
-                                vol.Required(CONF_HOST, default=host): str,
-                                vol.Required(CONF_PORT, default=port): int,
+                                probatio.Required(CONF_HOST, default=host): str,
+                                probatio.Required(CONF_PORT, default=port): int,
                             }
                         ),
                         {"collapsed": not address_suspect},

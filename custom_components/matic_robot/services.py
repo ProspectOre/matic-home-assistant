@@ -10,7 +10,7 @@ from collections.abc import (
 from functools import partial, wraps
 from typing import Any
 
-import voluptuous as vol
+import probatio
 from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -113,22 +113,28 @@ TARGET_KEYS = (
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Optional("rooms"): vol.All(
-            cv.ensure_list, [cv.string], vol.Length(max=MAX_ROOM_SEQUENCE_SIZE)
+        probatio.Optional("rooms"): probatio.All(
+            cv.ensure_list, [cv.string], probatio.Length(max=MAX_ROOM_SEQUENCE_SIZE)
         ),
-        vol.Optional("cleaning_mode"): vol.In([value.value for value in CleaningMode]),
-        vol.Optional("coverage_setting"): vol.In(
+        probatio.Optional("cleaning_mode"): probatio.In(
+            [value.value for value in CleaningMode]
+        ),
+        probatio.Optional("coverage_setting"): probatio.In(
             [value.value for value in CoverageSetting]
         ),
-        vol.Optional("ordered", default=False): cv.boolean,
+        probatio.Optional("ordered", default=False): cv.boolean,
     }
 )
 
 CLEAN_AREA_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Required("area"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Optional("cleaning_mode"): vol.In([value.value for value in CleaningMode]),
-        vol.Optional("coverage_setting"): vol.In(
+        probatio.Required("area"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Optional("cleaning_mode"): probatio.In(
+            [value.value for value in CleaningMode]
+        ),
+        probatio.Optional("coverage_setting"): probatio.In(
             [value.value for value in CoverageSetting]
         ),
     }
@@ -136,82 +142,88 @@ CLEAN_AREA_SERVICE_SCHEMA = cv.make_entity_service_schema(
 
 
 def _cadence_interval_validator(field: str) -> Callable[[object], int | None]:
-    """Adapt the shared cadence validator to voluptuous errors."""
+    """Adapt the shared cadence validator to probatio errors."""
 
     def validate(value: object) -> int | None:
         try:
             return validate_cadence_interval(value, field)
         except ValueError as err:
-            raise vol.Invalid(
+            raise probatio.Invalid(
                 f"Use a whole number from 1 to {MAX_CADENCE_INTERVAL}"
             ) from err
 
     return validate
 
 
-ROOM_CADENCE_SCHEMA = vol.Schema(
+ROOM_CADENCE_SCHEMA = probatio.Schema(
     {
-        vol.Optional("scope", default="plan"): vol.In(("plan", "shared")),
-        vol.Optional("mop_every_n"): vol.Any(
+        probatio.Optional("scope", default="plan"): probatio.In(("plan", "shared")),
+        probatio.Optional("mop_every_n"): probatio.Any(
             None,
             _cadence_interval_validator("mop_every_n"),
         ),
-        vol.Optional("coverage_every_n"): vol.Any(
+        probatio.Optional("coverage_every_n"): probatio.Any(
             None,
             _cadence_interval_validator("coverage_every_n"),
         ),
-        vol.Optional("periodic_coverage_setting"): vol.Any(
-            None, vol.In([value.value for value in CoverageSetting])
+        probatio.Optional("periodic_coverage_setting"): probatio.Any(
+            None, probatio.In([value.value for value in CoverageSetting])
         ),
-        vol.Optional("do_mop_next", default=False): cv.boolean,
-        vol.Optional("do_coverage_next", default=False): cv.boolean,
+        probatio.Optional("do_mop_next", default=False): cv.boolean,
+        probatio.Optional("do_coverage_next", default=False): cv.boolean,
     }
 )
 
 _ROOM_FIELDS = {
-    vol.Required("room"): cv.string,
-    vol.Optional("cleaning_mode", default=CleaningMode.BOTH.value): vol.In(
+    probatio.Required("room"): cv.string,
+    probatio.Optional("cleaning_mode", default=CleaningMode.BOTH.value): probatio.In(
         [value.value for value in CleaningMode]
     ),
-    vol.Optional("coverage_setting", default=CoverageSetting.OPTIMAL.value): vol.In(
-        [value.value for value in CoverageSetting]
-    ),
+    probatio.Optional(
+        "coverage_setting", default=CoverageSetting.OPTIMAL.value
+    ): probatio.In([value.value for value in CoverageSetting]),
 }
-SAVED_ROOM_SCHEMA = vol.Schema(_ROOM_FIELDS)
-SAVED_PLAN_ROOM_SCHEMA = vol.Schema(
-    {**_ROOM_FIELDS, vol.Optional("cadence"): ROOM_CADENCE_SCHEMA}
+SAVED_ROOM_SCHEMA = probatio.Schema(_ROOM_FIELDS)
+SAVED_PLAN_ROOM_SCHEMA = probatio.Schema(
+    {**_ROOM_FIELDS, probatio.Optional("cadence"): ROOM_CADENCE_SCHEMA}
 )
 
 SAVED_PLAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
-    {vol.Optional("plan"): vol.All(cv.string, vol.Length(min=1, max=128))}
+    {
+        probatio.Optional("plan"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        )
+    }
 )
 
 RUN_SELECTED_PLAN_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Optional("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Optional("preview_token"): vol.All(
+        probatio.Optional("plan"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Optional("preview_token"): probatio.All(
             cv.string,
-            vol.Match(r"^[0-9a-f]{64}$"),
+            probatio.Match(r"^[0-9a-f]{64}$"),
         ),
     }
 )
 
 _ROOM_SEQUENCE_FIELDS = {
-    vol.Required("rooms"): vol.All(
+    probatio.Required("rooms"): probatio.All(
         cv.ensure_list,
         [SAVED_ROOM_SCHEMA],
-        vol.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
+        probatio.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
     ),
-    vol.Optional("return_to_base", default=True): cv.boolean,
-    vol.Optional("use_room_schedule", default=False): cv.boolean,
-    vol.Optional("override_room_schedule", default=False): cv.boolean,
+    probatio.Optional("return_to_base", default=True): cv.boolean,
+    probatio.Optional("use_room_schedule", default=False): cv.boolean,
+    probatio.Optional("override_room_schedule", default=False): cv.boolean,
 }
 CLEAN_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(
     {
         **_ROOM_SEQUENCE_FIELDS,
-        vol.Optional("preview_token"): vol.All(
+        probatio.Optional("preview_token"): probatio.All(
             cv.string,
-            vol.Match(r"^[0-9a-f]{64}$"),
+            probatio.Match(r"^[0-9a-f]{64}$"),
         ),
     }
 )
@@ -219,26 +231,34 @@ PREVIEW_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(_ROOM_SEQUENCE_FIEL
 
 PLAN_TARGET_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Optional("include_unmanaged", default=False): cv.boolean,
-        vol.Optional("expected_run_id"): vol.All(cv.string, vol.Length(min=1, max=128)),
+        probatio.Optional("include_unmanaged", default=False): cv.boolean,
+        probatio.Optional("expected_run_id"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
     }
 )
 
 RESET_PLAN_HISTORY_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Optional("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Optional("all_plans", default=False): cv.boolean,
+        probatio.Optional("plan"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Optional("all_plans", default=False): cv.boolean,
     }
 )
 
 RESET_ROOM_CADENCE_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Required("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Optional("room_id"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Optional("modes"): vol.All(
+        probatio.Required("plan"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Optional("room_id"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Optional("modes"): probatio.All(
             cv.ensure_list,
-            [vol.In(("mop", "coverage"))],
-            vol.Length(min=1, max=2),
+            [probatio.In(("mop", "coverage"))],
+            probatio.Length(min=1, max=2),
         ),
     }
 )
@@ -247,65 +267,79 @@ LIST_PLANS_SCHEMA = cv.make_entity_service_schema({})
 
 SAVE_PLAN_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Optional("plan_id"): vol.All(cv.string, vol.Length(min=1, max=64)),
-        vol.Required("name"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Optional("enabled", default=True): cv.boolean,
-        vol.Optional("run_behavior", default="intelligent"): vol.In(
+        probatio.Optional("plan_id"): probatio.All(
+            cv.string, probatio.Length(min=1, max=64)
+        ),
+        probatio.Required("name"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Optional("enabled", default=True): cv.boolean,
+        probatio.Optional("run_behavior", default="intelligent"): probatio.In(
             ("intelligent", "ordered")
         ),
-        vol.Required("rooms"): vol.All(
+        probatio.Required("rooms"): probatio.All(
             cv.ensure_list,
             [SAVED_PLAN_ROOM_SCHEMA],
-            vol.Length(min=1, max=MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE),
+            probatio.Length(min=1, max=MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE),
         ),
-        vol.Optional("return_to_base", default=True): cv.boolean,
-        vol.Optional("finish_current_room", default=False): cv.boolean,
-        vol.Optional("finish_current_room_threshold", default=50): vol.All(
-            vol.Coerce(int), vol.Range(min=0, max=100)
+        probatio.Optional("return_to_base", default=True): cv.boolean,
+        probatio.Optional("finish_current_room", default=False): cv.boolean,
+        probatio.Optional("finish_current_room_threshold", default=50): probatio.All(
+            probatio.Coerce(int), probatio.Range(min=0, max=100)
         ),
-        vol.Optional("start_timeout", default=120): vol.All(
-            vol.Coerce(int), vol.Range(min=10, max=600)
+        probatio.Optional("start_timeout", default=120): probatio.All(
+            probatio.Coerce(int), probatio.Range(min=10, max=600)
         ),
-        vol.Optional("completion_timeout", default=21600): vol.All(
-            vol.Coerce(int), vol.Range(min=60, max=43200)
+        probatio.Optional("completion_timeout", default=21600): probatio.All(
+            probatio.Coerce(int), probatio.Range(min=60, max=43200)
         ),
-        vol.Optional("select", default=True): cv.boolean,
+        probatio.Optional("select", default=True): cv.boolean,
     }
 )
 
 PLAN_REFERENCE_SCHEMA = cv.make_entity_service_schema(
-    {vol.Required("plan"): vol.All(cv.string, vol.Length(min=1, max=128))}
+    {
+        probatio.Required("plan"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        )
+    }
 )
 
 SAVE_PLAN_ROOM_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Required("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Required("room"): SAVED_PLAN_ROOM_SCHEMA,
+        probatio.Required("plan"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Required("room"): SAVED_PLAN_ROOM_SCHEMA,
     }
 )
 
 DELETE_PLAN_ROOM_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Required("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Required("room"): cv.string,
+        probatio.Required("plan"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Required("room"): cv.string,
     }
 )
 
 MOVE_PLAN_ROOM_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Required("plan"): vol.All(cv.string, vol.Length(min=1, max=128)),
-        vol.Required("room"): cv.string,
-        vol.Required("new_position"): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=100)
+        probatio.Required("plan"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Required("room"): cv.string,
+        probatio.Required("new_position"): probatio.All(
+            probatio.Coerce(int), probatio.Range(min=1, max=100)
         ),
     }
 )
 
 INSPECT_ENDPOINT_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Required("endpoint"): vol.In(HERMES_ENDPOINT_NAMES),
-        vol.Optional("limit", default=32): vol.All(
-            vol.Coerce(int), vol.Range(min=1, max=256)
+        probatio.Required("endpoint"): probatio.In(HERMES_ENDPOINT_NAMES),
+        probatio.Optional("limit", default=32): probatio.All(
+            probatio.Coerce(int), probatio.Range(min=1, max=256)
         ),
     }
 )
@@ -435,7 +469,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
         "firmware_investigator",
         _require_matic_admin(hass, async_firmware_investigator),
         schema=cv.make_entity_service_schema(
-            {vol.Required("provider"): vol.All(cv.string, vol.Length(min=1, max=48))}
+            {
+                probatio.Required("provider"): probatio.All(
+                    cv.string, probatio.Length(min=1, max=48)
+                )
+            }
         ),
     )
     hass.services.async_register(
@@ -446,11 +484,15 @@ async def async_register_services(hass: HomeAssistant) -> None:
         ),
         schema=cv.make_entity_service_schema(
             {
-                vol.Required("report_id"): vol.All(
-                    cv.string, vol.Length(min=24, max=24)
+                probatio.Required("report_id"): probatio.All(
+                    cv.string, probatio.Length(min=24, max=24)
                 ),
-                vol.Required("revision"): vol.All(vol.Coerce(int), vol.Range(min=1)),
-                vol.Required("action"): vol.In(("acknowledge", "delivered", "recheck")),
+                probatio.Required("revision"): probatio.All(
+                    probatio.Coerce(int), probatio.Range(min=1)
+                ),
+                probatio.Required("action"): probatio.In(
+                    ("acknowledge", "delivered", "recheck")
+                ),
             }
         ),
     )

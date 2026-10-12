@@ -6,23 +6,25 @@ import hashlib
 import math
 from typing import Any
 
-import voluptuous as vol
+import probatio
 
 
 class GeometryTooComplex(ValueError):
     """The bounded fallback budget cannot prove containment."""
 
 
-_POINT_SCHEMA = vol.ExactSequence((vol.Coerce(float), vol.Coerce(float)))
-_ROOM_SCHEMA = vol.Schema(
+_POINT_SCHEMA = probatio.ExactSequence((probatio.Coerce(float), probatio.Coerce(float)))
+_ROOM_SCHEMA = probatio.Schema(
     {
-        vol.Required("room_id"): str,
-        vol.Required("name"): str,
-        vol.Required("boundary"): vol.All([_POINT_SCHEMA], vol.Length(min=3)),
+        probatio.Required("room_id"): str,
+        probatio.Required("name"): str,
+        probatio.Required("boundary"): probatio.All(
+            [_POINT_SCHEMA], probatio.Length(min=3)
+        ),
     }
 )
-_ROOMS_SCHEMA = vol.Schema(
-    {vol.Required("rooms"): [_ROOM_SCHEMA]}, extra=vol.PREVENT_EXTRA
+_ROOMS_SCHEMA = probatio.Schema(
+    {probatio.Required("rooms"): [_ROOM_SCHEMA]}, extra=probatio.PREVENT_EXTRA
 )
 
 
@@ -427,18 +429,18 @@ class AreaGeometry:
     ) -> list[dict[str, float]]:
         """Validate circles with an optional saved-center boundary tolerance."""
         if not isinstance(data, list):
-            raise vol.Invalid("Expected a list of drawn circles")
+            raise probatio.Invalid("Expected a list of drawn circles")
         if not 1 <= len(data) <= 512:
-            raise vol.Invalid("Draw between 1 and 512 area circles")
-        schema = vol.Schema(
+            raise probatio.Invalid("Draw between 1 and 512 area circles")
+        schema = probatio.Schema(
             {
-                vol.Required("x"): vol.Coerce(float),
-                vol.Required("y"): vol.Coerce(float),
-                vol.Required("radius"): vol.All(
-                    vol.Coerce(float), vol.Range(min=0.05, max=2.5)
+                probatio.Required("x"): probatio.Coerce(float),
+                probatio.Required("y"): probatio.Coerce(float),
+                probatio.Required("radius"): probatio.All(
+                    probatio.Coerce(float), probatio.Range(min=0.05, max=2.5)
                 ),
             },
-            extra=vol.PREVENT_EXTRA,
+            extra=probatio.PREVENT_EXTRA,
         )
         circles: list[dict[str, float]] = []
         rooms = self.rooms
@@ -446,14 +448,16 @@ class AreaGeometry:
         for item in data:
             circle = dict(schema(item))
             if not all(math.isfinite(value) for value in circle.values()):
-                raise vol.Invalid("Area circle values must be finite")
+                raise probatio.Invalid("Area circle values must be finite")
             try:
                 contained = geometry.contains(
                     circle["x"], circle["y"], center_tolerance
                 )
             except GeometryTooComplex as err:
-                raise vol.Invalid(str(err)) from err
+                raise probatio.Invalid(str(err)) from err
             if not contained:
-                raise vol.Invalid("Area circle centers must be inside a mapped room")
+                raise probatio.Invalid(
+                    "Area circle centers must be inside a mapped room"
+                )
             circles.append(circle)
         return circles

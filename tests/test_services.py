@@ -8,8 +8,8 @@ from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import probatio
 import pytest
-import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import Context, ServiceCall
 from homeassistant.exceptions import (
@@ -135,7 +135,7 @@ def test_room_service_schemas_share_the_bounded_sequence_size() -> None:
         ),
     ):
         assert len(schema(payload)["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
-        with pytest.raises(vol.Invalid):
+        with pytest.raises(probatio.Invalid):
             schema({**payload, "rooms": rooms[: MAX_ROOM_SEQUENCE_SIZE + 1]})
 
     save_payload = {
@@ -146,7 +146,7 @@ def test_room_service_schemas_share_the_bounded_sequence_size() -> None:
     assert len(SAVE_PLAN_SCHEMA(save_payload)["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
     assert len(SAVE_PLAN_SCHEMA({**save_payload, "rooms": rooms[:101]})["rooms"]) == 101
     assert len(SAVE_PLAN_SCHEMA({**save_payload, "rooms": rooms[:256]})["rooms"]) == 256
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         SAVE_PLAN_SCHEMA({**save_payload, "rooms": rooms})
 
     clean_payload = {**entity, "rooms": [room["room"] for room in rooms]}
@@ -161,7 +161,7 @@ def test_room_service_schemas_share_the_bounded_sequence_size() -> None:
         )
         == MAX_ROOM_SEQUENCE_SIZE
     )
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         CLEAN_SERVICE_SCHEMA(clean_payload)
 
 
@@ -3534,7 +3534,7 @@ def test_service_cadence_schema_rejects_non_integer_or_out_of_range_intervals(
     payload = {"scope": "shared", field: value}
     original = deepcopy(payload)
 
-    with pytest.raises(vol.Invalid):
+    with pytest.raises(probatio.Invalid):
         ROOM_CADENCE_SCHEMA(payload)
 
     assert payload == original
