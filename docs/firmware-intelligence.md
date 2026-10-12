@@ -22,7 +22,7 @@ the investigator preserves the observations and previous research.
   successful read resolves that endpoint. Transport failure alone does not prove
   a firmware defect. Recovery is recorded and can notify after an earlier alert.
 
-The **Firmware compatibility** sensor exposes the current bounded report:
+The **Firmware check status** sensor exposes the current bounded report:
 versions, baseline availability, scan freshness, activity contexts, endpoint
 failures, field paths, research, delivery status and investigator ownership.
 Eight superseded reports and four prior investigation receipts are retained.
@@ -31,7 +31,7 @@ Raw robot payloads, maps, audio and credentials are excluded from the inbox.
 ## Notifications
 
 Import [Firmware intelligence](../blueprints/automation/matic_robot/firmware_intelligence.yaml),
-then select the robot, its Firmware compatibility sensor and your Companion app
+then select the robot, its Firmware check status sensor and your Companion app
 notification action. Replace an older firmware alert automation to avoid two
 independent notification senders. Use a unique notification identifier per HA server.
 

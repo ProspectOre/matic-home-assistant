@@ -8,17 +8,14 @@
       "low_charge": { "default": "mdi:battery-alert" },
       "fully_charged": { "default": "mdi:battery-check" },
       "problem": { "default": "mdi:alert-circle-outline" },
-      "update_available": { "default": "mdi:update" },
       "matter_pairing_mode": { "default": "mdi:access-point" },
       "ssh_tunnel_permission": { "default": "mdi:console-network" },
       "diagnostic_upload": { "default": "mdi:cloud-upload" },
-      "following_person": { "default": "mdi:account-arrow-right" },
-      "bag_full": { "default": "mdi:trash-can-alert" },
-      "bag_missing": { "default": "mdi:trash-can-outline" }
+      "following_person": { "default": "mdi:account-arrow-right" }
     },
     "button": {
       "run_selected_plan": { "default": "mdi:play-circle-outline" },
-      "intelligent_clean": { "default": "mdi:brain" },
+      "intelligent_clean": { "default": "mdi:sort-clock-ascending-outline" },
       "clean_entire_plan": { "default": "mdi:home-floor-0" },
       "stop_intelligent_cleaning": { "default": "mdi:home-import-outline" },
       "clean_selected_area": { "default": "mdi:vector-square" }
@@ -51,11 +48,9 @@
       },
       "battery": { "default": "mdi:battery" },
       "cleaning_history": { "default": "mdi:history" },
-      "hardware_revision": { "default": "mdi:chip" },
       "rooms": { "default": "mdi:floor-plan" },
       "active_cleaning_plan": { "default": "mdi:progress-clock" },
       "next_cleaning_room": { "default": "mdi:playlist-play" },
-      "software_version": { "default": "mdi:package-up" },
       "protocol_version": { "default": "mdi:code-tags" },
       "current_area": { "default": "mdi:map-marker" },
       "update_channel": { "default": "mdi:source-branch" },

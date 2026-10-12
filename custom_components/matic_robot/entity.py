@@ -11,6 +11,11 @@ from .const import DOMAIN
 from .coordinator import MaticCoordinator
 
 
+def hostname_suffix(hostname: str) -> str:
+    """Return the last four characters of a robot's bare host name."""
+    return hostname.rstrip(".").removesuffix(".local")[-4:]
+
+
 class MaticEntity(CoordinatorEntity[MaticCoordinator]):
     """Base Matic Hermes entity."""
 
@@ -21,17 +26,23 @@ class MaticEntity(CoordinatorEntity[MaticCoordinator]):
         self._config_entry = entry
         state = self.coordinator.data
         info = state.info
-        self._attr_device_info = DeviceInfo(
+        device_info = DeviceInfo(
             identifiers={(DOMAIN, info.serial_number)},
             manufacturer="Matic",
-            model="Matic",
-            name=info.name or "Matic",
+            model="Robot",
             hw_version=str(info.hardware_revision),
             sw_version=(
                 state.telemetry.software_version or state.operational.software_version
             ),
         )
-        self._matic_device_name = info.name or "Matic"
+        if info.name:
+            device_info["name"] = info.name
+        else:
+            device_info["translation_key"] = "robot"
+            device_info["translation_placeholders"] = {
+                "suffix": hostname_suffix(info.hostname)
+            }
+        self._attr_device_info = device_info
         self._matic_serial = info.serial_number
 
     @property

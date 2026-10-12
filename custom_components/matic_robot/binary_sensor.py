@@ -38,6 +38,7 @@ DESCRIPTIONS = (
     MaticBinarySensorDescription(
         key="paused",
         translation_key="paused",
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.operational.paused,
     ),
     MaticBinarySensorDescription(
@@ -50,6 +51,7 @@ DESCRIPTIONS = (
         key="returning",
         translation_key="returning",
         device_class=BinarySensorDeviceClass.RUNNING,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.operational.returning,
     ),
     MaticBinarySensorDescription(
@@ -61,6 +63,7 @@ DESCRIPTIONS = (
     MaticBinarySensorDescription(
         key="fully_charged",
         translation_key="fully_charged",
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.operational.is_fully_charged,
     ),
     MaticBinarySensorDescription(
@@ -70,27 +73,11 @@ DESCRIPTIONS = (
         value_fn=lambda state: bool(state.operational.error_codes),
     ),
     MaticBinarySensorDescription(
-        key="update_available",
-        translation_key="update_available",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda state: (
-            None
-            if state.telemetry.update_state is None
-            else state.telemetry.update_state == "available"
-        ),
-    ),
-    MaticBinarySensorDescription(
         key="matter_pairing_mode",
         translation_key="matter_pairing_mode",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.matter_pairing_enabled,
-    ),
-    MaticBinarySensorDescription(
-        key="active_cleaning_session",
-        translation_key="active_cleaning_session",
-        device_class=BinarySensorDeviceClass.RUNNING,
-        value_fn=lambda state: state.telemetry.active_cleaning_session,
     ),
     MaticBinarySensorDescription(
         key="ssh_tunnel_permission",

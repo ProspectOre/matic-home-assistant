@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import UUID
@@ -60,6 +62,8 @@ from custom_components.matic_robot.slam_map_store import (
 )
 from tests.frontend_sources import common_strings
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
+
+INTEGRATION = Path(__file__).parents[1] / "custom_components" / DOMAIN
 
 
 def _state(
@@ -339,22 +343,27 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 55 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 51 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
-        "binary_sensor": 13,
+        "binary_sensor": 11,
         "button": 5,
         "camera": 2,
         "event": 1,
         "number": 1,
         "select": 4,
-        "sensor": 27,
+        "sensor": 25,
         "switch": 4,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 59
-    assert len({entity.unique_id for entity in entities}) == 59
-    assert all(entity.device_info["manufacturer"] == "Matic" for entity in entities)
+    assert len(entities) == 55
+    assert len({entity.unique_id for entity in entities}) == 55
+    assert all(
+        entity.device_info["manufacturer"] == "Matic"
+        and entity.device_info["model"] == "Robot"
+        and "model_id" not in entity.device_info
+        for entity in entities
+    )
 
 
 async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
@@ -1001,6 +1010,7 @@ async def test_update_entity_mirrors_robot_managed_ota_state(hass) -> None:
     assert entity.installed_version == "v178.8"
     assert entity.latest_version == entity.installed_version
     assert entity.state == STATE_OFF
+    assert entity.release_summary is None
     assert entity.extra_state_attributes == {
         "update_state": "idle",
         "update_channel": "stable",
@@ -1008,6 +1018,7 @@ async def test_update_entity_mirrors_robot_managed_ota_state(hass) -> None:
 
     _set_update_state(coordinator, "available")
     assert entity.latest_version == "Newer than v178.8"
+    assert entity.release_summary == update.FIRMWARE_RELEASE_SUMMARY
     assert entity.state == STATE_ON
 
     _set_update_state(coordinator, "complete")
@@ -1026,17 +1037,20 @@ async def test_pending_firmware_reads_the_loaded_translation(hass) -> None:
         common["pending_firmware_version_unknown"]
         == update.PENDING_FIRMWARE_VERSION_UNKNOWN
     )
+    assert common["firmware_release_summary"] == update.FIRMWARE_RELEASE_SUMMARY
     assert entity.latest_version == "Newer than v178.8"
 
     hass.config.language = "de"
     german = {
         update.PENDING_FIRMWARE_VERSION_KEY: "Neuer als {installed}",
         update.PENDING_FIRMWARE_VERSION_UNKNOWN_KEY: "Neuere Firmware",
+        update.FIRMWARE_RELEASE_SUMMARY_KEY: "Der Roboter aktualisiert sich selbst.",
     }
     with patch.object(
         update.translation, "async_get_cached_translations", return_value=german
     ) as cached:
         assert entity.latest_version == "Neuer als v178.8"
+        assert entity.release_summary == "Der Roboter aktualisiert sich selbst."
         assert entity.state == STATE_ON
         cached.assert_called_with(hass, "de", "common", DOMAIN)
         unknown, unknown_coordinator = _update_entity(hass, None)
@@ -1097,14 +1111,12 @@ def test_sensor_and_binary_sensor_values() -> None:
     sensors = [
         sensor.MaticActivitySensor(entry),
         sensor.MaticBatterySensor(entry),
-        sensor.MaticHardwareRevisionSensor(entry),
         sensor.MaticRoomsSensor(entry),
     ]
 
     assert [item.native_value for item in sensors] == [
         "cleaning",
         82,
-        "test-hardware",
         2,
     ]
     assert sensors[1].suggested_object_id == "battery"
@@ -1115,7 +1127,7 @@ def test_sensor_and_binary_sensor_values() -> None:
         "primary_error": None,
         "current_area": None,
     }
-    assert sensors[3].extra_state_attributes == {
+    assert sensors[2].extra_state_attributes == {
         "room_names": ["Kitchen", "Study"],
         "segments": {"room-1": "Kitchen", "room-2": "Study"},
     }
@@ -1147,8 +1159,6 @@ def test_sensor_and_binary_sensor_values() -> None:
         False,
         False,
         False,
-        False,
-        True,
         None,
         None,
         None,
@@ -1158,6 +1168,8 @@ def test_sensor_and_binary_sensor_values() -> None:
         for description in sensor.STATE_DESCRIPTIONS
         if description.entity_registry_enabled_default is False
     } == {
+        "protocol_version",
+        "update_channel",
         "wifi_state",
         "scheduled_cleanings",
         "local_cleaning_sessions",
@@ -1184,15 +1196,6 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert no_map_schedules is not None
     assert no_map_schedules["schedules"][0]["rooms"] == []
 
-    software = sensor.MaticSoftwareVersionSensor(entry)
-    assert software.native_value == "v-test"
-    assert software.extra_state_attributes == {
-        "firmware_profile": "test-profile",
-        "robot_profile": None,
-        "release_channel": None,
-        "supports_easter_event": True,
-        "timezone": "Etc/UTC",
-    }
     compatibility = sensor.MaticFirmwareCompatibilitySensor(entry)
     assert compatibility.native_value == "baseline"
     assert compatibility.available is True
@@ -2434,22 +2437,69 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
     await store.async_shutdown()
 
 
-@pytest.mark.parametrize("native", [True, False, None])
-def test_active_session_sensor_preserves_native_uncertainty_when_returning(
-    native,
-) -> None:
+def test_unnamed_robot_device_uses_the_translated_fallback_name() -> None:
     entry = _entry()
-    data = entry.runtime_data.coordinator.data
-    entry.runtime_data.coordinator.data = replace(
-        data,
-        operational=replace(
-            data.operational, cleaning=False, paused=False, returning=True
-        ),
-        telemetry=replace(data.telemetry, active_cleaning_session=native),
+    coordinator = entry.runtime_data.coordinator
+    assert MaticEntity(entry).device_info["name"] == "Test Robot"
+
+    coordinator.data = replace(
+        coordinator.data,
+        info=replace(coordinator.data.info, name="", hostname="matic-ab12.local."),
     )
-    description = next(
-        value
-        for value in binary_sensor.DESCRIPTIONS
-        if value.key == "active_cleaning_session"
+    device = MaticEntity(entry).device_info
+    assert "name" not in device
+    assert device["translation_key"] == "robot"
+    assert device["translation_placeholders"] == {"suffix": "ab12"}
+    strings = json.loads((INTEGRATION / "strings.json").read_text())
+    assert strings["device"]["robot"]["name"] == "Matic (Unofficial) {suffix}"
+
+
+def test_enum_sensors_list_every_translated_state() -> None:
+    strings = json.loads((INTEGRATION / "strings.json").read_text())["entity"]
+    descriptions = {
+        description.key: description
+        for description in (
+            sensor.ACTIVITY_DESCRIPTION,
+            sensor.FIRMWARE_COMPATIBILITY_DESCRIPTION,
+            *sensor.STATE_DESCRIPTIONS,
+        )
+    }
+    expected = {
+        "activity": 7,
+        "wifi_state": 6,
+        "update_state": 6,
+        "firmware_compatibility": 5,
+        "cues_voice_status": 6,
+        "cues_gesture_status": 6,
+    }
+    enums = {
+        key: description
+        for key, description in descriptions.items()
+        if description.device_class == "enum"
+    }
+    assert {key: len(value.options or ()) for key, value in enums.items()} == expected
+    for key, description in enums.items():
+        assert list(strings["sensor"][key]["state"]) == list(description.options or ())
+        expected_category = None if key == "activity" else "diagnostic"
+        assert description.entity_category == expected_category
+    assert descriptions["coverage_time"].device_class == "duration"
+    assert descriptions["coverage_time"].native_unit_of_measurement == "s"
+
+
+def test_rarely_useful_entities_are_off_by_default() -> None:
+    assert {
+        description.key
+        for description in binary_sensor.DESCRIPTIONS
+        if description.entity_registry_enabled_default is False
+    } == {
+        "paused",
+        "returning",
+        "fully_charged",
+        "matter_pairing_mode",
+        "ssh_tunnel_permission",
+        "diagnostic_upload",
+    }
+    assert (
+        number.WATER_FLOW_DESCRIPTION.native_unit_of_measurement
+        == "\N{MULTIPLICATION SIGN}"
     )
-    assert binary_sensor.MaticBinarySensor(entry, description).is_on is native

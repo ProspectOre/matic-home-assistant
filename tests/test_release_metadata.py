@@ -339,22 +339,31 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert "data" not in options["step"]["confirm_reset_history"]
 
         entities = translations["entity"]["binary_sensor"]
-        assert entities["diagnostic_upload"]["name"].startswith("Robot ")
-        assert entities["ssh_tunnel_permission"]["name"].startswith("Robot ")
+        assert entities["diagnostic_upload"]["name"] == "Diagnostic upload"
+        assert entities["ssh_tunnel_permission"]["name"] == (
+            "Support tunnel permission"
+        )
         assert entities["paused"]["state"] == {
             "off": "Not paused",
             "on": "Paused",
         }
-        assert entities["update_available"]["state"] == {
-            "off": "Up to date",
-            "on": "Update available",
-        }
+        assert not {"update_available", "active_cleaning_session"} & set(entities)
         assert translations["entity"]["number"]["water_flow"]["name"] == (
             "Mopping water flow"
         )
         assert translations["entity"]["sensor"]["cleaning_history"]["name"] == (
-            "Plan room completions"
+            "Rooms cleaned by plans"
         )
+        assert {
+            key: value["name"]
+            for key, value in translations["entity"]["button"].items()
+        } == {
+            "run_selected_plan": "Run plan",
+            "intelligent_clean": "Run intelligent rotation",
+            "clean_entire_plan": "Run saved order",
+            "stop_intelligent_cleaning": "Stop cleaning",
+            "clean_selected_area": "Clean selected area",
+        }
         selects = translations["entity"]["select"]
         assert selects["cleaning_mode"]["name"] == "Default cleaning mode"
         assert selects["coverage_setting"]["name"] == "Default vacuum coverage"
@@ -439,7 +448,7 @@ def test_documented_entity_surface_matches_release_contract() -> None:
     automation = " ".join((ROOT / "docs" / "automation.md").read_text().split())
     entities = " ".join((ROOT / "docs" / "entities.md").read_text().split())
     surface = (
-        "55 fixed entities — 23 sensors, 13 binary sensors, 5 buttons, "
+        "51 fixed entities — 21 sensors, 11 binary sensors, 5 buttons, "
         "4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and "
         "1 vacuum"
     )
