@@ -533,8 +533,10 @@ for (const kind of ["plan", "area"]) {
   });
 }
 
-for (const way of ["Escape", "Cancel"]) {
-  test(`${way} on a plan delete dialog whose Delete button a failed reload removed leaves focus in the panel`, async ({ page }) => {
+for (const way of ["Escape", "Cancel", "outside"]) {
+  test(way === "outside"
+    ? "closing a plan delete dialog whose Delete button a failed reload removed leaves focus that moved outside the shell alone"
+    : `${way} on a plan delete dialog whose Delete button a failed reload removed leaves focus on the panel heading`, async ({ page }) => {
     await loadQualityModules(page);
     await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState, SHELL_TAG, WORKFLOW_TAG } = await import("/quality-modules.js");
@@ -573,24 +575,28 @@ for (const way of ["Escape", "Cancel"]) {
       await effects.loadPlans({ force: true });
       await shell.updateComplete;
       await workflow().updateComplete;
-      window.__ux0Fix10 = { effects, shell };
+      window.__ux0Fix10 = { effects, shell, store };
     });
     const dialog = page.getByRole("dialog");
     await expect(dialog, "the dialog stays over the problem box").toBeVisible();
     await expect(page.getByRole("button", { name: "Try again" }), "the Delete button is gone, the problem box shows").toBeVisible();
-    if (way === "Escape") await page.keyboard.press("Escape");
+    if (way === "outside") {
+      await page.evaluate(() => {
+        const button = Object.assign(document.createElement("button"), { textContent: "Outside the studio" });
+        document.body.prepend(button);
+        button.focus();
+        window.__ux0Fix10.store.dispatch({ type: "dismiss-top-layer" });
+      });
+    } else if (way === "Escape") await page.keyboard.press("Escape");
     else await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(dialog).toHaveCount(0);
-    await expect.poll(() => page.evaluate(() => {
-      let active = document.activeElement;
-      while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
-      const root = window.__ux0Fix10.shell.shadowRoot;
-      const host = active?.getRootNode()?.host;
-      return {
-        body: !active || active === document.body,
-        inPanel: Boolean(active && (root.contains(active) || (host && root.contains(host)))),
-      };
-    }), "focus lands in the panel, never on the page body").toMatchObject({ body: false, inPanel: true });
+    // Wait out the hand-off (a render, then an animation frame) before reading focus.
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    if (way === "outside") {
+      await expect(page.getByRole("button", { name: "Outside the studio" }), "focus the user moved elsewhere stays there").toBeFocused();
+    } else {
+      await expect(page.getByRole("heading", { name: "Edit plan" }), "focus lands on the panel heading").toBeFocused();
+    }
     await page.evaluate(() => { window.__ux0Fix10.effects.dispose(); window.__ux0Fix10.shell.remove(); });
   });
 }

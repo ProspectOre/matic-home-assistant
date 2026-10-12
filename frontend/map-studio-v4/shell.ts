@@ -756,14 +756,15 @@ export class MaticMapShellV4 extends LitElement {
           ? this.#dialogLauncher
           : this.#dialogLauncherFor(previous.dialog);
         this.#dialogLauncher = null;
-        // A failed reload can remove the launcher while its dialog is open,
-        // and Safari gives a clicked Cancel no focus for the render hand-off
-        // to move, so a closed dialog that left focus nowhere in the shell
-        // hands it to the panel, never the page.
+        // One rule: try the launcher, then, if closing the dialog left focus
+        // on the page body (the launcher is gone or hidden, or Safari gave a
+        // clicked Cancel no focus to move), hand it to the panel. Focus the
+        // user moved elsewhere in the document is left alone.
         void this.updateComplete.then(() => {
           requestAnimationFrame(() => {
-            if (launcher?.isConnected) launcher.focus({ preventScroll: true });
-            else if (!this.shadowRoot?.activeElement) this.#focusPanel();
+            launcher?.focus({ preventScroll: true });
+            const body = !document.activeElement || document.activeElement === document.body;
+            if (!this.shadowRoot?.activeElement && body) this.#focusPanel();
           });
         });
       }
