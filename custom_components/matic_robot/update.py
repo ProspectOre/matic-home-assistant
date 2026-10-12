@@ -28,8 +28,15 @@ PENDING_FIRMWARE_VERSION_KEY: Final = (
 PENDING_FIRMWARE_VERSION_UNKNOWN_KEY: Final = (
     f"component.{DOMAIN}.common.pending_firmware_version_unknown"
 )
+FIRMWARE_RELEASE_SUMMARY_KEY: Final = (
+    f"component.{DOMAIN}.common.firmware_release_summary"
+)
 PENDING_FIRMWARE_VERSION: Final = "Newer than {installed}"
 PENDING_FIRMWARE_VERSION_UNKNOWN: Final = "Newer firmware"
+FIRMWARE_RELEASE_SUMMARY: Final = (
+    "The robot installs firmware updates itself; Home Assistant only reports "
+    "that one is waiting."
+)
 
 UPDATE_DESCRIPTION = UpdateEntityDescription(
     key="firmware",
@@ -74,17 +81,33 @@ class MaticFirmwareUpdate(MaticEntity, UpdateEntity):
     def latest_version(self) -> str | None:
         """Return a translated pending marker while the robot reports an OTA."""
         installed = self.installed_version
-        if self.coordinator.data.telemetry.update_state != "available":
+        if not self._update_pending:
             return installed
-        cached = translation.async_get_cached_translations(
-            self.hass, self.hass.config.language, "common", DOMAIN
-        )
+        cached = self._common_translations()
         if installed is None:
             return cached.get(
                 PENDING_FIRMWARE_VERSION_UNKNOWN_KEY, PENDING_FIRMWARE_VERSION_UNKNOWN
             )
         marker = cached.get(PENDING_FIRMWARE_VERSION_KEY, PENDING_FIRMWARE_VERSION)
         return marker.replace("{installed}", installed)
+
+    @property
+    def release_summary(self) -> str | None:
+        """Say who installs the pending update while the robot reports one."""
+        if not self._update_pending:
+            return None
+        return self._common_translations().get(
+            FIRMWARE_RELEASE_SUMMARY_KEY, FIRMWARE_RELEASE_SUMMARY
+        )
+
+    @property
+    def _update_pending(self) -> bool:
+        return self.coordinator.data.telemetry.update_state == "available"
+
+    def _common_translations(self) -> dict[str, str]:
+        return translation.async_get_cached_translations(
+            self.hass, self.hass.config.language, "common", DOMAIN
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:

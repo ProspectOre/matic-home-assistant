@@ -20,7 +20,7 @@ workflows checked on real robots.
 ## Automatic checks
 
 After a firmware or protocol change, the integration compares a local snapshot
-of 40 allowlisted endpoints. **Firmware compatibility** shows the result.
+of 40 allowlisted endpoints. **Firmware check status** shows the result.
 A Home Assistant Repair appears for repeated endpoint read failures and clears
 after recovery. First failures stay pending. Newly observed field shapes retain
 unknown meaning; they never enable commands.

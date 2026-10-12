@@ -22,6 +22,7 @@ WATER_FLOW_DESCRIPTION = NumberEntityDescription(
     native_min_value=0.5,
     native_max_value=2.0,
     native_step=0.1,
+    native_unit_of_measurement="\N{MULTIPLICATION SIGN}",
 )
 
 

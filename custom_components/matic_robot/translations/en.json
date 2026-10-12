@@ -462,6 +462,7 @@
     "v4_map_limited_body": "Home Assistant can show this map but can't confirm it well enough to start cleaning.",
     "pending_firmware_version": "Newer than {installed}",
     "pending_firmware_version_unknown": "Newer firmware",
+    "firmware_release_summary": "The robot installs firmware updates itself; Home Assistant only reports that one is waiting.",
     "v4_delete_plan_default": "{new_default} becomes your default plan.",
     "v4_delete_plan_none": "You'll have no default plan.",
     "v4_delete_area_selected": "{area} becomes the selected custom area.",
@@ -701,25 +702,15 @@
       "problem": {
         "name": "Problem"
       },
-      "update_available": {
-        "name": "Update available",
-        "state": {
-          "off": "Up to date",
-          "on": "Update available"
-        }
-      },
-      "active_cleaning_session": {
-        "name": "Active cleaning session"
-      },
       "diagnostic_upload": {
-        "name": "Robot diagnostic upload",
+        "name": "Diagnostic upload",
         "state": {
           "off": "Disabled",
           "on": "Enabled"
         }
       },
       "ssh_tunnel_permission": {
-        "name": "Robot SSH tunnel permission",
+        "name": "Support tunnel permission",
         "state": {
           "off": "Not allowed",
           "on": "Allowed"
@@ -727,34 +718,20 @@
       },
       "following_person": {
         "name": "Following a person"
-      },
-      "bag_full": {
-        "name": "Dust bag full",
-        "state": {
-          "off": "Dust bag not full",
-          "on": "Dust bag full"
-        }
-      },
-      "bag_missing": {
-        "name": "Dust bag missing",
-        "state": {
-          "off": "Dust bag present",
-          "on": "Dust bag missing"
-        }
       }
     },
     "button": {
       "run_selected_plan": {
-        "name": "Start default plan"
+        "name": "Run plan"
       },
       "intelligent_clean": {
-        "name": "Start intelligent rotation"
+        "name": "Run intelligent rotation"
       },
       "clean_entire_plan": {
-        "name": "Clean all rooms in default plan"
+        "name": "Run saved order"
       },
       "stop_intelligent_cleaning": {
-        "name": "Stop plan and dock"
+        "name": "Stop cleaning"
       },
       "clean_selected_area": {
         "name": "Clean selected area"
@@ -817,28 +794,28 @@
         "name": "Active cleaning plan"
       },
       "cleaning_history": {
-        "name": "Plan room completions"
+        "name": "Rooms cleaned by plans"
       },
       "current_area": {
-        "name": "Current area"
+        "name": "Current room"
       },
       "cues_voice_status": {
         "name": "Cues voice status",
         "state": {
           "disabled": "Disabled",
           "listening_for_wake_word": "Ready for wake word",
-          "listening_for_intent": "Listening for intent",
-          "thinking_for_intent": "Processing intent",
-          "classified": "Intent classified",
-          "rejected": "Intent rejected"
+          "listening_for_intent": "Listening for a command",
+          "thinking_for_intent": "Working out the command",
+          "classified": "Command understood",
+          "rejected": "Command not understood"
         }
       },
       "cues_gesture_status": {
         "name": "Cues gesture status",
         "state": {
-          "awaiting_pointed_target": "Waiting for pointed target",
-          "pointed_target_accepted": "Pointed target accepted",
-          "no_target_found": "No target found",
+          "awaiting_pointed_target": "Waiting for you to point",
+          "pointed_target_accepted": "Got the spot you pointed at",
+          "no_target_found": "Could not find the spot you pointed at",
           "facing_user": "Facing user",
           "person_not_found": "Person not found",
           "following": "Following"
@@ -850,11 +827,8 @@
       "dock_detections": {
         "name": "Dock detections"
       },
-      "hardware_revision": {
-        "name": "Hardware revision"
-      },
       "local_cleaning_sessions": {
-        "name": "Local cleaning sessions"
+        "name": "Robot cleaning runs"
       },
       "protocol_version": {
         "name": "Protocol version"
@@ -865,17 +839,14 @@
       "scheduled_cleanings": {
         "name": "Scheduled cleanings"
       },
-      "software_version": {
-        "name": "Software version"
-      },
       "firmware_compatibility": {
-        "name": "Firmware compatibility",
+        "name": "Firmware check status",
         "state": {
           "pending": "Checking",
-          "baseline": "Baseline recorded",
+          "baseline": "Checks recorded for comparison",
           "compatible": "Compatible",
-          "regression": "Read checks need attention",
-          "current": "Current"
+          "regression": "Some robot reads are failing",
+          "current": "Up to date"
         }
       },
       "sink_summon_locations": {
@@ -916,7 +887,7 @@
         "name": "{room} last cleaned"
       },
       "last_run_duration": {
-        "name": "Last run duration"
+        "name": "Last clean duration"
       },
       "wifi_signal": {
         "name": "Wi-Fi signal"
@@ -945,7 +916,7 @@
         "name": "Pet-waste avoidance"
       },
       "voice_assistant": {
-        "name": "Matic Cues"
+        "name": "Cues voice assistant"
       }
     },
     "event": {
@@ -995,6 +966,11 @@
       "firmware": {
         "name": "Firmware"
       }
+    }
+  },
+  "device": {
+    "robot": {
+      "name": "Matic (Unofficial) {suffix}"
     }
   },
   "exceptions": {

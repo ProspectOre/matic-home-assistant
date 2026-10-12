@@ -14,6 +14,14 @@ from .const import CONF_SERIAL_NUMBER, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
+# Entities 0.5 removed as duplicates; the release notes name each replacement.
+REMOVED_ENTITY_KEYS = (
+    ("binary_sensor", "active_cleaning_session"),
+    ("binary_sensor", "update_available"),
+    ("sensor", "software_version"),
+    ("sensor", "hardware_revision"),
+)
+
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate one config entry to the current schema exactly once.
@@ -26,7 +34,24 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.minor_version < 2:
         _async_migrate_entity_ids(hass, entry)
         hass.config_entries.async_update_entry(entry, minor_version=2)
+    if entry.minor_version < 3:
+        _async_remove_retired_entities(hass, entry)
+        hass.config_entries.async_update_entry(entry, minor_version=3)
     return True
+
+
+def _async_remove_retired_entities(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete the registry entries of entities 0.5 no longer provides."""
+    serial_number = entry.data.get(CONF_SERIAL_NUMBER)
+    if serial_number is None:
+        return
+    registry = er.async_get(hass)
+    for domain, key in REMOVED_ENTITY_KEYS:
+        if entity_id := registry.async_get_entity_id(
+            domain, DOMAIN, f"{serial_number}_{key}"
+        ):
+            _LOGGER.info("Removing retired entity %s", entity_id)
+            registry.async_remove(entity_id)
 
 
 def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:

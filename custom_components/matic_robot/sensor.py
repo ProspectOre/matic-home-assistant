@@ -26,17 +26,17 @@ from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from . import MaticConfigEntry
-from .client.models import RobotState, Room
+from .client.models import (
+    CuesGestureStatus,
+    CuesVoiceStatus,
+    RobotActivity,
+    RobotState,
+    Room,
+)
 from .entity import MaticEntity
 from .plans import plan_floor_token, room_cadence_identity
 
 PARALLEL_UPDATES = 0
-
-HARDWARE_DESCRIPTION = SensorEntityDescription(
-    key="hardware_revision",
-    translation_key="hardware_revision",
-    entity_category=EntityCategory.DIAGNOSTIC,
-)
 
 BATTERY_DESCRIPTION = SensorEntityDescription(
     key="battery",
@@ -48,6 +48,8 @@ BATTERY_DESCRIPTION = SensorEntityDescription(
 ACTIVITY_DESCRIPTION = SensorEntityDescription(
     key="activity",
     translation_key="activity",
+    device_class=SensorDeviceClass.ENUM,
+    options=[activity.value for activity in RobotActivity],
 )
 
 ROOMS_DESCRIPTION = SensorEntityDescription(
@@ -70,15 +72,11 @@ NEXT_ROOM_DESCRIPTION = SensorEntityDescription(
     translation_key="next_cleaning_room",
 )
 
-SOFTWARE_DESCRIPTION = SensorEntityDescription(
-    key="software_version",
-    translation_key="software_version",
-    entity_category=EntityCategory.DIAGNOSTIC,
-)
-
 FIRMWARE_COMPATIBILITY_DESCRIPTION = SensorEntityDescription(
     key="firmware_compatibility",
     translation_key="firmware_compatibility",
+    device_class=SensorDeviceClass.ENUM,
+    options=["pending", "baseline", "compatible", "regression", "current"],
     entity_category=EntityCategory.DIAGNOSTIC,
 )
 
@@ -145,17 +143,24 @@ STATE_DESCRIPTIONS = (
     MaticStateSensorDescription(
         key="cues_voice_status",
         translation_key="cues_voice_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=[status.value for status in CuesVoiceStatus],
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda state: state.operational.cues_voice_status,
     ),
     MaticStateSensorDescription(
         key="cues_gesture_status",
         translation_key="cues_gesture_status",
+        device_class=SensorDeviceClass.ENUM,
+        options=[status.value for status in CuesGestureStatus],
+        entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda state: state.operational.cues_gesture_status,
     ),
     MaticStateSensorDescription(
         key="protocol_version",
         translation_key="protocol_version",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.protocol_version,
     ),
     MaticStateSensorDescription(
@@ -167,6 +172,7 @@ STATE_DESCRIPTIONS = (
         key="update_channel",
         translation_key="update_channel",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: (
             state.telemetry.update_channel or state.operational.release_channel
         ),
@@ -174,12 +180,23 @@ STATE_DESCRIPTIONS = (
     MaticStateSensorDescription(
         key="update_state",
         translation_key="update_state",
+        device_class=SensorDeviceClass.ENUM,
+        options=["idle", "busy", "progress", "error", "complete", "available"],
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda state: state.telemetry.update_state,
     ),
     MaticStateSensorDescription(
         key="wifi_state",
         translation_key="wifi_state",
+        device_class=SensorDeviceClass.ENUM,
+        options=[
+            "unknown",
+            "connecting",
+            "connected",
+            "disconnected",
+            "disconnecting",
+            "roaming",
+        ],
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.wifi_state,
@@ -187,12 +204,14 @@ STATE_DESCRIPTIONS = (
     MaticStateSensorDescription(
         key="scheduled_cleanings",
         translation_key="scheduled_cleanings",
+        entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.scheduled_cleanings,
     ),
     MaticStateSensorDescription(
         key="local_cleaning_sessions",
         translation_key="local_cleaning_sessions",
+        entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.local_cleaning_sessions,
     ),
@@ -215,7 +234,8 @@ STATE_DESCRIPTIONS = (
         translation_key="coverage_time",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        native_unit_of_measurement="s",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
         value_fn=lambda state: state.telemetry.coverage_time_seconds,
     ),
     MaticStateSensorDescription(
@@ -276,12 +296,10 @@ async def async_setup_entry(
         [
             MaticActivitySensor(entry),
             MaticBatterySensor(entry),
-            MaticHardwareRevisionSensor(entry),
             MaticRoomsSensor(entry),
             MaticCleaningHistorySensor(entry),
             MaticActiveCleaningPlanSensor(entry),
             MaticNextCleaningRoomSensor(entry),
-            MaticSoftwareVersionSensor(entry),
             MaticFirmwareCompatibilitySensor(entry),
             *(
                 MaticStateSensor(entry, description)
@@ -298,23 +316,6 @@ async def async_setup_entry(
             async_add_entities(new_entities)
 
     entry.async_on_unload(coordinator.async_add_listener(_async_add_new_rooms))
-
-
-class MaticHardwareRevisionSensor(MaticEntity, SensorEntity):
-    """Matic hardware revision."""
-
-    entity_description = HARDWARE_DESCRIPTION
-
-    def __init__(self, entry: MaticConfigEntry) -> None:
-        super().__init__(entry)
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_hardware_revision"
-        )
-
-    @property
-    def native_value(self) -> str:
-        """Return the hardware revision."""
-        return self.coordinator.data.info.hardware_revision
 
 
 class MaticBatterySensor(MaticEntity, SensorEntity):
@@ -356,38 +357,6 @@ class MaticActivitySensor(MaticEntity, SensorEntity):
             "errors": list(state.error_names),
             "primary_error": state.error_names[0] if state.error_names else None,
             "current_area": state.current_area,
-        }
-
-
-class MaticSoftwareVersionSensor(MaticEntity, SensorEntity):
-    """Robot software version and build profile."""
-
-    entity_description = SOFTWARE_DESCRIPTION
-
-    def __init__(self, entry: MaticConfigEntry) -> None:
-        super().__init__(entry)
-        self._attr_unique_id = (
-            f"{self.coordinator.data.info.serial_number}_software_version"
-        )
-
-    @property
-    def native_value(self) -> str | None:
-        """Return the most specific verified local software version."""
-        state = self.coordinator.data
-        return state.telemetry.software_version or state.operational.software_version
-
-    _unrecorded_attributes = frozenset({"timezone"})
-
-    @property
-    def extra_state_attributes(self) -> dict[str, object]:
-        """Expose safe build metadata for update-aware automations."""
-        state = self.coordinator.data
-        return {
-            "firmware_profile": state.telemetry.software_profile,
-            "robot_profile": state.operational.robot_profile,
-            "release_channel": state.operational.release_channel,
-            "supports_easter_event": state.telemetry.supports_easter_event,
-            "timezone": state.telemetry.timezone,
         }
 
 
