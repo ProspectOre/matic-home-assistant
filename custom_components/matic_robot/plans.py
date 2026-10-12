@@ -4786,6 +4786,11 @@ class CleaningPlanManager:
             "last_run": public_last_run,
         }
 
+    def selected_area(self, serial_number: str) -> str | None:
+        """Return the selected area id without copying the plan history."""
+        selected: str | None = self._robot(serial_number).get("selected_area")
+        return selected
+
     def _robot(self, serial_number: str) -> dict[str, Any]:
         robots = self._data.get("robots")
         if not isinstance(robots, dict):

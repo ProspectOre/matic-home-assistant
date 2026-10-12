@@ -134,6 +134,8 @@ def test_low_charge_cleaning_task_at_dock_is_recharge_and_resume() -> None:
         ([109, 200, 119], [], RobotActivity.PAUSED),
         ([109, 200, 119], [326], RobotActivity.PAUSED),
         ([109, 200, 119], [326, 206, 207], RobotActivity.PAUSED),
+        ([106, 200], [207], RobotActivity.PAUSED),
+        ([109, 200], [326], RobotActivity.ERROR),
         ([101, 119, 209, 212], [207], RobotActivity.CLEANING),
         ([104, 105], [], RobotActivity.RETURNING),
         ([104, 105, 106, 119], [], RobotActivity.RETURNING),

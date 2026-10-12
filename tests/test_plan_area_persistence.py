@@ -130,6 +130,7 @@ async def test_cancelled_area_waiter_keeps_durable_commit_and_notifies(
 
     assert manager.areas(SERIAL) == expected_areas
     assert manager.snapshot(SERIAL)["selected_area"] == expected_selected
+    assert manager.selected_area(SERIAL) == expected_selected
     assert reloaded.areas(SERIAL) == expected_areas
     assert reloaded.snapshot(SERIAL)["selected_area"] == expected_selected
     assert notifications == 1

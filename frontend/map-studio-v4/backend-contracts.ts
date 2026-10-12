@@ -151,7 +151,10 @@ export interface AreasCatalog {
   readonly sceneUrl: string;
   readonly rooms: readonly MapRoom[];
   readonly areas: readonly SavedArea[];
-  /** The area the "Custom cleaning area" select and Clean selected area button use (`selected_area`). */
+  /**
+   * The area the "Custom cleaning area" select and Clean selected area button
+   * use (`selected_area`); null when none is selected or an older backend omits it.
+   */
   readonly selectedArea: string | null;
 }
 

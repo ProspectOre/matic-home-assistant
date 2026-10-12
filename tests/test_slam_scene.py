@@ -170,6 +170,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
             snapshot=MagicMock(
                 return_value={"selected_plan": None, "active_plan": None}
             ),
+            selected_area=MagicMock(return_value=None),
             lock=MagicMock(
                 return_value=SimpleNamespace(locked=MagicMock(return_value=False))
             ),
@@ -1284,7 +1285,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
         },
         "legacy": {"name": "Legacy"},
     }
-    runtime.cleaning_plans.snapshot.return_value = {"selected_area": "review"}
+    runtime.cleaning_plans.selected_area.return_value = "review"
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
@@ -1295,6 +1296,9 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
         response = await view.get(_request(hass), "entry")
 
     assert classify.call_count == 3
+    # The selection is read directly; snapshot() deep-copies the plan history.
+    runtime.cleaning_plans.selected_area.assert_called_once_with("synthetic-serial")
+    runtime.cleaning_plans.snapshot.assert_not_called()
     room_geometry = classify.call_args_list[0].kwargs["room_geometry"]
     assert all(
         call.kwargs["room_geometry"] is room_geometry

@@ -102,9 +102,12 @@ class RobotOperationalState:
     @property
     def activity(self) -> RobotActivity:
         """Return a conservative high-level state without inventing semantics."""
-        # Pausing is an explicit user or robot action; a latched warning does not
-        # cancel it.  The warning stays visible through ``error_codes`` / ``problem``.
-        if self.paused:
+        # Pausing is an explicit user or robot action and outranks the dock and a
+        # latched warning: an error code beside a retained task or on the dock
+        # (see below), which stays visible through ``error_codes`` / ``problem``.
+        # A paused robot with an error code and neither is stopped by a real
+        # error, and reports ``ERROR``.
+        if self.paused and (self.cleaning or self.is_charging or not self.error_codes):
             return RobotActivity.PAUSED
         if self.returning:
             return RobotActivity.RETURNING
