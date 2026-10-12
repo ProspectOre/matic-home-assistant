@@ -36,7 +36,6 @@ import {
 import { PreferenceStore, type MapPreferences } from "./preferences";
 import { WorkspaceTransport, type WorkspaceConnection } from "./workspace-transport";
 import { PageLifecycle } from "./page-lifecycle";
-import { formatDateTime } from "./localize";
 
 const resource = <T>(
   status: "idle" | "loading" | "ready" | "empty" | "error",
@@ -88,8 +87,9 @@ const NOTICES = {
   resetVacuumFailed: notice("error", "v4_notice_reset_vacuum_failed", "Vacuum rotation progress wasn't reset; try again."),
 } as const;
 
-const savedMapNotice = (date: string): WorkspaceNotice =>
-  notice("warning", "v4_notice_saved_map", "Showing the saved map from {date} without the robot's position.", { date });
+// Keeps the snapshot's timestamp; views format it as they render.
+const savedMapNotice = (createdAt: string): WorkspaceNotice =>
+  notice("warning", "v4_notice_saved_map", "Showing the saved map from {date} without the robot's position.", { date: { date: createdAt } });
 
 /** Coverage guard rejections, keyed by the service error's Matic `translation_key`. */
 const COVERAGE_GUARD_NOTICES: Readonly<Record<string, WorkspaceNotice>> = {
@@ -1753,7 +1753,7 @@ export class EffectController {
             floor: { ...currentState.floor, readOnly: true, displayName: safeFloorName(saved.floor, 1) },
             resources: { ...currentState.resources, scene: resource("ready", response.scene), pose: resource("idle", null) },
             map: { ...currentState.map, available: true, exactPose: false },
-            notice: savedMapNotice(formatDateTime(saved.snapshot.createdAt, this.#projection?.dates)),
+            notice: savedMapNotice(saved.snapshot.createdAt),
           });
           break;
         }

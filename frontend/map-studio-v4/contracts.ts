@@ -191,11 +191,13 @@ export interface WorkspaceSelection {
 }
 
 export type NoticeTone = "info" | "success" | "warning" | "error";
-export type NoticePlaceholders = Readonly<Record<string, string | number>>;
+/** A timestamp a view formats as it renders, so a language change reaches it. */
+export interface NoticeDate { readonly date: string }
+export type NoticePlaceholders = Readonly<Record<string, string | number | NoticeDate>>;
 
 /**
  * A workspace notice names its copy; views translate it at render time with
- * `translate(localize, key, fallback, placeholders)`.
+ * `translate(localize, key, fallback, placeholders, dates)`.
  */
 export interface WorkspaceNotice {
   readonly tone: NoticeTone;
@@ -222,15 +224,30 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> => {
   return prototype === Object.prototype || prototype === null;
 };
 
+// Own data values only: an accessor has no `value` and is rejected.
+const ownValue = (value: object, name: string): unknown => Object.getOwnPropertyDescriptor(value, name)?.value;
+
+// Exactly `{ date }`, holding a timestamp `Date.parse` accepts.
+const readNoticeDate = (value: unknown): NoticeDate | null => {
+  if (!isPlainObject(value)) return null;
+  const names = Reflect.ownKeys(value);
+  const date = ownValue(value, "date");
+  return names.length === 1 && typeof date === "string" && Number.isFinite(Date.parse(date))
+    ? Object.freeze({ date })
+    : null;
+};
+
 const readNoticePlaceholders = (value: unknown): NoticePlaceholders | null => {
   if (!isPlainObject(value)) return null;
-  const values: Record<string, string | number> = {};
+  const values: Record<string, string | number | NoticeDate> = {};
   for (const name of Reflect.ownKeys(value)) {
     if (typeof name !== "string" || !NOTICE_PLACEHOLDER.test(name)) return null;
-    // Own data values only: an accessor has no `value` and is rejected.
-    const entry: unknown = Object.getOwnPropertyDescriptor(value, name)?.value;
-    if (typeof entry !== "string" && !(typeof entry === "number" && Number.isFinite(entry))) return null;
-    values[name] = entry;
+    const entry = ownValue(value, name);
+    const read = typeof entry === "string" || (typeof entry === "number" && Number.isFinite(entry))
+      ? entry
+      : readNoticeDate(entry);
+    if (read === null) return null;
+    values[name] = read;
   }
   return Object.freeze(values);
 };

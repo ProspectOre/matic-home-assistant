@@ -1,15 +1,18 @@
-import type { DateFormat, Localize } from "./contracts";
+import type { DateFormat, Localize, NoticePlaceholders } from "./contracts";
 
 const PREFIX = "component.matic_robot.common.";
 const HA_ERROR = /^Translation error/iu;
 
+/** A date placeholder is formatted here, with the rendering view's `dates`. */
 export const translate = (
   localize: Localize | undefined,
   key: string,
   fallback: string,
-  placeholders?: Readonly<Record<string, string | number>>,
+  placeholders?: NoticePlaceholders,
+  dates?: DateFormat,
 ): string => {
-  const values = placeholders ? { ...placeholders } : undefined;
+  const values = placeholders && Object.fromEntries(Object.entries(placeholders).map(([name, value]) =>
+    [name, typeof value === "object" ? formatDateTime(value.date, dates) : value]));
   let translated: string | undefined;
   try {
     translated = localize?.(`${PREFIX}${key}`, values);
@@ -17,8 +20,8 @@ export const translate = (
     translated = undefined;
   }
   if (translated && translated !== `${PREFIX}${key}` && !HA_ERROR.test(translated)) return translated;
-  if (!placeholders) return fallback;
-  return Object.entries(placeholders).reduce(
+  if (!values) return fallback;
+  return Object.entries(values).reduce(
     (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
     fallback,
   );

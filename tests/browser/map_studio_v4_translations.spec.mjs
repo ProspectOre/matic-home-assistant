@@ -539,32 +539,62 @@ async function showSavedMap(page, hass) {
   };
 }
 
+const SNAPSHOT_TIME = "2026-09-25T12:00:00Z";
+
+// The saved snapshot's time as the history list shows it.
+const snapshotTime = (page, language, timeZone) => page.evaluate(([tag, zone, time]) => new Intl.DateTimeFormat(tag ?? undefined, {
+  dateStyle: "medium", timeStyle: "short", timeZone: zone ?? undefined,
+}).format(new Date(time)), [language ?? null, timeZone ?? null, SNAPSHOT_TIME]);
+
+const savedMapSentence = (date) => `Showing the saved map from ${date} without the robot's position.`;
+
+const showSnapshotInHistory = async (page) => {
+  const snapshotId = await page.evaluate((time) => window.__translationPanel.getWorkspaceSnapshot()
+    .resources.history.value.floors.flatMap((floor) => floor.snapshots)
+    .find((snapshot) => snapshot.createdAt === time).id, SNAPSHOT_TIME);
+  await sendIntent(page, { type: "open-workflow", workflow: "history" });
+  await sendIntent(page, { type: "set-history", historyId: snapshotId });
+};
+
 test("the saved-map date follows Home Assistant's language and server time zone", async ({ page }) => {
-  const { notice } = await showSavedMap(page, {
+  const { panel, notice } = await showSavedMap(page, {
     language: "en", locale: { language: "de", time_zone: "server" }, config: { time_zone: "Asia/Tokyo" },
   });
-  const expected = await page.evaluate(() => new Intl.DateTimeFormat("de", {
-    dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Tokyo",
-  }).format(new Date("2026-09-25T12:00:00Z")));
   expect(notice).toEqual({
     tone: "warning",
     key: "v4_notice_saved_map",
     fallback: "Showing the saved map from {date} without the robot's position.",
-    placeholders: { date: expected },
+    placeholders: { date: { date: SNAPSHOT_TIME } },
   });
+  await expect(panel.getByText(savedMapSentence(await snapshotTime(page, "de", "Asia/Tokyo"))).first()).toBeVisible();
 });
 
 test("the saved-map notice and the history list show one snapshot's time alike", async ({ page }) => {
-  const { panel, notice } = await showSavedMap(page, {
+  const { panel } = await showSavedMap(page, {
     language: "en", locale: { language: "de", time_zone: "server" }, config: { time_zone: "Asia/Tokyo" },
   });
-  const snapshotId = await page.evaluate(() => window.__translationPanel.getWorkspaceSnapshot()
-    .resources.history.value.floors.flatMap((floor) => floor.snapshots)
-    .find((snapshot) => snapshot.createdAt === "2026-09-25T12:00:00Z").id);
-  await sendIntent(page, { type: "open-workflow", workflow: "history" });
-  await sendIntent(page, { type: "set-history", historyId: snapshotId });
-  await expect(panel.locator('.snapshot[aria-current="true"] > span')).toHaveText(notice.placeholders.date);
-  await expect(panel.locator('.timeline input[type="range"]')).toHaveAttribute("aria-valuetext", notice.placeholders.date);
+  const expected = await snapshotTime(page, "de", "Asia/Tokyo");
+  await expect(panel.getByText(savedMapSentence(expected)).first()).toBeVisible();
+  await showSnapshotInHistory(page);
+  await expect(panel.locator('.snapshot[aria-current="true"] > span')).toHaveText(expected);
+  await expect(panel.locator('.timeline input[type="range"]')).toHaveAttribute("aria-valuetext", expected);
+});
+
+test("a language or time zone change reformats the saved-map date where it shows", async ({ page }) => {
+  const { panel } = await showSavedMap(page, {
+    language: "en", locale: { language: "de", time_zone: "server" }, config: { time_zone: "Asia/Tokyo" },
+  });
+  const before = await snapshotTime(page, "de", "Asia/Tokyo");
+  await expect(panel.getByText(savedMapSentence(before)).first()).toBeVisible();
+
+  await patchHass(page, { locale: { language: "fr", time_zone: "server" }, config: { time_zone: "America/New_York" } });
+  const after = await snapshotTime(page, "fr", "America/New_York");
+  expect(after).not.toBe(before);
+  await expect(panel.getByText(savedMapSentence(after)).first()).toBeVisible();
+  // The polite region keeps the sentence it already spoke; nothing else does.
+  await expect(panel.getByText(savedMapSentence(before)).and(panel.locator(":not([aria-live])"))).toHaveCount(0);
+  await showSnapshotInHistory(page);
+  await expect(panel.locator('.snapshot[aria-current="true"] > span')).toHaveText(after);
 });
 
 // A rejected zone drops only the zone; a rejected language drops to the
@@ -577,11 +607,9 @@ for (const [name, language, expectedLanguage] of [
     const { panel, notice } = await showSavedMap(page, {
       locale: { language, time_zone: "server" }, config: { time_zone: "Not/A_Zone" },
     });
-    const expected = await page.evaluate((tag) => new Intl.DateTimeFormat(tag, {
-      dateStyle: "medium", timeStyle: "short",
-    }).format(new Date("2026-09-25T12:00:00Z")), expectedLanguage);
-    expect(notice?.placeholders).toEqual({ date: expected });
-    await expect(panel.getByText(expected, { exact: false }).first()).toBeAttached();
+    const expected = await snapshotTime(page, expectedLanguage);
+    expect(notice?.placeholders).toEqual({ date: { date: SNAPSHOT_TIME } });
+    await expect(panel.getByText(savedMapSentence(expected)).first()).toBeAttached();
     await expect(panel.getByText("Invalid Date")).toHaveCount(0);
   });
 }

@@ -7,7 +7,7 @@ import { readCanvasPalette, watchTheme } from "./theme-probe";
 import { base, tokens } from "./tokens";
 import type { PropertyValues } from "lit";
 
-import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
+import type { DateFormat, Localize, NoticePlaceholders, WorkspaceIntent, WorkspaceState } from "./contracts";
 import type { OutlineEditor } from "./outline-editor";
 import { MAP_CANVAS_TAG } from "./element-tags";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
@@ -54,6 +54,8 @@ export class MaticMapCanvasV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
     localize: { attribute: false },
+    // Home Assistant's date language and time zone, for a notice's date.
+    dates: { attribute: false },
     // Draw's point editor, loaded and built by the shell (shell.ts #outline).
     outlineEditor: { attribute: false },
     // Reflected so the stylesheet can anchor the rail with :host([narrow]).
@@ -266,6 +268,7 @@ export class MaticMapCanvasV4 extends LitElement {
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
+  dates?: DateFormat;
   outlineEditor?: OutlineEditor;
   narrow = false;
   #helpLauncher: HTMLElement | null = null;
@@ -293,8 +296,8 @@ export class MaticMapCanvasV4 extends LitElement {
     });
   }
 
-  #t(key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>): string {
-    return translate(this.localize, key, fallback, placeholders);
+  #t(key: string, fallback: string, placeholders?: NoticePlaceholders): string {
+    return translate(this.localize, key, fallback, placeholders, this.dates);
   }
 
   override connectedCallback(): void {

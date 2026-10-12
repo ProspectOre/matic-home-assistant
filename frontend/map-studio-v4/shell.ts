@@ -7,6 +7,7 @@ import { isWorkspaceIntent } from "./contracts";
 import type {
   DateFormat,
   Localize,
+  NoticePlaceholders,
   NoticeTone,
   NoButtonAction,
   PrimaryAction,
@@ -407,8 +408,8 @@ export class MaticMapShellV4 extends LitElement {
     });
   }
 
-  #t(key: string, fallback: string, placeholders?: Readonly<Record<string, string | number>>): string {
-    return translate(this.localize, key, fallback, placeholders);
+  #t(key: string, fallback: string, placeholders?: NoticePlaceholders): string {
+    return translate(this.localize, key, fallback, placeholders, this.dates);
   }
   protected _measuredNarrow = false;
   protected _sheetOffset = 0;
@@ -1762,6 +1763,7 @@ export class MaticMapShellV4 extends LitElement {
                 style=${sheetOffset}
                 .state=${state}
                 .localize=${this.localize}
+                .dates=${this.dates}
                 .outlineEditor=${this.#outline.value}
                 .narrow=${narrow}
               >${this.#floorSwitcher(state)}

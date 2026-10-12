@@ -89,6 +89,28 @@ test("a set-notice intent without a valid notice is ignored", async ({ page }) =
   }
 });
 
+// A date placeholder carries one ISO timestamp; the view formats it as it
+// renders, in Home Assistant's language and time zone.
+test("a notice date placeholder holds exactly one valid timestamp", async ({ page }) => {
+  const panel = await mountPanel(page);
+  const dated = (date) => ({
+    tone: "warning",
+    key: "v4_notice_saved_map",
+    fallback: "Showing the saved map from {date} without the robot's position.",
+    placeholders: { date },
+  });
+  for (const date of [{ date: "nonsense" }, { date: 1 }, { date: "2026-09-25T12:00:00Z", extra: "x" }, {}]) {
+    await sendIntent(page, { type: "set-notice", notice: dated(date) });
+    expect((await snapshot(page)).notice, JSON.stringify(date)).toBeNull();
+  }
+  const valid = dated({ date: "2026-09-25T12:00:00Z" });
+  await sendIntent(page, { type: "set-notice", notice: valid });
+  expect((await snapshot(page)).notice).toEqual(valid);
+  const shown = await page.evaluate(() => new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" })
+    .format(new Date("2026-09-25T12:00:00Z")));
+  await expect(panel.getByText(`Showing the saved map from ${shown} without the robot's position.`).first()).toBeAttached();
+});
+
 test("@safety a Stop the robot rejects reports that Home Assistant can't confirm it stopped", async ({ page }) => {
   const panel = await mountPanel(page, {
     initialRobotStates: {
