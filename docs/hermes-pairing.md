@@ -62,6 +62,21 @@ integration replaces its saved credential after the new connection succeeds.
 Explicit credential replacement is also available through **Reconfigure**.
 Both paths need a local Bluetooth adapter; a replacement adapter works too.
 
+### More than one robot
+
+Reauthentication and **Robot was reset** remove this robot's existing
+Bluetooth pairing before asking for a code, so they never guess which robot to
+pair. Each entry records the Bluetooth address of the robot that issued its
+credential, saved only after that credential works on the robot. Robots
+recorded by other entries are never contacted, by setup either. Of the rest,
+Home Assistant uses this entry's recorded robot if it is advertising,
+otherwise the one robot heard advertising during the scan; a robot advertises
+only while its Pairing mode is open. If more than one remains, it stops with
+"can see more than one robot" and changes nothing: turn Pairing mode off on the
+other robots, wait a few minutes for their cached advertisements to expire,
+then retry. An entry paired by an earlier version records its address the next
+time it pairs.
+
 ## Robot was reset
 
 After a factory reset the robot presents a new certificate, so Home Assistant

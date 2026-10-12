@@ -7,7 +7,7 @@ import errno
 import logging
 import re
 import sys
-from collections.abc import AsyncIterator, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Collection, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -58,6 +58,10 @@ class BluetoothPairingResetError(MaticError):
     """A host bond was removed before a fresh pairing attempt."""
 
 
+class BluetoothCandidateAmbiguousError(MaticError):
+    """More than one robot could be the one whose pairing would be replaced."""
+
+
 class BluetoothBondRecoveryRequiredError(BluetoothPairingIncompleteError):
     """Let the user select a reused bond after credential-write rejection."""
 
@@ -92,6 +96,8 @@ class _MaticDiscovery:
     service_uuids: tuple[str, ...]
     rssi: int | None
     source: str
+    # Heard during this scan. Matic advertises only while Pairing mode is open.
+    fresh: bool
 
 
 class BluetoothPasskeyExchange:
@@ -189,6 +195,7 @@ class BluetoothCredentialGrant:
     """
 
     credential: HermesCredential
+    address: str | None = None
     scoped_pairing: bool = False
     reused_existing_bond: bool | None = None
     passkey_requested: bool = False
@@ -332,6 +339,7 @@ async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
                 service_uuids=tuple(service_uuids),
                 rssi=advertisement.rssi,
                 source=scanner.source,
+                fresh=refreshed_source,
             )
             current = local_by_address.get(address)
             if current is None or (discovery.rssi or -127) > (current.rssi or -127):
@@ -359,6 +367,36 @@ async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
             "Matic is visible only through a remote Bluetooth proxy"
         )
     return []
+
+
+def _same_address(discovery: Any, addresses: Collection[str]) -> bool:
+    """Return whether a candidate's Bluetooth address is one of these."""
+    address = str(discovery.device.address).casefold()
+    return any(address == other.casefold() for other in addresses)
+
+
+def _bind_replacement_candidate(
+    discoveries: list[Any], bond_address: str | None
+) -> list[Any]:
+    """Return the one robot whose bond may be replaced, or refuse to guess.
+
+    Replacing a bond deletes it before any credential can be checked against
+    the robot being paired, so it must never fall through to another robot.
+    """
+    if bond_address is not None:
+        bound = [d for d in discoveries if _same_address(d, (bond_address,))]
+        if bound:
+            return bound
+    if len(discoveries) > 1:
+        # A retained entry of a robot that is no longer advertising is not in
+        # Pairing mode, so it is never the robot the user is pairing.
+        discoveries = [discovery for discovery in discoveries if discovery.fresh]
+    if len(discoveries) != 1:
+        raise BluetoothCandidateAmbiguousError(
+            f"{len(discoveries)} Matic candidates could be replaced; "
+            "refusing to choose one"
+        )
+    return discoveries
 
 
 def _has_adapter_access_error(err: BaseException) -> bool:
@@ -398,10 +436,18 @@ async def async_request_bluetooth_credential(
     stage_callback: Callable[[str], None] | None = None,
     *,
     replace_existing_bond: bool = False,
+    bond_address: str | None = None,
+    excluded_addresses: Collection[str] = (),
     reset_bond_paths: set[str] | None = None,
     reset_bond_path: str | None = None,
 ) -> BluetoothCredentialGrant:
-    """Request one Hermes credential through Matic's private GATT endpoint."""
+    """Request one Hermes credential through Matic's private GATT endpoint.
+
+    Robots at ``excluded_addresses`` belong to other configured entries and are
+    never contacted. ``replace_existing_bond`` deletes an existing bond, so it
+    proceeds only with a single candidate: the one at ``bond_address`` when
+    it is advertising, otherwise the only Matic in Pairing mode.
+    """
 
     def _stage(stage: str) -> None:
         if stage_callback is not None:
@@ -417,8 +463,15 @@ async def async_request_bluetooth_credential(
                 f"({_safe_bluetooth_error_summary(err)})"
             ) from err
         raise PairingModeRequiredError("Matic Bluetooth discovery failed") from err
+    discoveries = [
+        discovery
+        for discovery in discoveries
+        if not _same_address(discovery, excluded_addresses)
+    ]
     if not discoveries:
         raise PairingModeRequiredError("No connectable Matic advertisement found")
+    if replace_existing_bond:
+        discoveries = _bind_replacement_candidate(discoveries, bond_address)
     if reset_bond_path is not None:
         discoveries = [
             discovery
@@ -575,6 +628,7 @@ async def async_request_bluetooth_credential(
                     # Read this candidate's facts before its agent context exits.
                     return BluetoothCredentialGrant(
                         credential,
+                        address=discovery.device.address,
                         scoped_pairing=not pair_with_bleak,
                         reused_existing_bond=(
                             None

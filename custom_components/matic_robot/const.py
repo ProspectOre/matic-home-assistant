@@ -16,6 +16,8 @@ PLATFORMS: Final = [
     "vacuum",
 ]
 
+# The Bluetooth address of the robot that issued the saved credential.
+CONF_BLUETOOTH_ADDRESS: Final = "bluetooth_address"
 CONF_CERTIFICATE_FINGERPRINT: Final = "certificate_fingerprint"
 CONF_CLEANING_MODE: Final = "cleaning_mode"
 CONF_COVERAGE_SETTING: Final = "coverage_setting"

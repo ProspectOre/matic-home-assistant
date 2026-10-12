@@ -494,6 +494,7 @@
       "invalid_certificate": "Home Assistant can't confirm this is your robot, so it did not connect. Check that the address belongs to your robot, then try again.",
       "invalid_credential": "The robot did not accept Home Assistant's saved pairing. Pair again to replace it.",
       "invalid_passkey": "Enter all six digits shown on the robot's screen.",
+      "multiple_robots_nearby": "Home Assistant can see more than one robot over Bluetooth and can't tell which one to pair, so nothing was changed. Turn Pairing mode off on your other robots, wait a few minutes, then try again.",
       "pairing_code_expired": "That code expired. In the Matic app, turn Pairing mode off and back on, then choose Start pairing and enter the new code right away.",
       "pairing_code_rejected": "The robot did not accept that code. In the Matic app, turn Pairing mode off and back on, then choose Start pairing and enter the new code right away.",
       "pairing_incomplete": "Home Assistant found the robot but could not finish pairing. Keep it near the adapter with Pairing mode on and try again; if it keeps failing, check Settings > System > Logs.",

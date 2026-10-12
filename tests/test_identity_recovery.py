@@ -16,6 +16,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot import config_flow as flow_module
 from custom_components.matic_robot.bluetooth_pairing import (
+    BluetoothCandidateAmbiguousError,
     BluetoothCredentialGrant,
     BluetoothPairingIncompleteError,
     BluetoothPairingUnavailableError,
@@ -38,6 +39,7 @@ from custom_components.matic_robot.config_flow import (
     _async_recovery_identity,
 )
 from custom_components.matic_robot.const import (
+    CONF_BLUETOOTH_ADDRESS,
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
     CONF_HOSTNAME,
@@ -232,7 +234,11 @@ async def test_recovery_re_pins_after_fresh_pairing_and_clears_the_repair(
     assert ir.async_get(hass).async_get_issue(DOMAIN, robot.issue_id) is None
     robot.reload.assert_called_once_with(robot.entry.entry_id)
     # Fresh passkey: any existing bond is removed first.
-    assert robot.request_kwargs == {"replace_existing_bond": True}
+    assert robot.request_kwargs == {
+        "replace_existing_bond": True,
+        "bond_address": None,
+        "excluded_addresses": frozenset(),
+    }
     # Pre-flight and verification each fetch from the form's address.
     assert [call.args for call in robot.fetch.await_args_list] == [
         ("192.0.2.9", 16320),
@@ -248,6 +254,30 @@ async def test_recovery_re_pins_after_fresh_pairing_and_clears_the_repair(
         "certificate_fingerprint": robot.fingerprint,
         "credential": NEW_CREDENTIAL,
     }
+
+
+async def test_recovery_binds_pairing_to_this_robot_and_records_it(hass, robot) -> None:
+    recorded, other, issued = (":".join((octet,) * 6) for octet in ("02", "06", "0A"))
+    MockConfigEntry(
+        domain=DOMAIN,
+        title="Hall",
+        unique_id="other-serial",
+        data={**ENTRY_DATA, CONF_BLUETOOTH_ADDRESS: other},
+    ).add_to_hass(hass)
+    hass.config_entries.async_update_entry(
+        robot.entry, data={**ENTRY_DATA, CONF_BLUETOOTH_ADDRESS: recorded}
+    )
+    robot.grant_facts["address"] = issued
+
+    result = await _recover(_flow(hass, robot))
+
+    assert result["reason"] == "identity_recovered"
+    assert robot.request_kwargs == {
+        "replace_existing_bond": True,
+        "bond_address": recorded,
+        "excluded_addresses": frozenset({other}),
+    }
+    assert robot.entry.data[CONF_BLUETOOTH_ADDRESS] == issued
 
 
 async def test_recovery_rejects_a_malformed_code_and_keeps_the_prompt(
@@ -318,6 +348,7 @@ async def test_recovery_reports_rejected_and_expired_codes(
         (PairingModeRequiredError("no advertisement"), "robot_not_found"),
         (BluetoothPairingUnavailableError("proxy only"), "bluetooth_unavailable"),
         (BluetoothPairingIncompleteError("gatt failed"), "pairing_incomplete"),
+        (BluetoothCandidateAmbiguousError("two robots"), "multiple_robots_nearby"),
     ],
 )
 async def test_recovery_reports_bluetooth_failures_like_setup(

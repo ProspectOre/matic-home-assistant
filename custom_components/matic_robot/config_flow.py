@@ -26,6 +26,7 @@ from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 from .bluetooth_pairing import (
     BluetoothBondRecoveryRequiredError,
     BluetoothBondResetFailedError,
+    BluetoothCandidateAmbiguousError,
     BluetoothCredentialGrant,
     BluetoothPairingIncompleteError,
     BluetoothPairingResetError,
@@ -47,6 +48,7 @@ from .client.exceptions import (
 )
 from .client.tls import PeerIdentity, async_fetch_peer_certificate, validate_certificate
 from .const import (
+    CONF_BLUETOOTH_ADDRESS,
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
     CONF_HOSTNAME,
@@ -327,6 +329,11 @@ async def _async_select_discovery_host(
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
     return _preferred_discovery_host(discovery_info)
+
+
+def _bluetooth_address_data(grant: BluetoothCredentialGrant) -> dict[str, str]:
+    """Return the entry update recording the robot that issued a credential."""
+    return {} if grant.address is None else {CONF_BLUETOOTH_ADDRESS: grant.address}
 
 
 async def _async_verify_recovered_robot(
@@ -799,8 +806,19 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "pairing_code_rejected" if exchange.submitted else "pairing_code_expired"
         )
 
-    async def _async_reauth_credential(self) -> BluetoothCredentialGrant:
+    def _other_bluetooth_addresses(self, entry_id: str | None) -> frozenset[str]:
+        """Return the Bluetooth addresses recorded by other configured robots."""
+        return frozenset(
+            entry.data[CONF_BLUETOOTH_ADDRESS]
+            for entry in self._async_current_entries(include_ignore=False)
+            if entry.entry_id != entry_id and CONF_BLUETOOTH_ADDRESS in entry.data
+        )
+
+    async def _async_reauth_credential(
+        self, entry: config_entries.ConfigEntry
+    ) -> BluetoothCredentialGrant:
         """Request a replacement credential, renewing expired codes in place."""
+        excluded_addresses = self._other_bluetooth_addresses(entry.entry_id)
         last_error: MaticError = PairingModeRequiredError(
             "no reauthorization attempt completed"
         )
@@ -815,6 +833,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             self._passkey_exchange,
                             stage_callback=self._async_set_pairing_stage,
                             replace_existing_bond=True,
+                            bond_address=entry.data.get(CONF_BLUETOOTH_ADDRESS),
+                            excluded_addresses=excluded_addresses,
                         )
                     except BluetoothPairingResetError as err:
                         last_error = BluetoothPairingIncompleteError(str(err))
@@ -844,12 +864,17 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else self._get_reauth_entry()
         )
         try:
-            credential = (await self._async_reauth_credential()).credential
+            grant = await self._async_reauth_credential(entry)
             await self._async_verify_existing_robot(
                 entry.data[CONF_HOST],
                 entry.data[CONF_PORT],
                 entry.data,
-                credential,
+                grant.credential,
+            )
+        except BluetoothCandidateAmbiguousError as err:
+            self._pairing_diagnostic = str(err)
+            self._pairing_result = self._show_pairing_form(
+                "reauth_confirm", {"base": "multiple_robots_nearby"}
             )
         except BluetoothPairingIncompleteError as err:
             self._pairing_diagnostic = str(err)
@@ -896,7 +921,10 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_mismatch()
             self._pairing_result = self.async_update_reload_and_abort(
                 entry,
-                data_updates={CONF_HERMES_CREDENTIAL: credential.to_storage()},
+                data_updates={
+                    CONF_HERMES_CREDENTIAL: grant.credential.to_storage(),
+                    **_bluetooth_address_data(grant),
+                },
                 reason="reauth_successful",
             )
 
@@ -1056,13 +1084,16 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         assert self._recovery_address is not None
         host, port = self._recovery_address
         try:
-            grant = await self._async_reauth_credential()
+            grant = await self._async_reauth_credential(entry)
             if not grant.fresh_passkey_bond:
                 self._pairing_result = self.async_abort(reason="pairing_not_confirmed")
                 return
             fingerprint = await _async_verify_recovered_robot(
                 host, port, entry.data, grant.credential
             )
+        except BluetoothCandidateAmbiguousError as err:
+            self._pairing_diagnostic = str(err)
+            error = "multiple_robots_nearby"
         except BluetoothPairingIncompleteError as err:
             self._pairing_diagnostic = str(err)
             error = self._pairing_retry_note or "pairing_incomplete"
@@ -1096,6 +1127,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_PORT: port,
                     CONF_CERTIFICATE_FINGERPRINT: fingerprint,
                     CONF_HERMES_CREDENTIAL: grant.credential.to_storage(),
+                    **_bluetooth_address_data(grant),
                 },
                 reason="identity_recovered",
             )
@@ -1226,6 +1258,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         host = data[CONF_HOST]
         port = data[CONF_PORT]
         credential_value = data.get(CONF_HERMES_CREDENTIAL)
+        bluetooth_address = data.get(CONF_BLUETOOTH_ADDRESS)
         try:
             credential = (
                 HermesCredential.from_storage(credential_value)
@@ -1260,7 +1293,9 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 needs_bluetooth_credential = info.requires_auth and credential is None
             if needs_bluetooth_credential:
-                credential = await self._async_request_credential()
+                grant = await self._async_request_credential()
+                credential = grant.credential
+                bluetooth_address = grant.address
             if credential is not None:
                 async with MaticHermesClient(
                     host,
@@ -1277,11 +1312,14 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     step_id="pair", errors={"base": "invalid_credential"}
                 )
             try:
-                credential = await self._async_request_credential()
+                grant = await self._async_request_credential()
             except MaticError as err:
                 return self._pairing_error_result(err, host, port, identity)
-            retry_data = dict(data)
-            retry_data[CONF_HERMES_CREDENTIAL] = credential.to_storage()
+            retry_data = {
+                **data,
+                CONF_HERMES_CREDENTIAL: grant.credential.to_storage(),
+                **_bluetooth_address_data(grant),
+            }
             return await self._async_create_or_error(retry_data)
         except CannotConnectError:
             return self.async_show_form(
@@ -1315,6 +1353,10 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         configured_updates = {CONF_HOST: host, CONF_PORT: port}
         if credential is not None:
             configured_updates[CONF_HERMES_CREDENTIAL] = credential.to_storage()
+        if bluetooth_address is not None:
+            # Saved only after the credential this robot issued authenticated
+            # above, so the address is bound to this robot's serial number.
+            configured_updates[CONF_BLUETOOTH_ADDRESS] = bluetooth_address
         self._abort_if_unique_id_configured(updates=configured_updates)
         entry_data = {
             CONF_HOST: host,
@@ -1325,12 +1367,14 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         if credential is not None:
             entry_data[CONF_HERMES_CREDENTIAL] = credential.to_storage()
+        if bluetooth_address is not None:
+            entry_data[CONF_BLUETOOTH_ADDRESS] = bluetooth_address
         return self.async_create_entry(
             title=info.name or fallback_robot_name(info.hostname),
             data=entry_data,
         )
 
-    async def _async_request_credential(self) -> HermesCredential:
+    async def _async_request_credential(self) -> BluetoothCredentialGrant:
         """Request a robot-issued credential for first setup over Bluetooth."""
         _LOGGER.debug("Requesting a robot-issued Bluetooth credential")
         grant = await async_request_bluetooth_credential(
@@ -1338,11 +1382,12 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._pairing_user_id,
             self._passkey_exchange,
             stage_callback=self._async_set_pairing_stage,
+            excluded_addresses=self._other_bluetooth_addresses(None),
             reset_bond_paths=self._reset_bond_paths,
             reset_bond_path=self._reset_bond_path,
         )
         _LOGGER.debug("Received a robot-issued Bluetooth credential")
-        return grant.credential
+        return grant
 
     def _pairing_error_result(
         self, err: MaticError, host: str, port: int, identity: PeerIdentity

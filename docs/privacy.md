@@ -10,7 +10,7 @@ analytics, or maintainer cloud service.
 
 | Data | Where it lives |
 | --- | --- |
-| Local credential, endpoint, and certificate identity | Home Assistant config entry |
+| Local credential, endpoint, certificate identity, and the robot's Bluetooth address | Home Assistant config entry |
 | Plans, room preferences, results, and custom-area geometry | Private integration storage |
 | Current photographic map and saved map history | Private integration storage; history is capped at 12 scenes and 48 MiB |
 | Firmware endpoint summaries | Private storage, up to 52 snapshots; sizes, hashes, and field shapes without payload values |

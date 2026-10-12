@@ -17,6 +17,7 @@ from custom_components.matic_robot.bluetooth_pairing import (
     MATIC_BLE_SERVICE_UUID,
     BluetoothAdapterUnavailableError,
     BluetoothBondRecoveryRequiredError,
+    BluetoothCandidateAmbiguousError,
     BluetoothCredentialGrant,
     BluetoothPairingIncompleteError,
     BluetoothPairingResetError,
@@ -642,6 +643,160 @@ async def test_grant_from_a_later_candidate_does_not_inherit_an_earlier_code(
     assert not grant.fresh_passkey_bond
 
 
+TARGET_PATH = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
+OTHER_PATH = "/org/bluez/hci0/dev_11_22_33_44_55_66"
+
+
+def _candidate(address: str, path: str, *, fresh: bool) -> SimpleNamespace:
+    return SimpleNamespace(
+        device=SimpleNamespace(address=address, details={"path": path}),
+        fresh=fresh,
+    )
+
+
+def _install_two_robot_home(monkeypatch, user_id, discoveries) -> SimpleNamespace:
+    """Model BlueZ for a home whose other robot is already paired to the host."""
+    home = SimpleNamespace(bonded={OTHER_PATH}, contacted=[], removed=[])
+
+    async def pair(path, *, replace_existing=False):
+        if path in home.bonded and replace_existing:
+            home.bonded.discard(path)
+            home.removed.append(path)
+            raise BluetoothPairingResetError("cleared")
+        session.reused_existing_bond = path in home.bonded
+        home.bonded.add(path)
+
+    session = SimpleNamespace(
+        async_require_connection_agent=AsyncMock(),
+        async_pair=pair,
+        reused_existing_bond=None,
+    )
+
+    @asynccontextmanager
+    async def pairing_agent(address, passkey_exchange=None):
+        del passkey_exchange
+        home.contacted.append(address)
+        yield session
+
+    monkeypatch.setattr(bluetooth_pairing, "_async_bluez_pairing_agent", pairing_agent)
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "_async_matic_discoveries",
+        AsyncMock(return_value=discoveries),
+    )
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "establish_connection",
+        AsyncMock(return_value=_credential_client(user_id)),
+    )
+    return home
+
+
+@pytest.mark.parametrize(
+    ("other_fresh", "kwargs"),
+    [
+        # The other robot is recorded by its own entry: never contacted.
+        (
+            True,
+            {
+                "replace_existing_bond": True,
+                "excluded_addresses": {OTHER_ADDRESS.lower()},
+            },
+        ),
+        # Its retained entry is not advertising, so it is not in Pairing mode.
+        (False, {"replace_existing_bond": True}),
+        # Both advertise, but this entry recorded its own robot's address.
+        (True, {"replace_existing_bond": True, "bond_address": TEST_ADDRESS}),
+        # First setup never contacts a robot another entry recorded.
+        (True, {"excluded_addresses": {OTHER_ADDRESS}}),
+    ],
+)
+async def test_a_stronger_paired_robot_is_never_contacted_or_unpaired(
+    monkeypatch, other_fresh, kwargs
+) -> None:
+    user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
+    home = _install_two_robot_home(
+        monkeypatch,
+        user_id,
+        [
+            _candidate(OTHER_ADDRESS, OTHER_PATH, fresh=other_fresh),
+            _candidate(TEST_ADDRESS, TARGET_PATH, fresh=True),
+        ],
+    )
+
+    grant = await async_request_bluetooth_credential(object(), user_id, **kwargs)
+
+    assert grant.address == TEST_ADDRESS
+    assert home.contacted == [TEST_ADDRESS]
+    assert home.removed == []
+    assert OTHER_PATH in home.bonded
+
+
+@pytest.mark.parametrize(
+    ("fresh", "bond_address"),
+    [
+        ((True, True), None),
+        ((False, False), None),
+        # The recorded robot is not advertising and two others are.
+        ((True, True), ":".join(("02",) * 6)),
+    ],
+)
+async def test_replacement_refuses_to_guess_between_robots(
+    monkeypatch, fresh, bond_address
+) -> None:
+    user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
+    home = _install_two_robot_home(
+        monkeypatch,
+        user_id,
+        [
+            _candidate(OTHER_ADDRESS, OTHER_PATH, fresh=fresh[0]),
+            _candidate(TEST_ADDRESS, TARGET_PATH, fresh=fresh[1]),
+        ],
+    )
+
+    with pytest.raises(BluetoothCandidateAmbiguousError):
+        await async_request_bluetooth_credential(
+            object(), user_id, replace_existing_bond=True, bond_address=bond_address
+        )
+
+    assert home.contacted == []
+    assert home.bonded == {OTHER_PATH}
+
+
+@pytest.mark.parametrize("fresh", [True, False])
+async def test_replacement_with_one_robot_still_pairs_it(monkeypatch, fresh) -> None:
+    user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
+    home = _install_two_robot_home(
+        monkeypatch, user_id, [_candidate(TEST_ADDRESS, TARGET_PATH, fresh=fresh)]
+    )
+
+    grant = await async_request_bluetooth_credential(
+        object(), user_id, replace_existing_bond=True
+    )
+
+    assert grant.address == TEST_ADDRESS
+    assert grant.reused_existing_bond is False
+    assert home.contacted == [TEST_ADDRESS]
+
+
+async def test_only_robots_of_other_entries_means_none_found(monkeypatch) -> None:
+    user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
+    home = _install_two_robot_home(
+        monkeypatch, user_id, [_candidate(OTHER_ADDRESS, OTHER_PATH, fresh=True)]
+    )
+
+    with pytest.raises(PairingModeRequiredError):
+        await async_request_bluetooth_credential(
+            object(),
+            user_id,
+            replace_existing_bond=True,
+            excluded_addresses={OTHER_ADDRESS},
+        )
+
+    assert home.contacted == []
+    assert home.bonded == {OTHER_PATH}
+
+
 def test_local_adapter_check_ignores_proxies_and_missing_bluetooth(
     monkeypatch,
 ) -> None:
@@ -1153,6 +1308,21 @@ async def test_discovery_accepts_an_unchanged_local_cache_entry(monkeypatch) -> 
         hass, duration=bluetooth_pairing.BLUETOOTH_ACTIVE_SCAN_SECONDS
     )
     assert [discovery.device.address for discovery in result] == [TEST_ADDRESS]
+    assert result[0].fresh is False
+
+
+async def test_discovery_marks_robots_heard_during_the_scan(monkeypatch) -> None:
+    scanner = _LocalScanner(
+        [_advertisement(), _advertisement(address=OTHER_ADDRESS, rssi=-30)]
+    )
+    _install_bluetooth(monkeypatch, [scanner], refreshed_addresses={TEST_ADDRESS})
+
+    result = await _async_matic_discoveries(object())
+
+    assert {d.device.address: d.fresh for d in result} == {
+        OTHER_ADDRESS: False,
+        TEST_ADDRESS: True,
+    }
 
 
 async def test_discovery_uses_bluez_cached_device_name(monkeypatch) -> None:
