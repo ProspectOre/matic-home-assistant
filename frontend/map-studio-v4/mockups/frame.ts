@@ -499,7 +499,7 @@ export abstract class MockScreen extends LitElement {
       class="inspector mobile-sheet"
       data-detent=${detent}
       style=${`block-size:${height}px`}
-      aria-label="Map workspace"
+      aria-label=${t("v4_panel_region")}
     >
       <div class="sheet-grip">
         <span class="sheet-handle" role="presentation"></span>
@@ -513,7 +513,7 @@ export abstract class MockScreen extends LitElement {
         <button
           class="sheet-toggle ms-btn ms-btn--icon"
           type="button"
-          aria-label=${expand ? t("v4_show_more") : t("v4_show_less")}
+          aria-label=${expand ? t("v4_sheet_expand") : t("v4_sheet_collapse")}
           aria-controls="sheet-body"
           @click=${() => this.emit({ detent: next })}
         >${glyph(expand ? iconChevronUp : iconChevronDown)}</button>
@@ -527,7 +527,7 @@ export abstract class MockScreen extends LitElement {
   }
 
   #inspector(view: ShellView): TemplateResult {
-    return html`<aside id="map-workspace" class="inspector" aria-label="Map workspace">
+    return html`<aside id="map-workspace" class="inspector" aria-label=${t("v4_panel_region")}>
       ${this.#strip(view)}
       <section class="workflow">
         ${this.#heading(view)}

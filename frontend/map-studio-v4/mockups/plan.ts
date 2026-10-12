@@ -5,6 +5,7 @@ import { iconChevronRight, iconMoveDown, iconMoveUp, iconOverflow, iconPlus } fr
 import { syntheticMockupFloor } from "../synthetic-fixtures";
 import {
   ROTATION_LEVEL,
+  levelWord,
   mopLabel,
   nextCleanLabel,
   num,
@@ -28,6 +29,7 @@ import { STATUS } from "./home";
 import {
   CATALOG,
   DEFAULT_PLAN_ID,
+  canBringForward,
   dueLines,
   orderFor,
   planById,
@@ -84,13 +86,13 @@ const planCss = css`
 .schedule { display: grid; gap: var(--ms-space-3); }
 .schedule-head { display: flex; align-items: center; gap: var(--ms-space-2); }
 .schedule-head h3 { flex: 1; margin: 0; font-size: var(--ms-t-md); font-weight: var(--ms-w-bold); }
-/* room-schedule.md §7: at every width the label sits above [−][field][+] and the status line below. */
+/* room-schedule.md §3, §7: both rows are a label line, a control line and a status line. */
 .sched-row { display: grid; gap: var(--ms-space-1); justify-items: start; }
 .sched-label { font-size: var(--ms-t-md); font-weight: var(--ms-w-medium); }
-/* room-schedule.md §3: row 2's title is the level select; it spans the row at 44 px. */
-.sched-level { inline-size: 100%; min-block-size: var(--ms-control); font-size: var(--ms-t-md); font-weight: var(--ms-w-medium); }
-.sched-row:has(.sched-level) { justify-items: stretch; }
-.sched-row:has(.sched-level) > :not(.sched-level) { justify-self: start; }
+/* The control line: row 2's level select (9 rem, 44 px) leads, and the stepper follows on the same
+   line where the content is at least 9 rem + 12 px + 170 px = 326 px wide, else it wraps below. */
+.sched-controls { display: flex; flex-wrap: wrap; gap: var(--ms-space-3); align-items: center; }
+.sched-level { inline-size: 9rem; flex: none; font-size: var(--ms-t-md); }
 .sched-status { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 .sched-status.reason { display: flex; gap: var(--ms-space-1); color: var(--ms-text); }
 .sched-status.reason .ms-icon { inline-size: 1rem; block-size: 1rem; color: var(--ms-warning); }
@@ -191,13 +193,13 @@ interface StepperOptions {
   readonly status?: string | null;
   readonly reason?: string;
   readonly reset?: string;
-  /** room-schedule.md §3: row 2's title is the level select, and the field is labelled by it. */
-  readonly title?: { readonly control: TemplateResult; readonly id: string };
+  /** room-schedule.md §3: row 2's level select leads the control line, before the stepper. */
+  readonly level?: TemplateResult;
 }
 
 const stepperRow = (options: StepperOptions): TemplateResult => {
   const { id, label, value } = options;
-  const labelId = options.title?.id ?? `${id}-label`;
+  const labelId = `${id}-label`;
   const atOff = value === null;
   const atMax = value === 100;
   const minReason = atOff ? t("v4_cadence_stepper_off_reason") : undefined;
@@ -217,7 +219,9 @@ const stepperRow = (options: StepperOptions): TemplateResult => {
     aria-describedby=${describedBy ?? nothing}
   >`;
   return html`<div class="sched-row">
-    ${options.title ? options.title.control : html`<span class="sched-label" id=${labelId}>${label}</span>`}
+    <span class="sched-label" id=${labelId}>${label}</span>
+    <div class="sched-controls">
+    ${options.level ?? nothing}
     ${options.readonly
       ? html`<span class="ms-stepper ms-stepper--readonly">${field}</span>`
       : html`<span class="ms-stepper">
@@ -241,6 +245,7 @@ const stepperRow = (options: StepperOptions): TemplateResult => {
           title=${maxReason ?? nothing}
         >${glyph(iconPlus)}</button>
       </span>`}
+    </div>
     ${options.reason
       ? html`<small class="sched-status reason" id=${`${id}-status`}>${glyph(glyphAlert)}<span>${options.reason}</span></small>
         ${options.reset ? html`<button class="ms-btn ms-btn--secondary" type="button">${options.reset}</button>` : nothing}`
@@ -259,7 +264,11 @@ export interface ScheduleModel {
   readonly level: RotationLevel;
   readonly mopStatus: string | null;
   readonly covStatus: string | null;
+  /** The next-clean switch is on (a flag is set). */
   readonly doNext: boolean;
+  /** room-schedule.md §5: the work the switch brings forward, which its label names (on and not already due). */
+  readonly bringMop: boolean;
+  readonly bringCov: boolean;
   readonly scope: "shared" | "plan";
   readonly readonly?: boolean;
   readonly sharedHint?: boolean;
@@ -276,16 +285,13 @@ const LEVELS: readonly RotationLevel[] = ["quick", "optimal", "heavy"];
 const scheduleBlock = (model: ScheduleModel, onScope: (scope: "shared" | "plan") => void, scrollTarget = false): TemplateResult => {
   const name = roomName(model.roomId);
   const id = model.roomId;
-  const mopOn = model.mopEvery !== null;
-  const covOn = model.covEvery !== null;
-  const levelId = `${id}-level`;
-  // room-schedule.md §3, §8: the select's options are the whole row labels;
-  // it is named "Vacuum rotation level", and the field takes its selected
-  // option as its name. Joined (read-only), the level shows as text.
+  // room-schedule.md §3, §8: the label line is text by level and value; the
+  // select shows only the level name and is named "Vacuum level for {room}".
+  // Joined (read-only), the label line carries the level and there is no select.
   const levelControl = model.readonly
-    ? html`<span class="sched-label" id=${levelId}>${rotationLabel(model.level, model.covEvery)}</span>`
-    : html`<select class="sched-level" id=${levelId} aria-label=${t("v4_cadence_rotation_level")}>
-        ${LEVELS.map((level) => html`<option value=${level} ?selected=${level === model.level}>${rotationLabel(level, model.covEvery)}</option>`)}
+    ? undefined
+    : html`<select class="ms-select sched-level" id=${`${id}-level`} aria-label=${t("v4_cadence_level_named", { room: name })}>
+        ${LEVELS.map((level) => html`<option value=${level} ?selected=${level === model.level}>${levelWord(level)}</option>`)}
       </select>`;
   return html`<section class="schedule" role="group" aria-label=${t("v4_room_cadence_named", { room: name })} ?data-scroll-target=${scrollTarget}>
     <div class="schedule-head">
@@ -308,11 +314,11 @@ const scheduleBlock = (model: ScheduleModel, onScope: (scope: "shared" | "plan")
       label: rotationLabel(model.level, model.covEvery),
       value: model.covEvery,
       status: model.covStatus,
-      title: { control: levelControl, id: levelId },
+      ...(levelControl ? { level: levelControl } : {}),
       ...(model.readonly ? { readonly: true } : {}),
     })}
-    ${mopOn || covOn
-      ? switchRow(`${id}-next`, nextCleanLabel(mopOn, covOn ? model.level : null), t("v4_cadence_next_hint"), model.doNext, model.readonly ? { readonly: true } : {})
+    ${model.bringMop || model.bringCov
+      ? switchRow(`${id}-next`, nextCleanLabel(model.bringMop, model.bringCov ? model.level : null), t("v4_cadence_next_hint"), model.doNext, model.readonly ? { readonly: true } : {})
       : nothing}
     ${model.note ? html`<p class="schedule-note">${model.note}</p>` : nothing}
     ${model.explanation ? html`<p class="schedule-note">${model.explanation}</p>` : nothing}
@@ -446,10 +452,10 @@ export class MockPlan extends MockScreen {
   #editRow(roomId: string, index: number, selected: boolean, ordered: boolean, last: number, plan: SavedPlan, expanded: EditOptions["expanded"]): TemplateResult {
     const name = roomName(roomId);
     const own: PlanRoom | undefined = plan.rooms.find((room) => room.roomId === roomId);
-    const preview = (plan.nextRunPreview?.rooms ?? []).find((room) => room.roomId === roomId);
     const open = expanded?.roomId === roomId;
-    const effective = this.variants.due && preview ? preview : own;
-    const line = effective ? roomSetting(effective.cleaningMode, effective.coverageSetting) : "";
+    // plan.md §3 Edit room row: line 2 is the room's own cleaning mode and
+    // vacuum coverage from the draft, not the preview's effective setting.
+    const line = own ? roomSetting(own.cleaningMode, own.coverageSetting) : "";
     // plan.md §3 Edit room row: line 3 is the schedule text (`v4_room_schedules_*`),
     // from the open draft when this row is expanded, else from the saved cadence.
     const schedules = open && expanded
@@ -633,12 +639,21 @@ export class MockSchedule extends MockPlan {
     const progress = progressFor(room?.cadenceProgress, cadence, this.variants.due);
     const mopEvery = state === "edited" ? 4 : cadence?.mopEveryN ?? null;
     const covEvery = cadence?.coverageEveryN ?? null;
+    // An edited interval keeps the progress, so the next due follows cadence.py:122
+    // (interval − count) rather than the saved schedule's value.
+    const mopNextIn = state === "edited" && mopEvery !== null && progress
+      ? Math.max(1, mopEvery - progress.mopProgress)
+      : progress?.nextMopIn ?? null;
+    const covNextIn = progress?.nextCoverageIn ?? null;
+    // room-schedule.md §5: the switch names only work that is on and not already due.
+    const bringMop = canBringForward(mopEvery, mopNextIn);
+    const bringCov = canBringForward(covEvery, covNextIn);
     const doNext = state === "next-clean";
     const leaving = this.variants.scope === "plan";
     const mopStatus = state === "edited"
       ? t("v4_cadence_status_edited")
-      : statusLine(mopEvery, progress?.nextMopIn ?? null, doNext);
-    const covStatus = statusLine(covEvery, progress?.nextCoverageIn ?? null, doNext);
+      : statusLine(mopEvery, mopNextIn, doNext && bringMop);
+    const covStatus = statusLine(covEvery, covNextIn, doNext && bringCov);
     const explanation = state === "edited"
       ? t("v4_cadence_existing_effect")
       : leaving ? t("v4_cadence_shared_leave_effect") : t("v4_cadence_shared_edit_effect", { room: roomName("room-kitchen") });
@@ -654,6 +669,8 @@ export class MockSchedule extends MockPlan {
         covStatus,
         level: levelOf(cadence?.periodicCoverageSetting),
         doNext,
+        bringMop,
+        bringCov,
         scope: this.variants.scope,
         explanation,
         advancedOpen: leaving,
@@ -678,6 +695,8 @@ export class MockSchedule extends MockPlan {
           mopStatus: statusLine(null, null, false),
           covStatus: statusLine(null, null, false),
           doNext: false,
+          bringMop: false,
+          bringCov: false,
           scope: "shared",
           sharedHint: true,
         },
@@ -695,6 +714,8 @@ export class MockSchedule extends MockPlan {
         mopStatus: statusLine(mopEvery, progress?.nextMopIn ?? null, Boolean(policy?.doMopNext)),
         covStatus: statusLine(covEvery, progress?.nextCoverageIn ?? null, Boolean(policy?.doCoverageNext)),
         doNext: Boolean(policy?.doMopNext || policy?.doCoverageNext),
+        bringMop: canBringForward(mopEvery, progress?.nextMopIn ?? null),
+        bringCov: canBringForward(covEvery, progress?.nextCoverageIn ?? null),
         scope: "shared",
         readonly: true,
         note: t("v4_cadence_join_pending", { room: roomName("room-study") }),
@@ -716,6 +737,8 @@ export class MockSchedule extends MockPlan {
         mopStatus: statusLine(null, null, false),
         covStatus: null,
         doNext: false,
+        bringMop: false,
+        bringCov: canBringForward(100, null),
         scope: "shared",
         explanation: t("v4_cadence_new_shared_effect"),
         advancedOpen: true,

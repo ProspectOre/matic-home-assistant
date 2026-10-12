@@ -178,7 +178,7 @@ export const COPY = {
   v4_cadence_coverage_heavy: "Heavy duty vacuum every {count} cleans",
   v4_cadence_coverage_heavy_one: "Heavy duty vacuum every clean",
   v4_cadence_coverage_heavy_off: "Heavy duty vacuum",
-  v4_cadence_rotation_level: "Vacuum rotation level",
+  v4_cadence_level_named: "Vacuum level for {room}", // room-schedule.md §6
   v4_cadence_off: "Off",
   v4_cadence_stepper_off_reason: "This schedule is already off.",
   v4_cadence_stepper_max_reason: "Every 100 cleans is the longest schedule.",
@@ -257,8 +257,9 @@ export const COPY = {
   v4_open_navigation: "Open Home Assistant sidebar", // (existing) shell.ts
   v4_how_to_move: "How to move the map", // (existing) shell.ts
   v4_choose_floor: "Choose floor", // (existing) shell.ts
-  v4_show_more: "Show more of the map workspace", // (existing) shell.ts
-  v4_show_less: "Show less of the map workspace", // (existing) shell.ts
+  v4_sheet_expand: "Expand panel", // shell.md §6
+  v4_sheet_collapse: "Collapse panel", // shell.md §6
+  v4_panel_region: "Cleaning panel", // shell.md §6, the sheet region's name
   v4_cleaning_choices: "Cleaning choices", // (existing) shell.ts, the group name home-rooms.md §8 asks for
   v4_close: "Close",
   // shell.md §5 dialog table, in the existing `v4_discard_*` keys
@@ -332,13 +333,18 @@ export const mopLabel = (every: number | null): string => {
   return every === 1 ? t("v4_cadence_mop_interval_one") : t("v4_cadence_mop_interval", { count: num(every) });
 };
 
+const LEVEL_WORD: Readonly<Record<RotationLevel, CopyKey>> = { quick: "quick", optimal: "standard", heavy: "heavy_duty" };
+
+/** room-schedule.md §3: the level select shows only the level name, the existing level words. */
+export const levelWord = (level: RotationLevel): string => t(LEVEL_WORD[level]);
+
 const ROTATION_KEYS: Readonly<Record<RotationLevel, readonly [CopyKey, CopyKey, CopyKey]>> = {
   quick: ["v4_cadence_coverage_quick", "v4_cadence_coverage_quick_one", "v4_cadence_coverage_quick_off"],
   optimal: ["v4_cadence_coverage_optimal", "v4_cadence_coverage_optimal_one", "v4_cadence_coverage_optimal_off"],
   heavy: ["v4_cadence_coverage_heavy", "v4_cadence_coverage_heavy_one", "v4_cadence_coverage_heavy_off"],
 };
 
-/** room-schedule.md §3: the vacuum rotation row's label (its level select's option) by level and value. */
+/** room-schedule.md §3: the vacuum rotation row's label line, by level and value. */
 export const rotationLabel = (level: RotationLevel, every: number | null): string => {
   const [many, one, off] = ROTATION_KEYS[level];
   if (every === null) return t(off);
@@ -351,7 +357,7 @@ const NEXT_KEYS: Readonly<Record<RotationLevel, readonly [CopyKey, CopyKey]>> = 
   heavy: ["v4_cadence_next_heavy", "v4_cadence_next_mop_heavy"],
 };
 
-/** room-schedule.md §6: the next-clean switch, labelled by the schedules that are on. */
+/** room-schedule.md §6: the next-clean switch, labelled by the work it brings forward. */
 export const nextCleanLabel = (mopOn: boolean, rotation: RotationLevel | null): string => {
   if (rotation === null) return t("v4_cadence_next_mop");
   const [alone, withMop] = NEXT_KEYS[rotation];

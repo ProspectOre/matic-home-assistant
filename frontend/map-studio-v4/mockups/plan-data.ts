@@ -129,7 +129,17 @@ export const progressFor = (
 };
 
 /**
+ * room-schedule.md §5 next-clean switch: a schedule is named only while it is
+ * on and not already "Due next clean" (server next_*_in > 1). A schedule at
+ * every clean is never named (its next_*_in is always 1, cadence.py:118-123),
+ * and a new one with no progress yet counts as not due.
+ */
+export const canBringForward = (every: number | null, nextIn: number | null): boolean =>
+  every !== null && every > 1 && (nextIn ?? 2) > 1;
+
+/**
  * room-schedule.md §5 status line, when it happens and nothing else:
+ * "Due every clean" at interval 1, which wins over "Due next clean"; else
  * "Due next clean" when the server's next_*_in is 1 or the next-clean switch
  * forces it, else "Due in {count} cleans" with that server value.
  */

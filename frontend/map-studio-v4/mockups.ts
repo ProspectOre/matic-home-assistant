@@ -39,7 +39,7 @@ const PLAN_RUN: readonly StateEntry[] = [
 ];
 
 const PLAN_EDIT: readonly StateEntry[] = [
-  entry("clean", "Clean edit", "plan.md §4 E1: nothing changed; Done is enabled and leaves without a dialog. A room with schedules shows them as line 3 text; chips are status only."),
+  entry("clean", "Clean edit", "plan.md §4 E1: nothing changed; Done is enabled and leaves without a dialog. Line 2 is the room's own mode and coverage; a room with schedules shows them as line 3 text; chips are status only."),
   entry("dirty", "Dirty edit", "plan.md §4 E2: the Unsaved changes chip; Cancel and Save stay pinned at the bottom."),
   entry("options", "When a run ends", "plan.md §3 Edit view: the When a run ends disclosure open: Return to the dock, Finish the current room with its hint, and the 70 % slider shown while that switch is on."),
   entry("menu", "Heading menu", "plan.md §3 Edit view: More actions holds Delete, disabled with its reason while there are changes."),
@@ -82,8 +82,8 @@ const SCREENS: Readonly<Record<ScreenId, { readonly label: string; readonly stat
   schedule: {
     label: "Room schedule",
     states: [
-      entry("counting", "Counting", "room-schedule.md §4 S2: the Mop row and the vacuum rotation row, whose level select is its title; each stepper has its Due line below, then the next-clean switch with its hint. The scope toggle switches Across all plans and In this plan only."),
-      entry("next-clean", "Next clean on", "room-schedule.md §4 S4 and §5: the next-clean switch on; both rows read Due next clean."),
+      entry("counting", "Counting", "room-schedule.md §4 S2: the Mop row and the vacuum rotation row share one shape, a label line, a control line (the level select beside the stepper at 390, stacked in the 360 px inspector) and a Due line; the next-clean switch names only the vacuum rotation, because Mop is already due next clean. The scope toggle switches Across all plans and In this plan only."),
+      entry("next-clean", "Next clean on", "room-schedule.md §4 S4 and §5: the next-clean switch on; both rows read Due next clean, and the label keeps naming the work it brought forward."),
       entry("edited", "Edited", "room-schedule.md §4 S5: an edited interval restarts nothing; the status line reads Keeps the progress so far."),
       entry("available", "Shared available", "room-schedule.md §4 S6: a room with no schedule in this plan; the shared hint."),
       entry("joined", "Joined shared", "room-schedule.md §4 S7: the plan joins the room's shared schedule, read-only until saved."),
