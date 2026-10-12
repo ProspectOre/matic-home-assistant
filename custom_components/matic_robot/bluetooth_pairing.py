@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import logging
+import math
 import re
 import sys
 from collections.abc import AsyncIterator, Callable, Collection, Iterable
@@ -289,6 +290,13 @@ def _is_matic_identity(name: object, service_uuids: Iterable[object] | None) -> 
     return named_matic or MATIC_BLE_SERVICE_UUID in normalized_uuids
 
 
+def _scanner_timestamps(scanners: Iterable[Any]) -> dict[str, dict[str, float]]:
+    """Return when each scanner last heard every address it retains."""
+    return {
+        scanner.source: scanner.discovered_device_timestamps for scanner in scanners
+    }
+
+
 async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
     """Return Matic advertisements retained by a local Bluetooth adapter."""
     from homeassistant.components import bluetooth
@@ -298,58 +306,63 @@ async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
             "Home Assistant has no directly attached connectable Bluetooth adapter"
         )
     try:
-        before_scan = {
-            info.address: info.time
-            for info in bluetooth.async_discovered_service_info(hass, connectable=False)
-        }
+        heard_before = _scanner_timestamps(bluetooth.async_current_scanners(hass))
         await bluetooth.async_request_active_scan(
             hass, duration=BLUETOOTH_ACTIVE_SCAN_SECONDS
         )
-        service_infos = tuple(
-            bluetooth.async_discovered_service_info(hass, connectable=False)
-        )
+        heard_after = _scanner_timestamps(bluetooth.async_current_scanners(hass))
+        scanner_devices = [
+            scanner_device
+            for service_info in bluetooth.async_discovered_service_info(
+                hass, connectable=False
+            )
+            if _is_matic_advertisement(service_info)
+            for scanner_device in bluetooth.async_scanner_devices_by_address(
+                hass, service_info.address, connectable=False
+            )
+        ]
     except RuntimeError as err:
         # Raised when Home Assistant's Bluetooth integration unloads mid-scan.
         raise BluetoothAdapterUnavailableError(
             "Home Assistant's Bluetooth integration is not available"
         ) from err
+    # Freshness belongs to each scanner: a proxy hearing Matic says nothing
+    # about whether a local adapter's retained entry is still advertising.
+    heard_during_scan = {
+        (source, address)
+        for source, timestamps in heard_after.items()
+        for address, heard in timestamps.items()
+        if heard > heard_before.get(source, {}).get(address, -math.inf)
+    }
 
     local_by_address: dict[str, _MaticDiscovery] = {}
     remote_matic = False
-    for service_info in service_infos:
-        if not _is_matic_advertisement(service_info):
+    for scanner_device in scanner_devices:
+        scanner = scanner_device.scanner
+        device = scanner_device.ble_device
+        advertisement = scanner_device.advertisement
+        address = device.address
+        name = advertisement.local_name or device.name or address
+        service_uuids = advertisement.service_uuids
+        if not _is_matic_identity(name, service_uuids):
             continue
-        previous_time = before_scan.get(service_info.address)
-        refreshed_source = previous_time is None or service_info.time > previous_time
-        scanner_devices = bluetooth.async_scanner_devices_by_address(
-            hass, service_info.address, connectable=False
+        fresh = (scanner.source, address) in heard_during_scan
+        if isinstance(scanner, bluetooth.BaseHaRemoteScanner):
+            remote_matic = remote_matic or fresh
+            continue
+        if not scanner.connectable:
+            continue
+        discovery = _MaticDiscovery(
+            device=device,
+            name=name,
+            service_uuids=tuple(service_uuids),
+            rssi=advertisement.rssi,
+            source=scanner.source,
+            fresh=fresh,
         )
-        for scanner_device in scanner_devices:
-            scanner = scanner_device.scanner
-            device = scanner_device.ble_device
-            advertisement = scanner_device.advertisement
-            address = device.address
-            name = advertisement.local_name or device.name or address
-            service_uuids = advertisement.service_uuids
-            if not _is_matic_identity(name, service_uuids):
-                continue
-            if isinstance(scanner, bluetooth.BaseHaRemoteScanner):
-                if scanner.source == service_info.source and refreshed_source:
-                    remote_matic = True
-                continue
-            if not scanner.connectable:
-                continue
-            discovery = _MaticDiscovery(
-                device=device,
-                name=name,
-                service_uuids=tuple(service_uuids),
-                rssi=advertisement.rssi,
-                source=scanner.source,
-                fresh=refreshed_source,
-            )
-            current = local_by_address.get(address)
-            if current is None or (discovery.rssi or -127) > (current.rssi or -127):
-                local_by_address[address] = discovery
+        current = local_by_address.get(address)
+        if current is None or (discovery.rssi or -127) > (current.rssi or -127):
+            local_by_address[address] = discovery
 
     local_discoveries = sorted(
         local_by_address.values(),

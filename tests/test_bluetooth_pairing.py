@@ -329,6 +329,12 @@ class _LocalScanner:
             device.address: (device, advertisement)
             for device, advertisement in devices or []
         }
+        # When this scanner last heard each retained address.
+        self.timestamps = dict.fromkeys(self.devices, 10.0)
+
+    @property
+    def discovered_device_timestamps(self) -> dict[str, float]:
+        return dict(self.timestamps)
 
 
 class _RemoteScanner(_LocalScanner):
@@ -356,7 +362,8 @@ def _advertisement(
     return device, advertisement
 
 
-def _install_bluetooth(monkeypatch, scanners, *, refreshed_addresses=None):
+def _install_bluetooth(monkeypatch, scanners, *, heard=None):
+    """Install Bluetooth; ``heard`` holds the (source, address) pairs the scan hears."""
     paths_by_address = {}
     for scanner in scanners:
         for address, (device, advertisement) in scanner.devices.items():
@@ -377,18 +384,23 @@ def _install_bluetooth(monkeypatch, scanners, *, refreshed_addresses=None):
                 address=address,
                 name=advertisement.local_name or device.name or address,
                 service_uuids=advertisement.service_uuids,
-                source=strongest.scanner.source,
-                time=10.0,
             )
         )
-    if refreshed_addresses is None:
-        refreshed_addresses = set(paths_by_address)
+    if heard is None:
+        heard = {
+            (scanner.source, address)
+            for scanner in scanners
+            for address in scanner.devices
+        }
 
     async def active_scan(_hass, *, duration):
         del duration
-        for info in service_infos:
-            if info.address in refreshed_addresses:
-                info.time += 1.0
+        for scanner in scanners:
+            for address in scanner.devices:
+                if (scanner.source, address) in heard:
+                    scanner.timestamps[address] = (
+                        scanner.timestamps.get(address, 10.0) + 1.0
+                    )
 
     scan = AsyncMock(side_effect=active_scan)
 
@@ -1350,7 +1362,7 @@ async def test_discovery_accepts_an_unchanged_local_cache_entry(monkeypatch) -> 
         service_uuids=["0000180f-0000-1000-8000-00805f9b34fb"],
     )
     scanner = _LocalScanner([cached, unrelated])
-    scan = _install_bluetooth(monkeypatch, [scanner], refreshed_addresses=set())
+    scan = _install_bluetooth(monkeypatch, [scanner], heard=set())
 
     result = await _async_matic_discoveries(hass)
 
@@ -1365,7 +1377,7 @@ async def test_discovery_marks_robots_heard_during_the_scan(monkeypatch) -> None
     scanner = _LocalScanner(
         [_advertisement(), _advertisement(address=OTHER_ADDRESS, rssi=-30)]
     )
-    _install_bluetooth(monkeypatch, [scanner], refreshed_addresses={TEST_ADDRESS})
+    _install_bluetooth(monkeypatch, [scanner], heard={("local-adapter", TEST_ADDRESS)})
 
     result = await _async_matic_discoveries(object())
 
@@ -1375,11 +1387,57 @@ async def test_discovery_marks_robots_heard_during_the_scan(monkeypatch) -> None
     }
 
 
+async def test_discovery_marks_a_newly_heard_local_robot_fresh(monkeypatch) -> None:
+    scanner = _LocalScanner([_advertisement()])
+    del scanner.timestamps[TEST_ADDRESS]
+    _install_bluetooth(monkeypatch, [scanner])
+
+    result = await _async_matic_discoveries(object())
+
+    assert [d.fresh for d in result] == [True]
+
+
+def _proxy_heard_while_local_is_stale(monkeypatch) -> None:
+    local = _LocalScanner([_advertisement(rssi=-80)], source="local")
+    remote = _RemoteScanner([_advertisement(rssi=-30)], source="proxy")
+    _install_bluetooth(monkeypatch, [local, remote], heard={("proxy", TEST_ADDRESS)})
+
+
+async def test_a_proxy_hearing_matic_does_not_refresh_a_local_entry(
+    monkeypatch,
+) -> None:
+    _proxy_heard_while_local_is_stale(monkeypatch)
+
+    result = await _async_matic_discoveries(object())
+
+    assert [(d.source, d.fresh) for d in result] == [("local", False)]
+
+
+async def test_replacement_never_unpairs_a_robot_only_a_proxy_heard(
+    monkeypatch,
+) -> None:
+    _proxy_heard_while_local_is_stale(monkeypatch)
+    pairing_agent = MagicMock()
+    connect = AsyncMock()
+    monkeypatch.setattr(bluetooth_pairing, "_async_bluez_pairing_agent", pairing_agent)
+    monkeypatch.setattr(bluetooth_pairing, "establish_connection", connect)
+
+    with pytest.raises(PairingModeRequiredError):
+        await async_request_bluetooth_credential(
+            object(),
+            "40dd38c5-0492-49de-b333-41f16f67471e",
+            replace_existing_bond=True,
+        )
+
+    pairing_agent.assert_not_called()
+    connect.assert_not_awaited()
+
+
 async def test_discovery_uses_bluez_cached_device_name(monkeypatch) -> None:
     scanner = _LocalScanner(
         [_advertisement(name=None, device_name="Robot Matic", service_uuids=[])]
     )
-    _install_bluetooth(monkeypatch, [scanner], refreshed_addresses=set())
+    _install_bluetooth(monkeypatch, [scanner], heard=set())
 
     result = await _async_matic_discoveries(object())
 
@@ -1477,7 +1535,7 @@ async def test_discovery_reports_proxy_only_visibility(monkeypatch) -> None:
 async def test_discovery_ignores_stale_proxy_cache_entry(monkeypatch) -> None:
     local = _LocalScanner([])
     remote = _RemoteScanner([_advertisement()], source="proxy")
-    _install_bluetooth(monkeypatch, [local, remote], refreshed_addresses=set())
+    _install_bluetooth(monkeypatch, [local, remote], heard=set())
 
     assert await _async_matic_discoveries(object()) == []
 
@@ -1540,7 +1598,7 @@ async def test_discovery_reports_unavailable_bluetooth_integration(
         await _async_matic_discoveries(hass)
 
 
-@pytest.mark.parametrize("fail_on", ["scan", "read"])
+@pytest.mark.parametrize("fail_on", ["scan", "timestamps", "read", "devices"])
 async def test_discovery_reports_bluetooth_unloading_during_the_scan(
     monkeypatch, fail_on
 ) -> None:
@@ -1549,8 +1607,13 @@ async def test_discovery_reports_bluetooth_unloading_during_the_scan(
     unloaded = RuntimeError("BluetoothManager has not been set")
     if fail_on == "scan":
         scan.side_effect = unloaded
+    elif fail_on == "timestamps":
+        scanners = bluetooth.async_current_scanners.return_value
+        bluetooth.async_current_scanners.side_effect = [scanners, scanners, unloaded]
+    elif fail_on == "read":
+        bluetooth.async_discovered_service_info.side_effect = unloaded
     else:
-        bluetooth.async_discovered_service_info.side_effect = [[], unloaded]
+        bluetooth.async_scanner_devices_by_address.side_effect = unloaded
 
     with pytest.raises(BluetoothAdapterUnavailableError) as raised:
         await _async_matic_discoveries(object())
