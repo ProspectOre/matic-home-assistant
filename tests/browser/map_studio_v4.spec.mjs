@@ -200,12 +200,12 @@ test.describe("Map Studio v0.4 foundation", () => {
     const inspector = gallery.locator(".inspector");
     const schedule = inspector.locator("details").first();
     await schedule.locator("summary").click();
-    await expect(inspector.getByRole("button", { name: "Reset coverage progress for Kitchen" })).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "Reset vacuum rotation progress for Kitchen" })).toBeVisible();
     const reset = inspector.getByRole("button", { name: "Reset mopping progress for Kitchen" });
     await reset.click();
-    const dialog = gallery.getByRole("dialog", { name: "Reset mopping progress for Kitchen?" });
-    await expect(dialog).toContainText("across plans that use its shared schedule");
-    await expect(dialog).toContainText("Coverage progress and saved cleaning history stay unchanged");
+    const dialog = gallery.getByRole("dialog", { name: "Reset mopping progress?" });
+    await expect(dialog).toContainText("The count for Kitchen starts again in every plan that shares its schedule");
+    await expect(dialog).toContainText("Other work and cleaning history don't change.");
     await dialog.getByRole("button", { name: "Cancel" }).click();
     await expect(dialog).toHaveCount(0);
     await reset.click();
@@ -216,7 +216,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         element.__resetAction = event.detail;
       }, { once: true });
     }, GALLERY_TAG);
-    await dialog.getByRole("button", { name: "Reset mopping progress" }).click();
+    await dialog.getByRole("button", { name: "Reset", exact: true }).click();
     await expect(dialog).toHaveCount(0);
     const action = await page.evaluate((tag) => document.querySelector(tag).__resetAction, GALLERY_TAG);
     expect(action).toEqual({ id: "reset-room-cadence", planId: "daily", roomId: "room-a", mode: "mop" });
@@ -259,7 +259,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(inspector).toContainText("Mopping progress must be reset before this schedule can run.");
     await expect(inspector).toContainText("Coverage progress must be reset before this schedule can run.");
     await expect(inspector.getByRole("button", { name: "Reset mopping progress for Kitchen" })).toBeVisible();
-    await expect(inspector.getByRole("button", { name: "Reset coverage progress for Kitchen" })).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "Reset vacuum rotation progress for Kitchen" })).toBeVisible();
   });
 
   test("previews next-run order, effective settings, cadence reasons, and mission boundaries", async ({ page }) => {
@@ -342,7 +342,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         planDraft: { ...state.planDraft, id: null, name: "Capacity check", rooms: selected, dirty: false },
       });
     }, GALLERY_TAG);
-    const planRooms = gallery.getByRole("group", { name: "Plan rooms" });
+    const planRooms = gallery.getByRole("group", { name: "Rooms in this plan" });
     const planChoices = planRooms.locator(".plan-room-label input[type=checkbox]");
     await expect(planChoices).toHaveCount(101);
     await planChoices.nth(99).check();
@@ -393,7 +393,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await gallery.getByRole("button", { name: /Legacy plan.*Edit plan/ }).click();
 
     await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toBeDisabled();
-    const rooms = gallery.getByRole("group", { name: "Plan rooms" });
+    const rooms = gallery.getByRole("group", { name: "Rooms in this plan" });
     const draftRoomCount = () => page.evaluate(
       (tag) => document.querySelector(tag).getWorkspaceSnapshot().planDraft.rooms.length,
       fixture.panelTag,
@@ -442,7 +442,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
     await gallery.getByRole("button", { name: "Back to plans", exact: true }).click();
     await gallery.getByRole("button", { name: /Legacy plan.*Edit plan/ }).click();
-    await expect(gallery.getByRole("group", { name: "Plan rooms" })
+    await expect(gallery.getByRole("group", { name: "Rooms in this plan" })
       .locator(".plan-room-label input[type=checkbox]:checked")).toHaveCount(100);
     await expect.poll(() => page.evaluate((tag) => {
       const state = document.querySelector(tag).getWorkspaceSnapshot();
@@ -586,12 +586,22 @@ test.describe("Map Studio v0.4 foundation", () => {
           areaDraft: { ...state.areaDraft, status: "stale", canRebind: reviewable },
         });
       }, { tag: GALLERY_TAG, reviewable: canRebind });
-      const review = gallery.getByText("Review the saved outline on this current map, then confirm it.", { exact: true });
-      const redraw = gallery.getByText("This outline no longer matches the current room map. Redraw it before saving.", { exact: true });
+      const review = gallery.getByText("The map changed since you saved this area, so save it again or redraw it.", { exact: true });
+      const redraw = gallery.getByText("Home Assistant can't use this area as it was saved, so redraw it.", { exact: true });
       await expect(canRebind ? review : redraw).toBeVisible();
       await expect(canRebind ? redraw : review).toHaveCount(0);
     });
   }
+
+  test("a paused plan shows a Paused chip beside its name and only its room count below", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "plans" });
+    const paused = gallery.getByRole("button", { name: /^Guest prep/ });
+    await expect(paused.locator("strong .ms-chip")).toHaveText("Paused");
+    await expect(paused.locator("small")).toHaveText("1 room");
+    const running = gallery.getByRole("button", { name: /^Weekend refresh/ });
+    await expect(running.locator(".ms-chip")).toHaveCount(0);
+    await expect(running.locator("small")).toHaveText("2 rooms");
+  });
 
   test("never offers a hidden stale plan while its catalog is loading or unavailable @safety", async ({ page }) => {
     const gallery = await loadGallery(page);
@@ -3623,8 +3633,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     const inspector = gallery.locator(".inspector");
     // Groups are named by a visible h3 (aria-labelledby), not a bare
     // aria-label, so the outline is readable by sighted users as well.
-    await expect(inspector.getByRole("heading", { name: "Plan rooms", level: 3 })).toBeVisible();
-    const list = inspector.getByLabel("Plan rooms");
+    await expect(inspector.getByRole("heading", { name: "Rooms in this plan", level: 3 })).toBeVisible();
+    const list = inspector.getByLabel("Rooms in this plan");
     await expect(list).toHaveCount(1);
     await expect(list).toHaveAttribute("aria-labelledby", "plan-rooms-heading");
     await expect(inspector.getByLabel("Room order and settings")).toHaveCount(0);
@@ -3678,7 +3688,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       }, GALLERY_TAG);
       await gallery.getByRole("button", { name: /^Run a plan/ }).click();
       await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
-      const cadence = gallery.getByLabel("Plan rooms").locator("details").first();
+      const cadence = gallery.getByLabel("Rooms in this plan").locator("details").first();
       await cadence.locator("summary").click();
       await expect(cadence.getByText("Periodic coverage is credited only after the robot confirms the requested vacuum coverage and completed clean. If those settings cannot be verified, coverage stays due for the next clean.")).toBeVisible();
       const scope = cadence.getByLabel("Schedule scope for Kitchen");
@@ -3827,7 +3837,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         areaDraft: { ...state.areaDraft, dirty: true },
       });
     }, GALLERY_TAG);
-    await gallery.getByRole("button", { name: "Edit outline" }).click();
+    await gallery.getByRole("button", { name: "Redraw" }).click();
     await expect.poll(async () => (await snapshot(page)).workflow).toBe("draw");
     await floor.selectOption("saved-1");
     await expect(gallery.getByRole("dialog", { name: "Discard area changes?" })).toBeVisible();
@@ -4074,7 +4084,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }
   });
 
-  const DRAW_TOOL_NAMES = ["Zone", "Paint", "Erase", "Move map", "Undo", "Redo", /^Brush width, 0\.60 m/];
+  const DRAW_TOOL_NAMES = ["Points", "Paint", "Erase", "Move map", "Undo", "Redo", /^Brush width, 0\.60 m/];
 
   async function expectDrawTools(gallery, tools) {
     await expect(tools).toHaveCount(7);
@@ -6195,7 +6205,7 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
       outline: { points: [{ x: 1.5, y: 1.4 }, { x: 1.9, y: 1.6 }, { x: 1.8, y: 2 }], closed: true },
     } }));
     await settlePhoneMap(gallery);
-    await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+    await gallery.getByRole("button", { name: "Points", exact: true }).click();
     const handle = gallery.locator(".zone-point:not(.zone-midpoint)").first();
     await expect(handle).toBeVisible();
     const bounds = await handle.boundingBox();
@@ -6360,7 +6370,7 @@ for (const narrow of [false, true]) for (const direction of ["ltr", "rtl"]) {
     const backward = direction === "rtl" ? "ArrowRight" : "ArrowLeft";
     const toolbar = gallery.getByRole("toolbar", { name: "Draw area tools" });
     await expect(toolbar).toBeVisible();
-    const zone = toolbar.getByRole("button", { name: "Zone", exact: true });
+    const zone = toolbar.getByRole("button", { name: "Points", exact: true });
     const paint = toolbar.getByRole("button", { name: "Paint", exact: true });
     const erase = toolbar.getByRole("button", { name: "Erase", exact: true });
     const brush = toolbar.getByRole("button", { name: /^Brush width/ });
@@ -6757,7 +6767,7 @@ test("zone perimeter closes automatically and supports extending dragging insert
     element.replaceWorkspaceState({ ...state, cameras: { top: { yaw: 0, pitch: 0, zoom: 2, targetX: 2.475, targetZ: -1.975 } },
       draw: { ...state.draw, circles: [], outline: null, undo: [], redo: [], strokeCount: 0, dirty: false } });
   }, GALLERY_TAG);
-  await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+  await gallery.getByRole("button", { name: "Points", exact: true }).click();
   const canvas = gallery.locator(".scene-canvas");
   await expect(gallery.locator(".zone-help")).toBeVisible();
   const box = await canvas.boundingBox();
@@ -6780,15 +6790,15 @@ test("zone perimeter closes automatically and supports extending dragging insert
   // An image ancestor flattens these controls out of Safari's native AX tree.
   const accessibleScene = await gallery.locator(".scene-window").ariaSnapshot();
   expect(accessibleScene).toMatch(/^- group /);
-  expect(accessibleScene).toContain('button "Zone point 1"');
+  expect(accessibleScene).toContain('button "Point 1"');
   expect(accessibleScene).not.toContain('button "Close zone"');
   await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
   expect((await snapshot(page)).draw.circles.length).toBeGreaterThan(0);
   const closed = (await snapshot(page)).draw.outline;
-  await gallery.getByRole("button", { name: "Zone point 1", exact: true }).click();
+  await gallery.getByRole("button", { name: "Point 1", exact: true }).click();
   expect((await snapshot(page)).draw.outline).toEqual(closed);
   const before = (await snapshot(page)).draw.outline;
-  const first = gallery.getByRole("button", { name: "Zone point 1", exact: true });
+  const first = gallery.getByRole("button", { name: "Point 1", exact: true });
   const unrotated = await first.boundingBox();
   await gallery.locator(".map-root").evaluate(element => {
     for (const [name,rotation] of [["gesturestart",0],["gesturechange",90],["gestureend",90]]) {
@@ -6804,7 +6814,7 @@ test("zone perimeter closes automatically and supports extending dragging insert
   await first.focus();
   await gallery.getByRole("button", { name: "Insert point", exact: true }).click();
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(5);
-  await gallery.getByRole("button", { name: "Zone point 2", exact: true }).press("Delete");
+  await gallery.getByRole("button", { name: "Point 2", exact: true }).press("Delete");
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(4);
   await gallery.getByRole("button", { name: "Undo", exact: true }).click();
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(5);
@@ -6894,7 +6904,7 @@ test("rotated zone coordinates match rendered coverage and preserve zoom anchors
 
 test("zone keyboard creation and point editing stay local and undoable", async ({ page }) => {
   const gallery = await loadGallery(page, { scenario: "draw" });
-  await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+  await gallery.getByRole("button", { name: "Points", exact: true }).click();
   const map = gallery.locator(".map-root");
   await map.focus();
   await map.press("ArrowDown"); await map.press("Enter");
@@ -6904,7 +6914,7 @@ test("zone keyboard creation and point editing stay local and undoable", async (
   await map.press("ArrowDown"); await map.press("Enter");
   await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
   const before = (await snapshot(page)).draw.outline;
-  await gallery.getByRole("button", { name: "Zone point 1", exact: true }).press("ArrowRight");
+  await gallery.getByRole("button", { name: "Point 1", exact: true }).press("ArrowRight");
   await expect.poll(async () => (await snapshot(page)).draw.outline.points[0].x).toBeCloseTo(before.points[0].x - .02);
   await gallery.getByRole("button", { name: "Delete point 1", exact: true }).click();
   await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(false);
@@ -7156,8 +7166,8 @@ for (const device of [
         outline: { closed: true, points: [{x:1,y:1},{x:3.5,y:1},{x:3.5,y:2.5},{x:1,y:2.5}] },
         circles: [{x:2.25,y:1.75,radius:.7}] } });
     }, GALLERY_TAG);
-    await expect(gallery.getByRole("button", { name: "Zone", exact: true })).toHaveAttribute("aria-pressed", "true");
-    const first = gallery.getByRole("button", { name: "Zone point 1", exact: true });
+    await expect(gallery.getByRole("button", { name: "Points", exact: true })).toHaveAttribute("aria-pressed", "true");
+    const first = gallery.getByRole("button", { name: "Point 1", exact: true });
     if (device.touch) await first.tap(); else await first.click();
     await expect(gallery.getByRole("button", { name: "Insert point", exact: true })).toBeVisible();
     await expect(gallery.getByRole("button", {name:"Name and save",exact:true})).toBeEnabled();
@@ -7201,7 +7211,7 @@ for (const interruption of ["Escape", "pointer cancel", "floor revalidation"]) {
       const e = document.querySelector(tag), s = e.getWorkspaceSnapshot();
       e.replaceWorkspaceState({...s, draw:{...s.draw,tool:"outline",outline:{closed:true,points:[{x:1,y:1},{x:3.5,y:1},{x:3.5,y:2.5},{x:1,y:2.5}]},circles:[{x:2,y:1.75,radius:.5}]}});
     }, GALLERY_TAG);
-    const first = gallery.getByRole("button", { name: "Zone point 1", exact: true });
+    const first = gallery.getByRole("button", { name: "Point 1", exact: true });
     const before = (await snapshot(page)).draw;
     const box = await first.boundingBox();
     await page.mouse.move(box.x + 22, box.y + 22); await page.mouse.down();
@@ -7216,7 +7226,7 @@ for (const interruption of ["Escape", "pointer cancel", "floor revalidation"]) {
 
 test("painting can undo back to an editable perimeter and ignores no-op marks", async ({ page }) => {
   const gallery = await loadGallery(page, { scenario: "draw" });
-  await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+  await gallery.getByRole("button", { name: "Points", exact: true }).click();
   const map = gallery.locator(".map-root");
   await map.focus();
   await map.press("ArrowDown"); await map.press("Enter");

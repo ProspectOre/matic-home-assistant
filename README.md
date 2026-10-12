@@ -22,7 +22,7 @@ Pair once over Bluetooth; everyday control, maps, and state use your local netwo
 ## Everything in one Home Assistant workspace
 
 - **Map Studio:** interactive 3D and 2D maps, robot position, room selection, and saved map history.
-- **Named custom areas:** draw and edit reusable outlines, including across room boundaries, then run them from a dashboard or automation.
+- **Named custom areas:** draw and edit reusable areas, including across room boundaries, then run them from a dashboard or automation.
 - **Controls and dashboards:** start, pause, stop, dock, adjust robot settings, and use map cameras, sensors, and switches.
 - **Run insight:** inspect plan outcomes, command activity, and per-mode history through local diagnostics and administrator-only read-only MCP tools.
 - **Firmware tracking:** compare local protocol snapshots and see compatibility changes in Home Assistant.
@@ -72,7 +72,7 @@ Open **Matic Map** from the sidebar:
 
 - **One-time clean** selects rooms for a single run.
 - **Create a plan** or **Run a plan** manages reusable room routines.
-- **Clean a custom area** creates or selects a saved outline.
+- **Clean a custom area** creates or selects a saved custom area.
 - **Map history** browses saved maps; saved floors are read-only.
 
 Use Home Assistant schedules and presence automations to decide when plans run.

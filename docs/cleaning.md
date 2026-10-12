@@ -99,6 +99,6 @@ Areas may cross room boundaries. They remain saved for future runs and can be
 selected from the robot's **Custom cleaning area** entity or called by name in
 an [automation](automation.md#custom-areas).
 
-If the map changes, a saved area may need **Confirm on current map** or a redraw.
+If the map changes, a saved area may need **Save area** again or a **Redraw**.
 The editor shows the required action. Coordinates stay in Home Assistant;
 automations need only the saved name.

@@ -121,7 +121,7 @@ inline-size: min(18rem, calc(100vw - 1.5rem));
             aria-valuetext=${`${draw.brushMeters.toFixed(2)} m`}
           />
         </div>
-        <p class="hint">${this.#t("v4_precision_hint", "Strokes follow the verified map resolution. Zoom changes the view, not the saved outline.")}</p>
+        <p class="hint">${this.#t("v4_precision_hint", "Strokes follow the map's resolution. Zooming changes the view, not the area.")}</p>
       </div>
     `;
   }

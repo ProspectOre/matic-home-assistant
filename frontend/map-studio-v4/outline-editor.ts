@@ -43,7 +43,7 @@ export class OutlineEditor {
     // Keep a small but valid outline editable so the next point can widen it.
     // Saving remains disabled until it contains verified cleaning coverage.
     this.#message = outline.closed && !circles.length
-      ? this.t("v4_zone_empty", "Make the zone wider and keep it on mapped floor.") : "";
+      ? this.t("v4_zone_empty", "Make the outline wider and keep it on the mapped floor.") : "";
     this.intent({ type: "set-draft-circles", circles, outline, coordinateEdit: admitted });
   }
 
@@ -155,7 +155,7 @@ export class OutlineEditor {
         <svg aria-hidden="true"><path d=${path + (outline?.closed ? " Z" : "")} class=${valid ? "" : "invalid"} fill=${outline?.closed ? "var(--ms-accent)" : "none"}></path></svg>
         ${projected.map((p, i) => p ? html`
           <button class="zone-point" type="button" data-zone-index=${i} data-selected=${String(this.#selected === i)} data-map-control style=${`left:${p.x}px;top:${p.y}px`}
-            aria-label=${this.t("v4_zone_point_number", "Zone point {number}", { number: i + 1 })} aria-describedby="zone-handle-help"
+            aria-label=${this.t("v4_zone_point_number", "Point {number}", { number: i + 1 })} aria-describedby="zone-handle-help"
             title=${this.t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}
             @pointerdown=${(e: PointerEvent) => this.#down(e, i)} @pointermove=${(e: PointerEvent) => this.#move(e)}
             @pointerup=${(e: PointerEvent) => this.#up(e)} @pointercancel=${() => this.cancel()}
@@ -177,7 +177,7 @@ export class OutlineEditor {
         <div class="zone-help" data-map-control>
           <span id="zone-handle-help" class="sr-only">${this.t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}</span>
           ${selected !== null ? html`
-            <div class="zone-point-actions ms-surface" role="group" aria-label=${this.t("v4_zone_point_number", "Zone point {number}", { number: selected + 1 })}>
+            <div class="zone-point-actions ms-surface" role="group" aria-label=${this.t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}>
               <span class="zone-selection">${this.t("v4_zone_point_short_number", "Point {number}", { number: selected + 1 })}</span>
               <button class="ms-btn" type="button" ?disabled=${points.length >= 64 || (!outline?.closed && selected === points.length - 1)} @click=${() => this.#insert(selected)}>${this.t("v4_zone_insert_point", "Insert point")}</button>
               <button class="ms-btn" type="button" aria-label=${this.t("v4_zone_delete_point_number", "Delete point {number}", { number: selected + 1 })} @click=${() => this.#remove(selected)}>${this.t("v4_zone_delete_point", "Delete point")}</button>

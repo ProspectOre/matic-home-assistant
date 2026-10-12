@@ -55,7 +55,7 @@ room order and settings without starting a run.
 
 ## Custom areas
 
-[Save an outline](cleaning.md#custom-areas), then call it by name. This example
+[Save a custom area](cleaning.md#custom-areas), then call it by name. This example
 cleans a saved area after a litter-box cycle:
 
 ```yaml

@@ -87,7 +87,7 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   await expect(editPlan).toBeVisible();
   await editPlan.click();
 
-  const schedule = panel.getByLabel("Plan rooms").locator("details").first();
+  const schedule = panel.getByLabel("Rooms in this plan").locator("details").first();
   await schedule.locator("summary").click();
   if ((page.viewportSize()?.width ?? Infinity) <= 600) {
     const sheet = panel.locator(".mobile-sheet");
@@ -153,7 +153,7 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   await panel.getByRole("button", { name: "Back to plans" }).click();
   await expect(panel.getByRole("button", { name: /Daily clean.*Edit plan/ })).toBeVisible();
   await panel.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
-  const reopenedSchedule = panel.getByLabel("Plan rooms").locator("details").first();
+  const reopenedSchedule = panel.getByLabel("Rooms in this plan").locator("details").first();
   await reopenedSchedule.locator("summary").click();
   await expect(reopenedSchedule.getByLabel("Schedule scope for Kitchen")).toHaveValue("shared");
   await expect(reopenedSchedule.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100")).toHaveValue("7");
@@ -236,7 +236,7 @@ test("mop-only legacy vacuum rules stay visible and can leave shared participati
   const panel = page.locator(fixture.panelTag);
   await panel.getByRole("button", { name: /^Run a plan/ }).click();
   await panel.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
-  const schedule = panel.getByLabel("Plan rooms").locator("details").first();
+  const schedule = panel.getByLabel("Rooms in this plan").locator("details").first();
   await schedule.locator("summary").click();
   await expect(schedule.getByLabel("Periodic vacuum coverage interval for Kitchen, from 1 to 100")).toHaveValue("3");
   await expect(schedule.getByLabel("Periodic vacuum coverage interval for Kitchen, from 1 to 100")).toBeDisabled();

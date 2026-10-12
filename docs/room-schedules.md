@@ -52,7 +52,7 @@ omitting a due mode or coverage leaves that work due.
 Review the effective room order, modes, coverage, and due-work explanations
 before starting. Map Studio refreshes that preview at Start; if it changed,
 review the updated settings before starting again. A failed preview keeps your
-selection and offers **Retry preview**.
+selection and offers **Try again**.
 
 Starts from the Matic app, physical controls, and custom-area cleans do not
 advance room schedules. Existing Home Assistant service calls keep their
@@ -72,7 +72,7 @@ be requested again on later cleans. Delayed results and restart recovery cannot
 count the same clean twice.
 
 Changing an interval preserves progress. Disabling a rule pauses it. Use the
-separate **Reset mopping** or **Reset coverage** action to start that interval
+separate **Reset mopping** or **Reset vacuum rotation** action to start that interval
 fresh; cleaning history is kept separately. A shared reset affects every
 participant in that room's shared schedule. Edits and resets wait while the
 affected room is queued, running, or its result is being verified.

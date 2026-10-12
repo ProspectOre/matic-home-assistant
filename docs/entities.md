@@ -18,7 +18,7 @@ plus two opt-in statistics sensors per mapped room.
 | Cleaning mode | Default vacuum, mop, or vacuum-and-mop mode |
 | Vacuum coverage | Default Quick, Optimal, or Heavy Duty vacuum coverage |
 | Saved cleaning plan | Select the default plan |
-| Custom cleaning area | Select a saved outline |
+| Custom cleaning area | Select a saved custom area |
 | Plan buttons | Run the selected plan, use rotation, run top-to-bottom, or stop |
 | Clean selected area | Run the selected custom area |
 | Setting switches | Child lock, pet-waste avoidance, Matic Cues, double-pass mopping |

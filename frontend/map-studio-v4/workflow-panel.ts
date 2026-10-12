@@ -272,7 +272,7 @@ line-height: var(--ms-lh-snug);
         ${this.state.manualRoomPreview.status === "error"
           ? html`<div class="stack">
             <div role="alert" class="problem">${this.#t("v4_room_preview_unavailable", "Your room selections are saved, but the effective settings could not be verified. Retry the preview to enable cleaning.")}</div>
-            <div class="toolbar"><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "retry-room-preview" })}>${this.#t("v4_retry_preview", "Retry preview")}</button></div>
+            <div class="toolbar"><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "retry-room-preview" })}>${this.#t("v4_retry", "Try again")}</button></div>
           </div>`
           : nothing}
         ${previewCurrent ? this.#manualRoomPreview(admitted.preview) : nothing}
@@ -534,7 +534,7 @@ line-height: var(--ms-lh-snug);
             ${policy.coverageEveryN || hasCoverageProgress ? html`<button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
-              aria-label=${this.#t("v4_reset_coverage_cadence_button_named", "Reset coverage progress for {room}", { room: label })}
+              aria-label=${this.#t("v4_reset_coverage_cadence_button_named", "Reset vacuum rotation progress for {room}", { room: label })}
               data-dialog-launcher="confirmResetCadence"
               ?disabled=${resetDisabled}
               @click=${() => this.#intent({
@@ -543,7 +543,7 @@ line-height: var(--ms-lh-snug);
                 roomId: room.roomId,
                 mode: "coverage",
               })}
-            >${this.#t("v4_reset_coverage_cadence_button", "Reset coverage")}</button>` : nothing}
+            >${this.#t("v4_reset_coverage_cadence_button", "Reset vacuum rotation")}</button>` : nothing}
           </div>
           <p class="subtle">${this.#t("v4_reset_cadence_hint", "Reset is available for a saved plan while the robot is idle. Cleaning history is kept separately.")}</p>
         ` : nothing}
@@ -580,12 +580,10 @@ line-height: var(--ms-lh-snug);
         </button>
         ${(resource.value?.plans || []).map((plan) => html`
           <button class="ms-row ms-row--card" type="button" @click=${() => this.#intent({ type: "select-plan", planId: plan.id })}>
-            <span class="ms-row__body"><strong>${plan.name}</strong>
+            <span class="ms-row__body"><strong>${plan.name}${plan.enabled ? nothing : html` <span class="ms-chip">${this.#t("v4_paused", "Paused")}</span>`}</strong>
               <small>${plan.rooms.length === 1
-                ? (plan.enabled ? this.#t("v4_plan_room_count_one", "1 room") : this.#t("v4_plan_room_count_one_paused", "1 room · paused"))
-                : (plan.enabled
-                  ? this.#t("v4_plan_room_count", "{count} rooms", { count: plan.rooms.length })
-                  : this.#t("v4_plan_room_count_paused", "{count} rooms · paused", { count: plan.rooms.length }))}</small>
+                ? this.#t("v4_plan_room_count_one", "1 room")
+                : this.#t("v4_plan_room_count", "{count} rooms", { count: plan.rooms.length })}</small>
             </span>
             <span class="ms-row__trail">${this.#t("v4_edit_plan", "Edit plan")}</span>
           </button>
@@ -656,7 +654,7 @@ line-height: var(--ms-lh-snug);
             ></button>
           </div>
         </div>
-        <h3 class="group-heading" id="plan-rooms-heading">${this.#t("plan_rooms", "Plan rooms")}</h3>
+        <h3 class="group-heading" id="plan-rooms-heading">${this.#t("v4_plan_rooms_heading", "Rooms in this plan")}</h3>
         ${mixedSettings ? html`
           <p class="subtle plan-transition-hint">${this.#t("v4_plan_mixed_settings", "Rooms with different cleaning settings may need separate missions and dock visits.")}
             ${draft.runBehavior === "ordered"
@@ -768,13 +766,13 @@ line-height: var(--ms-lh-snug);
     const areas = this.state.resources.areas;
     return html`
       <div class="stack">
-        <p class="subtle">${this.state.draw.tool === "outline" ? this.#t("v4_zone_coverage", "Place points around the zone. Shading shows cleaning coverage inside the perimeter; narrow edges may remain uncovered.") : this.#t("v4_draw_floor_hint", "Paint only on the mapped floor. Zoom and pan never change the saved outline.")}</p>
+        <p class="subtle">${this.state.draw.tool === "outline" ? this.#t("v4_zone_coverage", "Place points around the area. Shading shows where the robot cleans inside the outline; narrow edges may stay uncovered.") : this.#t("v4_draw_floor_hint", "Paint only on the mapped floor. Zooming and panning never change the area.")}</p>
         ${this.state.draw.tool !== "outline" ? html`<p class="subtle">${this.#t("v4_keyboard_draw_help", "Keyboard: focus the map, use arrow keys to aim, then Enter to paint or erase at the crosshair. D selects Paint; E selects Erase.")}</p>` : nothing}
         ${this.#resource(areas.status, areas.problem, html`
           <div class="group">
             <h3 class="group-heading" id="areas-heading">${this.#t("area_workspace_title", "Saved custom areas")}</h3>
             <div class="list" role="group" aria-labelledby="areas-heading">
-            <button class="list-button ms-row ms-row" type="button" @click=${() => this.#intent({ type: "select-area", areaId: null })}>＋ ${this.#t("area_new", "New outline")}</button>
+            <button class="list-button ms-row ms-row" type="button" @click=${() => this.#intent({ type: "select-area", areaId: null })}>${this.#t("area_new", "New area")}</button>
             ${(areas.value?.areas || []).map((area) => html`
               <button class="list-button ms-row ms-row" type="button" @click=${() => {
                 this.#intent({ type: "select-area", areaId: area.id, workflow: "areaReview" });
@@ -796,8 +794,8 @@ line-height: var(--ms-lh-snug);
     const stale = !needsReview && (draft.status === "stale" || draft.status === "unknown");
     return html`
       <div class="stack">
-        ${needsReview ? html`<div class="notice" data-tone="warning" role="status">${this.#t("area_review_required", "Review the saved outline on this current map, then confirm it.")}</div>` : nothing}
-        ${stale ? html`<div class="problem" role="alert">${this.#t("area_redraw_required", "This outline no longer matches the current room map. Redraw it before saving.")}</div>` : nothing}
+        ${needsReview ? html`<div class="notice" data-tone="warning" role="status">${this.#t("area_review_required", "The map changed since you saved this area, so save it again or redraw it.")}</div>` : nothing}
+        ${stale ? html`<div class="problem" role="alert">${this.#t("area_redraw_required", "Home Assistant can't use this area as it was saved, so redraw it.")}</div>` : nothing}
         <label class="field ms-field">${this.#t("area_name", "Area name")}
           <input maxlength="128" autocomplete="off" .value=${draft.name} @input=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { name: eventValue(event) } })}>
         </label>
@@ -811,7 +809,7 @@ line-height: var(--ms-lh-snug);
         </div>
         ${this.#mopCoverageHint(draft.cleaningMode)}
         <div class="toolbar">
-          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>${this.#t("v4_edit_outline", "Edit outline")}</button>
+          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>${this.#t("v4_edit_outline", "Redraw")}</button>
           ${draft.id ? html`
             <button
               class="danger ms-btn ms-btn--secondary ms-btn--danger"

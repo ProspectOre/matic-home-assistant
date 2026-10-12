@@ -280,6 +280,7 @@ const dialogCopy = (
   resetRoomName = "room",
   sharedCadence = false,
   resetMode: "mop" | "coverage" = "mop",
+  areaName = "",
 ): DialogPresentation | null => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
     translate(localize, key, fallback, placeholders);
@@ -303,7 +304,7 @@ const dialogCopy = (
     case "confirmDeleteArea":
       return {
         title: t("v4_delete_area", "Delete this area?"),
-        detail: t("v4_delete_area_detail", "This removes the saved outline from Home Assistant. The robot will not move."),
+        detail: t("v4_delete_area_detail", "Automations that clean \"{name}\" will stop working, and the robot won't move.", { name: areaName }),
         cancelLabel: t("v4_cancel", "Cancel"),
         confirmLabel: t("v4_delete_area_label", "Delete area"),
         action: "delete-area",
@@ -311,19 +312,13 @@ const dialogCopy = (
     case "confirmResetCadence":
       return {
         title: resetMode === "mop"
-          ? t("v4_reset_mop_cadence_title", "Reset mopping progress for {room}?", { room: resetRoomName })
-          : t("v4_reset_coverage_cadence_title", "Reset coverage progress for {room}?", { room: resetRoomName }),
+          ? t("v4_reset_mop_cadence_title", "Reset mopping progress?")
+          : t("v4_reset_coverage_cadence_title", "Reset vacuum rotation progress?"),
         detail: sharedCadence
-          ? resetMode === "mop"
-            ? t("v4_reset_shared_mop_cadence_detail", "This clears shared mopping progress for {room} across plans that use its shared schedule. Coverage progress and saved cleaning history stay unchanged.", { room: resetRoomName })
-            : t("v4_reset_shared_coverage_cadence_detail", "This clears shared coverage progress for {room} across plans that use its shared schedule. Mopping progress and saved cleaning history stay unchanged.", { room: resetRoomName })
-          : resetMode === "mop"
-            ? t("v4_reset_private_mop_cadence_detail", "This clears mopping progress for {room} in this plan. Coverage progress and saved cleaning history stay unchanged.", { room: resetRoomName })
-            : t("v4_reset_private_coverage_cadence_detail", "This clears coverage progress for {room} in this plan. Mopping progress and saved cleaning history stay unchanged.", { room: resetRoomName }),
+          ? t("v4_reset_shared_cadence_detail", "The count for {room} starts again in every plan that shares its schedule, and work brought forward to the next clean goes back to its schedule. Other work and cleaning history don't change.", { room: resetRoomName })
+          : t("v4_reset_private_cadence_detail", "The count for {room} starts again in this plan only, and work brought forward to the next clean goes back to its schedule. Other work and cleaning history don't change.", { room: resetRoomName }),
         cancelLabel: t("v4_cancel", "Cancel"),
-        confirmLabel: resetMode === "mop"
-          ? t("v4_reset_mop_cadence_confirm", "Reset mopping progress")
-          : t("v4_reset_coverage_cadence_confirm", "Reset coverage progress"),
+        confirmLabel: t("v4_reset", "Reset"),
         action: "reset-room-cadence",
       };
     case "confirmStop":
@@ -1486,6 +1481,7 @@ export class MaticMapShellV4 extends LitElement {
       resetRoom?.name || state.cadenceResetRequest?.roomId || "room",
       resetPlanRoom?.cadence?.scope === "shared",
       state.cadenceResetRequest?.mode,
+      state.areaDraft.name,
     );
     const sheetOffset = narrow && !state.fullMap ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";

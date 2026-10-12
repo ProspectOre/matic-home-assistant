@@ -1058,9 +1058,8 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
         && state.draw.circles.length > 0;
       return {
         id: "save-area",
-        ...(state.areaDraft.canRebind
-          ? { label: "Confirm on this map", labelKey: "v4_action_save_area_confirm" }
-          : { label: "Save area", labelKey: "v4_action_save_area" }),
+        label: "Save area",
+        labelKey: "v4_action_save_area",
         kind: "primary",
         enabled: valid,
         ...(valid
@@ -1077,7 +1076,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       enabled: current && canStartMotion(state),
       ...(current
         ? {}
-        : { reason: "Confirm this outline on the current map first.", reasonKey: "v4_reason_run_area" }),
+        : { reason: "Can't clean this area until you save it on the current map.", reasonKey: "v4_reason_run_area" }),
     };
   }
   return {

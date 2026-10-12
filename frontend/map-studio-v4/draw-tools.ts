@@ -43,7 +43,7 @@ export const renderDrawTools = (
           data-tool=${tool}
           @click=${() => handlers.intent({ type: "set-draw-tool", tool })}
         >${icon(tool === "outline" ? iconNewArea : tool === "paint" ? iconPaint : tool === "erase" ? iconErase : iconMoveMap)}<span class="ms-btn__label">${
-          tool === "outline" ? handlers.t("v4_zone_tool", "Zone")
+          tool === "outline" ? handlers.t("v4_zone_tool", "Points")
           : tool === "paint" ? handlers.t("area_paint", "Paint")
           : tool === "erase" ? handlers.t("area_erase", "Erase")
           : handlers.t("move_map", "Move map")
