@@ -1044,12 +1044,44 @@ async def test_pending_firmware_reads_the_loaded_translation(hass) -> None:
         assert unknown.latest_version == "Neuere Firmware"
 
 
+async def test_a_skip_lasts_until_the_installed_version_or_language_changes(
+    hass,
+) -> None:
+    """The documented Skip behaviour (docs/entities.md, ha-entities.md §10)."""
+    entity, coordinator = _update_entity(hass)
+    _set_update_state(coordinator, "available")
+    with patch.object(entity, "async_write_ha_state"):
+        await entity.async_skip()
+    assert entity.state == STATE_OFF
+
+    # A second pending update before any install keeps the same marker.
+    _set_update_state(coordinator, "idle")
+    _set_update_state(coordinator, "available")
+    assert entity.state == STATE_OFF
+
+    hass.config.language = "de"
+    german = {update.PENDING_FIRMWARE_VERSION_KEY: "Neuer als {installed}"}
+    with patch.object(
+        update.translation, "async_get_cached_translations", return_value=german
+    ):
+        assert entity.state == STATE_ON
+    hass.config.language = "en"
+
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(coordinator.data.telemetry, software_version="v179.0"),
+    )
+    assert entity.latest_version == "Newer than v179.0"
+    assert entity.state == STATE_ON
+
+
 async def test_pending_firmware_without_an_installed_version(hass) -> None:
     entity, coordinator = _update_entity(hass, None)
     _set_update_state(coordinator, "available")
 
     assert entity.installed_version is None
     assert entity.latest_version == "Newer firmware"
+    assert entity.state is None
 
 
 def test_sensor_and_binary_sensor_values() -> None:

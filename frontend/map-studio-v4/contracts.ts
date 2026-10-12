@@ -262,6 +262,8 @@ export interface WorkspaceState {
   readonly activity: RobotActivity;
   readonly workflow: Workflow;
   readonly command: CommandState;
+  /** True while a recheck the user asked for ("Try again") reads the catalog. */
+  readonly rechecking: boolean;
   readonly fullMap: boolean;
   readonly precisionOpen: boolean;
   readonly dialog: DialogKind | null;

@@ -14,12 +14,14 @@ A ``"v4_*"`` literal that is not at one of these sites is reported by
 
 The integration's Python names ``common`` keys in one form, a full cache key
 whose key part is literal: ``"component.matic_robot.common.key"`` or
-``f"component.{DOMAIN}.common.key"``. ``backend_key_sites`` finds those, and
+``f"component.{DOMAIN}.common.key"``. ``backend_key_sites`` finds those string
+literals in the syntax tree (never comments or docstrings), and
 ``stray_backend_references`` reports a cache key built from a run-time name.
 """
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from collections.abc import Iterator
@@ -380,23 +382,58 @@ def stray_v4_literals() -> list[tuple[str, int, str]]:
 BackendSite = tuple[str, int, str]
 
 _BACKEND_REFERENCE = re.compile(
-    r"""(?<![\w"'])(?P<f>f?)(?P<q>["'])component\.(?P<domain>matic_robot|\{DOMAIN\})"""
-    r"""\.common\.(?P<tail>[^"'\n]*)(?P=q)"""
+    r"component\.(?P<domain>matic_robot|\{DOMAIN\})\.common\.(?P<tail>.*)", re.DOTALL
 )
 _BACKEND_KEY = re.compile(r"[a-z0-9_]+")
+_DOCUMENTED = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+
+
+def _string_text(node: ast.expr) -> str | None:
+    """A string literal's text; an f-string's substitutions read ``{source}``."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(
+            "{" + ast.unparse(part.value) + "}"
+            if isinstance(part, ast.FormattedValue)
+            else str(getattr(part, "value", ""))
+            for part in node.values
+        )
+    return None
 
 
 def scan_backend_module(
     module: str, text: str
 ) -> tuple[list[BackendSite], list[BackendSite]]:
-    """``(module, line, key)`` of each backend key, and each non-literal key part."""
+    """``(module, line, key)`` of each backend key, and each non-literal key part.
+
+    Only real string literals count: comments are not in the syntax tree, and
+    docstrings and the literal parts inside an f-string are skipped.
+    """
+    tree = ast.parse(text)
+    skipped: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, _DOCUMENTED) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant):
+                skipped.add(id(first.value))
+        if isinstance(node, ast.JoinedStr):
+            skipped.update(id(part) for part in node.values)
     sites: list[BackendSite] = []
     strays: list[BackendSite] = []
-    for match in _BACKEND_REFERENCE.finditer(text):
-        if match["domain"] != "matic_robot" and not match["f"]:
+    for node in ast.walk(tree):
+        if id(node) in skipped or not isinstance(node, ast.expr):
+            continue
+        literal = _string_text(node)
+        match = _BACKEND_REFERENCE.fullmatch(literal) if literal is not None else None
+        if match is None:
+            continue
+        if match["domain"] != "matic_robot" and not isinstance(node, ast.JoinedStr):
             continue
         found = sites if _BACKEND_KEY.fullmatch(match["tail"]) else strays
-        found.append((module, _line(text, match.start()), match["tail"]))
+        found.append((module, node.lineno, match["tail"]))
+    sites.sort(key=lambda site: site[1])
+    strays.sort(key=lambda site: site[1])
     return sites, strays
 
 

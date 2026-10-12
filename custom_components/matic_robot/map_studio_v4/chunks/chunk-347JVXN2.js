@@ -114,7 +114,7 @@ import{a as o}from"./chunk-MMLYFANH.js";var u=o`
 button, input, select, textarea { font: inherit; }
 .ms-icon { display: block; flex: none; inline-size: var(--ms-icon); block-size: var(--ms-icon); }
 .ms-icon--sm { inline-size: var(--ms-icon-sm); block-size: var(--ms-icon-sm); }
-`;var i="component.matic_robot.common.",d=/^Translation error/iu,f=(e,r,t,s)=>{let n=s?{...s}:void 0,a;try{a=e?.(`${i}${r}`,n)}catch{a=void 0}return a&&a!==`${i}${r}`&&!d.test(a)?a:s?Object.entries(s).reduce((m,[c,l])=>m.replaceAll(`{${c}}`,String(l)),t):t},x=(e,r)=>new Intl.ListFormat(e,{style:"long",type:"conjunction"}).format(r),b={dateStyle:"medium",timeStyle:"short"},h=(e,r)=>{let t=new Date(e),s=(n,a)=>new Intl.DateTimeFormat(n,{...b,timeZone:a}).format(t);try{return s(r?.language,r?.timeZone)}catch{try{return s(r?.language)}catch{return s()}}};var y=o`
+`;var m="component.matic_robot.common.",d=/^Translation error/iu,f=(e,r,t,s)=>{let n=s?{...s}:void 0,a;try{a=e?.(`${m}${r}`,n)}catch{a=void 0}return a&&a!==`${m}${r}`&&!d.test(a)?a:s?Object.entries(s).reduce((i,[c,l])=>i.replaceAll(`{${c}}`,String(l)),t):t},x=(e,r)=>new Intl.ListFormat(e,{style:"long",type:"conjunction"}).format(r),b={dateStyle:"medium",timeStyle:"short"},h=(e,r)=>{let t=new Date(e),s=(n,a)=>new Intl.DateTimeFormat(n,{...b,timeZone:a}).format(t);try{return s(r?.language,r?.timeZone)}catch{try{return s(r?.language)}catch{return s()}}};var y=o`
 .ms-btn, .ms-row {
 border: 1px solid transparent;
 color: var(--ms-text);
@@ -202,7 +202,6 @@ background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local));
 .ms-row__body strong { display: block; font-size: var(--ms-t-md); font-weight: var(--ms-w-bold); letter-spacing: var(--ms-track-tight); }
 .ms-row__body small { display: block; margin-block-start: 0.125rem; color: color-mix(in srgb, var(--ms-text) 78%, var(--ms-local)); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); line-height: var(--ms-lh-snug); }
 .ms-row__trail { flex: none; color: var(--ms-text-quiet); }
-.ms-chip { display: inline-flex; align-items: center; block-size: 1.5rem; padding-inline: var(--ms-space-2); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-pill); background: var(--ms-surface-sunken); color: var(--ms-text); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); vertical-align: middle; }
 .ms-row:active:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-text) 14%, var(--ms-local)); }
 @media (hover: hover) {
 .ms-row:hover:not(:disabled):not([aria-disabled="true"]) { border-color: color-mix(in srgb, var(--ms-accent) 45%, var(--ms-line)); background: color-mix(in srgb, var(--ms-text) 7%, var(--ms-local)); }

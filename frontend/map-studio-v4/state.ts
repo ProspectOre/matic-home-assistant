@@ -74,6 +74,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   activity: "unknown",
   workflow: "none",
   command: "idle",
+  rechecking: false,
   fullMap: false,
   precisionOpen: false,
   dialog: null,

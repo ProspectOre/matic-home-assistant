@@ -51,9 +51,10 @@ class MaticFirmwareUpdate(MaticEntity, UpdateEntity):
     """Surface robot-managed OTA state in Home Assistant's update UI.
 
     The robot never reports the target version over Hermes, so a pending
-    OTA reads as "Newer than {installed}" in the user's language. Naming the
-    installed version makes the marker change after every real update, so
-    skipping one pending update never hides the next. Installs stay
+    OTA reads as "Newer than {installed}" in the user's language. The marker
+    changes when the installed version or the language changes, so a Skip
+    lasts until the robot installs firmware; with no installed version it
+    stays "Newer firmware" and Home Assistant reports no state. Installs stay
     robot-managed.
     """
 

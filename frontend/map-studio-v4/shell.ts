@@ -148,7 +148,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   // offer the recheck at once rather than a Ready beside "Finding the map".
   if (state.coherence === "degraded") return {
     title: t("v4_map_limited", "Map limited"),
-    detail: state.resources.catalog.status === "loading"
+    detail: state.rechecking
       ? t("v4_locating_rechecking", "Checking again")
       : t("v4_cleaning_blocked", "Cleaning can't start"),
     icon: iconRobot,
@@ -305,7 +305,7 @@ const dialogCopy = (
   resetRoomName = "room",
   sharedCadence = false,
   resetMode: "mop" | "coverage" = "mop",
-  areaName = "",
+  savedName = "",
 ): DialogPresentation | null => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
     translate(localize, key, fallback, placeholders);
@@ -320,18 +320,18 @@ const dialogCopy = (
       };
     case "confirmDeletePlan":
       return {
-        title: t("v4_delete_plan", "Delete this plan?"),
-        detail: t("v4_delete_plan_detail", "This removes the saved plan from Home Assistant. The robot will not move."),
+        title: t("v4_delete_plan", "Delete plan?"),
+        detail: t("v4_delete_plan_detail", "Automations that run \"{name}\" will stop working, and the robot won't move.", { name: savedName }),
         cancelLabel: t("v4_cancel", "Cancel"),
-        confirmLabel: t("v4_delete_plan_label", "Delete plan"),
+        confirmLabel: t("plan_delete", "Delete"),
         action: "delete-plan",
       };
     case "confirmDeleteArea":
       return {
-        title: t("v4_delete_area", "Delete this area?"),
-        detail: t("v4_delete_area_detail", "Automations that clean \"{name}\" will stop working, and the robot won't move.", { name: areaName }),
+        title: t("v4_delete_area", "Delete area?"),
+        detail: t("v4_delete_area_detail", "Automations that clean \"{name}\" will stop working, and the robot won't move.", { name: savedName }),
         cancelLabel: t("v4_cancel", "Cancel"),
-        confirmLabel: t("v4_delete_area_label", "Delete area"),
+        confirmLabel: t("area_delete", "Delete"),
         action: "delete-area",
       };
     case "confirmResetCadence":
@@ -977,14 +977,19 @@ export class MaticMapShellV4 extends LitElement {
     this.#setDetent(nearest);
   }
 
+  // A swipe that starts anywhere in the panel column, pinned heading and slot
+  // included, follows the body scroller's position.
+  #bodyScroller(event: PointerEvent): HTMLElement {
+    return (event.currentTarget as HTMLElement).querySelector(".sheet-body")!;
+  }
+
   #bodyDown(event: PointerEvent): void {
     if (event.pointerType === "mouse") return;
     if (this.#startsOnInteractiveSheetDescendant(event)) return;
-    const body = event.currentTarget as HTMLElement;
     this.#bodySwipe = {
       pointerId: event.pointerId,
       startY: event.clientY,
-      atTop: body.scrollTop === 0,
+      atTop: this.#bodyScroller(event).scrollTop === 0,
       consumed: false,
     };
   }
@@ -992,8 +997,7 @@ export class MaticMapShellV4 extends LitElement {
   #bodyMove(event: PointerEvent): void {
     const swipe = this.#bodySwipe;
     if (!swipe || swipe.consumed || !swipe.atTop || event.pointerId !== swipe.pointerId) return;
-    const body = event.currentTarget as HTMLElement;
-    if (body.scrollTop > 0) {
+    if (this.#bodyScroller(event).scrollTop > 0) {
       this.#bodySwipe = null;
       return;
     }
@@ -1228,7 +1232,7 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
-  #entry(state: WorkspaceState, narrow: boolean) {
+  #entry(state: WorkspaceState, narrow: boolean, status: StatusPresentation) {
     const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
       this.#t(key, fallback, placeholders);
     const historyRow = this.#shelfRow(
@@ -1289,18 +1293,17 @@ export class MaticMapShellV4 extends LitElement {
     const customAreaReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
       : t("v4_areas_quick_detail", "Create or choose a saved area");
-    const checking = state.resources.catalog.status === "loading";
     return html`
       ${state.activity === "problem"
         ? this.#hostState(t("v4_attention_title", "The robot needs attention"), t("v4_attention_body", "Check the robot, then start a new task."))
-        : statusCopy(state).recheck ? html`
+        : status.recheck ? html`
           <div class="host-state">
             <p>${t("v4_map_limited_body", "Home Assistant can show this map but can't confirm it well enough to start cleaning.")}</p>
             <button
               class="ms-btn ms-btn--secondary"
               type="button"
-              aria-disabled=${checking ? "true" : nothing}
-              @click=${() => { if (!checking) this.#dispatchAction("recheck-status"); }}
+              aria-disabled=${state.rechecking ? "true" : nothing}
+              @click=${() => { if (!this.state.rechecking) this.#dispatchAction("recheck-status"); }}
             >${t("v4_retry", "Try again")}</button>
           </div>
         ` : html`
@@ -1390,8 +1393,8 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
-  #workflowBody(state: WorkspaceState, narrow: boolean) {
-    if (state.workflow === "none") return this.#entry(state, narrow);
+  #workflowBody(state: WorkspaceState, narrow: boolean, status: StatusPresentation) {
+    if (state.workflow === "none") return this.#entry(state, narrow, status);
     this.#loadWorkflowPanel();
     if (!customElements.get(WORKFLOW_TAG)) {
       if (this._workflowLoadFailed) {
@@ -1458,10 +1461,10 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
-  #panel(state: WorkspaceState, narrow: boolean) {
+  #panel(state: WorkspaceState, narrow: boolean, status: StatusPresentation) {
     return html`
       <p class="panel-description">${workflowCopy(state, this.localize).description}</p>
-      ${this.#workflowBody(state, narrow)}
+      ${this.#workflowBody(state, narrow, status)}
     `;
   }
 
@@ -1555,7 +1558,10 @@ export class MaticMapShellV4 extends LitElement {
       resetRoom?.name || state.cadenceResetRequest?.roomId || "room",
       resetPlanRoom?.cadence?.scope === "shared",
       state.cadenceResetRequest?.mode,
-      state.areaDraft.name,
+      // Automations name the saved plan or area, never an unsaved rename.
+      (state.dialog === "confirmDeletePlan"
+        ? state.resources.plans.value?.plans.find((plan) => plan.id === state.planDraft.id)
+        : state.resources.areas.value?.areas.find((area) => area.id === state.areaDraft.id))?.name,
     );
     const sheetOffset = narrow && !state.fullMap ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";
@@ -1722,7 +1728,7 @@ export class MaticMapShellV4 extends LitElement {
                     class="ms-btn ms-btn--icon ms-btn--sm"
                     type="button"
                     aria-label=${this.#t("v4_show_more", "Show more of the map workspace")}
-                    aria-controls="sheet-body"
+                    aria-controls="sheet-panel"
                     aria-disabled=${this._sheetDetent === "full" ? "true" : nothing}
                     @click=${() => this.#sheetStep(1)}
                   >${icon(iconChevronUp)}</button>
@@ -1730,7 +1736,7 @@ export class MaticMapShellV4 extends LitElement {
                     class="ms-btn ms-btn--icon ms-btn--sm"
                     type="button"
                     aria-label=${this.#t("v4_show_less", "Show less of the map workspace")}
-                    aria-controls="sheet-body"
+                    aria-controls="sheet-panel"
                     aria-disabled=${this._sheetDetent === "peek" ? "true" : nothing}
                     @click=${() => this.#sheetStep(-1)}
                   >${icon(iconChevronDown)}</button>
@@ -1745,16 +1751,16 @@ export class MaticMapShellV4 extends LitElement {
                     ` : nothing}
                   </div>
                 ` : nothing}
-                ${this.#panelTop(state)}
                 <div
-                  class="sheet-body"
-                  id="sheet-body"
+                  class="sheet-panel"
+                  id="sheet-panel"
                   @pointerdown=${this.#bodyDown}
                   @pointermove=${this.#bodyMove}
                   @pointerup=${this.#bodyUp}
                   @pointercancel=${this.#bodyUp}
                 >
-                  ${this.#panel(state, narrow)}
+                  ${this.#panelTop(state)}
+                  <div class="sheet-body">${this.#panel(state, narrow, status)}</div>
                 </div>
                 ${this.#actionBar(state, footerPrimary, footerSecondary)}
               ` : html`
@@ -1767,7 +1773,7 @@ export class MaticMapShellV4 extends LitElement {
                 </div>
                 <section class="workflow">
                   ${this.#panelTop(state)}
-                  <div class="workflow-body">${this.#panel(state, narrow)}</div>
+                  <div class="workflow-body">${this.#panel(state, narrow, status)}</div>
                   ${this.#actionBar(state, footerPrimary, footerSecondary)}
                 </section>
               `}

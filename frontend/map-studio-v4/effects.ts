@@ -2391,8 +2391,14 @@ export class EffectController {
     const id = typeof idOrAction === "string" ? idOrAction : idOrAction.id;
     switch (id) {
       case "recheck-status": {
+        if (this.#store.value.rechecking) return;
         const entryId = this.#store.value.selection.entryId;
-        await this.refreshCatalog(true);
+        this.#store.patch({ rechecking: true });
+        try {
+          await this.refreshCatalog(true);
+        } finally {
+          if (!this.#disposed) this.#store.patch({ rechecking: false });
+        }
         const state = this.#store.value;
         if (!this.#disposed && state.selection.entryId === entryId
           && state.resources.catalog.status === "ready"

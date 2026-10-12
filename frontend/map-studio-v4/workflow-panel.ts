@@ -101,6 +101,7 @@ line-height: var(--ms-lh-snug);
 .timeline input[type="range"] { inline-size: 100%; min-block-size: var(--ms-control); }
 @media (max-width: 25rem) { .split { grid-template-columns: 1fr; } }
 @container (max-width: 38rem) { .plan-meta { grid-template-columns: 1fr; } }
+.ms-chip { display: inline-flex; align-items: center; block-size: 1.5rem; padding-inline: var(--ms-space-2); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-pill); background: var(--ms-surface-sunken); color: var(--ms-text); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); vertical-align: middle; }
 `];
 
   state: WorkspaceState = initialWorkspaceState();
@@ -154,8 +155,8 @@ line-height: var(--ms-lh-snug);
   #cadenceReason(reason: string): string {
     if (reason === "mop_due") return this.#t("v4_cadence_mop_due_reason", "Vacuum and mop are due");
     if (reason === "coverage_due") return this.#t("v4_cadence_coverage_due_reason", "Periodic coverage is due");
-    if (reason === "mop_progress_unverified") return this.#t("v4_cadence_mop_progress_unverified", "Mopping progress must be reset before this schedule can run.");
-    if (reason === "coverage_progress_unverified") return this.#t("v4_cadence_coverage_progress_unverified", "Coverage progress must be reset before this schedule can run.");
+    if (reason === "mop_progress_unverified") return this.#t("v4_cadence_mop_progress_unverified", "Can't run this schedule until you reset its mopping progress, which Home Assistant can't confirm.");
+    if (reason === "coverage_progress_unverified") return this.#t("v4_cadence_coverage_progress_unverified", "Can't run this schedule until you reset its vacuum rotation progress, which Home Assistant can't confirm.");
     return this.#t("v4_cadence_due_unknown_reason", "Schedule setting due");
   }
 
@@ -282,7 +283,7 @@ line-height: var(--ms-lh-snug);
           : nothing}
         ${this.state.manualRoomPreview.status === "error"
           ? html`<div class="stack">
-            <div role="alert" class="problem">${this.#t("v4_room_preview_unavailable", "Your room selections are saved, but the effective settings could not be verified. Retry the preview to enable cleaning.")}</div>
+            <div role="alert" class="problem">${this.#t("v4_room_preview_unavailable", "Home Assistant couldn't check the room settings.")}</div>
             <div class="toolbar"><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "retry-room-preview" })}>${this.#t("v4_retry", "Try again")}</button></div>
           </div>`
           : nothing}
@@ -381,10 +382,10 @@ line-height: var(--ms-lh-snug);
     if (reasons.includes("mop_progress_unverified") || reasons.includes("coverage_progress_unverified")) {
       const unverified: string[] = [];
       if (reasons.includes("mop_progress_unverified")) {
-        unverified.push(this.#t("v4_cadence_mop_progress_unverified", "Mopping progress must be reset before this schedule can run."));
+        unverified.push(this.#t("v4_cadence_mop_progress_unverified", "Can't run this schedule until you reset its mopping progress, which Home Assistant can't confirm."));
       }
       if (reasons.includes("coverage_progress_unverified")) {
-        unverified.push(this.#t("v4_cadence_coverage_progress_unverified", "Coverage progress must be reset before this schedule can run."));
+        unverified.push(this.#t("v4_cadence_coverage_progress_unverified", "Can't run this schedule until you reset its vacuum rotation progress, which Home Assistant can't confirm."));
       }
       return unverified.join(" ");
     }
@@ -487,7 +488,7 @@ line-height: var(--ms-lh-snug);
             ? this.#t("v4_cadence_shared_join_effect", "Saving makes this schedule shared across participating plans and opted-in room cleans. It adopts existing shared progress when available; a new shared schedule starts at zero.")
             : this.#t("v4_cadence_new_shared_effect", "Saving creates a shared schedule for participating plans and opted-in room cleans. Its progress starts at zero.")
           : this.#t("v4_cadence_new_private_effect", "Saving creates private progress for this plan only. It starts at zero when enabled.")
-        : this.#t("v4_cadence_existing_effect", "Interval edits keep progress, and disabling pauses it. Mopping and coverage have separate progress and resets.");
+        : this.#t("v4_cadence_existing_effect", "Changing how often keeps the progress, and turning a schedule off pauses it.");
     const cadenceLabel = this.#t("v4_room_cadence_named", "Room schedule for {room}", { room: label });
     return html`
       <details class="plan-option cadence-config">

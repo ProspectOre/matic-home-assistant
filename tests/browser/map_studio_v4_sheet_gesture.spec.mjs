@@ -60,14 +60,14 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
     const sheet = await loadNarrowGallery(page);
     await expect(sheet).toHaveAttribute("data-detent", "half");
 
-    await page.locator(`${GALLERY_TAG} #sheet-body`).evaluate((body) => {
+    await page.locator(`${GALLERY_TAG} .sheet-body`).evaluate((body) => {
       const control = document.createElement("button");
       control.type = "button";
       control.textContent = "Synthetic interactive control";
       body.append(control);
     });
     await dispatchTouchDrag(
-      page.locator(`${GALLERY_TAG} #sheet-body`).getByRole("button", { name: "Synthetic interactive control" }),
+      page.locator(`${GALLERY_TAG} .sheet-body`).getByRole("button", { name: "Synthetic interactive control" }),
       100,
       170,
     );
@@ -79,8 +79,28 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
     const sheet = await loadNarrowGallery(page);
     await expect(sheet).toHaveAttribute("data-detent", "half");
 
-    await dispatchTouchDrag(page.locator(`${GALLERY_TAG} #sheet-body`), 100, 170);
+    await dispatchTouchDrag(page.locator(`${GALLERY_TAG} .sheet-body`), 100, 170);
 
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+  });
+
+  test("a downward swipe that starts on the pinned heading or notice steps the sheet down", async ({ page }) => {
+    const sheet = await loadNarrowGallery(page);
+    await page.evaluate((tag) => {
+      const shell = document.querySelector(tag).shadowRoot.querySelector(".stage").firstElementChild;
+      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "set-notice", notice: { tone: "warning", key: "v4_notice_sample", fallback: "Swipe sample" } },
+        bubbles: true,
+        composed: true,
+      }));
+    }, GALLERY_TAG);
+    await expect(sheet).toHaveAttribute("data-detent", "half");
+    await dispatchTouchDrag(page.locator(`${GALLERY_TAG} .panel-heading h2`), 100, 170);
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+
+    await sheet.getByRole("button", { name: "Show more of the map workspace" }).click();
+    await expect(sheet).toHaveAttribute("data-detent", "half");
+    await dispatchTouchDrag(page.locator(`${GALLERY_TAG} [data-notice-slot] .notice-text`), 100, 170);
     await expect(sheet).toHaveAttribute("data-detent", "peek");
   });
 

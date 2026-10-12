@@ -178,7 +178,7 @@ export class OutlineEditor {
           <span id="zone-handle-help" class="sr-only">${this.t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}</span>
           ${selected !== null ? html`
             <div class="zone-point-actions ms-surface" role="group" aria-label=${this.t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}>
-              <span class="zone-selection">${this.t("v4_zone_point_short_number", "Point {number}", { number: selected + 1 })}</span>
+              <span class="zone-selection">${this.t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}</span>
               <button class="ms-btn" type="button" ?disabled=${points.length >= 64 || (!outline?.closed && selected === points.length - 1)} @click=${() => this.#insert(selected)}>${this.t("v4_zone_insert_point", "Insert point")}</button>
               <button class="ms-btn" type="button" aria-label=${this.t("v4_zone_delete_point_number", "Delete point {number}", { number: selected + 1 })} @click=${() => this.#remove(selected)}>${this.t("v4_zone_delete_point", "Delete point")}</button>
             </div>` : nothing}

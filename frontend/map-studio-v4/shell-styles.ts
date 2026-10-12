@@ -324,7 +324,7 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .mobile-sheet[data-detent="half"] { block-size: min(48%, 26rem); }
     .narrow .mobile-sheet[data-detent="full"] { block-size: min(92%, calc(100% - 9rem)); }
     .narrow .mobile-sheet.dragging { transition: none; }
-    .narrow .mobile-sheet[data-detent="peek"] :is(.panel-top, .sheet-body) { display: none; }
+    .narrow .mobile-sheet[data-detent="peek"] .sheet-panel { display: none; }
 
     .narrow .sheet-grip {
       position: relative;
@@ -392,7 +392,9 @@ export const shellStyles = [tokens, base, controls, css`
       clip-path: none;
       white-space: nowrap;
     }
-    .narrow .panel-top { padding-block-start: var(--ms-space-1); }
+    .narrow .sheet-panel { display: flex; flex: 1; flex-direction: column; min-block-size: 0; }
+    /* On a short sheet the pinned heading and notice give the body at least half. */
+    .narrow .panel-top { max-block-size: 50%; padding-block-start: var(--ms-space-1); overflow: auto; overscroll-behavior: contain; }
     .narrow .sheet-body { flex: 1; min-block-size: 0; padding-block-end: var(--ms-space-1); overflow: auto; overscroll-behavior: contain; }
     .narrow .mobile-sheet .action-bar { flex: none; margin-block-start: 0; padding-block-start: var(--ms-space-2); }
     .narrow .panel-back { inline-size: var(--ms-control); padding-inline: 0; }

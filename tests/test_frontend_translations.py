@@ -278,6 +278,22 @@ _BACKEND_FORMS = {
         ["{name}"],
     ),
     "other category": ('"component.matic_robot.entity.vacuum.x"', [], []),
+    "comment is not a reference": (
+        '# "component.matic_robot.common.k_c"\nx = 1',
+        [],
+        [],
+    ),
+    "docstring is not a reference": (
+        'def f():\n    """component.matic_robot.common.k_d"""',
+        [],
+        [],
+    ),
+    "literal beside a comment": (
+        'K = "component.matic_robot.common.k_e"  # "component.matic_robot.common.k_f"',
+        ["k_e"],
+        [],
+    ),
+    "concatenated key": ('"component.matic_robot.common." + name', [], [""]),
 }
 
 

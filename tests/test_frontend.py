@@ -105,6 +105,13 @@ def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
     )
 
 
+def test_workflow_only_classes_ship_in_the_lazy_workflow_chunk() -> None:
+    """design-system.md: classes only workflow views use stay out of controls.ts."""
+    modules = shipped_modules()
+    assert ".ms-chip" not in modules["controls.ts"]
+    assert ".ms-chip" in modules["workflow-panel.ts"]
+
+
 def test_v4_bundle_is_ascii_safe_for_home_assistant_file_editor() -> None:
     """Prevent File Editor uploads from corrupting UTF-8 UI glyphs."""
     for path in _STUDIO_V4_DIRECTORY.rglob("*.js"):
