@@ -542,6 +542,12 @@ async function withIndexLock(action) {
   }
 }
 
+// A record belongs to this run only when its source stamp equals the stamp of
+// the code running now. Records left in OUTPUT_ROOT by an earlier run on another
+// commit (or on a differently dirty tree) are stale and never enter the index.
+const isCurrentRecord = (record) =>
+  record?.gitHead === SOURCE_STAMP.gitHead && record?.gitDirty === SOURCE_STAMP.gitDirty;
+
 // Rebuilds manifest.json and summary.md from every finished scenario. Each
 // test calls this when it ends, under the lock; the rename keeps readers from
 // ever seeing a half-written file.
@@ -552,13 +558,23 @@ async function writeIndex() {
     // A scenario with an output directory but no records.json never finished:
     // it timed out, was dropped, or was still running when this index was built.
     const unfinished = [];
+    // A scenario whose records carry another source stamp came from an earlier
+    // run that this one has not (yet) replaced; it is reported, never indexed.
+    const stale = [];
     for (const item of ITEMS) {
       if (!present.has(item.id)) continue;
+      let records;
       try {
-        manifest.push(...JSON.parse(await readFile(join(OUTPUT_ROOT, item.id, "records.json"), "utf8")));
+        records = JSON.parse(await readFile(join(OUTPUT_ROOT, item.id, "records.json"), "utf8"));
       } catch {
         unfinished.push(item.id);
+        continue;
       }
+      if (!Array.isArray(records) || !records.every(isCurrentRecord)) {
+        stale.push(item.id);
+        continue;
+      }
+      manifest.push(...records);
     }
     const replace = async (name, contents) => {
       const temporary = join(OUTPUT_ROOT, `.${name}.${process.pid}.tmp`);
@@ -566,11 +582,11 @@ async function writeIndex() {
       await rename(temporary, join(OUTPUT_ROOT, name));
     };
     await replace("manifest.json", `${JSON.stringify(manifest, null, 2)}\n`);
-    await replace("summary.md", summarize(manifest, unfinished));
+    await replace("summary.md", summarize(manifest, unfinished, stale));
   });
 }
 
-function summarize(manifest, unfinished = []) {
+function summarize(manifest, unfinished = [], stale = []) {
   const captured = manifest.filter((entry) => entry.path);
   const failedCaptures = manifest.filter((entry) => entry.error);
   const errorScenarios = [...new Set([...failedCaptures.map((entry) => entry.scenario), ...unfinished])];
@@ -598,6 +614,7 @@ function summarize(manifest, unfinished = []) {
     "",
     `- Captures (PNG files): ${captured.length} (${captured.filter((entry) => entry.kind === "full-page").length} are full-page companions)`,
     `- Errors: ${errorCount}${errorScenarios.length ? ` (scenarios: ${errorScenarios.join(", ")})` : ""}`,
+    `- Stale (recorded by another commit or tree state, excluded from this index): ${stale.length}${stale.length ? ` (scenarios: ${stale.join(", ")})` : ""}`,
     `- Skipped: ${manifest.filter((entry) => entry.skipped).length}`,
     `- Axe serious (rule count across captures): ${sum(manifest, "axeSerious")}`,
     `- Axe critical (rule count across captures): ${sum(manifest, "axeCritical")}`,

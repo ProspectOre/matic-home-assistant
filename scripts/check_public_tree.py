@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from collections.abc import Iterator
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
+# Git-ignored output roots skipped by their exact path, so a tracked directory
+# that happens to share the name is still scanned.
+EXCLUDED_PATHS = {Path("tests/browser/.generated")}
 EXCLUDED_PARTS = {
-    ".generated",
     ".git",
     ".mypy_cache",
     ".private",
@@ -98,13 +101,16 @@ def _address_violation(candidate: str) -> str | None:
     return None
 
 
-def public_files(root: Path = ROOT):
+def public_files(root: Path = ROOT) -> Iterator[Path]:
     """Yield files that would be eligible for a public source tree."""
     for directory, dirnames, filenames in root.walk():
+        relative_directory = directory.relative_to(root)
         dirnames[:] = [
             name
             for name in dirnames
-            if name not in EXCLUDED_PARTS and not name.endswith(".egg-info")
+            if name not in EXCLUDED_PARTS
+            and not name.endswith(".egg-info")
+            and relative_directory / name not in EXCLUDED_PATHS
         ]
         yield from (directory / name for name in filenames)
 
