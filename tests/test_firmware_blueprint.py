@@ -65,7 +65,7 @@ async def make_automation_config(
     *,
     vacuum_entity: str = VACUUM,
     firmware_sensor: str = SENSOR,
-    separate_devices: bool = False,
+    register_vacuum: bool = True,
     register_sensor_device: bool = True,
     sensor_state: str = "needs_attention",
 ) -> dict[str, Any]:
@@ -79,30 +79,21 @@ async def make_automation_config(
         identifiers={("matic_robot", vacuum_entity)},
         name="Synthetic vacuum device",
     )
-    if separate_devices:
-        sensor_entry = MockConfigEntry(domain="matic_robot", data={}, options={})
-        sensor_entry.add_to_hass(hass)
-        sensor_device = device_registry.async_get_or_create(
-            config_entry_id=sensor_entry.entry_id,
-            identifiers={("matic_robot", firmware_sensor)},
-            name="Synthetic sensor device",
+    if register_vacuum:
+        entity_registry.async_get_or_create(
+            "vacuum",
+            "matic_robot",
+            vacuum_entity,
+            suggested_object_id=vacuum_entity.split(".", 1)[1],
+            device_id=vacuum_device.id,
         )
-    else:
-        sensor_device = vacuum_device
-    entity_registry.async_get_or_create(
-        "vacuum",
-        "matic_robot",
-        vacuum_entity,
-        suggested_object_id=vacuum_entity.split(".", 1)[1],
-        device_id=vacuum_device.id,
-    )
     if register_sensor_device:
         entity_registry.async_get_or_create(
             "sensor",
             "matic_robot",
             firmware_sensor,
             suggested_object_id=firmware_sensor.split(".", 1)[1],
-            device_id=sensor_device.id,
+            device_id=vacuum_device.id,
         )
     content = load_yaml(BLUEPRINT_PATH)
     blueprint = Blueprint(
@@ -118,7 +109,6 @@ async def make_automation_config(
             CONF_USE_BLUEPRINT: {
                 "path": str(BLUEPRINT_PATH),
                 "input": {
-                    "vacuum": vacuum_entity,
                     "firmware_sensor": firmware_sensor,
                     "notify_service": NOTIFY,
                 },
@@ -216,6 +206,10 @@ async def test_pending_report_delivers_then_marks_delivered_last(
         "revision": 7,
         "action": "delivered",
     }
+    persistent = calls[0][1]["message"]
+    assert "3 of 5 robot data checks succeeded" in persistent
+    assert "/config/devices/device/" in persistent
+    assert "MaticGetFirmware" not in persistent
     mobile = calls[1][1]
     assert mobile["data"]["push"]["interruption-level"] == "passive"
     assert len(mobile["message"]) <= 350
@@ -383,18 +377,12 @@ async def test_offline_sensor_on_selected_vacuum_device_still_reconciles(
     assert calls[-1][1]["action"] == "delivered"
 
 
-async def test_mismatched_robot_pair_with_identical_report_is_rejected(
+async def test_sensor_device_without_a_robot_is_rejected(
     hass: HomeAssistant,
 ) -> None:
-    """A matching report id/revision cannot authorize a different robot's sensor."""
+    """A report cannot act when the sensor's device has no robot vacuum."""
     calls = await install_services(hass, lambda _name, _data: None)
-    selected_report = report()
-    script = await make_script(
-        hass,
-        selected_report,
-        firmware_sensor="sensor.matic_other_firmware_compatibility",
-        separate_devices=True,
-    )
+    script = await make_script(hass, report(), register_vacuum=False)
     ack = f"MATIC_FW_ACK|matic_firmware_{VACUUM}|{REPORT_ID}|7"
     recheck = f"MATIC_FW_CHECK|matic_firmware_{VACUUM}|{REPORT_ID}|7"
 

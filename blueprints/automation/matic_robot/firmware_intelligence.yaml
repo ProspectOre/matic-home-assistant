@@ -1,34 +1,36 @@
 blueprint:
-  name: Matic — Firmware intelligence
+  name: "Matic: Send firmware alerts"
   description: >-
-    Deliver repeated read failures, recovery, and completed actionable research.
-    Unverified protocol-shape observations remain in the report without alerts.
-    Notifications include evidence links, bounded rechecks, and acknowledgement.
-    Reconciles pending delivery after restart. Research routing is configured
-    separately with Matic: Set firmware investigator.
+    Sends a phone notification when the robot's firmware checks keep failing,
+    when they recover, and when firmware research finishes. Notifications let
+    you check again or acknowledge. Notifications that were not delivered are
+    sent after Home Assistant restarts. Choose who researches firmware
+    separately with the action Advanced: Choose firmware investigator.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/firmware_intelligence.yaml
   input:
-    vacuum:
-      name: Matic vacuum
-      selector:
-        entity:
-          integration: matic_robot
-          domain: vacuum
     firmware_sensor:
-      name: Firmware compatibility sensor
+      name: Firmware check sensor
+      description: >-
+        The robot's Firmware check status sensor, for example
+        sensor.matic_firmware_compatibility. The robot is found from this
+        sensor's device.
       selector:
         entity:
           integration: matic_robot
           domain: sensor
     notify_service:
       name: Mobile notification action
-      description: Your Companion app action, such as notify.mobile_app_my_phone.
+      description: >-
+        Your Companion app notification action, for example
+        notify.mobile_app_my_phone.
       selector:
         text:
     notification_namespace:
-      name: Home notification identifier
-      description: Use a different value for each Home Assistant server.
+      name: Notification ID prefix
+      description: >-
+        Use a different value on each Home Assistant server so notifications
+        don't replace each other. Default matic_firmware.
       default: matic_firmware
       selector:
         text:
@@ -36,8 +38,11 @@ blueprint:
 mode: queued
 max: 10
 variables:
-  vacuum_entity: !input vacuum
   firmware_sensor: !input firmware_sensor
+  robot_device: "{{ device_id(firmware_sensor) }}"
+  vacuum_entity: >-
+    {{ (device_entities(robot_device) | select('match', 'vacuum\\.') | list
+        or [''])[0] if robot_device else '' }}
   namespace: !input notification_namespace
   notify_service: !input notify_service
   notification_key: "{{ namespace ~ '_' ~ vacuum_entity }}"
@@ -59,16 +64,13 @@ triggers:
 
 actions:
   - variables:
-      vacuum_device: "{{ device_id(vacuum_entity) }}"
-      sensor_device: "{{ device_id(firmware_sensor) }}"
       report_attribute: "{{ state_attr(firmware_sensor, 'firmware_report') }}"
       report_revision_attribute: "{{ state_attr(firmware_sensor, 'firmware_report_revision') }}"
       report: "{{ report_attribute if report_attribute is mapping else {} }}"
   - condition: template
     value_template: >-
-      {{ vacuum_device is not none
-         and sensor_device is not none
-         and vacuum_device == sensor_device
+      {{ vacuum_entity is string
+         and vacuum_entity.startswith('vacuum.')
          and report_attribute is mapping
          and report.get('id', '') is string
          and (report.get('id', '') | length) == 24
@@ -99,7 +101,7 @@ actions:
         sequence:
           - action: matic_robot.firmware_notification
             target:
-              entity_id: !input vacuum
+              entity_id: "{{ vacuum_entity }}"
             data:
               report_id: "{{ report.id }}"
               revision: "{{ report.revision }}"
@@ -116,7 +118,7 @@ actions:
         sequence:
           - action: matic_robot.firmware_notification
             target:
-              entity_id: !input vacuum
+              entity_id: "{{ vacuum_entity }}"
             data:
               report_id: "{{ report.id }}"
               revision: "{{ report.revision }}"
@@ -130,13 +132,10 @@ actions:
                 {% else %}Matic firmware reads recovered{% endif %}
               message: >-
                 Firmware {{ report.firmware_version }}.
-                {{ report.reachable_endpoints }}/{{ report.endpoint_count }} endpoints responded.
-                {% if report.attention_required %}Repeated read failures need review.
-                {% elif research_actionable %}An actionable research assessment is ready for administrator review.
-                {% else %}Read checks have recovered.{% endif %}
-                {% if research_actionable %}
-                An administrator can retrieve the assessment with MaticGetFirmware.
-                {% endif %}
+                {{ report.reachable_endpoints }} of {{ report.endpoint_count }} robot data checks succeeded.
+                {% if report.attention_required %}Some checks keep failing; open the details to review them.
+                {% elif research_actionable %}A firmware research report is ready for an administrator to review.
+                {% else %}The checks are working again.{% endif %}
           - action: persistent_notification.create
             data:
               notification_id: "{{ notification_key }}"
@@ -144,7 +143,7 @@ actions:
               message: >-
                 {{ message }}
 
-                [View device and firmware status](/config/devices/device/{{ device_id(vacuum_entity) }})
+                [Open the robot's device page](/config/devices/device/{{ robot_device }})
           - action: "{{ notify_service }}"
             data:
               title: "{{ title | trim }}"
@@ -165,7 +164,7 @@ actions:
                     title: Acknowledge
           - action: matic_robot.firmware_notification
             target:
-              entity_id: !input vacuum
+              entity_id: "{{ vacuum_entity }}"
             data:
               report_id: "{{ report.id }}"
               revision: "{{ report.revision }}"

@@ -29,8 +29,33 @@ clean_room_sequence:
   fields:
     rooms:
       required: true
+      example:
+        - room: Kitchen
+          cleaning_mode: vacuum_and_mop
+          coverage_setting: standard
+        - room: Study
+          cleaning_mode: vacuum
+          coverage_setting: quick
       selector:
-        object:
+        object: &room_list
+          translation_key: plan_room
+          multiple: true
+          label_field: room
+          fields: &room_fields
+            room:
+              required: true
+              selector:
+                text:
+            cleaning_mode:
+              selector:
+                select:
+                  translation_key: cleaning_mode
+                  options: [vacuum, mop, vacuum_and_mop]
+            coverage_setting:
+              selector:
+                select:
+                  translation_key: coverage_setting
+                  options: [quick, standard, heavy_duty]
     return_to_base:
       default: true
       selector:
@@ -49,8 +74,12 @@ preview_room_sequence:
   fields:
     rooms:
       required: true
+      example:
+        - room: Kitchen
+          cleaning_mode: vacuum_and_mop
+          coverage_setting: standard
       selector:
-        object:
+        object: *room_list
     return_to_base:
       default: true
       selector:
@@ -87,6 +116,7 @@ intelligent_clean:
   target: *vacuum_target
   fields: &optional_plan
     plan:
+      example: Main floor
       selector:
         text:
 
@@ -98,9 +128,11 @@ run_selected_plan:
   target: *vacuum_target
   fields:
     plan:
+      example: Main floor
       selector:
         text:
     preview_token:
+      advanced: true
       selector:
         text:
 
@@ -111,18 +143,20 @@ preview_plan:
 stop_intelligent_cleaning:
   target: *vacuum_target
   fields:
-    expected_run_id:
-      selector:
-        text:
     include_unmanaged:
       default: false
       selector:
         boolean:
+    expected_run_id:
+      advanced: true
+      selector:
+        text:
 
 reset_plan_history:
   target: *vacuum_target
   fields:
     plan:
+      example: Main floor
       selector:
         text:
     all_plans:
@@ -135,6 +169,7 @@ reset_room_cadence:
   fields:
     plan:
       required: true
+      example: Main floor
       selector:
         text:
     room_id:
@@ -143,10 +178,9 @@ reset_room_cadence:
     modes:
       selector:
         select:
+          translation_key: schedule_type
           multiple: true
-          options:
-            - mop
-            - coverage
+          options: [mop, coverage]
 
 list_plans:
   target: *vacuum_target
@@ -154,11 +188,9 @@ list_plans:
 save_plan:
   target: *vacuum_target
   fields:
-    plan_id:
-      selector:
-        text:
     name:
       required: true
+      example: Main floor
       selector:
         text:
     enabled:
@@ -181,7 +213,7 @@ save_plan:
           cleaning_mode: vacuum
           coverage_setting: quick
       selector:
-        object:
+        object: *room_list
     return_to_base:
       default: true
       selector:
@@ -203,6 +235,10 @@ save_plan:
       default: true
       selector:
         boolean:
+    plan_id:
+      advanced: true
+      selector:
+        text:
     start_timeout:
       default: 120
       advanced: true
@@ -230,6 +266,7 @@ delete_plan:
   fields: &plan_reference
     plan:
       required: true
+      example: Main floor
       selector:
         text:
 
@@ -242,6 +279,7 @@ save_plan_room:
   fields:
     plan:
       required: true
+      example: Main floor
       selector:
         text:
     room:
@@ -252,16 +290,21 @@ save_plan_room:
         coverage_setting: standard
       selector:
         object:
+          translation_key: plan_room
+          label_field: room
+          fields: *room_fields
 
 delete_plan_room:
   target: *plan_target
   fields:
     plan:
       required: true
+      example: Main floor
       selector:
         text:
     room:
       required: true
+      example: Kitchen
       selector:
         text:
 
@@ -270,10 +313,12 @@ move_plan_room:
   fields:
     plan:
       required: true
+      example: Main floor
       selector:
         text:
     room:
       required: true
+      example: Kitchen
       selector:
         text:
     new_position:
@@ -291,6 +336,7 @@ inspect_hermes_endpoint:
       required: true
       selector:
         select:
+          translation_key: robot_data_item
           options:
             - active_session_key
             - approximate_trajectory
@@ -361,6 +407,7 @@ firmware_notification:
         text:
     revision:
       required: true
+      advanced: true
       selector:
         number:
           min: 1
@@ -369,7 +416,5 @@ firmware_notification:
       required: true
       selector:
         select:
-          options:
-            - acknowledge
-            - delivered
-            - recheck
+          translation_key: firmware_notification_action
+          options: [acknowledge, delivered, recheck]

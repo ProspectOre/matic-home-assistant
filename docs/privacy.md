@@ -49,7 +49,8 @@ The integration offers no recording, clip-sharing, or clip-deletion controls.
 
 ## Diagnostics
 
-**Download diagnostics** creates a report only when requested. It contains
+**Download diagnostics** (Settings > Devices & services > Matic (Unofficial) >
+⋮ on the robot's entry) creates a report only when requested. It contains
 software/protocol versions, state and error codes, counters, and endpoint/map
 health, plus the bounded [command and state observation trail](activity-diagnostics.md).
 Observations contain no command payloads or exception messages.

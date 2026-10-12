@@ -185,6 +185,18 @@ class RoomSequenceLimitError(ValueError):
     """Raised when a cleaning definition exceeds the supported room count."""
 
 
+class PlanDisabledError(ValueError):
+    """Raised when a run names a plan that is turned off."""
+
+
+class EmptyPlanError(ValueError):
+    """Raised when a run names a plan without rooms."""
+
+
+class DuplicateRoomError(ValueError):
+    """Raised when one cleaning definition names the same room twice."""
+
+
 class CadenceBindingError(ValueError):
     """Raised when active shared cadence lacks a verified map binding."""
 
@@ -2697,10 +2709,10 @@ class CleaningPlanManager:
         """Resolve a saved plan's rooms against the robot's live map."""
         plan = self.plan(serial_number, plan_id)
         if not plan.get("enabled", True):
-            raise ValueError("plan is disabled")
+            raise PlanDisabledError("plan is disabled")
         raw = plan.get("rooms", [])
         if not isinstance(raw, list) or not raw:
-            raise ValueError("plan has no rooms")
+            raise EmptyPlanError("plan has no rooms")
         if any(not isinstance(room, Mapping) for room in raw):
             raise ValueError("plan contains an invalid room")
         return plan, resolve_rooms(raw, dict(room_map))
@@ -6232,7 +6244,7 @@ def resolve_rooms(
         resolved = candidates[0]
         room_id, room_name = resolved
         if room_id in seen:
-            raise ValueError(f"duplicate room: {room_name}")
+            raise DuplicateRoomError(f"duplicate room: {room_name}")
         seen.add(room_id)
         rooms.append(
             CleaningRoom(

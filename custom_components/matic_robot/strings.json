@@ -650,8 +650,8 @@
   "selector": {
     "cadence_scope": {
       "options": {
-        "plan": "This plan",
-        "shared": "Shared for this room"
+        "plan": "In this plan only",
+        "shared": "Across all plans (recommended)"
       }
     },
     "cleaning_mode": {
@@ -663,15 +663,88 @@
     },
     "coverage_setting": {
       "options": {
-        "heavy_duty": "Heavy Duty",
+        "heavy_duty": "Heavy duty",
         "quick": "Quick",
         "standard": "Optimal"
       }
     },
+    "firmware_notification_action": {
+      "options": {
+        "acknowledge": "Acknowledge",
+        "delivered": "Mark as delivered",
+        "recheck": "Check again"
+      }
+    },
+    "plan_room": {
+      "fields": {
+        "room": {
+          "name": "Room",
+          "description": "Room name or room ID from the robot's map."
+        },
+        "cleaning_mode": {
+          "name": "Cleaning mode",
+          "description": "How the robot cleans this room."
+        },
+        "coverage_setting": {
+          "name": "Vacuum coverage",
+          "description": "How thoroughly the robot vacuums this room."
+        }
+      }
+    },
+    "robot_data_item": {
+      "options": {
+        "active_session_key": "Current cleaning run",
+        "approximate_trajectory": "Approximate robot path",
+        "child_lock_enabled_state": "Child lock",
+        "coverage_corridor": "Cleaning path corridors",
+        "coverage_marker": "Cleaning progress markers",
+        "coverage_plan": "Rooms and map layout",
+        "coverage_session_history": "Cleaning run history",
+        "coverage_session_thumbnails": "Cleaning run thumbnails",
+        "coverage_time": "Total cleaning time",
+        "current_version": "Firmware version",
+        "deep_mop_override_setting_state": "Double-pass mopping",
+        "displayed_mission": "Displayed cleaning run",
+        "dock_detections": "Dock locations",
+        "jukebox_state": "Sound player",
+        "kabuki_state": "Robot status",
+        "labeled_missions": "Named cleaning runs",
+        "latest_pose": "Robot position",
+        "map_combined_coverage": "Combined cleaned area map",
+        "map_compressed_rgb": "Photo map",
+        "map_compressed_rgb_higher": "High-resolution photo map",
+        "map_integrated": "Structural map",
+        "map_semantics": "Map labels",
+        "map_semantics_override": "Edited map labels",
+        "matter_pairing_state": "Matter pairing",
+        "planned_path": "Planned path",
+        "petwaste_enabled_state": "Pet-waste avoidance",
+        "schedule_event_previews": "Upcoming schedule previews",
+        "schedule_events": "Robot schedules",
+        "semantics_override": "Edited room labels",
+        "sink_summon_locations": "Sink summon spots",
+        "sink_summons": "Sink summons",
+        "time_zone": "Time zone",
+        "update_config": "Update channel",
+        "update_state": "Firmware update status",
+        "uploader_config_state": "Diagnostic upload",
+        "user_tunnel_ssh_permission": "Support tunnel permission",
+        "voice_enabled_state": "Cues voice assistant",
+        "water_flow_override_state": "Mopping water flow",
+        "wifi_status": "Wi-Fi status",
+        "zones": "Areas saved on the robot"
+      }
+    },
     "run_behavior": {
       "options": {
-        "intelligent": "Intelligent rotation",
-        "ordered": "Run all in saved order"
+        "intelligent": "Intelligent rotation (longest-waiting rooms first)",
+        "ordered": "Saved order"
+      }
+    },
+    "schedule_type": {
+      "options": {
+        "mop": "Mopping",
+        "coverage": "Vacuum rotation"
       }
     }
   },
@@ -1043,7 +1116,7 @@
       "message": "The robot did not confirm the setting change. Check the robot's current setting before trying again."
     },
     "invalid_area": {
-      "message": "The saved custom area is invalid: {error}"
+      "message": "This custom area can't be used because its saved data is damaged. Open Matic Map and redraw it."
     },
     "area_map_changed": {
       "message": "This custom area was saved for a different room map. Open Configure and redraw it on the current map before cleaning."
@@ -1070,7 +1143,7 @@
       "message": "No managed Matic cleaning plan is running."
     },
     "invalid_plan": {
-      "message": "The cleaning request is invalid: {error}"
+      "message": "This request can't run. Check the plan, then try again."
     },
     "plan_limit_reached": {
       "message": "This robot has reached the saved-plan limit. Delete an existing plan before creating another one."
@@ -1121,7 +1194,7 @@
       "message": "Rooms must be a list of room names or IDs."
     },
     "unknown_rooms": {
-      "message": "Unknown Matic rooms: {rooms}"
+      "message": "These rooms aren't on the robot's map: {rooms}. Check the spelling, or choose rooms from the list."
     },
     "room_sequence_limit": {
       "message": "Room sequences are limited to {limit} rooms."
@@ -1137,6 +1210,51 @@
     },
     "managed_run_changed": {
       "message": "The managed cleaning run has changed. Stop was not sent."
+    },
+    "ambiguous_room": {
+      "message": "More than one room matches {room}. Use its room ID instead; List cleaning plans returns both."
+    },
+    "duplicate_room": {
+      "message": "Each room can appear only once. Remove repeated rooms, then try again."
+    },
+    "invalid_room_position": {
+      "message": "Choose a position from 1 to {count}, then try again."
+    },
+    "plan_preview_changed": {
+      "message": "The plan changed after you previewed it. Preview it again, then run the plan."
+    },
+    "room_sequence_preview_changed": {
+      "message": "The rooms changed after you previewed them. Preview them again, then start cleaning."
+    },
+    "room_schedule_map_unconfirmed": {
+      "message": "Home Assistant can't match a shared room schedule to a room on the current map. Open Matic Map, check the room, then save the plan again."
+    },
+    "plan_name_unusable": {
+      "message": "Home Assistant can't make a plan ID from this name. Add letters or numbers to the name, or set a plan ID."
+    },
+    "plan_locked": {
+      "message": "This plan is running, so it can't be deleted. Wait for the run to finish, then try again."
+    },
+    "room_not_in_plan": {
+      "message": "{room} isn't in {plan}. Check the room ID with List cleaning plans, then try again."
+    },
+    "cadence_reset_blocked": {
+      "message": "This room schedule progress is in use by a running plan. Wait for the run to finish, then try again."
+    },
+    "invalid_investigator": {
+      "message": "Use a lowercase investigator name of up to 48 characters, such as openclaw."
+    },
+    "firmware_evidence_unavailable": {
+      "message": "Home Assistant hasn't checked this robot's firmware yet. Run Advanced: Record firmware snapshot, then try again."
+    },
+    "firmware_notification_stale": {
+      "message": "This firmware notification is out of date. Open the Firmware check status sensor for the current report."
+    },
+    "plan_disabled": {
+      "message": "This plan is turned off. Turn it on in Matic Map, then try again."
+    },
+    "plan_empty": {
+      "message": "This plan has no rooms. Add rooms in Matic Map, then try again."
     }
   },
   "issues": {
@@ -1160,7 +1278,7 @@
       "fields": {
         "rooms": {
           "name": "Rooms",
-          "description": "Up to 100 ordered room objects containing room, cleaning_mode, and coverage_setting."
+          "description": "Up to 100 rooms, in cleaning order. For each room give its name or ID, cleaning mode and vacuum coverage."
         },
         "return_to_base": {
           "name": "Return to dock",
@@ -1168,33 +1286,33 @@
         },
         "use_room_schedule": {
           "name": "Use shared room schedule",
-          "description": "Use due work from shared room schedules. Tracked cleans advance compatible verified work."
+          "description": "Clean what the shared room schedules say is due. Rooms cleaned this way count toward their schedules."
         },
         "override_room_schedule": {
           "name": "Override shared room schedule",
-          "description": "Keep the selected room settings while still tracking compatible shared schedule work."
+          "description": "Use the settings you chose instead of the schedule's. Cleans that match a schedule still count toward it."
         }
       }
     },
     "preview_room_sequence": {
       "name": "Preview room sequence",
-      "description": "Read the current authoritative room sequence and cadence resolution without starting a clean.",
+      "description": "Shows the rooms and order a clean would use right now, including any room schedules, without starting the robot.",
       "fields": {
         "rooms": {
           "name": "Rooms",
-          "description": "Up to 100 ordered room objects containing room, cleaning_mode, and coverage_setting."
+          "description": "Up to 100 rooms, in cleaning order. For each room give its name or ID, cleaning mode and vacuum coverage."
         },
         "return_to_base": {
           "name": "Return to dock",
-          "description": "Include the dock setting in the preview fingerprint."
+          "description": "Include the return-to-dock setting in the preview."
         },
         "use_room_schedule": {
           "name": "Use shared room schedule",
-          "description": "Resolve due work from shared room schedules."
+          "description": "Include what the shared room schedules say is due."
         },
         "override_room_schedule": {
           "name": "Override shared room schedule",
-          "description": "Keep selected settings while preserving compatible cadence accounting."
+          "description": "Use the settings you chose instead of the schedule's; matching cleans still count toward it."
         }
       }
     },
@@ -1204,7 +1322,7 @@
       "fields": {
         "area": {
           "name": "Custom area",
-          "description": "Exact saved area name or stable ID."
+          "description": "Exact name or ID of a saved custom area."
         },
         "cleaning_mode": {
           "name": "Cleaning mode",
@@ -1222,11 +1340,11 @@
       "fields": {
         "rooms": {
           "name": "Rooms",
-          "description": "At most 100 room names or stable room IDs in the desired order. Omit this field to use the robot's clean-all command."
+          "description": "Up to 100 room names or room IDs, in the order to clean. Omit this field to clean all rooms."
         },
         "cleaning_mode": {
           "name": "Cleaning mode",
-          "description": "Cleaning system for this run. Omit it to use Default cleaning mode."
+          "description": "Cleaning mode for this run. Omit it to use the Default cleaning mode setting."
         },
         "coverage_setting": {
           "name": "Vacuum coverage",
@@ -1239,36 +1357,36 @@
       }
     },
     "intelligent_clean": {
-      "name": "Intelligent cleaning",
-      "description": "Starts with the room least recently confirmed as the current cleaning area, then continues until stopped or every selected room finishes. Rejected commands and lingering prior-room state do not change priority; rooms that started remain due without monopolizing later runs.",
+      "name": "Run intelligent rotation",
+      "description": "Cleans the rooms in a plan, starting with the ones that have waited longest, and keeps going until you stop it or every room is done. Rooms that were started but not finished stay due for the next run.",
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Plan name or stable ID. Omit it to use the default plan."
+          "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
         }
       }
     },
     "clean_entire_plan": {
-      "name": "Clean entire plan",
+      "name": "Run saved order",
       "description": "Runs the default or named plan once from top to bottom, using each room's saved settings.",
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Plan name or stable ID. Omit it to use the default plan."
+          "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
         }
       }
     },
     "run_selected_plan": {
-      "name": "Run plan with saved behavior",
-      "description": "Runs the default or named plan using its saved cleaning behavior.",
+      "name": "Run plan",
+      "description": "Runs the default or named plan the way it is saved: in saved order, or by rotation starting with the rooms that have waited longest.",
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Plan name or stable ID. Omit it to use the default plan."
+          "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
         },
         "preview_token": {
-          "name": "Preview token",
-          "description": "Use the token returned by preview_plan to run the accepted saved-plan resolution."
+          "name": "Preview ID",
+          "description": "The ID returned by Preview next plan run. Use it to run exactly what you previewed."
         }
       }
     },
@@ -1278,53 +1396,53 @@
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Plan name or stable ID. Omit it to use the default plan."
+          "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
         }
       }
     },
     "stop_intelligent_cleaning": {
-      "name": "Stop cleaning plan",
-      "description": "Stops the plan using its saved finish-current-room policy, never starts another room, and sends the robot to its dock.",
+      "name": "Stop cleaning",
+      "description": "Stops the running plan and sends the robot to its dock. If the plan is set to finish the current room, the robot finishes that room first once enough of it is done. It never starts another room.",
       "fields": {
         "include_unmanaged": {
           "name": "Also stop other cleaning",
-          "description": "If no managed plan is running, stop one-time or externally started cleaning and return to the dock. Active plans always use their saved stop policy."
+          "description": "If no plan is running, also stop a one-time clean or one started somewhere else (such as the Matic app), and return to the dock. A running plan always follows its own stop setting."
         },
         "expected_run_id": {
           "name": "Expected run ID",
-          "description": "Optional run ID from plan diagnostics. Stop is rejected if that managed run is no longer active."
+          "description": "Optional. A run ID from plan diagnostics. Stop is refused if that run is no longer the one running."
         }
       }
     },
     "reset_plan_history": {
-      "name": "Reset cleaning history",
+      "name": "Reset room cleaning history",
       "description": "Clears room completion history without deleting plans or room settings.",
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Plan name or stable ID. Omit it to use the default plan."
+          "description": "Plan name or ID. Leave empty to use the default plan. Find IDs with List cleaning plans."
         },
         "all_plans": {
           "name": "Reset history for every plan",
-          "description": "Clear intelligent-cleaning history for every plan."
+          "description": "Clear history for every plan."
         }
       }
     },
     "reset_room_cadence": {
       "name": "Reset room schedule progress",
-      "description": "Resets the selected cadence progress and one-time due settings without changing cleaning history. Omit modes to reset both mopping and coverage.",
+      "description": "Resets room schedule progress (mopping, coverage, or both) and any 'do it next clean' settings, without changing cleaning history.",
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Plan name or stable ID containing the room."
+          "description": "Plan name or ID. Find IDs with List cleaning plans."
         },
         "room_id": {
           "name": "Room ID",
-          "description": "Stable room ID to reset. Omit this field to reset every scheduled room in the plan."
+          "description": "Room ID to reset. Omit this field to reset every scheduled room in the plan."
         },
         "modes": {
-          "name": "Cadence types",
-          "description": "Reset mopping, coverage, or both. Omit this field to reset both."
+          "name": "Schedule types",
+          "description": "Reset mopping, vacuum rotation, or both. Omit this field to reset both."
         }
       }
     },
@@ -1339,11 +1457,11 @@
       "fields": {
         "plan_id": {
           "name": "Plan ID",
-          "description": "Stable ID to replace; omit to derive it from the name."
+          "description": "ID of the plan to replace. Omit it to derive the ID from the plan name."
         },
         "name": {
           "name": "Plan name",
-          "description": "Human-readable plan name."
+          "description": "The name shown for this plan."
         },
         "enabled": {
           "name": "Plan enabled",
@@ -1351,11 +1469,11 @@
         },
         "run_behavior": {
           "name": "Cleaning order",
-          "description": "Intelligent rotation uses target-room-confirmed cleaning starts and shared opportunity history; saved order breaks ties. Rejected commands and lingering prior-room state do not change priority. Run all cleans every selected room from top to bottom."
+          "description": "Intelligent rotation cleans the rooms that have waited longest first; saved order breaks ties. Saved order cleans every selected room from top to bottom."
         },
         "rooms": {
           "name": "Rooms and settings",
-          "description": "Ordered mapped rooms with individual cleaning mode and coverage settings."
+          "description": "Rooms in cleaning order, each with its own cleaning mode and vacuum coverage."
         },
         "return_to_base": {
           "name": "Return to dock when finished",
@@ -1366,8 +1484,8 @@
           "description": "Allow the active room to finish when its estimated progress meets the threshold. The next room never starts."
         },
         "finish_current_room_threshold": {
-          "name": "Finish-room progress threshold",
-          "description": "Below this estimated percentage, stop immediately. At or above it, finish the room. The estimate learns from successful managed runs with the same room settings."
+          "name": "Minimum room progress",
+          "description": "When you stop the plan: below this estimated progress, the robot stops now; at or above it, the robot finishes the room first. The estimate learns from earlier successful runs with the same room settings."
         },
         "select": {
           "name": "Use as default plan",
@@ -1385,11 +1503,11 @@
     },
     "delete_plan": {
       "name": "Delete cleaning plan",
-      "description": "Deletes one plan by stable ID or exact name.",
+      "description": "Deletes one plan by its ID or exact name.",
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Stable plan ID or exact name."
+          "description": "Plan name or ID. Find IDs with List cleaning plans."
         }
       }
     },
@@ -1399,7 +1517,7 @@
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Stable plan ID or exact name."
+          "description": "Plan name or ID. Find IDs with List cleaning plans."
         }
       }
     },
@@ -1409,11 +1527,11 @@
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Stable plan ID or exact name."
+          "description": "Plan name or ID. Find IDs with List cleaning plans."
         },
         "room": {
           "name": "Room and settings",
-          "description": "Mapped room name or stable room ID with its cleaning mode and coverage setting. Stable IDs take precedence."
+          "description": "Mapped room name or room ID, with its cleaning mode and coverage setting. If a value matches both an ID and a name, the ID wins."
         }
       }
     },
@@ -1423,11 +1541,11 @@
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Stable plan ID or exact name."
+          "description": "Plan name or ID. Find IDs with List cleaning plans."
         },
         "room": {
           "name": "Room",
-          "description": "Mapped room name or stable room ID. Stable IDs take precedence."
+          "description": "Mapped room name or room ID. If a value matches both an ID and a name, the ID wins."
         }
       }
     },
@@ -1437,11 +1555,11 @@
       "fields": {
         "plan": {
           "name": "Cleaning plan",
-          "description": "Stable plan ID or exact name."
+          "description": "Plan name or ID. Find IDs with List cleaning plans."
         },
         "room": {
           "name": "Room",
-          "description": "Mapped room name or stable room ID. Stable IDs take precedence."
+          "description": "Mapped room name or room ID. If a value matches both an ID and a name, the ID wins."
         },
         "new_position": {
           "name": "New position",
@@ -1450,12 +1568,12 @@
       }
     },
     "inspect_hermes_endpoint": {
-      "name": "Inspect Hermes endpoint",
-      "description": "Reads payload-free sizes and SHA-256 fingerprints from a supported local Hermes endpoint. Credential endpoints are blocked.",
+      "name": "Advanced: Inspect robot data",
+      "description": "Reads the size and a checksum of one item in the robot's local data, without reading its contents. Items that hold credentials are blocked.",
       "fields": {
         "endpoint": {
-          "name": "Endpoint",
-          "description": "Local Hermes property or collection to inspect."
+          "name": "Data item",
+          "description": "The property or collection in the robot's local data to inspect."
         },
         "limit": {
           "name": "Entry limit",
@@ -1464,12 +1582,12 @@
       }
     },
     "firmware_snapshot": {
-      "name": "Firmware snapshot",
-      "description": "Checks every known non-credential Hermes endpoint, stores a payload-free compatibility record, and reports availability, content, and value-free wire-shape changes from the prior snapshot."
+      "name": "Advanced: Record firmware snapshot",
+      "description": "Reads every known non-credential item in the robot's local data, saves a record without the data itself, and reports what is newly available, missing, or changed since the last snapshot."
     },
     "firmware_investigator": {
-      "name": "Set firmware investigator",
-      "description": "Assign firmware research to any connected agent without changing robot controls. Switching invalidates active claims and preserves evidence. Administrator access is required.",
+      "name": "Advanced: Choose firmware investigator",
+      "description": "Choose which connected agent researches firmware reports. This doesn't change any robot controls. Switching ends any research already claimed and keeps the evidence. Administrator access is required.",
       "fields": {
         "provider": {
           "name": "Investigator",
@@ -1478,22 +1596,29 @@
       }
     },
     "firmware_notification": {
-      "name": "Update firmware notification",
-      "description": "Acknowledge a current report, record accepted notification delivery, or request a bounded read-only recheck. Used by the Firmware intelligence blueprint.",
+      "name": "Advanced: Update firmware notification",
+      "description": "Acknowledge the current firmware report, record that a notification was delivered, or ask for another read-only check. Used by the Matic: Send firmware alerts blueprint.",
       "fields": {
         "report_id": {
           "name": "Report ID",
-          "description": "The current report ID from the Firmware compatibility sensor."
+          "description": "The current report ID, from the Firmware check status sensor."
         },
         "revision": {
-          "name": "Revision",
-          "description": "The exact current notification revision."
+          "name": "Report version",
+          "description": "The version of the current report, as shown by the Firmware check status sensor."
         },
         "action": {
           "name": "Action",
-          "description": "Acknowledge, mark delivered, or request a recheck."
+          "description": "Acknowledge, mark as delivered, or check again."
         }
       }
+    }
+  },
+  "device_automation": {
+    "trigger_type": {
+      "room_completed": "Room finished",
+      "plan_finished": "Plan finished",
+      "cleaning_finished": "Cleaning finished"
     }
   }
 }

@@ -1,36 +1,50 @@
 blueprint:
-  name: Matic — Quiet-hours cleaning plan
+  name: "Matic: Clean during quiet hours"
   description: >-
-    Start intelligent cleaning from a saved plan at a chosen time with an
-    optional battery guard. Use Quick coverage for rooms where a shorter
-    overnight run is preferred.
+    Starts a saved plan at a time you choose, only when the robot is docked or
+    idle. If you choose a battery sensor, it also skips cleaning when the
+    battery is at or below a level you set (40% by default). Use Quick coverage
+    for rooms where a shorter overnight run is preferred.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/quiet_hours.yaml
   input:
     vacuum:
-      name: Matic vacuum
+      name: Robot
+      description: The robot that cleans, for example vacuum.matic.
       selector:
         entity:
           integration: matic_robot
           domain: vacuum
+    plan:
+      name: Plan
+      description: >-
+        Name of a plan saved in Matic Map, for example Main floor. Leave empty
+        to use the default plan.
+      default: ""
+      selector:
+        text:
+    run_time:
+      name: Start time
+      description: Time of day to start cleaning. Default 01:00.
+      default: "01:00:00"
+      selector:
+        time:
     battery:
-      name: Matic battery sensor
+      name: Battery sensor
+      description: >-
+        Optional. Skip cleaning when this battery is at or below Minimum
+        battery. Leave empty to start at any battery level.
+      default: ""
       selector:
         entity:
           integration: matic_robot
           domain: sensor
           device_class: battery
-    plan:
-      name: Saved quiet-hours plan
-      selector:
-        text:
-    run_time:
-      name: Start time
-      default: "01:00:00"
-      selector:
-        time:
     minimum_battery:
-      name: Battery must be above
+      name: Minimum battery
+      description: >-
+        Optional. Skip cleaning when the battery is at or below this level.
+        Default 40%.
       default: 40
       selector:
         number:
@@ -40,18 +54,27 @@ blueprint:
 
 mode: single
 
+variables:
+  battery_entity: !input battery
+  minimum_level: !input minimum_battery
+  plan_name: !input plan
+
 triggers:
   - trigger: time
     at: !input run_time
 
 conditions:
-  - condition: numeric_state
-    entity_id: !input battery
-    above: !input minimum_battery
+  - condition: state
+    entity_id: !input vacuum
+    state: [docked, idle]
+  - condition: template
+    value_template: >-
+      {{ not battery_entity
+         or states(battery_entity) | float(0) > minimum_level | float(0) }}
 
 actions:
   - action: matic_robot.intelligent_clean
     target:
       entity_id: !input vacuum
-    data:
-      plan: !input plan
+    data: >-
+      {{ {'plan': plan_name | trim} if (plan_name or '') | trim else {} }}

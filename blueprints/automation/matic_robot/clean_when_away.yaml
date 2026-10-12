@@ -1,33 +1,44 @@
 blueprint:
-  name: Matic — Clean when everyone leaves
+  name: "Matic: Clean when everyone leaves"
   description: >-
-    Start intelligent cleaning after everyone leaves. Rooms that have waited
-    longest are cleaned first, so short trips do not repeatedly clean the same
-    beginning of the plan. It starts only when Matic is docked or idle, so a
-    cleaning already underway is never replaced. When anyone returns, stop the
-    managed run and send Matic to its dock; an interrupted room remains due
-    next time.
+    Starts a cleaning plan after everyone leaves. Rooms that have waited
+    longest are cleaned first, so short trips don't keep cleaning the first
+    rooms in the plan. It starts only when the robot is docked or idle, so it
+    never replaces a clean already underway. When anyone comes home, it stops
+    the plan and sends the robot to its dock; a room that was interrupted stays
+    due for next time.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/clean_when_away.yaml
   input:
     vacuum:
-      name: Matic vacuum
+      name: Robot
+      description: The robot that cleans, for example vacuum.matic.
       selector:
         entity:
           integration: matic_robot
           domain: vacuum
     household:
       name: Household members
+      description: >-
+        People who must all be away before cleaning starts. Someone in a named
+        zone, such as Work, counts as away.
       selector:
         entity:
           domain: person
           multiple: true
     plan:
-      name: Saved plan name
+      name: Plan
+      description: >-
+        Name of a plan saved in Matic Map, for example Main floor. Leave empty
+        to use the default plan.
+      default: ""
       selector:
         text:
     settle_time:
-      name: Departure settle time
+      name: Delay before cleaning
+      description: >-
+        How long everyone must be away before cleaning starts. Default 5
+        minutes.
       default:
         minutes: 5
       selector:
@@ -37,15 +48,22 @@ mode: parallel
 max: 2
 max_exceeded: silent
 
-variables:
+trigger_variables:
   household_entities: !input household
+
+variables:
   vacuum_entity: !input vacuum
+  plan_name: !input plan
 
 triggers:
-  - trigger: state
+  # A member is away unless they are home or their state is unknown, so a
+  # named zone such as Work counts as away.
+  - trigger: template
     id: everyone_left
-    entity_id: !input household
-    to: not_home
+    value_template: >-
+      {{ expand(household_entities)
+         | selectattr('state', 'in', ['home', 'unknown', 'unavailable'])
+         | list | count == 0 }}
     for: !input settle_time
   - trigger: state
     id: someone_returned
@@ -60,15 +78,16 @@ actions:
           - condition: template
             value_template: >-
               {{ expand(household_entities)
-                 | rejectattr('state', 'eq', 'not_home') | list | count == 0 }}
+                 | selectattr('state', 'in', ['home', 'unknown', 'unavailable'])
+                 | list | count == 0 }}
           - condition: template
             value_template: "{{ states(vacuum_entity) in ('docked', 'idle') }}"
         sequence:
           - action: matic_robot.intelligent_clean
             target:
               entity_id: !input vacuum
-            data:
-              plan: !input plan
+            data: >-
+              {{ {'plan': plan_name | trim} if (plan_name or '') | trim else {} }}
       - conditions:
           - condition: trigger
             id: someone_returned

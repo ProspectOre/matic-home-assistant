@@ -7,7 +7,9 @@ states the robot reported, and how a managed plan ended. No debug logging is nee
 
 ## Start here
 
-1. Download integration diagnostics soon after an unexpected stop or dock visit.
+1. Soon after an unexpected stop or dock visit, open Settings > Devices &
+   services > Matic (Unofficial), select ⋮ on the robot's entry, then
+   Download diagnostics.
 2. Find the plan's `run_id` and match it to room events and command observations.
 3. Compare the managed outcome with native history for the requested cleaning mode.
 
