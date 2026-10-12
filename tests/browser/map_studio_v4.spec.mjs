@@ -4942,6 +4942,9 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
       await expectContrast(".action-reason");
       await gallery.evaluate((element) => element.setScenario("draw"));
+      // The Rooms rows still on screen match the row selector, so wait for the
+      // Draw list itself before measuring its rows.
+      await expect(gallery.getByRole("group", { name: "Saved custom areas" })).toBeVisible();
       await expectContrast(".list .ms-row small");
       await gallery.evaluate((element) => { element.narrow = true; element.setScenario("rooms"); });
       await expectContrast(".sheet-status");

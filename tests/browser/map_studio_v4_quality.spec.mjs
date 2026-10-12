@@ -533,6 +533,68 @@ for (const kind of ["plan", "area"]) {
   });
 }
 
+for (const way of ["Escape", "Cancel"]) {
+  test(`${way} on a plan delete dialog whose Delete button a failed reload removed leaves focus in the panel`, async ({ page }) => {
+    await loadQualityModules(page);
+    await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState, SHELL_TAG, WORKFLOW_TAG } = await import("/quality-modules.js");
+      const initial = createGalleryState("plans");
+      const store = new WorkspaceStore(initial);
+      const gate = { fail: false };
+      const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry], scene: aborted, pose: aborted,
+        history: async () => initial.resources.history.value,
+        plans: async () => {
+          if (gate.fail) throw Object.assign(new Error("synthetic offline"), { code: "request-failed" });
+          return structuredClone(initial.resources.plans.value);
+        },
+        areas: async () => initial.resources.areas.value,
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      await effects.refreshCatalog(true);
+      store.patch({ map: initial.map, coherence: "current" });
+      await effects.loadPlans({ force: true });
+      effects.selectPlan("daily");
+      const shell = document.createElement(SHELL_TAG);
+      shell.state = store.value;
+      store.subscribe((state) => { shell.state = state; });
+      // The host applies the shell's intents, as the real element does.
+      shell.addEventListener("matic-workspace-intent", (event) => store.dispatch(event.detail));
+      document.body.append(shell);
+      const workflow = () => shell.shadowRoot.querySelector(WORKFLOW_TAG);
+      const launcher = () => workflow()?.shadowRoot?.querySelector('[data-dialog-launcher="confirmDeletePlan"]') ?? null;
+      for (let frame = 0; frame < 200 && !launcher(); frame += 1) await new Promise(requestAnimationFrame);
+      launcher().focus();
+      store.dispatch({ type: "open-dialog", dialog: "confirmDeletePlan" });
+      await shell.updateComplete;
+      gate.fail = true;
+      await effects.loadPlans({ force: true });
+      await shell.updateComplete;
+      await workflow().updateComplete;
+      window.__ux0Fix10 = { effects, shell };
+    });
+    const dialog = page.getByRole("dialog");
+    await expect(dialog, "the dialog stays over the problem box").toBeVisible();
+    await expect(page.getByRole("button", { name: "Try again" }), "the Delete button is gone, the problem box shows").toBeVisible();
+    if (way === "Escape") await page.keyboard.press("Escape");
+    else await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => {
+      let active = document.activeElement;
+      while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement;
+      const root = window.__ux0Fix10.shell.shadowRoot;
+      const host = active?.getRootNode()?.host;
+      return {
+        body: !active || active === document.body,
+        inPanel: Boolean(active && (root.contains(active) || (host && root.contains(host)))),
+      };
+    }), "focus lands in the panel, never on the page body").toMatchObject({ body: false, inPanel: true });
+    await page.evaluate(() => { window.__ux0Fix10.effects.dispose(); window.__ux0Fix10.shell.remove(); });
+  });
+}
+
 test("a catalog a suspended page sets back to idle keeps showing its value and Delete", async ({ page }) => {
   await loadQualityModules(page);
   const result = await page.evaluate(async () => {
