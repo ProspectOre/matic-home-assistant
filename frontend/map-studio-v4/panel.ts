@@ -22,6 +22,11 @@ import { initialWorkspaceState, WorkspaceStore } from "./state";
 
 const shellTag = unsafeStatic(SHELL_TAG);
 
+// Home Assistant never loads an integration's `common` translations for a
+// custom panel, so the panel asks once per connection and language.
+const commonTranslationsRequested = new WeakMap<object, string>();
+const NO_CONNECTION: object = {};
+
 export class MaticMapPanelV4 extends LitElement {
   static override styles = [tokens, base, css`
 :host { display: block; block-size: 100%; }
@@ -59,7 +64,18 @@ export class MaticMapPanelV4 extends LitElement {
       : this.#adapter.project(hass, panel);
   }
 
+  #requestCommonTranslations(): void {
+    const load = this.hass?.loadBackendTranslation;
+    if (typeof load !== "function") return;
+    const owner = this.hass?.connection ?? NO_CONNECTION;
+    const language = this.hass?.language ?? "";
+    if (commonTranslationsRequested.get(owner) === language) return;
+    commonTranslationsRequested.set(owner, language);
+    void Promise.resolve().then(() => load("common", "matic_robot")).catch(() => undefined);
+  }
+
   protected override shouldUpdate(changed: PropertyValues<this>): boolean {
+    this.#requestCommonTranslations();
     if (!changed.has("hass")
       || [...changed.keys()].some((property) => property !== "hass")) return true;
     const previousHass = changed.get("hass") as HassLike | undefined;
@@ -73,7 +89,8 @@ export class MaticMapPanelV4 extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
-    this.#unsubscribe = this.#store.subscribe((state) => {
+    this.#requestCommonTranslations();
+    this.#unsubscribe =this.#store.subscribe((state) => {
       this._workspace = state;
       if (state.selection.entryId !== this.#projection?.entryKey) {
         const projection = this.#project();

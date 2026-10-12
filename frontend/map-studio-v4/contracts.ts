@@ -393,6 +393,11 @@ export interface HassLike {
     returnResponse?: boolean,
   ) => Promise<unknown>;
   readonly localize?: (key: string, placeholders?: Record<string, unknown>) => string;
+  readonly loadBackendTranslation?: (
+    category: string,
+    integration?: string | readonly string[],
+    configFlow?: boolean,
+  ) => Promise<unknown>;
 }
 
 export interface HassProjection {

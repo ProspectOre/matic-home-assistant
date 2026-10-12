@@ -12,7 +12,11 @@ from __future__ import annotations
 import re
 
 import pytest
+from homeassistant.helpers.translation import async_get_translations
 
+# Importing the integration first makes ``custom_components`` resolve to this
+# repository, which is what lets Home Assistant's loader find ``matic_robot``.
+from custom_components.matic_robot.const import DOMAIN
 from tests.frontend_sources import (
     EN_PATH,
     STRINGS_PATH,
@@ -403,3 +407,15 @@ def test_effects_build_no_notice_text() -> None:
 def test_no_manual_placeholder_substitution() -> None:
     holders = [m for m, source in shipped_modules().items() if '.replace("{' in source]
     assert holders == []
+
+
+async def test_home_assistant_serves_matic_common_translations(hass) -> None:
+    """The `common` category is what the panel asks Home Assistant to load."""
+    served = await async_get_translations(hass, "en", "common", [DOMAIN])
+    prefix = f"component.{DOMAIN}.common."
+    stripped = {
+        key.removeprefix(prefix): value
+        for key, value in served.items()
+        if key.startswith(prefix)
+    }
+    assert stripped == common_strings()
