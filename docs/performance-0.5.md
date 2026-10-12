@@ -16,8 +16,9 @@ Earlier RC4 input results do not qualify this disconnect-admission repair.
 
 ## Method
 
-Build with `npm run build:map-studio-v4`, then run
-`node scripts/measure_map_studio_performance.mjs v0.4.5 > result.json`.
+Build with `npm run build:map-studio-v4`, build the baseline revision the same way in its own
+checkout, then run `node scripts/measure_map_studio_performance.mjs <baseline-checkout> > result.json`
+(the receipts below ran earlier forms of the script against v0.4.5 by git ref).
 Add `--headed` to measure a visible Chromium window. Launch and reported mode
 share the same option; never relabel a headless measurement as headed.
 `--trace-dir <private-directory>` records diagnostic traces with extra overhead;

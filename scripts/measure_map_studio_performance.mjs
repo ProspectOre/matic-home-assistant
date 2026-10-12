@@ -1,5 +1,7 @@
-// Offline, synthetic lab comparison. Build the candidate first, then run:
-// node scripts/measure_map_studio_performance.mjs [baseline-ref] [--headed] [--trace-dir path]
+// Offline, synthetic lab comparison. Build the candidate (npm run build:map-studio-v4)
+// and the baseline revision the same way in its own checkout, then run:
+// node scripts/measure_map_studio_performance.mjs <baseline-checkout> [--headed] [--trace-dir path]
+// Both builds need the production/review bundle split: the gallery is in the review bundle.
 // Prints JSON; does not contact HA, a robot, or external origins. Lab Event
 // Timing samples do not establish field INP, mobile performance, or GPU FPS.
 import { execFileSync } from "node:child_process";
@@ -20,29 +22,28 @@ const { values, positionals } = parseArgs({ options: {
   headed: { type: "boolean", default: false },
   "trace-dir": { type: "string" },
 }, allowPositionals: true });
-if (positionals.length > 1) throw new Error("Expected at most one baseline ref");
+if (positionals.length !== 1) throw new Error("Expected one baseline checkout directory");
 const headless = !values.headed;
 const traceDirectory = values["trace-dir"] ? resolve(values["trace-dir"]) : null;
 if (traceDirectory) await mkdir(traceDirectory, { recursive: true });
 const git = (...args) => execFileSync("git", args, { cwd: root, maxBuffer: 16 * 1024 * 1024 });
-const baseline = git("rev-parse", "--verify", "--end-of-options", `${positionals[0] || "v0.4.5"}^{commit}`).toString().trim();
+const baselineRoot = resolve(positionals[0]);
 const collectorSha256 = createHash("sha256").update(await readFile(fileURLToPath(import.meta.url))).digest("hex");
 const candidateSource = { commit: git("rev-parse", "HEAD").toString().trim(),
   trackedWorktreeDirty: Boolean(git("status", "--porcelain", "--untracked-files=no").toString().trim()) };
 const assets = { baseline: new Map(), candidate: new Map() };
-const reviewAssets = new Map();
-for (const path of git("ls-tree", "-r", "--name-only", baseline, "--", bundlePath).toString().trim().split("\n")) {
-  if (path.endsWith(".js")) assets.baseline.set(path.slice(bundlePath.length + 1), git("show", `${baseline}:${path}`));
-}
-async function loadCandidate(directory, files, prefix = "") {
+const reviewAssets = { baseline: new Map(), candidate: new Map() };
+async function loadScripts(directory, files, prefix = "") {
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = `${prefix}${entry.name}`;
-    if (entry.isDirectory()) await loadCandidate(join(directory, entry.name), files, `${path}/`);
+    if (entry.isDirectory()) await loadScripts(join(directory, entry.name), files, `${path}/`);
     else if (path.endsWith(".js")) files.set(path, await readFile(join(directory, entry.name)));
   }
 }
-await loadCandidate(join(root, bundlePath), assets.candidate);
-await loadCandidate(join(root, reviewBundlePath), reviewAssets);
+for (const [variant, checkout] of [["baseline", baselineRoot], ["candidate", root]]) {
+  await loadScripts(join(checkout, bundlePath), assets[variant]);
+  await loadScripts(join(checkout, reviewBundlePath), reviewAssets[variant]);
+}
 // Use the actual HA registration, including host-wide extra modules that the
 // isolated panel harness would otherwise omit. This requires the test venv.
 const registration = JSON.parse(execFileSync(join(root, ".venv/bin/python"),
@@ -52,7 +53,7 @@ for (const [url, path] of Object.entries(registration.staticPaths)) {
   const local = join(root, path);
   if ((await stat(local)).isDirectory()) {
     const files = new Map();
-    await loadCandidate(local, files);
+    await loadScripts(local, files);
     for (const [name, contents] of files) registeredAssets.set(`${url}/${name}`, contents);
   } else registeredAssets.set(url, await readFile(local));
 }
@@ -73,18 +74,21 @@ const server = createServer((request, response) => {
     return;
   }
   const [, variant, ...segments] = requestPath.split("/");
-  const files = variant === "map_studio_v4" ? assets.candidate : variant === "candidate"
-    ? new Map([...assets.candidate, ...reviewAssets])
-    : Object.hasOwn(assets, variant) ? assets[variant] : null;
   const path = segments.join("/");
+  const known = Object.hasOwn(assets, variant);
   response.setHeader("Cache-Control", "no-store");
-  if (files && path === "") {
+  if (known && path === "") {
     response.setHeader("Content-Type", "text/html");
     const hostImports = variant === "candidate" ? registration.extraModuleUrls.map(url => `import ${JSON.stringify(url)};`).join(" ") : "";
-    response.end(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Synthetic Map Studio benchmark</title><style>html,body{height:100%;margin:0}</style><body><script type="module">${hostImports} import "/${variant === "candidate" ? "map_studio_v4" : variant}/index.js"; ${variant === "candidate" ? 'import "/candidate/review.js";' : ""} await customElements.whenDefined("${galleryTag}"); const gallery=document.createElement("${galleryTag}"); gallery.controls=false; document.body.append(gallery);</script></body></html>`);
-  } else if (files?.has(path)) {
+    response.end(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Synthetic Map Studio benchmark</title><style>html,body{height:100%;margin:0}</style><body><script type="module">${hostImports} import "/${variant}/index.js"; import "/${variant}/review.js"; await customElements.whenDefined("${galleryTag}"); const gallery=document.createElement("${galleryTag}"); gallery.controls=false; document.body.append(gallery);</script></body></html>`);
+  } else if (known && assets[variant].has(path)) {
     response.setHeader("Content-Type", "text/javascript");
-    response.end(files.get(path));
+    response.end(assets[variant].get(path));
+  } else if (known && reviewAssets[variant].has(path)) {
+    // Review chunks import the shared production chunks by their installed
+    // URL; point them at this variant's copy so each build keeps one module identity.
+    response.setHeader("Content-Type", "text/javascript");
+    response.end(reviewAssets[variant].get(path).toString().replaceAll('"/map_studio_v4/', `"/${variant}/`));
   } else { response.writeHead(404); response.end(); }
 });
 await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -144,7 +148,7 @@ try {
         const gallery = page.locator(galleryTag);
         await gallery.getByRole("button", { name: "3D", exact: true }).waitFor();
         await settle(page);
-        const productionPrefix = `/${variant === "candidate" ? "map_studio_v4" : variant}/`;
+        const productionPrefix = `/${variant}/`;
         const productionRequest = path => path.startsWith(productionPrefix) && assets[variant].has(path.slice(productionPrefix.length));
         const initialScripts = [...new Set(requests)].filter(productionRequest);
         const initialHostScripts = [...new Set(requests)].filter(path => registeredAssets.has(path));
@@ -218,7 +222,7 @@ try {
           hostExtraModuleEstimatedGzipBytes: variant === "candidate" ? hostGzipBytes : null,
           wholeIntegrationInitialEstimatedGzipBytes: variant === "candidate" ? hostGzipBytes + gzipBytes(initialScripts) : null,
           hostExtraModuleRequests: initialHostScripts,
-          reviewOnlyInitialScriptEstimatedGzipBytes: initialReviewScripts.reduce((sum, path) => sum + gzipSync(reviewAssets.get(path.slice(variant.length + 2)), { level: 9 }).length, 0),
+          reviewOnlyInitialScriptEstimatedGzipBytes: initialReviewScripts.reduce((sum, path) => sum + gzipSync(reviewAssets[variant].get(path.slice(variant.length + 2)), { level: 9 }).length, 0),
           workflowAddedScriptEstimatedGzipBytes: gzipBytes(warmedScripts.filter(path => !initialScripts.includes(path))),
           inputs: 100, recordedInteractions: measured.interactions.length, inputP95EstimateMs: quantile(estimated, 0.95),
           inputMaxEstimateMs: Math.max(...estimated), slowestInteractions: measured.slowestInteractions, longTasksOver50Ms: measured.longTasks.length,
@@ -237,10 +241,10 @@ try {
     return [variant, { inputP95EstimateMs: { min: Math.min(...values), median: quantile(values, 0.5), max: Math.max(...values) },
       longTasksOver50MsByRun: runs.map(sample => sample.longTasksOver50Ms) }];
   }));
-  console.log(JSON.stringify({ schema: 5, collectorSha256, candidateSource,
-    measuredAt: new Date().toISOString(), baseline,
+  console.log(JSON.stringify({ schema: 6, collectorSha256, candidateSource,
+    measuredAt: new Date().toISOString(),
     bundles: Object.fromEntries(Object.entries(assets).map(([name, files]) => [name, fingerprint(files)])),
-    reviewOnlyBundle: fingerprint(reviewAssets),
+    reviewOnlyBundles: Object.fromEntries(Object.entries(reviewAssets).map(([name, files]) => [name, fingerprint(files)])),
     registeredFrontendAssets: fingerprint(registeredAssets),
     conditions: { browser: browser.version(), platform: platform(), arch: arch(), cpuModel: cpus()[0]?.model,
       logicalCpus: cpus().length, tracing: Boolean(traceDirectory),
