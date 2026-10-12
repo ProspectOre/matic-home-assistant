@@ -138,9 +138,7 @@ _MS_CUSTOM_PROPERTY_SET = re.compile(r'setProperty\(\s*"(--ms-[a-z0-9-]+)"')
 def test_every_ms_custom_property_is_defined() -> None:
     """A ``var(--ms-*)`` without a definition silently falls back to inheritance."""
     sources = shipped_modules().values()
-    used = {
-        name for text in sources for name in _MS_CUSTOM_PROPERTY_USE.findall(text)
-    }
+    used = {name for text in sources for name in _MS_CUSTOM_PROPERTY_USE.findall(text)}
     defined = {
         name
         for text in sources
