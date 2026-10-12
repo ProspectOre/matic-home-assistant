@@ -1283,12 +1283,11 @@
     },
     "robot_identity_changed": {
       "title": "Can't confirm this is {name}",
-      "description": "Home Assistant stopped talking to {name}, which no longer matches the robot it was set up with. If its address changed, use Update robot address (Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure). If it was reset, choose Fix to pair; a replacement is added as a new robot. Removal erases plans, room settings, schedule progress, custom areas, history and saved maps.",
       "fix_flow": {
         "step": {
           "init": {
             "title": "Pair {name} again over Bluetooth",
-            "description": "Stay next to the robot: you will turn on Pairing mode in the Matic app and type a six-digit code, and nothing is saved until the robot accepts it. If only the address changed, close this dialog and use Update robot address; removing the robot instead erases its plans, room settings, schedule progress, custom areas, history and saved maps.",
+            "description": "Home Assistant stopped talking to {name}, which no longer matches the robot it was set up with. If it was reset, stay next to it: you will turn on Pairing mode in the Matic app and type a six-digit code, and nothing is saved until the robot accepts it. A replacement robot is added as a new robot. If only the address changed, close this dialog and use Update robot address (Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure). Removing the robot instead erases its plans, room settings, schedule progress, custom areas, history and saved maps.",
             "submit": "Continue to pairing"
           }
         },
