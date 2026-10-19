@@ -12,7 +12,7 @@ import pytest
 @pytest.fixture
 def probe(monkeypatch, tmp_path):
     focus = SimpleNamespace(
-        appModule=SimpleNamespace(appModuleName="msedge"),
+        appModule=SimpleNamespace(appName="msedge", appModuleName="appModuleHandler"),
         name="Map options",
         role="button",
     )
@@ -86,7 +86,7 @@ def test_allowlisted_speech_still_has_the_original_evidence_provenance(probe):
 
 def test_unknown_modules_and_callback_errors_are_bounded_without_details(probe):
     plugin, focus, api, root = probe
-    focus.appModule.appModuleName = "private application"
+    focus.appModule.appName = "private application"
     plugin._on_speech_queued(["Map options"], None)
 
     def missing_focus():
@@ -124,3 +124,23 @@ def test_approved_label_does_not_persist_an_unmatched_tail(probe):
     assert events[-2]["name"] == "Map options"
     assert "private customer" not in raw
     assert "Kitchenette" not in raw
+
+
+def test_handler_class_name_does_not_authorize_another_executable(probe):
+    plugin, focus, _, root = probe
+    focus.appModule.appName = "notepad"
+    focus.appModule.appModuleName = "msedge"
+    plugin._on_speech_queued(["Map options"], None)
+    assert len((root / "events.jsonl").read_text().splitlines()) == 1
+    assert json.loads((root / "probe-counts.json").read_text())["otherCallbacks"] == 1
+
+
+def test_missing_executable_identity_is_not_replaced_with_handler_name(probe):
+    plugin, focus, _, root = probe
+    del focus.appModule.appName
+    focus.appModule.appModuleName = "msedge"
+    plugin._on_speech_queued(["Map options"], None)
+    assert len((root / "events.jsonl").read_text().splitlines()) == 1
+    counts = json.loads((root / "probe-counts.json").read_text())
+    assert counts["unknownCallbacks"] == 1
+    assert counts["errors"] > 0

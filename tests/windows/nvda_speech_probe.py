@@ -86,7 +86,8 @@ class GlobalPlugin(globalPluginHandler.GlobalPlugin):
     def _module_kind(self, obj=None):
         try:
             focus = obj if obj is not None else api.getFocusObject()
-            module = focus.appModule.appModuleName
+            # Compare NVDA's app identity; handler classes can be shared.
+            module = focus.appModule.appName
             if not isinstance(module, str) or not module:
                 return "unknown"
             module = module.lower()
