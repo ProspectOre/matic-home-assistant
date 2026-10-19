@@ -39,6 +39,30 @@ const helpDialog = (gallery) => canvasOf(gallery).getByRole("dialog", { name: "H
 const optionsButton = (gallery) => gallery.getByRole("button", { name: "Map options", exact: true });
 const optionsMenu = (gallery) => gallery.getByRole("menu", { name: "Map options" });
 
+test("empty Home Map options stays styled when the workflow chunk is unavailable", async ({ page }) => {
+  const workflowRequests = [];
+  await page.route("**/chunks/workflow-panel-*.js", (route) => {
+    workflowRequests.push(route.request().url());
+    return route.abort();
+  });
+  const gallery = await loadGallery(page, { scenario: "home-unpinned", narrow: true });
+  const launcher = optionsButton(gallery);
+  await launcher.click();
+  const menu = optionsMenu(gallery);
+  await expect(menu).toBeVisible();
+  await expect(menu).toHaveCSS("position", "absolute");
+  await expect(menu.getByRole("menuitemradio").first()).toBeFocused();
+  const names = menu.getByRole("menuitemcheckbox", { name: "Room names" });
+  await expect(names.locator(".ms-switch")).toHaveCSS("position", "relative");
+  const checked = await names.getAttribute("aria-checked");
+  await names.click();
+  await expect(names).toHaveAttribute("aria-checked", String(checked !== "true"));
+  await page.keyboard.press("Escape");
+  await expect(menu).toHaveCount(0);
+  await expect(launcher).toBeFocused();
+  expect(workflowRequests).toHaveLength(0);
+});
+
 const rows = async (dialog) => {
   // The first "?" press may wait for the views chunk; the rows follow it.
   await dialog.locator("dt").first().waitFor();

@@ -474,10 +474,7 @@ export class MaticMapShellV4 extends LitElement {
   // The menu has its own small lazy module; the first press opens it once the
   // module and menu controller have settled.
   readonly #options: LazyChunk<MapOptions> = new LazyChunk(this, async () => {
-    const [{ MapOptions },] = await Promise.all([
-      import("./map-options"),
-      this.#workflowModule(),
-    ]);
+    const { MapOptions } = await import("./map-options");
     return new MapOptions(this);
   });
   #optionsPending = false;

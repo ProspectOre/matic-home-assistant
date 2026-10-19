@@ -1,4 +1,7 @@
-import { html, nothing, type ReactiveControllerHost } from "lit";
+import { adoptStyles, html, nothing, type ReactiveControllerHost } from "lit";
+import { shellStyles } from "./shell-styles";
+import { shellWorkflowStyles } from "./workflow-styles";
+import { formControls } from "./form-controls";
 import type { WorkspaceIntent, WorkspaceState } from "./contracts";
 import { icon, iconDone } from "./icons";
 import { MenuController } from "./menu-controller";
@@ -25,6 +28,8 @@ export class MapOptions {
   readonly menu: MenuController;
 
   constructor(host: Host) {
+    // Adopt the shared menu/switch rules without loading workflow behavior.
+    adoptStyles(host.renderRoot as ShadowRoot, [...shellStyles, shellWorkflowStyles, formControls]);
     this.menu = new MenuController(host, ".overflow-wrap", ".overflow");
   }
 
