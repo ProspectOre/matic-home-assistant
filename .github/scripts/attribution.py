@@ -61,7 +61,7 @@ PATTERNS = (
     # Sign-offs: "Generated with [Claude Code](...)", "Implemented by Codex".
     re.compile(
         rf"{LEAD}(?:generated|created|made|written|authored|co-authored|produced"
-        r"|drafted|implemented|coded|assisted)[ \t]+(?:with|by|using|via)[ \t]+"
+        r"|drafted|implemented|coded|assisted)[ \t]+(?:with|by|using|via):?[ \t]+"
         rf"(?:\[|the[ \t]+)?(?:{WRITERS}){R}[^\n]*",
         re.I | re.M,
     ),
