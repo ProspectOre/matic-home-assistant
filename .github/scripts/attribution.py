@@ -59,8 +59,8 @@ PATTERNS = (
     ),
     # Sign-offs: "Generated with [Claude Code](...)", "Implemented by Codex".
     re.compile(
-        rf"{LEAD}(?:generated|created|written|authored|co-authored|produced|drafted"
-        r"|implemented|coded|assisted)[ \t]+(?:with|by|using|via)[ \t]+"
+        rf"{LEAD}(?:generated|created|made|written|authored|co-authored|produced"
+        r"|drafted|implemented|coded|assisted)[ \t]+(?:with|by|using|via)[ \t]+"
         rf"(?:\[|the[ \t]+)?(?:{WRITERS}){R}[^\n]*",
         re.I | re.M,
     ),
@@ -144,20 +144,20 @@ def commits(base, head, number):
         ],
         check=True,
     )
-    out = subprocess.run(
+    # Six NUL-separated fields per commit; a message can hold any byte but NUL.
+    fields = subprocess.run(
         [
             "git",
             "log",
-            "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x1e",
+            "-z",
+            "--format=%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B",
             f"{base}..{head}",
         ],
         check=True,
         capture_output=True,
         text=True,
-    ).stdout
-    entries = [
-        entry.strip("\n").split("\0", 5) for entry in out.split("\x1e") if "\0" in entry
-    ]
+    ).stdout.split("\0")
+    entries = [fields[i : i + 6] for i in range(0, len(fields) - 5, 6)]
     return [
         (sha, ((an, ae), (cn, ce)), message) for sha, an, ae, cn, ce, message in entries
     ]
