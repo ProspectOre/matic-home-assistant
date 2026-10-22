@@ -46,7 +46,7 @@ TRAILER = re.compile(
 PATTERNS = (
     # Trailer keys that only exist to credit a tool.
     re.compile(
-        r"^[ \t]*(?:assisted|generated|ai-assisted|ai-generated|made-with)-by"
+        r"^[ \t]*(?:(?:assisted|generated|ai-assisted|ai-generated)-by|made-with)"
         r"[ \t]*:[^\n]*",
         re.I | re.M,
     ),
