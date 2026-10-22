@@ -951,8 +951,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, credential: HermesCredential
     ) -> config_entries.ConfigFlowResult:
         """Finish first setup with the imported credential, like a paired one."""
-        if self._pairing_data is None:
-            return self.async_abort(reason="pairing_session_expired")
+        # Setup's pair step offers the import only after discovery stored this.
+        assert self._pairing_data is not None
         result = await self._async_create_or_error(
             {**self._pairing_data, **_imported_credential_data(credential)},
             error_step_id="import_credential",
@@ -1015,8 +1015,8 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         the other device.
         """
         entry = self._get_reconfigure_entry()
-        if self._recovery_address is None:
-            return self.async_abort(reason="pairing_session_expired")
+        # Recovery offers the import only after its pre-flight stored this.
+        assert self._recovery_address is not None
         host, port = self._recovery_address
         try:
             fingerprint = await _async_verify_recovered_robot(
