@@ -46,10 +46,13 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
     """Keep both official repository validators wired into CI."""
     workflow = (ROOT / ".github" / "workflows" / "validate.yml").read_text()
 
-    assert "hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main" in workflow
-    assert (
-        "home-assistant/actions/hassfest@"
-        "06749dd8c0b54f350bc69c8752456cee498808a3 # master" in workflow
+    # Match the validators by name and pinned-SHA shape rather than one exact
+    # SHA, so routine Dependabot bumps of these actions keep the test green.
+    assert re.search(r"uses: hacs/action@[0-9a-f]{40} # main$", workflow, re.MULTILINE)
+    assert re.search(
+        r"uses: home-assistant/actions/hassfest@[0-9a-f]{40} # master$",
+        workflow,
+        re.MULTILINE,
     )
 
 
