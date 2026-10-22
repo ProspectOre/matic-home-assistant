@@ -1612,7 +1612,13 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("a room settings check that fails says so and offers Try again", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "rooms" });
     // The gallery always admits a synthetic preview, so the failed check is
-    // rendered by handing the workflow panel that state directly.
+    // rendered by handing the workflow panel that state directly. The panel
+    // loads lazily, so wait for it before writing its state.
+    await expect.poll(() => gallery.evaluate((element) => {
+      const shell = element.shadowRoot.querySelector(".stage").firstElementChild;
+      return [...(shell?.shadowRoot?.querySelectorAll("*") ?? [])]
+        .some((node) => node.localName.startsWith("matic-map-workflow-v4"));
+    })).toBe(true);
     await gallery.evaluate((element) => {
       const shell = element.shadowRoot.querySelector(".stage").firstElementChild;
       const panel = [...shell.shadowRoot.querySelectorAll("*")]

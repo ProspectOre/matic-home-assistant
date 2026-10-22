@@ -27,7 +27,7 @@ loops and ten room-list loops after workflow warm-up. No tracing was enabled.
 
 | Measure | v0.4.5 | Candidate | Gate |
 |---|---:|---:|---:|
-| Complete registered startup gzip estimate | Not measured | 90,778 bytes | ≤92,160 bytes |
+| Complete registered startup gzip estimate | Not measured | 90,778 bytes | ≤92,416 bytes |
 | Added lazy workflow gzip estimate | 0 bytes | 11,905 bytes | ≤30,720 bytes |
 | Input p95, three runs | 56/56/56 ms | 56/56/56 ms | ≤100 ms |
 | Tasks over 50 ms, three runs | 0/0/0 | 0/0/0 | No routine task over 50 ms |

@@ -1541,7 +1541,10 @@ export class RendererController {
           context.fill();
           context.stroke();
         }
-        if (!state.labelsVisible) continue;
+      }
+      // Labels draw after every fill so a later, overlapping room cannot paint
+      // over an earlier room's name. Room names on draws every room.
+      if (state.labelsVisible) for (const room of scene.metadata.rooms) {
         const center = this.#projectCell(room.center[0], room.center[1], 1);
         if (!center) continue;
         const position = selectedPositions?.get(room.id);
@@ -1550,25 +1553,34 @@ export class RendererController {
         const badgeGap = position ? 4 : 0;
         const textWidth = context.measureText(room.name).width;
         const contentWidth = badgeWidth + badgeGap + textWidth;
+        // Every room keeps its name: a label that would cover another moves to
+        // the nearest free slot above or below its room centre.
         const labelBounds = new DOMRect(center.x - contentWidth / 2 - 6, center.y - 10, contentWidth + 12, 20);
-        if (occupied.some((other) => labelBounds.left < other.right + 8
-          && labelBounds.right + 8 > other.left
-          && labelBounds.top < other.bottom + 4
-          && labelBounds.bottom + 4 > other.top)) continue;
+        // Steps visit the centre, 24 px below, 24 px above, 48 px below and
+        // 48 px above on the canvas, and return to the centre when none fits.
+        for (const step of [24, -48, 72, -96, 48]) {
+          if (labelBounds.top >= 0 && labelBounds.bottom <= bounds.height
+            && !occupied.some((other) => labelBounds.left < other.right + 8
+            && labelBounds.right + 8 > other.left
+            && labelBounds.top < other.bottom + 4
+            && labelBounds.bottom + 4 > other.top)) break;
+          labelBounds.y += step;
+        }
+        const y = labelBounds.y + 10;
         occupied.push(labelBounds);
         context.fillStyle = rgba(palette.plate, .88);
         context.fillRect(labelBounds.x, labelBounds.y, labelBounds.width, labelBounds.height);
         if (position) {
           const badgeX = center.x - contentWidth / 2 + badgeWidth / 2;
           context.beginPath();
-          context.roundRect(badgeX - badgeWidth / 2, center.y - 8, badgeWidth, 16, 8);
+          context.roundRect(badgeX - badgeWidth / 2, y - 8, badgeWidth, 16, 8);
           context.fillStyle = rgba(palette.accent, 1);
           context.fill();
           context.fillStyle = rgba(palette.onAccent, 1);
-          context.fillText(position, badgeX, center.y);
+          context.fillText(position, badgeX, y);
         }
         context.fillStyle = rgba(palette.text, 1);
-        context.fillText(room.name, center.x + (badgeWidth + badgeGap) / 2, center.y);
+        context.fillText(room.name, center.x + (badgeWidth + badgeGap) / 2, y);
       }
     }
     const preview = this.#circlePreview;

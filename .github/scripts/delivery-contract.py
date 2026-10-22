@@ -19,7 +19,7 @@ from pathlib import Path
 KINDS = {"ci", "dispatch", "nightly"}
 DISPATCH_EVENTS = {"workflow_dispatch", "workflow_call", "repository_dispatch"}
 KEY = re.compile(r"""^\s*(?:-\s*)?(['"]?)([A-Za-z_]+)\1\s*(?::.*)?$""")
-RUNS_ON = re.compile(r"^(\s*)runs-on:\s*(.*)$")
+RUNS_ON = re.compile(r"""^(\s*)(['"]?)runs-on\2\s*:\s*(.*)$""")
 
 
 def uncommented(text):
@@ -88,14 +88,17 @@ def triggers(text):
 
 
 def runs_on_violations(text):
-    """Return runs-on values that are not a list containing self-hosted."""
+    """Return runs-on lines whose value is not a list containing self-hosted."""
     lines = uncommented(text).splitlines()
     bad = []
     for i, line in enumerate(lines):
+        if "runs-on" not in line:
+            continue
         m = RUNS_ON.match(line)
         if not m:
+            bad.append(line.strip())  # flow mapping or a shape we cannot read
             continue
-        value = m.group(2).split(" #", 1)[0].strip()
+        value = m.group(3).split(" #", 1)[0].strip()
         if value:
             items = flow_items(value)
         else:
@@ -157,9 +160,10 @@ def check(root):
                 errors.append(f"{name}: nightly runs beyond schedule/workflow_dispatch")
     if nightly > 1:
         errors.append("more than one nightly workflow")
-    for dep in (gh / "dependabot.yml", gh / "dependabot.yaml"):
-        if not contract.get("dependabot", True) or not dep.exists():
-            continue
+    deps = [d for d in (gh / "dependabot.yml", gh / "dependabot.yaml") if d.exists()]
+    if contract.get("dependabot", True) and not deps:
+        errors.append("dependabot.yml: missing")
+    for dep in deps if contract.get("dependabot", True) else ():
         text = uncommented(dep.read_text())
         intervals = re.findall(r"interval:\s*['\"]?([a-z]+)", text)
         if any(i != "monthly" for i in intervals):
