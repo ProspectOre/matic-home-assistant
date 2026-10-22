@@ -346,6 +346,28 @@ def _bluetooth_address_data(grant: BluetoothCredentialGrant) -> dict[str, str]:
     return {} if grant.address is None else {CONF_BLUETOOTH_ADDRESS: grant.address}
 
 
+def _unquoted(value: str) -> str:
+    """Return the value without one pair of matching surrounding quotes."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        return value[1:-1].strip()
+    return value
+
+
+def _pasted_credential(value: str) -> str:
+    """Return the stored form of a pasted credential.
+
+    The tool's output may be pasted as the stored form or as the header
+    ``Bearer: <stored form>``, and either may be quoted as a whole, or the
+    header's value alone may be quoted. Quotes are removed around the whole
+    paste first, then the prefix, then quotes around the value.
+    """
+    value = _unquoted(value)
+    if value[:7].lower() == "bearer:":
+        value = _unquoted(value[7:])
+    return value
+
+
 def _bluetooth_credential_data(grant: BluetoothCredentialGrant) -> dict[str, str]:
     """Return the entry update saving a credential paired here over Bluetooth."""
     return {
@@ -912,11 +934,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="pairing_session_expired")
         if user_input is None:
             return self._show_import_form()
-        value = str(user_input.get(CONF_HERMES_CREDENTIAL, "")).strip()
-        if value[:7].lower() == "bearer:":
-            value = value[7:].strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1].strip()
+        value = _pasted_credential(str(user_input.get(CONF_HERMES_CREDENTIAL, "")))
         try:
             credential = HermesCredential.from_storage(value)
         except ValueError:
