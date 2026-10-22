@@ -44,6 +44,8 @@ checklist, see [Review and manual merge](docs/maintenance-reviews.md).
 ## Changes and pull requests
 
 - Explain the user-visible change briefly; update relevant docs and tests.
+- Leave AI attribution out of commits and PR text (co-author trailers, session links,
+  tool footers). Test warns on fork PRs; the maintainer strips any left at merge.
 - Use synthetic fixtures. Keep credentials, identifiers, room names, maps,
   captures, backups, raw timings, and Home Assistant storage out of public files and discussion.
 - Preserve TLS validation, certificate pinning, diagnostic privacy, entity availability, and unload cleanup.
