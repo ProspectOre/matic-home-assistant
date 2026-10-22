@@ -29,7 +29,7 @@ PRODUCTS = (
     r"(?:github )?copilot|(?:anthropic(?:'s)? )?claude code|anthropic(?:'s)? claude|"
     r"(?:openai )?codex(?: cli)?|chatgpt|(?:google )?gemini (?:cli|code assist)|"
     r"google gemini|google jules|cursor (?:agent|ai)|devin ai|kiro agent|"
-    r"amazon q(?: developer)?|aider|windsurf|codeium|openclaw"
+    r"amazon q(?: developer)?|aider|windsurf|codeium|openclaw|(?:openai )?gpt-\d[\w.-]*"
 )
 WRITERS = (
     rf"{PRODUCTS}|claude|gemini|jules|devin|kiro|"
