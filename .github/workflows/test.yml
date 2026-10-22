@@ -2,6 +2,7 @@ name: Test
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
   workflow_dispatch:
@@ -9,14 +10,27 @@ on:
 permissions:
   contents: read
 
+# Every PR runs the same gates, whoever opened it. A title or body edit changes
+# no code: its run rechecks attribution and reports the last code run for the
+# same head instead of rerunning the suite. A base change reruns everything.
+env:
+  RECHECK: ${{ github.event.action == 'edited' && !github.event.changes.base }}
+
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: >-
+    ${{ github.workflow }}-${{ github.ref }}-${{
+    github.event.action == 'edited' && !github.event.changes.base
+    && github.run_id || 'code' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: ${{ github.event.action == 'edited' && !github.event.changes.base && 60 || 20 }}
+    permissions:
+      actions: read
+      checks: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -26,23 +40,42 @@ jobs:
       - run: python3 .github/scripts/delivery-contract.py .
       - if: github.event_name == 'pull_request'
         run: python3 .github/scripts/attribution.py
+      # The required check is this job, so an edit run reports the last code
+      # run of it rather than skipping, which would read as passing.
+      - if: ${{ fromJSON(env.RECHECK) }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/scripts/last-code-run.sh "test (${{ matrix.python-version }})"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ !fromJSON(env.RECHECK) }}
         with:
           node-version: 24
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        if: ${{ !fromJSON(env.RECHECK) }}
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: python -m pip install --upgrade pip
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: python -m pip install -e '.[test]'
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: pytest --cov=custom_components/matic_robot --cov-report=term-missing
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: ruff check .
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: ruff format --check .
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: mypy custom_components/matic_robot
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: python scripts/check_public_tree.py
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: python -m build
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: python scripts/check_release_artifacts.py dist
+        if: ${{ !fromJSON(env.RECHECK) }}
       - run: python scripts/check_fresh_install.py dist
+        if: ${{ !fromJSON(env.RECHECK) }}
 
   ci:
     name: ci
