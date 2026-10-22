@@ -35,9 +35,15 @@ through RC37.
 
 ## Update
 
-Install through HACS and restart Home Assistant while the robot is docked.
-Home Assistant **2026.10+** is required. Existing plans, areas, shortcuts and
-credentials are preserved. Installed RC37 results, including a supervised
+Make a Home Assistant backup first, then install through HACS and restart
+Home Assistant while the robot is docked. Home Assistant **2026.10+** is
+required. Existing plans, areas, shortcuts, history and credentials are
+preserved, and four duplicate entities are removed (see the
+[upgrade check](verification-0.5-upgrade.md)).
+
+Going back to 0.4.x needs that backup restored. Installing 0.4.x over 0.5 data
+leaves the integration unloaded (the 0.5 data stays intact, and reinstalling
+0.5 recovers it). Installed RC37 results, including a supervised
 custom-area run, are recorded in the
 [continuity qualification](verification-0.5-area-continuity.md).
 [Installation](../README.md#install) · [Compatibility](acceptance-0.5.md).
