@@ -24,7 +24,14 @@ CONF_COVERAGE_SETTING: Final = "coverage_setting"
 CONF_HERMES_CREDENTIAL: Final = "hermes_credential"
 CONF_HOSTNAME: Final = "hostname"
 CONF_LIVE_WORKSPACE_TRANSPORT: Final = "live_workspace_transport"
+# How the saved credential was obtained: paired here over Bluetooth, or
+# imported from a pairing made on another device. Entries saved before this
+# was recorded were all paired over Bluetooth.
+CONF_PAIRING_METHOD: Final = "pairing_method"
 CONF_SERIAL_NUMBER: Final = "serial_number"
+
+PAIRING_METHOD_BLUETOOTH: Final = "bluetooth"
+PAIRING_METHOD_IMPORT: Final = "import"
 
 DEFAULT_PORT: Final = 16320
 SERVICE_TYPE: Final = "_matic_hermes._tcp.local."

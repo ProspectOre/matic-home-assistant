@@ -646,7 +646,9 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert "2. Turn on Pairing mode." in pairing
         assert "3. Come back here and choose Start pairing." in pairing
         assert pair_step["submit"] == "Start pairing"
-        assert "data" not in pair_step
+        # The only field is the manual pairing import checkbox; the
+        # confirmation itself stays submit-only.
+        assert set(pair_step["data"]) == {"import_credential"}
         assert "pairing_mode_off" not in errors
         assert "pairing_mode_confirmation_required" not in errors
 

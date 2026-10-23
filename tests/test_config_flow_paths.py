@@ -41,6 +41,7 @@ from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
     CONF_HOSTNAME,
+    CONF_PAIRING_METHOD,
     CONF_SERIAL_NUMBER,
 )
 
@@ -156,6 +157,7 @@ async def test_initial_pairing_offers_explicit_bond_recovery_then_retries(
     assert len(exchanges) == 3
     assert len({id(exchange) for exchange in exchanges}) == 3
     assert result["data"][CONF_HERMES_CREDENTIAL] == TEST_CREDENTIAL.to_storage()
+    assert result["data"][CONF_PAIRING_METHOD] == "bluetooth"
 
 
 async def test_reset_bond_resumes_the_reauthentication_runner(
@@ -803,7 +805,8 @@ async def test_reauthentication_replaces_only_the_local_credential(
     assert result["reason"] == "reauth_successful"
     flow._async_verify_existing_robot.assert_awaited_once()
     assert flow.async_update_reload_and_abort.call_args.kwargs["data_updates"] == {
-        CONF_HERMES_CREDENTIAL: credential.to_storage()
+        CONF_HERMES_CREDENTIAL: credential.to_storage(),
+        CONF_PAIRING_METHOD: "bluetooth",
     }
     flow.async_set_unique_id.assert_awaited_once_with("synthetic")
     flow._abort_if_unique_id_mismatch.assert_called_once_with()
@@ -896,6 +899,7 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     flow._async_verify_existing_robot.assert_awaited_once()
     assert flow.async_update_reload_and_abort.call_args.kwargs["data_updates"] == {
         CONF_HERMES_CREDENTIAL: credential.to_storage(),
+        CONF_PAIRING_METHOD: "bluetooth",
         CONF_BLUETOOTH_ADDRESS: TEST_BLUETOOTH_ADDRESS,
     }
     flow.async_set_unique_id.assert_awaited_once_with("synthetic")
@@ -1086,7 +1090,10 @@ async def test_reconfigure_can_replace_local_access(hass) -> None:
     flow._async_verify_existing_robot.assert_awaited_once()
     flow.async_update_reload_and_abort.assert_called_once_with(
         entry,
-        data_updates={CONF_HERMES_CREDENTIAL: TEST_CREDENTIAL.to_storage()},
+        data_updates={
+            CONF_HERMES_CREDENTIAL: TEST_CREDENTIAL.to_storage(),
+            CONF_PAIRING_METHOD: "bluetooth",
+        },
         reason="reauth_successful",
     )
 

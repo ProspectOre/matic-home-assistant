@@ -105,6 +105,30 @@ async def test_diagnostics_redact_access_material_but_keep_local_context(hass) -
     assert diagnostics["firmware_tracking"]["observed_version"] == "test-version"
 
 
+@pytest.mark.parametrize(
+    ("data", "expected"),
+    [
+        pytest.param({"pairing_method": "import"}, "import", id="imported"),
+        pytest.param({"pairing_method": "bluetooth"}, "bluetooth", id="paired"),
+        # Saved before the method was recorded: only Bluetooth existed then.
+        pytest.param({}, "bluetooth", id="earlier-entry"),
+        pytest.param({"hermes_credential": None}, None, id="no-credential"),
+    ],
+)
+async def test_diagnostics_name_the_pairing_method_never_the_pairing(
+    hass, data, expected
+) -> None:
+    entry = diagnostic_entry()
+    entry.data.update(data)
+    if data.get("hermes_credential", "") is None:
+        del entry.data["hermes_credential"]
+
+    diagnostics = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert diagnostics["entry"]["pairing_method"] == expected
+    assert "private-credential" not in repr(diagnostics)
+
+
 @pytest.mark.parametrize("replace_runtime", [True, False])
 async def test_runtime_change_during_executor_capture_cannot_report_a_match(
     hass, monkeypatch, replace_runtime

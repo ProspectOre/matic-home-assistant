@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import ssl
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -45,6 +47,7 @@ from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
     CONF_HOSTNAME,
+    CONF_PAIRING_METHOD,
     CONF_SERIAL_NUMBER,
     DOMAIN,
 )
@@ -232,6 +235,7 @@ async def test_recovery_re_pins_after_fresh_pairing_and_clears_the_repair(
         "host": "192.0.2.9",
         CONF_CERTIFICATE_FINGERPRINT: robot.fingerprint,
         CONF_HERMES_CREDENTIAL: NEW_CREDENTIAL.to_storage(),
+        CONF_PAIRING_METHOD: "bluetooth",
     }
     assert ir.async_get(hass).async_get_issue(DOMAIN, robot.issue_id) is None
     robot.reload.assert_called_once_with(robot.entry.entry_id)
@@ -685,3 +689,171 @@ async def test_a_dialog_for_another_robot_does_not_block_recovery(hass, robot) -
     result = await _flow(hass, robot).async_step_recover_identity()
 
     assert result["step_id"] == "recover_identity"
+
+
+def _no_local_adapter(monkeypatch) -> None:
+    monkeypatch.setattr(
+        flow_module, "async_has_local_bluetooth_adapter", lambda _hass: False
+    )
+
+
+async def _choose_import(flow: MaticRobotConfigFlow, address=NEW_ADDRESS):
+    form = await flow.async_step_recover_identity()
+    assert flow_module.CONF_IMPORT_CREDENTIAL in form["data_schema"].schema
+    return await flow.async_step_recover_identity(
+        {**address, flow_module.CONF_IMPORT_CREDENTIAL: True}
+    )
+
+
+async def test_recovery_without_an_adapter_re_pins_with_an_imported_pairing(
+    hass, robot, monkeypatch
+) -> None:
+    """The same checks as Bluetooth recovery, then the same single write."""
+    _no_local_adapter(monkeypatch)
+    flow = _flow(hass, robot)
+
+    picked = await _choose_import(flow)
+    assert picked["step_id"] == "import_credential"
+    # Pre-flight ran before the paste was asked for.
+    robot.fetch.assert_awaited_once_with("192.0.2.9", 16320)
+    result = await flow.async_step_import_credential(
+        {flow_module.CONF_HERMES_CREDENTIAL: NEW_CREDENTIAL.to_storage()}
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "identity_recovered"
+    assert result["description_placeholders"] == {"name": "Kitchen"}
+    assert dict(robot.entry.data) == {
+        **ENTRY_DATA,
+        "host": "192.0.2.9",
+        CONF_CERTIFICATE_FINGERPRINT: robot.fingerprint,
+        CONF_HERMES_CREDENTIAL: NEW_CREDENTIAL.to_storage(),
+        CONF_PAIRING_METHOD: "import",
+    }
+    assert ir.async_get(hass).async_get_issue(DOMAIN, robot.issue_id) is None
+    robot.reload.assert_called_once_with(robot.entry.entry_id)
+    # The pasted credential authenticated on the newly pinned certificate.
+    [(_args, kwargs)] = robot.clients
+    assert kwargs["credential"] == NEW_CREDENTIAL
+    assert kwargs["certificate_fingerprint"] == robot.fingerprint
+    assert kwargs["serial_number"] == SERIAL
+    # No Bluetooth was attempted.
+    assert robot.request_kwargs == {}
+    assert flow._pairing_task is None
+
+
+async def test_recovery_with_an_adapter_offers_no_import(hass, robot) -> None:
+    flow = _flow(hass, robot)
+
+    form = await flow.async_step_recover_identity()
+    assert flow_module.CONF_IMPORT_CREDENTIAL not in form["data_schema"].schema
+    refused = await flow.async_step_recover_identity(
+        {**NEW_ADDRESS, flow_module.CONF_IMPORT_CREDENTIAL: True}
+    )
+
+    assert refused["step_id"] == "recover_identity"
+    assert flow_module.CONF_IMPORT_CREDENTIAL not in refused["data_schema"].schema
+    assert flow._import_mode is None
+    assert flow._pairing_task is None
+    _assert_nothing_written(hass, robot)
+
+
+async def test_recovery_import_refused_by_the_robot_keeps_the_paste_field(
+    hass, robot, monkeypatch
+) -> None:
+    _no_local_adapter(monkeypatch)
+    robot.client = _Client(error=AuthenticationRequiredError("refused"))
+    flow = _flow(hass, robot)
+
+    await _choose_import(flow)
+    result = await flow.async_step_import_credential(
+        {flow_module.CONF_HERMES_CREDENTIAL: NEW_CREDENTIAL.to_storage()}
+    )
+
+    assert result["step_id"] == "import_credential"
+    assert result["errors"] == {"base": "import_rejected"}
+    assert flow_module.CONF_HERMES_CREDENTIAL in result["data_schema"].schema
+    assert ir.async_get(hass).async_get_issue(DOMAIN, robot.issue_id) is not None
+    _assert_nothing_written(hass, robot)
+
+
+@pytest.mark.parametrize(
+    ("second_fetch", "client", "expected"),
+    [
+        pytest.param(
+            CannotConnectError("gone"), None, "recover_cannot_connect", id="offline"
+        ),
+        pytest.param(
+            _certificate(hostname="matic-example", serial="other-serial"),
+            None,
+            "different_robot",
+            id="different-robot",
+        ),
+        pytest.param(
+            None,
+            _Client(info=_info("other-serial")),
+            "invalid_certificate",
+            id="serial",
+        ),
+        pytest.param(
+            None,
+            _Client(error=EndpointUnsupportedError("no Handshake")),
+            "recover_cannot_connect",
+            id="unsupported",
+        ),
+    ],
+)
+async def test_recovery_import_robot_failures_return_to_the_address(
+    hass, robot, monkeypatch, second_fetch, client, expected
+) -> None:
+    """Failures about the robot at this address reopen the recovery form,
+    which still offers the import; nothing is written."""
+    _no_local_adapter(monkeypatch)
+    if isinstance(second_fetch, Exception):
+        robot.fetch.side_effect = [robot.certificate, second_fetch]
+    else:
+        robot.fetch.side_effect = [robot.certificate, second_fetch or robot.certificate]
+    if client is not None:
+        robot.client = client
+    flow = _flow(hass, robot)
+
+    await _choose_import(flow)
+    result = await flow.async_step_import_credential(
+        {flow_module.CONF_HERMES_CREDENTIAL: NEW_CREDENTIAL.to_storage()}
+    )
+
+    assert result["step_id"] == "recover_identity"
+    assert result["errors"] == {"base": expected}
+    assert flow_module.CONF_IMPORT_CREDENTIAL in result["data_schema"].schema
+    assert flow._import_mode is None
+    _assert_nothing_written(hass, robot)
+
+
+async def test_recovery_import_pre_flight_refuses_another_robot_first(
+    hass, robot, monkeypatch
+) -> None:
+    """A different robot is refused before the paste is ever asked for."""
+    _no_local_adapter(monkeypatch)
+    robot.fetch.return_value = _certificate(
+        hostname="matic-example", serial="other-serial"
+    )
+    flow = _flow(hass, robot)
+
+    result = await _choose_import(flow)
+
+    assert result["step_id"] == "recover_identity"
+    assert result["errors"] == {"base": "different_robot"}
+    assert flow._import_mode is None
+    _assert_nothing_written(hass, robot)
+
+
+def test_identity_repair_mentions_the_import_for_hosts_without_an_adapter() -> None:
+    strings = json.loads(
+        (
+            Path(__file__).resolve().parents[1]
+            / "custom_components/matic_robot/strings.json"
+        ).read_text()
+    )
+    init = strings["issues"]["robot_identity_changed"]["fix_flow"]["step"]["init"]
+    assert "over Bluetooth" not in init["title"]
+    assert "paste a pairing made on another device" in init["description"]

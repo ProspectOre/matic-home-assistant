@@ -8,7 +8,11 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 
 from . import MaticConfigEntry
-from .const import CONF_HERMES_CREDENTIAL
+from .const import (
+    CONF_HERMES_CREDENTIAL,
+    CONF_PAIRING_METHOD,
+    PAIRING_METHOD_BLUETOOTH,
+)
 from .runtime_code import capture_runtime_code
 
 
@@ -56,6 +60,13 @@ async def async_get_config_entry_diagnostics(
         "entry": {
             "port": entry.data.get("port"),
             "credential_configured": CONF_HERMES_CREDENTIAL in entry.data,
+            # How the credential was obtained, never the credential itself.
+            # Entries saved before this was recorded were paired over Bluetooth.
+            "pairing_method": (
+                entry.data.get(CONF_PAIRING_METHOD, PAIRING_METHOD_BLUETOOTH)
+                if CONF_HERMES_CREDENTIAL in entry.data
+                else None
+            ),
         },
         "robot": {
             "hardware_revision": info.hardware_revision,

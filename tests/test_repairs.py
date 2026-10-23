@@ -8,6 +8,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.matic_robot import config_flow as flow_module
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HOSTNAME,
@@ -27,6 +28,13 @@ ENTRY_DATA = {
     CONF_SERIAL_NUMBER: "synthetic-serial",
     CONF_CERTIFICATE_FINGERPRINT: "00" * 32,
 }
+
+
+def _local_adapter(monkeypatch) -> None:
+    """Answer the recovery form's adapter check without real Bluetooth."""
+    monkeypatch.setattr(
+        flow_module, "async_has_local_bluetooth_adapter", lambda _hass: True
+    )
 
 
 def _entry(hass) -> MockConfigEntry:
@@ -66,7 +74,10 @@ async def test_placeholders_fall_back_without_a_device(hass) -> None:
     assert repair_placeholders(hass, "removed")["name"] == "Matic (Unofficial)"
 
 
-async def test_identity_fix_flow_hands_off_to_robot_was_reset(hass) -> None:
+async def test_identity_fix_flow_hands_off_to_robot_was_reset(
+    hass, monkeypatch
+) -> None:
+    _local_adapter(monkeypatch)
     entry = _entry(hass)
     flow = await async_create_fix_flow(
         hass, f"robot_identity_changed_{entry.entry_id}", {"entry_id": entry.entry_id}
@@ -91,8 +102,9 @@ async def test_identity_fix_flow_hands_off_to_robot_was_reset(hass) -> None:
 
 
 async def test_identity_fix_flow_without_a_running_flow_names_the_manual_path(
-    hass,
+    hass, monkeypatch
 ) -> None:
+    _local_adapter(monkeypatch)
     entry = _entry(hass)
     context = {
         "source": config_entries.SOURCE_RECONFIGURE,
