@@ -298,9 +298,6 @@ export class GestureController {
           ...start,
           distance: start.distance * this.#pinchDistance / nextDistance,
           yaw: start.yaw + angleDelta(nextAngle - this.#pinchAngle),
-          pitch: start.orthographic
-            ? start.pitch
-            : start.pitch - (nextCenter.y - this.#pinchCenter.y) * 0.0035,
         };
         this.#renderer.setCamera(this.#renderer.cameraAfterPan(
           transformed,
