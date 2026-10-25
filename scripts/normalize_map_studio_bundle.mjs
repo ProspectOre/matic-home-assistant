@@ -1,4 +1,5 @@
 import { readdir, readFile, writeFile } from "node:fs/promises";
+import { compactJavaScript } from "./compact_javascript.mjs";
 
 const bundleDirectory = new URL(
   "../custom_components/matic_robot/map_studio_v4/",
@@ -38,11 +39,12 @@ for (const relativePath of javascriptPaths) {
     },
   );
 
-  if (/[^\x00-\x7f]/u.test(asciiSafeSource)) {
+  const compacted = await compactJavaScript(asciiSafeSource);
+  if (/[^\x00-\x7f]/u.test(compacted)) {
     throw new Error(`${relativePath} still contains non-ASCII bytes`);
   }
 
-  await writeFile(path, asciiSafeSource, "ascii");
+  await writeFile(path, compacted, "ascii");
 }
 
 if (whitespaceClassOccurrences !== 2) {

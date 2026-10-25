@@ -1,0 +1,12 @@
+{
+  "matic_entry_id": "synthetic-entry",
+  "plans": {
+    "daily": { "name": "Daily", "enabled": true, "room_count": 3 }
+  },
+  "last_run": {
+    "run_id": "partial-1",
+    "outcome": "failed",
+    "room_count": 3,
+    "completed_room_count": 1
+  }
+}

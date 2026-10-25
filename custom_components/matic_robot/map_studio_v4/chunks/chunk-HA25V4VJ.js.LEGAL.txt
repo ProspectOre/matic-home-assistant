@@ -1,0 +1,1 @@
+/*! Material Design Icons geometry: Apache-2.0. Original robot geometry: MIT. */

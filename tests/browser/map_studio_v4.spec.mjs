@@ -5641,10 +5641,17 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }, GALLERY_TAG);
 
-    // UX9: with no catalog yet there is no shortcut to run, only Your plans.
+    // Publish cleaning choices together after their pinned metadata settles.
     await expect(gallery.getByRole("button", { name: /^Run Daily clean/ })).toHaveCount(0);
-    await expect(gallery.getByRole("button", { name: "Your plans", exact: true })).toBeVisible();
+    await expect(gallery.getByText("Loading your saved home choices…", { exact: true })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Your plans", exact: true })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: /Create a plan/ })).toHaveCount(0);
+    await page.evaluate((tag) => {
+      document.querySelector(tag).replaceWorkspaceState(window.__galleryModule.createGalleryState("ready"));
+    }, GALLERY_TAG);
+    await expect(gallery.getByText("Loading your saved home choices…", { exact: true })).toHaveCount(0);
+    await expect(gallery.getByRole("button", { name: "Your plans", exact: true })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: /^Run Daily clean/ })).toBeVisible();
   });
 
   test("retries a plan catalog after a transient floor-recheck conflict", async ({ page }) => {

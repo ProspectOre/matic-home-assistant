@@ -101,7 +101,15 @@ def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
         rb"customElements\.get\((\w+)\)\|\|customElements\.define\(\1,",
         workflow_bytes,
     )
-    assert "SPDX-License-Identifier: BSD-3-Clause" in _STUDIO_V4_JS
+    notices = tuple(_STUDIO_V4_DIRECTORY.rglob("*.js.LEGAL.txt"))
+    assert notices
+    assert "SPDX-License-Identifier: BSD-3-Clause" in "\n".join(
+        path.read_text(encoding="utf-8") for path in notices
+    )
+    for notice in notices:
+        owner = notice.with_name(notice.name.removesuffix(".LEGAL.txt"))
+        assert owner.is_file()
+        assert notice.name in owner.read_text(encoding="utf-8")
     assert 'from"lit"' not in _STUDIO_V4_JS
     assert "https://" not in _STUDIO_V4_JS
     assert frontend.MATIC_MAP_PANEL_ELEMENT == (

@@ -305,6 +305,7 @@ export function readWorkspaceNotice(value: unknown): WorkspaceNotice | null {
 
 export interface WorkspaceState {
   readonly deepMop: RobotSetting | null;
+  readonly lastRun: ManagedRunSummary | null;
   readonly pageActive: boolean;
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;
   readonly draftFloorOrdinal: number | null;
@@ -567,6 +568,14 @@ export interface HassProjection {
   readonly entryKey: string | null;
   readonly robotLabel: string;
   readonly robots: readonly RobotChoice[];
+  readonly lastRun: ManagedRunSummary | null;
+}
+
+export interface ManagedRunSummary {
+  readonly runId: string;
+  readonly outcome: "running" | "partial" | "unverified";
+  readonly completedRoomCount: number;
+  readonly roomCount: number;
 }
 
 export interface RobotSetting {

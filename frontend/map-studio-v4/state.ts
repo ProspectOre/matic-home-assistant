@@ -62,6 +62,7 @@ export const normalizeBrush = (value: number): number =>
   ) / 100;
 
 export const initialWorkspaceState = (): WorkspaceState => ({
+  lastRun: null,
   pageActive: true,
   owner: null,
   draftFloorOrdinal: null,

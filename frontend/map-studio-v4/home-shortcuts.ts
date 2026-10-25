@@ -125,12 +125,17 @@ export const homeShortcuts = (host: ShortcutHost) => {
     const area = areas.find((candidate) => candidate.id === pin.id);
     return area ? areaShortcut(rowHost, pin, area, index, visiblePins.length) : nothing;
   });
-  if (!visiblePins.length && state.homePins.status !== "error") return nothing;
+  const planError = state.homePins.status === "ready" && state.homePins.pins.some((pin) => pin.kind === "plan") && state.resources.plans.status === "error";
+  const areaError = state.homePins.status === "ready" && state.homePins.pins.some((pin) => pin.kind === "area") && state.resources.areas.status === "error";
+  if (!visiblePins.length && state.homePins.status !== "error" && !planError && !areaError) return nothing;
   const heading = t("v4_shortcuts_heading", "Shortcuts");
   return html`<h3 class="ms-section-heading home-shortcuts-heading" id="shortcuts-heading">${heading}<button class="ms-btn ms-btn--icon" type="button"
     aria-label=${host.editing ? t("v4_done_editing_home_shortcuts", "Done editing shortcuts") : t("v4_edit_home_shortcuts", "Edit shortcuts")}
     ?disabled=${!host.editing && !canReorder} @click=${host.toggleEditing}>${icon(host.editing ? iconDone : iconMenu)}</button></h3>
-    <div class="quick-actions home-shortcuts" role="group" aria-labelledby="shortcuts-heading">${rows}${state.homePins.status === "error" ? html`<p class="pins-error">${t("v4_shortcuts_unavailable", "Home Assistant couldn't load your home shortcuts.")} <button class="ms-btn ms-btn--secondary" type="button" @click=${() => host.emit({ type: "reload-home-pins" })}>${t("v4_retry", "Try again")}</button></p>` : nothing}</div>`;
+    <div class="quick-actions home-shortcuts" role="group" aria-labelledby="shortcuts-heading">${rows}${state.homePins.status === "error" ? html`<p class="pins-error">${t("v4_shortcuts_unavailable", "Home Assistant couldn't load your home shortcuts.")} <button class="ms-btn ms-btn--secondary" type="button" @click=${() => host.emit({ type: "reload-home-pins" })}>${t("v4_retry", "Try again")}</button></p>` : nothing}
+      ${planError ? html`<p class="pins-error">${t("v4_shortcuts_plans_unavailable", "Saved plan shortcuts couldn't be loaded.")} <button class="ms-btn ms-btn--secondary" type="button" @click=${() => host.emit({ type: "open-workflow", workflow: "plans" })}>${t("v4_shortcuts_open_plans", "Open Plans")}</button></p>` : nothing}
+      ${areaError ? html`<p class="pins-error">${t("v4_shortcuts_areas_unavailable", "Saved area shortcuts couldn't be loaded.")} <button class="ms-btn ms-btn--secondary" type="button" @click=${() => host.emit({ type: "open-workflow", workflow: "areas" })}>${t("v4_shortcuts_open_areas", "Open Areas")}</button></p>` : nothing}
+    </div>`;
 };
 
 /**

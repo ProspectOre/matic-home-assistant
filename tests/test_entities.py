@@ -55,6 +55,8 @@ from custom_components.matic_robot.entity import MaticEntity
 from custom_components.matic_robot.plans import (
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
+    CleaningPlanManager,
+    CleaningRoom,
     PlanStopDecision,
 )
 from custom_components.matic_robot.slam_map_store import (
@@ -1121,6 +1123,67 @@ async def test_pending_firmware_without_an_installed_version(hass) -> None:
     assert entity.installed_version is None
     assert entity.latest_version == "Newer firmware"
     assert entity.state is None
+
+
+@pytest.mark.parametrize("active", [False, True])
+async def test_history_payload_matches_the_panel_contract(hass, active) -> None:
+    """Use a real manager snapshot for the shared browser payload contract."""
+    payload = json.loads(
+        (
+            Path(__file__).parent
+            / "browser/fixtures"
+            / (
+                "matic_active_cleaning_history.json"
+                if active
+                else "matic_cleaning_history.json"
+            )
+        ).read_text(encoding="utf-8")
+    )
+    entry = _entry()
+    entry.entry_id = payload["matic_entry_id"]
+    manager = CleaningPlanManager(hass)
+    manager._store.async_save = AsyncMock()
+    robot = manager._robot("synthetic-serial")
+    robot["plans"] = {
+        "daily": {"name": "Daily", "enabled": True, "rooms": [{}, {}, {}]}
+    }
+    await manager.async_begin_run(
+        "synthetic-serial",
+        "daily",
+        "partial-1",
+        3,
+        trigger="user",
+        service="run_selected_plan",
+    )
+    if active:
+        await manager.async_mark_started(
+            "synthetic-serial",
+            "daily",
+            CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard"),
+            run_id="partial-1",
+        )
+    else:
+        assert await manager.async_finish_run(
+            "synthetic-serial",
+            "partial-1",
+            "failed",
+            "partial_native_result",
+            1,
+            terminal_activity="docked",
+        )
+    entry.runtime_data.cleaning_plans = manager
+    history = sensor.MaticCleaningHistorySensor(entry)
+    attributes = history.extra_state_attributes
+    assert attributes["matic_entry_id"] == payload["matic_entry_id"]
+    if active:
+        assert attributes["active_plan"]["run_id"] == payload["active_plan"]["run_id"]
+    else:
+        assert attributes["plans"] == payload["plans"]
+    assert {key: attributes["last_run"][key] for key in payload["last_run"]} == payload[
+        "last_run"
+    ]
+    assert isinstance(attributes["plans"], dict)
+    assert "matic_entry_id" in history._unrecorded_attributes
 
 
 def test_sensor_and_binary_sensor_values() -> None:

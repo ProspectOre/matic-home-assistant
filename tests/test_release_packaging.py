@@ -220,9 +220,15 @@ def test_source_and_runtime_translations_stay_in_sync() -> None:
     chunk_files = tuple(workflow_chunks.rglob("*.js"))
     assert chunk_files
     assert all(path.is_file() for path in chunk_files)
+    notices = set(workflow_chunks.rglob("*.js.LEGAL.txt"))
+    assert notices
+    assert all(
+        path.with_name(path.name.removesuffix(".LEGAL.txt")).is_file()
+        for path in notices
+    )
     assert {path for path in workflow_chunks.rglob("*") if path.is_file()} == set(
         chunk_files
-    )
+    ) | notices
     production_graph = "\n".join(
         path.read_text() for path in studio_bundle.rglob("*.js")
     )
@@ -249,6 +255,8 @@ def test_python_package_includes_home_assistant_runtime_files() -> None:
     assert "*.js" in package_data
     assert "map_studio_v4/*.js" in package_data
     assert "map_studio_v4/**/*.js" in package_data
+    assert "map_studio_v4/*.js.LEGAL.txt" in package_data
+    assert "map_studio_v4/**/*.js.LEGAL.txt" in package_data
     assert (INTEGRATION / "manifest.json").exists()
     assert (INTEGRATION / "client" / "matic_intermediate_ca.pem").exists()
 

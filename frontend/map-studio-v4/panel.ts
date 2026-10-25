@@ -71,6 +71,16 @@ export class MaticMapPanelV4 extends LitElement {
   #backend: MaticBackend | null = null;
   #effects: EffectController | null = null;
   #layers: LayerHistoryController | null = null;
+  #stopViewport: (() => void) | null = null;
+  // HA's layout viewport can extend below Safari's visible viewport. Cap only
+  // this panel, preserving smaller embeds and allowing it to grow again.
+  #fitViewport = (): void => {
+    if (!this.isConnected) return;
+    const viewport = window.visualViewport;
+    this.style.maxBlockSize = `${Math.max(0,
+      (viewport?.height ?? window.innerHeight) + (viewport?.offsetTop ?? 0) - this.getBoundingClientRect().top,
+    )}px`;
+  };
   #commonRetry: {
     readonly owner: object;
     readonly language: string;
@@ -131,6 +141,16 @@ export class MaticMapPanelV4 extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    const events = new AbortController();
+    const observer = new ResizeObserver(this.#fitViewport);
+    this.#stopViewport = () => { events.abort(); observer.disconnect(); };
+    const options = { signal: events.signal, capture: true };
+    for (const target of [window, window.visualViewport]) {
+      for (const type of ["resize", "scroll"]) target?.addEventListener(type, this.#fitViewport, options);
+    }
+    document.addEventListener("fullscreenchange", this.#fitViewport, options);
+    observer.observe(this);
+    this.#fitViewport();
     this.#requestCommonTranslations();
     this.#unsubscribe = this.#store.subscribe((state) => {
       this._workspace = state;
@@ -146,6 +166,8 @@ export class MaticMapPanelV4 extends LitElement {
   }
 
   override disconnectedCallback(): void {
+    this.#stopViewport?.();
+    this.#stopViewport = null;
     // A detached panel drops its waiting retry and the failed pair with it, so
     // reattaching asks again.
     if (this.#commonRetry) {

@@ -618,7 +618,15 @@
     "v4_mouse_points_help": "Click to add points · right-drag or Space-drag to move · wheel to zoom",
     "v4_touch_draw_pan_help": "Drag to move the map · two fingers to move or zoom",
     "v4_touch_erase_help": "Drag to erase · two fingers to move or zoom",
-    "v4_touch_points_help": "Tap to add points · two fingers to move or zoom"
+    "v4_touch_points_help": "Tap to add points · two fingers to move or zoom",
+    "v4_last_run_partial": "Last run did not finish",
+    "v4_last_run_unverified": "Last run unverified",
+    "v4_last_run_rooms": "{completed} of {total} rooms completed",
+    "v4_shortcuts_loading_catalogs": "Loading your saved home choices…",
+    "v4_shortcuts_plans_unavailable": "Saved plan shortcuts couldn't be loaded.",
+    "v4_shortcuts_areas_unavailable": "Saved area shortcuts couldn't be loaded.",
+    "v4_shortcuts_open_plans": "Open Plans",
+    "v4_shortcuts_open_areas": "Open Areas"
   },
   "config": {
     "flow_title": "{name}",

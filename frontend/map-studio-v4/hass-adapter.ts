@@ -41,6 +41,23 @@ const maticEntryKey = (entity: HassEntityLike): string | null => {
   return typeof key === "string" && key.length > 0 ? key : null;
 };
 
+const managedRunSummary = (value: unknown, activePlan: unknown) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const run = value as Record<string, unknown>;
+  if (typeof run.run_id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/u.test(run.run_id)) return null;
+  const roomCount = run.room_count;
+  const completedRoomCount = run.completed_room_count;
+  if (!Number.isSafeInteger(roomCount) || !Number.isSafeInteger(completedRoomCount)
+    || (roomCount as number) < 0 || (completedRoomCount as number) < 0
+    || (completedRoomCount as number) > (roomCount as number)) return null;
+  if (run.outcome === "running") {
+    if (!activePlan || typeof activePlan !== "object" || Array.isArray(activePlan)
+      || (activePlan as Record<string, unknown>).run_id !== run.run_id || roomCount === 0) return null;
+  } else if (run.outcome !== "unverified" && run.outcome !== "stopped_docked" && run.outcome !== "failed" && run.outcome !== "cancelled" && run.outcome !== "recharge_suspended") return null;
+  return Object.freeze({ runId: run.run_id, outcome: run.outcome === "running" ? "running" as const : run.outcome === "unverified" ? "unverified" as const : "partial" as const,
+    completedRoomCount: completedRoomCount as number, roomCount: roomCount as number });
+};
+
 const safeUserKey = (value: unknown): string => {
   const key = String(value || "local-user")
     .replaceAll(/[^a-zA-Z0-9_-]/g, "")
@@ -75,10 +92,14 @@ export class HassAdapter {
     let selectedVacuumEntityId: string | null = null;
     let selectedEntryKey: string | null = requestedEntry;
     const robots = new Map<string, { readonly entryId: string; readonly label: string }>();
+    const histories = new Map<string, Readonly<Record<string, unknown>>>();
 
     for (const [entityId, entity] of Object.entries(states)) {
       const entryKey = maticEntryKey(entity);
       if (!entryKey) continue;
+      if (entityId.startsWith("sensor.") && entity.attributes?.last_run !== undefined) {
+        histories.set(entryKey, entity.attributes);
+      }
       if (!entityId.startsWith("vacuum.")) continue;
       robots.set(entryKey, { entryId: entryKey, label: safeRobotLabel(entity.attributes?.friendly_name) });
       if (requestedEntry ? entryKey === requestedEntry : !selectedVacuum) {
@@ -122,6 +143,8 @@ export class HassAdapter {
     const robotLabel = safeRobotLabel(selectedVacuum?.attributes?.friendly_name);
     const robotChoices = [...robots.values()].sort((left, right) =>
       left.label.localeCompare(right.label, language, { sensitivity: "base" }));
+    const history = histories.get(selectedEntryKey ?? "");
+    const lastRun = managedRunSummary(history?.last_run, history?.active_plan);
     const signature = [
       host.connected,
       host.administrator,
@@ -140,6 +163,7 @@ export class HassAdapter {
       robotChoices.map((robot) => `${robot.entryId}:${robot.label}`).join(","),
       deepMop?.entityId ?? "",
       deepMop?.enabled ?? "unknown",
+      lastRun ? `${lastRun.runId}:${lastRun.outcome}:${lastRun.completedRoomCount}:${lastRun.roomCount}` : "no-last-run",
     ].join("|");
 
     if (signature === this.#signature && this.#projection) {
@@ -159,6 +183,7 @@ export class HassAdapter {
       entryKey: selectedEntryKey,
       robotLabel,
       robots: robotChoices,
+      lastRun,
     };
     return this.#projection;
   }

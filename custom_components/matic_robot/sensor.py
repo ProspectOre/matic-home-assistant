@@ -543,6 +543,7 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
     entity_description = HISTORY_DESCRIPTION
     _unrecorded_attributes = frozenset(
         {
+            "matic_entry_id",
             "last_completed_by_room",
             "plans",
             "plan_history",
@@ -589,6 +590,7 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
         snapshot = self._history.snapshot(self._serial_number)
         return {
             **snapshot,
+            "matic_entry_id": self._config_entry.entry_id,
             "plan_count": len(snapshot["plans"]),
             "plan_running": snapshot["active_plan"] is not None,
         }

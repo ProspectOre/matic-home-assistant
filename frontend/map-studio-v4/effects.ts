@@ -482,6 +482,7 @@ export class EffectController {
       batteryPercent: projection.batteryPercent,
       currentArea: projection.currentArea,
       deepMop: projection.deepMop,
+      lastRun: projection.lastRun ?? null,
       robotLabel: projection.robotLabel,
       robots: projection.robots,
       locale: projection.language,

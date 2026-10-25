@@ -143,9 +143,13 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
     // Row 11: the room the robot reports, when it is a room on this floor.
     const area = roomKey(state.currentArea);
     const room = area && state.resources.scene.value?.metadata.rooms.find((candidate) => roomKey(candidate.name) === area || roomKey(candidate.id) === area)?.name;
+    const progress = state.lastRun?.outcome === "running" ? state.lastRun : null;
     return {
       title: t("v4_cleaning", "Cleaning"),
-      detail: mapUnavailable ? t("v4_active_map_unavailable", "Live map unavailable") : room ? t("v4_cleaning_room", "In {room}", { room }) : battery,
+      detail: mapUnavailable ? t("v4_active_map_unavailable", "Live map unavailable") : progress
+        ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: progress.completedRoomCount, total: progress.roomCount })
+          + (room ? ` · ${t("v4_cleaning_room", "In {room}", { room })}` : "")
+        : room ? t("v4_cleaning_room", "In {room}", { room }) : battery,
       icon: iconCleaning,
       notable: true,
     };
@@ -170,6 +174,15 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
     notable: true,
     recheck: true,
   };
+  if (state.lastRun && state.lastRun.outcome !== "running" && (state.activity === "docked" || state.activity === "idle")) {
+    const run = state.lastRun;
+    return {
+      title: run.outcome === "unverified" ? t("v4_last_run_unverified", "Last run unverified") : t("v4_last_run_partial", "Last run did not finish"),
+      detail: run.roomCount ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: run.completedRoomCount, total: run.roomCount }) : "",
+      icon: iconPlan,
+      notable: true,
+    };
+  }
   return {
     title: state.activity === "docked" ? t("v4_docked", "Docked") : t("v4_ready", "Ready"),
     detail: battery,
@@ -1594,6 +1607,20 @@ export class MaticMapShellV4 extends LitElement {
         break;
     }
     const held = kind !== "ready";
+    const retry = kind === "map-unavailable" || kind === "map-limited" ? html`
+      <div class="home-actions">
+        <button class="ms-btn ms-btn--secondary" type="button"
+          aria-disabled=${state.rechecking ? "true" : nothing}
+          @click=${() => { if (!this.state.rechecking) this.#dispatchAction("recheck-status"); }}
+        >${t("v4_retry", "Try again")}</button>
+      </div>` : nothing;
+    const priorityMaps = held ? maps(kind === "map-unavailable") : nothing;
+    const pins = state.homePins.pins;
+    const waiting = (status: string) => status === "idle" || status === "loading";
+    const pending = waiting(state.homePins.status) || state.homePins.status === "ready" && pins.some((pin) =>
+      pin.kind === "plan"
+        ? waiting(state.resources.plans.status) && !state.resources.plans.value?.plans.some((plan) => plan.id === pin.id)
+        : waiting(state.resources.areas.status) && !state.resources.areas.value?.areas.some((area) => area.id === pin.id));
     const plans = readyPlans(state);
     const noRooms = plans !== null && plans.rooms.length === 0;
     const roomsDisabled = held || noRooms;
@@ -1603,18 +1630,13 @@ export class MaticMapShellV4 extends LitElement {
       this.#shelfRow(title, glyph, launcher, detail, disabled, held, featured ? "ms-row ms-row--card ms-row--featured" : "ms-row ms-row--card");
     // Pinned shortcuts start cleaning in one tap, so they get their own
     // section first (owner, 2026-10-14); the cards below open a screen.
-    const shortcuts = this.#shortcuts(state, held);
+    const shortcuts = pending ? nothing : this.#shortcuts(state, held);
     return html`
-      ${kind === "map-unavailable" || kind === "map-limited" ? html`
-        <div class="home-actions">
-          <button
-            class="ms-btn ms-btn--secondary"
-            type="button"
-            aria-disabled=${state.rechecking ? "true" : nothing}
-            @click=${() => { if (!this.state.rechecking) this.#dispatchAction("recheck-status"); }}
-          >${t("v4_retry", "Try again")}</button>
-        </div>
-      ` : nothing}
+      ${retry}
+      ${priorityMaps}
+      ${pending ? html`
+        <div class="home-actions" role="status"><p>${t("v4_shortcuts_loading_catalogs", "Loading your saved home choices…")}</p></div>
+      ` : html`
       ${shortcuts === nothing ? nothing : html`${shortcuts}<h3 class="ms-section-heading">${t("v4_more_ways_heading", "More ways to clean")}</h3>`}
       <div class="quick-actions" role="group" aria-label=${t("v4_cleaning_choices", "Cleaning choices")}>
         ${card("rooms", shortcuts === nothing, iconRobot, roomsDisabled,
@@ -1625,7 +1647,8 @@ export class MaticMapShellV4 extends LitElement {
           t("v4_areas_quick_detail", "Draw or choose a custom area"))}
         ${this.#shelfRow(t("v4_your_plans", "Your plans"), iconPlan, "plans", undefined, held, held)}
       </div>
-      ${maps(kind === "map-unavailable")}
+      ${held ? nothing : maps(false)}
+      `}
     `;
   }
 

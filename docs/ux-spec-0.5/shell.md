@@ -107,7 +107,7 @@ Strip titles and details are in §4; dialog copy is in §5. Glossary: `docs/ux-a
 - Screen readers: §4 rule 6; Stop keeps its "Stop cleaning" label (`shell.ts:960`) and its reason via `aria-describedby` at every width (drop `shell-styles.ts:156`). RTL: back arrows and the sheet toggle mirror under `:dir(rtl)`; the toast uses logical insets.
 
 ## 9. Backend needs
-- **Rooms done of total** (MS-STATUS-05): the current room already exists as `current_area` (`vacuum.py:121`; reading it is frontend work); only progress is missing, and today the entry carries just `active_plan` as a boolean (`custom_components/matic_robot/slam_scene.py:222`). Owner `slam_scene.py` + `plans.py`, parsed in `backend-contracts.ts`. Fallback: the battery detail.
+- **Rooms done of total** (MS-STATUS-05): the cleaning-history entity supplies verified completed room legs and their fixed total. `hass-adapter.ts` requires its entry association and matching running `last_run.run_id`/`active_plan.run_id`; `shell.ts` shows the counts beside the current room while cleaning. Custom-area legs are excluded; this is not a time or coverage percentage. Without a matched room run, retain the room/battery fallback.
 - **Problem reason** (MS-HOST-02): a translated plain-language mapping of `error_codes`, which today become only `problem: bool` (`vacuum.py:120`). Owner `vacuum.py` and the coordinator. Fallback: "Check the robot".
 - **Selected custom area** (MS-DLG-04, provided in UX0): the areas catalog carries `selected_area` (`slam_scene.py` `MaticAreasView.get`, `AreasCatalog.selectedArea` in `backend-contracts.ts`), as the plans catalog carries `selected_plan`. The field is optional: an older backend omits it, and the panel reads that as no selected area (`null`); both delete dialogs name the first remaining item in catalog order, the backend's saved order.
 - **Unsupported map** (MS-HOST-07): a `map_block_reason` value for an unsupported robot or map; today four values only (`slam_scene.py:179-192`, `backend-contracts.ts:18-19`). Owner `slam_scene.py`. Fallback: row 16, whose copy promises nothing.
@@ -124,7 +124,7 @@ Strip titles and details are in §4; dialog copy is in §5. Glossary: `docs/ux-a
 | MS-STATUS-02 | Rejected Stop: strip back to the activity, Stop re-enabled, error in slot and toast; UX0 browser test |
 | MS-STATUS-03, MS-RESP-01 | 844×390: action bar in the grip row, 28rem floor gone, Stop on-screen at load |
 | MS-STATUS-04, MS-STATUS-06 | Invariant Stop place with danger fill; † rows; Resume beside Stop, wide action bar empty when paused; card demotion: `home-rooms.md` |
-| MS-STATUS-05, MS-STATUS-07 | Details never restate titles; one glyph per state; room from `current_area`; progress is a backend need |
+| MS-STATUS-05, MS-STATUS-07 | Details never restate titles; one glyph per state; room from `current_area`; matched active-run verified room counts |
 | MS-STATUS-08, MS-DS-01 | Forced-colors rule covers primary and Stop; CSS in `design-system.md` |
 | MS-STATUS-09 (= MS-PLAN-13) | One toggle, unavailable direction hidden; disabled icon styling: `design-system.md` |
 | MS-HOST-01, -05, -06, -09 | Chip or card names the state, sheet carries consequence + one verb, no state-labelled disabled buttons, map controls hidden without a map |

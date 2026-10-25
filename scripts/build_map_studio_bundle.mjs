@@ -45,7 +45,7 @@ const result = await build({
     stage: "frontend/map-studio-v4/stage.ts",
   },
   bundle: true, format: "esm", target: "es2022", charset: "ascii", minify: true,
-  splitting: true, legalComments: "eof", entryNames: "[name]", chunkNames: "chunks/[name]-[hash]",
+  splitting: true, legalComments: "linked", entryNames: "[name]", chunkNames: "chunks/[name]-[hash]",
   outdir: production, write: false, metafile: true,
 });
 const graph = new Map(Object.entries(result.metafile.outputs).map(([path, metadata]) => [resolve(root, path), metadata]));
@@ -65,9 +65,15 @@ await rm(review, { recursive: true, force: true });
 for (const output of result.outputFiles) {
   const name = relative(production, output.path);
   if (name.startsWith("..")) throw new Error("Compiled asset escaped its output directory");
-  const destination = resolve(shipped.has(output.path) ? production : review, name);
-  let contents = output.text;
-  if (!shipped.has(output.path)) {
+  // esbuild's linked legal notices belong beside their owning JavaScript,
+  // including notices for shared chunks used by the review harness.
+  const owner = output.path.replace(/\.LEGAL\.txt$/u, "");
+  const destination = resolve(shipped.has(owner) ? production : review, name);
+  // Keep the notice link concise; the complete license text stays untouched.
+  let contents = owner === output.path
+    ? output.text.replace("/*! For license information please see ", "/*! Licenses: ")
+    : output.text;
+  if (!shipped.has(owner) && owner === output.path) {
     // The browser must use one module identity for shared production code,
     // even when both entries are loaded in the same audit page.
     for (const dependency of graph.get(output.path).imports) {
@@ -85,6 +91,7 @@ for (const output of result.outputFiles) {
 // harness can refuse a bundle that no longer matches the working tree.
 const inputs = [...new Set([...Object.keys(result.metafile.inputs),
   "scripts/build_map_studio_bundle.mjs", "scripts/compact_html_templates.mjs",
+  "scripts/compact_javascript.mjs",
   "scripts/normalize_map_studio_bundle.mjs", "scripts/source_stamp.mjs",
   "package.json", "package-lock.json",
 ])].sort();

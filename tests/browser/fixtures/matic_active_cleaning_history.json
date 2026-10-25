@@ -1,0 +1,10 @@
+{
+  "matic_entry_id": "synthetic-entry",
+  "active_plan": { "run_id": "partial-1" },
+  "last_run": {
+    "run_id": "partial-1",
+    "outcome": "running",
+    "room_count": 3,
+    "completed_room_count": 0
+  }
+}
