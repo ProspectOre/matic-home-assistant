@@ -41,6 +41,7 @@ from .commands import (
 from .coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
+    coverage_plan_lacks_active_goals,
     coverage_readback_matches,
 )
 from .coverage_receipts import (
@@ -48,6 +49,7 @@ from .coverage_receipts import (
     coverage_floor_hash,
     make_coverage_receipt,
     native_session_hash,
+    receipt_matches_history,
     receipt_matches_plan,
 )
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
@@ -1962,8 +1964,15 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 ):
                     return False
                 plan = await self.async_get_property("coverage_plan")
+                history_fingerprint = None
                 if not receipt_matches_plan(receipt, plan):
-                    return False
+                    if not coverage_plan_lacks_active_goals(plan):
+                        return False
+                    history_fingerprint = (
+                        await self._async_coverage_history_fingerprint(receipt)
+                    )
+                    if history_fingerprint is None:
+                        return False
                 if (
                     coverage_floor_hash(await self.async_get_floor_plan())
                     != receipt.floor_hash
@@ -1976,11 +1985,32 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 # A second fresh sample catches same-session edits during the
                 # floor/activity checks. The protocol has no atomic generation
                 # marker, so this establishes observed consistency only.
-                return receipt_matches_plan(
-                    receipt, await self.async_get_property("coverage_plan")
+                final_plan = await self.async_get_property("coverage_plan")
+                if history_fingerprint is None:
+                    return receipt_matches_plan(receipt, final_plan)
+                if not coverage_plan_lacks_active_goals(final_plan):
+                    return False
+                return history_fingerprint == (
+                    await self._async_coverage_history_fingerprint(receipt)
                 )
         except MaticError, DecodeError, TimeoutError:
             return False
+
+    async def _async_coverage_history_fingerprint(
+        self, receipt: CoverageReceipt
+    ) -> str | None:
+        """Bind one complete retained goal set to its unique native history key."""
+        entries = await self.async_get_tracked_collection_entries(
+            "coverage_session_history", limit=64
+        )
+        matches = [
+            entry
+            for entry in entries
+            if native_session_hash(entry.key) == receipt.session_hash
+        ]
+        if len(matches) != 1 or not receipt_matches_history(receipt, matches[0].value):
+            return None
+        return hashlib.sha256(matches[0].value).hexdigest()
 
     async def async_start_custom_coverage(
         self,
