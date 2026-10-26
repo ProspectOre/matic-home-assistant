@@ -1635,11 +1635,13 @@ class CleaningPlanManager:
     @callback
     def replace_managed_motion(self, serial_number: str) -> bool:
         """Transfer motion ownership to an admitted independent command."""
+        replaced = False
         if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
             self.cancellation_event(serial_number).set()
             dispatch = self._managed_stop_dispatch.get()
             if dispatch is None or dispatch[0] != serial_number:
                 self._cancellation_reasons[serial_number] = "motion_replaced"
+                replaced = True
         self.cancel_reconciliation_tasks(serial_number)
         # Keep the settle countdown active, but revoke its persisted run owner:
         # replacement motion must not resume an obsolete dock watcher after a
@@ -1658,6 +1660,8 @@ class CleaningPlanManager:
             self._motion_generations.get(serial_number, 0) + 1
         )
         self._managed_motion.pop(serial_number, None)
+        if replaced:
+            self._notify_listeners(serial_number)
         return reconciliation_removed
 
     @contextmanager
@@ -5691,6 +5695,7 @@ class CleaningPlanManager:
             or run.get("run_id") != active["run_id"]
             or run.get("plan_id") != active.get("plan_id")
             or run.get("outcome") != "running"
+            or self.cancellation_reason(serial_number) == "motion_replaced"
             or active.get("status") not in {"running", "suspended"}
             or not isinstance(active.get("cleaning_started"), str)
         ):

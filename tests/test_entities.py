@@ -1555,6 +1555,13 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
         )
         publisher.refresh()
         assert publisher.data is not None
+        async with manager.lock("synthetic-serial"):
+            await manager.async_replace_managed_motion("synthetic-serial")
+            assert manager.cancellation_reason("synthetic-serial") == "motion_replaced"
+            assert publisher.data is None  # Clear immediately, without a timer tick.
+        manager.prepare_run("synthetic-serial")
+        publisher.refresh()
+        assert publisher.data is not None
         manager._robot("synthetic-serial")["last_run"]["run_id"] = "replacement"
         publisher.refresh()
         assert publisher.data is None

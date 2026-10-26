@@ -4904,6 +4904,32 @@ async def test_current_room_timing_rejects_other_owners_and_settings(hass) -> No
     assert manager.current_room_timing("serial") is None
 
 
+async def test_current_room_timing_rejects_replaced_motion_before_cleanup(hass) -> None:
+    """A replacement cannot inherit the old room's clock during executor unwind."""
+    manager = CleaningPlanManager(hass)
+    manager._store.async_save = AsyncMock()
+    room = _room("Kitchen", "room-kitchen")
+    async with manager.lock("serial"):
+        manager.prepare_run("serial")
+        await manager.async_begin_run(
+            "serial", "daily", "old-run", 1, trigger="user", service="run_selected_plan"
+        )
+        await manager.async_mark_started("serial", "daily", room, run_id="old-run")
+        await manager.async_mark_resumed("serial", "daily", room)
+        robot = manager._robot("serial")
+        robot["rotations"]["daily"]["rooms"][room.room_id][
+            "duration_history_seconds"
+        ] = [100, 100, 100]
+        robot["active_plan"]["active_elapsed_seconds"] = 50
+        robot["active_plan"]["active_segment_started"] = None
+        manager.mark_managed_stop("serial")
+        assert manager.current_room_timing("serial")["estimated_percent"] == 50
+        await manager.async_replace_managed_motion("serial")
+        assert robot["active_plan"]["run_id"] == robot["last_run"]["run_id"]
+        assert manager.cancellation_reason("serial") == "motion_replaced"
+        assert manager.current_room_timing("serial") is None
+
+
 async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
     hass,
 ) -> None:
