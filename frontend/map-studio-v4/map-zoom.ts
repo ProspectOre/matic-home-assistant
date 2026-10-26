@@ -1,4 +1,4 @@
-import { html, type ReactiveControllerHost } from "lit";
+import { html, type ReactiveController, type ReactiveControllerHost } from "lit";
 import { live } from "lit/directives/live.js";
 import { MAP_ZOOM_MAX, MAP_ZOOM_MIN } from "./contracts";
 import type { MaticMapCanvasV4 } from "./map-canvas";
@@ -9,12 +9,44 @@ type Host = ReactiveControllerHost & HTMLElement & { readonly renderRoot: Parent
 type Translate = (key: string, fallback: string) => string;
 
 /** Loaded with Map options; camera-only controls never dispatch robot commands. */
-export class MapZoom {
+export class MapZoom implements ReactiveController {
   open = false;
   #value = "100";
   #editing = false;
+  #viewport: Element | null = null;
+  #resizeFrame = 0;
+  readonly #resize = new ResizeObserver(() => {
+    cancelAnimationFrame(this.#resizeFrame);
+    // A reconnected renderer may observe after us. Read its camera after all resize observers run.
+    this.#resizeFrame = requestAnimationFrame(() => {
+      this.#resizeFrame = 0;
+      this.host.requestUpdate();
+    });
+  });
 
-  constructor(private readonly host: Host, private readonly menu: MenuController) {}
+  constructor(private readonly host: Host, private readonly menu: MenuController) {
+    host.addController(this);
+  }
+
+  hostConnected(): void { this.#watchViewport(); }
+  hostUpdated(): void { this.#watchViewport(); }
+  hostDisconnected(): void { this.#unwatchViewport(); }
+
+  #unwatchViewport(): void {
+    this.#resize.disconnect();
+    cancelAnimationFrame(this.#resizeFrame);
+    this.#resizeFrame = 0;
+    this.#viewport = null;
+  }
+
+  #watchViewport(): void {
+    const viewport = this.open && this.menu.open
+      ? this.#canvas()?.renderRoot.querySelector(".scene-canvas") ?? null : null;
+    if (viewport === this.#viewport) return;
+    this.#unwatchViewport();
+    this.#viewport = viewport;
+    if (viewport) this.#resize.observe(viewport);
+  }
 
   #canvas(): MaticMapCanvasV4 | null {
     return this.host.renderRoot.querySelector<MaticMapCanvasV4>(".map-canvas");

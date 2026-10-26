@@ -88,6 +88,64 @@ test("numeric zoom rejects invalid input and closes without losing camera state"
   await expect.poll(() => percent(canvas)).toBeCloseTo(400, 5);
 });
 
+for (const mode of ["2D", "3D"]) test(`open numeric zoom tracks viewport changes without replacing an edit in ${mode}`, async ({ page }) => {
+  const gallery = await mount(page, "ready", false);
+  // Keep the perspective viewport narrower than its height without crossing a shell breakpoint.
+  if (mode === "3D") await gallery.locator(".stage").evaluate(element => { element.style.blockSize = "1400px"; });
+  await gallery.getByRole("button", { name: mode, exact: true }).click();
+  const canvas = gallery.locator(".map-canvas");
+  const dialog = await openZoom(gallery);
+  const input = dialog.getByLabel("Map zoom percent", { exact: true });
+  const output = dialog.getByLabel("Current zoom", { exact: true });
+  await dialog.getByRole("button", { name: "400%", exact: true }).click();
+  await expect.poll(() => percent(canvas)).toBeCloseTo(400, 5);
+  await page.setViewportSize({ width: 1000, height: 760 });
+  await expect.poll(() => percent(canvas)).not.toBeCloseTo(400, 1);
+  const resized = Math.round(await percent(canvas));
+  await expect(output).toHaveText(`${resized}%`);
+  await expect(input).toHaveValue(String(resized));
+  await input.press("Enter");
+  await expect.poll(() => percent(canvas)).toBeCloseTo(resized, 5);
+
+  await input.fill("375");
+  await page.setViewportSize({ width: 1080, height: 760 });
+  await expect.poll(() => percent(canvas)).not.toBeCloseTo(resized, 1);
+  await expect(output).toHaveText(`${Math.round(await percent(canvas))}%`);
+  await expect(input).toHaveValue("375");
+  await input.press("Enter");
+  await expect.poll(() => percent(canvas)).toBeCloseTo(375, 5);
+});
+
+test("numeric zoom stays accurate through fitted resizing, host reconnect and reopening @safety", async ({ page }) => {
+  const gallery = await mount(page, "ready", false);
+  await gallery.getByRole("button", { name: "2D", exact: true }).click();
+  const canvas = gallery.locator(".map-canvas");
+  let dialog = await openZoom(gallery);
+  const fitBefore = await canvas.evaluate(element => element.rendererDiagnostics().fitDistance);
+  await page.setViewportSize({ width: 1000, height: 760 });
+  await expect.poll(() => canvas.evaluate(element => element.rendererDiagnostics().fitDistance)).not.toBeCloseTo(fitBefore, 2);
+  await expect.poll(() => percent(canvas)).toBeCloseTo(100, 5);
+  await expect(dialog.getByLabel("Current zoom", { exact: true })).toHaveText("100%");
+  await expect(dialog.getByLabel("Map zoom percent", { exact: true })).toHaveValue("100");
+
+  await dialog.getByRole("button", { name: "400%", exact: true }).click();
+  await gallery.evaluate(element => { window.__detachedZoomGallery = element; element.remove(); });
+  await page.setViewportSize({ width: 1080, height: 760 });
+  await page.evaluate(() => { document.body.append(window.__detachedZoomGallery); delete window.__detachedZoomGallery; });
+  await expect(dialog).toBeVisible();
+  await expect.poll(() => canvas.evaluate(element => element.rendererDiagnostics()?.sceneRevision)).not.toBeNull();
+  await dialog.getByRole("button", { name: "400%", exact: true }).click();
+  await expect.poll(() => percent(canvas)).toBeCloseTo(400, 5);
+  await page.setViewportSize({ width: 1000, height: 760 });
+  await expect.poll(() => percent(canvas)).not.toBeCloseTo(400, 1);
+  await expect(dialog.getByLabel("Current zoom", { exact: true })).toHaveText(`${Math.round(await percent(canvas))}%`);
+
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.setViewportSize({ width: 1180, height: 760 });
+  dialog = await openZoom(gallery);
+  await expect(dialog.getByLabel("Current zoom", { exact: true })).toHaveText(`${Math.round(await percent(canvas))}%`);
+});
+
 for (const narrow of [false, true]) test(`numeric zoom stays reachable in compact RTL forced colors${narrow ? " @mobile" : ""}`, async ({ page }) => {
   const gallery = await mount(page, "draw", narrow);
   await page.setViewportSize({ width: 320, height: 256 });
