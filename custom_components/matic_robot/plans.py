@@ -1660,7 +1660,8 @@ class CleaningPlanManager:
             self._motion_generations.get(serial_number, 0) + 1
         )
         self._managed_motion.pop(serial_number, None)
-        if replaced:
+        active = self._robot(serial_number).get("active_plan")
+        if replaced and isinstance(active, Mapping) and active.get("room_id"):
             self._notify_listeners(serial_number)
         return reconciliation_removed
 
