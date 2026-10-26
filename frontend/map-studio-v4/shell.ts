@@ -1315,7 +1315,7 @@ export class MaticMapShellV4 extends LitElement {
   readonly #toggleOptions = (event: Event): void => {
     const options = this.#options.value;
     if (options) {
-      options.menu.toggle();
+      options.toggle();
       return;
     }
     if (this.#options.status === "failed") {

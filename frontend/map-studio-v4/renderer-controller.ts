@@ -22,6 +22,7 @@ export interface RendererDiagnostics {
   readonly cameraDistance: number;
   readonly fitDistance: number;
   readonly fitActive: boolean;
+  readonly topPixelsPerMeter: number;
 }
 
 export interface CameraState {
@@ -1638,7 +1639,7 @@ export class RendererController {
     }
     if (this.#cursor && state.workflow === "draw" && (state.draw.tool === "paint" || state.draw.tool === "erase")) {
       const center = this.#projectMeters(this.#cursor.x, this.#cursor.y);
-      const edge = this.#projectMeters(this.#cursor.x + state.draw.brushMeters / 2, this.#cursor.y);
+      const edge = this.#projectMeters(this.#cursor.x + state.draw.brushMeters / 2, this.#cursor.y, 0, false);
       if (center && edge) {
         context.beginPath();
         context.arc(center.x, center.y, Math.max(2, Math.hypot(edge.x - center.x, edge.y - center.y)), 0, Math.PI * 2);
@@ -1876,6 +1877,7 @@ export class RendererController {
       cameraDistance: this.#camera.distance,
       fitDistance: this.#camera.orthographic ? this.#homeTop : this.#homeThree,
       fitActive: this.#fitActive,
+      topPixelsPerMeter: Math.min(this.#viewport.height, this.#viewport.width * 5) / (2 * this.#camera.distance),
     };
   }
 

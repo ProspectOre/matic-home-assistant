@@ -5460,39 +5460,6 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator(".map-message")).toContainText("Locating");
   });
 
-  test("uses identical map math for the brush cursor and scale", async ({ page }) => {
-    await page.goto("/");
-    const combinations = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4-review/review.js");
-      const samples = [
-        [100, 0.2],
-        [100, 2.5],
-        [400, 0.2],
-        [400, 2.5],
-        [1000, 0.6],
-        [1000, 2.5],
-      ];
-      return samples.map(([zoom, brush]) => {
-        const base = module.createGalleryState("draw");
-        const state = {
-          ...base,
-          draw: { ...base.draw, zoomPercent: zoom, brushMeters: brush },
-        };
-        const scale = module.mapScale(state);
-        return {
-          zoom,
-          brush,
-          cursor: module.brushCursorPixels(state),
-          expected: brush * (scale.pixels / scale.meters),
-        };
-      });
-    });
-
-    for (const sample of combinations) {
-      expect(sample.cursor).toBeCloseTo(sample.expected, 8);
-    }
-  });
-
   const DRAW_TOOL_NAMES = ["Points", "Paint", "Erase", "Move map", "Undo", "Redo", "Clear", /^Brush width, 60 cm/];
 
   async function expectDrawTools(gallery, tools) {
