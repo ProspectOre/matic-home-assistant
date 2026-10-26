@@ -166,9 +166,22 @@ def _entry(
     )
 
 
+class _HassStub(SimpleNamespace):
+    """Use Home Assistant's identity semantics for cached helper lookups."""
+
+    __eq__ = object.__eq__
+    __hash__ = object.__hash__
+
+
 def _hass(*entries, user=None):
     user = user or SimpleNamespace(is_admin=True)
-    return SimpleNamespace(
+    return _HassStub(
+        data={
+            er.DATA_REGISTRY: SimpleNamespace(
+                async_get_entity_id=MagicMock(return_value=None)
+            )
+        },
+        states=SimpleNamespace(get=MagicMock(return_value=None)),
         auth=SimpleNamespace(
             async_get_user=AsyncMock(return_value=user),
             async_get_users=AsyncMock(return_value=[]),
@@ -637,6 +650,193 @@ async def test_operations_includes_read_only_bag_observation_when_available() ->
         "last_full_at": "2026-09-02T10:00:00+00:00",
         "last_replaced_at": "2026-09-02T10:02:00+00:00",
     }
+
+
+def _timing_hass():
+    """Expose a renamed entity backed by the real producer's shared fixture."""
+    entry = _entry()
+    manager = entry.runtime_data.cleaning_plans
+    sample = json.loads(
+        (
+            Path(__file__).parent / "browser/fixtures/matic_current_room_timing.json"
+        ).read_text()
+    )["attributes"]
+    sample = {
+        **sample,
+        "matic_entry_id": entry.entry_id,
+        "matic_metric": "current_room_active_time",
+    }
+    manager.snapshot.return_value = {
+        **manager.snapshot.return_value,
+        "active_plan": {
+            "run_id": sample["run_id"],
+            "room_id": sample["room_id"],
+            "status": "running",
+        },
+        "last_run": {
+            "run_id": sample["run_id"],
+            "outcome": "running",
+            "completed_room_count": 0,
+        },
+    }
+    hass = _hass(entry)
+    registry = hass.data[er.DATA_REGISTRY]
+    registry.async_get_entity_id.return_value = "sensor.renamed_clock"
+    hass.states.get.return_value = State("sensor.renamed_clock", "35", sample)
+    return hass, entry, sample
+
+
+async def test_operations_reads_shared_timing_without_sampling_or_motion() -> None:
+    hass, entry, sample = _timing_hass()
+    tool = MaticGetOperationsTool()
+    result = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    timing = result["robots"][0]["managed_runner"]["current_room_timing"]
+    assert timing == {
+        key: value for key, value in sample.items() if not key.startswith("matic_")
+    }
+    hass.data[er.DATA_REGISTRY].async_get_entity_id.assert_called_once_with(
+        "sensor", DOMAIN, "synthetic-serial_current_room_active_time"
+    )
+    hass.states.get.assert_called_once_with("sensor.renamed_clock")
+    entry.runtime_data.cleaning_plans.current_room_timing.assert_not_called()
+    assert (
+        result["robots"][0]["managed_runner"]["last_run"]["completed_room_count"] == 0
+    )
+
+    # The API forwards the published sample; it never calculates a newer clock.
+    for value in (0, 100):
+        newer = {**sample, "active_elapsed_seconds": value, "estimated_percent": value}
+        hass.states.get.return_value = State("sensor.renamed_clock", str(value), newer)
+        result = (
+            await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+        ).data
+        assert (
+            result["robots"][0]["managed_runner"]["current_room_timing"][
+                "estimated_percent"
+            ]
+            == value
+        )
+        assert result["robots"][0]["managed_runner"]["last_run"]["outcome"] == "running"
+    # User-selected display units do not change the API's canonical seconds.
+    hass.states.get.return_value = State(
+        "sensor.renamed_clock", "0.58", {**sample, "unit_of_measurement": "min"}
+    )
+    result = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert (
+        result["robots"][0]["managed_runner"]["current_room_timing"][
+            "active_elapsed_seconds"
+        ]
+        == 35
+    )
+    entry.runtime_data.cleaning_plans.current_room_timing.assert_not_called()
+
+
+@pytest.mark.parametrize("paused", [False, True])
+async def test_operations_preserves_unknown_estimates_and_paused_samples(
+    paused,
+) -> None:
+    hass, entry, sample = _timing_hass()
+    sample = {
+        **sample,
+        "expected_seconds": None,
+        "estimated_percent": None,
+        "baseline_samples": 2,
+        "status": "suspended" if paused else "running",
+    }
+    entry.runtime_data.cleaning_plans.snapshot.return_value["active_plan"]["status"] = (
+        sample["status"]
+    )
+    hass.states.get.return_value = State("sensor.renamed_clock", "35", sample)
+    tool = MaticGetOperationsTool()
+    result = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    timing = result["robots"][0]["managed_runner"]["current_room_timing"]
+    assert timing["active_elapsed_seconds"] == 35
+    assert timing["expected_seconds"] is timing["estimated_percent"] is None
+    assert timing["status"] == sample["status"]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"matic_entry_id": "other"},
+        {"matic_metric": "other"},
+        {"run_id": "old"},
+        {"room_id": "other"},
+        {"status": "starting"},
+        {"status": []},
+        {"room": ""},
+        {"active_elapsed_seconds": True},
+        {"active_elapsed_seconds": -1},
+        {"expected_seconds": 0},
+        {"expected_seconds": True},
+        {"estimated_percent": 101},
+        {"estimated_percent": True},
+        {"estimated_percent": 1.5},
+        {"baseline_samples": -1},
+    ],
+)
+async def test_operations_withholds_invalid_or_other_room_timing(fields) -> None:
+    hass, _entry, sample = _timing_hass()
+    hass.states.get.return_value = State(
+        "sensor.renamed_clock", "35", {**sample, **fields}
+    )
+    tool = MaticGetOperationsTool()
+    result = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert result["robots"][0]["managed_runner"]["current_room_timing"] is None
+
+
+@pytest.mark.parametrize(
+    "condition",
+    [
+        "unregistered",
+        "absent",
+        "unknown",
+        "unavailable",
+        "offline",
+        "no_active",
+        "no_run",
+        "replacement",
+        "terminal",
+        "changed_phase",
+        "changed_plan",
+    ],
+)
+async def test_operations_withholds_unavailable_or_stale_timing(condition) -> None:
+    hass, entry, sample = _timing_hass()
+    snapshot = entry.runtime_data.cleaning_plans.snapshot.return_value
+    if condition == "unregistered":
+        hass.data[er.DATA_REGISTRY].async_get_entity_id.return_value = None
+    elif condition == "absent":
+        hass.states.get.return_value = None
+    elif condition in {"unknown", "unavailable"}:
+        hass.states.get.return_value = State("sensor.renamed_clock", condition, sample)
+    elif condition == "offline":
+        entry.runtime_data.coordinator.last_update_success = False
+    elif condition == "no_active":
+        snapshot["active_plan"] = None
+    elif condition == "no_run":
+        snapshot["last_run"] = None
+    elif condition == "replacement":
+        snapshot["last_run"]["run_id"] = "replacement"
+    elif condition == "terminal":
+        snapshot["last_run"]["outcome"] = "completed"
+    elif condition == "changed_phase":
+        snapshot["active_plan"]["status"] = "suspended"
+    elif condition == "changed_plan":
+        snapshot["active_plan"]["plan_id"] = "other"
+    tool = MaticGetOperationsTool()
+    result = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert result["robots"][0]["managed_runner"]["current_room_timing"] is None
 
 
 async def test_robot_resolution_variants() -> None:
