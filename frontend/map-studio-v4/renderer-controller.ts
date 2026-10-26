@@ -233,7 +233,6 @@ interface GpuUpload {
   readonly staging: boolean;
   seed: "scene" | "copy";
   readonly previousScene: SceneModel | null;
-  readonly preserveCamera: boolean;
   frontierBytes: number;
   readonly dirtyBlocks: Set<number>;
   readonly transitionBlocks: Set<number>;
@@ -539,14 +538,18 @@ export class RendererController {
           : null;
         this.#cancelGpuUpload(false);
         if (this.#mode === "webgl2") {
-          if (compatible) {
+          // A live map can grow or change its point counts without changing
+          // floor/session. Keep its complete published frame while the new
+          // layout uploads, just as for a compatible pixel update. A different
+          // scene context still replaces the front immediately.
+          if (compatible || (sameSceneContext && publishedFrontComplete)) {
             if (publishedSuccessorBlocks !== null) {
               this.#startGpuUpload(
-                scene, sceneContextKey, state, true, this.#scene, true,
+                scene, sceneContextKey, state, true, this.#scene,
                 "copy", publishedSuccessorBlocks,
               );
             } else {
-              this.#startGpuUpload(scene, sceneContextKey, state, true, this.#scene, true);
+              this.#startGpuUpload(scene, sceneContextKey, state, true, this.#scene);
             }
           } else {
             this.#cancelGpuUpload(true);
@@ -559,7 +562,7 @@ export class RendererController {
               sameSceneContext,
               previous ? topView(previous) : null,
             );
-            this.#startGpuUpload(scene, sceneContextKey, state, false, previousScene, false);
+            this.#startGpuUpload(scene, sceneContextKey, state, false, previousScene);
           }
         } else {
           this.#scene = scene;
@@ -901,7 +904,6 @@ export class RendererController {
     state: WorkspaceState,
     staging: boolean,
     previousScene: SceneModel | null,
-    preserveCamera: boolean,
     seed: "scene" | "copy" = "scene",
     dirtyBlocks: readonly number[] = [],
   ): void {
@@ -941,7 +943,6 @@ export class RendererController {
       staging,
       seed,
       previousScene,
-      preserveCamera,
       frontierBytes: 0,
       dirtyBlocks: new Set(dirtyBlocks),
       transitionBlocks: new Set(dirtyBlocks),
@@ -1143,7 +1144,9 @@ export class RendererController {
       this.#renderedPoints = upload.scene.total;
       const rebased = this.#installScene(
         upload.scene,
-        upload.preserveCamera,
+        // Input remains live on the published front during staging. Honor
+        // the user's latest pan/zoom or Fit, rather than the upload's start.
+        !this.#fitActive,
         upload.previousScene,
         true,
         currentView,
@@ -1879,7 +1882,7 @@ export class RendererController {
           topView(state),
         );
       }
-      this.#startGpuUpload(scene, context, state, false, previousScene, sameContext && !this.#fitActive);
+      this.#startGpuUpload(scene, context, state, false, previousScene);
       if (rebased) {
         const view = topView(state);
         this.#applyPreferredCamera(view, state, rebased);
