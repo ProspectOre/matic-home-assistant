@@ -1315,7 +1315,7 @@ export class MaticMapShellV4 extends LitElement {
   readonly #toggleOptions = (event: Event): void => {
     const options = this.#options.value;
     if (options) {
-      options.menu.toggle();
+      options.toggle();
       return;
     }
     if (this.#options.status === "failed") {
@@ -1899,7 +1899,7 @@ export class MaticMapShellV4 extends LitElement {
                 class="overflow ms-btn ms-btn--icon"
                 type="button"
                 aria-label=${this.#t("v4_map_options", "Map options")}
-                aria-haspopup="menu"
+                aria-haspopup=${options?.popupRole ?? "menu"}
                 aria-expanded=${String(options?.menu.open ?? false)}
                 aria-controls="map-options"
                 @click=${this.#toggleOptions}

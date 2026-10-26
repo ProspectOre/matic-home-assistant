@@ -4,6 +4,7 @@ import { icon, iconDone } from "./icons";
 import { MenuController } from "./menu-controller";
 import { topView } from "./state";
 import { switchStyles } from "./switch-styles";
+import { MapZoom } from "./map-zoom";
 
 type Host = ReactiveControllerHost & HTMLElement & { readonly renderRoot: ParentNode };
 
@@ -24,9 +25,20 @@ export type MapOptionsContext = {
  */
 export class MapOptions {
   readonly menu: MenuController;
+  readonly #zoom: MapZoom;
 
   constructor(host: Host) {
     this.menu = new MenuController(host, ".overflow-wrap", ".overflow");
+    this.#zoom = new MapZoom(host, this.menu);
+  }
+
+  get popupRole(): "menu" | "dialog" {
+    return this.#zoom.open && this.menu.open ? "dialog" : "menu";
+  }
+
+  toggle(): void {
+    this.#zoom.open = false;
+    this.menu.toggle();
   }
 
   render({ state, narrow, t, intent, diagnostics }: MapOptionsContext) {
@@ -46,6 +58,9 @@ export class MapOptions {
       display: grid;
       gap: var(--ms-space-1);
       min-inline-size: 14rem;
+      max-inline-size: calc(100vw - 2rem);
+      max-block-size: calc(100dvh - 5rem - var(--ms-safe-top, 0px) - var(--ms-safe-bottom, 0px));
+      overflow-y: auto;
       padding: var(--ms-space-1);
     }
     .overflow-menu .ms-row { justify-content: flex-start; }
@@ -55,7 +70,7 @@ export class MapOptions {
     .menu-heading { margin: 0; padding: var(--ms-space-2) var(--ms-space-3) var(--ms-space-1); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
 
       </style>
-      <div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" role="menu" aria-label=${t("v4_map_options", "Map options")}>
+      ${this.#zoom.open ? this.#zoom.render(t) : html`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" role="menu" aria-label=${t("v4_map_options", "Map options")}>
         ${narrow ? html`
           <div role="group" aria-labelledby="menu-display">
             <p class="menu-heading" id="menu-display" role="presentation">${t("v4_map_display", "Map display")}</p>
@@ -80,8 +95,9 @@ export class MapOptions {
           ${detail("balanced", t("map_quality_balanced", "Balanced"))}
           ${detail("maximum", t("map_quality_maximum", "Maximum"))}
         </div>
+        ${this.#zoom.available() ? html`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${() => this.#zoom.show()}>${t("v4_map_zoom", "Map zoom")}</button>` : nothing}
         <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${() => { this.menu.close(false); diagnostics(); }}>${t("v4_map_diagnostics", "Map diagnostics")}</button>
-      </div>
+      </div>`}
     `;
   }
 }

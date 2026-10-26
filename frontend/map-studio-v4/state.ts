@@ -4,7 +4,6 @@ import { needsDraftConfirmation } from "./draft-navigation";
 import {
   DRAW_BRUSH_MAX_METERS,
   DRAW_BRUSH_MIN_METERS,
-  MAP_PIXELS_PER_METER_AT_100,
   MAP_ZOOM_MAX,
   MAP_ZOOM_MIN,
   MAX_ROOM_SEQUENCE_SIZE,
@@ -1440,18 +1439,12 @@ export const selectStopSecondaryAction = (
 ): PrimaryAction | null => hasStoppableWork(state) && selectPrimaryAction(state).id !== "stop"
   ? stopAction(state) : null;
 
-export const brushCursorPixels = (state: WorkspaceState): number =>
-  state.draw.brushMeters
-  * MAP_PIXELS_PER_METER_AT_100
-  * (state.draw.zoomPercent / 100);
-
 const SCALE_OPTIONS_METERS = [2, 1, 0.5, 0.25, 0.1, 0.05] as const;
 
 export const mapScale = (
-  state: WorkspaceState,
-): { readonly meters: number; readonly pixels: number; readonly label: string } => {
-  const pixelsPerMeter = MAP_PIXELS_PER_METER_AT_100
-    * (state.draw.zoomPercent / 100);
+  pixelsPerMeter: number,
+): { readonly meters: number; readonly pixels: number; readonly label: string } | null => {
+  if (!Number.isFinite(pixelsPerMeter) || pixelsPerMeter <= 0) return null;
   const meters = SCALE_OPTIONS_METERS.reduce((best, candidate) => {
     const distance = Math.abs(candidate * pixelsPerMeter - 64);
     const bestDistance = Math.abs(best * pixelsPerMeter - 64);

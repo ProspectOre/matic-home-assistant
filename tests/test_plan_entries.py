@@ -340,7 +340,7 @@ async def test_deleting_an_area_removes_it_from_every_plan_atomically(hass) -> N
     listener.assert_called()
 
 
-async def test_deleting_an_area_refuses_to_empty_a_plan(hass) -> None:
+async def test_deleting_an_area_refuses_to_empty_a_plan(hass, caplog) -> None:
     manager = await _manager(hass)
     await manager.async_save_plan(
         SERIAL,
@@ -365,9 +365,11 @@ async def test_deleting_an_area_refuses_to_empty_a_plan(hass) -> None:
     assert raised.value.plan_names == ("Rug only",)
     assert manager._robot(SERIAL) == before
     manager._store.async_save.assert_not_awaited()
+    await hass.async_block_till_done()
+    assert "Metadata persistence task failed" not in caplog.text
 
 
-async def test_deleting_an_area_restores_plans_when_storage_fails(hass) -> None:
+async def test_deleting_an_area_restores_plans_when_storage_fails(hass, caplog) -> None:
     manager = await _manager(hass)
     await manager.async_save_plan(
         SERIAL,
@@ -385,6 +387,8 @@ async def test_deleting_an_area_restores_plans_when_storage_fails(hass) -> None:
         await manager.async_delete_area(SERIAL, "rug")
 
     assert manager._robot(SERIAL) == before
+    await hass.async_block_till_done()
+    assert "Metadata persistence task failed" in caplog.text
 
 
 async def test_deleting_an_unused_area_keeps_plans_untouched(hass) -> None:

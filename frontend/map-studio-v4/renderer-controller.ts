@@ -22,6 +22,7 @@ export interface RendererDiagnostics {
   readonly cameraDistance: number;
   readonly fitDistance: number;
   readonly fitActive: boolean;
+  readonly topPixelsPerMeter: number;
 }
 
 export interface CameraState {
@@ -427,11 +428,13 @@ export class RendererController {
     return { ...this.#camera };
   }
 
-  #distanceBounds(): { readonly minimum: number; readonly maximum: number } {
-    return {
-      minimum: Math.max(0.2, this.#radius * 0.04),
-      maximum: this.#radius * 8,
-    };
+  #clampDistance(distance: number, top = this.#camera.orthographic): number {
+    const home = top ? this.#homeTop : this.#homeThree;
+    // Keep the gesture range while allowing every numeric tier on small or
+    // elongated maps, and use the same bounds when restoring preferences.
+    return clamp(distance,
+      Math.min(Math.max(0.2, this.#radius * 0.04), home / 10),
+      Math.max(this.#radius * 8, home));
   }
 
   #targetBounds(): { readonly x: number; readonly z: number } {
@@ -445,14 +448,13 @@ export class RendererController {
   }
 
   setCamera(camera: CameraState, notify = true): void {
-    const distance = this.#distanceBounds();
     const target = this.#targetBounds();
     this.#camera = {
       yaw: angle(camera.yaw),
       pitch: camera.orthographic
         ? Math.PI / 2 - 0.018
         : clamp(camera.pitch, 0.18, 1.38),
-      distance: clamp(camera.distance, distance.minimum, distance.maximum),
+      distance: this.#clampDistance(camera.distance, camera.orthographic),
       targetX: clamp(camera.targetX, -target.x, target.x),
       targetZ: clamp(camera.targetZ, -target.z, target.z),
       orthographic: camera.orthographic,
@@ -652,7 +654,7 @@ export class RendererController {
 
   #preferenceOf(camera: CameraState, fit: boolean, home = this.#homeTop): CameraPreference {
     if (fit) return { yaw: 0, pitch: Math.PI / 2 - 0.018, zoom: 1, targetX: 0, targetZ: 0 };
-    return { yaw: camera.yaw, pitch: camera.pitch, zoom: home / Math.max(0.2, camera.distance), targetX: camera.targetX, targetZ: camera.targetZ };
+    return { yaw: camera.yaw, pitch: camera.pitch, zoom: home / camera.distance, targetX: camera.targetX, targetZ: camera.targetZ };
   }
 
   /** The world position of a map point in metres (the overlay's coordinate space). */
@@ -709,11 +711,7 @@ export class RendererController {
     this.#camera = {
       yaw: preference.yaw,
       pitch: top ? Math.PI / 2 - 0.018 : preference.pitch,
-      distance: clamp(
-        home / clamp(preference.zoom, 0.01, 100),
-        Math.max(0.2, this.#radius * 0.04),
-        this.#radius * 8,
-      ),
+      distance: this.#clampDistance(home / clamp(preference.zoom, 0.01, 100), top),
       targetX: clamp(preference.targetX, -this.#radius, this.#radius),
       targetZ: clamp(preference.targetZ, -this.#radius, this.#radius),
       orthographic: top,
@@ -1638,7 +1636,7 @@ export class RendererController {
     }
     if (this.#cursor && state.workflow === "draw" && (state.draw.tool === "paint" || state.draw.tool === "erase")) {
       const center = this.#projectMeters(this.#cursor.x, this.#cursor.y);
-      const edge = this.#projectMeters(this.#cursor.x + state.draw.brushMeters / 2, this.#cursor.y);
+      const edge = this.#projectMeters(this.#cursor.x + state.draw.brushMeters / 2, this.#cursor.y, 0, false);
       if (center && edge) {
         context.beginPath();
         context.arc(center.x, center.y, Math.max(2, Math.hypot(edge.x - center.x, edge.y - center.y)), 0, Math.PI * 2);
@@ -1797,10 +1795,9 @@ export class RendererController {
 
   zoomAt(factor: number, clientX?: number, clientY?: number): void {
     const before = clientX === undefined || clientY === undefined ? null : this.screenToMap(clientX, clientY);
-    const distance = this.#distanceBounds();
     this.#camera = {
       ...this.#camera,
-      distance: clamp(this.#camera.distance / factor, distance.minimum, distance.maximum),
+      distance: this.#clampDistance(this.#camera.distance / factor),
     };
     this.#fitActive = false;
     if (before && clientX !== undefined && clientY !== undefined) {
@@ -1876,6 +1873,7 @@ export class RendererController {
       cameraDistance: this.#camera.distance,
       fitDistance: this.#camera.orthographic ? this.#homeTop : this.#homeThree,
       fitActive: this.#fitActive,
+      topPixelsPerMeter: Math.min(this.#viewport.height, this.#viewport.width * 5) / (2 * this.#camera.distance),
     };
   }
 

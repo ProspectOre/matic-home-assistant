@@ -6,7 +6,6 @@ export const MAX_ROOM_SEQUENCE_SIZE = 100;
 export const MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE = 256;
 export const DRAW_BRUSH_MIN_METERS = 0.2;
 export const DRAW_BRUSH_MAX_METERS = 2.5;
-export const MAP_PIXELS_PER_METER_AT_100 = 64;
 
 export type CoherenceState =
   | "booting"

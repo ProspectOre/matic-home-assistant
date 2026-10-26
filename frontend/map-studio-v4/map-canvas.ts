@@ -467,6 +467,10 @@ export class MaticMapCanvasV4 extends LitElement {
     return this.#renderer?.diagnostics() ?? null;
   }
 
+  zoomBy(factor: number): void {
+    this.#renderer?.zoomAt(factor);
+  }
+
   canvasIdentity(): { readonly scene: HTMLCanvasElement | null; readonly overlay: HTMLCanvasElement | null } {
     return {
       scene: this.renderRoot.querySelector<HTMLCanvasElement>(".scene-canvas"),
@@ -640,7 +644,7 @@ export class MaticMapCanvasV4 extends LitElement {
 
   protected override render() {
     const state = this.state;
-    const scale = mapScale(state);
+    const scale = mapScale(this.#renderer?.diagnostics().topPixelsPerMeter ?? 0);
     const showScene = state.map.available && (canShowLiveMap(state) || state.dataMode === "history");
     const message = this.#message(showScene);
     const showDraw = state.workflow === "draw" && showScene;
@@ -675,10 +679,10 @@ export class MaticMapCanvasV4 extends LitElement {
 
         ${showDraw ? html`
           ${this.recipes ?? nothing}
-          <div class="map-scale" role="img" aria-label=${this.#t("v4_map_scale", "Scale {distance}", { distance: scale.label })}>
+          ${scale ? html`<div class="map-scale" role="img" aria-label=${this.#t("v4_map_scale", "Scale {distance}", { distance: scale.label })}>
             <span class="scale-line" style=${`--scale-width:${scale.pixels}px`}></span>
             <span>${scale.label}</span>
-          </div>
+          </div>` : nothing}
         ` : nothing}
 
         ${this.#renderDock(showScene)}

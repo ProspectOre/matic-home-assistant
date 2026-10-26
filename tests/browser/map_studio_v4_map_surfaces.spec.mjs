@@ -516,7 +516,7 @@ test.describe("Full map (map-surfaces.md §5 Full map, §11 MS-FULL-01…04)", (
     expect(await page.evaluate(() => window.__fs.exits)).toBe(1);
 
     await optionsButton(gallery).click();
-    await expect(optionsMenu(gallery).getByRole("menuitem")).toHaveText(["Map diagnostics"]);
+    await expect(optionsMenu(gallery).getByRole("menuitem")).toHaveText(["Map zoom", "Map diagnostics"]);
   });
 
   test("the HUD is content-sized at the bottom inline-end on wide and the Draw dock sits above it", async ({ page }) => {

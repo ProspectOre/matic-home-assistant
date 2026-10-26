@@ -6357,7 +6357,7 @@ class CleaningPlanManager:
         if task.cancelled():
             _LOGGER.error("Metadata persistence task was cancelled")
         elif task.exception() is not None and not isinstance(
-            task.exception(), AreaSavePreconditionError
+            task.exception(), (AreaSavePreconditionError, AreaInUseError)
         ):
             _LOGGER.error("Metadata persistence task failed")
 
