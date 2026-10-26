@@ -13,6 +13,7 @@ RC38 brings the RC37 qualification fixes together for a new installed test cycle
   duration and estimated progress as three Home Assistant sensors that refresh
   together. Pauses freeze time; fewer than three matching samples leaves the
   estimate unknown. Estimated 100% never grants completion credit.
+  The MCP status tool reads that same sample without recalculating it.
 - Retain incomplete and unverified run summaries after idle/docking, including
   low-charge suspension. Active work and current map warnings retain priority;
   successful completion stays quiet. Cleaning credit rules are unchanged.

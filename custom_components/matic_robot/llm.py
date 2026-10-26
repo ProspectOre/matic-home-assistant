@@ -83,6 +83,8 @@ NON_ADMIN_PROMPT = (
 )
 ROBOT_STATUS_PROMPT = (
     f"{PLAIN_WORDS_PROMPT} The read-only tools never change the robot or a plan. "
+    "Current-room percentages estimate time, not completed work; unknown estimates "
+    "must stay unknown, and even 100% is not proof of completion. "
     "`MaticRunPlan`, `MaticCleanRooms`, `MaticStopCleaning` and "
     "`MaticResetSchedule` act only when Matic Map would allow the same action; "
     "start or reset something only when the user asks, and when a tool refuses, "
@@ -629,8 +631,8 @@ class MaticGetOperationsTool(_MaticTool):
     title = "Get robot status"
     description = (
         "Returns read-only status for every loaded robot: live activity, whether "
-        "a plan is running, the active room, the selected plan, and dust-bag "
-        "observations."
+        "a plan is running, the active room and its sampled time estimate, the "
+        "selected plan, and dust-bag observations."
     )
     annotations = _READ_ONLY
 
@@ -645,7 +647,7 @@ class MaticGetOperationsTool(_MaticTool):
         return llm.ToolResult(
             data={
                 "read_only": True,
-                "robots": [_robot_summary(entry) for entry in entries],
+                "robots": [_robot_summary(hass, entry) for entry in entries],
                 "robot_count": len(entries),
             }
         )
@@ -1899,7 +1901,79 @@ def _entry_name(entry: ConfigEntry[Any]) -> str:
     return name if name else entry.title
 
 
-def _robot_summary(entry: ConfigEntry[Any]) -> JsonObjectType:
+def _sampled_room_timing(
+    hass: HomeAssistant, entry: ConfigEntry[Any], snapshot: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Read the registered active-time entity's shared sample, without a clock tick."""
+    coordinator = entry.runtime_data.coordinator
+    if not coordinator.last_update_success:
+        return None
+    active = snapshot.get("active_plan")
+    run = snapshot.get("last_run")
+    if not isinstance(active, dict) or not isinstance(run, dict):
+        return None
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "sensor",
+        DOMAIN,
+        f"{coordinator.data.info.serial_number}_current_room_active_time",
+    )
+    state = hass.states.get(entity_id) if entity_id else None
+    if state is None or state.state in {"unknown", "unavailable"}:
+        return None
+    sample = state.attributes
+    if (
+        sample.get("matic_entry_id") != entry.entry_id
+        or sample.get("matic_metric") != "current_room_active_time"
+        or not isinstance(sample.get("run_id"), str)
+        or not sample["run_id"]
+        or sample["run_id"] != active.get("run_id")
+        or sample["run_id"] != run.get("run_id")
+        or active.get("plan_id") != run.get("plan_id")
+        or run.get("outcome") != "running"
+        or not isinstance(sample.get("room_id"), str)
+        or not sample["room_id"]
+        or sample["room_id"] != active.get("room_id")
+        or sample.get("status") not in ("running", "suspended")
+        or sample["status"] != active.get("status")
+        or not isinstance(sample.get("room"), str)
+        or not sample["room"]
+    ):
+        return None
+    elapsed = sample.get("active_elapsed_seconds")
+    expected = sample.get("expected_seconds")
+    percent = sample.get("estimated_percent")
+    samples = sample.get("baseline_samples")
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in (elapsed, samples)
+    ):
+        return None
+    if expected is not None and (
+        not isinstance(expected, int) or isinstance(expected, bool) or expected <= 0
+    ):
+        return None
+    if percent is not None and (
+        not isinstance(percent, int)
+        or isinstance(percent, bool)
+        or not 0 <= percent <= 100
+    ):
+        return None
+    return {
+        key: sample.get(key)
+        for key in (
+            "run_id",
+            "room_id",
+            "room",
+            "status",
+            "active_elapsed_seconds",
+            "expected_seconds",
+            "estimated_percent",
+            "baseline_samples",
+        )
+    }
+
+
+def _robot_summary(hass: HomeAssistant, entry: ConfigEntry[Any]) -> JsonObjectType:
     """Build one bounded robot and plan-run snapshot."""
     runtime = entry.runtime_data
     state = runtime.coordinator.data
@@ -1936,6 +2010,7 @@ def _robot_summary(entry: ConfigEntry[Any]) -> JsonObjectType:
                 "stop_settle_pending": manager.stop_pending(serial_number),
                 "active_plan": snapshot.get("active_plan"),
                 "last_run": snapshot.get("last_run"),
+                "current_room_timing": _sampled_room_timing(hass, entry, snapshot),
             },
             "selected_plan": {
                 "id": snapshot.get("selected_plan"),

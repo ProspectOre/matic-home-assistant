@@ -130,30 +130,5 @@ User-assigned names and IDs are preserved.
 
 ## Assistant tools
 
-Two LLM APIs serve Assist conversation agents and Home Assistant's MCP server.
-Only administrators get tools; anyone else gets no tools and a one-line prompt
-to ask an administrator.
-
-**Matic: Robot status (administrators only)** reads robot status, a plan's next
-run, whether its saved areas are ready on the current map, robot-reported
-history, recent events and command activity (`MaticGetOperations`,
-`MaticGetPlan`, `MaticGetPlanReadiness`, `MaticGetNativeHistory`,
-`MaticGetRecentEvents`, `MaticGetActivity`, `MaticGetFirmware`). Its write tools
-use Matic Map's own actions and checks: `MaticRunPlan` (a plan name or the
-default plan), `MaticCleanRooms` (room names and a cleaning mode),
-`MaticStopCleaning` and `MaticResetSchedule` (mopping or vacuum rotation progress
-for one room or a whole plan). When Matic Map would refuse, the tool returns the
-same reason instead. Assist agents get these tools, prefixed `matic_robot__`,
-when the robot is exposed to Assist.
-Recent events keep room and final-state evidence separate from the
-[command and raw-state observation trail](activity-diagnostics.md).
-Dust-bag observations are available through `MaticGetOperations` only.
-`MaticGetPlanReadiness` reports only map and saved-area readiness for a
-preview; the normal robot control checks still decide whether a cleaning run
-can start.
-
-**Matic: Firmware research (administrators only)** reads the
-[firmware intelligence inbox](firmware-intelligence.md) (`MaticGetFirmware`) and
-claims and completes research (`MaticClaimFirmwareInvestigation`,
-`MaticCompleteFirmwareInvestigation`). It writes research records only, never a
-robot command, and is reachable only from an MCP client that selects it.
+See [Assistant and MCP tools](assistant-tools.md) for administrator access,
+status and cleaning actions, and the separate firmware research tools.
