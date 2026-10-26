@@ -14,11 +14,10 @@ async function openFrame(page, hash) {
   await page.locator("html[data-stage-ready]").waitFor({ state: "attached" });
 }
 
-const snapshot = (target) => target.evaluate((tag) => document.querySelector(tag).getWorkspaceSnapshot(), GALLERY);
+const snapshot = (target) => target.locator(GALLERY).evaluate((gallery) => gallery.getWorkspaceSnapshot());
 
 const stageFrame = async (page) => {
-  const handle = await page.locator("iframe").elementHandle();
-  const frame = await handle.contentFrame();
+  const frame = page.frameLocator("iframe");
   await frame.locator("html[data-stage-ready]").waitFor({ state: "attached" });
   return frame;
 };
