@@ -576,6 +576,7 @@ export interface ManagedRunSummary {
   readonly outcome: "running" | "partial" | "unverified";
   readonly completedRoomCount: number;
   readonly roomCount: number;
+  readonly estimate?: { readonly roomId: string; readonly room: string; readonly percent: number };
 }
 
 export interface RobotSetting {

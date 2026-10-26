@@ -1635,11 +1635,13 @@ class CleaningPlanManager:
     @callback
     def replace_managed_motion(self, serial_number: str) -> bool:
         """Transfer motion ownership to an admitted independent command."""
+        replaced = False
         if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
             self.cancellation_event(serial_number).set()
             dispatch = self._managed_stop_dispatch.get()
             if dispatch is None or dispatch[0] != serial_number:
                 self._cancellation_reasons[serial_number] = "motion_replaced"
+                replaced = True
         self.cancel_reconciliation_tasks(serial_number)
         # Keep the settle countdown active, but revoke its persisted run owner:
         # replacement motion must not resume an obsolete dock watcher after a
@@ -1658,6 +1660,9 @@ class CleaningPlanManager:
             self._motion_generations.get(serial_number, 0) + 1
         )
         self._managed_motion.pop(serial_number, None)
+        active = self._robot(serial_number).get("active_plan")
+        if replaced and isinstance(active, Mapping) and active.get("room_id"):
+            self._notify_listeners(serial_number)
         return reconciliation_removed
 
     @contextmanager
@@ -2177,20 +2182,7 @@ class CleaningPlanManager:
             self.cancellation_event(serial_number).clear()
             self.finish_room_event(serial_number).set()
             return PlanStopDecision("after_room", None, threshold)
-        record = (
-            robot["rotations"]
-            .get(active["plan_id"], {})
-            .get("rooms", {})
-            .get(active["room_id"], {})
-        )
-        expected = _expected_duration(
-            {
-                "duration_history_seconds": _compatible_duration_history(
-                    robot, active["room_id"], record
-                )
-            }
-        )
-        progress = _estimated_progress(active, expected)
+        progress = _room_timing(robot, active, dt_util.utcnow())["estimated_percent"]
         if progress is not None and progress < threshold:
             fence_new_motion()
             self.cancel(serial_number)
@@ -5685,6 +5677,38 @@ class CleaningPlanManager:
 
         await self._async_mutate_and_save(serial_number, mutate)
 
+    def current_room_timing(self, serial_number: str) -> dict[str, Any] | None:
+        """Read the canonical active-time estimate for a confirmed managed room.
+
+        This read never learns history, advances completion or writes storage.
+        Stop uses the same calculation, including its unknown-baseline fallback.
+        """
+        robot = self._robot(serial_number)
+        active = robot.get("active_plan")
+        run = robot.get("last_run")
+        if (
+            not isinstance(active, Mapping)
+            or not isinstance(run, Mapping)
+            or not isinstance(active.get("room_id"), str)
+            or not active["room_id"]
+            or not isinstance(active.get("run_id"), str)
+            or not active["run_id"]
+            or run.get("run_id") != active["run_id"]
+            or run.get("plan_id") != active.get("plan_id")
+            or run.get("outcome") != "running"
+            or self.cancellation_reason(serial_number) == "motion_replaced"
+            or active.get("status") not in {"running", "suspended"}
+            or not isinstance(active.get("cleaning_started"), str)
+        ):
+            return None
+        return {
+            "run_id": active["run_id"],
+            "room_id": active["room_id"],
+            "room": active.get("room"),
+            "status": active["status"],
+            **_room_timing(robot, active, dt_util.utcnow()),
+        }
+
     def snapshot(self, serial_number: str) -> dict[str, Any]:
         """Return compact, automation-friendly plan and room history state."""
         robot = self._robot(serial_number)
@@ -7191,13 +7215,40 @@ def _expected_duration(record: Mapping[str, Any]) -> int | None:
     return max(1, round(median(history)))
 
 
-def _estimated_progress(active: object, expected: object) -> int | None:
+def _room_timing(
+    robot: Mapping[str, Any], active: Mapping[str, Any], now: datetime
+) -> dict[str, Any]:
+    """Sample the existing room clock and matching successful-duration baseline."""
+    room_id = active.get("room_id")
+    record = (
+        robot.get("rotations", {})
+        .get(active.get("plan_id"), {})
+        .get("rooms", {})
+        .get(room_id, {})
+    )
+    history = (
+        _compatible_duration_history(robot, room_id, record)
+        if isinstance(room_id, str)
+        else []
+    )
+    expected = _expected_duration({"duration_history_seconds": history})
+    return {
+        "active_elapsed_seconds": _active_elapsed_seconds(active, now),
+        "expected_seconds": expected,
+        "estimated_percent": _estimated_progress(active, expected, now=now),
+        "baseline_samples": len(history),
+    }
+
+
+def _estimated_progress(
+    active: object, expected: object, *, now: datetime | None = None
+) -> int | None:
     """Estimate completion from active cleaning time and a confident baseline."""
     if not isinstance(expected, int | float) or expected <= 0:
         return None
     if not isinstance(active, Mapping):
         return None
-    elapsed = _active_elapsed_seconds(active, dt_util.utcnow())
+    elapsed = _active_elapsed_seconds(active, now or dt_util.utcnow())
     return max(0, min(100, math.floor((elapsed / expected) * 100)))
 
 

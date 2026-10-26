@@ -22,6 +22,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
@@ -34,6 +35,7 @@ from .client.models import (
     Room,
 )
 from .entity import MaticEntity
+from .native_completion import native_room_key
 from .plans import plan_floor_token, room_cadence_identity
 
 PARALLEL_UPDATES = 0
@@ -65,6 +67,26 @@ HISTORY_DESCRIPTION = SensorEntityDescription(
 ACTIVE_PLAN_DESCRIPTION = SensorEntityDescription(
     key="active_cleaning_plan",
     translation_key="active_cleaning_plan",
+)
+
+CURRENT_ROOM_TIMING_DESCRIPTIONS = (
+    SensorEntityDescription(
+        key="current_room_active_time",
+        translation_key="current_room_active_time",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+    ),
+    SensorEntityDescription(
+        key="current_room_expected_duration",
+        translation_key="current_room_expected_duration",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+    ),
+    SensorEntityDescription(
+        key="current_room_estimated_progress",
+        translation_key="current_room_estimated_progress",
+        native_unit_of_measurement=PERCENTAGE,
+    ),
 )
 
 NEXT_ROOM_DESCRIPTION = SensorEntityDescription(
@@ -274,6 +296,7 @@ async def async_setup_entry(
     transition verifies the native signal; they are not registered here yet.
     """
     coordinator = entry.runtime_data.coordinator
+    room_timing = _RoomTimingPublisher(hass, entry)
     known_rooms: set[str] = set()
 
     def _new_room_entities() -> list[SensorEntity]:
@@ -299,6 +322,14 @@ async def async_setup_entry(
             MaticRoomsSensor(entry),
             MaticCleaningHistorySensor(entry),
             MaticActiveCleaningPlanSensor(entry),
+            *(
+                MaticCurrentRoomTimingSensor(entry, description, room_timing, field)
+                for description, field in zip(
+                    CURRENT_ROOM_TIMING_DESCRIPTIONS,
+                    ("active_elapsed_seconds", "expected_seconds", "estimated_percent"),
+                    strict=True,
+                )
+            ),
             MaticNextCleaningRoomSensor(entry),
             MaticFirmwareCompatibilitySensor(entry),
             *(
@@ -621,6 +652,120 @@ class _MaticPlanSensor(MaticEntity, SensorEntity):
     def available(self) -> bool:
         """Keep locally persisted orchestration state available offline."""
         return True
+
+
+class _RoomTimingPublisher:
+    """Publish one local sample to all timing entities, without robot polling."""
+
+    def __init__(self, hass: HomeAssistant, entry: MaticConfigEntry) -> None:
+        self._entry = entry
+        self._listeners: set[Callable[[], None]] = set()
+        self._closed = False
+        self.data: dict[str, Any] | None = None
+        self.refresh()
+        removers = (
+            entry.runtime_data.coordinator.async_add_listener(self.refresh),
+            entry.runtime_data.cleaning_plans.async_add_listener(
+                entry.runtime_data.coordinator.data.info.serial_number, self.refresh
+            ),
+            async_track_time_interval(
+                hass, self.refresh, timedelta(seconds=5), cancel_on_shutdown=True
+            ),
+        )
+
+        @callback
+        def close() -> None:
+            self._closed = True
+            self._listeners.clear()
+            for remove in removers:
+                remove()
+
+        entry.async_on_unload(close)
+
+    @callback
+    def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        self._listeners.add(listener)
+        return lambda: self._listeners.discard(listener)
+
+    @callback
+    def refresh(self, _now: datetime | None = None) -> None:
+        """Re-read ownership on every tick; never keep another run's estimate."""
+        if self._closed:
+            return
+        coordinator = self._entry.runtime_data.coordinator
+        data = None
+        if coordinator.last_update_success:
+            state = coordinator.data.operational
+            if state.activity in {RobotActivity.CLEANING, RobotActivity.PAUSED}:
+                candidate = self._entry.runtime_data.cleaning_plans.current_room_timing(
+                    coordinator.data.info.serial_number
+                )
+                if candidate is not None:
+                    area = native_room_key(state.current_area or "")
+                    matching_room = area and area in {
+                        native_room_key(candidate["room_id"]),
+                        native_room_key(candidate.get("room") or ""),
+                    }
+                    matching_phase = candidate["status"] == (
+                        "suspended"
+                        if state.activity == RobotActivity.PAUSED
+                        else "running"
+                    )
+                    if matching_room and matching_phase:
+                        data = candidate
+        if data == self.data:
+            return
+        self.data = data
+        for listener in tuple(self._listeners):
+            listener()
+
+
+class MaticCurrentRoomTimingSensor(MaticEntity, SensorEntity):
+    """Expose one field from the same sampled current-room timing model."""
+
+    _unrecorded_attributes = frozenset(
+        {
+            "matic_entry_id",
+            "matic_metric",
+            "run_id",
+            "room_id",
+            "room",
+            "status",
+            "active_elapsed_seconds",
+            "expected_seconds",
+            "estimated_percent",
+            "baseline_samples",
+        }
+    )
+
+    def __init__(
+        self,
+        entry: MaticConfigEntry,
+        description: SensorEntityDescription,
+        publisher: _RoomTimingPublisher,
+        field: str,
+    ) -> None:
+        super().__init__(entry)
+        self.entity_description = description
+        self._publisher = publisher
+        self._field = field
+        self._attr_unique_id = f"{self._matic_serial}_{description.key}"
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(self._publisher.add_listener(self.async_write_ha_state))
+
+    @property
+    def native_value(self) -> int | None:
+        return (self._publisher.data or {}).get(self._field)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        return {
+            "matic_entry_id": self._config_entry.entry_id,
+            "matic_metric": self.entity_description.key,
+            **(self._publisher.data or {}),
+        }
 
 
 class MaticActiveCleaningPlanSensor(_MaticPlanSensor):

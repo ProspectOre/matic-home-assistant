@@ -84,6 +84,7 @@ const workflowTag = unsafeStatic(WORKFLOW_TAG);
 interface StatusPresentation {
   readonly title: string;
   readonly detail: string;
+  readonly estimate?: string | undefined;
   readonly icon: string;
   /** True when the robot is doing something the workspace title alone would hide. */
   readonly notable: boolean;
@@ -144,8 +145,13 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
     const area = roomKey(state.currentArea);
     const room = area && state.resources.scene.value?.metadata.rooms.find((candidate) => roomKey(candidate.name) === area || roomKey(candidate.id) === area)?.name;
     const progress = state.lastRun?.outcome === "running" ? state.lastRun : null;
+    const timing = progress?.estimate;
+    const estimate = state.coherence === "current" && timing && area
+      && (area === roomKey(timing.room) || area === roomKey(timing.roomId))
+      ? t("v4_room_estimated_progress", "Estimated {percent}% · {room}", { percent: timing.percent, room: timing.room }) : undefined;
     return {
       title: t("v4_cleaning", "Cleaning"),
+      estimate,
       detail: mapUnavailable ? t("v4_active_map_unavailable", "Live map unavailable") : progress
         ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: progress.completedRoomCount, total: progress.roomCount })
           + (room ? ` · ${t("v4_cleaning_room", "In {room}", { room })}` : "")
@@ -1785,6 +1791,7 @@ export class MaticMapShellV4 extends LitElement {
     const compact = narrow && this._compact;
     const options = this.#options.value;
     const status = statusCopy(state, this.localize, this.dates);
+    const roomEstimate = status.estimate ? html`<small class="room-estimate">${status.estimate}</small>` : nothing;
     const selectedRobotUnavailable = isSelectedRobotUnavailable(state);
     const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
     // Stop takes the bar when work is stoppable (shell.md §3) and Redraw moves
@@ -1954,7 +1961,7 @@ export class MaticMapShellV4 extends LitElement {
                 >
                   <span class="sheet-handle" role="presentation"></span>
                   ${this._sheetDetent === "peek" ? this.#back(state, true) : nothing}
-                  <span class="sheet-status">${this.#sheetStatus(state, status)}</span>
+                  <span class="sheet-status">${this.#sheetStatus(state, status)}${roomEstimate}</span>
                   ${compact ? this.#actionBar(state, footerPrimary, footerSecondary) : nothing}
                   ${/* step is always +1 or -1 */ (compact ? [this._sheetDetent === "full" ? -1 : 1] as const : [1, -1] as const).map((step) => html`<button
                     class="ms-btn ms-btn--icon ms-btn--sm"
@@ -1988,7 +1995,7 @@ export class MaticMapShellV4 extends LitElement {
               ` : html`
                 <div class="status-strip">
                   <span class="status-icon" aria-hidden="true">${icon(status.icon)}</span>
-                  <span class="status-copy"><strong>${status.title}</strong>${status.detail ? html`<small>${status.detail}</small>` : nothing}</span>
+                  <span class="status-copy"><strong>${status.title}</strong>${roomEstimate}${status.detail ? html`<small>${status.detail}</small>` : nothing}</span>
                   ${statusAction
                     ? this.#actionButton(statusAction, "status-action ms-btn ms-btn--secondary", "status-reason")
                     : nothing}
@@ -2006,7 +2013,7 @@ export class MaticMapShellV4 extends LitElement {
                 class="full-map-hud ms-surface ms-surface--floating"
                 aria-label=${this.#t("v4_robot_status_and_action", "Robot status and action")}
               >
-                <span class="hud-copy"><strong>${status.title}</strong><small>${status.detail}</small></span>
+                <span class="hud-copy"><strong>${status.title}</strong>${roomEstimate}<small>${status.detail}</small></span>
                 ${locatingInFullMap && primary.id !== "stop" ? nothing : this.#actionButton(primary, "ms-btn ms-btn--lg ms-btn--primary", "hud-reason")}
                 ${secondary?.id === "stop"
                   ? this.#actionButton(secondary, "ms-btn ms-btn--lg ms-btn--secondary", "hud-secondary-reason")

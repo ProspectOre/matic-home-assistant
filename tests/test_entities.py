@@ -6,6 +6,7 @@ import asyncio
 import json
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from homeassistant.components.vacuum.const import VacuumActivity
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import translation
+from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot import (
     binary_sensor,
@@ -255,6 +257,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_select_plan=AsyncMock(),
         async_select_area=AsyncMock(),
         async_add_listener=MagicMock(return_value=MagicMock()),
+        current_room_timing=MagicMock(return_value=None),
         cancel=MagicMock(return_value=True),
         request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
         async_checkpoint_stop_intent=AsyncMock(),
@@ -346,7 +349,7 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 51 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 54 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
         "binary_sensor": 11,
         "button": 5,
@@ -354,13 +357,13 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
         "event": 1,
         "number": 1,
         "select": 4,
-        "sensor": 25,
+        "sensor": 28,
         "switch": 4,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 55
-    assert len({entity.unique_id for entity in entities}) == 55
+    assert len(entities) == 58
+    assert len({entity.unique_id for entity in entities}) == 58
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -1177,6 +1180,7 @@ async def test_history_payload_matches_the_panel_contract(hass, active) -> None:
     assert attributes["matic_entry_id"] == payload["matic_entry_id"]
     if active:
         assert attributes["active_plan"]["run_id"] == payload["active_plan"]["run_id"]
+        assert attributes["active_plan"]["room_id"] == payload["active_plan"]["room_id"]
     else:
         assert attributes["plans"] == payload["plans"]
     assert {key: attributes["last_run"][key] for key in payload["last_run"]} == payload[
@@ -1434,6 +1438,151 @@ async def test_storage_backed_sensors_track_history_and_stay_available() -> None
     entry.runtime_data.coordinator.last_update_success = False
     assert history_sensor.available is True
     assert plan_sensor.available is True
+
+
+async def test_current_room_entities_share_live_sample_and_close_on_unload(
+    hass,
+) -> None:
+    """One local timer drives all metrics, with identity and offline fences."""
+    entry = _entry()
+    entry.entry_id = "synthetic-entry"
+    manager = CleaningPlanManager(hass)
+    manager._store.async_save = AsyncMock()
+    entry.runtime_data.cleaning_plans = manager
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, current_area="The Kitchen"),
+    )
+    room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
+    base = dt_util.utcnow()
+    with patch("custom_components.matic_robot.plans.dt_util.utcnow", return_value=base):
+        await manager.async_begin_run(
+            "synthetic-serial",
+            "daily",
+            "partial-1",
+            3,
+            trigger="user",
+            service="run_selected_plan",
+        )
+        await manager.async_mark_started(
+            "synthetic-serial", "daily", room, run_id="partial-1"
+        )
+        await manager.async_mark_resumed("synthetic-serial", "daily", room)
+    record = manager._robot("synthetic-serial")["rotations"]["daily"]["rooms"][
+        room.room_id
+    ]
+    record["duration_history_seconds"] = [100, 100, 100]
+    cancel_timer = MagicMock()
+    with patch.object(
+        sensor, "async_track_time_interval", return_value=cancel_timer
+    ) as timer:
+        publisher = sensor._RoomTimingPublisher(hass, entry)
+    timer.assert_called_once_with(
+        hass, publisher.refresh, timedelta(seconds=5), cancel_on_shutdown=True
+    )
+    entities = [
+        sensor.MaticCurrentRoomTimingSensor(entry, description, publisher, field)
+        for description, field in zip(
+            sensor.CURRENT_ROOM_TIMING_DESCRIPTIONS,
+            ("active_elapsed_seconds", "expected_seconds", "estimated_percent"),
+            strict=True,
+        )
+    ]
+    remove_listeners = []
+    with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
+        for entity in entities:
+            entity.async_write_ha_state = MagicMock()
+            entity.async_on_remove = remove_listeners.append
+            await entity.async_added_to_hass()
+    with patch(
+        "custom_components.matic_robot.plans.dt_util.utcnow",
+        return_value=base + timedelta(seconds=35),
+    ):
+        publisher.refresh()
+    assert [entity.native_value for entity in entities] == [35, 100, 35]
+    attributes = entities[-1].extra_state_attributes
+    assert (
+        attributes
+        == json.loads(
+            (
+                Path(__file__).parent
+                / "browser/fixtures/matic_current_room_timing.json"
+            ).read_text()
+        )["attributes"]
+    )
+    assert len({id(entity._publisher.data) for entity in entities}) == 1
+    for entity in entities:
+        entity.async_write_ha_state.assert_called_once()
+
+    # A timer sample is the same read-only producer as an immediate manager event.
+    with patch(
+        "custom_components.matic_robot.plans.dt_util.utcnow",
+        return_value=base + timedelta(seconds=35),
+    ):
+        publisher.refresh()
+        for entity in entities:
+            entity.async_write_ha_state.assert_called_once()
+        await manager.async_mark_suspended("synthetic-serial", "daily", room, "paused")
+        assert publisher.data is None  # Source/manager disagree during the handoff.
+        coordinator.data = replace(
+            coordinator.data,
+            operational=replace(
+                coordinator.data.operational, paused=True, cleaning=False
+            ),
+        )
+        coordinator.async_add_listener.call_args_list[0].args[0]()
+    with patch(
+        "custom_components.matic_robot.plans.dt_util.utcnow",
+        return_value=base + timedelta(hours=1),
+    ):
+        publisher.refresh()
+        assert [entity.native_value for entity in entities] == [35, 100, 35]
+        coordinator.last_update_success = False
+        publisher.refresh()
+        assert all(entity.native_value is None for entity in entities)
+        assert all(not entity.available for entity in entities)
+        coordinator.last_update_success = True
+        coordinator.data = replace(
+            coordinator.data,
+            operational=replace(coordinator.data.operational, current_area="Study"),
+        )
+        publisher.refresh()
+        assert publisher.data is None
+        coordinator.data = replace(
+            coordinator.data,
+            operational=replace(coordinator.data.operational, current_area="Kitchen"),
+        )
+        publisher.refresh()
+        assert publisher.data is not None
+        async with manager.lock("synthetic-serial"):
+            await manager.async_replace_managed_motion("synthetic-serial")
+            assert manager.cancellation_reason("synthetic-serial") == "motion_replaced"
+            assert publisher.data is None  # Clear immediately, without a timer tick.
+        manager.prepare_run("synthetic-serial")
+        publisher.refresh()
+        assert publisher.data is not None
+        manager._robot("synthetic-serial")["last_run"]["run_id"] = "replacement"
+        publisher.refresh()
+        assert publisher.data is None
+        coordinator.data = replace(
+            coordinator.data,
+            operational=replace(
+                coordinator.data.operational, paused=False, cleaning=False
+            ),
+        )
+        publisher.refresh()
+        assert publisher.data is None
+    for remove in remove_listeners:
+        remove()
+    assert publisher._listeners == set()
+    close = entry.async_on_unload.call_args.args[0]
+    close()
+    cancel_timer.assert_called_once()
+    coordinator.async_add_listener.return_value.assert_called_once()
+    with patch.object(manager, "current_room_timing") as read:
+        publisher.refresh()
+        read.assert_not_called()
 
 
 async def test_firmware_sensor_tracks_background_snapshot_completion() -> None:

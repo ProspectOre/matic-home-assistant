@@ -1,0 +1,15 @@
+{
+  "state": "35",
+  "attributes": {
+    "matic_entry_id": "synthetic-entry",
+    "matic_metric": "current_room_estimated_progress",
+    "run_id": "partial-1",
+    "room_id": "room-kitchen",
+    "room": "Kitchen",
+    "status": "running",
+    "active_elapsed_seconds": 35,
+    "expected_seconds": 100,
+    "estimated_percent": 35,
+    "baseline_samples": 3
+  }
+}

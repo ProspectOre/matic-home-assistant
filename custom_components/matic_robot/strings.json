@@ -626,7 +626,8 @@
     "v4_shortcuts_plans_unavailable": "Saved plan shortcuts couldn't be loaded.",
     "v4_shortcuts_areas_unavailable": "Saved area shortcuts couldn't be loaded.",
     "v4_shortcuts_open_plans": "Open Plans",
-    "v4_shortcuts_open_areas": "Open Areas"
+    "v4_shortcuts_open_areas": "Open Areas",
+    "v4_room_estimated_progress": "Estimated {percent}% · {room}"
   },
   "config": {
     "flow_title": "{name}",
@@ -1196,6 +1197,15 @@
       },
       "bag_last_replaced": {
         "name": "Dust bag last replaced"
+      },
+      "current_room_active_time": {
+        "name": "Current room active cleaning time"
+      },
+      "current_room_expected_duration": {
+        "name": "Current room expected duration"
+      },
+      "current_room_estimated_progress": {
+        "name": "Current room estimated progress"
       }
     },
     "switch": {
