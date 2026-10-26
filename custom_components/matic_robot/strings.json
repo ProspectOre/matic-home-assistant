@@ -648,9 +648,11 @@
       "cannot_connect": "Could not connect to the robot. Check that it is powered on and on the same network, then try again.",
       "certificate_changed": "This robot no longer matches the one Home Assistant was set up with, so nothing was changed. If it was reset, close this dialog, then go to Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure > Robot was reset.",
       "different_robot": "A different robot answered at this address, so nothing was changed. If your robot moved, enter its new address under Robot address; a replacement robot is added as a new robot.",
+      "import_rejected": "The robot did not accept this pairing. Make a new one with the pairing tool while Pairing mode is on, then paste it again.",
       "invalid_certificate": "Home Assistant can't confirm this is your robot, so it did not connect. Check that the address belongs to your robot, then try again.",
       "invalid_credential": "The robot did not accept Home Assistant's saved pairing. Pair again to replace it.",
       "invalid_passkey": "Enter all six digits shown on the robot's screen.",
+      "malformed_credential": "That is not a valid pairing. Copy the full pairing text from the tool and paste it again.",
       "multiple_robots_nearby": "Home Assistant can see more than one robot over Bluetooth and can't tell which one to pair, so nothing was changed. Turn Pairing mode off on your other robots, wait a few minutes, then try again.",
       "pairing_code_expired": "That code expired. In the Matic app, turn Pairing mode off and back on, then choose Start pairing and enter the new code right away.",
       "pairing_code_rejected": "The robot did not accept that code. In the Matic app, turn Pairing mode off and back on, then choose Start pairing and enter the new code right away.",
@@ -687,6 +689,12 @@
       "pair": {
         "title": "Connect your robot",
         "description": "Pairing mode is a short window in the Matic app that lets Home Assistant connect to the robot over Bluetooth. Put Home Assistant's Bluetooth adapter within a few feet of the robot, then:\n\n1. In the Matic app, go to Settings > Connectivity > Add another user.\n2. Turn on Pairing mode.\n3. Come back here and choose Start pairing.",
+        "data": {
+          "import_credential": "I already have a pairing"
+        },
+        "data_description": {
+          "import_credential": "Experimental. Home Assistant has no Bluetooth adapter of its own, so it can't pair here. Turn this on to paste a pairing made on another device instead."
+        },
         "submit": "Start pairing"
       },
       "reset_bond": {
@@ -708,9 +716,26 @@
         },
         "submit": "Check code"
       },
+      "import_credential": {
+        "title": "Paste the saved pairing",
+        "description": "Experimental: use a pairing made on another device with the community pairing tool ([how it works]({import_help_url})). Run the tool there while the robot shows its code, then copy what it saves. Home Assistant checks it against the robot over the network before saving anything. Treat it like a password: anyone holding it can control the robot.",
+        "data": {
+          "hermes_credential": "Pairing from the other device"
+        },
+        "data_description": {
+          "hermes_credential": "Copy the whole pairing text from the tool, with or without the \"Bearer: \" prefix."
+        },
+        "submit": "Check pairing"
+      },
       "reauth_confirm": {
         "title": "Pair Home Assistant again",
         "description": "Home Assistant can no longer connect to the robot, so it needs a new pairing that replaces the saved one. Put the adapter within a few feet of the robot, then:\n\n1. In the Matic app, go to Settings > Connectivity > Add another user.\n2. Turn on Pairing mode.\n3. Come back here and choose Start pairing.",
+        "data": {
+          "import_credential": "I already have a pairing"
+        },
+        "data_description": {
+          "import_credential": "Experimental. Home Assistant has no Bluetooth adapter of its own, so it can't pair here. Turn this on to paste a pairing made on another device instead."
+        },
         "submit": "Start pairing"
       },
       "reconfigure": {
@@ -741,6 +766,12 @@
               "port": "Port"
             }
           }
+        },
+        "data": {
+          "import_credential": "I already have a pairing"
+        },
+        "data_description": {
+          "import_credential": "Experimental. Home Assistant has no Bluetooth adapter of its own, so it can't pair here. Turn this on to paste a pairing made on another device instead."
         },
         "submit": "Start pairing"
       }
@@ -1481,8 +1512,8 @@
       "fix_flow": {
         "step": {
           "init": {
-            "title": "Pair {name} again over Bluetooth",
-            "description": "Home Assistant stopped talking to {name}, which no longer matches the robot it was set up with. If it was reset, stay next to it: you will turn on Pairing mode in the Matic app and type a six-digit code, and nothing is saved until the robot accepts it. A replacement robot is added as a new robot. If only the address changed, close this dialog and use Update robot address (Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure). Removing the robot instead erases its plans, room settings, schedule progress, custom areas, history and saved maps.",
+            "title": "Pair {name} again",
+            "description": "Home Assistant stopped talking to {name}, which no longer matches the robot it was set up with. If it was reset, stay next to it: you will turn on Pairing mode in the Matic app and type a six-digit code, and nothing is saved until the robot accepts it. If Home Assistant has no Bluetooth adapter of its own, the next step also lets you paste a pairing made on another device. A replacement robot is added as a new robot. If only the address changed, close this dialog and use Update robot address (Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure). Removing the robot instead erases its plans, room settings, schedule progress, custom areas, history and saved maps.",
             "submit": "Continue to pairing"
           }
         },

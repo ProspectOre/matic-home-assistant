@@ -2,9 +2,10 @@
 
 [Documentation](README.md) · [Install](../README.md#install)
 
-Pairing gives Home Assistant its own local robot credential. It requires a
-Bluetooth adapter built into or attached to the Home Assistant host; proxies
-cannot complete it. Normal use is over the LAN after pairing.
+Pairing gives Home Assistant its own local robot credential. Use the host's
+Bluetooth adapter; proxies cannot complete it. Normal use is over the LAN.
+A host without an adapter can [paste a pairing made on another
+device](#pair-on-another-device) (experimental).
 
 ## Setup
 
@@ -46,10 +47,8 @@ Home Assistant OS configures these requirements automatically.
 | Local adapter sees no nearby devices | Reload Bluetooth or replug the adapter. Reboot the host if scanning still fails. |
 | Pairing hangs or times out | Read the `matic_robot` warning in **Settings > System > Logs**; it identifies the failing stage. |
 | Existing Bluetooth pairing is reused but no code appears | If the credential write is rejected, setup asks **Remove the robot's saved pairing?** Select the affected robot by its Bluetooth name and address, enable Pairing mode, and submit. Setup removes only that bond once, rediscovers that device, and requests a fresh code. Cancel if you cannot identify the robot. |
-| Version 0.3.3 reports no fresh advertisement | Update to 0.3.4 or newer; older discovery discarded valid retained scanner entries. |
 
-For more detail, enable `custom_components.matic_robot: debug`, reproduce once,
-and include the relevant log lines in a bug report after removing private data.
+For details, enable `custom_components.matic_robot: debug`; share only redacted logs.
 
 Restarting Home Assistant does not clear Bluetooth bonds: they are stored by
 the host's BlueZ service. If recovery still fails, remove only the affected
@@ -57,10 +56,11 @@ robot's bond on the host, reopen Pairing mode, and retry setup.
 
 ## Reauthentication
 
-When Home Assistant requests reauthentication, repeat the pairing steps. The
-integration replaces its saved credential after the new connection succeeds.
-Explicit credential replacement is also available through **Reconfigure**.
-Both paths need a local Bluetooth adapter; a replacement adapter works too.
+When Home Assistant requests reauthentication, repeat the pairing steps; the
+saved credential changes only after the new connection succeeds. You can also
+replace it through **Reconfigure**. Use a local adapter, including a replacement;
+hosts without one offer **I already have a pairing** instead. See
+[Pair on another device](#pair-on-another-device).
 
 ### More than one robot
 
@@ -103,9 +103,45 @@ certificate pin and credential saved, in one write, and the Repair cleared.
 Any failure, or closing the dialog, leaves the old pin, credential and Repair
 unchanged.
 
-Trust limit: the endpoint is bound by the Matic CA plus the stored serial and
-hostname, the same trust as first setup. A host holding a Matic-CA key for this
-serial and hostname would be accepted.
+Trust limit: setup and recovery trust the Matic CA, serial and hostname.
+Another Matic-CA key for that identity would also be accepted.
+
+On a host without a local adapter, the form also offers **I already have a
+pairing**. After the same certificate check, it asks for a pairing made on
+another device after the reset, which must authenticate on the newly presented
+certificate before the same single write. A reset robot no longer accepts
+pairings made before the reset. See [Pair on another device](#pair-on-another-device).
+
+## Pair on another device
+
+Experimental. When Home Assistant has no Bluetooth adapter of its own, setup,
+reauthentication, **Pair Home Assistant again** and **Robot was reset** show **I
+already have a pairing**. It never appears on a host with a local adapter;
+pair there instead.
+
+1. On a Bluetooth-capable computer near the robot, turn on Pairing mode in the
+   Matic app and make a pairing with the
+   [community pairing tool](#community-pairing-tool).
+2. In Home Assistant, turn on **I already have a pairing**, submit, and paste
+   the pairing. A `Bearer: ` prefix or surrounding quotes are fine.
+3. Home Assistant opens a connection pinned to the robot's certificate and
+   checks that the robot accepts the pairing. Nothing is saved until it does;
+   a refused pairing, a wrong address or an offline robot keeps the form open.
+
+The pairing is a credential: anyone holding it can control the robot. Delete
+the copy on the other computer once Home Assistant accepts it. Entries set up
+this way show `"pairing_method": "import"` in their diagnostics, never the
+pairing itself.
+
+### Community pairing tool
+
+The community pairing tool is maintained separately. Its default output and
+platform coverage have not been qualified by this project. Use a helper only
+after confirming it keeps the credential out of ordinary output and logs.
+Tool maintainers and testers should follow the
+[0.5 interchange contract and evidence checklist](pairing-import-contract.md).
+The [community implementation](https://github.com/Apocrathia/matic-home-assistant/blob/main/docs/matic-pair.md)
+must meet that contract before it can be treated as a verified compatible tool.
 
 ## Removing access
 
