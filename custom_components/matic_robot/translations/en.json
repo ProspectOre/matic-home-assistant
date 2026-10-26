@@ -627,7 +627,7 @@
     "v4_shortcuts_areas_unavailable": "Saved area shortcuts couldn't be loaded.",
     "v4_shortcuts_open_plans": "Open Plans",
     "v4_shortcuts_open_areas": "Open Areas",
-    "v4_room_estimated_progress": "Estimated {percent}% · {room}",
+    "v4_room_estimated_progress": "Estimated room progress: {percent}% (based on time)",
     "v4_map_zoom": "Map zoom",
     "v4_map_zoom_percent": "Map zoom percent",
     "v4_map_zoom_help": "Zoom is relative to Fit. Enter 100–1000%; larger values zoom closer without moving the map's center.",

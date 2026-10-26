@@ -148,7 +148,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
     const timing = progress?.estimate;
     const estimate = state.coherence === "current" && timing && area
       && (area === roomKey(timing.room) || area === roomKey(timing.roomId))
-      ? t("v4_room_estimated_progress", "Estimated {percent}% · {room}", { percent: timing.percent, room: timing.room }) : undefined;
+      ? t("v4_room_estimated_progress", "Estimated room progress: {percent}% (based on time)", { percent: timing.percent }) : undefined;
     return {
       title: t("v4_cleaning", "Cleaning"),
       estimate,
@@ -1995,7 +1995,7 @@ export class MaticMapShellV4 extends LitElement {
               ` : html`
                 <div class="status-strip">
                   <span class="status-icon" aria-hidden="true">${icon(status.icon)}</span>
-                  <span class="status-copy"><strong>${status.title}</strong>${roomEstimate}${status.detail ? html`<small>${status.detail}</small>` : nothing}</span>
+                  <span class="status-copy"><strong>${status.title}</strong>${status.detail ? html`<small>${status.detail}</small>` : nothing}${roomEstimate}</span>
                   ${statusAction
                     ? this.#actionButton(statusAction, "status-action ms-btn ms-btn--secondary", "status-reason")
                     : nothing}
@@ -2013,7 +2013,7 @@ export class MaticMapShellV4 extends LitElement {
                 class="full-map-hud ms-surface ms-surface--floating"
                 aria-label=${this.#t("v4_robot_status_and_action", "Robot status and action")}
               >
-                <span class="hud-copy"><strong>${status.title}</strong>${roomEstimate}<small>${status.detail}</small></span>
+                <span class="hud-copy"><strong>${status.title}</strong><small>${status.detail}</small>${roomEstimate}</span>
                 ${locatingInFullMap && primary.id !== "stop" ? nothing : this.#actionButton(primary, "ms-btn ms-btn--lg ms-btn--primary", "hud-reason")}
                 ${secondary?.id === "stop"
                   ? this.#actionButton(secondary, "ms-btn ms-btn--lg ms-btn--secondary", "hud-secondary-reason")

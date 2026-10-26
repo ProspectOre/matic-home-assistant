@@ -6,6 +6,99 @@ import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 const history = JSON.parse(readFileSync(new URL("./fixtures/matic_active_cleaning_history.json", import.meta.url), "utf8"));
 const timing = JSON.parse(readFileSync(new URL("./fixtures/matic_current_room_timing.json", import.meta.url), "utf8"));
 
+for (const [viewport, fontSize] of [
+  [{ width: 320, height: 700 }, 16],
+  [{ width: 402, height: 874 }, 16],
+  [{ width: 402, height: 874 }, 20],
+  [{ width: 844, height: 390 }, 16],
+  [{ width: 844, height: 390 }, 20],
+]) {
+  test(`active room status stays readable at ${viewport.width}x${viewport.height} with ${fontSize}px font @mobile`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const room = { id: "room-bedroom", name: "Master Bedroom", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] };
+    const activeHistory = structuredClone(history);
+    activeHistory.active_plan.room_id = room.id;
+    const activeTiming = structuredClone(timing);
+    activeTiming.attributes.room_id = room.id;
+    activeTiming.attributes.room = room.name;
+    const fixture = await installPanelFixture(page, { sceneRooms: [room], initialRobotStates: {
+      "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70, current_area: "The Master Bedroom" } },
+      "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
+      "sensor.synthetic_progress": activeTiming,
+    } });
+    await page.evaluate((size) => {
+      document.documentElement.style.fontSize = `${size}px`;
+      document.body.append(window.__panelFixture.createPanel());
+    }, fontSize);
+    const shell = page.locator(fixture.panelTag).locator("matic-map-shell-v4");
+    const status = shell.locator(".sheet-status");
+    await expect(status).toContainText("In Master Bedroom");
+    await expect(status.locator(".room-estimate")).toHaveText("Estimated room progress: 35% (based on time)");
+    const layout = await status.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const sheet = element.closest(".mobile-sheet").getBoundingClientRect();
+      const controls = [...element.parentElement.querySelectorAll("button")].map((button) => button.getBoundingClientRect());
+      const estimate = element.querySelector(".room-estimate");
+      return {
+        textFits: element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1,
+        estimateFits: estimate.scrollWidth <= estimate.clientWidth + 1 && estimate.scrollHeight <= estimate.clientHeight + 1,
+        withinSheet: rect.top >= sheet.top && rect.bottom <= sheet.bottom,
+        overlapsControl: controls.some((control) => rect.left < control.right && rect.right > control.left && rect.top < control.bottom && rect.bottom > control.top),
+      };
+    });
+    expect(layout).toEqual({ textFits: true, estimateFits: true, withinSheet: true, overlapsControl: false });
+    const stop = shell.getByRole("button", { name: "Stop cleaning", exact: true });
+    await expect(stop).toBeVisible();
+    const box = await stop.boundingBox();
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    if (viewport.width === 402 && fontSize === 16) await page.screenshot({ path: test.info().outputPath("active-room-status.png") });
+
+    await shell.getByRole("button", { name: "Full map", exact: true }).click();
+    const hud = shell.locator(".full-map-hud");
+    const hudEstimate = hud.locator(".room-estimate");
+    await expect(hudEstimate).toHaveText("Estimated room progress: 35% (based on time)");
+    const hudTextFits = await hudEstimate.evaluate((element) =>
+      element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1);
+    expect(hudTextFits).toBe(true);
+    const hudStop = hud.getByRole("button", { name: "Stop cleaning", exact: true });
+    await expect(hudStop).toBeVisible();
+    const hudStopBox = await hudStop.boundingBox();
+    expect(hudStopBox.x).toBeGreaterThanOrEqual(0);
+    expect(hudStopBox.y).toBeGreaterThanOrEqual(0);
+    expect(hudStopBox.x + hudStopBox.width).toBeLessThanOrEqual(viewport.width);
+    expect(hudStopBox.y + hudStopBox.height).toBeLessThanOrEqual(viewport.height);
+    if (viewport.width === 402 && fontSize === 16) await page.screenshot({ path: test.info().outputPath("active-room-status-full-map.png") });
+  });
+}
+
+test("map options remain usable when the robot starts cleaning @mobile", async ({ page }) => {
+  await page.setViewportSize({ width: 402, height: 874 });
+  const room = { id: "room-bedroom", name: "Master Bedroom", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] };
+  const activeHistory = structuredClone(history);
+  activeHistory.active_plan.room_id = room.id;
+  const fixture = await installPanelFixture(page, { sceneRooms: [room], initialRobotStates: {
+    "vacuum.synthetic": { state: "docked", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70, current_area: "Master Bedroom" } },
+    "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
+  } });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  const shell = panel.locator("matic-map-shell-v4");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().coherence)).toBe("current");
+  await shell.getByRole("button", { name: "Map options", exact: true }).click();
+  const menu = shell.getByRole("menu", { name: "Map options" });
+  await expect(menu).toBeVisible();
+  await panel.evaluate((element) => {
+    const states = structuredClone(element.hass.states);
+    states["vacuum.synthetic"].state = "cleaning";
+    element.hass = { ...element.hass, states };
+  });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().activity)).toBe("cleaning");
+  await expect(menu).toBeVisible();
+  await menu.getByRole("menuitem", { name: "Map zoom", exact: true }).click();
+  await expect(shell.getByRole("dialog", { name: "Map zoom", exact: true })).toBeVisible();
+});
+
 test("timing projection reads the canonical entity and rejects ambiguous or stale ownership", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { HassAdapter } from "./frontend/map-studio-v4/hass-adapter";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/room-timing-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
@@ -62,7 +155,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
       const shell = panel.locator("matic-map-shell-v4");
       await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
       const estimate = shell.locator(".room-estimate");
-      await expect(estimate).toHaveText("Estimated 35% · Kitchen");
+      await expect(estimate).toHaveText("Estimated room progress: 35% (based on time)");
+      expect(await estimate.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
       const stop = shell.getByRole("button", { name: "Stop cleaning", exact: true });
       await expect(stop).toBeVisible();
       const box = await stop.boundingBox();
@@ -81,11 +175,11 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
         element.hass = { ...element.hass, states };
       }, fields);
       await update({ percent: "100" });
-      await expect(estimate).toHaveText("Estimated 100% · Kitchen");
+      await expect(estimate).toHaveText("Estimated room progress: 100% (based on time)");
       await expect(shell.locator(viewport.width < 1000 ? ".sheet-status" : ".status-copy")).toContainText("0 of 3 rooms completed");
       await expect(stop).toBeVisible();
       await shell.getByRole("button", { name: "Full map", exact: true }).click();
-      await expect(shell.locator(".full-map-hud .room-estimate")).toHaveText("Estimated 100% · Kitchen");
+      await expect(shell.locator(".full-map-hud .room-estimate")).toHaveText("Estimated room progress: 100% (based on time)");
       await expect(stop).toBeVisible();
       await shell.getByRole("button", { name: "Exit full map", exact: true }).click();
       await update({ room: "Study" });
