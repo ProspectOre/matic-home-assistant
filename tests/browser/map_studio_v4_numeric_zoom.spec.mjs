@@ -36,6 +36,7 @@ for (const mode of ["top", "three", "draw"]) for (const narrow of [false, true])
     const dialog = await openZoom(gallery);
     const input = dialog.getByLabel("Map zoom percent", { exact: true });
     await expect(input).toBeFocused();
+    await expect(gallery.getByRole("button", { name: "Map options", exact: true })).toHaveAttribute("aria-haspopup", "dialog");
     for (const value of [100, 400, 1000]) {
       await dialog.getByRole("button", { name: `${value}%`, exact: true }).click();
       await expect.poll(() => percent(canvas)).toBeCloseTo(value, 5);
@@ -134,4 +135,45 @@ test("numeric zoom keeps live and saved camera preferences separate", async ({ p
   expect(after.cameras).toEqual(before.cameras);
   expect(after.historyCameras[after.view].zoom).toBe(4);
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
+});
+
+test("numeric zoom remains available with Room colors and matching popup semantics", async ({ page }) => {
+  const gallery = await mount(page, "ready", false);
+  await gallery.getByRole("button", { name: "2D", exact: true }).click();
+  await gallery.getByRole("button", { name: "Room colors", exact: true }).click();
+  const canvas = gallery.locator(".map-canvas");
+  await expect.poll(() => canvas.evaluate(element => element.rendererDiagnostics().renderedPoints)).toBe(0);
+  const dialog = await openZoom(gallery);
+  await expect(gallery.getByRole("button", { name: "Map options", exact: true })).toHaveAttribute("aria-haspopup", "dialog");
+  await dialog.getByRole("button", { name: "400%", exact: true }).click();
+  await expect.poll(() => percent(canvas)).toBeCloseTo(400, 5);
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await gallery.getByRole("button", { name: "Map options", exact: true }).click();
+  await expect(gallery.getByRole("button", { name: "Map options", exact: true })).toHaveAttribute("aria-haspopup", "menu");
+});
+
+for (const [width, depth] of [[1, 1], [10, 1]]) test(`numeric presets persist on a ${width} by ${depth} meter map`, async ({ page }) => {
+  const gallery = await mount(page, "ready", false);
+  await page.setViewportSize({ width: 1000, height: 300 });
+  await page.evaluate(({ tag, width, depth }) => {
+    const gallery = document.querySelector(tag);
+    const state = gallery.getWorkspaceSnapshot();
+    const scene = state.resources.scene.value;
+    gallery.replaceWorkspaceState({ ...state, resources: { ...state.resources, scene: { ...state.resources.scene, value: {
+      ...scene, revision: scene.revision + 1, metadata: { ...scene.metadata, metersPerCell: 0.05, span: [width * 20, depth * 20] },
+    } } } });
+  }, { tag, width, depth });
+  const canvas = gallery.locator(".map-canvas");
+  for (const mode of ["2D", "3D"]) {
+    await gallery.getByRole("button", { name: mode, exact: true }).click();
+    const dialog = await openZoom(gallery);
+    for (const value of [100, 400, 1000]) {
+      await dialog.getByRole("button", { name: `${value}%`, exact: true }).click();
+      await expect.poll(() => percent(canvas)).toBeCloseTo(value, 5);
+    }
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await gallery.getByRole("button", { name: mode === "2D" ? "3D" : "2D", exact: true }).click();
+    await gallery.getByRole("button", { name: mode, exact: true }).click();
+    await expect.poll(() => percent(canvas)).toBeCloseTo(1000, 5);
+  }
 });

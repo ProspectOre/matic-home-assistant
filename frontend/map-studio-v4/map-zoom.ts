@@ -24,7 +24,7 @@ export class MapZoom {
     const canvas = this.#canvas();
     return !!canvas && canvas.state.map.available
       && (canShowLiveMap(canvas.state) || canvas.state.dataMode === "history")
-      && (canvas.rendererDiagnostics()?.renderedPoints ?? 0) > 0;
+      && canvas.rendererDiagnostics()?.sceneRevision != null;
   }
 
   #percent(): number {

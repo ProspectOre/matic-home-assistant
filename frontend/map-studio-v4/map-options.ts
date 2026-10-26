@@ -32,6 +32,10 @@ export class MapOptions {
     this.#zoom = new MapZoom(host, this.menu);
   }
 
+  get popupRole(): "menu" | "dialog" {
+    return this.#zoom.open && this.menu.open ? "dialog" : "menu";
+  }
+
   toggle(): void {
     this.#zoom.open = false;
     this.menu.toggle();
