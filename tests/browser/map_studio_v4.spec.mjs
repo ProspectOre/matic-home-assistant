@@ -3980,6 +3980,13 @@ test.describe("Map Studio v0.4 foundation", () => {
           },
         };
         renderer.setState(next);
+        // Geometry replacements publish atomically after the upload. Read the
+        // rebased destination only once that scene becomes the visible front.
+        const transitionDeadline = performance.now() + 5000;
+        while (renderer.diagnostics().sceneRevision !== next.resources.scene.value.revision
+          && performance.now() < transitionDeadline) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
         const afterTransition = renderer.camera;
         const fitAfterTransition = renderer.diagnostics().fitActive;
         const outgoing = preferences[transition === "top-three" || transition === "leave-draw" ? "top" : "three"];
@@ -4010,10 +4017,12 @@ test.describe("Map Studio v0.4 foundation", () => {
       }, { transition, destinationFit });
       expect(result.publication.sceneRevision).toBe(result.expectedRevision);
       expect(result.publication.renderedPoints).toBe(result.expectedPoints);
-      expect(result.beforePublication.notifications).toBe(1);
+      expect(result.beforePublication.notifications).toBe(transition === "enter-draw" ? 2 : 1);
       expect(result.beforePublication.revision).toBe(result.expectedRevision - 1);
       expect(result.beforePublication.camera).toEqual(result.afterTransition);
-      expect(result.notifications).toBe(2); // Final destination, then the same-view revision.
+      // Entering Draw first publishes its top camera on the old front; geometry
+      // publication then rebases it, followed by the same-view revision.
+      expect(result.notifications).toBe(transition === "enter-draw" ? 3 : 2);
       expect(result.outgoing.zoom).toBeCloseTo(1, 6);
       expect(result.outgoing.targetX).toBe(0);
       expect(result.outgoing.targetZ).toBe(0);
@@ -4062,6 +4071,11 @@ test.describe("Map Studio v0.4 foundation", () => {
           metadata: { ...scene.metadata, origin: [4, -2], span: [200, 160] } } },
       } });
       renderer.setState(store.value);
+      const publicationDeadline = performance.now() + 5000;
+      while (renderer.diagnostics().sceneRevision !== scene.revision + 1
+        && performance.now() < publicationDeadline) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
       const rebased = renderer.camera;
       const zoom = store.value.draw.zoomPercent;
       const fit = renderer.diagnostics().fitDistance;
@@ -4074,8 +4088,13 @@ test.describe("Map Studio v0.4 foundation", () => {
       canvases.forEach(canvas => canvas.remove());
       return { rebased, echoed, stepped, zoom, fit, notices };
     });
-    expect(result.notices).toHaveLength(1);
+    expect(result.notices).toHaveLength(2);
     expect(result.notices[0].camera.orthographic).toBe(true);
+    expect(result.notices[0].zoomPercent).toBe(200);
+    expect(result.notices[0].camera.targetX).toBeCloseTo(0.1, 8);
+    expect(result.notices[0].camera.targetZ).toBeCloseTo(-0.2, 8);
+    expect(result.notices[1].camera).toEqual(result.rebased);
+    expect(result.notices[1].zoomPercent).toBe(result.zoom);
     expect(result.zoom).toBe(Math.round(result.fit / result.rebased.distance * 100));
     expect(result.zoom).not.toBe(200);
     expect(result.echoed).toEqual(result.rebased);
