@@ -4773,6 +4773,137 @@ async def test_snapshot_reports_running_active_elapsed(hass) -> None:
     assert active["active_elapsed_seconds"] == 45
 
 
+@pytest.mark.parametrize("samples", [0, 2, 3])
+async def test_current_room_timing_shares_stop_clock_and_confidence(
+    hass, samples
+) -> None:
+    """The displayed estimate uses exactly Stop's clock, confidence and floor."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "away",
+        {
+            "name": "Away",
+            "enabled": True,
+            "rooms": [],
+            "finish_current_room": True,
+            "finish_current_room_threshold": 50,
+        },
+    )
+    room = _room("Kitchen", "room-kitchen")
+    base = dt_util.utcnow()
+    for _ in range(samples):
+        with patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow",
+            return_value=base - timedelta(seconds=100),
+        ):
+            await manager.async_mark_started("serial", "away", room)
+            await manager.async_mark_resumed("serial", "away", room)
+        with patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow", return_value=base
+        ):
+            await manager.async_mark_completed("serial", "away", room)
+
+    async with manager.lock("serial"):
+        manager.prepare_run("serial")
+        with patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow", return_value=base
+        ):
+            await manager.async_begin_run(
+                "serial",
+                "away",
+                "timed-run",
+                1,
+                trigger="user",
+                service="run_selected_plan",
+            )
+            await manager.async_mark_started("serial", "away", room, run_id="timed-run")
+            assert manager.current_room_timing("serial") is None
+            await manager.async_mark_resumed("serial", "away", room)
+        active_before = deepcopy(manager._robot("serial")["active_plan"])
+        saves = manager._store.async_save.await_count
+        with patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow",
+            return_value=base + timedelta(seconds=49.9),
+        ):
+            timing = manager.current_room_timing("serial")
+            expected = 49 if samples == 3 else None
+            assert timing["estimated_percent"] == expected
+            assert timing["active_elapsed_seconds"] == 49
+            assert timing["expected_seconds"] == (100 if samples == 3 else None)
+            assert timing["baseline_samples"] == samples
+            assert manager.request_stop("serial") == PlanStopDecision(
+                "immediate" if samples == 3 else "after_room", expected, 50
+            )
+        assert manager._store.async_save.await_count == saves
+        assert manager._robot("serial")["active_plan"] == active_before
+
+        with patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow",
+            return_value=base + timedelta(seconds=50),
+        ):
+            manager.prepare_run("serial")
+            assert manager.request_stop("serial") == PlanStopDecision(
+                "after_room", 50 if samples == 3 else None, 50
+            )
+            await manager.async_mark_suspended("serial", "away", room, "paused")
+        with patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow",
+            return_value=base + timedelta(hours=1),
+        ):
+            paused = manager.current_room_timing("serial")
+            assert paused["active_elapsed_seconds"] == 50
+            assert paused["estimated_percent"] == (50 if samples == 3 else None)
+            await manager.async_mark_resumed("serial", "away", room)
+        with patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow",
+            return_value=base + timedelta(hours=1, seconds=50),
+        ):
+            assert manager.current_room_timing("serial")["estimated_percent"] == (
+                100 if samples == 3 else None
+            )
+            assert manager.snapshot("serial")["last_run"]["outcome"] == "running"
+            assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 0
+            await manager.async_mark_verifying("serial", "away", room)
+            assert manager.current_room_timing("serial") is None
+
+
+async def test_current_room_timing_rejects_other_owners_and_settings(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    await manager.async_save_plan("serial", "away", {"name": "Away", "rooms": []})
+    for _ in range(3):
+        await manager.async_mark_started("serial", "away", room)
+        manager._robot("serial")["active_plan"]["active_elapsed_seconds"] = 100
+        await manager.async_mark_completed("serial", "away", room)
+    await manager.async_begin_run(
+        "serial", "away", "new-run", 1, trigger="user", service="run_selected_plan"
+    )
+    changed = CleaningRoom(room.room_id, room.name, "mop", "standard")
+    await manager.async_mark_started("serial", "away", changed, run_id="new-run")
+    await manager.async_mark_resumed("serial", "away", changed)
+    assert manager.current_room_timing("serial")["expected_seconds"] is None
+    robot = manager._robot("serial")
+    active = deepcopy(robot["active_plan"])
+    for fields in (
+        {"run_id": "old"},
+        {"plan_id": "other"},
+        {"room_id": ""},
+        {"room_id": None},
+        {"status": "recovering"},
+        {"cleaning_started": None},
+    ):
+        robot["active_plan"] = {**active, **fields}
+        assert manager.current_room_timing("serial") is None
+    robot["active_plan"] = active
+    robot["last_run"]["outcome"] = "unverified"
+    assert manager.current_room_timing("serial") is None
+    robot["last_run"] = None
+    assert manager.current_room_timing("serial") is None
+
+
 async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
     hass,
 ) -> None:

@@ -5,6 +5,7 @@ import { minify } from "terser";
 export async function compactJavaScript(source) {
   const result = await minify(source, {
     module: true, ecma: 2022, keep_classnames: true, keep_fnames: true,
+    compress: { passes: 2 },
     format: { ascii_only: true, comments: /^!/u },
   });
   if (typeof result.code !== "string") throw new Error("JavaScript compaction produced no code");

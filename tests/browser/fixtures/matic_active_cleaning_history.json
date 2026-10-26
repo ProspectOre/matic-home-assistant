@@ -1,6 +1,6 @@
 {
   "matic_entry_id": "synthetic-entry",
-  "active_plan": { "run_id": "partial-1" },
+  "active_plan": { "run_id": "partial-1", "room_id": "room-kitchen" },
   "last_run": {
     "run_id": "partial-1",
     "outcome": "running",

@@ -134,6 +134,7 @@ export const shellStyles = [tokens, base, controls, css`
     }
 
     .status-copy { min-inline-size: 0; }
+    .room-estimate { display: block; overflow: hidden; text-overflow: ellipsis; font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); }
     .status-strip strong, .status-strip small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .status-strip strong { font-size: var(--ms-t-sm); }
     .status-strip small { margin-block-start: 0.125rem; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); }

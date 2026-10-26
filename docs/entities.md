@@ -6,7 +6,7 @@ Build dashboards, adjust settings, and use cleaning results in automations.
 Enable per-room statistics to track when each room was last cleaned and how
 long successful cleaning took.
 
-Each robot has 51 fixed entities — 21 sensors, 11 binary sensors, 5 buttons,
+Each robot has 54 fixed entities — 24 sensors, 11 binary sensors, 5 buttons,
 4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and 1 vacuum —
 plus two opt-in statistics sensors per mapped room.
 
@@ -37,6 +37,9 @@ are disabled by default; enable them from the device's entity list.
 | Current room | `sensor.matic_current_area` | on |
 | Rooms cleaned by plans | `sensor.matic_cleaning_history` | on |
 | Active cleaning plan · Next room to clean | `sensor.matic_active_cleaning_plan` · `sensor.matic_next_cleaning_room` | on |
+| Current room active cleaning time | `sensor.matic_current_room_active_time` | on |
+| Current room expected duration | `sensor.matic_current_room_expected_duration` | on |
+| Current room estimated progress | `sensor.matic_current_room_estimated_progress` | on |
 | Last clean duration | `sensor.matic_last_run_duration` | on |
 | Firmware check status · Update status | `sensor.matic_firmware_compatibility` · `sensor.matic_update_state` | on |
 | Cues voice status · Cues gesture status | `sensor.matic_cues_voice_status` · `sensor.matic_cues_gesture_status` | on |
@@ -55,6 +58,16 @@ Paused, Returning to dock and Fully charged repeat **Activity**, so they start
 disabled. The status sensors (Activity, Firmware check status, Update status,
 Wi-Fi status, both Cues statuses) offer their states as a pick list in the
 automation editor. Durations are reported in seconds and shown as time.
+
+The three current-room sensors refresh together every five seconds,
+without extra robot requests. They apply to the current room of a clean
+started in Home Assistant; active time excludes pauses. Expected duration is the median of
+at least three recent successful cleans with matching mode and coverage.
+Without that history, expected duration and percentage stay unknown. Matic Map reads
+this same percentage, and Stop evaluates the same clock and baseline at the
+time of the command. A displayed estimate can be up to five seconds behind.
+Even **Estimated 100%** does not prove completion. Use confirmed room results
+for completion automations. An area-only, stale or unmatched run has no estimate.
 
 ## Controls
 

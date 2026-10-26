@@ -41,7 +41,7 @@ const maticEntryKey = (entity: HassEntityLike): string | null => {
   return typeof key === "string" && key.length > 0 ? key : null;
 };
 
-const managedRunSummary = (value: unknown, activePlan: unknown) => {
+const managedRunSummary = (value: unknown, activePlan: unknown, timing: HassEntityLike | undefined) => {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const run = value as Record<string, unknown>;
   if (typeof run.run_id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/u.test(run.run_id)) return null;
@@ -54,7 +54,15 @@ const managedRunSummary = (value: unknown, activePlan: unknown) => {
     if (!activePlan || typeof activePlan !== "object" || Array.isArray(activePlan)
       || (activePlan as Record<string, unknown>).run_id !== run.run_id || roomCount === 0) return null;
   } else if (run.outcome !== "unverified" && run.outcome !== "stopped_docked" && run.outcome !== "failed" && run.outcome !== "cancelled" && run.outcome !== "recharge_suspended") return null;
-  return Object.freeze({ runId: run.run_id, outcome: run.outcome === "running" ? "running" as const : run.outcome === "unverified" ? "unverified" as const : "partial" as const,
+  const metric = timing?.attributes;
+  const percent = timing && /^\d{1,3}$/u.test(timing.state) ? Number(timing.state) : NaN;
+  const estimate = run.outcome === "running" && metric?.run_id === run.run_id
+    && metric?.room_id === (activePlan as Record<string, unknown>).room_id
+    && metric?.status === "running" && typeof metric.room_id === "string"
+    && typeof metric.room === "string" && metric.room
+    && percent <= 100
+    ? { roomId: metric.room_id, room: metric.room, percent } : undefined;
+  return Object.freeze({ runId: run.run_id, outcome: run.outcome === "running" ? "running" as const : run.outcome === "unverified" ? "unverified" as const : "partial" as const, ...(estimate ? { estimate } : {}),
     completedRoomCount: completedRoomCount as number, roomCount: roomCount as number });
 };
 
@@ -85,6 +93,7 @@ export class HassAdapter {
     preferredEntry: string | null = null,
   ): HassProjection {
     const states = hass?.states ?? {};
+    const entities = Object.entries(states);
     const panelEntry = panel?.config?.entry_id;
     const configuredEntry = typeof panelEntry === "string" ? panelEntry : null;
     const requestedEntry = preferredEntry || configuredEntry;
@@ -94,7 +103,7 @@ export class HassAdapter {
     const robots = new Map<string, { readonly entryId: string; readonly label: string }>();
     const histories = new Map<string, Readonly<Record<string, unknown>>>();
 
-    for (const [entityId, entity] of Object.entries(states)) {
+    for (const [entityId, entity] of entities) {
       const entryKey = maticEntryKey(entity);
       if (!entryKey) continue;
       if (entityId.startsWith("sensor.") && entity.attributes?.last_run !== undefined) {
@@ -109,7 +118,7 @@ export class HassAdapter {
       }
     }
 
-    const settings = selectedVacuum ? Object.entries(states).filter(([id, entity]) =>
+    const settings = selectedVacuum ? entities.filter(([id, entity]) =>
       id.startsWith("switch.") && maticEntryKey(entity) === selectedEntryKey
       && entity.attributes?.matic_setting === "deep_mop") : [];
     const setting = settings.length === 1 ? settings[0] : undefined;
@@ -144,33 +153,10 @@ export class HassAdapter {
     const robotChoices = [...robots.values()].sort((left, right) =>
       left.label.localeCompare(right.label, language, { sensitivity: "base" }));
     const history = histories.get(selectedEntryKey ?? "");
-    const lastRun = managedRunSummary(history?.last_run, history?.active_plan);
-    const signature = [
-      host.connected,
-      host.administrator,
-      host.robotConnected,
-      host.robotCount,
-      activity,
-      batteryPercent ?? "none",
-      currentArea ?? "",
-      language,
-      dateLanguage,
-      timeZone ?? "browser",
-      userKey,
-      selectedVacuumEntityId ?? "none",
-      selectedEntryKey ?? "none",
-      robotLabel,
-      robotChoices.map((robot) => `${robot.entryId}:${robot.label}`).join(","),
-      deepMop?.entityId ?? "",
-      deepMop?.enabled ?? "unknown",
-      lastRun ? `${lastRun.runId}:${lastRun.outcome}:${lastRun.completedRoomCount}:${lastRun.roomCount}` : "no-last-run",
-    ].join("|");
-
-    if (signature === this.#signature && this.#projection) {
-      return this.#projection;
-    }
-    this.#signature = signature;
-    this.#projection = {
+    const timing = entities.filter(([id, entity]) => id.startsWith("sensor.")
+      && maticEntryKey(entity) === selectedEntryKey && entity.attributes?.matic_metric === "current_room_estimated_progress");
+    const lastRun = managedRunSummary(history?.last_run, history?.active_plan, timing.length === 1 ? timing[0]?.[1] : undefined);
+    const projection: HassProjection = {
       deepMop,
       host,
       activity,
@@ -185,6 +171,10 @@ export class HassAdapter {
       robots: robotChoices,
       lastRun,
     };
-    return this.#projection;
+    const signature = JSON.stringify(projection);
+    if (signature === this.#signature && this.#projection) return this.#projection;
+    this.#signature = signature;
+    this.#projection = projection;
+    return projection;
   }
 }
