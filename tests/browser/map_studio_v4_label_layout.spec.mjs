@@ -91,6 +91,12 @@ for (const [width, height, count, expected, mobile] of [
           });
           await frame();
           captures.push({ appearance, labels: structuredClone(labels), leaders: structuredClone(leaders), anchors: structuredClone(anchors), png: overlay.toDataURL() });
+          if (width === 900) for (let step = 0; step < 20; step += 1) {
+            renderer.panBy(0, 1);
+            await frame();
+            captures.push({ appearance: `${appearance}-pan-${step}`, labels: structuredClone(labels),
+              leaders: structuredClone(leaders), anchors: structuredClone(anchors) });
+          }
         }
       } finally {
         renderer.dispose();
@@ -100,10 +106,19 @@ for (const [width, height, count, expected, mobile] of [
       return captures;
     }, { width, height, count });
 
+    let previous = null;
     for (const capture of result) {
-      const path = test.info().outputPath(`${capture.appearance}-${width}x${height}.png`);
-      await writeFile(path, Buffer.from(capture.png.split(",")[1], "base64"));
-      await test.info().attach(`${capture.appearance}-${width}x${height}`, { path, contentType: "image/png" });
+      if (capture.png) {
+        const path = test.info().outputPath(`${capture.appearance}-${width}x${height}.png`);
+        await writeFile(path, Buffer.from(capture.png.split(",")[1], "base64"));
+        await test.info().attach(`${capture.appearance}-${width}x${height}`, { path, contentType: "image/png" });
+      }
+      if (capture.appearance.includes("-pan-")) for (const label of capture.labels) {
+        const last = previous.labels.find((item) => item.text === label.text);
+        expect(last).toBeTruthy();
+        expect(Math.hypot(label.x - last.x, label.y - last.y), `${label.text} follows a small pan`).toBeLessThan(3);
+      }
+      previous = capture;
       const names = capture.labels.map((label) => label.text);
       expect(names).toContain("Room 11");
       expect(names).toContain("Room 10");
@@ -142,3 +157,62 @@ for (const [width, height, count, expected, mobile] of [
     }
   });
 }
+
+test("room labels move continuously with small map pans", async ({ page }) => {
+  const bundle = await build({
+    stdin: {
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      resolveDir: process.cwd(),
+    },
+    bundle: true, format: "esm", write: false,
+  });
+  await page.route("**/label-pan.js", (route) => route.fulfill({
+    contentType: "text/javascript", body: bundle.outputFiles[0].text,
+  }));
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  const positions = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = await import("/label-pan.js");
+    const base = createGalleryState("ready");
+    const scene = base.resources.scene.value;
+    const room = { id: "pan-room", roomId: "pan-room", name: "Pan room",
+      center: [50, 50], boundary: [[40, 40], [60, 40], [60, 60], [40, 60]] };
+    const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
+    canvases.forEach((canvas) => {
+      Object.assign(canvas.style, { position: "absolute", width: "700px", height: "500px" });
+      document.body.append(canvas);
+    });
+    const renderer = new RendererController(...canvases);
+    const overlay = canvases[1];
+    const original = CanvasRenderingContext2D.prototype.fillText;
+    let latest = null;
+    CanvasRenderingContext2D.prototype.fillText = function (text, x, y, ...rest) {
+      if (this.canvas === overlay && text === room.name) latest = { x, y };
+      return original.call(this, text, x, y, ...rest);
+    };
+    const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    try {
+      renderer.setState({ ...base, view: "top", appearance: "photo", labelsVisible: true,
+        resources: { ...base.resources, scene: { status: "ready", problem: null,
+          value: { ...scene, metadata: { ...scene.metadata, origin: [0, 0], span: [100, 100], rooms: [room] } } } } });
+      await frame();
+      await frame();
+      const samples = [];
+      for (let step = 0; step < 60; step += 1) {
+        renderer.panBy(0, 1);
+        await frame();
+        samples.push(latest && { ...latest });
+      }
+      return samples;
+    } finally {
+      CanvasRenderingContext2D.prototype.fillText = original;
+      renderer.dispose();
+      canvases.forEach((canvas) => canvas.remove());
+    }
+  });
+  expect(positions.every(Boolean)).toBe(true);
+  const steps = positions.slice(1).map((position, index) => Math.hypot(
+    position.x - positions[index].x, position.y - positions[index].y,
+  ));
+  expect(Math.abs(positions.at(-1).y - positions[0].y)).toBeGreaterThan(20);
+  expect(Math.max(...steps)).toBeLessThan(3);
+});

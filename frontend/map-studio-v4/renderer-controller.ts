@@ -394,6 +394,7 @@ export class RendererController {
   #palette: CanvasPalette = DEFAULT_PALETTE;
   // Saved-order numbers are drawn every frame; one formatter per locale.
   #positionFormat: { readonly locale: string; readonly format: Intl.NumberFormat } | null = null;
+  #labelOffsets = new Map<string, readonly [x: number, y: number]>();
 
   constructor(
     sceneCanvas: HTMLCanvasElement,
@@ -408,6 +409,7 @@ export class RendererController {
     this.#sceneCanvas.addEventListener("webglcontextrestored", this.#contextRestored);
     this.#initWebGl();
     this.#resizeObserver = new ResizeObserver(() => {
+      this.#labelOffsets.clear();
       const previousThree = this.#homeThree;
       const previousTop = this.#homeTop;
       this.#updateHomeDistances();
@@ -499,6 +501,7 @@ export class RendererController {
       && state.owner?.userKey === previous?.owner?.userKey && state.selection.entryId === previous?.selection.entryId;
     const context = holdingScene ? this.#sceneContext : scene ? sceneContext(state) : null;
     const cameraContextChanged = !holdingScene && context !== this.#sceneContext;
+    if (cameraContextChanged || (previous && topView(previous) !== topView(state))) this.#labelOffsets.clear();
     const liveKey = liveCameraKey(state);
     const liveCameraChanged = liveKey !== null && liveKey !== liveCameraKey(previous);
     this.#admittedScene = scene;
@@ -582,6 +585,7 @@ export class RendererController {
       this.#deleteFrontBuffer();
       this.#scene = null;
       this.#sceneContext = null;
+      this.#labelOffsets.clear();
       this.#renderedPoints = 0;
       this.#initializedPoints = 0;
     }
@@ -1447,7 +1451,11 @@ export class RendererController {
     const bounds = this.#viewport;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, bounds.width, bounds.height);
-    if (!scene || !state) return;
+    if (!scene || !state) {
+      this.#labelOffsets.clear();
+      return;
+    }
+    const labelOffsets = new Map<string, readonly [x: number, y: number]>();
     const palette = this.#palette;
     const colours = roomColours(state);
     if (this.#mode === "canvas2d" && this.#fallbackCanvas
@@ -1526,18 +1534,27 @@ export class RendererController {
         const width = badgeSpace + context.measureText(room.name).width + 12;
         if (width > bounds.width || bounds.height < 20) continue;
         let placement: readonly [number, number] | undefined;
+        const fits = (x: number, y: number) => !occupied.some(([left, top, otherWidth]) => x < left + otherWidth + 8
+          && x + width + 8 > left && y < top + 24 && y + 24 > top);
+        const previous = this.#labelOffsets.get(room.id);
+        let retained = false;
+        if (previous) {
+          const x = clamp(center.x + previous[0] - width / 2, 0, bounds.width - width);
+          const y = clamp(center.y + previous[1] - 10, 0, bounds.height - 20);
+          if (fits(x, y)) { placement = [x, y]; retained = true; }
+        }
         let nearest = Infinity;
-        for (let row = -4; row <= 4; row++) for (let column = -2; column <= 2; column++) {
+        if (!placement) for (let row = -4; row <= 4; row++) for (let column = -2; column <= 2; column++) {
           const x = clamp(center.x - width / 2 + column * (width + 8), 0, bounds.width - width);
           const y = clamp((Math.round((center.y - 10) / 24) + row) * 24, 0, Math.floor((bounds.height - 20) / 24) * 24);
           const distance = Math.hypot(x + width / 2 - center.x, y + 10 - center.y);
-          if (distance >= nearest || occupied.some(([left, top, otherWidth]) => x < left + otherWidth + 8
-            && x + width + 8 > left && y < top + 24 && y + 24 > top)) continue;
+          if (distance >= nearest || !fits(x, y)) continue;
           placement = [x, y];
           nearest = distance;
         }
         if (!placement) continue;
         const [left, top] = placement;
+        labelOffsets.set(room.id, retained ? previous! : [left + width / 2 - center.x, top + 10 - center.y]);
         occupied.push([left, top, width]);
         const edgeX = clamp(center.x, left, left + width);
         const edgeY = clamp(center.y, top, top + 20);
@@ -1569,6 +1586,7 @@ export class RendererController {
       }
       for (const paint of labels) paint();
     }
+    this.#labelOffsets = labelOffsets;
     const preview = this.#circlePreview;
     const circles = preview && hasCoordinateEditAdmission(state, preview.capture)
       ? preview.circles
@@ -1926,6 +1944,7 @@ export class RendererController {
     this.#circlePreview = null;
     this.#scene = null;
     this.#state = null;
+    this.#labelOffsets.clear();
     this.#admittedScene = null;
     this.#admittedContext = null;
   }
