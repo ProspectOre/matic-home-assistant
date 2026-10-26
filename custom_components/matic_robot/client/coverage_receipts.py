@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -15,6 +15,7 @@ from .commands import CoverageSetting
 from .coverage_goals import (
     CoverageGoalSignature,
     coverage_command_goal_signatures,
+    coverage_history_goal_records,
     coverage_plan_goal_signatures,
     coverage_readback_matches,
 )
@@ -220,8 +221,14 @@ def _records(payload: bytes, *, command: bool) -> dict[str, CoverageGoalSignatur
             for group in _messages(root, 1, budget)
             for goal in _messages(group, 1, budget)
         ]
+    return _keyed_records(zip(goals, signatures, strict=True), budget)
+
+
+def _keyed_records(
+    goals: Iterable[tuple[bytes, CoverageGoalSignature]], budget: WireFieldBudget
+) -> dict[str, CoverageGoalSignature]:
     result = {}
-    for goal, signature in zip(goals, signatures, strict=True):
+    for goal, signature in goals:
         key = _uuid_hash(_one(_one(goal, 6, budget), 1, budget))
         if key in result:
             raise DecodeError("receipt repeats a goal identity")
@@ -316,6 +323,19 @@ def receipt_matches_plan(receipt: CoverageReceipt, retained_plan: bytes) -> bool
     """Require the exact vacuum goals again at native completion, including IDs."""
     try:
         actual = _vacuum_hashes(_records(retained_plan, command=False))
+    except DecodeError, ValueError:
+        return False
+    return actual == {room.region_hash: room.goals_hash for room in receipt.rooms}
+
+
+def receipt_matches_history(receipt: CoverageReceipt, history_value: bytes) -> bool:
+    """Match exact retained goal IDs/specs; the caller must bind the history key."""
+    try:
+        records = _keyed_records(
+            coverage_history_goal_records(history_value),
+            WireFieldBudget(remaining=_MAX_FIELDS),
+        )
+        actual = _vacuum_hashes(records)
     except DecodeError, ValueError:
         return False
     return actual == {room.region_hash: room.goals_hash for room in receipt.rooms}

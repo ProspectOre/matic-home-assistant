@@ -19,6 +19,7 @@ from custom_components.matic_robot.client.coverage_receipts import (
     make_coverage_receipt,
     native_session_hash,
     receipt_from_storage,
+    receipt_matches_history,
     receipt_matches_plan,
 )
 from custom_components.matic_robot.client.models import FloorPlan, Room
@@ -81,6 +82,24 @@ def receipt_plan(command, *, deep=False, transform_heavy=True, omit_mop=True):
 
 def history_key(session=SESSION):
     return _field(2, _wrapped_uuid(str(session)))
+
+
+def receipt_history(plan):
+    """Use synthetic goal IDs in the observed completed-history envelope."""
+    goals = bytes_fields(first_bytes(first_bytes(plan, 7), 1), 1)
+    return _history_with_goals(goals)
+
+
+def _history_with_goals(goals):
+    return _field(
+        2,
+        _field(
+            1,
+            _field(1, b"goal slot")
+            + _field(2, _field(1, b"".join(_field(2, g) for g in goals))),
+        )
+        + _field(1, _field(1, b"map slot") + _field(10, b"unrelated map metadata")),
+    )
 
 
 def active_key(session=SESSION):
@@ -254,6 +273,101 @@ def test_changed_same_session_settings_cannot_confirm_a_receipt():
         make_coverage_receipt(command, b"malformed", receipt_floor(), str(SESSION))
         is None
     )
+
+
+@pytest.mark.parametrize("setting", CoverageSetting)
+@pytest.mark.parametrize("mode", (CleaningMode.VACUUM, CleaningMode.BOTH))
+def test_completed_history_preserves_exact_echoed_goal_proof(mode, setting):
+    command = receipt_command(mode, setting)
+    plan = receipt_plan(command)
+    receipt = make_coverage_receipt(command, plan, receipt_floor(), str(SESSION))
+    assert receipt is not None
+    assert receipt_matches_history(receipt, receipt_history(plan))
+    assert not receipt_matches_history(
+        receipt, receipt_history(receipt_plan(receipt_command(mode, setting)))
+    )
+
+
+def test_completed_history_rejects_changed_heavy_duty_retained_setting():
+    command = receipt_command(CleaningMode.VACUUM, CoverageSetting.HEAVY_DUTY)
+    receipt = make_coverage_receipt(
+        command, receipt_plan(command), receipt_floor(), str(SESSION)
+    )
+    assert receipt is not None
+    assert not receipt_matches_history(
+        receipt, receipt_history(receipt_plan(command, transform_heavy=False))
+    )
+
+
+@pytest.mark.parametrize("change", ("missing", "duplicate", "extra", "region"))
+def test_completed_history_requires_the_complete_original_goal_set(change):
+    command = receipt_command(CleaningMode.VACUUM)
+    plan = receipt_plan(command)
+    receipt = make_coverage_receipt(command, plan, receipt_floor(), str(SESSION))
+    assert receipt is not None
+    goals = list(bytes_fields(first_bytes(first_bytes(plan, 7), 1), 1))
+    if change == "missing":
+        goals.pop()
+    elif change == "duplicate":
+        goals.append(goals[0])
+    elif change == "extra":
+        other = receipt_plan(receipt_command(CleaningMode.VACUUM))
+        goals.append(bytes_fields(first_bytes(first_bytes(other, 7), 1), 1)[0])
+    else:
+        goals[0] = goals[0].replace(
+            _wrapped_uuid(REGION), _wrapped_uuid(str(UUID(int=124)))
+        )
+    assert not receipt_matches_history(receipt, _history_with_goals(goals))
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b"",
+        b"malformed",
+        _varint_field(2, 1),
+        _field(2, b"") * 2,
+        _field(2, b""),
+        _field(2, _field(1, b"")),
+        _field(2, _field(1, _field(2, b"") * 2)),
+        _field(2, _field(1, _field(2, b"")) * 2),
+        _field(2, _field(1, _field(2, b""))),
+        _field(2, _field(1, _field(2, _field(1, b"")))),
+        _field(2, _field(1, _field(2, _field(1, _varint_field(2, 1))))),
+        _field(2, _field(1, _field(1, b"key") + _field(11, b"unknown arm"))),
+        _field(2, _field(1, _field(1, b"key") + _field(2, b"") + _field(10, b""))),
+        _field(2, _field(1, _varint_field(1, 1) + _field(2, b""))),
+        _field(2, _field(1, _field(1, b"key") + _field(10, b"metadata"))),
+        _field(2, _field(1, _field(1, b"key") + _field(2, b"")) * 2),
+        _field(2, _field(1, _field(1, b"key") + _field(2, b""))),
+    ),
+)
+def test_completed_history_rejects_missing_ambiguous_or_wrong_wire_wrappers(payload):
+    command = receipt_command()
+    receipt = make_coverage_receipt(
+        command, receipt_plan(command), receipt_floor(), str(SESSION)
+    )
+    assert receipt is not None
+    assert not receipt_matches_history(receipt, payload)
+
+
+@pytest.mark.parametrize(
+    "limit,value",
+    (
+        ("_MAX_COVERAGE_PLAN_BYTES", 1),
+        ("_MAX_COVERAGE_GOALS", 7),
+        ("_MAX_COVERAGE_FIELDS_PER_PLAN", 1),
+    ),
+)
+def test_completed_history_obeys_byte_field_and_goal_limits(monkeypatch, limit, value):
+    command = receipt_command(CleaningMode.VACUUM)
+    plan = receipt_plan(command)
+    receipt = make_coverage_receipt(command, plan, receipt_floor(), str(SESSION))
+    assert receipt is not None
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.coverage_goals." + limit, value
+    )
+    assert not receipt_matches_history(receipt, receipt_history(plan))
 
 
 @pytest.mark.parametrize("active", (False, True))

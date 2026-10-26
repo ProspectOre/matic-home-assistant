@@ -162,6 +162,78 @@ def coverage_plan_goal_signatures(payload: bytes) -> tuple[CoverageGoalSignature
     return tuple(goals)
 
 
+def coverage_plan_lacks_active_goals(payload: bytes) -> bool:
+    """Recognize an absent container without accepting malformed live goals."""
+    if not payload or len(payload) > _MAX_COVERAGE_PLAN_BYTES:
+        raise DecodeError("coverage plan is empty or exceeds its byte limit")
+    budget = WireFieldBudget(remaining=_MAX_COVERAGE_FIELDS_PER_PLAN)
+    return not any(field.number == 7 for field in _bounded_fields(payload, budget))
+
+
+def coverage_history_goal_records(
+    payload: bytes,
+) -> tuple[tuple[bytes, CoverageGoalSignature], ...]:
+    """Decode the observed history value's goals at exactly 2/1/2/1/2.
+
+    The history collection key supplies session identity separately. Every
+    selected wrapper and goal must be complete; searching arbitrary nested
+    messages could mistake unrelated data for retained dispatch evidence.
+    """
+    if len(payload) > _MAX_COVERAGE_PLAN_BYTES:
+        raise DecodeError("coverage history exceeds its byte limit")
+    budget = WireFieldBudget(remaining=_MAX_COVERAGE_FIELDS_PER_PLAN)
+
+    def messages(value: bytes, number: int) -> tuple[bytes, ...]:
+        selected = tuple(
+            field for field in _bounded_fields(value, budget) if field.number == number
+        )
+        if any(field.wire_type != 2 for field in selected):
+            raise DecodeError("coverage history has an invalid wrapper wire type")
+        return tuple(
+            field.value for field in selected if isinstance(field.value, bytes)
+        )
+
+    def one(value: bytes, number: int) -> bytes:
+        selected = messages(value, number)
+        if len(selected) != 1:
+            raise DecodeError("coverage history has a missing or repeated wrapper")
+        return selected[0]
+
+    requests = messages(one(payload, 2), 1)
+    if not requests:
+        raise DecodeError("coverage history has no goal requests")
+    snapshots: list[bytes] = []
+    for request in requests:
+        fields = _bounded_fields(request, budget)
+        keys = tuple(field for field in fields if field.number == 1)
+        arms = tuple(field for field in fields if field.number != 1)
+        if (
+            len(keys) != 1
+            or keys[0].wire_type != 2
+            or len(arms) != 1
+            or arms[0].number not in {2, 3, 4, 5, 10}
+            or arms[0].wire_type != 2
+            or not isinstance(arms[0].value, bytes)
+        ):
+            raise DecodeError("coverage history has an ambiguous request variant")
+        # Other observed variants retain unrelated metadata. Only arm 2
+        # contains goals; multiple goal snapshots remain ambiguous.
+        if arms[0].number == 2:
+            snapshots.append(arms[0].value)
+    if len(snapshots) != 1:
+        raise DecodeError("coverage history has no unique goal snapshot")
+    groups = messages(snapshots[0], 1)
+    if not groups:
+        raise DecodeError("coverage history has no goal groups")
+    goals: list[bytes] = []
+    for group in groups:
+        candidates = messages(group, 2)
+        if not candidates or len(goals) + len(candidates) > _MAX_COVERAGE_GOALS:
+            raise DecodeError("coverage history has an invalid goal count")
+        goals.extend(candidates)
+    return tuple((goal, _goal_signature(goal, budget)) for goal in goals)
+
+
 def _goal_signature(payload: bytes, budget: WireFieldBudget) -> CoverageGoalSignature:
     """Decode one complete goal without retaining its opaque command IDs."""
     goal_fields = _bounded_fields(payload, budget)
