@@ -2,7 +2,7 @@
 
 import hashlib
 from itertools import count
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
 import pytest
@@ -17,12 +17,19 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.coverage_receipts import (
     make_coverage_receipt,
 )
-from custom_components.matic_robot.client.models import FloorPlan, Room
+from custom_components.matic_robot.client.models import (
+    FloorPlan,
+    HermesCollectionEntry,
+    Room,
+)
 from tests.test_coverage_receipts import (
     SESSION,
     active_key,
+    history_key,
+    receipt_history,
     receipt_plan,
 )
+from tests.wire_builders import _field, _varint_field
 
 FLOOR = FloorPlan(
     42,
@@ -50,19 +57,19 @@ ACTIVE_IDENTITY = active_key()
 SESSION_HASH = hashlib.sha256(str(SESSION).encode("ascii")).hexdigest()
 
 
-def _normal_fixture():
+def _normal_fixture(setting=CoverageSetting.QUICK):
     identifiers = count(500)
     command = encode_coverage_command(
         mission_id=FLOOR.mission_id,
         partition_id=FLOOR.partition_protocol_id,
         region_ids=[REGION],
         cleaning_mode=CleaningMode.VACUUM,
-        coverage_setting=CoverageSetting.QUICK,
+        coverage_setting=setting,
         ordered=True,
         session_id=SESSION,
         command_id_factory=lambda: UUID(int=next(identifiers)),
     )
-    plan = receipt_plan(command, transform_heavy=False)
+    plan = receipt_plan(command, transform_heavy=setting is CoverageSetting.HEAVY_DUTY)
     receipt = make_coverage_receipt(command, plan, FLOOR, str(SESSION))
     assert receipt is not None
     return command, plan, receipt
@@ -247,6 +254,111 @@ async def test_completion_accepts_matching_retained_goals_after_inactive_session
 
     assert await client.async_confirm_coverage_receipt(receipt, SESSION_HASH)
     assert client.async_get_property.await_count == 2
+
+
+def _history_completion_client(setting=CoverageSetting.QUICK):
+    client, _receipt = _completion_client(plan=_field(10, b"retained geometry"))
+    _command, plan, receipt = _normal_fixture(setting)
+    value = receipt_history(plan)
+    entries = (HermesCollectionEntry(history_key(), value),)
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=entries)
+    return client, receipt, entries
+
+
+@pytest.mark.parametrize("setting", CoverageSetting)
+async def test_completion_uses_exact_session_history_when_live_goals_were_cleared(
+    setting,
+):
+    client, receipt, _entries = _history_completion_client(setting)
+    assert await client.async_confirm_coverage_receipt(receipt, SESSION_HASH)
+    assert client.async_get_tracked_collection_entries.await_args_list == [
+        call("coverage_session_history", limit=64),
+        call("coverage_session_history", limit=64),
+    ]
+
+
+@pytest.mark.parametrize(
+    "change", ("missing", "wrong", "unknown", "duplicate", "goals")
+)
+async def test_history_fallback_requires_unique_matching_session_and_goals(change):
+    client, receipt, entries = _history_completion_client()
+    if change == "missing":
+        entries = ()
+    elif change == "wrong":
+        entries = (HermesCollectionEntry(history_key(UUID(int=988)), entries[0].value),)
+    elif change == "unknown":
+        entries = (HermesCollectionEntry(b"unknown", entries[0].value),)
+    elif change == "duplicate":
+        entries *= 2
+    else:
+        entries = (
+            HermesCollectionEntry(history_key(), receipt_history(_changed_goal_plan())),
+        )
+    client.async_get_tracked_collection_entries.return_value = entries
+    assert not await client.async_confirm_coverage_receipt(receipt, SESSION_HASH)
+
+
+@pytest.mark.parametrize(
+    "plan", (b"", b"malformed", _field(7, b""), _varint_field(7, 1))
+)
+async def test_history_does_not_mask_empty_malformed_or_contradictory_live_goals(plan):
+    client, receipt, _entries = _history_completion_client()
+    client.async_get_property.return_value = plan
+    assert not await client.async_confirm_coverage_receipt(receipt, SESSION_HASH)
+    client.async_get_tracked_collection_entries.assert_not_awaited()
+
+
+async def test_valid_but_changed_live_goals_cannot_be_overridden_by_history():
+    client, receipt, _entries = _history_completion_client()
+    client.async_get_property.return_value = _changed_goal_plan()
+    assert not await client.async_confirm_coverage_receipt(receipt, SESSION_HASH)
+    client.async_get_tracked_collection_entries.assert_not_awaited()
+
+
+@pytest.mark.parametrize("change", ("missing", "body", "goals", "live_goals"))
+async def test_history_fallback_requires_consistent_second_snapshot(change):
+    client, receipt, entries = _history_completion_client()
+    final_entries = entries
+    if change == "missing":
+        final_entries = ()
+    elif change == "body":
+        final_entries = (
+            HermesCollectionEntry(
+                history_key(), entries[0].value + _field(5, b"changed")
+            ),
+        )
+    elif change == "goals":
+        final_entries = (
+            HermesCollectionEntry(history_key(), receipt_history(_changed_goal_plan())),
+        )
+    else:
+        client.async_get_property.side_effect = [
+            _field(10, b"geometry"),
+            receipt_plan_for(receipt),
+        ]
+    client.async_get_tracked_collection_entries.side_effect = [entries, final_entries]
+    assert not await client.async_confirm_coverage_receipt(receipt, SESSION_HASH)
+
+
+@pytest.mark.parametrize("race", ("floor", "activity", "identity"))
+async def test_history_fallback_retains_floor_activity_and_identity_fences(race):
+    client, receipt, _entries = _history_completion_client()
+    if race == "floor":
+        client.async_get_floor_plan.side_effect = [
+            FLOOR,
+            FloorPlan(43, FLOOR.partition_protocol_id, b"partition", FLOOR.rooms),
+        ]
+    elif race == "activity":
+        client.async_get_active_cleaning_session_state.side_effect = [False, True]
+    else:
+        client.async_get_cleaning_session_identity.side_effect = [b"", ACTIVE_IDENTITY]
+    assert not await client.async_confirm_coverage_receipt(receipt, SESSION_HASH)
+
+
+async def test_history_read_timeout_withholds_coverage_credit():
+    client, receipt, _entries = _history_completion_client()
+    client.async_get_tracked_collection_entries.side_effect = TimeoutError
+    assert not await client.async_confirm_coverage_receipt(receipt, SESSION_HASH)
 
 
 @pytest.mark.parametrize(
