@@ -233,7 +233,6 @@ interface GpuUpload {
   readonly staging: boolean;
   seed: "scene" | "copy";
   readonly previousScene: SceneModel | null;
-  readonly preserveCamera: boolean;
   frontierBytes: number;
   readonly dirtyBlocks: Set<number>;
   readonly transitionBlocks: Set<number>;
@@ -395,6 +394,7 @@ export class RendererController {
   #palette: CanvasPalette = DEFAULT_PALETTE;
   // Saved-order numbers are drawn every frame; one formatter per locale.
   #positionFormat: { readonly locale: string; readonly format: Intl.NumberFormat } | null = null;
+  #labelOffsets = new Map<string, readonly [x: number, y: number]>();
 
   constructor(
     sceneCanvas: HTMLCanvasElement,
@@ -409,6 +409,7 @@ export class RendererController {
     this.#sceneCanvas.addEventListener("webglcontextrestored", this.#contextRestored);
     this.#initWebGl();
     this.#resizeObserver = new ResizeObserver(() => {
+      this.#labelOffsets.clear();
       const previousThree = this.#homeThree;
       const previousTop = this.#homeTop;
       this.#updateHomeDistances();
@@ -487,6 +488,7 @@ export class RendererController {
   setState(state: WorkspaceState): void {
     if (this.#disposed) return;
     const previous = this.#state;
+    const view = topView(state);
     const previousScene = this.#scene;
     const admittedBefore = this.#admittedScene;
     const admittedContextBefore = this.#admittedContext;
@@ -500,6 +502,7 @@ export class RendererController {
       && state.owner?.userKey === previous?.owner?.userKey && state.selection.entryId === previous?.selection.entryId;
     const context = holdingScene ? this.#sceneContext : scene ? sceneContext(state) : null;
     const cameraContextChanged = !holdingScene && context !== this.#sceneContext;
+    if (cameraContextChanged || (previous && topView(previous) !== view)) this.#labelOffsets.clear();
     const liveKey = liveCameraKey(state);
     const liveCameraChanged = liveKey !== null && liveKey !== liveCameraKey(previous);
     this.#admittedScene = scene;
@@ -529,24 +532,30 @@ export class RendererController {
         && pendingSuccessorBlocks !== null
         && this.#advanceGpuUpload(scene, sceneContextKey, state, pendingSuccessorBlocks));
       const uploadChanged = Boolean(currentUpload && !uploadMatches);
-      if (!advanced && (frontNeedsMaterialization || uploadChanged || targetChanged
+      // Finish a same-context back upload before starting the latest
+      // replacement; a busy stream must not repeatedly reset its frontier.
+      if (!(advanced || currentUpload?.staging && uploadMatches) && (frontNeedsMaterialization || uploadChanged || targetChanged
         || scene !== this.#scene || sceneContextKey !== this.#sceneContext)) {
         const sameSceneContext = this.#scene !== null && this.#sceneContext === sceneContextKey;
-        const compatible = sameSceneContext && this.#scene && samePointLayout(this.#scene, scene);
+        const compatible = sameSceneContext && samePointLayout(this.#scene!, scene);
         const publishedFrontComplete = Boolean(this.#scene && this.#initializedPoints >= this.#scene.total);
         const publishedSuccessorBlocks = !currentUpload && compatible && publishedFrontComplete
           ? validDeltaBlocks(scene, this.#scene?.revision ?? -1)
           : null;
         this.#cancelGpuUpload(false);
         if (this.#mode === "webgl2") {
-          if (compatible) {
+          // A live map can grow or change its point counts without changing
+          // floor/session. Keep its complete published frame while the new
+          // layout uploads, just as for a compatible pixel update. A different
+          // scene context still replaces the front immediately.
+          if (compatible || (sameSceneContext && publishedFrontComplete)) {
             if (publishedSuccessorBlocks !== null) {
               this.#startGpuUpload(
-                scene, sceneContextKey, state, true, this.#scene, true,
+                scene, sceneContextKey, state, true, this.#scene,
                 "copy", publishedSuccessorBlocks,
               );
             } else {
-              this.#startGpuUpload(scene, sceneContextKey, state, true, this.#scene, true);
+              this.#startGpuUpload(scene, sceneContextKey, state, true, this.#scene);
             }
           } else {
             this.#cancelGpuUpload(true);
@@ -559,7 +568,7 @@ export class RendererController {
               sameSceneContext,
               previous ? topView(previous) : null,
             );
-            this.#startGpuUpload(scene, sceneContextKey, state, false, previousScene, false);
+            this.#startGpuUpload(scene, sceneContextKey, state, false, previousScene);
           }
         } else {
           this.#scene = scene;
@@ -597,7 +606,7 @@ export class RendererController {
       // Leaving a forced top view reads preferences again below. Carry the
       // restored camera into that read instead of the review's framed state.
       rebasedPreferences = { ...rebasedPreferences, top: this.#preferenceOf(camera, fit) };
-      if (topView(state) === "top") {
+      if (view === "top") {
         this.#camera = camera;
         this.#fitActive = fit;
         this.#notifyCamera();
@@ -606,7 +615,6 @@ export class RendererController {
         this.#callbacks.onCameraPreferences?.({ top: this.#preferenceOf(camera, fit) });
       }
     }
-    const view = topView(state);
     // Entering or leaving a workflow that looks straight down re-reads the
     // view's preference, as a view change does.
     const enteredTop = !forcesTop(previous) && forcesTop(state);
@@ -901,7 +909,6 @@ export class RendererController {
     state: WorkspaceState,
     staging: boolean,
     previousScene: SceneModel | null,
-    preserveCamera: boolean,
     seed: "scene" | "copy" = "scene",
     dirtyBlocks: readonly number[] = [],
   ): void {
@@ -941,7 +948,6 @@ export class RendererController {
       staging,
       seed,
       previousScene,
-      preserveCamera,
       frontierBytes: 0,
       dirtyBlocks: new Set(dirtyBlocks),
       transitionBlocks: new Set(dirtyBlocks),
@@ -1097,8 +1103,8 @@ export class RendererController {
       const frontierLimit = pendingFrontier && upload.dirtyBlocks.size > 0
         ? GPU_UPLOAD_FAIR_SHARE_BYTES
         : GPU_UPLOAD_CHUNK_BYTES;
-      const frontierBytes = this.#uploadFrontier(upload, Math.min(frontierLimit, remainingBudget));
-      if (frontierBytes < 0) throw new Error("gpu-frontier-upload-failed");
+      const frontierBytes = this.#uploadFrontier(upload, frontierLimit);
+      if (frontierBytes < 0) return this.#transitionToFallback();
       remainingBudget -= frontierBytes;
 
       const canPatch = [...upload.dirtyBlocks].some((block) =>
@@ -1107,15 +1113,16 @@ export class RendererController {
         ? Math.min(GPU_UPLOAD_FAIR_SHARE_BYTES, remainingBudget)
         : canPatch ? remainingBudget : 0;
       const patchBytes = this.#uploadDirtyBlocks(upload, patchLimit);
-      if (patchBytes < 0) throw new Error("gpu-dirty-upload-failed");
+      if (patchBytes < 0) return this.#transitionToFallback();
       remainingBudget -= patchBytes;
 
       const hasEligiblePatch = [...upload.dirtyBlocks].some((block) =>
         Math.min(byteLength, (block + 1) * GPU_DELTA_BLOCK_BYTES) <= upload.frontierBytes);
       if (pendingFrontier && remainingBudget > 0 && !hasEligiblePatch) {
-        if (this.#uploadFrontier(upload, remainingBudget) < 0) throw new Error("gpu-frontier-upload-failed");
+        if (this.#uploadFrontier(upload, remainingBudget) < 0) return this.#transitionToFallback();
       }
     } catch {
+      // Both upload failures and thrown WebGL calls select the same fallback.
       this.#transitionToFallback();
       return;
     }
@@ -1143,7 +1150,9 @@ export class RendererController {
       this.#renderedPoints = upload.scene.total;
       const rebased = this.#installScene(
         upload.scene,
-        upload.preserveCamera,
+        // Input remains live on the published front during staging. Honor
+        // the user's latest pan/zoom or Fit, rather than the upload's start.
+        !this.#fitActive,
         upload.previousScene,
         true,
         currentView,
@@ -1152,6 +1161,7 @@ export class RendererController {
         this.#applyPreferredCamera(currentView, currentState, rebased);
         this.#notifyCamera();
       }
+      if (this.#admittedScene !== upload.scene && this.#state) this.setState(this.#state);
     } else {
       this.#upload = null;
       this.#scene = upload.scene;
@@ -1165,11 +1175,10 @@ export class RendererController {
     const state = this.#state;
     if (!state) return false;
     return !this.#disposed && state.pageActive
-      && upload.scene === this.#admittedScene
+      && (upload.scene === this.#admittedScene || upload.staging)
       && upload.revision === upload.scene.revision
       && upload.context === this.#admittedContext
       && upload.generation === state.generation
-      && state.resources.scene.value === upload.scene
       && upload.contextGeneration === this.#contextGeneration
       && (upload.staging ? this.#stagingBuffer === upload.buffer : this.#buffer === upload.buffer);
   }
@@ -1445,6 +1454,7 @@ export class RendererController {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, bounds.width, bounds.height);
     if (!scene || !state) return;
+    const labelOffsets = new Map<string, readonly [x: number, y: number]>();
     const palette = this.#palette;
     const colours = roomColours(state);
     if (this.#mode === "canvas2d" && this.#fallbackCanvas
@@ -1523,18 +1533,36 @@ export class RendererController {
         const width = badgeSpace + context.measureText(room.name).width + 12;
         if (width > bounds.width || bounds.height < 20) continue;
         let placement: readonly [number, number] | undefined;
+        const fits = (x: number, y: number) => !occupied.some(([left, top, otherWidth]) => x < left + otherWidth + 8
+          && x + width + 8 > left && y < top + 24 && y + 24 > top);
+        let previous = this.#labelOffsets.get(room.id);
+        if (previous) {
+          const x = clamp(center.x + previous[0] - width / 2, 0, bounds.width - width);
+          const y = clamp(center.y + previous[1] - 10, 0, bounds.height - 20);
+          if (fits(x, y)) placement = [x, y];
+          else previous = undefined;
+        }
         let nearest = Infinity;
-        for (let row = -4; row <= 4; row++) for (let column = -2; column <= 2; column++) {
+        if (!placement) for (let row = -4; row <= 4; row++) for (let column = -2; column <= 2; column++) {
           const x = clamp(center.x - width / 2 + column * (width + 8), 0, bounds.width - width);
           const y = clamp((Math.round((center.y - 10) / 24) + row) * 24, 0, Math.floor((bounds.height - 20) / 24) * 24);
           const distance = Math.hypot(x + width / 2 - center.x, y + 10 - center.y);
-          if (distance >= nearest || occupied.some(([left, top, otherWidth]) => x < left + otherWidth + 8
-            && x + width + 8 > left && y < top + 24 && y + 24 > top)) continue;
+          if (distance >= nearest || !fits(x, y)) continue;
           placement = [x, y];
           nearest = distance;
         }
-        if (!placement) continue;
+        if (!placement) {
+          // Retained offsets can fragment a shallow viewport. Repack once
+          // before hiding a label that the original grid can still fit.
+          if (this.#labelOffsets.size) {
+            this.#labelOffsets.clear();
+            this.#renderOverlay();
+            return;
+          }
+          continue;
+        }
         const [left, top] = placement;
+        labelOffsets.set(room.id, previous ?? [left + width / 2 - center.x, top + 10 - center.y]);
         occupied.push([left, top, width]);
         const edgeX = clamp(center.x, left, left + width);
         const edgeY = clamp(center.y, top, top + 20);
@@ -1566,6 +1594,7 @@ export class RendererController {
       }
       for (const paint of labels) paint();
     }
+    this.#labelOffsets = labelOffsets;
     const preview = this.#circlePreview;
     const circles = preview && hasCoordinateEditAdmission(state, preview.capture)
       ? preview.circles
@@ -1879,7 +1908,7 @@ export class RendererController {
           topView(state),
         );
       }
-      this.#startGpuUpload(scene, context, state, false, previousScene, sameContext && !this.#fitActive);
+      this.#startGpuUpload(scene, context, state, false, previousScene);
       if (rebased) {
         const view = topView(state);
         this.#applyPreferredCamera(view, state, rebased);
@@ -1923,6 +1952,7 @@ export class RendererController {
     this.#circlePreview = null;
     this.#scene = null;
     this.#state = null;
+    this.#labelOffsets.clear();
     this.#admittedScene = null;
     this.#admittedContext = null;
   }

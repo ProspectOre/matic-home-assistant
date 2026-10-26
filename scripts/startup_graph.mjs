@@ -8,8 +8,9 @@ import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
 // 0.5 RC37 added 256 bytes so every room label can move aside instead of
-// disappearing; the 0.5 candidate had 4 bytes of headroom left.
-export const STARTUP_BUDGET_BYTES = 90 * 1024 + 256;
+// disappearing. The owner approved another 128 bytes for continuous label
+// placement during map gestures, preserving the existing collision checks.
+export const STARTUP_BUDGET_BYTES = 90 * 1024 + 384;
 
 const COMPONENT = fileURLToPath(new URL("../custom_components/matic_robot/", import.meta.url));
 const STATIC_IMPORT = /(?:^|[;}\n])\s*(?:import|export)\s*(?:[\w$\s,{}*]*?from\s*)?"(\.[^"]+)"/gu;

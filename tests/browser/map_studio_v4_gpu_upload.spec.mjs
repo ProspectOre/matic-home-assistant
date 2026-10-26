@@ -537,6 +537,171 @@ test("@safety a successor to an incomplete initial upload starts a full back buf
   expect(outcome.allocations.filter((allocation) => allocation.bytes > 512 * 1024)).toHaveLength(2);
 });
 
+for (const interaction of ["existing camera", "pan during upload", "Fit during upload"]) {
+  test(`@safety a changed-layout live scene keeps the complete published map until replacement upload finishes (${interaction})`, async ({ page }) => {
+    await loadRenderer(page);
+    const outcome = await page.evaluate(async (interaction) => {
+      const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
+      const base = createGalleryState("ready");
+      const source = base.resources.scene.value;
+      const makeScene = (revision, total, span) => {
+        const buffer = new ArrayBuffer(source.pointOffset + total * 8);
+        new Uint8Array(buffer, source.pointOffset).fill(revision);
+        return { ...source, buffer, total, floorCount: total - 200_000,
+          surfaceCount: 200_000, revision, metadata: { ...source.metadata, span } };
+      };
+      const stateFor = (scene) => ({ ...base,
+        resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null } } });
+      const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
+      canvases.forEach((canvas) => {
+        Object.assign(canvas.style, { width: "700px", height: "500px" });
+        document.body.append(canvas);
+      });
+      const renderer = new RendererController(...canvases);
+      const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+      const initial = makeScene(80, 1_000_000, [90, 80]);
+      const successor = makeScene(81, 1_100_000, [100, 90]);
+      const waitFor = async (predicate) => {
+        for (let attempt = 0; attempt < 240; attempt += 1) {
+          if (predicate()) return true;
+          await nextFrame();
+        }
+        return predicate();
+      };
+      try {
+        renderer.setState(stateFor(initial));
+        const initialComplete = await waitFor(() => renderer.diagnostics().renderedPoints === initial.total);
+        await nextFrame();
+        await nextFrame();
+        if (interaction !== "pan during upload") {
+          renderer.zoomAt(2);
+          renderer.panBy(24, -16);
+        }
+        renderer.setState(stateFor(successor));
+        if (interaction === "pan during upload") {
+          renderer.zoomAt(2);
+          renderer.panBy(24, -16);
+        } else if (interaction === "Fit during upload") renderer.fit();
+        const before = renderer.camera;
+        const immediate = renderer.diagnostics();
+        const intermediate = [];
+        const context = contexts.at(-1);
+        for (let attempt = 0; attempt < 240; attempt += 1) {
+          const diagnostics = renderer.diagnostics();
+          if (diagnostics.sceneRevision === successor.revision && diagnostics.renderedPoints === successor.total) break;
+          intermediate.push({ revision: diagnostics.sceneRevision,
+            rendered: diagnostics.renderedPoints,
+            camera: renderer.camera });
+          await nextFrame();
+        }
+        const final = renderer.diagnostics();
+        const front = [...context.vertexArrayBuffers.values()][0];
+        const actual = context.buffers.get(front?.id);
+        const expected = new Uint8Array(successor.buffer, successor.pointOffset, successor.total * 8);
+        return { initialComplete, immediate, before, intermediate, final, finalCamera: renderer.camera,
+          centerShift: 5 * source.metadata.metersPerCell,
+          exact: Boolean(actual && actual.length === expected.length && actual.every((value, index) => value === expected[index])),
+          validDraws: context.calls.filter((call) => call.type === "draw").every((call) => call.valid),
+          copies: context.calls.filter((call) => call.type === "copy").length,
+          buffers: context.liveBufferCount };
+      } finally {
+        renderer.dispose();
+        canvases.forEach((canvas) => canvas.remove());
+      }
+    }, interaction);
+    expect(outcome.initialComplete).toBe(true);
+    expect(outcome.immediate.sceneRevision).toBe(80);
+    expect(outcome.immediate.renderedPoints).toBe(1_000_000);
+    expect(outcome.intermediate.length).toBeGreaterThan(1);
+    for (const frame of outcome.intermediate) {
+      expect(frame.revision).toBe(80);
+      expect(frame.rendered).toBe(1_000_000);
+      expect(frame.camera).toEqual(outcome.before);
+    }
+    expect(outcome.final.sceneRevision).toBe(81);
+    expect(outcome.final.renderedPoints).toBe(1_100_000);
+    if (interaction === "Fit during upload") {
+      expect(outcome.final.fitActive).toBe(true);
+      expect(outcome.finalCamera.distance).toBeCloseTo(outcome.final.fitDistance, 5);
+      expect(outcome.finalCamera.targetX).toBe(0);
+      expect(outcome.finalCamera.targetZ).toBe(0);
+    } else {
+      expect(outcome.finalCamera.distance).toBeCloseTo(outcome.before.distance, 5);
+      expect(outcome.finalCamera.targetX).toBeCloseTo(outcome.before.targetX + outcome.centerShift, 5);
+      expect(outcome.finalCamera.targetZ).toBeCloseTo(outcome.before.targetZ - outcome.centerShift, 5);
+    }
+    expect(outcome.exact).toBe(true);
+    expect(outcome.validDraws).toBe(true);
+    expect(outcome.copies).toBe(0);
+    expect(outcome.buffers).toBe(2);
+  });
+}
+
+for (const cadence of [1, 8]) test(`@safety changed-layout updates every ${cadence} frames make publication progress and settle latest`, async ({ page }) => {
+  await loadRenderer(page);
+  const outcome = await page.evaluate(async (cadence) => {
+    const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
+    const base = createGalleryState("ready");
+    const source = base.resources.scene.value;
+    const makeScene = (revision) => {
+      const total = 1_000_000 + (revision - 90) * 1000;
+      const buffer = new ArrayBuffer(source.pointOffset + total * 8);
+      new Uint8Array(buffer, source.pointOffset).fill(revision);
+      return { ...source, buffer, revision, total, floorCount: total - 200_000,
+        surfaceCount: 200_000 };
+    };
+    const stateFor = (scene) => ({ ...base,
+      resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null } } });
+    const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
+    canvases.forEach((canvas) => document.body.append(canvas));
+    const renderer = new RendererController(...canvases);
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(resolve));
+    const waitFor = async (predicate) => {
+      for (let attempt = 0; attempt < 240; attempt += 1) {
+        if (predicate()) return true;
+        await nextFrame();
+      }
+      return predicate();
+    };
+    try {
+      const initial = makeScene(90);
+      renderer.setState(stateFor(initial));
+      const initialComplete = await waitFor(() => renderer.diagnostics().renderedPoints === initial.total);
+      const frames = [];
+      let latest = initial;
+      for (let revision = 91; revision <= 100; revision += 1) {
+        latest = makeScene(revision);
+        renderer.setState(stateFor(latest));
+        for (let tick = 0; tick < cadence; tick += 1) await nextFrame();
+        frames.push(renderer.diagnostics());
+      }
+      const latestComplete = await waitFor(() => renderer.diagnostics().sceneRevision === latest.revision
+        && renderer.diagnostics().renderedPoints === latest.total);
+      const context = contexts.at(-1);
+      const front = [...context.vertexArrayBuffers.values()][0];
+      const actual = context.buffers.get(front?.id);
+      const expected = new Uint8Array(latest.buffer, latest.pointOffset, latest.total * 8);
+      return { initialComplete, latestComplete, frames, buffers: context.liveBufferCount,
+        exact: Boolean(actual && actual.length === expected.length && actual.every((value, index) => value === expected[index])),
+        validDraws: context.calls.filter((call) => call.type === "draw").every((call) => call.valid) };
+    } finally {
+      renderer.dispose();
+      canvases.forEach((canvas) => canvas.remove());
+    }
+  }, cadence);
+  expect(outcome.initialComplete).toBe(true);
+  for (const frame of outcome.frames) {
+    expect(frame.sceneRevision).toBeGreaterThanOrEqual(90);
+    expect(frame.renderedPoints).toBe(1_000_000 + (frame.sceneRevision - 90) * 1000);
+  }
+  if (cadence === 1) expect(outcome.frames.every((frame) => frame.sceneRevision === 90)).toBe(true);
+  else expect(new Set(outcome.frames.map((frame) => frame.sceneRevision)).size).toBeGreaterThan(2);
+  expect(outcome.latestComplete).toBe(true);
+  expect(outcome.exact).toBe(true);
+  expect(outcome.validDraws).toBe(true);
+  expect(outcome.buffers).toBe(2);
+});
+
 test("@safety a staged scene persists camera preferences for the active view at publication", async ({ page }) => {
   await loadRenderer(page);
   const outcome = await page.evaluate(async () => {
@@ -1253,7 +1418,7 @@ test("@safety WebGL allocation and subdata errors fall back to the latest admitt
   expect(outcome.subdataCallsAfterFallback).toBe(outcome.subdataCallsAtFallback);
 });
 
-test("@safety point-layout changes revoke the old front and use a bounded full upload", async ({ page }) => {
+test("@safety point-layout changes retain the old front while a bounded full upload stages", async ({ page }) => {
   await loadRenderer(page);
   const outcome = await page.evaluate(async () => {
     const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
@@ -1309,9 +1474,8 @@ test("@safety point-layout changes revoke the old front and use a bounded full u
 
   expect(outcome.initialComplete).toBe(true);
   expect(outcome.firstReplacementWrite).toBe(true);
-  expect(outcome.replacementRevision).toBe(61);
-  expect(outcome.replacementPoints).toBeGreaterThan(0);
-  expect(outcome.replacementPoints).toBeLessThan(120_000);
+  expect(outcome.replacementRevision).toBe(60);
+  expect(outcome.replacementPoints).toBe(100_000);
   expect(outcome.complete).toBe(true);
   expect(outcome.copies).toBe(0);
   expect(outcome.liveBuffers).toBeLessThanOrEqual(2);
