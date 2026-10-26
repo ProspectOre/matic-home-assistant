@@ -637,9 +637,9 @@ for (const interaction of ["existing camera", "pan during upload", "Fit during u
   });
 }
 
-test("@safety changed-layout bursts retain the old front and eventually publish the latest complete scene", async ({ page }) => {
+for (const cadence of [1, 8]) test(`@safety changed-layout updates every ${cadence} frames make publication progress and settle latest`, async ({ page }) => {
   await loadRenderer(page);
-  const outcome = await page.evaluate(async () => {
+  const outcome = await page.evaluate(async (cadence) => {
     const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
     const base = createGalleryState("ready");
     const source = base.resources.scene.value;
@@ -672,7 +672,7 @@ test("@safety changed-layout bursts retain the old front and eventually publish 
       for (let revision = 91; revision <= 100; revision += 1) {
         latest = makeScene(revision);
         renderer.setState(stateFor(latest));
-        await nextFrame();
+        for (let tick = 0; tick < cadence; tick += 1) await nextFrame();
         frames.push(renderer.diagnostics());
       }
       const latestComplete = await waitFor(() => renderer.diagnostics().sceneRevision === latest.revision
@@ -688,12 +688,14 @@ test("@safety changed-layout bursts retain the old front and eventually publish 
       renderer.dispose();
       canvases.forEach((canvas) => canvas.remove());
     }
-  });
+  }, cadence);
   expect(outcome.initialComplete).toBe(true);
   for (const frame of outcome.frames) {
-    expect(frame.sceneRevision).toBe(90);
-    expect(frame.renderedPoints).toBe(1_000_000);
+    expect(frame.sceneRevision).toBeGreaterThanOrEqual(90);
+    expect(frame.renderedPoints).toBe(1_000_000 + (frame.sceneRevision - 90) * 1000);
   }
+  if (cadence === 1) expect(outcome.frames.every((frame) => frame.sceneRevision === 90)).toBe(true);
+  else expect(new Set(outcome.frames.map((frame) => frame.sceneRevision)).size).toBeGreaterThan(2);
   expect(outcome.latestComplete).toBe(true);
   expect(outcome.exact).toBe(true);
   expect(outcome.validDraws).toBe(true);

@@ -91,7 +91,7 @@ for (const [width, height, count, expected, mobile] of [
           });
           await frame();
           captures.push({ appearance, labels: structuredClone(labels), leaders: structuredClone(leaders), anchors: structuredClone(anchors), png: overlay.toDataURL() });
-          if (width === 900) for (let step = 0; step < 20; step += 1) {
+          for (let step = 0; step < (width === 900 ? 20 : 60); step += 1) {
             renderer.panBy(0, 1);
             await frame();
             captures.push({ appearance: `${appearance}-pan-${step}`, labels: structuredClone(labels),
@@ -113,7 +113,7 @@ for (const [width, height, count, expected, mobile] of [
         await writeFile(path, Buffer.from(capture.png.split(",")[1], "base64"));
         await test.info().attach(`${capture.appearance}-${width}x${height}`, { path, contentType: "image/png" });
       }
-      if (capture.appearance.includes("-pan-")) for (const label of capture.labels) {
+      if (width === 900 && capture.appearance.includes("-pan-")) for (const label of capture.labels) {
         const last = previous.labels.find((item) => item.text === label.text);
         expect(last).toBeTruthy();
         expect(Math.hypot(label.x - last.x, label.y - last.y), `${label.text} follows a small pan`).toBeLessThan(3);
