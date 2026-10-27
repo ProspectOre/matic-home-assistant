@@ -1,7 +1,7 @@
 import type { DateFormat, Localize, NoticePlaceholders } from "./contracts";
 
 const PREFIX = "component.matic_robot.common.";
-const HA_ERROR = /^Translation error/iu;
+const HA_ERROR = /^Translation (?:error|\[[^\]]*error\b)/iu;
 
 /** A date placeholder is formatted here, with the rendering view's `dates`. */
 export const translate = (

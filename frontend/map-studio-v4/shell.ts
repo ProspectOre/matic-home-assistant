@@ -104,7 +104,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
     const area = roomKey(state.currentArea);
     return state.activity === "cleaning" && state.coherence === "current" && timing && area
       && (area === roomKey(timing.room) || area === roomKey(timing.roomId))
-      ? t("v4_room_estimated_progress", "Estimated room progress: {percent}% (based on time)", { percent: timing.percent }) : undefined;
+      ? t("v4_room_estimated_time_progress", "Estimated room progress: {percent}% (based on time)", { percent: timing.percent }) : undefined;
   };
   if (!state.host.connected) return { title: t("v4_reconnecting", "Reconnecting"), detail: t("v4_ha_offline", "Home Assistant is offline"), icon: iconOffline, notable: true };
   if (!state.host.administrator) return { title: t("v4_access_required", "Access required"), detail: t("v4_admin_only", "Administrator only"), icon: iconOffline, notable: true };
@@ -255,17 +255,17 @@ const homeCopy = (kind: HomeKind, state: WorkspaceState, t: (key: string, fallba
   readonly description: string;
 } => {
   if (state.smartStop?.phase === "verifying_completion" && kind === "busy" && state.command !== "settling") {
-    return { title: t("v4_smart_stop_checking_title", "Checking the result"), description: t("v4_smart_stop_checking_reason", "Checking the result before docking.") };
+    return { title: t("v4_smart_stop_checking_title", "Checking the result"), description: t("v4_smart_stop_checking_home", "Before returning to the dock.") };
   }
   if (state.smartStop?.phase === "returning_to_dock" && kind === "busy" && state.command !== "settling") {
-    return { title: t("v4_smart_stop_returning_title", "Returning to the dock"), description: t("v4_smart_stop_returning_home_detail", "Smart Stop is taking the robot home.") };
+    return { title: t("v4_smart_stop_returning_title", "Returning to the dock"), description: "" };
   }
   if (state.smartStop && (kind === "busy" || kind === "paused")
     && (state.activity === "cleaning" || state.activity === "paused")
     && state.command !== "settling" && !state.resources.entry?.stopSettlePending) {
     return state.activity === "paused"
-      ? { title: t("v4_smart_stop_paused_title", "Smart Stop is paused"), description: t("v4_smart_stop_paused_detail", "Resume to finish this clean, or stop now and dock.") }
-      : { title: state.smartStop.kind === "area" ? t("v4_smart_stop_finishing_area", "Finishing this area") : t("v4_smart_stop_finishing_room", "Finishing this room"), description: t("v4_smart_stop_home_detail", "Smart Stop will return to the dock when it's done.") };
+      ? { title: t("v4_paused", "Paused"), description: t("v4_smart_stop_paused_detail", "Resume to finish this clean, or stop now and dock.") }
+      : { title: state.smartStop.kind === "area" ? t("v4_smart_stop_finishing_area", "Finishing this area") : t("v4_smart_stop_finishing_room", "Finishing this room"), description: t("v4_smart_stop_return_after_room", "Returning to the dock when it's done.") };
   }
   switch (kind) {
     case "ready":
@@ -291,6 +291,9 @@ const homeCopy = (kind: HomeKind, state: WorkspaceState, t: (key: string, fallba
     case "robot-unavailable":
       return { title: t("v4_selected_robot_unavailable", "Selected robot unavailable"), description: t("v4_choose_another_robot", "Choose another robot to open its map.") };
     case "read-only":
+      if (state.dataMode === "live" && state.smartStop) {
+        return { title: t("v4_live_map_read_only_title", "Map is read only"), description: "" };
+      }
       return {
         title: t("v4_saved_map_read_only_title", "Saved map is read only"),
         description: state.dataMode === "live"
@@ -1799,11 +1802,27 @@ export class MaticMapShellV4 extends LitElement {
 
   #panel(state: WorkspaceState, narrow: boolean) {
     const { description } = workflowCopy(state, this.localize);
-    // Home's demoted cards are described by this one line (home-rooms.md §4).
+    // Home's demoted cards need a reason even when its visible copy is concise.
+    const heldReason = state.workflow === "none" && !description && state.smartStop
+      ? homeState(state) === "read-only"
+        ? this.#t("v4_live_read_only_held_reason", "Cleaning is unavailable while the map is read only.")
+        : homeState(state) === "busy" && state.smartStop.phase === "returning_to_dock"
+          ? this.#t("v4_returning_held_reason", "Wait until the robot returns to the dock before starting another clean.")
+          : ""
+      : "";
     return html`
       ${description ? html`<p class="panel-description" id=${state.workflow === "none" ? "home-reason" : nothing}>${description}</p>` : nothing}
+      ${heldReason ? html`<span class="sr-only" id="home-reason">${heldReason}</span>` : nothing}
       ${this.#workflowBody(state, narrow)}
     `;
+  }
+
+  #homeSmartStopSummary(state: WorkspaceState): boolean {
+    const kind = homeState(state);
+    return state.workflow === "none" && state.smartStop !== null
+      && (kind === "busy" || kind === "paused")
+      && state.command !== "settling" && state.activity !== "stopping"
+      && !state.resources.entry?.stopSettlePending;
   }
 
   #sheetStatus(state: WorkspaceState, status: StatusPresentation): string {
@@ -1811,7 +1830,14 @@ export class MaticMapShellV4 extends LitElement {
     const line = (state.workflow === "rooms" ? this.#views.value?.roomsGripLine(this.#t, state) : null) ?? workflow.title;
     // With the body open the h2 already names the workflow, so the grip line
     // carries the robot instead of repeating the title directly above it.
-    if (this._sheetDetent !== "peek") return status.detail ? `${status.title} · ${status.detail}` : status.title;
+    if (this._sheetDetent !== "peek" && this.#homeSmartStopSummary(state)) {
+      const target = state.activity !== "paused" && (state.smartStop?.phase === "finishing_room" || state.smartStop?.phase === "finishing_area")
+        ? state.smartStop.target : null;
+      return target ? `${status.title} · ${target}` : status.title;
+    }
+    if (this._sheetDetent !== "peek" || state.activity === "cleaning" || state.smartStop) {
+      return status.detail ? `${status.title} · ${status.detail}` : status.title;
+    }
     return status.notable ? `${status.title} · ${line}` : line;
   }
 
@@ -1825,6 +1851,11 @@ export class MaticMapShellV4 extends LitElement {
     const compact = narrow && this._compact;
     const options = this.#options.value;
     const status = statusCopy(state, this.localize, this.dates);
+    const shortSmartStop = this.#homeSmartStopSummary(state);
+    const statusDetail = shortSmartStop
+      ? state.activity !== "paused" && (state.smartStop?.phase === "finishing_room" || state.smartStop?.phase === "finishing_area")
+        ? state.smartStop.target : null
+      : status.detail;
     const roomEstimate = status.estimate ? html`<small class="room-estimate">${status.estimate}</small>` : nothing;
     const selectedRobotUnavailable = isSelectedRobotUnavailable(state);
     const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
@@ -2029,7 +2060,7 @@ export class MaticMapShellV4 extends LitElement {
               ` : html`
                 <div class="status-strip">
                   <span class="status-icon" aria-hidden="true">${icon(status.icon)}</span>
-                  <span class="status-copy"><strong>${status.title}</strong>${status.detail ? html`<small>${status.detail}</small>` : nothing}${roomEstimate}</span>
+                  <span class="status-copy"><strong>${status.title}</strong>${statusDetail ? html`<small>${statusDetail}</small>` : nothing}${roomEstimate}</span>
                   ${statusAction
                     ? this.#actionButton(statusAction, "status-action ms-btn ms-btn--secondary", "status-reason")
                     : nothing}
