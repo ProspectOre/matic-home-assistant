@@ -4,9 +4,9 @@ import { writeFile } from "node:fs/promises";
 
 for (const [width, height, count, expected, mobile] of [
   [900, 700, 12, 12, false],
-  [390, 126, 12, 12, false],
+  [390, 126, 12, null, false],
   [180, 44, 12, null, false],
-  [390, 126, 12, 12, true],
+  [390, 126, 12, null, true],
 ]) {
   test(`room labels stay readable at ${width}x${height}${mobile ? " @mobile" : ""}`, async ({ page }) => {
     const bundle = await build({
@@ -40,6 +40,7 @@ for (const [width, height, count, expected, mobile] of [
       }
       const overlay = canvases[1];
       const captures = [];
+      let expandedNames = null;
       let plates = [], labels = [], leaders = [], path = [], anchors = [];
       const proto = CanvasRenderingContext2D.prototype;
       const original = Object.fromEntries(["clearRect", "fillRect", "fillText", "beginPath", "moveTo", "lineTo", "stroke", "fill"].map((name) => [name, proto[name]]));
@@ -98,30 +99,39 @@ for (const [width, height, count, expected, mobile] of [
               leaders: structuredClone(leaders), anchors: structuredClone(anchors) });
           }
         }
+        if (width === 390 && height === 126) {
+          for (const canvas of canvases) Object.assign(canvas.style, { width: "900px", height: "700px" });
+          await frame();
+          renderer.fit();
+          await frame();
+          expandedNames = labels.map((label) => label.text);
+        }
       } finally {
         renderer.dispose();
         Object.assign(proto, original);
         canvases.forEach((canvas) => canvas.remove());
       }
-      return captures;
+      return { captures, expandedNames };
     }, { width, height, count });
 
     let previous = null;
-    for (const capture of result) {
+    if (result.expandedNames) expect(result.expandedNames).toHaveLength(count);
+    for (const capture of result.captures) {
       if (capture.png) {
         const path = test.info().outputPath(`${capture.appearance}-${width}x${height}.png`);
         await writeFile(path, Buffer.from(capture.png.split(",")[1], "base64"));
         await test.info().attach(`${capture.appearance}-${width}x${height}`, { path, contentType: "image/png" });
       }
-      if (width === 900 && capture.appearance.includes("-pan-")) for (const label of capture.labels) {
+      if ((width === 900 || width === 390) && capture.appearance.includes("-pan-")) for (const label of capture.labels) {
+        if (width === 390 && !["Room 10", "Room 11"].includes(label.text)) continue;
         const last = previous.labels.find((item) => item.text === label.text);
         expect(last).toBeTruthy();
-        expect(Math.hypot(label.x - last.x, label.y - last.y), `${label.text} follows a small pan`).toBeLessThan(3);
+        expect(Math.hypot(label.x - last.x, label.y - last.y), `${label.text} follows a small pan ${capture.appearance}`).toBeLessThan(3);
       }
       previous = capture;
       const names = capture.labels.map((label) => label.text);
       expect(names).toContain("Room 11");
-      expect(names).toContain("Room 10");
+      if (height > 44) expect(names).toContain("Room 10");
       if (expected !== null) expect(names).toHaveLength(expected);
       else expect(names.length).toBeLessThan(count);
       if (expected !== null) expect(capture.leaders.length).toBeGreaterThan(0);
@@ -136,6 +146,10 @@ for (const [width, height, count, expected, mobile] of [
         expect(a.x + a.width).toBeLessThanOrEqual(width);
         expect(a.y + a.height).toBeLessThanOrEqual(height);
         const anchor = capture.anchors[Number(label.text.slice(5))];
+        if (height < 160) {
+          const limit = (["Room 10", "Room 11"].includes(label.text) ? 56 : 32) + (capture.appearance.includes("-pan-") ? 24 : 0);
+          expect(Math.hypot(a.x + a.width / 2 - anchor.x, a.y + a.height / 2 - anchor.y), `${label.text} stays near its room in a shallow map`).toBeLessThanOrEqual(limit + .1);
+        }
         const edge = {
           x: Math.max(a.x, Math.min(a.x + a.width, anchor.x)),
           y: Math.max(a.y, Math.min(a.y + a.height, anchor.y)),
