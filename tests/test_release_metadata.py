@@ -675,7 +675,7 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             for key, value in translations["entity"]["button"].items()
         } == {
             "run_selected_plan": "Run plan",
-            "intelligent_clean": "Run intelligent rotation",
+            "intelligent_clean": "Run Smart Order",
             "clean_entire_plan": "Run saved order",
             "stop_intelligent_cleaning": "Stop cleaning",
             "clean_selected_area": "Clean custom area",
@@ -730,7 +730,7 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             )
         } == {
             "run_selected_plan": "Run plan",
-            "intelligent_clean": "Run intelligent rotation",
+            "intelligent_clean": "Run Smart Order",
             "clean_entire_plan": "Run saved order",
             "stop_intelligent_cleaning": "Stop cleaning",
             "reset_plan_history": "Reset room cleaning history",

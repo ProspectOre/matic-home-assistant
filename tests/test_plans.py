@@ -10403,6 +10403,14 @@ async def test_smart_stop_pending_is_public_only_for_owned_run(hass) -> None:
     active = manager.snapshot("serial")["active_plan"]
     assert active["smart_stop_pending"] is True
     assert active["smart_stop_phase"] == "finishing_room"
+    robot["active_plan"]["status"] = "verifying"
+    active = manager.snapshot("serial")["active_plan"]
+    assert active["smart_stop_pending"] is True
+    assert active["smart_stop_phase"] == "verifying_completion"
+    assert manager.request_stop("serial", stop_now=True).behavior == "after_room"
+    assert manager.finish_room_event("serial").is_set()
+    assert not manager.cancellation_event("serial").is_set()
+    robot["active_plan"]["status"] = "running"
     manager.finish_room_event("serial").clear()
     assert manager.request_stop("serial", stop_now=True).behavior == "after_room"
     assert not manager.cancellation_event("serial").is_set()

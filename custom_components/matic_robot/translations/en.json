@@ -646,7 +646,9 @@
     "v4_map_zoom_current": "Current zoom",
     "v4_smart_stop_returning_detail": "Smart Stop is returning to the dock.",
     "v4_smart_stop_returning_title": "Returning to the dock",
-    "v4_smart_stop_returning_home_detail": "Smart Stop is taking the robot home."
+    "v4_smart_stop_returning_home_detail": "Smart Stop is taking the robot home.",
+    "v4_smart_stop_checking_reason": "Checking the result before docking.",
+    "v4_smart_stop_checking_title": "Checking the result"
   },
   "config": {
     "flow_title": "{name}",
@@ -1772,12 +1774,12 @@
           "description": "Send the robot to its dock after all selected rooms finish."
         },
         "finish_current_room": {
-          "name": "Finish the current room when stopping",
-          "description": "Allow the active room to finish when its estimated progress meets the threshold. The next room never starts."
+          "name": "Smart Stop",
+          "description": "When you press Stop, finish the current room once it has reached the chosen share of its estimated time. The next room will not start."
         },
         "finish_current_room_threshold": {
-          "name": "Minimum room progress",
-          "description": "When you stop the plan: below this estimated progress, the robot stops now; at or above it, the robot finishes the room first. The estimate learns from earlier successful runs with the same room settings."
+          "name": "Smart Stop threshold",
+          "description": "The share of estimated room time required to finish the room after you press Stop. The estimate uses earlier successful runs with the same room settings."
         },
         "select": {
           "name": "Use as default plan",

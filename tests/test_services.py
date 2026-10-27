@@ -3503,10 +3503,22 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
         },
     )
     try:
+        await manager.async_mark_verifying(
+            "serial", "upstairs", room, verification_deadline=dt_util.utcnow()
+        )
+        verifying = manager.snapshot("serial")["active_plan"]
+        assert verifying["smart_stop_phase"] == "verifying_completion"
         with patch(
             "custom_components.matic_robot.services._saved_plan_context",
             return_value=context,
         ):
+            with pytest.raises(ServiceValidationError) as raised:
+                await _registered_handler(services, "stop_intelligent_cleaning")(stop)
+            assert raised.value.translation_key == "smart_stop_not_pending"
+            assert manager.finish_room_event("serial").is_set()
+            assert not manager.cancellation_event("serial").is_set()
+            services.async_call.assert_not_awaited()
+            manager._robot("serial")["active_plan"]["status"] = "running"
             await _registered_handler(services, "stop_intelligent_cleaning")(stop)
     finally:
         lock.release()

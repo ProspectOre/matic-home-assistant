@@ -577,7 +577,7 @@ export interface SmartStopStatus {
   readonly runId: string;
   readonly target: string | null;
   readonly kind: "room" | "area";
-  readonly phase: "finishing_room" | "finishing_area" | "returning_to_dock";
+  readonly phase: "finishing_room" | "finishing_area" | "verifying_completion" | "returning_to_dock";
 }
 
 export interface ManagedRunSummary {

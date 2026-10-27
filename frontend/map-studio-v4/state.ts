@@ -1151,6 +1151,7 @@ const noButton = (id: string): NoButtonAction => ({ id, enabled: false });
 
 export const hasStoppableWork = (state: WorkspaceState): boolean =>
   state.command === "starting"
+  || state.smartStop !== null
   || state.activity === "cleaning" || state.activity === "paused"
   || state.activity === "returning" || state.activity === "recharging"
   || (state.resources.entry?.entryId === state.selection.entryId
@@ -1167,15 +1168,21 @@ export const canStopMotion = (state: WorkspaceState): boolean =>
   && hasStoppableWork(state);
 
 const stopAction = (state: WorkspaceState): PrimaryAction => {
-  const enabled = canStopMotion(state);
-  const immediate = state.smartStop && state.smartStop.phase !== "returning_to_dock";
+  const immediate = state.smartStop !== null;
+  const checking = state.smartStop?.phase === "verifying_completion";
+  const returning = state.smartStop?.phase === "returning_to_dock";
+  const enabled = canStopMotion(state) && !checking && !returning;
   return {
     ...(immediate
       ? { id: "stop-now", label: "Stop now & dock", labelKey: "v4_action_stop_now_dock" }
       : { id: "stop", label: "Stop", labelKey: "v4_action_stop" }),
     kind: "danger",
     enabled,
-    ...(enabled ? {} : { reason: "Waiting for the robot to stop.", reasonKey: "v4_reason_stop" }),
+    ...(enabled ? {} : checking
+      ? { reason: "Checking the result before docking.", reasonKey: "v4_smart_stop_checking_reason" }
+      : returning
+        ? { reason: "Smart Stop is returning to the dock.", reasonKey: "v4_smart_stop_returning_detail" }
+        : { reason: "Waiting for the robot to stop.", reasonKey: "v4_reason_stop" }),
   };
 };
 

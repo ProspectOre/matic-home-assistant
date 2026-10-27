@@ -661,8 +661,8 @@ class MaticGetPlanTool(_MaticTool):
     description = (
         "Returns a read-only preview of the next run of the selected or named "
         "saved plan: room and custom area order, each one's settings, and where "
-        "a settings change or a custom area splits the run into separate "
-        "cleaning passes."
+        "a settings change, Smart Stop room boundary, or custom area splits "
+        "the run into separate cleaning passes."
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(
@@ -710,16 +710,23 @@ class MaticGetPlanTool(_MaticTool):
             # A missing area or one drawn on another map lands here too.
             raise _error("llm_plan_unavailable", error=str(err)) from err
         plan_id = preview["plan_id"]
+        single_room_missions = preview.get("finish_current_room") is True
         cadence_by_room = {
             room["room_id"]: room["cadence"] for room in preview["rooms"]
         }
-        # Each custom area keeps its saved place as a pass of its own; the
-        # rooms between two areas group exactly as in a room-only plan.
+        # Each custom area keeps its saved place as a pass of its own. Smart
+        # Stop runs room entries separately so Assist matches execution.
         groups: list[list[CleaningRoom] | dict[str, Any]] = []
         rooms: list[CleaningRoom] = []
         for item in preview["entries"]:
             if item["kind"] == "area":
-                groups.extend(leg_groups(rooms, mixed_settings=True))
+                groups.extend(
+                    leg_groups(
+                        rooms,
+                        mixed_settings=True,
+                        single_room_missions=single_room_missions,
+                    )
+                )
                 rooms = []
                 groups.append(item)
                 continue
@@ -731,7 +738,13 @@ class MaticGetPlanTool(_MaticTool):
                     item["coverage_setting"],
                 )
             )
-        groups.extend(leg_groups(rooms, mixed_settings=True))
+        groups.extend(
+            leg_groups(
+                rooms,
+                mixed_settings=True,
+                single_room_missions=single_room_missions,
+            )
+        )
         rotation = preview["rotation"]
         snapshot = runtime.cleaning_plans.snapshot(serial_number)
         active = snapshot.get("active_plan")

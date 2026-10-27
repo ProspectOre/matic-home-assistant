@@ -2508,7 +2508,7 @@ export class EffectController {
         return;
       case "stop-now": {
         const smartStop = this.#store.value.smartStop;
-        if (smartStop && smartStop.phase !== "returning_to_dock") await this.#motion("matic_robot", "stop_intelligent_cleaning", {
+        if (smartStop && (smartStop.phase === "finishing_room" || smartStop.phase === "finishing_area")) await this.#motion("matic_robot", "stop_intelligent_cleaning", {
           stop_now: true,
           expected_run_id: smartStop.runId,
         });

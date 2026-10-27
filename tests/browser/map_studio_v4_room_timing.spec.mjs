@@ -190,14 +190,17 @@ test("Smart Stop projection is bound to the active run and its phase", async ({ 
     const area = read();
     states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, run_id: "old-run" } } };
     const stale = read();
+    states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, smart_stop_phase: "verifying_completion" } } };
+    const verifying = read();
     states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, smart_stop_phase: "returning_to_dock" } } };
     const returning = read();
     states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, smart_stop_phase: "unrecognized" } } };
     const unknown = read();
-    return { area, stale, returning, unknown };
+    return { area, stale, verifying, returning, unknown };
   }, history);
   expect(result.area).toEqual({ runId: "partial-1", target: "Master Bathroom", kind: "area", phase: "finishing_area" });
   expect(result.stale).toBeNull();
+  expect(result.verifying.phase).toBe("verifying_completion");
   expect(result.returning.phase).toBe("returning_to_dock");
   expect(result.unknown).toBeNull();
 });
@@ -216,12 +219,20 @@ test("Smart Stop shows paused and return phases without hiding connection proble
   await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toBeEnabled();
   await panel.evaluate((element) => {
     const states = structuredClone(element.hass.states);
+    states["vacuum.synthetic"].state = "idle";
+    states["sensor.synthetic_history"].attributes.active_plan.smart_stop_phase = "verifying_completion";
+    element.hass = { ...element.hass, states };
+  });
+  await expect(shell.locator(".status-copy")).toContainText("Checking the result before docking.");
+  await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toBeDisabled();
+  await panel.evaluate((element) => {
+    const states = structuredClone(element.hass.states);
     states["vacuum.synthetic"].state = "returning";
     states["sensor.synthetic_history"].attributes.active_plan.smart_stop_phase = "returning_to_dock";
     element.hass = { ...element.hass, states };
   });
   await expect(shell.locator(".status-copy")).toContainText("Smart Stop is returning to the dock.");
-  await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toHaveCount(0);
+  await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toBeDisabled();
   await panel.evaluate((element) => { element.hass = { ...element.hass, connected: false }; });
   await expect(shell.locator(".status-copy")).toContainText("Home Assistant is offline");
 });

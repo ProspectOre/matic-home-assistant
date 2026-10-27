@@ -2165,6 +2165,7 @@ class CleaningPlanManager:
             if (
                 not isinstance(active, Mapping)
                 or not (active.get("room_id") or active.get("area_id"))
+                or active.get("status") == "verifying"
                 or not isinstance(checkpoint, Mapping)
                 or checkpoint.get("stop_intent") != "after_room"
                 or not self.finish_room_event(serial_number).is_set()
@@ -5841,7 +5842,9 @@ class CleaningPlanManager:
             )
             if active_plan["smart_stop_pending"]:
                 active_plan["smart_stop_phase"] = (
-                    "finishing_room"
+                    "verifying_completion"
+                    if active_plan.get("status") == "verifying"
+                    else "finishing_room"
                     if isinstance(active_plan.get("room_id"), str)
                     else "finishing_area"
                     if isinstance(active_plan.get("area_id"), str)

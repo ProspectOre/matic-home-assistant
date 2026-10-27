@@ -33,7 +33,7 @@ def test_action_names_follow_the_glossary() -> None:
     names = {key: service["name"] for key, service in STRINGS["services"].items()}
     assert {key: names[key] for key in ADVANCED_ACTIONS} == ADVANCED_ACTIONS
     assert names["run_selected_plan"] == "Run plan"
-    assert names["intelligent_clean"] == "Run intelligent rotation"
+    assert names["intelligent_clean"] == "Run Smart Order"
     assert names["clean_entire_plan"] == "Run saved order"
     assert names["stop_intelligent_cleaning"] == "Stop cleaning"
     assert names["reset_plan_history"] == "Reset room cleaning history"

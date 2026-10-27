@@ -75,7 +75,7 @@ const smartStopStatus = (value: unknown, activePlan: unknown) => {
     || typeof run.run_id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/u.test(run.run_id)
     || active.run_id !== run.run_id) return null;
   const phase = active.smart_stop_phase;
-  if (phase !== "finishing_room" && phase !== "finishing_area" && phase !== "returning_to_dock") return null;
+  if (phase !== "finishing_room" && phase !== "finishing_area" && phase !== "verifying_completion" && phase !== "returning_to_dock") return null;
   const kind = phase === "finishing_area" || typeof active.area_id === "string" ? "area" as const : "room" as const;
   const rawTarget = kind === "area" ? active.area : active.room;
   const target = typeof rawTarget === "string" && rawTarget.trim()

@@ -119,6 +119,8 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
   if (state.smartStop) {
     const detail = state.smartStop.phase === "returning_to_dock"
       ? t("v4_smart_stop_returning_detail", "Smart Stop is returning to the dock.")
+      : state.smartStop.phase === "verifying_completion"
+      ? t("v4_smart_stop_checking_reason", "Checking the result before docking.")
       : state.activity === "paused"
       ? t("v4_smart_stop_paused_detail", "Resume to finish this clean, or stop now and dock.")
       : state.smartStop.target
@@ -252,6 +254,9 @@ const homeCopy = (kind: HomeKind, state: WorkspaceState, t: (key: string, fallba
   readonly title: string;
   readonly description: string;
 } => {
+  if (state.smartStop?.phase === "verifying_completion" && kind === "busy" && state.command !== "settling") {
+    return { title: t("v4_smart_stop_checking_title", "Checking the result"), description: t("v4_smart_stop_checking_reason", "Checking the result before docking.") };
+  }
   if (state.smartStop?.phase === "returning_to_dock" && kind === "busy" && state.command !== "settling") {
     return { title: t("v4_smart_stop_returning_title", "Returning to the dock"), description: t("v4_smart_stop_returning_home_detail", "Smart Stop is taking the robot home.") };
   }

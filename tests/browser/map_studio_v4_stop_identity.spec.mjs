@@ -18,6 +18,33 @@ async function loadStopHarness(page) {
   await page.goto("/", { waitUntil: "domcontentloaded" });
 }
 
+test("@safety Smart Stop cannot send an immediate override while checking or returning", async ({ page }) => {
+  await loadStopHarness(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, initialWorkspaceState, selectPrimaryAction } = await import("/stop-identity-test.js");
+    const initial = initialWorkspaceState();
+    const host = { ...initial.host, connected: true, administrator: true, robotConnected: true, robotCount: 1 };
+    const store = new WorkspaceStore({ ...initial, activity: "idle", host });
+    const calls = [];
+    const effects = new EffectController(store, { service: async (...args) => calls.push(args), dispose() {} }, null, false);
+    const base = { host, activity: "idle", batteryPercent: 61, robotLabel: "Robot",
+      robots: [{ entryId: "synthetic-entry", label: "Robot" }], language: "en",
+      userKey: "stop-test", entryKey: "synthetic-entry", vacuumEntityId: "vacuum.synthetic" };
+    const actions = [];
+    try {
+      for (const phase of ["verifying_completion", "returning_to_dock"]) {
+        effects.sync({ ...base, smartStop: { runId: "run-123", target: "Master Bedroom", kind: "room", phase } });
+        const action = selectPrimaryAction(store.value);
+        actions.push({ id: action.id, enabled: action.enabled });
+        await effects.executeAction("stop-now");
+      }
+      return { actions, calls };
+    } finally { effects.dispose(); }
+  });
+  expect(result.actions).toEqual([{ id: "stop-now", enabled: false }, { id: "stop-now", enabled: false }]);
+  expect(result.calls).toEqual([]);
+});
+
 test("@safety active selected vacuum remains stoppable when its catalog is unavailable", async ({ page }) => {
   await loadStopHarness(page);
   const result = await page.evaluate(async () => {
