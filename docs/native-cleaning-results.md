@@ -26,6 +26,14 @@ room summary, explicitly labeled as such, and provide separate positive-duration
 vacuum, mop, and combined completion counts. The native summary does not identify
 the mode requested by a plan.
 
+Room **Last clean duration** uses the verified managed-room timing: native
+per-room work time when supplied by completion, otherwise tracked active room
+time. The whole-robot **Last clean duration** uses the latest session timing;
+Home Assistant can prefer a matching locally tracked active session when the
+native summary lacks mode results. Native MCP history separately reports the
+session's start-to-end duration and each mode's work duration. These measurements
+can differ; changing display units does not change their scope.
+
 A native result does not identify why a mission ended. Firmware can report a
 stopped room as completed; managed plans also verify ownership and the terminal
 transition. A requested stop followed by docking can succeed while unfinished

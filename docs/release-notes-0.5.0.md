@@ -50,8 +50,10 @@ Everyday control, maps, and plan storage remain local to your home.
   does not measure cleaned floor area or award completion credit. Without
   enough matching history, it stays unknown.
 - **Time in familiar units.** Plan estimates use compact hours and minutes.
-  New duration entities suggest minutes for room timings and hours for whole-run
-  totals, while their native measurements remain numeric seconds.
+  New duration entities suggest minutes for room timings and hours for the last
+  clean, while their native measurements remain numeric seconds. See
+  [timing scopes](native-cleaning-results.md) for active time, native work time
+  and session span.
 - **Smart Stop.** Choose a threshold for finishing the current room before
   docking. Later rooms stay out of that mission. While the current room finishes,
   **Stop now & dock** gives you an immediate override.
