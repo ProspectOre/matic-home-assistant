@@ -305,6 +305,7 @@ export function readWorkspaceNotice(value: unknown): WorkspaceNotice | null {
 export interface WorkspaceState {
   readonly deepMop: RobotSetting | null;
   readonly lastRun: ManagedRunSummary | null;
+  readonly smartStop: SmartStopStatus | null;
   readonly pageActive: boolean;
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;
   readonly draftFloorOrdinal: number | null;
@@ -568,6 +569,15 @@ export interface HassProjection {
   readonly robotLabel: string;
   readonly robots: readonly RobotChoice[];
   readonly lastRun: ManagedRunSummary | null;
+  readonly smartStop?: SmartStopStatus | null;
+}
+
+/** An accepted finish-current-entry request, bound to the active managed run. */
+export interface SmartStopStatus {
+  readonly runId: string;
+  readonly target: string | null;
+  readonly kind: "room" | "area";
+  readonly phase: "finishing_room" | "finishing_area" | "returning_to_dock";
 }
 
 export interface ManagedRunSummary {

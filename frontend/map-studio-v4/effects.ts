@@ -440,6 +440,7 @@ export class EffectController {
 
   sync(projection: HassProjection): void {
     if (this.#disposed) return;
+    const previousSmartStop = this.#projection?.smartStop ?? null;
     const workspaceTransportBeforeSync = this.#workspaceTransport;
     const robotWasConnected = this.#projection?.host.robotConnected ?? null;
     const authorizationRestored = this.#projection?.host.administrator === false
@@ -483,6 +484,9 @@ export class EffectController {
       currentArea: projection.currentArea,
       deepMop: projection.deepMop,
       lastRun: projection.lastRun ?? null,
+      smartStop: projection.smartStop ?? null,
+      ...(projection.smartStop && !previousSmartStop && this.#store.value.command === "settling"
+        ? { command: "idle" as const } : {}),
       robotLabel: projection.robotLabel,
       robots: projection.robots,
       locale: projection.language,
@@ -2502,6 +2506,14 @@ export class EffectController {
       case "stop":
         await this.#motion("matic_robot", "stop_intelligent_cleaning", { include_unmanaged: true });
         return;
+      case "stop-now": {
+        const smartStop = this.#store.value.smartStop;
+        if (smartStop && smartStop.phase !== "returning_to_dock") await this.#motion("matic_robot", "stop_intelligent_cleaning", {
+          stop_now: true,
+          expected_run_id: smartStop.runId,
+        });
+        return;
+      }
       case "resume":
         await this.#motion("vacuum", "send_command", { command: "resume" });
         return;
@@ -2717,6 +2729,12 @@ export class EffectController {
     try {
       await this.#backend.service(domain, service, data, entityId);
       if (!current()) return;
+      if (stopping && data.stop_now !== true && this.#store.value.smartStop) {
+        // The backend has confirmed that this run will finish its current
+        // entry; the user can now choose the explicit immediate override.
+        this.#store.patch({ command: "idle" });
+        return;
+      }
       if (domain === "matic_robot" && (service === "clean_room_sequence" || service === "run_selected_plan")) {
         // These services return when their managed run ends, not when its
         // initial command is accepted. Do not show a new Starting interval.

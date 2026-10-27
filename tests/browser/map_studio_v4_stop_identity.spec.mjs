@@ -187,3 +187,47 @@ test("@safety stale catalog work cannot stop idle B, while active B stops only B
     entityId: "vacuum.synthetic_b",
   }]);
 });
+
+for (const pendingBeforeAck of [false, true]) {
+  test(`@safety Smart Stop exposes an immediate run-bound override when pending arrives ${pendingBeforeAck ? "before" : "after"} acknowledgment`, async ({ page }) => {
+    await loadStopHarness(page);
+    const result = await page.evaluate(async (pendingBeforeAck) => {
+      const { EffectController, WorkspaceStore, initialWorkspaceState, selectPrimaryAction } = await import("/stop-identity-test.js");
+      const initial = initialWorkspaceState();
+      const host = { ...initial.host, connected: true, administrator: true, robotConnected: true, robotCount: 1 };
+      const store = new WorkspaceStore({ ...initial, activity: "cleaning", host });
+      const calls = [];
+      let acknowledge;
+      const firstAck = new Promise((resolve) => { acknowledge = resolve; });
+      const effects = new EffectController(store, {
+        service: async (domain, service, data, entityId) => {
+          calls.push({ domain, service, data, entityId });
+          if (calls.length === 1) await firstAck;
+        },
+        dispose() {},
+      }, null, false);
+      const projection = {
+        host, activity: "cleaning", batteryPercent: 61, robotLabel: "Robot",
+        robots: [{ entryId: "synthetic-entry", label: "Robot" }], language: "en",
+        userKey: "stop-test", entryKey: "synthetic-entry", vacuumEntityId: "vacuum.synthetic",
+      };
+      const pending = { runId: "run-123", target: "Master Bedroom", kind: "room", phase: "finishing_room" };
+      try {
+        effects.sync(projection);
+        const first = effects.executeAction("stop");
+        if (pendingBeforeAck) effects.sync({ ...projection, smartStop: pending });
+        acknowledge();
+        await first;
+        if (!pendingBeforeAck) effects.sync({ ...projection, smartStop: pending });
+        const action = selectPrimaryAction(store.value);
+        await effects.executeAction("stop-now");
+        return { action: { id: action.id, enabled: action.enabled, label: action.label }, calls };
+      } finally { effects.dispose(); }
+    }, pendingBeforeAck);
+    expect(result.action).toEqual({ id: "stop-now", enabled: true, label: "Stop now & dock" });
+    expect(result.calls).toEqual([
+      { domain: "matic_robot", service: "stop_intelligent_cleaning", data: { include_unmanaged: true }, entityId: "vacuum.synthetic" },
+      { domain: "matic_robot", service: "stop_intelligent_cleaning", data: { stop_now: true, expected_run_id: "run-123" }, entityId: "vacuum.synthetic" },
+    ]);
+  });
+}

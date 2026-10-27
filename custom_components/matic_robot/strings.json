@@ -16,7 +16,7 @@
     "move_room_down": "Move {room} later",
     "move_room_up": "Move {room} earlier",
     "plan_delete": "Delete",
-    "plan_intelligent": "Intelligent rotation",
+    "plan_intelligent": "Smart Order",
     "plan_name": "Plan name",
     "plan_ordered": "Saved order",
     "plan_run_behavior": "Cleaning order",
@@ -41,6 +41,16 @@
     "v4_action_save_area": "Save area",
     "v4_action_save_plan": "Save",
     "v4_action_stop": "Stop",
+    "v4_action_stop_now_dock": "Stop now & dock",
+    "v4_smart_stop": "Smart Stop",
+    "v4_smart_stop_named_detail": "Finishing {target}, then returning to the dock.",
+    "v4_smart_stop_room_detail": "Finishing this room, then returning to the dock.",
+    "v4_smart_stop_area_detail": "Finishing this area, then returning to the dock.",
+    "v4_smart_stop_paused_title": "Smart Stop is paused",
+    "v4_smart_stop_paused_detail": "Resume to finish this clean, or stop now and dock.",
+    "v4_smart_stop_finishing_room": "Finishing this room",
+    "v4_smart_stop_finishing_area": "Finishing this area",
+    "v4_smart_stop_home_detail": "Smart Stop will return to the dock when it's done.",
     "v4_admin_body": "Ask a Home Assistant administrator to open this map.",
     "v4_admin_only": "Administrator only",
     "v4_admin_required": "Administrator access required",
@@ -183,7 +193,7 @@
     "v4_task_map_unavailable": "The live map is unavailable; the current clean continues.",
     "v4_task_docked": "Robot docked; the clean has not finished.",
     "v4_task_waiting": "Waiting for the clean to continue or finish.",
-    "v4_plan_rotation_settings": "Longest-waiting rooms and custom areas first, checked again when you run the plan.",
+    "v4_plan_rotation_settings": "Smart Order cleans the rooms and areas that have waited longest first, checking again each time.",
     "v4_preview_room_limit": "Can't run this plan until it has 100 rooms or fewer.",
     "v4_cadence_mop_progress_unverified": "Can't run this schedule until you reset its mopping progress, which Home Assistant can't confirm.",
     "v4_cadence_coverage_progress_unverified": "Can't run this schedule until you reset its vacuum rotation progress, which Home Assistant can't confirm.",
@@ -271,9 +281,9 @@
     "v4_room_schedules_mop_heavy_one_both": "Mop every clean · Heavy duty vacuum every clean",
     "v4_run_end_options": "When a run ends",
     "v4_plan_return_to_dock": "Return to the dock when finished",
-    "v4_plan_finish_room": "Finish the current room when you press Stop",
-    "v4_plan_finish_room_hint": "Only if the room is at least {percent}% done; otherwise the robot stops right away.",
-    "v4_plan_finish_threshold": "Finish if at least {percent}% done",
+    "v4_plan_finish_room": "Smart Stop",
+    "v4_plan_finish_room_hint": "When you press Stop, finish the room if it's reached {percent}% of its estimated time. Areas and rooms without an estimate finish first. You can still stop now and dock.",
+    "v4_plan_finish_threshold": "Finish after {percent}% of estimated room time",
     "v4_run_named_plan": "Run {plan}",
     "v4_saved_floor": "Saved floor {number}",
     "v4_saved_floor_count": "Saved floor count",
@@ -344,8 +354,8 @@
     "v4_back_to_area": "Back to {name}",
     "v4_create_plan": "Create a plan",
     "v4_no_plans": "No plans yet",
-    "v4_plan_row_rotation": "{count} rooms · Longest-waiting rooms first",
-    "v4_plan_row_rotation_one": "1 room · Longest-waiting rooms first",
+    "v4_plan_row_rotation": "{count} rooms · Smart Order",
+    "v4_plan_row_rotation_one": "1 room · Smart Order",
     "v4_plan_row_ordered": "{count} rooms · Top to bottom, as listed",
     "v4_plan_row_ordered_one": "1 room · Top to bottom, as listed",
     "v4_plan_default": "Default",
@@ -541,7 +551,7 @@
     "v4_plan_summary_areas": "{count} custom areas",
     "v4_plan_summary_areas_one": "1 custom area",
     "v4_plan_steps_heading": "Rooms and custom areas",
-    "v4_plan_areas_rotation_hint": "Rooms and custom areas rotate together. Saved order follows your exact sequence.",
+    "v4_plan_areas_rotation_hint": "Smart Order chooses the longest-waiting rooms and areas first. Saved order follows your list.",
     "v4_plan_area_every_run": "Custom area · Every run",
     "v4_plan_area_missing": "Not found · Remove it from this plan",
     "v4_area_include_named": "Include {area}",
@@ -561,7 +571,7 @@
     "v4_area_in_plans_one": "In 1 plan: {plans}",
     "v4_area_in_plans": "In {count} plans: {plans}",
     "v4_delete_area_detail_plans": "Automations that clean \"{name}\" will stop working, and {plans} won't clean it anymore. The robot won't move.",
-    "v4_plan_summary_finish": "When you press Stop, the robot finishes the current room if it's at least {percent}% done.",
+    "v4_plan_summary_finish": "Smart Stop finishes the room if you press Stop after {percent}% of its estimated time.",
     "v4_plan_summary_return": "Returns to the dock when finished",
     "v4_reason_plan_switch_busy": "Can't change this until the robot finishes.",
     "v4_reason_plan_switch_offline": "Waiting for Home Assistant to reach the robot again.",
@@ -633,7 +643,10 @@
     "v4_map_zoom_help": "Zoom is relative to Fit. Enter 100–1000%; larger values zoom closer without moving the map's center.",
     "v4_map_zoom_presets": "Zoom presets",
     "v4_map_zoom_apply": "Set zoom",
-    "v4_map_zoom_current": "Current zoom"
+    "v4_map_zoom_current": "Current zoom",
+    "v4_smart_stop_returning_detail": "Smart Stop is returning to the dock.",
+    "v4_smart_stop_returning_title": "Returning to the dock",
+    "v4_smart_stop_returning_home_detail": "Smart Stop is taking the robot home."
   },
   "config": {
     "flow_title": "{name}",
@@ -953,7 +966,7 @@
     },
     "run_behavior": {
       "options": {
-        "intelligent": "Intelligent rotation (longest-waiting rooms first)",
+        "intelligent": "Smart Order (longest-waiting rooms first)",
         "ordered": "Saved order"
       }
     },
@@ -1025,7 +1038,7 @@
         "name": "Run plan"
       },
       "intelligent_clean": {
-        "name": "Run intelligent rotation"
+        "name": "Run Smart Order"
       },
       "clean_entire_plan": {
         "name": "Run saved order"
@@ -1516,6 +1529,9 @@
     },
     "cadence_delete_blocked": {
       "message": "The robot is using this schedule. Wait until cleaning ends, then try again."
+    },
+    "smart_stop_not_pending": {
+      "message": "Smart Stop is no longer finishing this room or area. Check the robot before trying again."
     }
   },
   "issues": {
@@ -1629,7 +1645,7 @@
       }
     },
     "intelligent_clean": {
-      "name": "Run intelligent rotation",
+      "name": "Run Smart Order",
       "description": "Cleans the rooms in a plan, starting with the ones that have waited longest, and keeps going until you stop it or every room is done. Rooms that were started but not finished stay due for the next run.",
       "fields": {
         "plan": {
@@ -1682,7 +1698,11 @@
         },
         "expected_run_id": {
           "name": "Expected run ID",
-          "description": "Optional. A run ID from plan diagnostics. Stop is refused if that run is no longer the one running."
+          "description": "A run ID from plan diagnostics. Stop is refused if that run is no longer active. Required for Stop now and dock."
+        },
+        "stop_now": {
+          "name": "Stop now and dock",
+          "description": "Cancel a pending Smart Stop and send the robot to its dock immediately. Requires the expected run ID."
         }
       }
     },
@@ -1741,7 +1761,7 @@
         },
         "run_behavior": {
           "name": "Cleaning order",
-          "description": "Intelligent rotation cleans the rooms that have waited longest first; saved order breaks ties. Saved order cleans every selected room from top to bottom."
+          "description": "Smart Order cleans the rooms that have waited longest first; saved order breaks ties. Saved order cleans every selected room from top to bottom."
         },
         "rooms": {
           "name": "Rooms, areas and settings",

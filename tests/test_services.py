@@ -3448,6 +3448,100 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         await _registered_handler(services, "reset_plan_history")(reset)
 
 
+async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("serial")["plans"]["upstairs"] = {
+        "name": "Upstairs",
+        "finish_current_room": True,
+        "finish_current_room_threshold": 50,
+        "rooms": [
+            {
+                "room_id": "room-study",
+                "name": "Study",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "quick",
+            }
+        ],
+    }
+    services = await _registered_services(hass, manager)
+    coordinator = SimpleNamespace(async_discard_current_room=MagicMock())
+    entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+    context = ("vacuum.test", entry, "serial", {"room-study": "Study"})
+    run_id = "smart-stop-run"
+    await manager.async_begin_run(
+        "serial",
+        "upstairs",
+        run_id,
+        1,
+        trigger="test",
+        service="test",
+        finish_current_room=True,
+    )
+    await manager.async_set_recovery_checkpoint(
+        "serial",
+        run_id,
+        {"rooms": [], "leg_index": 0, "phase": "ready"},
+    )
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    await manager.async_mark_started("serial", "upstairs", room, run_id=run_id)
+    active = manager._robot("serial")["active_plan"]
+    active["active_elapsed_seconds"] = 60
+    active["active_segment_started"] = None
+    manager.finish_room_event("serial").set()
+    await manager.async_checkpoint_stop_intent("serial", "after_room", run_id=run_id)
+    lock = manager.lock("serial")
+    await lock.acquire()
+    stop = ServiceCall(
+        hass,
+        DOMAIN,
+        "stop_intelligent_cleaning",
+        {
+            "entity_id": ["vacuum.test"],
+            "stop_now": True,
+            "expected_run_id": run_id,
+        },
+    )
+    try:
+        with patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ):
+            await _registered_handler(services, "stop_intelligent_cleaning")(stop)
+    finally:
+        lock.release()
+    assert manager.snapshot("serial")["active_plan"]["smart_stop_pending"] is False
+    assert manager.finish_room_event("serial").is_set() is False
+    coordinator.async_discard_current_room.assert_called_once_with()
+    services.async_call.assert_awaited_once_with(
+        "vacuum",
+        "return_to_base",
+        {"entity_id": "vacuum.test"},
+        blocking=True,
+        context=stop.context,
+    )
+    repeated = ServiceCall(
+        hass,
+        DOMAIN,
+        "stop_intelligent_cleaning",
+        {
+            "entity_id": ["vacuum.test"],
+            "stop_now": True,
+            "expected_run_id": run_id,
+        },
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(ServiceValidationError) as raised,
+    ):
+        await _registered_handler(services, "stop_intelligent_cleaning")(repeated)
+    assert raised.value.translation_key == "smart_stop_not_pending"
+    services.async_call.assert_awaited_once()
+
+
 async def test_managed_actions_ignore_inactive_stop(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

@@ -1862,7 +1862,7 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
 ) -> None:
     monkeypatch.setattr(
         "custom_components.matic_robot.plans.leg_groups",
-        lambda rooms, mixed_settings=False: [[room] for room in rooms],
+        lambda rooms, mixed_settings=False, **_kwargs: [[room] for room in rooms],
     )
     runtime = _runtime()
     runtime.cleaning_plans.plans.return_value = {
@@ -3287,6 +3287,15 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
 ) -> None:
     runtime = _runtime()
     floor_plan = runtime.coordinator.data.floor_plan
+    second_room = replace(
+        floor_plan.rooms[0],
+        id="room-2",
+        name="Office",
+        protocol_id="protocol-2",
+        id_wire=b"room-2",
+    )
+    floor_plan = replace(floor_plan, rooms=(*floor_plan.rooms, second_room))
+    runtime.coordinator.data.floor_plan = floor_plan
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     serial = "synthetic-serial"
@@ -3315,6 +3324,27 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         serial,
         "spots",
         {"name": "Spots", "rooms": [], "entries": [_area_entry("rug")]},
+        select=False,
+    )
+    await manager.async_save_plan(
+        serial,
+        "smart-stop",
+        {
+            "name": "Smart Stop",
+            "finish_current_room": True,
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+                {
+                    "room_id": "room-2",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+            ],
+        },
         select=False,
     )
     manager._robot(serial)["plans"]["corrupt"] = {
@@ -3387,6 +3417,19 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         "blocker": None,
     }
     assert mixed["next_run_estimate_seconds"] is None
+    smart_stop = plans["smart-stop"]["next_run_preview"]
+    assert smart_stop["mission_boundaries"] == [1]
+    assert smart_stop["preview_token"] == saved_plan_preview_token(
+        manager.preview(
+            serial,
+            {"room-1": "Kitchen", "room-2": "Office"},
+            "smart-stop",
+            floor_token=token_inputs["floor_token"],
+            room_identities=token_inputs["room_identities"],
+            floor_plan=floor_plan,
+        ),
+        **token_inputs,
+    )
     spots = plans["spots"]["next_run_preview"]
     assert spots["rooms"] == []
     assert spots["entries"] == [area_projection]

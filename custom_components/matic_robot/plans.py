@@ -399,11 +399,13 @@ def plan_area_fingerprint(area: Mapping[str, Any]) -> str:
     return hashlib.sha256(b"matic-plan-area-v1\0" + encoded).hexdigest()
 
 
-def entry_mission_boundaries(entries: Sequence[Mapping[str, Any]]) -> list[int]:
+def entry_mission_boundaries(
+    entries: Sequence[Mapping[str, Any]], *, single_room_missions: bool = False
+) -> list[int]:
     """Return entry offsets where a run must start a new robot mission.
 
     Rooms and drawn areas cannot share one native mission: each area is its
-    own leg, and contiguous rooms keep today's mixed-settings grouping.
+    own leg. With Smart Stop enabled, every room also gets its own mission.
     """
     boundaries: list[int] = []
     offset = 0
@@ -411,7 +413,11 @@ def entry_mission_boundaries(entries: Sequence[Mapping[str, Any]]) -> list[int]:
 
     def close_rooms() -> None:
         nonlocal offset
-        for group in leg_groups(rooms, mixed_settings=True):
+        for group in leg_groups(
+            rooms,
+            mixed_settings=True,
+            single_room_missions=single_room_missions,
+        ):
             offset += len(group)
             boundaries.append(offset)
         rooms.clear()
@@ -488,6 +494,7 @@ def plan_legs(
     *,
     mixed_settings: bool = False,
     preserve_legacy_settings: bool = False,
+    single_room_missions: bool = False,
 ) -> list[PlanLeg]:
     """Split a run into its native missions, in entry order.
 
@@ -501,6 +508,7 @@ def plan_legs(
                 rooms,
                 mixed_settings=mixed_settings,
                 preserve_legacy_settings=preserve_legacy_settings,
+                single_room_missions=single_room_missions,
             )
         )
     if not isinstance(entries, list):
@@ -515,6 +523,7 @@ def plan_legs(
                 pending,
                 mixed_settings=mixed_settings,
                 preserve_legacy_settings=preserve_legacy_settings,
+                single_room_missions=single_room_missions,
             )
         )
         pending.clear()
@@ -580,6 +589,7 @@ def checkpoint_legs(checkpoint: Mapping[str, Any]) -> list[PlanLeg]:
         checkpoint.get("entries"),
         mixed_settings=checkpoint.get("mixed_settings") is True,
         preserve_legacy_settings=checkpoint.get("mixed_settings") is not True,
+        single_room_missions=checkpoint.get("single_room_missions") is True,
     )
 
 
@@ -661,6 +671,7 @@ def leg_groups(
     *,
     mixed_settings: bool = False,
     preserve_legacy_settings: bool = False,
+    single_room_missions: bool = False,
 ) -> list[list[CleaningRoom]]:
     """Group consecutive rooms that can share one native mission.
 
@@ -676,6 +687,9 @@ def leg_groups(
 
     groups: list[list[CleaningRoom]] = []
     for room in rooms:
+        if single_room_missions:
+            groups.append([room])
+            continue
         previous = groups[-1][-1] if groups else None
         if previous is not None and (
             mixed_settings or group_key(previous) == group_key(room)
@@ -1207,6 +1221,8 @@ class CleaningPlanManager:
             )
             if recoverable and isinstance(last_run, dict):
                 checkpoint = last_run["recovery_checkpoint"]
+                if checkpoint.get("stop_intent") == "after_room":
+                    self.finish_room_event(str(serial_number)).set()
                 room_records = checkpoint.get("rooms", [])
                 self.restore_prepared_run(
                     str(serial_number),
@@ -2121,7 +2137,9 @@ class CleaningPlanManager:
         return True
 
     @callback
-    def request_stop(self, serial_number: str) -> PlanStopDecision:
+    def request_stop(
+        self, serial_number: str, *, stop_now: bool = False
+    ) -> PlanStopDecision:
         """Apply the active plan's immediate-or-after-room stop policy."""
         self._stop_request_generations[serial_number] = (
             self.stop_request_generation(serial_number) + 1
@@ -2132,11 +2150,41 @@ class CleaningPlanManager:
                 self.motion_generation(serial_number) + 1
             )
 
+        if stop_now:
+            robot = self._robot(serial_number)
+            active = robot.get("active_plan")
+            last_run = robot.get("last_run")
+            checkpoint = (
+                last_run.get("recovery_checkpoint")
+                if isinstance(last_run, Mapping)
+                and last_run.get("outcome") == "running"
+                and isinstance(active, Mapping)
+                and last_run.get("run_id") == active.get("run_id")
+                else None
+            )
+            if (
+                not isinstance(active, Mapping)
+                or not (active.get("room_id") or active.get("area_id"))
+                or not isinstance(checkpoint, Mapping)
+                or checkpoint.get("stop_intent") != "after_room"
+                or not self.finish_room_event(serial_number).is_set()
+                or self.cancellation_reason(serial_number) == "motion_replaced"
+            ):
+                # The current room may have completed between the UI read and
+                # the explicit override. Keep the accepted graceful stop and
+                # let its existing dock path finish without a duplicate dock.
+                return PlanStopDecision("after_room")
+
         # Fence undispatched direct starts/resumes even if no managed lock is
         # held yet. A graceful stop keeps the current managed owner intact so
         # its active room can reach the room-boundary STOP.
         if not self.lock(serial_number).locked():
             fence_new_motion()
+            if stop_now:
+                self.finish_room_event(serial_number).clear()
+                self.cancellation_event(serial_number).set()
+                self._cancellation_reasons[serial_number] = "managed_stop"
+                return PlanStopDecision("immediate")
             if self.recovery_run(serial_number) is not None:
                 self.cancellation_event(serial_number).set()
                 self._cancellation_reasons[serial_number] = "managed_stop"
@@ -2158,6 +2206,14 @@ class CleaningPlanManager:
             fence_new_motion()
             self.cancel(serial_number)
             return PlanStopDecision("immediate")
+        if stop_now:
+            fence_new_motion()
+            self.finish_room_event(serial_number).clear()
+            self.cancellation_event(serial_number).set()
+            self._cancellation_reasons[serial_number] = "managed_stop"
+            return PlanStopDecision("immediate")
+        if self.finish_room_event(serial_number).is_set():
+            return PlanStopDecision("after_room")
         frozen_policy = active if _has_frozen_stop_policy(active) else None
         last_run = robot.get("last_run")
         checkpoint = (
@@ -4580,6 +4636,10 @@ class CleaningPlanManager:
                 ):
                     return False
                 checkpoint["stop_intent"] = behavior
+                if behavior == "after_room":
+                    self.finish_room_event(serial_number).set()
+                elif behavior == "immediate":
+                    self.finish_room_event(serial_number).clear()
                 await self._store.async_save(self._data)
                 return True
 
@@ -5743,11 +5803,50 @@ class CleaningPlanManager:
             }
             for plan_id, plan in robot["plans"].items()
         }
+        last_run = robot.get("last_run")
+        checkpoint = (
+            last_run.get("recovery_checkpoint")
+            if isinstance(last_run, Mapping) and last_run.get("outcome") == "running"
+            else None
+        )
+        pending_smart_stop = bool(
+            isinstance(last_run, Mapping)
+            and isinstance(last_run.get("run_id"), str)
+            and isinstance(checkpoint, Mapping)
+            and checkpoint.get("stop_intent") == "after_room"
+            and self.finish_room_event(serial_number).is_set()
+            and self.cancellation_reason(serial_number) != "motion_replaced"
+        )
         active_plan = deepcopy(robot.get("active_plan"))
+        if (
+            pending_smart_stop
+            and isinstance(last_run, Mapping)
+            and isinstance(last_run.get("run_id"), str)
+            and not isinstance(active_plan, dict)
+        ):
+            active_plan = {
+                "run_id": last_run["run_id"],
+                "plan_id": last_run.get("plan_id"),
+                "plan_name": last_run.get("plan_name"),
+                "status": "returning_to_dock",
+            }
         if isinstance(active_plan, dict):
             active_plan["active_elapsed_seconds"] = _active_elapsed_seconds(
                 active_plan, dt_util.utcnow()
             )
+            active_plan["smart_stop_pending"] = bool(
+                pending_smart_stop
+                and isinstance(last_run, Mapping)
+                and active_plan.get("run_id") == last_run.get("run_id")
+            )
+            if active_plan["smart_stop_pending"]:
+                active_plan["smart_stop_phase"] = (
+                    "finishing_room"
+                    if isinstance(active_plan.get("room_id"), str)
+                    else "finishing_area"
+                    if isinstance(active_plan.get("area_id"), str)
+                    else "returning_to_dock"
+                )
         public_last_run = deepcopy(robot.get("last_run"))
         if isinstance(public_last_run, dict):
             public_last_run.pop("recovery_checkpoint", None)

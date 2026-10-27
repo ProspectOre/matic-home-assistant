@@ -99,6 +99,13 @@ const roomKey = (name: string | null): string => name?.toLowerCase().replace(/\s
 const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateFormat): StatusPresentation => {
   const t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
     translate(localize, key, fallback, placeholders, dates);
+  const roomProgressEstimate = (): string | undefined => {
+    const timing = state.lastRun?.outcome === "running" ? state.lastRun.estimate : undefined;
+    const area = roomKey(state.currentArea);
+    return state.activity === "cleaning" && state.coherence === "current" && timing && area
+      && (area === roomKey(timing.room) || area === roomKey(timing.roomId))
+      ? t("v4_room_estimated_progress", "Estimated room progress: {percent}% (based on time)", { percent: timing.percent }) : undefined;
+  };
   if (!state.host.connected) return { title: t("v4_reconnecting", "Reconnecting"), detail: t("v4_ha_offline", "Home Assistant is offline"), icon: iconOffline, notable: true };
   if (!state.host.administrator) return { title: t("v4_access_required", "Access required"), detail: t("v4_admin_only", "Administrator only"), icon: iconOffline, notable: true };
   if (state.host.robotCount === 0) return { title: t("v4_no_robot_short", "No robot"), detail: t("v4_set_up_robot", "Check the integration"), icon: iconOffline, notable: true };
@@ -108,6 +115,20 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
   // shell.md §4 row 15: from the press until the robot or the backend's fence settles.
   if (state.command === "settling" || state.activity === "stopping" || state.resources.entry?.stopSettlePending) {
     return { title: t("v4_stopping", "Stopping"), detail: t("v4_waiting_robot", "Waiting for the robot"), icon: iconPaused, notable: true };
+  }
+  if (state.smartStop) {
+    const detail = state.smartStop.phase === "returning_to_dock"
+      ? t("v4_smart_stop_returning_detail", "Smart Stop is returning to the dock.")
+      : state.activity === "paused"
+      ? t("v4_smart_stop_paused_detail", "Resume to finish this clean, or stop now and dock.")
+      : state.smartStop.target
+        ? t("v4_smart_stop_named_detail", "Finishing {target}, then returning to the dock.", { target: state.smartStop.target })
+        : state.smartStop.kind === "area"
+          ? t("v4_smart_stop_area_detail", "Finishing this area, then returning to the dock.")
+          : t("v4_smart_stop_room_detail", "Finishing this room, then returning to the dock.");
+    return { title: t("v4_smart_stop", "Smart Stop"), detail,
+      estimate: state.smartStop.phase === "finishing_room" ? roomProgressEstimate() : undefined,
+      icon: iconPaused, notable: true };
   }
   if (state.dataMode === "history") {
     // shell.md §4 row 7: the date and place of the saved map, as the chip says.
@@ -145,10 +166,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
     const area = roomKey(state.currentArea);
     const room = area && state.resources.scene.value?.metadata.rooms.find((candidate) => roomKey(candidate.name) === area || roomKey(candidate.id) === area)?.name;
     const progress = state.lastRun?.outcome === "running" ? state.lastRun : null;
-    const timing = progress?.estimate;
-    const estimate = state.coherence === "current" && timing && area
-      && (area === roomKey(timing.room) || area === roomKey(timing.roomId))
-      ? t("v4_room_estimated_progress", "Estimated room progress: {percent}% (based on time)", { percent: timing.percent }) : undefined;
+    const estimate = roomProgressEstimate();
     return {
       title: t("v4_cleaning", "Cleaning"),
       estimate,
@@ -234,6 +252,16 @@ const homeCopy = (kind: HomeKind, state: WorkspaceState, t: (key: string, fallba
   readonly title: string;
   readonly description: string;
 } => {
+  if (state.smartStop?.phase === "returning_to_dock" && kind === "busy" && state.command !== "settling") {
+    return { title: t("v4_smart_stop_returning_title", "Returning to the dock"), description: t("v4_smart_stop_returning_home_detail", "Smart Stop is taking the robot home.") };
+  }
+  if (state.smartStop && (kind === "busy" || kind === "paused")
+    && (state.activity === "cleaning" || state.activity === "paused")
+    && state.command !== "settling" && !state.resources.entry?.stopSettlePending) {
+    return state.activity === "paused"
+      ? { title: t("v4_smart_stop_paused_title", "Smart Stop is paused"), description: t("v4_smart_stop_paused_detail", "Resume to finish this clean, or stop now and dock.") }
+      : { title: state.smartStop.kind === "area" ? t("v4_smart_stop_finishing_area", "Finishing this area") : t("v4_smart_stop_finishing_room", "Finishing this room"), description: t("v4_smart_stop_home_detail", "Smart Stop will return to the dock when it's done.") };
+  }
   switch (kind) {
     case "ready":
       return { title: t("v4_what_to_clean", "Choose what to clean"), description: "" };
@@ -1465,6 +1493,7 @@ export class MaticMapShellV4 extends LitElement {
         aria-describedby=${reason ? reasonId : nothing}
         data-redraw=${action.id === "redraw" ? "" : nothing}
         aria-label=${action.id === "stop" ? this.#t("v4_stop_cleaning_label", "Stop cleaning")
+          : action.id === "stop-now" ? this.#t("v4_action_stop_now_dock", "Stop now & dock")
           : action.id === "run-plan" ? this.#t("v4_action_run_plan_named", "Run plan {plan}", { plan: this.state.planDraft.name })
           : nothing}
         @click=${() => this.#action(action)}
@@ -1802,9 +1831,9 @@ export class MaticMapShellV4 extends LitElement {
       ? { id: "redraw", label: "Redraw", labelKey: "v4_edit_outline", kind: "neutral", enabled: !held, ...(held ?? {}) }
       : null;
     const secondary = selectStopSecondaryAction(state) ?? redraw;
-    const statusAction = !narrow && primary.id === "stop"
+    const statusAction = !narrow && ["stop", "stop-now"].includes(primary.id)
       ? primary
-      : !narrow && secondary?.id === "stop" ? secondary : null;
+      : !narrow && secondary && ["stop", "stop-now"].includes(secondary.id) ? secondary : null;
     const footerPrimary = statusAction && statusAction === primary ? null : primary;
     const footerSecondary = statusAction && statusAction === secondary ? null : secondary;
     const locatingInFullMap = state.fullMap
@@ -2014,8 +2043,8 @@ export class MaticMapShellV4 extends LitElement {
                 aria-label=${this.#t("v4_robot_status_and_action", "Robot status and action")}
               >
                 <span class="hud-copy"><strong>${status.title}</strong><small>${status.detail}</small>${roomEstimate}</span>
-                ${locatingInFullMap && primary.id !== "stop" ? nothing : this.#actionButton(primary, "ms-btn ms-btn--lg ms-btn--primary", "hud-reason")}
-                ${secondary?.id === "stop"
+                ${locatingInFullMap && !["stop", "stop-now"].includes(primary.id) ? nothing : this.#actionButton(primary, "ms-btn ms-btn--lg ms-btn--primary", "hud-reason")}
+                ${secondary && ["stop", "stop-now"].includes(secondary.id)
                   ? this.#actionButton(secondary, "ms-btn ms-btn--lg ms-btn--secondary", "hud-secondary-reason")
                   : nothing}
                 <button

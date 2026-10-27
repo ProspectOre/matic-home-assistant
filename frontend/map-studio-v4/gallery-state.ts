@@ -876,7 +876,7 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       return openPlan(withAreas(state), areasPlan("ordered"), "run");
     case "plan-run-areas-only":
       return openPlan(withAreas(state), spotsPlan(), "run", catalogWith([savedDailyPlan(), spotsPlan()]));
-    // Edit shows the saved tie-break order. Intelligent rotation ranks all
+    // Edit shows the saved tie-break order. Smart Order ranks all
     // entries from history when previewing a run, so editing shows no numbers.
     case "plan-edit-areas":
       return openPlan(withAreas(state), areasPlan("ordered"), "edit");

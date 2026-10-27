@@ -139,6 +139,93 @@ test("timing projection reads the canonical entity and rejects ambiguous or stal
     duplicate: null, changed: true, percent: 36 });
 });
 
+for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
+  test(`Smart Stop explains its state and keeps the immediate override reachable at ${viewport.width}x${viewport.height} @mobile`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    const activeHistory = structuredClone(history);
+    Object.assign(activeHistory.active_plan, { room_id: "bedroom", room: "Master Bedroom", smart_stop_pending: true, smart_stop_phase: "finishing_room" });
+    const activeTiming = structuredClone(timing);
+    Object.assign(activeTiming.attributes, { room_id: "bedroom", room: "Master Bedroom" });
+    const fixture = await installPanelFixture(page, { moduleSource: "packaged", sceneRooms: [
+      { id: "bedroom", name: "Master Bedroom", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+    ], initialRobotStates: {
+      "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70, current_area: "Master Bedroom" } },
+      "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
+      "sensor.synthetic_progress": activeTiming,
+    } });
+    await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+    const panel = page.locator(fixture.panelTag);
+    const shell = panel.locator("matic-map-shell-v4");
+    const status = shell.locator(".sheet-status");
+    await expect(status).toContainText("Smart Stop");
+    await expect(status).toContainText("Finishing Master Bedroom, then returning to the dock.");
+    await expect(status.locator(".room-estimate")).toHaveText("Estimated room progress: 35% (based on time)");
+    expect(await status.evaluate((element) => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    const stop = shell.getByRole("button", { name: "Stop now & dock", exact: true });
+    await expect(stop).toBeEnabled();
+    const box = await stop.boundingBox();
+    expect(box.y).toBeGreaterThanOrEqual(0);
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    await stop.click();
+    const calls = await page.evaluate(() => window.__panelFixture.serviceCalls);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ domain: "matic_robot", service: "stop_intelligent_cleaning", data: { stop_now: true, expected_run_id: "partial-1" } });
+  });
+}
+
+test("Smart Stop projection is bound to the active run and its phase", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { HassAdapter } from "./frontend/map-studio-v4/hass-adapter";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/smart-stop-projection.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async (history) => {
+    const { HassAdapter } = await import("/smart-stop-projection.js");
+    const adapter = new HassAdapter();
+    const active = { ...history.active_plan, smart_stop_pending: true, smart_stop_phase: "finishing_area", area_id: "area-1", area: "Master Bathroom" };
+    const states = {
+      "vacuum.robot": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry" } },
+      "sensor.history": { state: "ready", attributes: { ...history, active_plan: active } },
+    };
+    const hass = { connected: true, user: { is_admin: true }, states };
+    const read = () => adapter.project(hass, undefined, "synthetic-entry").smartStop;
+    const area = read();
+    states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, run_id: "old-run" } } };
+    const stale = read();
+    states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, smart_stop_phase: "returning_to_dock" } } };
+    const returning = read();
+    states["sensor.history"] = { state: "ready", attributes: { ...history, active_plan: { ...active, smart_stop_phase: "unrecognized" } } };
+    const unknown = read();
+    return { area, stale, returning, unknown };
+  }, history);
+  expect(result.area).toEqual({ runId: "partial-1", target: "Master Bathroom", kind: "area", phase: "finishing_area" });
+  expect(result.stale).toBeNull();
+  expect(result.returning.phase).toBe("returning_to_dock");
+  expect(result.unknown).toBeNull();
+});
+
+test("Smart Stop shows paused and return phases without hiding connection problems", async ({ page }) => {
+  const activeHistory = structuredClone(history);
+  Object.assign(activeHistory.active_plan, { room: "Master Bedroom", smart_stop_pending: true, smart_stop_phase: "finishing_room" });
+  const fixture = await installPanelFixture(page, { initialRobotStates: {
+    "vacuum.synthetic": { state: "paused", attributes: { matic_entry_id: "synthetic-entry", battery_level: 70 } },
+    "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
+  } });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  const shell = panel.locator("matic-map-shell-v4");
+  await expect(shell.locator(".status-copy")).toContainText("Resume to finish this clean, or stop now and dock.");
+  await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toBeEnabled();
+  await panel.evaluate((element) => {
+    const states = structuredClone(element.hass.states);
+    states["vacuum.synthetic"].state = "returning";
+    states["sensor.synthetic_history"].attributes.active_plan.smart_stop_phase = "returning_to_dock";
+    element.hass = { ...element.hass, states };
+  });
+  await expect(shell.locator(".status-copy")).toContainText("Smart Stop is returning to the dock.");
+  await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toHaveCount(0);
+  await panel.evaluate((element) => { element.hass = { ...element.hass, connected: false }; });
+  await expect(shell.locator(".status-copy")).toContainText("Home Assistant is offline");
+});
+
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
   for (const fontSize of [16, 20]) {
     test(`canonical room estimate and Stop fit ${viewport.width}x${viewport.height} with ${fontSize}px host font`, async ({ page }, testInfo) => {

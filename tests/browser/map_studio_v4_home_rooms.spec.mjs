@@ -534,7 +534,7 @@ const planCard = (gallery) => shortcutsGroup(gallery).locator("button.shortcut")
 test.describe("the plan card", () => {
   test("names the default plan with the picker's lines", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
-    await expect(planCard(gallery)).toHaveAccessibleName(/^Run Daily clean 3 rooms · Longest-waiting rooms first$/);
+    await expect(planCard(gallery)).toHaveAccessibleName(/^Run Daily clean 3 rooms · Smart Order$/);
     await expect(planCard(gallery).locator("strong bdi")).toHaveText("Daily clean");
     await expect(planCard(gallery).locator(".line")).toHaveCount(0);
   });
