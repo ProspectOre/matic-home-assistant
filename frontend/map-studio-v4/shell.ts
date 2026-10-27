@@ -291,6 +291,14 @@ const homeCopy = (kind: HomeKind, state: WorkspaceState, t: (key: string, fallba
     case "robot-unavailable":
       return { title: t("v4_selected_robot_unavailable", "Selected robot unavailable"), description: t("v4_choose_another_robot", "Choose another robot to open its map.") };
     case "read-only":
+      if (state.dataMode === "live" && state.smartStop) {
+        return {
+          title: t("v4_live_map_read_only_title", "Map is read only"),
+          description: state.activity === "paused"
+            ? t("v4_smart_stop_read_only_paused", "Smart Stop is paused while the map is read only.")
+            : t("v4_smart_stop_read_only", "Smart Stop continues while the map is read only."),
+        };
+      }
       return {
         title: t("v4_saved_map_read_only_title", "Saved map is read only"),
         description: state.dataMode === "live"

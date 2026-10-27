@@ -648,7 +648,10 @@
     "v4_smart_stop_returning_title": "Returning to the dock",
     "v4_smart_stop_returning_home_detail": "Smart Stop is taking the robot home.",
     "v4_smart_stop_checking_reason": "Checking the result before docking.",
-    "v4_smart_stop_checking_title": "Checking the result"
+    "v4_smart_stop_checking_title": "Checking the result",
+    "v4_live_map_read_only_title": "Map is read only",
+    "v4_smart_stop_read_only": "Smart Stop continues while the map is read only.",
+    "v4_smart_stop_read_only_paused": "Smart Stop is paused while the map is read only."
   },
   "config": {
     "flow_title": "{name}",
