@@ -1,6 +1,6 @@
 # v0.5.0
 
-Matic 0.5 brings Map Studio, saved cleaning plans and cleaning history together
+Matic 0.5 brings Map Studio, saved cleaning plans and run results together
 in Home Assistant.
 
 - Use one map workspace for live status, saved maps, room selection, custom
@@ -8,8 +8,8 @@ in Home Assistant.
 - Build plans in your saved order or with Smart Order, with room and area entries, per-room
   cleaning settings and private or shared cleaning schedules. Preview the
   effective settings before starting a run.
-- Follow verified room progress, active time and clearly labeled estimated
-  progress based on estimated time. Estimates do not grant completion credit.
+- See completed room counts, active cleaning time and an estimate of current-room
+  progress based on time. Estimates do not grant completion credit.
   Smart Stop can finish the current room before docking, and **Stop now & dock**
   gives you an immediate choice while it is still cleaning.
 - Keep the visible map and camera steady during updates, browsing and draft
