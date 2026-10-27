@@ -66,6 +66,24 @@ const managedRunSummary = (value: unknown, activePlan: unknown, timing: HassEnti
     completedRoomCount: completedRoomCount as number, roomCount: roomCount as number });
 };
 
+const smartStopStatus = (value: unknown, activePlan: unknown) => {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || !activePlan || typeof activePlan !== "object" || Array.isArray(activePlan)) return null;
+  const run = value as Record<string, unknown>;
+  const active = activePlan as Record<string, unknown>;
+  if (run.outcome !== "running" || active.smart_stop_pending !== true
+    || typeof run.run_id !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/u.test(run.run_id)
+    || active.run_id !== run.run_id) return null;
+  const phase = active.smart_stop_phase;
+  if (phase !== "finishing_room" && phase !== "finishing_area" && phase !== "verifying_completion" && phase !== "returning_to_dock") return null;
+  const kind = phase === "finishing_area" || typeof active.area_id === "string" ? "area" as const : "room" as const;
+  const rawTarget = kind === "area" ? active.area : active.room;
+  const target = typeof rawTarget === "string" && rawTarget.trim()
+    && Array.from(rawTarget).length <= 128 && !/[\u0000-\u001f\u007f]/u.test(rawTarget)
+    ? rawTarget.trim() : null;
+  return Object.freeze({ runId: run.run_id, target, kind, phase });
+};
+
 const safeUserKey = (value: unknown): string => {
   const key = String(value || "local-user")
     .replaceAll(/[^a-zA-Z0-9_-]/g, "")
@@ -170,6 +188,7 @@ export class HassAdapter {
       robotLabel,
       robots: robotChoices,
       lastRun,
+      smartStop: smartStopStatus(history?.last_run, history?.active_plan),
     };
     const signature = JSON.stringify(projection);
     if (signature === this.#signature && this.#projection) return this.#projection;

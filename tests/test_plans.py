@@ -10327,8 +10327,121 @@ async def test_finish_room_threshold_never_rounds_progress_up(hass) -> None:
         assert manager.request_stop("serial") == PlanStopDecision("after_room", 50, 50)
         assert manager.finish_room_event("serial").is_set()
         assert not manager.cancellation_event("serial").is_set()
+        assert manager.request_stop("serial").behavior == "after_room"
     finally:
         lock.release()
+
+
+async def test_new_smart_stop_run_uses_one_room_per_native_mission(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("serial")["plans"]["away"] = {
+        "name": "Away",
+        "finish_current_room": True,
+        "finish_current_room_threshold": 50,
+        "rooms": [],
+    }
+    rooms = [
+        CleaningRoom("room-one", "One", "vacuum", "standard"),
+        CleaningRoom("room-two", "Two", "vacuum", "standard"),
+    ]
+    observed: list[list[CleaningRoom]] = []
+
+    async def complete_leg(*args, **kwargs) -> bool:
+        checkpoint = manager.recovery_run("serial")["recovery_checkpoint"]
+        assert checkpoint["single_room_missions"] is True
+        observed.append(args[5])
+        kwargs["record_room_completed"](args[5][0])
+        return True
+
+    with (
+        patch(
+            "custom_components.matic_robot.managed_executor._async_run_leg",
+            AsyncMock(side_effect=complete_leg),
+        ),
+        patch(
+            "custom_components.matic_robot.managed_executor._async_wait_for_settled_leg_handoff",
+            AsyncMock(return_value=True),
+        ),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            managed_user_command=AsyncMock(),
+            floor_is_current=lambda: True,
+            floor_token="a" * 64,
+            session_identity=AsyncMock(return_value=b""),
+            active_session=AsyncMock(return_value=False),
+            session_history=AsyncMock(return_value=()),
+        )
+
+    assert observed == [[rooms[0]], [rooms[1]]]
+
+
+async def test_smart_stop_pending_is_public_only_for_owned_run(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    room = _room("Kitchen", "room-kitchen")
+    robot = manager._robot("serial")
+    robot["last_run"] = {
+        "run_id": "run-1",
+        "plan_id": "away",
+        "outcome": "running",
+        "recovery_checkpoint": {"stop_intent": "after_room"},
+    }
+    robot["active_plan"] = {
+        "run_id": "run-1",
+        "plan_id": "away",
+        "room_id": room.room_id,
+        "status": "running",
+    }
+    manager.finish_room_event("serial").set()
+
+    active = manager.snapshot("serial")["active_plan"]
+    assert active["smart_stop_pending"] is True
+    assert active["smart_stop_phase"] == "finishing_room"
+    robot["active_plan"]["status"] = "verifying"
+    active = manager.snapshot("serial")["active_plan"]
+    assert active["smart_stop_pending"] is True
+    assert active["smart_stop_phase"] == "verifying_completion"
+    assert manager.request_stop("serial", stop_now=True).behavior == "after_room"
+    assert manager.finish_room_event("serial").is_set()
+    assert not manager.cancellation_event("serial").is_set()
+    robot["active_plan"]["status"] = "running"
+    manager.finish_room_event("serial").clear()
+    assert manager.request_stop("serial", stop_now=True).behavior == "after_room"
+    assert not manager.cancellation_event("serial").is_set()
+    manager.finish_room_event("serial").set()
+    assert manager.request_stop("serial", stop_now=True).behavior == "immediate"
+    assert not manager.finish_room_event("serial").is_set()
+    assert manager.cancellation_event("serial").is_set()
+    manager.cancellation_event("serial").clear()
+    manager.finish_room_event("serial").set()
+    robot["active_plan"] = {
+        "run_id": "run-1",
+        "plan_id": "away",
+        "area_id": "area-rug",
+        "status": "running",
+    }
+    assert manager.snapshot("serial")["active_plan"]["smart_stop_phase"] == (
+        "finishing_area"
+    )
+    robot["active_plan"] = None
+    active = manager.snapshot("serial")["active_plan"]
+    assert active["run_id"] == "run-1"
+    assert active["smart_stop_pending"] is True
+    assert active["smart_stop_phase"] == "returning_to_dock"
+    robot["last_run"]["run_id"] = "replacement-run"
+    robot["active_plan"] = {
+        "run_id": "run-1",
+        "plan_id": "away",
+        "room_id": room.room_id,
+        "status": "running",
+    }
+    assert manager.snapshot("serial")["active_plan"]["smart_stop_pending"] is False
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])

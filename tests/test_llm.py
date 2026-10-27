@@ -1589,6 +1589,27 @@ async def test_plan_tool_previews_custom_areas_in_run_order(hass) -> None:
         },
         select=False,
     )
+    await manager.async_save_plan(
+        serial,
+        "smart-rooms",
+        {
+            "name": "Smart Stop rooms",
+            "finish_current_room": True,
+            "rooms": [
+                {
+                    "room_id": "kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+                {
+                    "room_id": "study",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+            ],
+        },
+        select=False,
+    )
     entry = _entry(floor_plan=floor_plan)
     entry.runtime_data.cleaning_plans = manager
     hass = _hass(entry)
@@ -1634,6 +1655,13 @@ async def test_plan_tool_previews_custom_areas_in_run_order(hass) -> None:
     rooms_only = await plan_preview("rooms")
     assert "runnable" not in rooms_only
     assert [leg["rooms"][0]["id"] for leg in rooms_only["legs"]] == ["kitchen"]
+
+    smart_rooms = await plan_preview("smart-rooms")
+    assert smart_rooms["settings_boundary_count"] == 1
+    assert [[room["id"] for room in leg["rooms"]] for leg in smart_rooms["legs"]] == [
+        ["kitchen"],
+        ["study"],
+    ]
 
     # A redrawn map or a deleted area stops the preview with its reason.
     areas = manager._robot(serial)["areas"]

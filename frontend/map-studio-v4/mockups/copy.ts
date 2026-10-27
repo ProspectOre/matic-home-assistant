@@ -81,7 +81,7 @@ export const COPY = {
   v4_create_plan: "Create a plan",
   v4_plan_order_intelligent_hint: "Longest-waiting first",
   v4_plan_order_ordered_hint: "Top to bottom, as listed",
-  v4_plan_row_rotation: "{count} rooms · Longest-waiting rooms first",
+  v4_plan_row_rotation: "{count} rooms · Smart Order",
   v4_plan_row_ordered: "{count} rooms · Top to bottom, as listed",
   v4_plan_default: "Default",
   v4_paused: "Paused",
@@ -103,11 +103,11 @@ export const COPY = {
   v4_next_run_preview: "Next run",
   v4_next_run_after_active: "After this run",
   v4_plan_rooms_heading: "In this plan",
-  v4_plan_rotation_settings: "Longest-waiting rooms and custom areas first, checked again when you run the plan.",
+  v4_plan_rotation_settings: "Smart Order cleans the rooms and areas that have waited longest first, checking again each time.",
   v4_part_break: "Part {number} starts here; the robot may stop at the dock first",
   v4_needs_attention_chip: "Needs attention", // (literal) plan.md §3 row chip
   v4_plan_summary_return: "Returns to the dock when finished",
-  v4_plan_summary_finish: "When you press Stop, the robot finishes the current room if it's at least {percent}% done.",
+  v4_plan_summary_finish: "Smart Stop finishes the room if you press Stop after {percent}% of its estimated time.",
   v4_reason_run_plan_paused: "Can't run this plan until you turn it on.",
   v4_reason_plan_room_progress: "Can't run this plan until you reset {room}'s schedule progress, which Home Assistant can't confirm.",
   v4_review_room: "Review {room}",
@@ -130,7 +130,7 @@ export const COPY = {
   v4_notice_shared_schedule_blocked: "The robot is using this schedule. Wait until cleaning ends, then try again.",
   v4_plan_name: "Plan name", // (literal) plan.md §3
   v4_cleaning_order: "Cleaning order", // (literal) plan.md §3
-  v4_order_intelligent: "Intelligent rotation", // (literal) plan.md §3
+  v4_order_intelligent: "Smart Order", // (literal) plan.md §3
   v4_order_ordered: "Saved order", // (literal) plan.md §3
   v4_rooms_heading: "Rooms", // (literal) plan.md §3
   v4_plan_rooms_selected: "{selected} of {total} selected",
@@ -161,9 +161,9 @@ export const COPY = {
   v4_room_schedules_mop_heavy_one_both: "Mop every clean · Heavy duty vacuum every clean",
   v4_run_end_options: "When a run ends",
   v4_plan_return_to_dock: "Return to the dock when finished",
-  v4_plan_finish_room: "Finish the current room when you press Stop",
-  v4_plan_finish_room_hint: "Only if the room is at least {percent}% done; otherwise the robot stops right away.",
-  v4_plan_finish_threshold: "Finish if at least {percent}% done",
+  v4_plan_finish_room: "Smart Stop",
+  v4_plan_finish_room_hint: "After {percent}% of a room's estimated time, finish it before docking. Areas and rooms without an estimate finish first. You can still stop now.",
+  v4_plan_finish_threshold: "Finish after {percent}% of estimated room time",
   v4_action_save_plan: "Save",
   v4_action_done: "Done",
   v4_cancel: "Cancel",

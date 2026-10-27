@@ -147,6 +147,11 @@ stop_intelligent_cleaning:
       default: false
       selector:
         boolean:
+    stop_now:
+      default: false
+      advanced: true
+      selector:
+        boolean:
     expected_run_id:
       advanced: true
       selector:

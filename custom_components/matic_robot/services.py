@@ -267,6 +267,7 @@ PREVIEW_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(_ROOM_SEQUENCE_FIEL
 PLAN_TARGET_SCHEMA = cv.make_entity_service_schema(
     {
         probatio.Optional("include_unmanaged", default=False): cv.boolean,
+        probatio.Optional("stop_now", default=False): cv.boolean,
         probatio.Optional("expected_run_id"): probatio.All(
             cv.string, probatio.Length(min=1, max=128)
         ),
@@ -1128,7 +1129,28 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     "The managed cleaning run has changed; Stop was not sent",
                     "managed_run_changed",
                 )
-            decision = manager.request_stop(serial_number)
+            stop_now = bool(call.data.get("stop_now"))
+            if stop_now:
+                active_plan = manager.snapshot(serial_number).get("active_plan")
+                if (
+                    not run_id
+                    or call.data.get("expected_run_id") != run_id
+                    or not isinstance(active_plan, dict)
+                    or active_plan.get("run_id") != run_id
+                    or active_plan.get("smart_stop_pending") is not True
+                    or active_plan.get("smart_stop_phase")
+                    not in {"finishing_room", "finishing_area"}
+                ):
+                    raise _validation_error(
+                        "The Smart Stop request is no longer active; "
+                        "no new stop was sent",
+                        "smart_stop_not_pending",
+                    )
+            decision = (
+                manager.request_stop(serial_number, stop_now=True)
+                if stop_now
+                else manager.request_stop(serial_number)
+            )
             expected_generation = manager.motion_generation(serial_number)
             expected_stop_generation = manager.stop_request_generation(serial_number)
             await manager.async_checkpoint_stop_intent(

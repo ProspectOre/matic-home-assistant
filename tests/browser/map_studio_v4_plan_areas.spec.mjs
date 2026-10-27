@@ -103,10 +103,10 @@ test.describe("plan Edit with custom areas", () => {
     expect((await snapshot(page)).planDraft.dirty).toBe(true);
   });
 
-  test("Intelligent rotation includes every room and area without promising a fixed order", async ({ page }) => {
+  test("Smart Order includes every room and area without promising a fixed order", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "plan-edit-areas-rotation" });
     const list = gallery.getByRole("list", { name: "Rooms and custom areas", exact: true });
-    await expect(gallery.getByText("Rooms and custom areas rotate together. Saved order follows your exact sequence.", { exact: true })).toBeVisible();
+    await expect(gallery.getByText("Smart Order chooses the longest-waiting rooms and areas first. Saved order follows your list.", { exact: true })).toBeVisible();
     await expect(list.locator(".pos-badge")).toHaveCount(0);
     await expect(list.getByRole("button", { name: /^Move / })).toHaveCount(0);
     await expect(list.getByRole("button", { name: /^Settings for / })).toHaveText([
@@ -298,7 +298,7 @@ test.describe("Run and home with custom areas", () => {
     await gallery.evaluate((element) => element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), planView: "run" }));
     await settleWorkspace(gallery);
     await expect(gallery.locator("ul.run-list > li bdi")).toHaveText(["Under the dining table", "Office", "Entryway", "Living room", "Kitchen"]);
-    await expect(gallery.getByText("Longest-waiting rooms and custom areas first, checked again when you run the plan.", { exact: true })).toBeVisible();
+    await expect(gallery.getByText("Smart Order cleans the rooms and areas that have waited longest first, checking again each time.", { exact: true })).toBeVisible();
     await expect(gallery.locator("ul.run-list > li[data-break]")).toHaveCount(3);
   });
 
