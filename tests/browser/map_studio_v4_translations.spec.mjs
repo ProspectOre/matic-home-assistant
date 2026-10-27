@@ -273,6 +273,21 @@ test("a Home Assistant translation error string falls back to English", async ({
   await expect(brush).toContainText(/^Brush · \d+ cm$/);
 });
 
+test("an ICU formatting error returned as text falls back to English", async ({ page }) => {
+  const panel = await mountPanel(page);
+  await page.evaluate(() => {
+    const element = window.__translationPanel;
+    const localize = element.hass.localize;
+    element.hass = { ...element.hass, localize: (key, placeholders) =>
+      key.endsWith(".v4_brush_button")
+        ? 'Translation [formats Error: MISSING_VALUE] The intl string context variable "room" was not provided'
+        : localize(key, placeholders) };
+  });
+  await sendIntent(page, { type: "open-workflow", workflow: "draw" });
+  await sendIntent(page, { type: "set-draw-tool", tool: "paint" });
+  await expect(panel.locator(".draw-brush").first()).toHaveAttribute("aria-label", /^Brush width, \d+ cm\. Opens brush settings\.$/);
+});
+
 test("a localize that throws falls back to English", async ({ page }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));

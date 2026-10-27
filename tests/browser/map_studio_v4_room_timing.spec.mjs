@@ -54,6 +54,18 @@ for (const [viewport, fontSize] of [
     expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
     if (viewport.width === 402 && fontSize === 16) await page.screenshot({ path: test.info().outputPath("active-room-status.png") });
 
+    const sheet = shell.getByRole("complementary", { name: "Cleaning panel" });
+    const collapse = sheet.getByRole("button", { name: "Collapse panel", exact: true });
+    if (await collapse.isVisible()) await collapse.click();
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+    await expect(status).toContainText("In Master Bedroom");
+    await expect(status.locator(".room-estimate")).toHaveText("Estimated room progress: 35% (based on time)");
+    expect(await status.evaluate((element) => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    await expect(stop).toBeVisible();
+    const collapsedStop = await stop.boundingBox();
+    expect(collapsedStop.y).toBeGreaterThanOrEqual(0);
+    expect(collapsedStop.y + collapsedStop.height).toBeLessThanOrEqual(viewport.height);
+
     await shell.getByRole("button", { name: "Full map", exact: true }).click();
     const hud = shell.locator(".full-map-hud");
     const hudEstimate = hud.locator(".room-estimate");
@@ -139,6 +151,29 @@ test("timing projection reads the canonical entity and rejects ambiguous or stal
     duplicate: null, changed: true, percent: 36 });
 });
 
+test("an already-open Home Assistant page with the old progress translation shows the new estimate", async ({ page }) => {
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged", sceneRooms: [
+    { id: "room-kitchen", name: "Kitchen", center: [0.5, 0.5], boundary: [[0, 0], [1, 0], [1, 1], [0, 1]] },
+  ], initialRobotStates: {
+    "vacuum.synthetic": { state: "cleaning", attributes: { matic_entry_id: "synthetic-entry", current_area: "Kitchen" } },
+    "sensor.synthetic_history": { state: "ready", attributes: history },
+    "sensor.synthetic_progress": timing,
+  } });
+  await page.evaluate(() => {
+    const panel = window.__panelFixture.createPanel();
+    panel.hass = { ...panel.hass, localize: (key, values) => {
+      if (key.endsWith(".v4_room_estimated_progress")) {
+        if (!values?.room) return 'Translation [formats Error: MISSING_VALUE] The intl string context variable "room" was not provided';
+        return `Estimated ${values.percent}% · ${values.room}`;
+      }
+      return key;
+    } };
+    document.body.append(panel);
+  });
+  const panel = page.locator(fixture.panelTag);
+  await expect(panel.locator("matic-map-shell-v4 .room-estimate")).toHaveText("Estimated room progress: 35% (based on time)");
+});
+
 for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
   test(`Smart Stop explains its state and keeps the immediate override reachable at ${viewport.width}x${viewport.height} @mobile`, async ({ page }) => {
     await page.setViewportSize(viewport);
@@ -166,6 +201,15 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
     const box = await stop.boundingBox();
     expect(box.y).toBeGreaterThanOrEqual(0);
     expect(box.y + box.height).toBeLessThanOrEqual(viewport.height);
+    const sheet = shell.getByRole("complementary", { name: "Cleaning panel" });
+    const collapse = sheet.getByRole("button", { name: "Collapse panel", exact: true });
+    if (await collapse.isVisible()) await collapse.click();
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+    await expect(status).toContainText("Finishing Master Bedroom, then returning to the dock.");
+    await expect(stop).toBeVisible();
+    const collapsedStop = await stop.boundingBox();
+    expect(collapsedStop.y).toBeGreaterThanOrEqual(0);
+    expect(collapsedStop.y + collapsedStop.height).toBeLessThanOrEqual(viewport.height);
     await stop.click();
     const calls = await page.evaluate(() => window.__panelFixture.serviceCalls);
     expect(calls).toHaveLength(1);

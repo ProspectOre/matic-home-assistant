@@ -104,7 +104,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
     const area = roomKey(state.currentArea);
     return state.activity === "cleaning" && state.coherence === "current" && timing && area
       && (area === roomKey(timing.room) || area === roomKey(timing.roomId))
-      ? t("v4_room_estimated_progress", "Estimated room progress: {percent}% (based on time)", { percent: timing.percent }) : undefined;
+      ? t("v4_room_estimated_time_progress", "Estimated room progress: {percent}% (based on time)", { percent: timing.percent }) : undefined;
   };
   if (!state.host.connected) return { title: t("v4_reconnecting", "Reconnecting"), detail: t("v4_ha_offline", "Home Assistant is offline"), icon: iconOffline, notable: true };
   if (!state.host.administrator) return { title: t("v4_access_required", "Access required"), detail: t("v4_admin_only", "Administrator only"), icon: iconOffline, notable: true };
@@ -1811,7 +1811,9 @@ export class MaticMapShellV4 extends LitElement {
     const line = (state.workflow === "rooms" ? this.#views.value?.roomsGripLine(this.#t, state) : null) ?? workflow.title;
     // With the body open the h2 already names the workflow, so the grip line
     // carries the robot instead of repeating the title directly above it.
-    if (this._sheetDetent !== "peek") return status.detail ? `${status.title} · ${status.detail}` : status.title;
+    if (this._sheetDetent !== "peek" || state.activity === "cleaning" || state.smartStop) {
+      return status.detail ? `${status.title} · ${status.detail}` : status.title;
+    }
     return status.notable ? `${status.title} · ${line}` : line;
   }
 
