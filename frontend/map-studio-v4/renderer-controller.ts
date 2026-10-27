@@ -1530,6 +1530,10 @@ export class RendererController {
         // screen. Never paint a colliding fallback when the viewport is full.
         const width = badgeSpace + context.measureText(room.name).width + 12;
         if (width > bounds.width || bounds.height < 20) continue;
+        // A shallow landscape map cannot usefully show distant callouts for
+        // every room. Keep names near their rooms and favor the active choice;
+        // names return automatically as the map regains space.
+        const maxDisplacement = bounds.height < 160 ? (priority(room) ? 56 : 32) : Infinity;
         let placement: readonly [number, number] | undefined;
         const fits = (x: number, y: number) => !occupied.some(([left, top, otherWidth]) => x < left + otherWidth + 8
           && x + width + 8 > left && y < top + 24 && y + 24 > top);
@@ -1537,22 +1541,37 @@ export class RendererController {
         if (previous) {
           const x = clamp(center.x + previous[0] - width / 2, 0, bounds.width - width);
           const y = clamp(center.y + previous[1] - 10, 0, bounds.height - 20);
-          if (fits(x, y)) placement = [x, y];
-          else previous = undefined;
+          // Retain a little extra room for an existing placement so a small
+          // pan across the cutoff does not make the label jump to a new slot.
+          if (Math.hypot(x + width / 2 - center.x, y + 10 - center.y) <= maxDisplacement + 24 && fits(x, y)) placement = [x, y];
+          else {
+            // When a plate meets a viewport edge, a one-pixel adjustment can
+            // maintain spacing without snapping to a distant grid slot.
+            if (bounds.height < 160) for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+              const nextX = x + dx;
+              const nextY = y + dy;
+              if (nextX < 0 || nextY < 0 || nextX + width > bounds.width || nextY + 20 > bounds.height) continue;
+              if (Math.hypot(nextX + width / 2 - center.x, nextY + 10 - center.y) > maxDisplacement + 24 || !fits(nextX, nextY)) continue;
+              placement = [nextX, nextY];
+              break;
+            }
+            previous = undefined;
+          }
         }
         let nearest = Infinity;
         if (!placement) for (let row = -4; row <= 4; row++) for (let column = -2; column <= 2; column++) {
           const x = clamp(center.x - width / 2 + column * (width + 8), 0, bounds.width - width);
           const y = clamp((Math.round((center.y - 10) / 24) + row) * 24, 0, Math.floor((bounds.height - 20) / 24) * 24);
           const distance = Math.hypot(x + width / 2 - center.x, y + 10 - center.y);
-          if (distance >= nearest || !fits(x, y)) continue;
+          if (distance > maxDisplacement || distance >= nearest || !fits(x, y)) continue;
           placement = [x, y];
           nearest = distance;
         }
         if (!placement) {
-          // Retained offsets can fragment a shallow viewport. Repack once
-          // before hiding a label that the original grid can still fit.
-          if (this.#labelOffsets.size) {
+          // Repack a roomy viewport when retained offsets fragment it. In a
+          // shallow map labels are deliberately omitted; clearing offsets on
+          // every frame would make the remaining labels jump while panning.
+          if (bounds.height >= 160 && this.#labelOffsets.size) {
             this.#labelOffsets.clear();
             this.#renderOverlay();
             return;
