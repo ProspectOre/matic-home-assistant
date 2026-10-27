@@ -1,6 +1,6 @@
 # Matic 0.5 stable qualification
 
-Updated October 26, 2026. This summary reconciles the current candidate with
+Updated October 27, 2026. This summary reconciles the current candidate with
 historical entries in the [acceptance matrix](acceptance-0.5.md). It preserves
 their evidence and limitations; it does not turn older observations into new tests.
 
@@ -14,16 +14,21 @@ duration displays and control defaults. The revised candidate repairs PNG
 camera responses, formats plan estimates, suggests native duration units, and
 makes specialized buttons/selectors opt-in. It also retains learned room-duration
 profiles by cleaning mode and coverage, migrating plan storage minor 11 to 12.
-These changes require fresh source and installed validation; use a matching
-backup for rollback. Cleaning dispatch and completion-credit rules are unchanged; the bounded physical receipts below retain their original scope.
+The revised runtime was installed from `5a1a93a2bee71af04cd5aaef941cef172de7d2f7`
+with a verified encrypted backup. Use that matching backup for rollback.
+Cleaning dispatch and completion-credit rules are unchanged; the bounded
+physical receipts below retain their original scope.
 
 Starting head `3e6e618d1c9243b7a0705dcc1f2d6b77d888ce69` had a clean
 [complete-comparison review](https://github.com/ProspectOre/matic-home-assistant/pull/324#issuecomment-6433732740)
-and passing hosted Test, Browser, and Validate checks. The revised source requires
-fresh complete review and CI on the updated head; the PR is the current source
-of those results. Earlier failed attempts remain historical evidence.
+and passing hosted Test, Browser, and Validate checks. Revised runtime head
+`5a1a93a2bee71af04cd5aaef941cef172de7d2f7` also passed all seven returned checks
+and a clean complete regular review. Subsequent tests/documentation need review
+and CI on their own comparison; the PR records those results. Earlier failed
+attempts remain historical evidence.
 
-Local verification of the revised source: 5,456 Python tests passed with 100%
+Local verification including the 25 new native service/persistence checks:
+5,481 Python tests passed with 100%
 coverage, Ruff and mypy passed, 16 build tests and six focused Chromium/WebKit
 cases passed, and wheel/source contents plus a fresh-environment import passed.
 Independent review found no actionable issue in the changes or timing migration.
@@ -31,11 +36,14 @@ Independent review found no actionable issue in the changes or timing migration.
 ## Installed and physical evidence
 
 Private captures and device identifiers stay outside the public repository.
-These are summaries of retained receipts, not claims of new execution today.
+Current installed checks and historical physical receipts are identified separately.
 
 | Scope | Retained evidence and boundary |
 | --- | --- |
 | RC43 install | 117 integration files matched; sampled loaded identity covered 64 files and 1,385 functions with no code errors. Configuration was preserved and plan-store bytes matched. This is not whole-process verification. |
+| Revised runtime install | 117 files matched the reviewed runtime; 64 loaded files and 1,390 active functions matched. One restart, credentials/options, 80 entity records and four YAML files were checked. Only the two intended settings categories changed. Minor 11→12 preserved existing plan/history/cadence/credit data and created 43 bounded timing profiles. |
+| Revised runtime cameras/UI | Both cameras returned PNG headers/bytes at native and resized resolutions. All 28 served modules and icons matched. Installed Chromium desktop/compact navigation, readable native duration dialogs and an automated compact accessibility scan passed, with no captured page errors or failed HTTP responses. This is not physical-device or screen-reader acceptance. |
+| Native Assist | An installed OpenAI agent returned all seven Matic read-tool results without errors; a natural-language plan preview selected the plan/readiness tools and generated speech. The bounded command trail was unchanged. Microphone input, speaker playback and write-tool physical effects remain separate. |
 | RC43 iPhone | Shallow landscape showed three separated nearby names; Full map restored all 12. Fit and portrait were restored. A native pan changed viewport height, so fixed-viewport continuity is supported by browser tests. |
 | Other devices | Mac, iPad, iPhone, and Samsung map/navigation, reload, settings, drafts, and layout evidence is retained at its tested revision. RC42 reload/layout checks covered all four device types. |
 | Smart Stop | RC41: one acknowledged threshold Stop, one verified completed room, no next-room start, one shared-schedule increment, and docking. Immediate Stop now & dock separately docked with zero completed rooms. |
@@ -59,11 +67,12 @@ not registered and are not part of the shipped entity count.
 
 | Surface | Remaining end-to-end proof |
 | --- | --- |
-| Entities and direct actions | All button/select and standard vacuum routes; positive diagnostic/error/Cues transitions; per-room Recorder/restoration behavior. |
+| Entities and direct actions | Native Core registration/dispatch checks cover all five buttons, plan/area and preference selects, vacuum commands, four switches and water-flow validation with an inert client. Button destinations use local service sinks. Real transport/physical effects and positive diagnostic/error/Cues transitions remain open. |
+| Room statistics | Recorder history and native restore-store serialization/reload preserve duration and timestamp values with no room history available; seconds remain native while minutes remain displayed. This is a disposable Core check, not a full host/database restore drill. |
 | Timing and schedules | Retained estimates match room, mode, and coverage in source; broader setting combinations and every cadence/recovery combination are not physically qualified. Latest room-statistics sensors are not separate settings tiers. |
-| History reset | The prior disposable-target reset had no populated history. It does not establish clearing a populated target while preserving other plans. |
-| Blueprints and triggers | Preview and trigger-choice checks did not import/save/run the five blueprints or establish each trigger-to-action chain. |
-| Assist and notifications | A tool-capable native Assist agent and real phone delivery/action lifecycle remain unverified. Read-only MCP calls and quiet notification traces do not close these gates. |
+| History reset | Populated encrypted-backup migration/reset passed in a disposable instance: only the target history was cleared, 45 other histories survived reload. No production history reset or full backup-restore drill is claimed. |
+| Blueprints and triggers | Five native import/save/reload checks exercise actual state/time/report triggers against local service sinks. Three device-trigger automations survive save/reload, reject unrelated targets and stop after deletion. Download bytes and bus events are synthetic; physical producer chains and real phone delivery remain separate. |
+| Assist and notifications | Native Assist read tools and generated speech passed. Physical write tools, microphone/speaker use and real phone delivery/action lifecycle remain unverified. |
 | Pairing and firmware | Spare-robot, helper, multi-robot, foreign/revoked credentials, identity recovery, and actual firmware transition/alert lifecycles retain hardware or configuration prerequisites. |
 | Reliability and accessibility | Live setter fault/reconnect cases, low-charge recovery, complete assistive-technology coverage, all-device endurance, and a matching-backup restore drill are not established. |
 
@@ -87,8 +96,10 @@ exercise missing behaviors rather than rerunning the entire historical matrix.
 
 The initial source-promotion audit found no new runtime implementation. The
 broader live audit then found PNG camera images advertised as JPEG, and the
-owner requested timing/display/control refinements. Source fixes do not establish
-installed validation or whole-integration end-to-end certification.
+owner requested timing/display/control refinements. The revised runtime now has
+installed preservation, camera, frontend and Assist receipts. Broader physical,
+fault, device, notification and owner gates still prevent complete end-to-end
+certification.
 
 Stable merge and publication remain held for completed qualification and the
 owner's walkthrough and fresh explicit approval. PR #324 stays draft until that
