@@ -6,7 +6,8 @@ Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Eve
 
 ## Workspace and attribution
 
-- Inherit `/Users/alec/Dev/AGENTS.md` when present (native `xcode-tools` preference included); this file adds repository facts only.
+- Inherit the shared [AGENTS.md](https://github.com/ProspectOre/dev-workspace/blob/main/AGENTS.md) (`/Users/alec/Dev/AGENTS.md` when present; native `xcode-tools` preference included); this file adds repository facts only.
+- Before substantive work, at material milestones and at handoff, follow the canonical [Linear work-tracking workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/linear-work-tracking.md). When local ancestor or wiki files are absent, read the linked canonical sources through existing authorized session connectors as that workflow requires; report unavailable routes separately.
 - No AI attribution: no AI co-author or `Assisted-by` trailers, agent session links, "Generated with/by" footers or AI sign-offs in commits, PR titles or bodies, reviews or comments; commit as the account owner; name branches by purpose. `.github/scripts/attribution.py` enforces it in Test.
 
 ## Release candidate cleanup
