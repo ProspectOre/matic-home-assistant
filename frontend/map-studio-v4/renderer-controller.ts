@@ -1530,6 +1530,10 @@ export class RendererController {
         // screen. Never paint a colliding fallback when the viewport is full.
         const width = badgeSpace + context.measureText(room.name).width + 12;
         if (width > bounds.width || bounds.height < 20) continue;
+        // A shallow landscape map cannot usefully show distant callouts for
+        // every room. Keep names near their rooms and favor the active choice;
+        // names return automatically as the map regains space.
+        const maxDisplacement = bounds.height < 160 ? (priority(room) ? 56 : 32) : Infinity;
         let placement: readonly [number, number] | undefined;
         const fits = (x: number, y: number) => !occupied.some(([left, top, otherWidth]) => x < left + otherWidth + 8
           && x + width + 8 > left && y < top + 24 && y + 24 > top);
@@ -1537,7 +1541,7 @@ export class RendererController {
         if (previous) {
           const x = clamp(center.x + previous[0] - width / 2, 0, bounds.width - width);
           const y = clamp(center.y + previous[1] - 10, 0, bounds.height - 20);
-          if (fits(x, y)) placement = [x, y];
+          if (Math.hypot(x + width / 2 - center.x, y + 10 - center.y) <= maxDisplacement && fits(x, y)) placement = [x, y];
           else previous = undefined;
         }
         let nearest = Infinity;
@@ -1545,7 +1549,7 @@ export class RendererController {
           const x = clamp(center.x - width / 2 + column * (width + 8), 0, bounds.width - width);
           const y = clamp((Math.round((center.y - 10) / 24) + row) * 24, 0, Math.floor((bounds.height - 20) / 24) * 24);
           const distance = Math.hypot(x + width / 2 - center.x, y + 10 - center.y);
-          if (distance >= nearest || !fits(x, y)) continue;
+          if (distance > maxDisplacement || distance >= nearest || !fits(x, y)) continue;
           placement = [x, y];
           nearest = distance;
         }
