@@ -144,3 +144,5 @@ Strip titles and details are in §4; dialog copy is in §5. Glossary: `docs/ux-a
 - Out of scope: Draw, area review, history, Full map and help (`map-surfaces.md`); plan run/edit and schedules (`plan.md`); home cards, rooms and the robot select (`home-rooms.md`); token values, sizes and detent heights (`design-system.md`); HA-native surfaces (`ha-native.md`).
 
 - **Smart Stop:** after an accepted finish-current-entry request, identify Smart Stop and explain that the current room or area finishes before the robot returns to the dock. Keep **Stop now & dock** available to cancel the rest immediately, bound to the active run. Once the current mission ends, disable it while the result is checked and the robot returns to the dock. Connection and robot warnings retain priority; a paused run explains how to resume or stop now.
+
+- On the expanded home panel, show the Smart Stop name and current room in the status line, and explain the next step once in the panel. The collapsed sheet and full-map view keep the complete explanation.

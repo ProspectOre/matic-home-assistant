@@ -479,14 +479,16 @@ test.describe("home by state", () => {
         smartStop: { runId: "run-123", target: "Master Bedroom", kind: "room", phase: "finishing_room" } });
     });
     await expect(gallery.getByRole("heading", { name: "Map is read only", level: 2 })).toBeVisible();
-    await expect(panelOf(gallery).locator(".panel-description")).toHaveText("Smart Stop continues while the map is read only.");
+    await expect(panelOf(gallery).locator(".panel-description")).toHaveCount(0);
+    await expect(gallery.getByText("Finishing Master Bedroom, then returning to the dock.", { exact: true })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Stop now & dock", exact: true })).toBeEnabled();
     await expect(gallery.getByText("Saved map is read only", { exact: true })).toHaveCount(0);
     await gallery.evaluate((element) => {
       const state = element.getWorkspaceSnapshot();
       element.replaceWorkspaceState({ ...state, activity: "paused" });
     });
-    await expect(panelOf(gallery).locator(".panel-description")).toHaveText("Smart Stop is paused while the map is read only.");
+    await expect(panelOf(gallery).locator(".panel-description")).toHaveCount(0);
+    await expect(gallery.getByText("Resume to finish this clean, or stop now and dock.", { exact: true })).toBeVisible();
   });
 
   // MS-HOME-01 / MS-STATUS-02: a notice is visible on home, under the heading,

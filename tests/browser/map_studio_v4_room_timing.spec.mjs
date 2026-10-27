@@ -174,7 +174,7 @@ test("an already-open Home Assistant page with the old progress translation show
   await expect(panel.locator("matic-map-shell-v4 .room-estimate")).toHaveText("Estimated room progress: 35% (based on time)");
 });
 
-for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }]) {
+for (const viewport of [{ width: 320, height: 700 }, { width: 390, height: 844 }, { width: 844, height: 390 }]) {
   test(`Smart Stop explains its state and keeps the immediate override reachable at ${viewport.width}x${viewport.height} @mobile`, async ({ page }) => {
     await page.setViewportSize(viewport);
     const activeHistory = structuredClone(history);
@@ -188,12 +188,21 @@ for (const viewport of [{ width: 390, height: 844 }, { width: 844, height: 390 }
       "sensor.synthetic_history": { state: "ready", attributes: activeHistory },
       "sensor.synthetic_progress": activeTiming,
     } });
-    await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+    await page.evaluate((largeText) => {
+      if (largeText) document.documentElement.style.fontSize = "20px";
+      const panel = window.__panelFixture.createPanel();
+      panel.hass = { ...panel.hass, localize: (key) => key.endsWith(".v4_smart_stop_home_detail")
+        ? "Smart Stop will return to the dock when it's done." : key };
+      document.body.append(panel);
+    }, viewport.width === 320);
     const panel = page.locator(fixture.panelTag);
     const shell = panel.locator("matic-map-shell-v4");
     const status = shell.locator(".sheet-status");
     await expect(status).toContainText("Smart Stop");
-    await expect(status).toContainText("Finishing Master Bedroom, then returning to the dock.");
+    await expect(status).toContainText("Master Bedroom");
+    await expect(status).not.toContainText("returning to the dock");
+    await expect(shell.getByRole("heading", { name: "Finishing this room", exact: true })).toBeVisible();
+    await expect(shell.locator(".panel-description")).toHaveText("Returning to the dock when it's done.");
     await expect(status.locator(".room-estimate")).toHaveText("Estimated room progress: 35% (based on time)");
     expect(await status.evaluate((element) => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
     const stop = shell.getByRole("button", { name: "Stop now & dock", exact: true });
@@ -259,7 +268,7 @@ test("Smart Stop shows paused and return phases without hiding connection proble
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
   const shell = panel.locator("matic-map-shell-v4");
-  await expect(shell.locator(".status-copy")).toContainText("Resume to finish this clean, or stop now and dock.");
+  await expect(shell.locator(".panel-description")).toHaveText("Resume to finish this clean, or stop now and dock.");
   await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toBeEnabled();
   await panel.evaluate((element) => {
     const states = structuredClone(element.hass.states);
@@ -267,7 +276,8 @@ test("Smart Stop shows paused and return phases without hiding connection proble
     states["sensor.synthetic_history"].attributes.active_plan.smart_stop_phase = "verifying_completion";
     element.hass = { ...element.hass, states };
   });
-  await expect(shell.locator(".status-copy")).toContainText("Checking the result before docking.");
+  await expect(shell.getByRole("heading", { name: "Checking the result", exact: true })).toBeVisible();
+  await expect(shell.locator(".panel-description")).toHaveText("Before returning to the dock.");
   await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toBeDisabled();
   await panel.evaluate((element) => {
     const states = structuredClone(element.hass.states);
@@ -275,7 +285,7 @@ test("Smart Stop shows paused and return phases without hiding connection proble
     states["sensor.synthetic_history"].attributes.active_plan.smart_stop_phase = "returning_to_dock";
     element.hass = { ...element.hass, states };
   });
-  await expect(shell.locator(".status-copy")).toContainText("Smart Stop is returning to the dock.");
+  await expect(shell.getByRole("heading", { name: "Returning to the dock", exact: true })).toBeVisible();
   await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toBeDisabled();
   await panel.evaluate((element) => { element.hass = { ...element.hass, connected: false }; });
   await expect(shell.locator(".status-copy")).toContainText("Home Assistant is offline");
