@@ -232,6 +232,123 @@ async def test_import_save_reload_and_source_trigger(
 
 
 @pytest.mark.parametrize(
+    ("action_prefix", "expected_action"),
+    [("MATIC_FW_ACK", "acknowledge"), ("MATIC_FW_CHECK", "recheck")],
+)
+async def test_saved_firmware_mobile_action_routes_current_report(
+    hass: HomeAssistant,
+    hass_ws_client: Any,
+    hass_client: Any,
+    aioclient_mock: Any,
+    tmp_path: Path,
+    action_prefix: str,
+    expected_action: str,
+) -> None:
+    """Imported blueprint actions render tokens and call only inert local sinks."""
+    calls = await prepare_api(hass, tmp_path)
+    register_firmware_device(hass)
+    report = {
+        "id": "0123456789abcdef01234567",
+        "revision": 3,
+        "delivered_revision": 3,
+        "acknowledged_revision": 0,
+        "notification_pending": False,
+        "attention_required": True,
+        "firmware_version": "synthetic-test",
+        "reachable_endpoints": 1,
+        "endpoint_count": 2,
+        "findings": [],
+    }
+    hass.states.async_set(
+        FIRMWARE,
+        "needs_attention",
+        {"firmware_report": report, "firmware_report_revision": 3},
+    )
+    assert await async_setup_component(hass, "websocket_api", {})
+    automation_config.async_setup(hass)
+    ws = await hass_ws_client(hass)
+    client = await hass_client()
+    filename = "firmware_intelligence.yaml"
+    source = (
+        "https://github.com/ProspectOre/matic-home-assistant/blob/main/"
+        f"blueprints/automation/matic_robot/{filename}"
+    )
+    raw = (
+        "https://raw.githubusercontent.com/ProspectOre/matic-home-assistant/main/"
+        f"blueprints/automation/matic_robot/{filename}"
+    )
+    aioclient_mock.get(raw, text=(BLUEPRINTS / filename).read_text())
+    await ws.send_json({"id": 1, "type": "blueprint/import", "url": source})
+    imported = await ws.receive_json()
+    assert imported["success"], imported
+    assert not imported["result"]["validation_errors"]
+    path = f"matic_test/{filename}"
+    await ws.send_json(
+        {
+            "id": 2,
+            "type": "blueprint/save",
+            "domain": "automation",
+            "path": path,
+            "yaml": imported["result"]["raw_data"],
+            "source_url": source,
+        }
+    )
+    assert (await ws.receive_json())["success"]
+    inputs = inputs_for(filename)
+    config = {
+        "alias": "Saved Matic mobile action test",
+        "use_blueprint": {"path": path, "input": inputs},
+    }
+    response = await client.post(
+        "/api/config/automation/config/matic_mobile_action_test", json=config
+    )
+    assert response.status == 200, await response.text()
+    await hass.services.async_call("automation", "reload", {}, blocking=True)
+    await hass.async_block_till_done()
+    assert hass.states.get("automation.saved_matic_mobile_action_test").state == "on"
+    assert calls == []
+
+    notification_key = f"matic_firmware_{VACUUM}"
+    action_token = (
+        f"{action_prefix}|{notification_key}|{report['id']}|{report['revision']}"
+    )
+    hass.bus.async_fire("mobile_app_notification_action", {"action": action_token})
+    await hass.async_block_till_done()
+    firmware_calls = [
+        call
+        for call in calls
+        if call.domain == "matic_robot" and call.service == "firmware_notification"
+    ]
+    assert len(firmware_calls) == 1
+    assert firmware_calls[0].data == {
+        "entity_id": [VACUUM],
+        "report_id": report["id"],
+        "revision": 3,
+        "action": expected_action,
+    }
+    if expected_action == "acknowledge":
+        assert [(call.domain, call.service) for call in calls] == [
+            ("matic_robot", "firmware_notification"),
+            ("persistent_notification", "dismiss"),
+            ("notify", "blueprint_test_phone"),
+        ]
+        assert calls[-1].data == {
+            "message": "clear_notification",
+            "data": {"tag": notification_key},
+        }
+    else:
+        assert [(call.domain, call.service) for call in calls] == [
+            ("matic_robot", "firmware_notification")
+        ]
+    await hass.services.async_call(
+        "automation",
+        "turn_off",
+        {"entity_id": "automation.saved_matic_mobile_action_test"},
+        blocking=True,
+    )
+
+
+@pytest.mark.parametrize(
     "trigger_type", ["room_completed", "plan_finished", "cleaning_finished"]
 )
 async def test_saved_device_trigger_filters_after_reload(

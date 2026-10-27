@@ -27,8 +27,8 @@ and a clean complete regular review. Subsequent tests/documentation need review
 and CI on their own comparison; the PR records those results. Earlier failed
 attempts remain historical evidence.
 
-Local verification including the 25 new native service/persistence checks:
-5,481 Python tests passed with 100%
+Local verification including 27 new native service/persistence and mobile-action checks:
+5,483 Python tests passed with 100%
 coverage, Ruff and mypy passed, 16 build tests and six focused Chromium/WebKit
 cases passed, and wheel/source contents plus a fresh-environment import passed.
 Independent review found no actionable issue in the changes or timing migration.
@@ -72,7 +72,7 @@ not registered and are not part of the shipped entity count.
 | Room statistics | Recorder history and native restore-store serialization/reload preserve duration and timestamp values with no room history available; seconds remain native while minutes remain displayed. This is a disposable Core check, not a full host/database restore drill. |
 | Timing and schedules | Retained estimates match room, mode, and coverage in source; broader setting combinations and every cadence/recovery combination are not physically qualified. Latest room-statistics sensors are not separate settings tiers. |
 | History reset | Populated encrypted-backup migration/reset passed in a disposable instance: only the target history was cleared, 45 other histories survived reload. No production history reset or full backup-restore drill is claimed. |
-| Blueprints and triggers | Five native import/save/reload checks exercise actual state/time/report triggers against local service sinks. Three device-trigger automations survive save/reload, reject unrelated targets and stop after deletion. Download bytes and bus events are synthetic; physical producer chains and real phone delivery remain separate. |
+| Blueprints and triggers | Five native import/save/reload checks exercise actual state/time/report triggers against local service sinks. Saved firmware blueprints also route acknowledge and recheck mobile events to the intended local sinks. Three device-trigger automations survive save/reload, reject unrelated targets and stop after deletion. Download bytes and bus events are synthetic; physical producer chains and real phone delivery remain separate. |
 | Assist and notifications | Native Assist read tools and generated speech passed. Physical write tools, microphone/speaker use and real phone delivery/action lifecycle remain unverified. |
 | Pairing and firmware | Spare-robot, helper, multi-robot, foreign/revoked credentials, identity recovery, and actual firmware transition/alert lifecycles retain hardware or configuration prerequisites. |
 | Reliability and accessibility | Live setter fault/reconnect cases, low-charge recovery, complete assistive-technology coverage, all-device endurance, and a matching-backup restore drill are not established. |
