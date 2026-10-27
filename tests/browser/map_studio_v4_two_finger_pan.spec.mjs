@@ -13,7 +13,9 @@ async function gesture(page, view, kind, delta = 60) {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   return page.evaluate(async ({ view, kind, delta }) => {
     const { GestureController, RendererController, createGalleryState } = await import("/two-finger-pan.js");
-    const state = { ...createGalleryState("ready"), view };
+    const state = view === "draw"
+      ? createGalleryState("draw")
+      : { ...createGalleryState("ready"), view };
     const host = document.createElement("div");
     host.tabIndex = 0;
     Object.assign(host.style, { position: "absolute", left: "20px", top: "20px", width: "800px", height: "600px" });
@@ -47,8 +49,112 @@ async function gesture(page, view, kind, delta = 60) {
       const first = [320, 320];
       const second = [520, 320];
       dispatch("pointerdown", 11, ...first);
+      if (kind === "singlePan") {
+        const samples = [];
+        for (let step = 1; step <= 4; step += 1) {
+          first[0] = 320 + 48 * step / 4;
+          first[1] = 320 + 36 * step / 4;
+          dispatch("pointermove", 11, ...first);
+          await frame();
+          samples.push(renderer.camera);
+        }
+        dispatch("pointerup", 11, ...first);
+        return { before, samples, mutations };
+      }
+      if (kind === "preJoinPan") {
+        first[0] = 360;
+        first[1] = 350;
+        dispatch("pointermove", 11, ...first);
+        await frame();
+        const joinCamera = renderer.camera;
+        second[0] = 560;
+        second[1] = 350;
+        dispatch("pointerdown", 12, ...second);
+        first[1] += delta;
+        second[1] += delta;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const after = renderer.camera;
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before: joinCamera, samples: [after], mutations };
+      }
       dispatch("pointerdown", 12, ...second);
+      if (kind === "cancelSecond") {
+        dispatch("pointercancel", 12, ...second);
+        first[0] = 360;
+        first[1] = 350;
+        dispatch("pointermove", 11, ...first);
+        await frame();
+        const samples = [renderer.camera];
+        dispatch("pointerup", 11, ...first);
+        return { before, samples, mutations };
+      }
+      if (kind === "stationaryPinch") {
+        first[0] = 260;
+        dispatch("pointermove", 11, ...first);
+        await frame();
+        const samples = [renderer.camera];
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples, mutations };
+      }
+      if (kind === "stationaryTwist") {
+        second[0] = 320;
+        second[1] = 520;
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const samples = [renderer.camera];
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples, mutations };
+      }
+      if (kind === "stationaryVertical18") {
+        first[1] = 338;
+        dispatch("pointermove", 11, ...first);
+        await frame();
+        const samples = [renderer.camera];
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples, mutations };
+      }
+      if (kind === "spreadVertical") {
+        first[0] = 315;
+        first[1] = 340;
+        second[0] = 525;
+        second[1] = 340;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const samples = [renderer.camera];
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples, mutations };
+      }
+      if (kind === "blurQueued") {
+        first[1] = second[1] = 350;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        host.dispatchEvent(new Event("blur"));
+        await frame();
+        return { before, samples: [renderer.camera], mutations };
+      }
+      if (kind === "combined") {
+        first[0] = 380;
+        first[1] = 350;
+        second[0] = 550;
+        second[1] = 410;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const samples = [renderer.camera];
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples, mutations };
+      }
       const samples = [];
+      let firstMove;
       for (let step = 1; step <= 4; step += 1) {
         const t = step / 4;
         if (kind === "pan") {
@@ -64,13 +170,14 @@ async function gesture(page, view, kind, delta = 60) {
           second[1] = 320 + 100 * Math.sin(angle);
         }
         dispatch("pointermove", 11, ...first);
+        if (step === 1) firstMove = renderer.camera;
         dispatch("pointermove", 12, ...second);
         await frame();
         samples.push(renderer.camera);
       }
       dispatch("pointerup", 11, ...first);
       dispatch("pointerup", 12, ...second);
-      return { before, samples, mutations };
+      return { before, samples, firstMove, mutations };
     } finally {
       controller.dispose();
       renderer.dispose();
@@ -79,17 +186,124 @@ async function gesture(page, view, kind, delta = 60) {
   }, { view, kind, delta });
 }
 
+test("one-finger touch drag pans the 3D map", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "singlePan");
+  const after = samples.at(-1);
+  expect(Math.hypot(after.targetX - before.targetX, after.targetZ - before.targetZ)).toBeGreaterThan(0.01);
+  expect(after.pitch).toBeCloseTo(before.pitch, 8);
+  expect(after.yaw).toBeCloseTo(before.yaw, 8);
+  expect(mutations).toBe(0);
+});
+
+test("two-finger movement in Draw pans the top view and cancels the pending paint without editing", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "draw", "pan", 60);
+  const after = samples.at(-1);
+  expect(Math.hypot(after.targetX - before.targetX, after.targetZ - before.targetZ)).toBeGreaterThan(0.01);
+  expect(after.yaw).toBeCloseTo(before.yaw, 8);
+  expect(mutations).toBe(0);
+});
+
+test("when one contact is cancelled, the remaining finger pans without editing", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "cancelSecond");
+  const after = samples.at(-1);
+  expect(Math.hypot(after.targetX - before.targetX, after.targetZ - before.targetZ)).toBeGreaterThan(0.01);
+  expect(after.pitch).toBeCloseTo(before.pitch, 8);
+  expect(after.yaw).toBeCloseTo(before.yaw, 8);
+  expect(mutations).toBe(0);
+});
+
+test("pinching with one stationary anchor still zooms", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "stationaryPinch");
+  const after = samples.at(-1);
+  expect(after.distance).toBeLessThan(before.distance * 0.8);
+  expect(after.pitch).toBeCloseTo(before.pitch, 8);
+  expect(after.yaw).toBeCloseTo(before.yaw, 8);
+  expect(mutations).toBe(0);
+});
+
+test("twisting around one stationary anchor still rotates and pans", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "stationaryTwist");
+  const after = samples.at(-1);
+  expect(Math.abs(after.yaw - before.yaw)).toBeGreaterThan(1);
+  expect(after.distance).toBeCloseTo(before.distance, 8);
+  expect(Math.hypot(after.targetX - before.targetX, after.targetZ - before.targetZ)).toBeGreaterThan(0.01);
+  expect(mutations).toBe(0);
+});
+
+test("a stationary anchor with an 18px vertical move remains a composed transform, not tilt", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "stationaryVertical18");
+  const after = samples.at(-1);
+  expect(Math.abs(after.yaw - before.yaw)).toBeGreaterThan(0.05);
+  expect(after.pitch).toBeCloseTo(before.pitch, 8);
+  expect(after.distance).not.toBeCloseTo(before.distance, 4);
+  expect(mutations).toBe(0);
+});
+
+test("vertical translation with deliberate finger spread preserves zoom instead of tilting", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "spreadVertical");
+  const after = samples.at(-1);
+  expect(after.pitch).toBeCloseTo(before.pitch, 8);
+  expect(after.distance).not.toBeCloseTo(before.distance, 3);
+  expect(Math.hypot(after.targetX - before.targetX, after.targetZ - before.targetZ)).toBeGreaterThan(0.01);
+  expect(mutations).toBe(0);
+});
+
+test("blur cancels a queued two-finger camera update", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "blurQueued");
+  const after = samples.at(-1);
+  expect(after.pitch).toBeCloseTo(before.pitch, 8);
+  expect(after.yaw).toBeCloseTo(before.yaw, 8);
+  expect(after.distance).toBeCloseTo(before.distance, 8);
+  expect(after.targetX).toBeCloseTo(before.targetX, 8);
+  expect(after.targetZ).toBeCloseTo(before.targetZ, 8);
+  expect(mutations).toBe(0);
+});
+
+test("combined two-finger translation, pinch, and twist preserve all transform components", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "combined");
+  const after = samples.at(-1);
+  expect(after.distance).not.toBeCloseTo(before.distance, 2);
+  expect(Math.abs(after.yaw - before.yaw)).toBeGreaterThan(0.1);
+  expect(Math.hypot(after.targetX - before.targetX, after.targetZ - before.targetZ)).toBeGreaterThan(0.01);
+  expect(mutations).toBe(0);
+});
+
+test("a one-finger pan before the second contact does not contaminate 3D tilt intent", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "preJoinPan", 60);
+  const after = samples.at(-1);
+  expect(Math.abs(after.pitch - before.pitch)).toBeGreaterThan(0.15);
+  expect(after.yaw).toBeCloseTo(before.yaw, 8);
+  expect(after.distance).toBeCloseTo(before.distance, 8);
+  expect(after.targetX).toBeCloseTo(before.targetX, 8);
+  expect(after.targetZ).toBeCloseTo(before.targetZ, 8);
+  expect(mutations).toBe(0);
+});
+
 for (const view of ["three", "top"]) {
   for (const delta of [-60, 60]) {
-    test(`parallel two-finger ${delta < 0 ? "up" : "down"} pan preserves the ${view} camera angle and scale`, async ({ page }) => {
+    test(`parallel two-finger ${delta < 0 ? "up" : "down"} drag ${view === "three" ? "tilts" : "pans"} without editing areas`, async ({ page }) => {
       const result = await gesture(page, view, "pan", delta);
+      // PointerEvents for the two fingers arrive separately. Do not apply the
+      // first contact's half-movement while its partner is still stationary.
+      expect(result.firstMove.pitch).toBeCloseTo(result.before.pitch, 8);
+      expect(result.firstMove.yaw).toBeCloseTo(result.before.yaw, 8);
+      expect(result.firstMove.targetX).toBeCloseTo(result.before.targetX, 8);
+      expect(result.firstMove.targetZ).toBeCloseTo(result.before.targetZ, 8);
       for (const sample of result.samples) {
-        expect(sample.pitch).toBeCloseTo(result.before.pitch, 8);
         expect(sample.yaw).toBeCloseTo(result.before.yaw, 8);
         expect(sample.distance).toBeCloseTo(result.before.distance, 8);
       }
       const after = result.samples.at(-1);
-      expect(Math.hypot(after.targetX - result.before.targetX, after.targetZ - result.before.targetZ)).toBeGreaterThan(0.01);
+      if (view === "three") {
+        expect(Math.abs(after.pitch - result.before.pitch)).toBeGreaterThan(0.15);
+        expect(after.pitch).toBeLessThanOrEqual(1.38);
+        expect(after.pitch).toBeGreaterThanOrEqual(0.18);
+        expect(after.targetX).toBeCloseTo(result.before.targetX, 8);
+        expect(after.targetZ).toBeCloseTo(result.before.targetZ, 8);
+      } else {
+        expect(after.pitch).toBeCloseTo(result.before.pitch, 8);
+        expect(Math.hypot(after.targetX - result.before.targetX, after.targetZ - result.before.targetZ)).toBeGreaterThan(0.01);
+      }
       expect(result.mutations).toBe(0);
     });
   }

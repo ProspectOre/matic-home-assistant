@@ -27,8 +27,8 @@ and a clean complete regular review. Subsequent tests/documentation need review
 and CI on their own comparison; the PR records those results. Earlier failed
 attempts remain historical evidence.
 
-Local verification including 27 new native service/persistence and mobile-action checks:
-5,483 Python tests passed with 100%
+Local verification including 29 new native service/persistence and mobile-action checks:
+5,485 Python tests passed with 100%
 coverage, Ruff and mypy passed, 16 build tests and six focused Chromium/WebKit
 cases passed, and wheel/source contents plus a fresh-environment import passed.
 Independent review found no actionable issue in the changes or timing migration.
@@ -43,7 +43,7 @@ Current installed checks and historical physical receipts are identified separat
 | RC43 install | 117 integration files matched; sampled loaded identity covered 64 files and 1,385 functions with no code errors. Configuration was preserved and plan-store bytes matched. This is not whole-process verification. |
 | Revised runtime install | 117 files matched the reviewed runtime; 64 loaded files and 1,390 active functions matched. One restart, credentials/options, 80 entity records and four YAML files were checked. Only the two intended settings categories changed. Minor 11→12 preserved existing plan/history/cadence/credit data and created 43 bounded timing profiles. |
 | Revised runtime cameras/UI | Both cameras returned PNG headers/bytes at native and resized resolutions. All 28 served modules and icons matched. Installed Chromium desktop/compact navigation, readable native duration dialogs and an automated compact accessibility scan passed, with no captured page errors or failed HTTP responses. This is not physical-device or screen-reader acceptance. |
-| Native Assist | An installed OpenAI agent returned all seven Matic read-tool results without errors; a natural-language plan preview selected the plan/readiness tools and generated speech. The bounded command trail was unchanged. Microphone input, speaker playback and write-tool physical effects remain separate. |
+| Native Assist | An installed OpenAI agent returned all seven Matic read-tool results without errors; a natural-language plan preview selected the plan/readiness tools and generated speech. The owner confirmed iPhone microphone input and spoken output. Direct Run plan physical effects are recorded below; model-selected physical writes remain separate. |
 | Revised runtime physical pass | One independently approved native Run plan tool completed a Dining Room Vacuum/Quick pass, with one Start, one verified room credit and docking. Both shared N3 counters advanced 0→1; private cadence, original definitions/default and other rooms' histories were preserved. Managed room time was 844 seconds, native vacuum work 805 seconds, tracked session time 859 seconds and native session span 882 seconds; the minute display matched managed timing. This is not due-cycle, mopping, restart recovery or independent coverage-application proof. The owner then stopped physical testing: all three owned test plans and their temporary shared schedule were removed, with original definitions/default and completed physical history preserved. |
 | RC43 iPhone | Shallow landscape showed three separated nearby names; Full map restored all 12. Fit and portrait were restored. A native pan changed viewport height, so fixed-viewport continuity is supported by browser tests. |
 | Other devices | Mac, iPad, iPhone, and Samsung map/navigation, reload, settings, drafts, and layout evidence is retained at its tested revision. RC42 reload/layout checks covered all four device types. |
@@ -70,6 +70,9 @@ independent physical coverage application or untested recovery combinations.
 Earlier plan, schedule, reset/Cancel, preview, history, authorization/refusal,
 and recovery receipts remain bounded by their revisions and change-impact review.
 The old 189-cell matrix is historical; it is not a current unique-defect count.
+The [35-entry feature record](verification-0.5-features.md) tracks the full new
+surface, later live metadata/reload and phone checks, and the owner-requested
+iOS gesture update. Its pending checks are not silently certified by the passes above.
 
 ## Whole-integration evidence audit
 
@@ -87,8 +90,8 @@ not registered and are not part of the shipped entity count.
 | Room statistics | Recorder history and native restore-store serialization/reload preserve duration and timestamp values with no room history available; seconds remain native while minutes remain displayed. This is a disposable Core check, not a full host/database restore drill. |
 | Timing and schedules | Retained estimates match room, mode, and coverage in source; broader setting combinations and every cadence/recovery combination are not physically qualified. Latest room-statistics sensors are not separate settings tiers. |
 | History reset | Populated encrypted-backup migration/reset passed in a disposable instance: only the target history was cleared, 45 other histories survived reload. No production history reset or full backup-restore drill is claimed. |
-| Blueprints and triggers | Five native import/save/reload checks exercise actual state/time/report triggers against local service sinks. Saved firmware blueprints also route acknowledge and recheck mobile events to the intended local sinks. Three device-trigger automations survive save/reload, reject unrelated targets and stop after deletion. Download bytes and bus events are synthetic; physical producer chains and real phone delivery remain separate. |
-| Assist and notifications | Native Assist read tools and generated speech passed. The direct native Run plan tool completed the bounded physical passes above. Model-selected writes, microphone/speaker use and real phone delivery/action lifecycle remain unverified. |
+| Blueprints and triggers | Five native import/save/reload checks exercise actual state/time/report triggers against local sinks. A composed native tracker-to-saved-blueprint check verifies retry and quiet delivery behavior. Three device-trigger automations survive save/reload and stop after deletion. Synthetic firmware scans do not establish a real firmware transition. |
+| Assist and notifications | Native Assist reads, owner-confirmed microphone/speaker use and direct Run plan passed. Real iPhone Check again/Acknowledge events completed through the current saved blueprint, and the owner confirmed notification clearing. Model-selected physical writes and actual firmware-transition alert delivery remain separate. |
 | Pairing and firmware | Spare-robot, helper, multi-robot, foreign/revoked credentials, identity recovery, and actual firmware transition/alert lifecycles retain hardware or configuration prerequisites. |
 | Reliability and accessibility | Live setter fault/reconnect cases, low-charge recovery, complete assistive-technology coverage, all-device endurance, and a matching-backup restore drill are not established. |
 
