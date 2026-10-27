@@ -18,6 +18,7 @@ your Home Assistant user settings. The full schema is in
 | --- | --- |
 | Clean (`clean`) | Optional `rooms`, `cleaning_mode`, `coverage_setting` and `ordered`. Omit rooms for the whole floor. |
 | Clean room sequence (`clean_room_sequence`) | Required `rooms`, each with room, cleaning mode and vacuum coverage; optional `return_to_base` (default `true`). |
+| Preview room sequence (`preview_room_sequence`) | Checks the selected rooms, effective settings and due work without starting cleaning; returns the preview used to confirm the run. |
 | Clean custom area (`clean_area`) | Required `area` name; optional `cleaning_mode` and `coverage_setting` overrides. |
 | Run plan (`run_selected_plan`) | Runs `plan`, or the default plan, the way it is saved. |
 | Run intelligent rotation (`intelligent_clean`) | Runs `plan` starting with the rooms that have waited longest. |
@@ -44,6 +45,7 @@ and dock, use Home Assistant's standard vacuum actions.
 | Remove room or area from plan (`delete_plan_room`) | Removes `room` or `area` from `plan`. |
 | Reset room cleaning history (`reset_plan_history`) | Clears which rooms `plan` has cleaned, or every plan with `all_plans: true`. |
 | Reset room schedule progress (`reset_room_cadence`) | Resets mopping, vacuum rotation or both for one room or the whole plan. |
+| Delete shared room schedule (`delete_room_schedule`) | Removes one room's shared schedule after checking the confirmation and affected plans; usual cleaning settings and cleaning history remain. |
 
 `save_plan` also accepts `enabled`, `run_behavior` (`intelligent` for
 Intelligent rotation or `ordered` for Saved order), `return_to_base`,
@@ -66,8 +68,8 @@ data:
       coverage_setting: heavy_duty
 ```
 
-Areas keep their saved positions; Intelligent rotation reorders only the rooms
-between two areas. A preview splits the run at every switch between rooms and
+Smart Order ranks rooms and custom areas together by which have waited longest.
+Saved order keeps their saved positions. A preview splits the run at every switch between rooms and
 an area, and is refused (`area_missing`, `area_map_changed`) when an area was
 deleted or the map changed. Deleting an area removes it from every plan; it
 is refused while it is a plan's only item, and Matic Map names those plans.

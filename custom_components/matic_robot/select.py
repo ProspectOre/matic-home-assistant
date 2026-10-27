@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.components.select import SelectEntity, SelectEntityDescription
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
@@ -16,21 +17,25 @@ PARALLEL_UPDATES = 0
 CLEANING_MODE_DESCRIPTION = SelectEntityDescription(
     key=CONF_CLEANING_MODE,
     translation_key=CONF_CLEANING_MODE,
+    entity_category=EntityCategory.CONFIG,
 )
 
 COVERAGE_DESCRIPTION = SelectEntityDescription(
     key=CONF_COVERAGE_SETTING,
     translation_key=CONF_COVERAGE_SETTING,
+    entity_category=EntityCategory.CONFIG,
 )
 
 SAVED_PLAN_DESCRIPTION = SelectEntityDescription(
     key="saved_cleaning_plan",
     translation_key="saved_cleaning_plan",
+    entity_registry_enabled_default=False,
 )
 
 CUSTOM_AREA_DESCRIPTION = SelectEntityDescription(
     key="custom_cleaning_area",
     translation_key="custom_cleaning_area",
+    entity_registry_enabled_default=False,
 )
 
 

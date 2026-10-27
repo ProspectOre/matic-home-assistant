@@ -75,12 +75,14 @@ CURRENT_ROOM_TIMING_DESCRIPTIONS = (
         translation_key="current_room_active_time",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.MINUTES,
     ),
     SensorEntityDescription(
         key="current_room_expected_duration",
         translation_key="current_room_expected_duration",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.MINUTES,
     ),
     SensorEntityDescription(
         key="current_room_estimated_progress",
@@ -107,6 +109,7 @@ ROOM_DURATION_DESCRIPTION = SensorEntityDescription(
     translation_key="room_clean_duration",
     device_class=SensorDeviceClass.DURATION,
     native_unit_of_measurement=UnitOfTime.SECONDS,
+    suggested_unit_of_measurement=UnitOfTime.MINUTES,
     state_class=SensorStateClass.MEASUREMENT,
     entity_registry_enabled_default=False,
 )
@@ -258,6 +261,7 @@ STATE_DESCRIPTIONS = (
         entity_registry_enabled_default=False,
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.MINUTES,
         value_fn=lambda state: state.telemetry.coverage_time_seconds,
     ),
     MaticStateSensorDescription(
@@ -265,6 +269,7 @@ STATE_DESCRIPTIONS = (
         translation_key="last_run_duration",
         device_class=SensorDeviceClass.DURATION,
         native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.HOURS,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda state: (
             state.telemetry.latest_session.duration_seconds

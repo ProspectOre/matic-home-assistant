@@ -84,6 +84,10 @@ class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
 class MaticPlanButton(_MaticFloorBoundButton):
     """Run one native saved-plan operation for this robot."""
 
+    # Map Studio and the standard vacuum controls cover everyday use. These
+    # alternate entry points remain available for dashboards and automations.
+    _attr_entity_registry_enabled_default = False
+
     def __init__(self, entry: MaticConfigEntry, service: str) -> None:
         super().__init__(entry)
         self._service = service
@@ -91,10 +95,6 @@ class MaticPlanButton(_MaticFloorBoundButton):
         self._plans = entry.runtime_data.cleaning_plans
         self._attr_translation_key = service
         self._attr_unique_id = f"{self._serial_number}_{service}"
-        self._attr_entity_registry_enabled_default = service in {
-            "run_selected_plan",
-            "stop_intelligent_cleaning",
-        }
 
     @property
     def _uses_floor_coherence(self) -> bool:
@@ -167,7 +167,7 @@ class MaticAreaButton(_MaticFloorBoundButton):
     """Run the custom area selected on the Matic device page."""
 
     _attr_translation_key = "clean_selected_area"
-    _attr_entity_registry_enabled_default = True
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)

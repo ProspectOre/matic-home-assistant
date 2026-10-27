@@ -3,8 +3,7 @@
 [Documentation](README.md) · [Automations](automation.md)
 
 Build dashboards, adjust settings, and use cleaning results in automations.
-Enable per-room statistics to track when each room was last cleaned and how
-long successful cleaning took.
+Enable per-room statistics to track each room’s last clean and successful duration.
 
 Each robot has 54 fixed entities — 24 sensors, 11 binary sensors, 5 buttons,
 4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and 1 vacuum —
@@ -22,11 +21,11 @@ are disabled by default; enable them from the device's entity list.
 | Name | Entity ID | Default |
 | --- | --- | --- |
 | (the robot) | `vacuum.matic` | on |
-| Run plan · Stop cleaning | `button.matic_run_selected_plan` · `button.matic_stop_intelligent_cleaning` | on |
+| Run plan · Stop cleaning | `button.matic_run_selected_plan` · `button.matic_stop_intelligent_cleaning` | off |
 | Run intelligent rotation · Run saved order | `button.matic_intelligent_clean` · `button.matic_clean_entire_plan` | off |
-| Clean custom area | `button.matic_clean_selected_area` | on |
+| Clean custom area | `button.matic_clean_selected_area` | off |
 | Default cleaning mode · Default vacuum coverage | `select.matic_cleaning_mode` · `select.matic_coverage` | on |
-| Default cleaning plan · Custom cleaning area | `select.matic_saved_cleaning_plan` · `select.matic_custom_cleaning_area` | on |
+| Default cleaning plan · Custom cleaning area | `select.matic_saved_cleaning_plan` · `select.matic_custom_cleaning_area` | off |
 | Child lock · Pet-waste avoidance | `switch.matic_child_lock` · `switch.matic_pet_waste_avoidance` | on |
 | Cues voice assistant · Double-pass mopping | `switch.matic_voice_assistant` · `switch.matic_deep_mop` | on |
 | Mopping water flow (×) | `number.matic_water_flow` | on |
@@ -57,12 +56,19 @@ are disabled by default; enable them from the device's entity list.
 Paused, Returning to dock and Fully charged repeat **Activity**, so they start
 disabled. The status sensors (Activity, Firmware check status, Update status,
 Wi-Fi status, both Cues statuses) offer their states as a pick list in the
-automation editor. Durations are reported in seconds and shown as time.
+automation editor. Duration sources remain numeric seconds. New room-timing and
+coverage sensors suggest minutes; whole-run duration suggests hours. Home Assistant
+formats these as time and lets you choose another unit. Existing unit choices stay
+unchanged; raw attributes and API fields ending in `_seconds` remain seconds.
 
 The three current-room sensors refresh together every five seconds,
 without extra robot requests. They apply to the current room of a clean
-started in Home Assistant; active time excludes pauses. Expected duration is the median of
-at least three recent successful cleans with matching mode and coverage.
+started in Home Assistant; active time excludes pauses. Expected duration is the median
+of up to seven successful samples, with at least three required. Samples can come
+from different plans but must match the room, cleaning mode, and vacuum coverage.
+Quick, Optimal, and Heavy duty do not share an estimate, nor do vacuum, mop, and
+combined cleaning. Switching settings retains each learned tier across restarts.
+Double-pass mopping and water flow are not separate timing tiers.
 Without that history, expected duration and percentage stay unknown. Matic Map reads
 this same percentage, and Stop evaluates the same clock and baseline at the
 time of the command. A displayed estimate can be up to five seconds behind.
@@ -70,6 +76,12 @@ Even **Estimated 100%** does not prove completion. Use confirmed room results
 for completion automations. An area-only, stale or unmatched run has no estimate.
 
 ## Controls
+
+Use Matic Map for plans, room selection, and custom areas, or the standard vacuum
+controls for a full-floor clean, pause/resume, Stop, and dock. Default mode and
+coverage appear under **Configuration**. The five specialized buttons and the
+plan/area selectors are opt-in dashboard and automation shortcuts; existing
+enabled choices and entity IDs are preserved.
 
 The plan buttons have the same names as their actions: **Run plan** runs the
 default plan with its saved behavior, **Run intelligent rotation** cleans the
@@ -109,6 +121,8 @@ firmware pulses. Recorded activity can help diagnose an error after it clears.
 Each room's **Last cleaned** and **Last clean duration** sensors are disabled
 by default. Enable them to retain room-specific history and duration statistics.
 The robot-wide **Last clean duration** is recorded by default.
+
+Room sensors show the latest confirmed result across settings; estimates use matching tiers.
 
 Room lists, SSID, schedules, detailed run results, and plan history remain
 available to templates through `state_attr()` but are excluded from Recorder

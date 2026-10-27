@@ -120,7 +120,7 @@ class _MetadataLockLease:
 
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 11
+STORAGE_MINOR_VERSION = 12
 STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
 PLAN_FLOOR_TOKEN = "_matic_plan_floor"
@@ -128,6 +128,11 @@ PLAN_SESSION_ID = "_matic_plan_session"
 _PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v2\0"
 DURATION_HISTORY_MAX_SAMPLES = 7
 DURATION_CONFIDENCE_MIN_SAMPLES = 3
+DURATION_PROFILE_KEYS = tuple(
+    f"{mode}:{coverage}"
+    for mode in ("vacuum", "mop", "vacuum_and_mop")
+    for coverage in ("quick", "standard", "heavy_duty")
+)
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = 64
 MAX_SAVED_PLANS_PER_ROBOT = 256
 MANUAL_ROOM_SEQUENCE_PLAN_ID = "__matic_manual_room_sequence__"
@@ -1084,6 +1089,17 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
                         )
                 if old_minor_version < 11:
                     _stamp_plan_entries(robot)
+                if old_minor_version < 12:
+                    rotations = robot.get("rotations")
+                    if isinstance(rotations, dict):
+                        for rotation in rotations.values():
+                            if not isinstance(rotation, dict):
+                                continue
+                            records = rotation.get("rooms")
+                            if isinstance(records, dict):
+                                for record in records.values():
+                                    if isinstance(record, dict):
+                                        _normalize_duration_profiles(record)
         return old_data
 
 
@@ -5314,14 +5330,7 @@ class CleaningPlanManager:
                 else None
             )
         if duration is not None and duration > 0:
-            samples = _stored_count(record, "duration_samples") + 1
-            history = _duration_history(record)
-            history.append(duration)
-            history = history[-DURATION_HISTORY_MAX_SAMPLES:]
-            record["last_duration_seconds"] = duration
-            record["duration_history_seconds"] = history
-            record["average_duration_seconds"] = round(median(history))
-            record["duration_samples"] = samples
+            _record_duration_sample(record, room, duration, now)
         record["last_completed"] = now
         record["last_result"] = "completed"
         record["completed_runs"] = _stored_count(record, "completed_runs") + 1
@@ -6045,6 +6054,8 @@ class CleaningPlanManager:
                     if not isinstance(record, dict):
                         records.pop(record_id)
                         changed = True
+                    elif kind == "rooms":
+                        changed = _normalize_duration_profiles(record) or changed
         reset_values = robot["rotation_resets"]
         for plan_id, value in tuple(reset_values.items()):
             if not isinstance(value, str):
@@ -7042,7 +7053,16 @@ def _record_native_completion(
     record = room_records.setdefault(room_id, {})
     record["room_id"] = room_id
     record["name"] = room.name
-    _admit_room_settings(record, room_settings)
+    record["duration_profiles"] = _duration_profiles(record)
+    active = robot.get("active_plan")
+    if not (
+        isinstance(active, Mapping)
+        and active.get("plan_id") == plan_id
+        and active.get("room_id") == room_id
+        and _duration_profile_key(record)
+        != _duration_profile_key(asdict(room_settings) if room_settings else {})
+    ):
+        _admit_room_settings(record, room_settings)
     record["last_completed"] = completed_at
     record["last_result"] = "completed"
     record["completed_runs"] = _stored_count(record, "completed_runs") + 1
@@ -7055,13 +7075,7 @@ def _record_native_completion(
         else None
     )
     if duration is not None:
-        history = _duration_history(record)
-        history.append(duration)
-        history = history[-DURATION_HISTORY_MAX_SAMPLES:]
-        record["last_duration_seconds"] = duration
-        record["duration_history_seconds"] = history
-        record["average_duration_seconds"] = round(median(history))
-        record["duration_samples"] = _stored_count(record, "duration_samples") + 1
+        _record_duration_sample(record, room_settings, duration, completed_at)
     global_room = CleaningPlanManager._global_room(robot, room)
     global_room["name"] = room.name
     global_room["last_completed"] = completed_at
@@ -7071,7 +7085,8 @@ def _record_native_completion(
 
 
 def _admit_room_settings(record: dict[str, Any], room: CleaningRoom | None) -> None:
-    """Keep duration samples only when their exact settings are known to match."""
+    """Select an exact settings tier without discarding other successful tiers."""
+    record["duration_profiles"] = _duration_profiles(record)
     if room is None or any(
         record.get(key) != getattr(room, key)
         for key in ("cleaning_mode", "coverage_setting")
@@ -7091,6 +7106,7 @@ def _admit_room_settings(record: dict[str, Any], room: CleaningRoom | None) -> N
     else:
         record["cleaning_mode"] = room.cleaning_mode
         record["coverage_setting"] = room.coverage_setting
+    _project_duration_profile(record)
 
 
 def _import_native_room_activity(
@@ -7268,13 +7284,120 @@ def _duration_history(record: Mapping[str, Any]) -> list[int]:
     return [round(average)] * sample_count
 
 
+def _duration_profile_key(record: Mapping[str, Any]) -> str | None:
+    """Accept only the finite supported mode/coverage combinations."""
+    mode = record.get("cleaning_mode")
+    coverage = record.get("coverage_setting")
+    if not isinstance(mode, str) or not isinstance(coverage, str):
+        return None
+    key = f"{mode}:{coverage}"
+    return key if key in DURATION_PROFILE_KEYS else None
+
+
+def _duration_profiles(record: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
+    """Read bounded tiers, admitting legacy history only before its migration."""
+    if "duration_profiles" not in record:
+        key = _duration_profile_key(record)
+        raw: Mapping[str, Any] = {key: record} if key is not None else {}
+        legacy = True
+    else:
+        value = record.get("duration_profiles")
+        raw = value if isinstance(value, Mapping) else {}
+        legacy = False
+    profiles: dict[str, dict[str, Any]] = {}
+    for key in DURATION_PROFILE_KEYS:
+        profile = raw.get(key)
+        if not isinstance(profile, Mapping):
+            continue
+        # A malformed authoritative profile must not recover samples from its
+        # average or the room's obsolete compatibility fields.
+        history = _duration_history(
+            profile
+            if legacy
+            else {"duration_history_seconds": profile.get("duration_history_seconds")}
+        )
+        history = [sample for sample in history if sample > 0]
+        if not history:
+            continue
+        normalized: dict[str, Any] = {
+            "duration_history_seconds": history,
+            "duration_samples": max(
+                len(history), _stored_count(profile, "duration_samples")
+            ),
+        }
+        completed = _latest_timestamp_value(profile.get("last_completed"))
+        if completed is not None:
+            normalized["last_completed"] = completed[1]
+        profiles[key] = normalized
+    return profiles
+
+
+def _normalize_duration_profiles(record: dict[str, Any]) -> bool:
+    """Sanitize persisted tiers without inventing history for empty records."""
+    if not any(
+        key in record
+        for key in (
+            "duration_profiles",
+            "duration_history_seconds",
+            "duration_samples",
+            "average_duration_seconds",
+        )
+    ):
+        return False
+    profiles = _duration_profiles(record)
+    if record.get("duration_profiles") == profiles:
+        return False
+    record["duration_profiles"] = profiles
+    return True
+
+
+def _project_duration_profile(record: dict[str, Any]) -> None:
+    """Keep legacy estimate fields as a projection of the current exact tier."""
+    for name in (
+        "duration_history_seconds",
+        "average_duration_seconds",
+        "duration_samples",
+    ):
+        record.pop(name, None)
+    key = _duration_profile_key(record)
+    profile = _duration_profiles(record).get(key) if key is not None else None
+    if profile is not None:
+        history = profile["duration_history_seconds"]
+        record["duration_history_seconds"] = list(history)
+        record["average_duration_seconds"] = round(median(history))
+        record["duration_samples"] = profile["duration_samples"]
+
+
+def _record_duration_sample(
+    record: dict[str, Any],
+    room: CleaningRoom | None,
+    duration: int,
+    completed_at: str,
+) -> None:
+    """Add one admitted completion to its tier, never to an active other tier."""
+    profiles = _duration_profiles(record)
+    key = _duration_profile_key(asdict(room) if room is not None else {})
+    if key is not None:
+        previous = profiles.get(key, {})
+        history = [*previous.get("duration_history_seconds", []), duration]
+        profiles[key] = {
+            "duration_history_seconds": history[-DURATION_HISTORY_MAX_SAMPLES:],
+            "duration_samples": _stored_count(previous, "duration_samples") + 1,
+            "last_completed": completed_at,
+        }
+    record["duration_profiles"] = profiles
+    _project_duration_profile(record)
+    # This remains the latest observed completed duration; switching back to an
+    # older tier must not rewrite the global or per-plan last-clean result.
+    record["last_duration_seconds"] = duration
+
+
 def _compatible_duration_history(
     robot: Mapping[str, Any], room_id: str, active_record: Mapping[str, Any]
 ) -> list[int]:
     """Return recent samples for one room with exactly matching settings."""
-    cleaning_mode = active_record.get("cleaning_mode")
-    coverage_setting = active_record.get("coverage_setting")
-    if not isinstance(cleaning_mode, str) or not isinstance(coverage_setting, str):
+    key = _duration_profile_key(active_record)
+    if key is None:
         return []
 
     rotations = robot.get("rotations")
@@ -7289,16 +7412,13 @@ def _compatible_duration_history(
         if not isinstance(records, Mapping):
             continue
         record = records.get(room_id)
-        if (
-            not isinstance(record, Mapping)
-            or record.get("cleaning_mode") != cleaning_mode
-            or record.get("coverage_setting") != coverage_setting
-        ):
+        if not isinstance(record, Mapping):
             continue
-        history = _duration_history(record)
-        if not history:
+        profile = _duration_profiles(record).get(key)
+        if profile is None:
             continue
-        completed = _latest_timestamp(record.get("last_completed"), now=now)
+        history = profile["duration_history_seconds"]
+        completed = _latest_timestamp(profile.get("last_completed"), now=now)
         candidates.append((completed or 0.0, plan_id, history))
 
     history = [

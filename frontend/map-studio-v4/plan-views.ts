@@ -22,7 +22,7 @@ import {
   initialWorkspaceState,
   roomBlocker,
 } from "./state";
-import { translate } from "./localize";
+import { formatDuration, translate } from "./localize";
 import {
   draftSteps, dueLines, formatNumber, fromSteps, planAreas, planRowLine2, planRowLine3, roomsAndAreas, withPlanAreas,
 } from "./plan-copy";
@@ -322,7 +322,7 @@ export class MaticPlanViewsV4 extends LitElement {
       : (blocker && PLAN_BLOCKERS[blocker]) || PLAN_PREVIEW;
     const count = ready ? previewRooms.length : plan.rooms.length;
     const seconds = ready ? plan.nextRunEstimateSeconds : null;
-    const minutes = seconds === null ? "" : this.#count(Math.max(1, Math.round(seconds / 60)));
+    const duration = seconds === null ? "" : formatDuration(state.locale, seconds);
     const rooms = count === 1
       ? this.#t("v4_plan_summary_rooms_one", "1 room")
       : this.#t("v4_plan_summary_rooms", "{count} rooms", { count: this.#count(count) });
@@ -332,8 +332,8 @@ export class MaticPlanViewsV4 extends LitElement {
       : seconds === null
         ? rooms
         : count === 1
-          ? this.#t("v4_plan_summary_rooms_estimate_one", "1 room · about {minutes} min", { minutes })
-          : this.#t("v4_plan_summary_rooms_estimate", "{count} rooms · about {minutes} min", { count: this.#count(count), minutes });
+          ? this.#t("v4_plan_summary_rooms_estimate_duration_one", "1 room · about {duration}", { duration })
+          : this.#t("v4_plan_summary_rooms_estimate_duration", "{count} rooms · about {duration}", { count: this.#count(count), duration });
     const boundaries = ready && preview ? preview.missionBoundaries : [];
     const rows = ready
       ? steps.map((step, index) => {

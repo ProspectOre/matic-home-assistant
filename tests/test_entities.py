@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 from uuid import UUID
 
 import pytest
+from homeassistant.components.camera import async_get_image
 from homeassistant.components.vacuum.const import VacuumActivity
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
@@ -1473,6 +1474,12 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
         room.room_id
     ]
     record["duration_history_seconds"] = [100, 100, 100]
+    record["duration_profiles"] = {
+        f"{record['cleaning_mode']}:{record['coverage_setting']}": {
+            "duration_history_seconds": [100, 100, 100],
+            "duration_samples": 3,
+        }
+    }
     cancel_timer = MagicMock()
     with patch.object(
         sensor, "async_track_time_interval", return_value=cancel_timer
@@ -1890,6 +1897,31 @@ async def test_selects_update_next_clean_preferences(hass) -> None:
     }
     mode.async_write_ha_state.assert_called_once()
     coverage.async_write_ha_state.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "camera_type", [camera.MaticMapCamera, camera.MaticPhotorealisticMapCamera]
+)
+async def test_camera_snapshot_keeps_png_type_and_skips_jpeg_scaling(
+    hass, camera_type
+) -> None:
+    """Home Assistant must serve our PNG without feeding it to its JPEG scaler."""
+    entity = camera_type(_entry())
+    entity.hass = hass
+    png = b"\x89PNG\r\n\x1a\nsynthetic-image"
+    with (
+        patch(
+            "homeassistant.components.camera.get_camera_from_entity_id",
+            return_value=entity,
+        ),
+        patch.object(entity, "async_camera_image", return_value=png) as render,
+        patch("homeassistant.components.camera.scale_jpeg_camera_image") as scale,
+    ):
+        result = await async_get_image(hass, "camera.test_robot", width=320, height=240)
+    assert result.content_type == "image/png"
+    assert result.content == png
+    render.assert_awaited_once_with(width=320, height=240)
+    scale.assert_not_called()
 
 
 async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
@@ -2833,3 +2865,23 @@ def test_rarely_useful_entities_are_off_by_default() -> None:
         number.WATER_FLOW_DESCRIPTION.native_unit_of_measurement
         == "\N{MULTIPLICATION SIGN}"
     )
+    entry = _entry()
+    for service in (
+        "run_selected_plan",
+        "intelligent_clean",
+        "clean_entire_plan",
+        "stop_intelligent_cleaning",
+    ):
+        assert (
+            button.MaticPlanButton(entry, service).entity_registry_enabled_default
+            is False
+        )
+    assert button.MaticAreaButton(entry).entity_registry_enabled_default is False
+    assert select.MaticSavedPlanSelect(entry).entity_registry_enabled_default is False
+    assert select.MaticCustomAreaSelect(entry).entity_registry_enabled_default is False
+    for entity in (
+        select.MaticCleaningModeSelect(entry),
+        select.MaticCoverageSettingSelect(entry),
+    ):
+        assert entity.entity_registry_enabled_default is True
+        assert entity.entity_category == "config"

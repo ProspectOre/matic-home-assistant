@@ -1444,6 +1444,14 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, seconds);
     await oneRoom(1_980);
     await expect(gallery.locator(".summary")).toHaveText("1 room · about 33 min");
+    await oneRoom(3_600);
+    await expect(gallery.locator(".summary")).toHaveText("1 room · about 1 hr");
+    await oneRoom(3_900);
+    await expect(gallery.locator(".summary")).toHaveText("1 room · about 1 hr and 5 min");
+    await oneRoom(176_400);
+    await expect(gallery.locator(".summary")).toHaveText("1 room · about 2 days and 1 hr");
+    await oneRoom(31);
+    await expect(gallery.locator(".summary")).toHaveText("1 room · about 1 min");
     await oneRoom(null);
     await expect(gallery.locator(".summary")).toHaveText("1 room");
   });
