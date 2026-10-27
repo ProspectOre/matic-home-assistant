@@ -6683,7 +6683,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const requestsBeforeMissingFallback = poseRequests;
     await expect.poll(() => poseRequests, { timeout: 5_000 })
       .toBeGreaterThan(requestsBeforeMissingFallback);
-    expect(await page.evaluate(() => {
+    await expect.poll(() => page.evaluate(() => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, pose: state.resources.pose.value };
     })).toEqual({
@@ -6694,7 +6694,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const requestsBeforeMissingLivePose = poseRequests;
     await expect.poll(() => poseRequests, { timeout: 5_000 })
       .toBeGreaterThan(requestsBeforeMissingLivePose);
-    expect(await page.evaluate(() => {
+    await expect.poll(() => page.evaluate(() => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return {
         exactPose: state.map.exactPose,
@@ -6705,7 +6705,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     failNextPose = true;
     const requestsBeforeFailure = poseRequests;
     await expect.poll(() => poseRequests, { timeout: 5_000 }).toBeGreaterThan(requestsBeforeFailure);
-    expect(await page.evaluate(() => {
+    await expect.poll(() => page.evaluate(() => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, pose: state.resources.pose.value };
     })).toEqual({ exactPose: false, pose: null });
