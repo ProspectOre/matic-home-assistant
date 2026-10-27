@@ -829,16 +829,25 @@ async def test_checkpoint_load_preserves_active_room_and_hides_private_state(
     hass, recovery_state
 ):
     manager, _, _, room = recovery_state
+    await manager.async_checkpoint_stop_intent("serial", "after_room", run_id="run")
     saved = deepcopy(manager._data)
+    assert manager.finish_room_event("serial").is_set()
+    manager.finish_room_event("serial").clear()
     manager._store.async_load = AsyncMock(return_value=saved)
     await manager.async_load()
     snapshot = manager.snapshot("serial")
     assert snapshot["active_plan"]["status"] == "recovering"
+    assert snapshot["active_plan"]["smart_stop_pending"] is True
+    assert snapshot["active_plan"]["smart_stop_phase"] == "finishing_room"
+    assert manager.finish_room_event("serial").is_set()
     assert "recovery_checkpoint" not in snapshot["last_run"]
     assert snapshot["interrupted_runs"] == 0
     await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
     await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
     assert manager.snapshot("serial")["completed_runs"] == 1
+    assert manager.snapshot("serial")["active_plan"]["smart_stop_phase"] == (
+        "returning_to_dock"
+    )
 
 
 @pytest.mark.parametrize("history_state", ["available", "missing", "error"])

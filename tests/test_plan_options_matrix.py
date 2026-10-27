@@ -269,7 +269,7 @@ async def test_stop_threshold_does_not_estimate_from_unscoped_duration_history(
         manager.cancel("serial")
 
 
-async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
+async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     hass, monkeypatch
 ):
     monkeypatch.setattr(
@@ -305,7 +305,6 @@ async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
     )
     identity = b""
     started_at = None
-    observation_count = 0
     decisions = []
     commands: list[tuple[int, UserCommand]] = []
     confirmed = []
@@ -313,7 +312,7 @@ async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
 
     async def send(service_call):
         nonlocal identity, started_at
-        assert service_call.data["params"]["rooms"] == [room.room_id for room in rooms]
+        assert service_call.data["params"]["rooms"] == [rooms[0].room_id]
         session_id = service_call.data["params"].get(PLAN_SESSION_ID)
         identity = (
             _session_identity(UUID(session_id))
@@ -326,19 +325,18 @@ async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
         )
 
     async def observe_boundary(*_args, **_kwargs):
-        nonlocal ended, identity, observation_count
-        if observation_count == 0:
-            observation_count += 1
-            decisions.append(manager.request_stop("serial"))
-            return RoomRunOutcome.ROOM_CHANGED, rooms[1]
+        nonlocal ended, identity
+        decisions.append(manager.request_stop("serial"))
         ended = True
         identity = b""
         hass.states.async_set("vacuum.matic", "idle")
-        return RoomRunOutcome.HANDOFF_CANDIDATE, None
+        return RoomRunOutcome.HANDOFF_CANDIDATE
 
     async def history():
         if not ended:
             return ()
+        if manager.snapshot("serial")["active_plan"]["status"] == "verifying":
+            decisions.append(manager.request_stop("serial", stop_now=True))
         return (
             CleaningSessionRecord(
                 b"synthetic-stop-record",
@@ -367,6 +365,10 @@ async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
         confirmed.append(room_name)
 
     hass.services.async_register("vacuum", "send_command", send)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
+        observe_boundary,
+    )
     await asyncio.wait_for(
         _async_execute_rooms(
             hass,
@@ -382,13 +384,15 @@ async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
             floor_is_current=lambda: True,
             floor_token="a" * 64,
             session_identity=AsyncMock(side_effect=lambda: identity),
-            wait_for_leg_outcome=observe_boundary,
         ),
         timeout=3,
     )
 
-    assert [decision.behavior for decision in decisions] == ["after_room"]
-    assert [command for _token, command in commands] == [UserCommand.STOP]
+    assert [decision.behavior for decision in decisions] == [
+        "after_room",
+        "after_room",
+    ]
+    assert [command for _token, command in commands] == [UserCommand.DOCK]
     assert len({token for token, _command in commands}) == 1
     assert confirmed == [rooms[0].name]
     result = manager.snapshot("serial")["last_run"]
@@ -397,5 +401,4 @@ async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
     assert result["completed_room_count"] == 1
     completed_by_room = manager.snapshot("serial")["last_completed_by_room"]
     assert completed_by_room["room-a"]["runs"] == 1
-    assert completed_by_room["room-b"]["runs"] == 0
-    assert completed_by_room["room-b"]["at"] is None
+    assert "room-b" not in completed_by_room

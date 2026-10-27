@@ -134,10 +134,11 @@ export const shellStyles = [tokens, base, controls, css`
     }
 
     .status-copy { min-inline-size: 0; }
-    .room-estimate { display: block; overflow: hidden; text-overflow: ellipsis; font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); }
-    .status-strip strong, .status-strip small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .room-estimate { display: block; overflow-wrap: anywhere; font-size: var(--ms-t-sm); font-weight: var(--ms-w-regular); }
+    .status-strip strong, .status-strip small { display: block; overflow-wrap: anywhere; }
     .status-strip strong { font-size: var(--ms-t-sm); }
     .status-strip small { margin-block-start: 0.125rem; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); }
+    .status-strip .room-estimate { font-size: var(--ms-t-sm); }
     .status-strip .action-reason { grid-column: 1 / -1; text-align: start; }
 
     .workflow {
@@ -246,7 +247,7 @@ export const shellStyles = [tokens, base, controls, css`
     }
     .hud-exit { gap: var(--ms-space-1); }
     .hud-copy { min-inline-size: 0; }
-    .hud-copy strong, .hud-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .hud-copy strong, .hud-copy small { display: block; overflow-wrap: anywhere; }
     .hud-copy strong { font-size: var(--ms-t-sm); }
     .hud-copy small { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); }
     .full-map-hud .ms-btn { inline-size: auto; min-inline-size: 5rem; }
@@ -337,12 +338,11 @@ export const shellStyles = [tokens, base, controls, css`
     }
     .narrow .sheet-status {
       display: block;
-      overflow: hidden;
       min-inline-size: 0;
       font-size: var(--ms-t-md);
       font-weight: var(--ms-w-bold);
-      text-overflow: ellipsis;
-      white-space: nowrap;
+      overflow-wrap: anywhere;
+      white-space: normal;
     }
     .narrow .sheet-tools { display: block; padding-block: var(--ms-space-1) var(--ms-space-2); }
     .sheet-tools > :is(.loading, .problem) { margin-block-end: var(--ms-space-2); }

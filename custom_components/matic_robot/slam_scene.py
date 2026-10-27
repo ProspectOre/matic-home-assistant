@@ -1449,9 +1449,13 @@ class MaticPlansView(HomeAssistantView):
                     for entry in projected_entries
                     if entry["kind"] == "room"
                 ]
-                # Contiguous rooms share one native mixed-settings mission;
-                # each custom area is a mission of its own.
-                boundaries = entry_mission_boundaries(projected_entries)
+                # Smart Stop runs each room in its own native mission so a
+                # room-boundary STOP cannot allow the next room to start.
+                # Custom areas remain separate missions either way.
+                boundaries = entry_mission_boundaries(
+                    projected_entries,
+                    single_room_missions=preview.get("finish_current_room") is True,
+                )
             except RoomSequenceLimitError:
                 return {
                     "rooms": [],

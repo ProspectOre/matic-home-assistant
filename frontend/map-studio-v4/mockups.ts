@@ -34,7 +34,7 @@ const entry = (id: string, label: string, caption: string): StateEntry => ({ id,
 
 const PLAN_RUN: readonly StateEntry[] = [
   entry("ready", "Daily clean", "plan.md §4 R1: the summary with about N min, the due lines directly under it, the next run with each room's effective setting and no due chips, and one When a run ends line (finish the room at 70 %). Numbers only in Saved order."),
-  entry("parts", "In two parts", "plan.md §4 R1: a plan that runs in two parts, divided where the robot docks. The order toggle switches Intelligent rotation and Saved order."),
+  entry("parts", "In two parts", "plan.md §4 R1: a plan that runs in two parts, divided where the robot docks. The order toggle switches Smart Order and Saved order."),
   entry("paused", "Paused plan", "plan.md §4 R2: the switch is off, the rooms are listed without numbers or chips, and Run plan is disabled with \"Can't run this plan until you turn it on.\" Opened from the home card (H1 Plan paused), it is Daily clean."),
   entry("blocked", "Needs attention", "plan.md §4 R3: Run plan disabled with its reason and a jump to the room."),
 ];

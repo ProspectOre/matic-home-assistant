@@ -7,10 +7,10 @@ import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
-// 0.5 RC37 added 256 bytes so every room label can move aside instead of
-// disappearing. The owner approved another 128 bytes for continuous label
-// placement during map gestures, preserving the existing collision checks.
-export const STARTUP_BUDGET_BYTES = 90 * 1024 + 384;
+// RC41 adds run-bound Smart Stop status, progress and immediate-stop controls.
+// Allow up to 92 KiB compressed for the complete registered startup graph;
+// the lazy workflow and diagnostics chunks retain their separate limits.
+export const STARTUP_BUDGET_BYTES = 92 * 1024;
 
 const COMPONENT = fileURLToPath(new URL("../custom_components/matic_robot/", import.meta.url));
 const STATIC_IMPORT = /(?:^|[;}\n])\s*(?:import|export)\s*(?:[\w$\s,{}*]*?from\s*)?"(\.[^"]+)"/gu;

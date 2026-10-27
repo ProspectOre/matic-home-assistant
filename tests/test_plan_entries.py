@@ -630,6 +630,7 @@ def test_mission_boundaries_split_at_every_room_and_area_switch() -> None:
         offset += len(group)
         expected_rooms_only.append(offset)
     assert entry_mission_boundaries(room_entries) == expected_rooms_only
+    assert entry_mission_boundaries(room_entries, single_room_missions=True) == [1]
     area = {"kind": "area", "area_id": "rug"}
     assert entry_mission_boundaries([]) == []
     assert entry_mission_boundaries([area]) == []
@@ -1301,6 +1302,25 @@ def test_plan_legs_reject_entries_that_do_not_describe_the_run(
 
 def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
     rooms = _rooms()
+    room_only_checkpoint = {
+        "rooms": [
+            {
+                "room_id": room.room_id,
+                "name": room.name,
+                "cleaning_mode": room.cleaning_mode,
+                "coverage_setting": room.coverage_setting,
+            }
+            for room in rooms
+        ],
+        "mixed_settings": True,
+    }
+    # RC40 checkpoints without the new marker retain their existing mixed
+    # mission even when finish_current_room is enabled on the saved policy.
+    assert checkpoint_legs(room_only_checkpoint) == [rooms]
+    assert checkpoint_legs({**room_only_checkpoint, "single_room_missions": True}) == [
+        [room] for room in rooms
+    ]
+
     checkpoint = {
         "rooms": [
             {
@@ -1329,6 +1349,18 @@ def test_checkpoint_legs_rebuild_the_runs_legs() -> None:
     assert checkpoint_legs(legacy) == list(
         leg_groups(rooms, preserve_legacy_settings=True)
     )
+    smart_stop = {**checkpoint, "single_room_missions": True}
+    assert checkpoint_legs(smart_stop) == [[room] for room in rooms[:1]] + [
+        AreaLeg("rug", "Rug", "vacuum", "quick", _FINGERPRINT),
+        *[[room] for room in rooms[1:]],
+    ]
+
+
+def test_single_room_mission_grouping_is_opt_in_and_keeps_area_boundaries() -> None:
+    rooms = _rooms()
+    assert leg_groups(rooms, mixed_settings=True, single_room_missions=True) == [
+        [room] for room in rooms
+    ]
 
 
 @pytest.mark.parametrize(

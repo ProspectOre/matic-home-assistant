@@ -1108,7 +1108,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(daily.locator("strong .ms-chip")).toHaveText("Default");
     await expect(daily.locator("strong .ms-chip")).toHaveAttribute("title", "Home Assistant's plan button and plan select run this plan.");
     await expect(daily).toHaveAccessibleDescription("Home Assistant's plan button and plan select run this plan.");
-    await expect(daily.locator("small")).toHaveText("3 rooms · Longest-waiting rooms first");
+    await expect(daily.locator("small")).toHaveText("3 rooms · Smart Order");
     // Intl.ListFormat joins the rooms that share a due kind (plan.md §3).
     await expect(daily.locator(".line")).toHaveText(["Mop due in Kitchen and Living room", "Optimal vacuum due in Kitchen"]);
     const weekend = gallery.getByRole("button", { name: /^Weekend refresh/ });
@@ -1121,7 +1121,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(weekend).toHaveAccessibleDescription("");
     const paused = gallery.getByRole("button", { name: /^Guest prep/ });
     await expect(paused.locator("strong .ms-chip")).toHaveText("Paused");
-    await expect(paused.locator("small")).toHaveText("1 room · Longest-waiting rooms first");
+    await expect(paused.locator("small")).toHaveText("1 room · Smart Order");
     await expect(paused.locator(".line")).toHaveCount(0);
     const items = gallery.locator("matic-map-plan-views-v4 li");
     await expect(items.last().getByRole("button")).toHaveText("Create a plan");
@@ -1222,8 +1222,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       await expect(gallery.getByText("3 rooms · about 33 min", { exact: true })).toBeVisible();
       await expect(gallery.getByText("Mop due in Kitchen, Living room, and Office", { exact: true })).toBeVisible();
       await expect(gallery.getByRole("heading", { name: "Next run", level: 3 })).toBeVisible();
-      await expect(gallery.getByText("Longest-waiting rooms and custom areas first, checked again when you run the plan.", { exact: true })).toBeVisible();
-      // Intelligent rotation: an unnumbered list, one setting string per row.
+      await expect(gallery.getByText("Smart Order cleans the rooms and areas that have waited longest first, checking again each time.", { exact: true })).toBeVisible();
+      // Smart Order: an unnumbered list, one setting string per row.
       await expect(gallery.locator("ol.run-list")).toHaveCount(0);
       const rows = gallery.locator("ul.run-list > li");
       await expect(rows).toHaveText(["Kitchen Vacuum · Optimal", "Living room Vacuum · Optimal", "Office Vacuum · Optimal"]);
@@ -1240,7 +1240,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("Run numbers Saved order and marks each part break", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "plan-saved-ordered" });
     await expect(gallery.locator("ol.run-list > li")).toHaveText(["1 Office Vacuum · Optimal", "2 Kitchen Vacuum · Optimal", "3 Living room Vacuum · Optimal"]);
-    await expect(gallery.getByText("Longest-waiting rooms and custom areas first, checked again when you run the plan.")).toHaveCount(0);
+    await expect(gallery.getByText("Smart Order cleans the rooms and areas that have waited longest first, checking again each time.")).toHaveCount(0);
 
     await gallery.evaluate((element) => element.setScenario("plan-run-parts"));
     await settleWorkspace(gallery);
@@ -5005,17 +5005,17 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("the finish threshold shows only while Finish the current room is on", async ({ page }) => {
     const { gallery } = await editDaily(page, { finishCurrentRoom: false, finishCurrentRoomThreshold: 60 });
     await gallery.getByText("When a run ends", { exact: true }).click();
-    const finish = gallery.getByRole("switch", { name: "Finish the current room when you press Stop" });
+    const finish = gallery.getByRole("switch", { name: "Smart Stop" });
     await expect(finish).toHaveAttribute("aria-checked", "false");
-    await expect(finish).toHaveAccessibleDescription("Only if the room is at least 60% done; otherwise the robot stops right away.");
+    await expect(finish).toHaveAccessibleDescription("When you press Stop, finish the room if it's reached 60% of its estimated time. Areas and rooms without an estimate finish first. You can still stop now and dock.");
     await expect(gallery.getByRole("slider")).toHaveCount(0);
     await finish.click();
     await expect(finish).toHaveAttribute("aria-checked", "true");
-    const slider = gallery.getByRole("slider", { name: "Finish if at least 60% done" });
+    const slider = gallery.getByRole("slider", { name: "Finish after 60% of estimated room time" });
     await expect(slider).toHaveAttribute("aria-valuetext", "60%");
     await slider.fill("80");
     await expect.poll(async () => (await snapshot(page)).planDraft.finishCurrentRoomThreshold).toBe(80);
-    await expect(gallery.getByRole("slider", { name: "Finish if at least 80% done" })).toHaveAttribute("aria-valuetext", "80%");
+    await expect(gallery.getByRole("slider", { name: "Finish after 80% of estimated room time" })).toHaveAttribute("aria-valuetext", "80%");
     await finish.click();
     await expect(gallery.getByRole("slider")).toHaveCount(0);
     const dock = gallery.getByRole("switch", { name: "Return to the dock when finished" });
@@ -5032,7 +5032,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await gallery.getByText("When a run ends", { exact: true }).click();
     const controls = [
       gallery.getByRole("textbox", { name: "Plan name" }),
-      gallery.getByRole("group", { name: "Cleaning order" }).getByRole("button", { name: "Intelligent rotation", exact: true }),
+      gallery.getByRole("group", { name: "Cleaning order" }).getByRole("button", { name: "Smart Order", exact: true }),
       rooms.getByRole("checkbox", { name: "Include Kitchen", exact: true }),
       rooms.getByRole("button", { name: "Settings for Kitchen", exact: true }),
       rooms.getByRole("button", { name: "Move Kitchen later", exact: true }),
@@ -7922,10 +7922,10 @@ for (const ordered of [false, true]) {
       } });
     }, { tag: GALLERY_TAG, ordered });
     const order = gallery.getByRole("group", { name: "Cleaning order" });
-    const choice = order.getByRole("button", { name: ordered ? "Saved order" : "Intelligent rotation", exact: true });
+    const choice = order.getByRole("button", { name: ordered ? "Saved order" : "Smart Order", exact: true });
     await choice.click();
     await expect(choice).toHaveAttribute("aria-pressed", "true");
-    await expect(order.getByRole("button", { name: ordered ? "Intelligent rotation" : "Saved order", exact: true })).toHaveAttribute("aria-pressed", "false");
+    await expect(order.getByRole("button", { name: ordered ? "Smart Order" : "Saved order", exact: true })).toHaveAttribute("aria-pressed", "false");
     // plan.md §3: the hint under the segment says what the order means.
     await expect(order.getByText(ordered ? "Top to bottom, as listed" : "Longest-waiting first", { exact: true })).toBeVisible();
     expect((await snapshot(page)).planDraft.runBehavior).toBe(ordered ? "ordered" : "intelligent");

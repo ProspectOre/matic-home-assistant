@@ -349,7 +349,7 @@ export class MaticPlanViewsV4 extends LitElement {
         problem: problem && blocker === "area_map_changed" ? this.#areaProblem(area.areaId) : null,
       }));
     const end = draft.finishCurrentRoom
-      ? this.#t("v4_plan_summary_finish", "When you press Stop, the robot finishes the current room if it's at least {percent}% done.", {
+      ? this.#t("v4_plan_summary_finish", "Smart Stop finishes the room if you press Stop after {percent}% of its estimated time.", {
         percent: this.#count(draft.finishCurrentRoomThreshold),
       })
       : draft.returnToBase ? this.#t("v4_plan_summary_return", "Returns to the dock when finished") : null;
@@ -361,7 +361,7 @@ export class MaticPlanViewsV4 extends LitElement {
         : state.resources.entry?.activePlan
           ? this.#t("v4_next_run_after_active", "After this run")
           : this.#t("v4_next_run_preview", "Next run")}</h3>
-      ${ready && !ordered ? html`<p class="quiet">${this.#t("v4_plan_rotation_settings", "Longest-waiting rooms and custom areas first, checked again when you run the plan.")}</p>` : nothing}
+      ${ready && !ordered ? html`<p class="quiet">${this.#t("v4_plan_rotation_settings", "Smart Order cleans the rooms and areas that have waited longest first, checking again each time.")}</p>` : nothing}
       ${boundaries.length ? html`<p class="quiet">${this.#t("v4_room_parts", "The robot cleans in {count} parts and may stop at the dock between parts.", {
         count: this.#count(boundaries.length + 1),
       })}</p>` : nothing}
@@ -802,13 +802,13 @@ export class MaticPlanViewsV4 extends LitElement {
       <div class="order" role="group" aria-labelledby="order-label">
         <span id="order-label">${this.#t("plan_run_behavior", "Cleaning order")}</span>
         <div class="ms-segment">
-          ${order("intelligent", this.#t("plan_intelligent", "Intelligent rotation"))}
+          ${order("intelligent", this.#t("plan_intelligent", "Smart Order"))}
           ${order("ordered", this.#t("plan_ordered", "Saved order"))}
         </div>
         <p class="quiet">${ordered
           ? this.#t("v4_plan_order_ordered_hint", "Top to bottom, as listed")
           : this.#t("v4_plan_order_intelligent_hint", "Longest-waiting first")}</p>
-        ${areas && !ordered ? html`<p class="quiet">${this.#t("v4_plan_areas_rotation_hint", "Rooms and custom areas rotate together. Saved order follows your exact sequence.")}</p>` : nothing}
+        ${areas && !ordered ? html`<p class="quiet">${this.#t("v4_plan_areas_rotation_hint", "Smart Order chooses the longest-waiting rooms and areas first. Saved order follows your list.")}</p>` : nothing}
       </div>
       <div class="list-header">
         <h3 class="heading" id="edit-rooms">${areas
@@ -835,11 +835,11 @@ export class MaticPlanViewsV4 extends LitElement {
         <summary>${this.#t("v4_run_end_options", "When a run ends")}</summary>
         ${this.#endSwitch("return-dock", this.#t("v4_plan_return_to_dock", "Return to the dock when finished"), null, draft.returnToBase, held,
           (on) => this.#patch({ returnToBase: on }))}
-        ${this.#endSwitch("finish-room", this.#t("v4_plan_finish_room", "Finish the current room when you press Stop"),
-          this.#t("v4_plan_finish_room_hint", "Only if the room is at least {percent}% done; otherwise the robot stops right away.", { percent }),
+        ${this.#endSwitch("finish-room", this.#t("v4_plan_finish_room", "Smart Stop"),
+          this.#t("v4_plan_finish_room_hint", "When you press Stop, finish the room if it's reached {percent}% of its estimated time. Areas and rooms without an estimate finish first. You can still stop now and dock.", { percent }),
           draft.finishCurrentRoom, held, (on) => this.#patch({ finishCurrentRoom: on }))}
         ${draft.finishCurrentRoom ? html`<div class="threshold">
-          <span id="finish-threshold-label">${this.#t("v4_plan_finish_threshold", "Finish if at least {percent}% done", { percent })}</span>
+          <span id="finish-threshold-label">${this.#t("v4_plan_finish_threshold", "Finish after {percent}% of estimated room time", { percent })}</span>
           <input
             type="range"
             min="0"

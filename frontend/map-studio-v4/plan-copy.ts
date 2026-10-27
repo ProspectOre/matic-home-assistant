@@ -124,11 +124,11 @@ export const planRowLine2 = (t: Translate, locale: string, plan: SavedPlan): str
   if (count === 1) {
     return ordered
       ? t("v4_plan_row_ordered_one", "1 room · Top to bottom, as listed")
-      : t("v4_plan_row_rotation_one", "1 room · Longest-waiting rooms first");
+      : t("v4_plan_row_rotation_one", "1 room · Smart Order");
   }
   return ordered
     ? t("v4_plan_row_ordered", "{count} rooms · Top to bottom, as listed", { count: formatNumber(locale, count) })
-    : t("v4_plan_row_rotation", "{count} rooms · Longest-waiting rooms first", { count: formatNumber(locale, count) });
+    : t("v4_plan_row_rotation", "{count} rooms · Smart Order", { count: formatNumber(locale, count) });
 };
 
 export type PlanRowLine3 = { readonly blocked: string } | { readonly due: readonly string[] } | null;
