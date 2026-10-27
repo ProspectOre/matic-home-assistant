@@ -52,6 +52,21 @@ Current installed checks and historical physical receipts are identified separat
 | Room then custom area | One owned room-to-area sequence completed. Area evidence is owned-session completion, not measured coverage of every part of the drawn outline. |
 | Earlier fixture cleanup | Earlier owned fixtures were removed; original plans, areas, selections, and physical history were retained. Verified encrypted rollback backup and recoverable source history are retained privately. No restore drill is claimed. |
 
+After the owner approved resumption, a fresh four-pass Dining Room cycle ran on
+the revised runtime: Vacuum/Quick, Vacuum/Optimal, due Vacuum+Mop/Heavy duty,
+then private N1 Vacuum+Mop/Optimal. Each pass had one Start, one verified room
+credit and docking. The shared N3 counters progressed 0→1→2→0 across two saved
+plans; the private pass left that shared schedule unchanged and remained due
+at N1. Both mop passes had positive completed native vacuum and mop results.
+The final pass ended at 10:53 a.m. Pacific on October 27; its native work was
+921 seconds vacuum plus 840 seconds mop, managed room time 1,887 seconds and
+native session span 1,927 seconds. The minute display matched managed timing.
+All three owned plans and the temporary shared schedule were then removed,
+with original definitions/default, other schedules and completed physical
+history preserved. No further movement command was sent during cleanup.
+These receipts establish the bounded requested-mode/cadence behavior, not
+independent physical coverage application or untested recovery combinations.
+
 Earlier plan, schedule, reset/Cancel, preview, history, authorization/refusal,
 and recovery receipts remain bounded by their revisions and change-impact review.
 The old 189-cell matrix is historical; it is not a current unique-defect count.
@@ -73,7 +88,7 @@ not registered and are not part of the shipped entity count.
 | Timing and schedules | Retained estimates match room, mode, and coverage in source; broader setting combinations and every cadence/recovery combination are not physically qualified. Latest room-statistics sensors are not separate settings tiers. |
 | History reset | Populated encrypted-backup migration/reset passed in a disposable instance: only the target history was cleared, 45 other histories survived reload. No production history reset or full backup-restore drill is claimed. |
 | Blueprints and triggers | Five native import/save/reload checks exercise actual state/time/report triggers against local service sinks. Saved firmware blueprints also route acknowledge and recheck mobile events to the intended local sinks. Three device-trigger automations survive save/reload, reject unrelated targets and stop after deletion. Download bytes and bus events are synthetic; physical producer chains and real phone delivery remain separate. |
-| Assist and notifications | Native Assist read tools and generated speech passed. Physical write tools, microphone/speaker use and real phone delivery/action lifecycle remain unverified. |
+| Assist and notifications | Native Assist read tools and generated speech passed. The direct native Run plan tool completed the bounded physical passes above. Model-selected writes, microphone/speaker use and real phone delivery/action lifecycle remain unverified. |
 | Pairing and firmware | Spare-robot, helper, multi-robot, foreign/revoked credentials, identity recovery, and actual firmware transition/alert lifecycles retain hardware or configuration prerequisites. |
 | Reliability and accessibility | Live setter fault/reconnect cases, low-charge recovery, complete assistive-technology coverage, all-device endurance, and a matching-backup restore drill are not established. |
 
