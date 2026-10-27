@@ -25,8 +25,8 @@ Periodic coverage can also be verified against the exact completed native
 session when firmware clears its live coverage goals. Missing or contradictory
 evidence keeps coverage due.
 
-This release carries forward [RC41](release-notes-0.5.0-rc41.md) with stable
-version metadata. It does not add a new runtime implementation after RC41.
+This release carries forward [RC42](release-notes-0.5.0-rc42.md) with stable
+version metadata. It does not add a new runtime implementation after RC42.
 The external pairing helper remains a separate project with its own platform
 and hardware qualification.
 
