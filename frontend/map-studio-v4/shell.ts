@@ -1802,9 +1802,17 @@ export class MaticMapShellV4 extends LitElement {
 
   #panel(state: WorkspaceState, narrow: boolean) {
     const { description } = workflowCopy(state, this.localize);
-    // Home's demoted cards are described by this one line (home-rooms.md §4).
+    // Home's demoted cards need a reason even when its visible copy is concise.
+    const heldReason = state.workflow === "none" && !description && state.smartStop
+      ? homeState(state) === "read-only"
+        ? this.#t("v4_live_read_only_held_reason", "Cleaning is unavailable while the map is read only.")
+        : homeState(state) === "busy" && state.smartStop.phase === "returning_to_dock"
+          ? this.#t("v4_returning_held_reason", "Wait until the robot returns to the dock before starting another clean.")
+          : ""
+      : "";
     return html`
       ${description ? html`<p class="panel-description" id=${state.workflow === "none" ? "home-reason" : nothing}>${description}</p>` : nothing}
+      ${heldReason ? html`<span class="sr-only" id="home-reason">${heldReason}</span>` : nothing}
       ${this.#workflowBody(state, narrow)}
     `;
   }

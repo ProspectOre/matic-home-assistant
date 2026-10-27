@@ -286,6 +286,7 @@ test("Smart Stop shows paused and return phases without hiding connection proble
     element.hass = { ...element.hass, states };
   });
   await expect(shell.getByRole("heading", { name: "Returning to the dock", exact: true })).toBeVisible();
+  await expect(shell.locator('[data-launcher="rooms"]')).toHaveAccessibleDescription("Wait until the robot returns to the dock before starting another clean.");
   await expect(shell.getByRole("button", { name: "Stop now & dock", exact: true })).toBeDisabled();
   await panel.evaluate((element) => { element.hass = { ...element.hass, connected: false }; });
   await expect(shell.locator(".status-copy")).toContainText("Home Assistant is offline");

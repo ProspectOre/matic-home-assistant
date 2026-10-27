@@ -480,6 +480,7 @@ test.describe("home by state", () => {
     });
     await expect(gallery.getByRole("heading", { name: "Map is read only", level: 2 })).toBeVisible();
     await expect(panelOf(gallery).locator(".panel-description")).toHaveCount(0);
+    await expect(gallery.locator('[data-launcher="rooms"]')).toHaveAccessibleDescription("Cleaning is unavailable while the map is read only.");
     await expect(gallery.getByText("Finishing Master Bedroom, then returning to the dock.", { exact: true })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Stop now & dock", exact: true })).toBeEnabled();
     await expect(gallery.getByText("Saved map is read only", { exact: true })).toHaveCount(0);
