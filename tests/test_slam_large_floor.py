@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import weakref
 from dataclasses import replace
 from io import BytesIO
 from unittest.mock import patch
@@ -214,3 +215,67 @@ def test_scaled_projection_keeps_corner_geometry_and_robot_aligned():
     assert len(xs) > 0
     assert abs(xs.mean() - sum(x for x, _ in centers) / 4) < 3
     assert abs(ys.mean() - sum(y for _, y in centers) / 4) < 3
+
+
+def test_large_floor_releases_intermediate_image_cores(monkeypatch):
+    """Bound simultaneous native rasters, including Pillow's resize copies."""
+    entries = floor_entries(MAX_SLAM_TILES)
+    photos = tuple(decode_slam_tile(photo) for photo, _ in entries)
+    structures = tuple(
+        decode_slam_structure_tile(structure) for _, structure in entries
+    )
+    live_images = []
+    peak_pixels = 0
+    original_new = Image.Image._new
+
+    def tracked_new(self, core):
+        nonlocal peak_pixels
+        result = original_new(self, core)
+        live_images[:] = [ref for ref in live_images if ref() is not None]
+        live_images.append(weakref.ref(result))
+        pixels = 0
+        for reference in live_images:
+            image = reference()
+            if image is None:
+                continue
+            try:
+                _ = image.im
+            except ValueError:  # Explicit close destroyed the native core.
+                continue
+            pixels += image.width * image.height
+        peak_pixels = max(peak_pixels, pixels)
+        return result
+
+    monkeypatch.setattr(Image.Image, "_new", tracked_new)
+    for _ in range(2):
+        png = render_slam_map(
+            photos, structure_tiles=structures, width=1024, height=1024
+        )
+        assert png.startswith(b"\x89PNG")
+    # The projection is at most four output pixels per camera pixel. Permit
+    # three such cores for Pillow's resampling plus the final output, rather
+    # than retaining floor, voxel, mirrored and cropped copies throughout.
+    assert peak_pixels <= (3 * 4 + 1) * 1024**2
+
+
+def test_camera_native_size_preserves_translucent_colors(monkeypatch):
+    """Skipping a resize must not introduce a premultiplied-alpha round trip."""
+    tile = decode_slam_tile(synthetic_slam_entry())
+    cropped_images = []
+    original_crop = Image.Image.crop
+
+    def capture_crop(self, box=None):
+        result = original_crop(self, box)
+        cropped_images.append(result.copy())
+        return result
+
+    monkeypatch.setattr(Image.Image, "crop", capture_crop)
+    render_slam_map((tile,))
+    cropped = cropped_images.pop()
+    width, height = cropped.width + 32, cropped.height + 32
+    expected = Image.new("RGB", (width, height), "#0b1118")
+    expected.paste(cropped, (16, 16), cropped)
+    with Image.open(
+        BytesIO(render_slam_map((tile,), width=width, height=height))
+    ) as actual:
+        assert actual.tobytes() == expected.tobytes()

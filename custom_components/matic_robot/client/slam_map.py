@@ -7,6 +7,7 @@ import json
 import math
 import struct
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -757,7 +758,8 @@ def render_slam_map(
     )
     projected_width = max(1, math.floor(projected_width * projection_scale))
     projected_height = max(1, math.floor(projected_height * projection_scale))
-    floor_projection = top_down.transform(
+    del top_draw
+    scene = top_down.transform(
         (projected_width, projected_height),
         Image.Transform.AFFINE,
         (
@@ -770,7 +772,9 @@ def render_slam_map(
         ),
         resample=Image.Resampling.BILINEAR,
     )
-    scene = floor_projection
+    # Release each raster after its last use. At the pixel ceiling a single
+    # RGBA image is 64 MiB; retained draw contexts also keep its core alive.
+    top_down.close()
 
     def project_cell(x: float, y: float, z: float = 0) -> tuple[float, float]:
         local_x = x - min_cell_x
@@ -781,16 +785,17 @@ def render_slam_map(
             (vertical_headroom + local_x + local_y - z * 2.5) * projection_scale,
         )
 
-    scene = _paint_voxels(
-        scene,
-        tiles,
-        min_cell_x=min_cell_x,
-        min_cell_y=min_cell_y,
-        grid_height=grid_height,
-        margin_x=margin_x,
-        vertical_headroom=vertical_headroom,
-        projection_scale=projection_scale,
-    )
+    with closing(scene):
+        scene = _paint_voxels(
+            scene,
+            tiles,
+            min_cell_x=min_cell_x,
+            min_cell_y=min_cell_y,
+            grid_height=grid_height,
+            margin_x=margin_x,
+            vertical_headroom=vertical_headroom,
+            projection_scale=projection_scale,
+        )
     draw = ImageDraw.Draw(scene, "RGBA")
 
     labels: list[tuple[str, float, float]] = []
@@ -817,7 +822,9 @@ def render_slam_map(
     # house from the raw x-y projection above. Mirror the finished geometry,
     # then mirror only the pending overlay coordinates so labels themselves
     # remain readable and the robot marker stays exact.
-    scene = ImageOps.mirror(scene)
+    del draw
+    with closing(scene):
+        scene = ImageOps.mirror(scene)
     mirror_x = scene.width - 1
     labels = [(name, mirror_x - x, y) for name, x, y in labels]
     if robot_marker is not None:
@@ -826,19 +833,29 @@ def render_slam_map(
     bounds = scene.getbbox()
     if bounds is None:
         raise DecodeError("photorealistic SLAM map has no visible content")
-    cropped = scene.crop(bounds)
+    with closing(scene):
+        cropped = scene.crop(bounds)
     scale = min((width - 32) / cropped.width, (height - 32) / cropped.height)
     target = (
         max(1, round(cropped.width * scale)),
         max(1, round(cropped.height * scale)),
     )
-    cropped = cropped.resize(target, Image.Resampling.LANCZOS)
+    if cropped.size != target:
+        # Pillow resamples RGBA via premultiplied RGBa. Perform those same steps
+        # explicitly so the old full-size core can be closed between phases.
+        with closing(cropped):
+            cropped = cropped.convert("RGBa")
+        with closing(cropped):
+            cropped = cropped.resize(target, Image.Resampling.LANCZOS)
+        with closing(cropped):
+            cropped = cropped.convert("RGBA")
     image = Image.new("RGB", (width, height), "#0b1118")
     image.paste(
         cropped,
         ((width - target[0]) // 2, (height - target[1]) // 2),
         cropped,
     )
+    cropped.close()
     output_draw = ImageDraw.Draw(image, "RGBA")
     offset_x = (width - target[0]) // 2
     offset_y = (height - target[1]) // 2
@@ -902,6 +919,8 @@ def render_slam_map(
     # process for seconds on a detailed map. Moderate compression keeps camera
     # refreshes responsive while preserving the exact image.
     image.save(output, "PNG", compress_level=4)
+    del output_draw
+    image.close()
     return output.getvalue()
 
 
