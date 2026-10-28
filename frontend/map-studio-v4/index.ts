@@ -1,4 +1,3 @@
-export * from "./contracts";
-export * from "./hass-adapter";
-export * from "./state";
-export * from "./panel";
+import "./panel";
+
+export { MATIC_MAP_PANEL_TAG } from "./panel";

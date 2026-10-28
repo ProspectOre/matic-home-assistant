@@ -21,7 +21,6 @@ interface GestureCallbacks {
 }
 
 interface PointerRecord {
-  readonly id: number;
   readonly type: string;
   startX: number;
   startY: number;
@@ -42,8 +41,6 @@ const midpoint = (first: PointerRecord, second: PointerRecord): MapPoint => ({
 
 const angle = (first: PointerRecord, second: PointerRecord): number =>
   Math.atan2(second.y - first.y, second.x - first.x);
-
-const angleDelta = (value: number): number => Math.atan2(Math.sin(value), Math.cos(value));
 
 interface SafariGestureEvent extends Event {
   readonly scale: number;
@@ -127,7 +124,6 @@ export class GestureController {
       && this.#callbacks.state().draw.tool === "outline") this.#navigationUntilRelease = true;
     const now = performance.now();
     const pointer: PointerRecord = {
-      id: event.pointerId,
       type: event.pointerType,
       startX: event.clientX,
       startY: event.clientY,
@@ -320,24 +316,23 @@ export class GestureController {
     const deltaY = nextCenter.y - center.y;
     const firstY = first.y - first.startY;
     const secondY = second.y - second.startY;
-    const firstX = first.x - first.startX;
-    const secondX = second.x - second.startX;
-    const rotation = angleDelta(angle(first, second) - this.#pinchAngle);
-    const verticalPair = Math.abs(deltaY) > Math.abs(dx) * 1.25
-      && Math.abs(nextDistance - this.#pinchDistance) <= this.#pinchDistance * 0.025
-      && Math.abs(rotation) <= 0.04;
-    const firstVerticalOnly = Math.abs(firstY) > Math.abs(firstX) * 1.25 && Math.abs(secondY) < 1;
-    const secondVerticalOnly = Math.abs(secondY) > Math.abs(secondX) * 1.25 && Math.abs(firstY) < 1;
+    const abs = Math.abs;
+    const rotation = angle(first, second) - this.#pinchAngle;
+    const rotationSize = abs(rotation);
+    const smallRotation = rotationSize < 0.04 || rotationSize > 6.24;
+    const verticalPair = abs(deltaY) > abs(dx) * 1.25
+      && abs(nextDistance - this.#pinchDistance) <= this.#pinchDistance * 0.025
+      && smallRotation;
     const tiltCandidate = !start.orthographic && verticalPair && firstY * secondY > 0;
     // PointerEvents for the two contacts can straddle a frame. Hold a lone
     // near-vertical update until its partner arrives or the gesture ends, so
     // the first half cannot pan before a later tilt classification.
     if (!flushPending && !this.#twoFingerTilt && !start.orthographic
-      && (firstVerticalOnly || secondVerticalOnly)) return;
+      && abs(firstY * secondY) < 1
+      && abs(deltaY) > abs(dx) * 1.25) return;
     if (!this.#twoFingerTilt && tiltCandidate) {
-      if (Math.min(Math.abs(firstY), Math.abs(secondY)) >= 12 && Math.abs(deltaY) >= 12) {
-        this.#twoFingerTilt = true;
-      } else if (!flushPending) return;
+      this.#twoFingerTilt = Math.min(abs(firstY), abs(secondY)) >= 12;
+      if (!this.#twoFingerTilt && !flushPending) return;
     }
     // Outside the deliberate parallel vertical 3D gesture, preserve the
     // combined native transform: pinch scale, twist rotation, and centroid
