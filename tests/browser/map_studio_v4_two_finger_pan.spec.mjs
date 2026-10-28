@@ -20,7 +20,13 @@ async function gesture(page, view, kind, delta = 60) {
     host.tabIndex = 0;
     Object.assign(host.style, { position: "absolute", left: "20px", top: "20px", width: "800px", height: "600px" });
     // Synthetic events do not register active browser pointers for capture.
-    host.setPointerCapture = host.releasePointerCapture = () => {};
+    const capturedPointers = new Set();
+    const releasedPointers = [];
+    host.setPointerCapture = (id) => capturedPointers.add(id);
+    host.hasPointerCapture = (id) => capturedPointers.has(id);
+    host.releasePointerCapture = (id) => {
+      if (capturedPointers.delete(id)) releasedPointers.push(id);
+    };
     const canvases = [document.createElement("canvas"), document.createElement("canvas")];
     for (const canvas of canvases) {
       Object.assign(canvas.style, { position: "absolute", width: "800px", height: "600px" });
@@ -29,6 +35,12 @@ async function gesture(page, view, kind, delta = 60) {
     document.body.append(host);
     const renderer = new RendererController(...canvases);
     let mutations = 0;
+    let cancelledFrames = 0;
+    const cancelAnimationFrame = window.cancelAnimationFrame.bind(window);
+    window.cancelAnimationFrame = (frameId) => {
+      cancelledFrames += 1;
+      return cancelAnimationFrame(frameId);
+    };
     const controller = new GestureController(host, renderer, {
       state: () => state,
       onCircles: () => { mutations += 1; },
@@ -46,8 +58,8 @@ async function gesture(page, view, kind, delta = 60) {
       renderer.setCamera({ ...renderer.camera, yaw: 0.3, pitch: 1,
         distance: renderer.camera.distance * 0.7, targetX: 0, targetZ: 0 });
       const before = renderer.camera;
-      const first = [320, 320];
-      const second = [520, 320];
+      const first = kind === "largeGapStationary" ? [100, 320] : [320, 320];
+      const second = kind === "largeGapStationary" ? [700, 320] : [520, 320];
       dispatch("pointerdown", 11, ...first);
       if (kind === "singlePan") {
         const samples = [];
@@ -81,6 +93,64 @@ async function gesture(page, view, kind, delta = 60) {
         return { before: joinCamera, samples: [after], mutations };
       }
       dispatch("pointerdown", 12, ...second);
+      if (kind === "largeGapStationary") {
+        second[1] = 344;
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        const samples = [renderer.camera];
+        return { before, samples, mutations };
+      }
+      if (kind === "gradualTilt") {
+        const samples = [];
+        first[1] = 324;
+        dispatch("pointermove", 11, ...first);
+        await frame();
+        samples.push(renderer.camera);
+        dispatch("pointermove", 12, 520, 324);
+        second[1] = 324;
+        await frame();
+        samples.push(renderer.camera);
+        for (const y of [328, 332]) {
+          first[1] = second[1] = y;
+          dispatch("pointermove", 11, ...first);
+          dispatch("pointermove", 12, ...second);
+          await frame();
+          samples.push(renderer.camera);
+        }
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples, mutations, cancelledFrames };
+      }
+      if (kind === "largeLeadTilt") {
+        first[1] = 336;
+        dispatch("pointermove", 11, ...first);
+        await frame();
+        const firstOnly = renderer.camera;
+        second[1] = 336;
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const aligned = renderer.camera;
+        first[1] = second[1] = 352;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const tilted = renderer.camera;
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples: [firstOnly, aligned, tilted], mutations };
+      }
+      if (kind === "shortVerticalRelease") {
+        first[1] = second[1] = 328;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        const samples = [renderer.camera];
+        return { before, samples, mutations };
+      }
       if (kind === "cancelSecond") {
         dispatch("pointercancel", 12, ...second);
         first[0] = 360;
@@ -114,9 +184,9 @@ async function gesture(page, view, kind, delta = 60) {
         first[1] = 338;
         dispatch("pointermove", 11, ...first);
         await frame();
-        const samples = [renderer.camera];
         dispatch("pointerup", 11, ...first);
         dispatch("pointerup", 12, ...second);
+        const samples = [renderer.camera];
         return { before, samples, mutations };
       }
       if (kind === "spreadVertical") {
@@ -138,7 +208,7 @@ async function gesture(page, view, kind, delta = 60) {
         dispatch("pointermove", 12, ...second);
         host.dispatchEvent(new Event("blur"));
         await frame();
-        return { before, samples: [renderer.camera], mutations };
+        return { before, samples: [renderer.camera], mutations, cancelledFrames, releasedPointers };
       }
       if (kind === "combined") {
         first[0] = 380;
@@ -239,6 +309,52 @@ test("a stationary anchor with an 18px vertical move remains a composed transfor
   expect(mutations).toBe(0);
 });
 
+test("a wide stationary-anchor vertical movement remains composed instead of tilting", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "largeGapStationary");
+  const after = samples.at(-1);
+  expect(after.pitch).toBeCloseTo(before.pitch, 8);
+  expect(Math.abs(after.yaw - before.yaw)).toBeGreaterThan(0.02);
+  expect(after.distance).not.toBeCloseTo(before.distance, 4);
+  expect(Math.hypot(after.targetX - before.targetX, after.targetZ - before.targetZ)).toBeGreaterThan(0.01);
+  expect(mutations).toBe(0);
+});
+
+test("interleaved gradual vertical movement buffers pan until 3D tilt is resolved", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "gradualTilt");
+  for (const sample of samples.slice(0, 2)) {
+    expect(sample.targetX).toBeCloseTo(before.targetX, 8);
+    expect(sample.targetZ).toBeCloseTo(before.targetZ, 8);
+    expect(sample.pitch).toBeCloseTo(before.pitch, 8);
+  }
+  const after = samples.at(-1);
+  expect(Math.abs(after.pitch - before.pitch)).toBeGreaterThan(0.02);
+  expect(after.targetX).toBeCloseTo(before.targetX, 8);
+  expect(after.targetZ).toBeCloseTo(before.targetZ, 8);
+  expect(mutations).toBe(0);
+});
+
+test("a large one-finger lead stays buffered until the second finger confirms 3D tilt", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "largeLeadTilt");
+  expect(samples[0].targetX).toBeCloseTo(before.targetX, 8);
+  expect(samples[0].targetZ).toBeCloseTo(before.targetZ, 8);
+  expect(samples[0].pitch).toBeCloseTo(before.pitch, 8);
+  expect(samples[1].targetX).toBeCloseTo(before.targetX, 8);
+  expect(samples[1].targetZ).toBeCloseTo(before.targetZ, 8);
+  const after = samples.at(-1);
+  expect(Math.abs(after.pitch - before.pitch)).toBeGreaterThan(0.02);
+  expect(after.targetX).toBeCloseTo(before.targetX, 8);
+  expect(after.targetZ).toBeCloseTo(before.targetZ, 8);
+  expect(mutations).toBe(0);
+});
+
+test("a short parallel vertical gesture pans when released before tilt threshold", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "shortVerticalRelease");
+  const after = samples.at(-1);
+  expect(after.pitch).toBeCloseTo(before.pitch, 8);
+  expect(Math.hypot(after.targetX - before.targetX, after.targetZ - before.targetZ)).toBeGreaterThan(0.01);
+  expect(mutations).toBe(0);
+});
+
 test("vertical translation with deliberate finger spread preserves zoom instead of tilting", async ({ page }) => {
   const { before, samples, mutations } = await gesture(page, "three", "spreadVertical");
   const after = samples.at(-1);
@@ -248,8 +364,8 @@ test("vertical translation with deliberate finger spread preserves zoom instead 
   expect(mutations).toBe(0);
 });
 
-test("blur cancels a queued two-finger camera update", async ({ page }) => {
-  const { before, samples, mutations } = await gesture(page, "three", "blurQueued");
+test("blur cancels a queued camera update and releases both pointer captures", async ({ page }) => {
+  const { before, samples, mutations, cancelledFrames, releasedPointers } = await gesture(page, "three", "blurQueued");
   const after = samples.at(-1);
   expect(after.pitch).toBeCloseTo(before.pitch, 8);
   expect(after.yaw).toBeCloseTo(before.yaw, 8);
@@ -257,6 +373,8 @@ test("blur cancels a queued two-finger camera update", async ({ page }) => {
   expect(after.targetX).toBeCloseTo(before.targetX, 8);
   expect(after.targetZ).toBeCloseTo(before.targetZ, 8);
   expect(mutations).toBe(0);
+  expect(cancelledFrames).toBeGreaterThan(0);
+  expect(releasedPointers.sort()).toEqual([11, 12]);
 });
 
 test("combined two-finger translation, pinch, and twist preserve all transform components", async ({ page }) => {

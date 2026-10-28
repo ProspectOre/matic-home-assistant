@@ -27,14 +27,10 @@ interface PointerRecord {
   startY: number;
   x: number;
   y: number;
-  lastX: number;
-  lastY: number;
   lastTime: number;
   velocityX: number;
   velocityY: number;
 }
-
-type TwoFingerIntent = "tilt" | null;
 
 const distance = (first: PointerRecord, second: PointerRecord): number =>
   Math.hypot(first.x - second.x, first.y - second.y);
@@ -47,12 +43,7 @@ const midpoint = (first: PointerRecord, second: PointerRecord): MapPoint => ({
 const angle = (first: PointerRecord, second: PointerRecord): number =>
   Math.atan2(second.y - first.y, second.x - first.x);
 
-const angleDelta = (value: number): number => {
-  let delta = value;
-  while (delta > Math.PI) delta -= Math.PI * 2;
-  while (delta < -Math.PI) delta += Math.PI * 2;
-  return delta;
-};
+const angleDelta = (value: number): number => Math.atan2(Math.sin(value), Math.cos(value));
 
 interface SafariGestureEvent extends Event {
   readonly scale: number;
@@ -91,8 +82,7 @@ export class GestureController {
   #pinchCenter: MapPoint | null = null;
   #pinchAngle = 0;
   #pinchCamera: CameraState | null = null;
-  #twoFingerIntent: TwoFingerIntent | null = null;
-  #twoFingerFrame: number | null = null;
+  #twoFingerTilt = false;
   #dragCamera: CameraState | null = null;
   #gestureCamera: CameraState | null = null;
   #gestureRotation = 0;
@@ -143,8 +133,6 @@ export class GestureController {
       startY: event.clientY,
       x: event.clientX,
       y: event.clientY,
-      lastX: event.clientX,
-      lastY: event.clientY,
       lastTime: now,
       velocityX: 0,
       velocityY: 0,
@@ -156,14 +144,13 @@ export class GestureController {
       this.#callbacks.onCirclePreview(null);
       this.#coordinateCapture = null;
       this.#mode = "pinch";
-      this.#twoFingerIntent = null;
+      this.#twoFingerTilt = false;
       this.#host.classList.add("navigating");
       this.#navigationUntilRelease = true;
       const [first, second] = [...this.#pointers.values()];
       if (first && second) {
-        // The first contact may already have panned before the second arrived.
-        // Rebase both contacts and the camera at the join so that earlier
-        // one-finger motion does not leak into two-finger intent detection.
+        // Rebase the pair and camera on join so earlier one-finger travel
+        // doesn't leak into two-finger intent detection.
         first.startX = first.x;
         first.startY = first.y;
         second.startX = second.x;
@@ -231,14 +218,9 @@ export class GestureController {
       this.#coordinateCapture = null;
       this.#draft = [];
       this.#lastMapPoint = null;
-      this.#pinchCenter = null;
-      this.#pinchCamera = null;
       this.#dragCamera = null;
-      if (this.#twoFingerFrame !== null) window.cancelAnimationFrame(this.#twoFingerFrame);
-      this.#twoFingerFrame = null;
       this.#gestureCamera = null;
       this.#gestureRotation = 0;
-      this.#twoFingerIntent = null;
       this.#spacePressed = false;
       this.#navigationUntilRelease = false;
       this.#mode = "idle";
@@ -290,24 +272,20 @@ export class GestureController {
     const sample = samples.at(-1) || event;
     const now = performance.now();
     const elapsed = Math.max(1, now - pointer.lastTime);
-    const instantaneousX = (sample.clientX - pointer.lastX) / elapsed;
-    const instantaneousY = (sample.clientY - pointer.lastY) / elapsed;
+    const instantaneousX = (sample.clientX - pointer.x) / elapsed;
+    const instantaneousY = (sample.clientY - pointer.y) / elapsed;
     pointer.velocityX = pointer.velocityX * 0.62 + instantaneousX * 0.38;
     pointer.velocityY = pointer.velocityY * 0.62 + instantaneousY * 0.38;
-    pointer.lastX = sample.clientX;
-    pointer.lastY = sample.clientY;
     pointer.lastTime = now;
     pointer.x = sample.clientX;
     pointer.y = sample.clientY;
-    if (this.#mode === "pinch" && this.#pointers.size >= 2) {
+    if (this.#mode === "pinch") {
       // PointerEvents for two contacts may arrive in separate bursts. Sample
       // once per frame so the camera sees the latest pair together.
-      if (this.#twoFingerFrame === null) {
-        this.#twoFingerFrame = window.requestAnimationFrame(() => {
-          this.#twoFingerFrame = null;
-          this.#applyTwoFingerGesture();
-        });
-      }
+      this.#motionFrame ??= window.requestAnimationFrame(() => {
+        this.#motionFrame = null;
+        this.#applyTwoFingerGesture();
+      });
       event.preventDefault();
       return;
     }
@@ -331,55 +309,46 @@ export class GestureController {
     event.preventDefault();
   };
 
-  #applyTwoFingerGesture(): void {
-    if (this.#mode !== "pinch" || this.#pointers.size < 2) return;
-    const [first, second] = [...this.#pointers.values()];
-    const start = this.#pinchCamera;
-    const center = this.#pinchCenter;
-    if (!first || !second || !start || !center) return;
+  #applyTwoFingerGesture(flushPending = false): void {
+    if (this.#mode !== "pinch") return;
+    const [first, second] = [...this.#pointers.values()] as [PointerRecord, PointerRecord];
+    const start = this.#pinchCamera!;
+    const center = this.#pinchCenter!;
     const nextDistance = Math.max(1, distance(first, second));
     const nextCenter = midpoint(first, second);
-    const firstDelta = { x: first.x - first.startX, y: first.y - first.startY };
-    const secondDelta = { x: second.x - second.startX, y: second.y - second.startY };
-    const translation = { x: nextCenter.x - center.x, y: nextCenter.y - center.y };
-    const firstTravel = Math.hypot(firstDelta.x, firstDelta.y);
-    const secondTravel = Math.hypot(secondDelta.x, secondDelta.y);
-    const sameVerticalDirection = firstDelta.y * secondDelta.y > 0;
-    const alignedVerticalTravel = sameVerticalDirection
-      && Math.abs(firstDelta.y) >= 12
-      && Math.abs(secondDelta.y) >= 12
-      && firstTravel >= 12
-      && secondTravel >= 12
-      && Math.abs(firstDelta.x) <= Math.max(3, Math.abs(firstDelta.y) * 0.1)
-      && Math.abs(secondDelta.x) <= Math.max(3, Math.abs(secondDelta.y) * 0.1)
-      && Math.abs(firstDelta.y - secondDelta.y) <= Math.max(4, Math.max(Math.abs(firstDelta.y), Math.abs(secondDelta.y)) * 0.15);
-    const scaleChange = Math.abs(Math.log(nextDistance / this.#pinchDistance));
-    const rotationChange = Math.abs(angleDelta(angle(first, second) - this.#pinchAngle));
-    const parallelVertical = alignedVerticalTravel
-      && Math.abs(translation.y) >= 12
-      && Math.abs(translation.y) > Math.abs(translation.x) * 1.25
-      && scaleChange <= 0.025
-      && rotationChange <= 0.04;
-    if (this.#twoFingerIntent === null && topView(this.#callbacks.state()) === "three" && parallelVertical) {
-      this.#twoFingerIntent = "tilt";
-    }
-    if (this.#twoFingerIntent === "tilt") {
-      this.#renderer.setCamera({ ...start, pitch: start.pitch - translation.y * 0.004 });
-      return;
+    const dx = nextCenter.x - center.x;
+    const deltaY = nextCenter.y - center.y;
+    const firstY = first.y - first.startY;
+    const secondY = second.y - second.startY;
+    const firstX = first.x - first.startX;
+    const secondX = second.x - second.startX;
+    const rotation = angleDelta(angle(first, second) - this.#pinchAngle);
+    const verticalPair = Math.abs(deltaY) > Math.abs(dx) * 1.25
+      && Math.abs(nextDistance - this.#pinchDistance) <= this.#pinchDistance * 0.025
+      && Math.abs(rotation) <= 0.04;
+    const firstVerticalOnly = Math.abs(firstY) > Math.abs(firstX) * 1.25 && Math.abs(secondY) < 1;
+    const secondVerticalOnly = Math.abs(secondY) > Math.abs(secondX) * 1.25 && Math.abs(firstY) < 1;
+    const tiltCandidate = !start.orthographic && verticalPair && firstY * secondY > 0;
+    // PointerEvents for the two contacts can straddle a frame. Hold a lone
+    // near-vertical update until its partner arrives or the gesture ends, so
+    // the first half cannot pan before a later tilt classification.
+    if (!flushPending && !this.#twoFingerTilt && !start.orthographic
+      && (firstVerticalOnly || secondVerticalOnly)) return;
+    if (!this.#twoFingerTilt && tiltCandidate) {
+      if (Math.min(Math.abs(firstY), Math.abs(secondY)) >= 12 && Math.abs(deltaY) >= 12) {
+        this.#twoFingerTilt = true;
+      } else if (!flushPending) return;
     }
     // Outside the deliberate parallel vertical 3D gesture, preserve the
     // combined native transform: pinch scale, twist rotation, and centroid
     // translation may all change together. A stationary anchor is valid.
-    const transformed: CameraState = {
-      ...start,
-      distance: start.distance * this.#pinchDistance / nextDistance,
-      yaw: start.yaw + angleDelta(angle(first, second) - this.#pinchAngle),
-    };
-    this.#renderer.setCamera(this.#renderer.cameraAfterPan(
-      transformed,
-      translation.x,
-      translation.y,
-    ));
+    this.#renderer.setCamera(this.#twoFingerTilt
+      ? { ...start, pitch: start.pitch - deltaY * 0.004 }
+      : this.#renderer.cameraAfterPan({
+        ...start,
+        distance: start.distance * this.#pinchDistance / nextDistance,
+        yaw: start.yaw + rotation,
+      }, dx, deltaY));
   }
 
   readonly #pointerUp = (event: PointerEvent): void => {
@@ -397,9 +366,8 @@ export class GestureController {
     if (!pointer) return;
     const completedMode = this.#mode;
     if (this.#mode === "pinch") {
-      if (this.#twoFingerFrame !== null) window.cancelAnimationFrame(this.#twoFingerFrame);
-      this.#twoFingerFrame = null;
-      this.#applyTwoFingerGesture();
+      this.#cancelMotion();
+      this.#applyTwoFingerGesture(event.type !== "pointercancel");
     }
     this.#pointers.delete(event.pointerId);
     this.#host.releasePointerCapture?.(event.pointerId);
@@ -432,11 +400,6 @@ export class GestureController {
       this.#coordinateCapture = null;
       this.#host.classList.remove("navigating");
       this.#navigationUntilRelease = false;
-      this.#pinchCenter = null;
-      this.#pinchCamera = null;
-      this.#twoFingerIntent = null;
-      if (this.#twoFingerFrame !== null) window.cancelAnimationFrame(this.#twoFingerFrame);
-      this.#twoFingerFrame = null;
       this.#dragCamera = null;
       this.#lastMapPoint = null;
       if ((completedMode === "pan" || completedMode === "orbit")
@@ -454,8 +417,6 @@ export class GestureController {
         remaining.velocityY = 0;
       }
       this.#dragCamera = this.#renderer.camera;
-      this.#pinchCamera = null;
-      this.#twoFingerIntent = null;
     }
     event.preventDefault();
   };
@@ -658,17 +619,13 @@ export class GestureController {
   readonly #blur = (): void => {
     this.#spacePressed = false;
     this.#cancelCoordinateGesture();
-    if (this.#twoFingerFrame !== null) window.cancelAnimationFrame(this.#twoFingerFrame);
-    this.#twoFingerFrame = null;
-    if (this.#mode === "pinch") {
-      this.#mode = "idle";
-      this.#pinchCenter = null;
-      this.#pinchCamera = null;
-      this.#twoFingerIntent = null;
-      this.#navigationUntilRelease = false;
-      for (const id of this.#pointers.keys()) this.#host.releasePointerCapture?.(id);
-      this.#pointers.clear();
+    this.#cancelMotion();
+    for (const id of this.#pointers.keys()) {
+      if (this.#host.hasPointerCapture?.(id)) this.#host.releasePointerCapture?.(id);
     }
+    this.#mode = "idle";
+    this.#navigationUntilRelease = false;
+    this.#pointers.clear();
     this.#renderer.setCursor(null);
     this.#host.classList.remove("navigating");
   };
@@ -727,8 +684,6 @@ export class GestureController {
     this.#cancelCoordinateGesture();
     this.#disposed = true;
     this.#cancelMotion();
-    if (this.#twoFingerFrame !== null) window.cancelAnimationFrame(this.#twoFingerFrame);
-    this.#twoFingerFrame = null;
     this.#host.removeEventListener("pointerdown", this.#pointerDown);
     this.#host.removeEventListener("pointermove", this.#pointerMove);
     this.#host.removeEventListener("pointerup", this.#pointerUp);

@@ -50,7 +50,7 @@ Current installed checks and historical physical receipts are identified separat
 | Smart Stop | RC41: one acknowledged threshold Stop, one verified completed room, no next-room start, one shared-schedule increment, and docking. Immediate Stop now & dock separately docked with zero completed rooms. |
 | Heavy duty one-shot | Accepted same-run settings matched the requested room; one completion and true-to-false one-shot reset were recorded. Independent native-session-hash recomputation is not claimed. |
 | Room then custom area | One owned room-to-area sequence completed. Area evidence is owned-session completion, not measured coverage of every part of the drawn outline. |
-| Earlier fixture cleanup | Earlier owned fixtures were removed; original plans, areas, selections, and physical history were retained. Verified encrypted rollback backup and recoverable source history are retained privately. No restore drill is claimed. |
+| Earlier fixture cleanup | Earlier owned fixtures were removed; original plans, areas, selections, and physical history were retained. Verified encrypted rollback backup and recoverable source history are retained privately. The later isolated restore attempt was rejected before restore work because Supervisor network prerequisites were unavailable; no restore is claimed. |
 
 After the owner approved resumption, a fresh four-pass Dining Room cycle ran on
 the revised runtime: Vacuum/Quick, Vacuum/Optimal, due Vacuum+Mop/Heavy duty,
@@ -71,8 +71,33 @@ Earlier plan, schedule, reset/Cancel, preview, history, authorization/refusal,
 and recovery receipts remain bounded by their revisions and change-impact review.
 The old 189-cell matrix is historical; it is not a current unique-defect count.
 The [35-entry feature record](verification-0.5-features.md) tracks the full new
-surface, later live metadata/reload and phone checks, and the owner-requested
-iOS gesture update. Its pending checks are not silently certified by the passes above.
+surface, later live metadata/reload and phone checks, the owner-requested iOS
+gesture update, and its remaining physical and recovery gates. Its pending
+checks are not silently certified by the passes above.
+
+After the four-pass Dining Room cycle, one bounded Master Bedroom one-time-clean
+check completed the vacuum-only skip-due-work case: one Start, one verified
+room credit, 959 seconds of native vacuum work, and docking. Due mop and
+coverage remained due. This does not verify one-time due-work application or
+independent physical coverage. The single follow-up request for Vacuum+Mop was
+explicitly refused before robot dispatch; no second run or native Vacuum+Mop
+session occurred. The owned temporary plan and schedule were then removed
+while original definitions, selection, other schedules, and physical history
+were preserved. The refusal leaves due-work application unverified and is not
+evidence of a robot failure or a confirmed integration defect.
+
+The live camera resize check confirmed that Home Assistant forwards requested
+dimensions and the integration clamps each dimension to a minimum of 256 pixels:
+a 320×240 request returned 320×256. The earlier 320×240 upper-bound expectation
+was a test assumption; no camera defect was demonstrated. Camera consumer/card
+display and failure boundaries remain open.
+
+An isolated restore was attempted once in a restricted HAOS virtual machine.
+Supervisor rejected it before restore work because its network prerequisites
+were unavailable. No data restore or rollback qualification is claimed; the
+temporary guest copy was removed, the backup catalog was empty afterward, and
+the virtual machine was shut down. The live Home Assistant server was not
+restored.
 
 ## Whole-integration evidence audit
 
