@@ -22,6 +22,7 @@ from homeassistant.helpers.storage import Store
 from .client.api import MaticHermesClient
 from .client.models import FloorPlan, HermesCollectionEntry
 from .client.slam_map import (
+    MAX_SLAM_TILES,
     MAX_TILE_ENTRY_BYTES,
     SlamStructureTile,
     SlamTile,
@@ -31,8 +32,11 @@ from .client.slam_map import (
 from .const import DOMAIN
 
 STORAGE_VERSION = 1
-MAX_TILES = 1024
-MAX_STORED_BYTES = 16 * 1024 * 1024
+MAX_TILES = MAX_SLAM_TILES
+# Raw key/value bytes shared by both layers, not a per-layer allowance.
+# Base64 adds roughly one third on disk. Candidates use the same ceiling;
+# at most two candidates plus the active floor can be retained concurrently.
+MAX_STORED_BYTES = 64 * 1024 * 1024
 STREAM_RETRY_SECONDS = 5
 SAVE_DELAY_SECONDS = 1
 MAP_SETTLE_SECONDS = 3
