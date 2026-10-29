@@ -135,6 +135,50 @@ class _MissionCandidate:
     dropped_structure_tiles: int = 0
 
 
+@dataclass(slots=True)
+class _LegacyRecovery:
+    """Evidence a live replay must produce before a restored latch clears.
+
+    Legacy eviction removed interior pages only: ``_spatial_victim`` never
+    evicts a page on the retained bounding-box edge. The missing pages are
+    therefore inside that box, and a replayed page inside the box that the
+    old cache lacked is one of them (or a later refinement of that gap).
+    """
+
+    pending: tuple[set[str], set[str]]
+    retained: tuple[frozenset[str], frozenset[str]]
+    boxes: tuple[tuple[int, int, int, int], tuple[int, int, int, int]]
+    gap_filled: list[bool]
+
+    @classmethod
+    def from_layers(
+        cls,
+        entries: Mapping[str, HermesCollectionEntry],
+        structure_entries: Mapping[str, HermesCollectionEntry],
+    ) -> _LegacyRecovery:
+        layers = (frozenset(entries), frozenset(structure_entries))
+        return cls(
+            pending=(set(layers[0]), set(layers[1])),
+            retained=layers,
+            boxes=(_bounding_box(layers[0]), _bounding_box(layers[1])),
+            gap_filled=[False, False],
+        )
+
+    def observe(self, key: str, *, structural: bool) -> None:
+        """Record one live page of the active mission."""
+        layer = int(structural)
+        self.pending[layer].discard(key)
+        if key not in self.retained[layer] and _inside(
+            _parse_tile_key(key), self.boxes[layer]
+        ):
+            self.gap_filled[layer] = True
+
+    @property
+    def satisfied(self) -> bool:
+        """Return whether both layers replayed past the retained subset."""
+        return not (self.pending[0] or self.pending[1]) and all(self.gap_filled)
+
+
 @dataclass(frozen=True, slots=True)
 class _LoadedMap:
     """One fully decoded private storage snapshot built off the event loop."""
@@ -198,7 +242,7 @@ class SlamMapStore:
         # Pages a restored truncated cache still holds that the live replay has
         # not re-delivered yet, per layer. ``None`` means the latch cannot be
         # recovered in this session; see ``_recover_legacy_truncation``.
-        self._pending_legacy_keys: tuple[set[str], set[str]] | None = None
+        self._legacy_recovery: _LegacyRecovery | None = None
         self._truncation_bounds = _current_bounds()
         self._stream_states: dict[str, MapStreamState] = {
             "map_compressed_rgb": "idle",
@@ -245,8 +289,8 @@ class SlamMapStore:
         # does one truncated under the current bounds. The original bounds
         # are persisted until the latch clears, so a restart mid-replay keeps
         # the latch recoverable.
-        self._pending_legacy_keys = (
-            (set(self._entries), set(self._structure_entries))
+        self._legacy_recovery = (
+            _LegacyRecovery.from_layers(self._entries, self._structure_entries)
             if loaded.recoverable and self._entries and self._structure_entries
             else None
         )
@@ -344,10 +388,11 @@ class SlamMapStore:
             else self._entry_content_digests
         )
         key = _tile_key(tile)
-        if self._pending_legacy_keys is not None:
+        if self._legacy_recovery is not None:
             # Live delivery of a page the truncated cache retained is evidence
-            # that this session's replay reaches at least that far.
-            self._pending_legacy_keys[int(structural)].discard(key)
+            # that this session's replay reaches at least that far; a page
+            # inside the retained area that it lacked fills an eviction gap.
+            self._legacy_recovery.observe(key, structural=structural)
         previous = target.get(key)
         content_digest = _tile_content_digest(tile)
         previous_digest = content_digests.get(key)
@@ -673,7 +718,7 @@ class SlamMapStore:
         self._dropped_photo_tiles = candidate.dropped_photo_tiles
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
         self._invalid_tiles = 0
-        self._pending_legacy_keys = None
+        self._legacy_recovery = None
         self._truncation_bounds = _current_bounds()
         self._candidates.pop(mission_token, None)
         # Promotion itself requires live photographic and structural evidence.
@@ -1045,20 +1090,24 @@ class SlamMapStore:
         latch is released only when, within one live session for the same
         mission: both layers are verified live; every page the truncated
         cache retained has been re-delivered in both layers, so the replay
-        provably reached at least the whole retained set; nothing was evicted
-        under the current bounds; both layers agree spatially; and the map
-        has settled. The cache then holds everything the robot replayed.
+        provably reached at least the whole retained set; each layer also
+        delivered a page inside the retained area that the old cache lacked,
+        so the replay demonstrably filled evicted gaps rather than echoing
+        the surviving subset; nothing was evicted under the current bounds;
+        both layers agree spatially; and the map has settled. The cache then
+        holds everything the robot replayed. Legacy drop counters cannot
+        enumerate the missing pages, so this is the strongest evidence
+        available without an authoritative inventory.
         """
-        pending = self._pending_legacy_keys
+        recovery = self._legacy_recovery
         if (
-            pending is None
-            or pending[0]
-            or pending[1]
+            recovery is None
+            or not recovery.satisfied
             or not self._has_balanced_layers()
             or not self._settled()
         ):
             return False
-        self._pending_legacy_keys = None
+        self._legacy_recovery = None
         self._truncation_bounds = _current_bounds()
         self._truncated = False
         self._dropped_photo_tiles = 0
@@ -1155,7 +1204,7 @@ class SlamMapStore:
         self._dropped_photo_tiles = 0
         self._dropped_structure_tiles = 0
         self._invalid_tiles = 0
-        self._pending_legacy_keys = None
+        self._legacy_recovery = None
         self._truncation_bounds = _current_bounds()
         self._notify_listeners()
         await self._store.async_remove()
@@ -1190,7 +1239,7 @@ class SlamMapStore:
             # Pages evicted under the current bounds are genuinely missing;
             # no replay evidence can clear this latch within the session.
             self._truncated = True
-            self._pending_legacy_keys = None
+            self._legacy_recovery = None
             self._truncation_bounds = _current_bounds()
             self._dropped_photo_tiles = _increment_by(
                 self._dropped_photo_tiles, dropped_photo
@@ -1594,6 +1643,18 @@ def _tile_content_digest(tile: SlamTile | SlamStructureTile) -> bytes:
         digest.update(tile.occupancy)
         digest.update(tile.semantics)
     return digest.digest()
+
+
+def _bounding_box(keys: frozenset[str]) -> tuple[int, int, int, int]:
+    """Return (min_x, max_x, min_y, max_y) of a non-empty page set."""
+    points = [_parse_tile_key(key) for key in keys]
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    return min(xs), max(xs), min(ys), max(ys)
+
+
+def _inside(point: tuple[int, int], box: tuple[int, int, int, int]) -> bool:
+    return box[0] <= point[0] <= box[1] and box[2] <= point[1] <= box[3]
 
 
 def _tile_key(tile: SlamTile | SlamStructureTile) -> str:

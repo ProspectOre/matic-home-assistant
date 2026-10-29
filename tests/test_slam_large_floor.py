@@ -125,7 +125,7 @@ async def test_legacy_truncated_cache_reacquires_both_layers_without_reset(hass)
     assert restored.tile_count == restored.structure_tile_count == len(entries)
     assert restored.health.truncated
     # A restart before the replay settles keeps the latch recoverable.
-    assert restored._pending_legacy_keys == (
+    assert restored._legacy_recovery.pending == (
         set(restored._entries),
         set(restored._structure_entries),
     )
@@ -326,7 +326,7 @@ async def test_legacy_truncation_clears_after_full_replay_settles(hass):
     await replay(store, entries)
     assert store.live_session_verified
     assert store.tile_count == store.structure_tile_count == len(entries)
-    assert store._pending_legacy_keys == (set(), set())
+    assert store._legacy_recovery.satisfied
     # Replay coverage alone is not completion; the settle period still applies.
     with patch.object(storage, "MAP_SETTLE_SECONDS", 10**6):
         assert store.health.state == "truncated" and not store.map_complete
@@ -335,7 +335,7 @@ async def test_legacy_truncation_clears_after_full_replay_settles(hass):
     health = store.health
     assert health.state == "ready" and health.complete and not health.truncated
     assert health.dropped_photo_tiles == health.dropped_structure_tiles == 0
-    assert store._pending_legacy_keys is None
+    assert store._legacy_recovery is None
     with patch.object(storage, "SAVE_DELAY_SECONDS", 0):
         store._schedule_save()
     await hass.async_block_till_done()
@@ -344,7 +344,7 @@ async def test_legacy_truncation_clears_after_full_replay_settles(hass):
     await restored.async_load()
     assert not restored.health.truncated
     assert restored.tile_count == restored.structure_tile_count == len(entries)
-    assert restored._pending_legacy_keys is None
+    assert restored._legacy_recovery is None
     assert restored._serialized_data()["bounds"] == {
         "tiles": storage.MAX_TILES,
         "bytes": storage.MAX_STORED_BYTES,
@@ -377,7 +377,8 @@ async def test_legacy_truncation_persists_until_every_retained_page_replays(hass
     assert len(held_back) == 1
     await replay(store, entries, skip=held_back)
     assert store.live_session_verified
-    assert store._pending_legacy_keys == ({retained[-1]}, {retained[-1]})
+    assert store._legacy_recovery.pending == ({retained[-1]}, {retained[-1]})
+    assert store._legacy_recovery.gap_filled == [True, True]
     with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
         assert not store.map_complete
         assert store.health.state == "truncated"
@@ -393,14 +394,21 @@ async def test_legacy_truncation_recovery_requires_balanced_layers(hass):
     store = await legacy_truncated_store(hass, "legacy-unbalanced", entries)
     for photo, _ in entries:
         await store.async_add(photo)
-    # Only the structural pages the old cache retained replay this session.
-    for key in sorted(store._pending_legacy_keys[1]):
+    # Structural replay covers the retained pages plus one evicted gap only.
+    retained = store._legacy_recovery.retained[1]
+    gap = next(
+        structure
+        for _, structure in entries
+        if storage._tile_key(decode_slam_structure_tile(structure)) not in retained
+    )
+    for key in sorted(retained):
         page_x, page_y = storage._parse_tile_key(key)
         await store.async_add_structure(
             synthetic_structure_entry(page_x=page_x, page_y=page_y, mission_id=1)
         )
+    await store.async_add_structure(gap)
     assert store.live_session_verified
-    assert store._pending_legacy_keys == (set(), set())
+    assert store._legacy_recovery.satisfied
     assert store.health.layer_overlap < storage.MIN_LAYER_OVERLAP
     with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
         assert not store.map_complete
@@ -414,7 +422,7 @@ async def test_in_session_eviction_disables_legacy_recovery(hass):
     store = await legacy_truncated_store(hass, "legacy-evicted", entries)
     with patch.object(storage, "MAX_TILES", 1050):
         await replay(store, entries)
-    assert store._pending_legacy_keys is None
+    assert store._legacy_recovery is None
     assert store.tile_count == 1050
     with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
         assert not store.map_complete
@@ -430,19 +438,19 @@ async def test_in_session_eviction_disables_legacy_recovery(hass):
 async def test_legacy_recovery_state_resets_on_promotion_reload_and_removal(hass):
     entries = floor_entries(1100)
     store = await legacy_truncated_store(hass, "legacy-reset", entries)
-    assert store._pending_legacy_keys is not None
+    assert store._legacy_recovery is not None
     store.set_expected_mission_id(2)
     await store.async_add(synthetic_slam_entry(mission_id=2))
     await store.async_add_structure(synthetic_structure_entry(mission_id=2))
     assert store.mission_identity.mission_id == 2
     assert not store.health.truncated
-    assert store._pending_legacy_keys is None
+    assert store._legacy_recovery is None
     await store.async_shutdown()
     restored = storage.SlamMapStore(hass, "legacy-reset")
     await restored.async_load()
-    assert restored._pending_legacy_keys is None
+    assert restored._legacy_recovery is None
     await restored.async_remove()
-    assert restored._pending_legacy_keys is None
+    assert restored._legacy_recovery is None
 
 
 async def test_empty_or_one_sided_legacy_truncation_is_not_recoverable(hass):
@@ -456,7 +464,7 @@ async def test_empty_or_one_sided_legacy_truncation_is_not_recoverable(hass):
     restored = storage.SlamMapStore(hass, "legacy-empty")
     await restored.async_load()
     assert restored.health.truncated
-    assert restored._pending_legacy_keys is None
+    assert restored._legacy_recovery is None
     restored.set_expected_mission_id(1)
     await restored.async_add(synthetic_slam_entry(mission_id=1))
     await restored.async_add_structure(synthetic_structure_entry(mission_id=1))
@@ -544,7 +552,7 @@ async def test_truncation_under_current_bounds_survives_restart_unrecovered(hass
         }
         restored = storage.SlamMapStore(hass, "current-bounds")
         await restored.async_load()
-        assert restored._pending_legacy_keys is None
+        assert restored._legacy_recovery is None
         restored.set_expected_mission_id(1)
         # Replaying only the pages that fit, then settling, must not clear it.
         await replay(restored, [entries[index] for index in sorted(retained)])
@@ -556,7 +564,7 @@ async def test_truncation_under_current_bounds_survives_restart_unrecovered(hass
     # The same snapshot becomes recoverable once the bounds grow.
     grown = storage.SlamMapStore(hass, "current-bounds")
     await grown.async_load()
-    assert grown._pending_legacy_keys == (
+    assert grown._legacy_recovery.pending == (
         set(grown._entries),
         set(grown._structure_entries),
     )
@@ -635,3 +643,48 @@ def test_load_time_eviction_is_not_recoverable():
     )
     loaded = storage._decode_stored_snapshot(snapshot)
     assert not loaded.truncated and loaded.bounds == storage._current_bounds()
+
+
+async def test_replaying_only_surviving_pages_keeps_the_legacy_latch(hass):
+    """Coverage of the retained subset alone is not recovery evidence."""
+    entries = floor_entries(1100)
+    store = await legacy_truncated_store(hass, "legacy-survivors", entries)
+    recovery = store._legacy_recovery
+    survivors = [
+        pair
+        for pair in entries
+        if storage._tile_key(decode_slam_tile(pair[0])) in recovery.retained[0]
+    ]
+    evicted = [pair for pair in entries if pair not in survivors]
+    assert evicted and len(survivors) + len(evicted) == len(entries)
+    await replay(store, survivors)
+    assert store.live_session_verified
+    assert recovery.pending == (set(), set())
+    assert recovery.gap_filled == [False, False]
+    assert not recovery.satisfied
+    with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
+        assert not store.map_complete
+    assert store.health.truncated
+    # A page beyond the retained area extends the map; it fills no gap.
+    outside = (
+        synthetic_slam_entry(page_x=200, page_y=200, mission_id=1),
+        synthetic_structure_entry(page_x=200, page_y=200, mission_id=1),
+    )
+    await replay(store, [outside])
+    assert recovery.gap_filled == [False, False]
+    # One evicted interior page per layer is evidence the replay reaches
+    # into the gaps the old bounds created.
+    await replay(store, evicted[:1])
+    assert recovery.gap_filled == [True, True]
+    assert recovery.satisfied
+    with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
+        assert store.map_complete
+    assert not store.health.truncated
+    await store.async_shutdown()
+
+
+def test_legacy_recovery_geometry_helpers():
+    assert storage._bounding_box(frozenset({"3:-2", "-1:5", "0:0"})) == (-1, 3, -2, 5)
+    box = (0, 10, 0, 10)
+    assert storage._inside((0, 10), box) and storage._inside((5, 5), box)
+    assert not storage._inside((11, 5), box) and not storage._inside((5, -1), box)
