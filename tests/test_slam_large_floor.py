@@ -125,14 +125,24 @@ async def test_legacy_truncated_cache_reacquires_both_layers_without_reset(hass)
     assert restored.tile_count == restored.structure_tile_count == len(entries)
     assert restored.health.truncated
     # A restart before the replay settles keeps the latch recoverable.
-    assert restored._legacy_recovery.pending == (
-        set(restored._entries),
-        set(restored._structure_entries),
+    # The retained baseline survives the restart; recovered gap pages are
+    # not promoted into it, so a further full replay can still recover.
+    assert restored._legacy_recovery.retained == (
+        frozenset(retained_photo),
+        frozenset(retained_structure),
     )
+    assert restored._legacy_recovery.pending == (retained_photo, retained_structure)
     assert restored._serialized_data()["bounds"] == {
         "tiles": 1024,
         "bytes": 16 * 1024**2,
     }
+    restored.set_expected_mission_id(1)
+    await replay(restored, entries)
+    with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
+        assert restored.map_complete
+    assert not restored.health.truncated
+    assert "legacy_retained" not in restored._serialized_data()
+    await restored.async_shutdown()
 
 
 def test_large_floor_hard_count_and_shared_byte_boundaries():
@@ -185,7 +195,7 @@ def test_large_floor_renderers_accept_capacity_and_keep_output_bounds():
     snapshot = storage._serialize_snapshot(
         tuple(photo for photo, _ in entries),
         tuple(structure for _, structure in entries),
-        (photos[0].mission_token, False, 0, 0, storage._current_bounds()),
+        (photos[0].mission_token, False, 0, 0, storage._current_bounds(), None),
     )
     assert len(json.dumps(snapshot)) < 90 * 1024**2
     loaded = storage._decode_stored_snapshot(snapshot)
@@ -595,6 +605,7 @@ def test_snapshot_bounds_provenance_gates_recovery(bounds, recoverable, dirty):
             1,
             1,
             storage.LEGACY_BOUNDS,
+            None,
         ),
     )
     if bounds is None:
@@ -627,6 +638,7 @@ def test_load_time_eviction_is_not_recoverable():
             0,
             0,
             storage.LEGACY_BOUNDS,
+            None,
         ),
     )
     with patch.object(storage, "MAX_TILES", 2):
@@ -688,3 +700,82 @@ def test_legacy_recovery_geometry_helpers():
     box = (0, 10, 0, 10)
     assert storage._inside((0, 10), box) and storage._inside((5, 5), box)
     assert not storage._inside((11, 5), box) and not storage._inside((5, -1), box)
+
+
+async def test_restart_after_gap_pages_keeps_the_recovery_baseline(hass):
+    """A snapshot saved mid-replay must not absorb gap pages into the baseline."""
+    entries = floor_entries(1100)
+    store = await legacy_truncated_store(hass, "legacy-mid-replay", entries)
+    baseline = store._legacy_recovery.retained
+    await replay(store, entries)
+    assert store._legacy_recovery.satisfied
+    serialized = store._serialized_data()
+    assert serialized["legacy_retained"] == {
+        "tiles": sorted(baseline[0]),
+        "structure_tiles": sorted(baseline[1]),
+    }
+    assert len(serialized["tiles"]) == len(entries) > len(baseline[0])
+    await store.async_shutdown()
+    restored = storage.SlamMapStore(hass, "legacy-mid-replay")
+    await restored.async_load()
+    assert restored.health.truncated
+    recovery = restored._legacy_recovery
+    assert recovery.retained == baseline
+    assert recovery.pending == (set(baseline[0]), set(baseline[1]))
+    assert recovery.gap_filled == [False, False]
+    restored.set_expected_mission_id(1)
+    await replay(restored, entries)
+    assert recovery.satisfied
+    with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
+        assert restored.map_complete
+    assert not restored.health.truncated
+    assert "legacy_retained" not in restored._serialized_data()
+    await restored.async_shutdown()
+
+
+@pytest.mark.parametrize(
+    "baseline",
+    [
+        "nope",
+        {"tiles": ["0:0"]},
+        {"tiles": [], "structure_tiles": ["0:0"]},
+        {"tiles": "0:0", "structure_tiles": ["0:0"]},
+        {"tiles": ["0:0"] * (storage.MAX_TILES + 1), "structure_tiles": ["0:0"]},
+        {"tiles": [1], "structure_tiles": ["0:0"]},
+        {"tiles": ["x" * 33], "structure_tiles": ["0:0"]},
+        {"tiles": ["a:b"], "structure_tiles": ["0:0"]},
+        {"tiles": ["00:1"], "structure_tiles": ["0:0"]},
+        {"tiles": ["0:1:2"], "structure_tiles": ["0:0"]},
+    ],
+)
+def test_malformed_recovery_baseline_is_ignored_and_marked_dirty(baseline):
+    tile = decode_slam_tile(synthetic_slam_entry())
+    snapshot = storage._serialize_snapshot(
+        (synthetic_slam_entry(),),
+        (synthetic_structure_entry(),),
+        (tile.mission_token, True, 1, 1, storage.LEGACY_BOUNDS, None),
+    )
+    snapshot["legacy_retained"] = baseline
+    loaded = storage._decode_stored_snapshot(snapshot)
+    assert loaded.baseline is None and loaded.dirty and loaded.recoverable
+
+
+def test_recovery_baseline_round_trips_and_resets_on_mission_change():
+    tile = decode_slam_tile(synthetic_slam_entry())
+    baseline = (frozenset({"2:-1", "0:0"}), frozenset({"2:-1"}))
+    snapshot = storage._serialize_snapshot(
+        (synthetic_slam_entry(),),
+        (synthetic_structure_entry(),),
+        (tile.mission_token, True, 1, 1, storage.LEGACY_BOUNDS, baseline),
+    )
+    assert snapshot["legacy_retained"] == {
+        "tiles": ["0:0", "2:-1"],
+        "structure_tiles": ["2:-1"],
+    }
+    loaded = storage._decode_stored_snapshot(snapshot)
+    assert loaded.baseline == baseline and not loaded.dirty
+    snapshot["tiles"].append(
+        storage._serialize_entry(synthetic_slam_entry(mission_id=9, page_x=9))
+    )
+    loaded = storage._decode_stored_snapshot(snapshot)
+    assert loaded.baseline is None and not loaded.truncated

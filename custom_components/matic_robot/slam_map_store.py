@@ -73,7 +73,8 @@ MAX_RETIRED_MISSIONS = 8
 CANDIDATE_CLASSIFICATION_SECONDS = STREAM_RETRY_SECONDS * 3
 CANDIDATE_REFRESH_RETRY_SECONDS = STREAM_RETRY_SECONDS
 
-_SnapshotHealth = tuple[str | None, bool, int, int, tuple[int, int]]
+_Baseline = tuple[frozenset[str], frozenset[str]]
+_SnapshotHealth = tuple[str | None, bool, int, int, tuple[int, int], _Baseline | None]
 
 MapHealthState = Literal[
     "empty", "collecting", "incomplete", "ready", "truncated", "degraded"
@@ -151,12 +152,14 @@ class _LegacyRecovery:
     gap_filled: list[bool]
 
     @classmethod
-    def from_layers(
-        cls,
-        entries: Mapping[str, HermesCollectionEntry],
-        structure_entries: Mapping[str, HermesCollectionEntry],
-    ) -> _LegacyRecovery:
-        layers = (frozenset(entries), frozenset(structure_entries))
+    def from_baseline(cls, layers: _Baseline) -> _LegacyRecovery:
+        """Start, or after a restart resume, recovery from the retained set.
+
+        The baseline is persisted while recovery is armed: a snapshot saved
+        after gap pages arrived but before the map settled must not promote
+        those pages into the retained set, or no later replay could ever
+        demonstrate that it reaches into the old gaps.
+        """
         return cls(
             pending=(set(layers[0]), set(layers[1])),
             retained=layers,
@@ -196,6 +199,8 @@ class _LoadedMap:
     # latch from bounds smaller than this build applies may be cleared by a
     # complete live replay; one from the current bounds cannot.
     bounds: tuple[int, int]
+    # The retained set recovery was armed with, when a snapshot persisted one.
+    baseline: _Baseline | None = None
 
     @property
     def recoverable(self) -> bool:
@@ -290,7 +295,10 @@ class SlamMapStore:
         # are persisted until the latch clears, so a restart mid-replay keeps
         # the latch recoverable.
         self._legacy_recovery = (
-            _LegacyRecovery.from_layers(self._entries, self._structure_entries)
+            _LegacyRecovery.from_baseline(
+                loaded.baseline
+                or (frozenset(self._entries), frozenset(self._structure_entries))
+            )
             if loaded.recoverable and self._entries and self._structure_entries
             else None
         )
@@ -1289,6 +1297,7 @@ class SlamMapStore:
             self._dropped_photo_tiles,
             self._dropped_structure_tiles,
             self._truncation_bounds,
+            None if self._legacy_recovery is None else self._legacy_recovery.retained,
         )
 
     def _serialized_data(self) -> dict[str, Any]:
@@ -1306,8 +1315,10 @@ def _serialize_snapshot(
     health: _SnapshotHealth,
 ) -> dict[str, Any]:
     """Encode an immutable private snapshot for Home Assistant storage."""
-    mission_token, truncated, dropped_photo, dropped_structure, bounds = health
-    return {
+    mission_token, truncated, dropped_photo, dropped_structure, bounds, baseline = (
+        health
+    )
+    snapshot: dict[str, Any] = {
         "mission_token": mission_token,
         "truncated": truncated,
         "dropped_photo_tiles": dropped_photo,
@@ -1319,6 +1330,13 @@ def _serialize_snapshot(
         "tiles": [_serialize_entry(item) for item in photo_entries],
         "structure_tiles": [_serialize_entry(item) for item in structure_entries],
     }
+    if baseline is not None:
+        # Content-free page coordinates only; retained while recovery is armed.
+        snapshot["legacy_retained"] = {
+            "tiles": sorted(baseline[0]),
+            "structure_tiles": sorted(baseline[1]),
+        }
+    return snapshot
 
 
 def _serialize_entry(item: HermesCollectionEntry) -> dict[str, str]:
@@ -1344,10 +1362,16 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
         _stored_bounds(stored["bounds"]) if "bounds" in stored else LEGACY_BOUNDS
     )
     bounds = _current_bounds() if stored_bounds is None else stored_bounds
+    baseline = (
+        _stored_baseline(stored["legacy_retained"])
+        if "legacy_retained" in stored
+        else None
+    )
     dirty = (
         (stored.get("mission_token") is not None and stored_mission is None)
         or ("truncated" in stored and not isinstance(stored["truncated"], bool))
         or stored_bounds is None
+        or ("legacy_retained" in stored and baseline is None)
         or dropped_photo != stored.get("dropped_photo_tiles", 0)
         or dropped_structure != stored.get("dropped_structure_tiles", 0)
     )
@@ -1420,6 +1444,7 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
                 mission_ids.clear()
                 truncated = False
                 bounds = _current_bounds()
+                baseline = None
                 dropped_photo = 0
                 dropped_structure = 0
                 invalid = 0
@@ -1459,7 +1484,36 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
         invalid,
         dirty,
         bounds,
+        baseline,
     )
+
+
+def _stored_baseline(value: object) -> _Baseline | None:
+    """Return the persisted recovery baseline, or ``None`` when malformed."""
+    if not isinstance(value, Mapping):
+        return None
+    layers: list[frozenset[str]] = []
+    for name in ("tiles", "structure_tiles"):
+        items = value.get(name)
+        if (
+            not isinstance(items, Sequence)
+            or isinstance(items, str | bytes)
+            or not 0 < len(items) <= MAX_TILES
+        ):
+            return None
+        keys: set[str] = set()
+        for item in items:
+            if not isinstance(item, str) or len(item) > 32:
+                return None
+            try:
+                x, y = _parse_tile_key(item)
+            except ValueError:
+                return None
+            if item != f"{x}:{y}":
+                return None
+            keys.add(item)
+        layers.append(frozenset(keys))
+    return layers[0], layers[1]
 
 
 def _current_bounds() -> tuple[int, int]:
