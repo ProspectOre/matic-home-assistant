@@ -41,8 +41,8 @@ Poll and push messages can arrive out of order.
 Administrators can use these tools from the **Matic: Robot status
 (administrators only)** LLM API in Assist or Home Assistant's MCP server.
 
-
-- `MaticGetActivity`: use `kind: commands`, `states`, `stream`, or `all`.
+- `MaticGetActivity`: use `kind: commands` (the default), `states`, `stream`,
+  or `all`; each page holds up to 128 observations.
 - For another page, pass `next_before_sequence` as `before_sequence`, with the
   returned `observation_session` and the same `kind`.
 - `MaticGetRecentEvents`: add `include_activity: true` for a combined trail.
@@ -55,10 +55,14 @@ completion scope and nullable completion flags.
 
 ## Interpret the outcome
 
-`matic_robot_plan_finished` describes the managed run. Its outcome, verified room
-count, and `reason_code` explain what the runner observed. Common reasons include
-`verified_completion`, `unverified_completion`, `stopped_in_place`,
-`native_task_taken_over`, `start_timeout`, `completion_timeout`, and `robot_error`.
+`matic_robot_plan_finished` describes the managed run. Its `outcome`
+(`completed`, `stopped_docked`, `recharge_suspended`, `cancelled`, `failed`, or
+`unverified`), verified room count, and `reason_code` explain what the runner
+observed. Common reasons include `all_rooms_verified`, `partial_native_result`,
+`stopped_in_place`, `native_task_taken_over`, `managed_stop`, `low_charge`,
+`start_timeout`, `completion_timeout`, and `robot_error`; reasons starting with
+`restart_` say why [restart recovery](restart-recovery.md) could not continue.
+Room events use `verified_completion` and `unverified_completion` instead.
 `cause: unknown` means the source was not established.
 
 A successful stop and dock can leave unfinished rooms. Native firmware may label

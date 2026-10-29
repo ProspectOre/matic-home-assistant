@@ -95,7 +95,7 @@ export const COPY = {
   v4_action_run_plan: "Run plan",
   v4_action_run_plan_named: "Run plan {plan}",
   v4_plan_summary_rooms: "{count} rooms",
-  v4_plan_summary_rooms_estimate: "{count} rooms · about {minutes} min",
+  v4_plan_summary_rooms_estimate_duration: "{count} rooms · about {duration}",
   v4_plan_can_run: "Plan enabled",
   v4_plan_can_run_on: "When it's on, this plan can run from here, from automations and from Home Assistant actions.",
   v4_plan_default_hint: "Home Assistant's plan button and plan select run this plan.",

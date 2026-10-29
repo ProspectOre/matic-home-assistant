@@ -14,6 +14,16 @@ docking, or ending the overall mission does not mark a room cleaned.
 Managed plans match results to their own run. A partially completed mission
 credits only verified completed rooms. Older saved history is not rewritten.
 
+A plan runs as one or more native missions: consecutive rooms share one, each
+custom area is its own, and with Smart Stop on each room is its own. Each room
+is checked against the robot's record of its own mission. The robot's summary
+of a drawn area carries no room or area name, so the integration does not use
+it: an area counts as finished when the mission the run started for it,
+identified by the session ID the integration generated, ends normally while
+the run still owns the robot. A finished area updates that area's history,
+never a room's mop or vacuum schedule. **Plan finished** reports `completed`
+only when every room is verified and every area's mission has finished.
+
 Partial or completed work affects rotation priority; unattempted work does not.
 For completion automations, use `matic_robot_room_completed` or **Last cleaned**.
 The `latest_mode_results` sensor attribute is available live but excluded from
@@ -25,6 +35,22 @@ scope and nullable completion flags. Finished events retain their existing nativ
 room summary, explicitly labeled as such, and provide separate positive-duration
 vacuum, mop, and combined completion counts. The native summary does not identify
 the mode requested by a plan.
+
+Room **Last clean duration** uses the verified managed-room timing: native
+per-room work time when supplied by completion, otherwise tracked active room
+time. The whole-robot **Last clean duration** uses the latest session timing;
+Home Assistant can prefer a matching locally tracked active session when the
+native summary lacks mode results. Native MCP history separately reports the
+session's start-to-end duration and each mode's work duration. These measurements
+can differ. Durations are stored in seconds; room durations display in minutes
+and whole cleans in hours by default, and changing display units does not
+change their scope.
+
+**Current room expected duration** is the median of up to the last seven verified
+durations for that room with the same cleaning mode and coverage, across plans.
+It and **Current room estimated progress** stay unknown until three such
+durations exist. Estimated progress measures active time against that
+estimate, stops at 100%, and never marks a room finished.
 
 A native result does not identify why a mission ended. Firmware can report a
 stopped room as completed; managed plans also verify ownership and the terminal

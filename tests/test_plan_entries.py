@@ -124,7 +124,7 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     hass,
 ) -> None:
     manager = CleaningPlanManager(hass)
-    assert manager._store.minor_version == 11
+    assert manager._store.minor_version == 12
     stored = {
         "robots": {
             SERIAL: {
@@ -165,7 +165,7 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     assert plans["stamped"]["entries"] == [_room_entry("room-hall")]
     assert plans["corrupt"] == "not-a-plan"
     with pytest.raises(ValueError, match="minor version"):
-        await manager._store._async_migrate_func(1, 12, stored)
+        await manager._store._async_migrate_func(1, 13, stored)
 
 
 async def test_room_only_save_stores_identical_rooms_and_room_entries(hass) -> None:

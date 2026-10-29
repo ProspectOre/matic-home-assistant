@@ -19,6 +19,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.client.slam_map import (
     FLOOR_RGBA_BYTES,
+    MAX_SLAM_TILES,
     SCENE_MAGIC,
     SCENE_POINT_STRIDE,
     SCENE_VERSION,
@@ -631,7 +632,7 @@ def test_encode_slam_scene_rejects_empty_unbounded_or_invisible_data() -> None:
     with pytest.raises(DecodeError, match="no photorealistic"):
         encode_slam_scene(())
     with pytest.raises(DecodeError, match="invalid photorealistic"):
-        encode_slam_scene((tile,) * 1025)
+        encode_slam_scene((tile,) * (MAX_SLAM_TILES + 1))
     with pytest.raises(DecodeError, match="invalid photorealistic"):
         encode_slam_scene((tile,), max_points=0)
     with pytest.raises(DecodeError, match="no visible"):
@@ -821,11 +822,11 @@ def test_render_slam_map_rejects_empty_or_unbounded_cache() -> None:
 
     tile = SlamTile(0, 0, "mission", bytes(4096), bytes(SURFACE_BYTES), b"")
     with pytest.raises(DecodeError):
-        render_slam_map((tile,) * 1025)
+        render_slam_map((tile,) * (MAX_SLAM_TILES + 1))
 
     structure = decode_slam_structure_tile(synthetic_structure_entry())
     with pytest.raises(DecodeError):
-        render_slam_map((tile,), structure_tiles=(structure,) * 1025)
+        render_slam_map((tile,), structure_tiles=(structure,) * (MAX_SLAM_TILES + 1))
 
     hostile_floor_plan = FloorPlan(
         1,
@@ -845,9 +846,10 @@ def test_render_slam_map_rejects_empty_or_unbounded_cache() -> None:
         render_slam_map((tile,), floor_plan=hostile_floor_plan)
 
 
-def test_render_slam_map_rejects_unbounded_projection() -> None:
+def test_render_slam_map_scales_large_projection_within_budget() -> None:
     near_corner = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
     distant = decode_slam_tile(synthetic_slam_entry(page_x=14, page_y=255))
 
-    with pytest.raises(DecodeError, match="projection is too large"):
-        render_slam_map((near_corner, distant))
+    result = render_slam_map((near_corner, distant), width=256, height=256)
+    with Image.open(BytesIO(result)) as image:
+        assert image.size == (256, 256)

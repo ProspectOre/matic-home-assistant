@@ -21,14 +21,11 @@ interface GestureCallbacks {
 }
 
 interface PointerRecord {
-  readonly id: number;
   readonly type: string;
   startX: number;
   startY: number;
   x: number;
   y: number;
-  lastX: number;
-  lastY: number;
   lastTime: number;
   velocityX: number;
   velocityY: number;
@@ -44,13 +41,6 @@ const midpoint = (first: PointerRecord, second: PointerRecord): MapPoint => ({
 
 const angle = (first: PointerRecord, second: PointerRecord): number =>
   Math.atan2(second.y - first.y, second.x - first.x);
-
-const angleDelta = (value: number): number => {
-  let delta = value;
-  while (delta > Math.PI) delta -= Math.PI * 2;
-  while (delta < -Math.PI) delta += Math.PI * 2;
-  return delta;
-};
 
 interface SafariGestureEvent extends Event {
   readonly scale: number;
@@ -89,6 +79,8 @@ export class GestureController {
   #pinchCenter: MapPoint | null = null;
   #pinchAngle = 0;
   #pinchCamera: CameraState | null = null;
+  #twoFingerTilt = false;
+  #twoFingerTransform = false;
   #dragCamera: CameraState | null = null;
   #gestureCamera: CameraState | null = null;
   #gestureRotation = 0;
@@ -133,14 +125,11 @@ export class GestureController {
       && this.#callbacks.state().draw.tool === "outline") this.#navigationUntilRelease = true;
     const now = performance.now();
     const pointer: PointerRecord = {
-      id: event.pointerId,
       type: event.pointerType,
       startX: event.clientX,
       startY: event.clientY,
       x: event.clientX,
       y: event.clientY,
-      lastX: event.clientX,
-      lastY: event.clientY,
       lastTime: now,
       velocityX: 0,
       velocityY: 0,
@@ -152,10 +141,18 @@ export class GestureController {
       this.#callbacks.onCirclePreview(null);
       this.#coordinateCapture = null;
       this.#mode = "pinch";
+      this.#twoFingerTilt = false;
+      this.#twoFingerTransform = false;
       this.#host.classList.add("navigating");
       this.#navigationUntilRelease = true;
       const [first, second] = [...this.#pointers.values()];
       if (first && second) {
+        // Rebase the pair and camera on join so earlier one-finger travel
+        // doesn't leak into two-finger intent detection.
+        first.startX = first.x;
+        first.startY = first.y;
+        second.startX = second.x;
+        second.startY = second.y;
         this.#pinchDistance = Math.max(1, distance(first, second));
         this.#pinchCenter = midpoint(first, second);
         this.#pinchAngle = angle(first, second);
@@ -166,11 +163,9 @@ export class GestureController {
     }
     const state = this.#callbacks.state();
     const drawing = state.workflow === "draw" && state.map.available && !state.floor.readOnly;
-    // D1 (map-surfaces.md §10): a drag moves the map on every input; a
-    // Shift-, middle- or right-drag rotates in 3D and moves in 2D, where
-    // there is nothing to rotate. Space-drag moves while drawing. Draw and
-    // the area review look straight down whatever the saved view, so the
-    // effective view decides.
+    // D1 (map-surfaces.md §10): one-finger drag moves the map. Two-finger
+    // vertical drag tilts in 3D; in top view it remains a pan. Space-drag
+    // moves while drawing. The effective view decides in review surfaces.
     const modifier = event.shiftKey || event.button === 1 || event.button === 2;
     const navigation = this.#navigationUntilRelease
       || this.#spacePressed
@@ -221,8 +216,6 @@ export class GestureController {
       this.#coordinateCapture = null;
       this.#draft = [];
       this.#lastMapPoint = null;
-      this.#pinchCenter = null;
-      this.#pinchCamera = null;
       this.#dragCamera = null;
       this.#gestureCamera = null;
       this.#gestureRotation = 0;
@@ -277,34 +270,20 @@ export class GestureController {
     const sample = samples.at(-1) || event;
     const now = performance.now();
     const elapsed = Math.max(1, now - pointer.lastTime);
-    const instantaneousX = (sample.clientX - pointer.lastX) / elapsed;
-    const instantaneousY = (sample.clientY - pointer.lastY) / elapsed;
+    const instantaneousX = (sample.clientX - pointer.x) / elapsed;
+    const instantaneousY = (sample.clientY - pointer.y) / elapsed;
     pointer.velocityX = pointer.velocityX * 0.62 + instantaneousX * 0.38;
     pointer.velocityY = pointer.velocityY * 0.62 + instantaneousY * 0.38;
-    pointer.lastX = sample.clientX;
-    pointer.lastY = sample.clientY;
     pointer.lastTime = now;
     pointer.x = sample.clientX;
     pointer.y = sample.clientY;
-    if (this.#mode === "pinch" && this.#pointers.size >= 2) {
-      const [first, second] = [...this.#pointers.values()];
-      if (!first || !second) return;
-      const nextDistance = Math.max(1, distance(first, second));
-      const nextCenter = midpoint(first, second);
-      const nextAngle = angle(first, second);
-      const start = this.#pinchCamera;
-      if (start && this.#pinchCenter) {
-        const transformed: CameraState = {
-          ...start,
-          distance: start.distance * this.#pinchDistance / nextDistance,
-          yaw: start.yaw + angleDelta(nextAngle - this.#pinchAngle),
-        };
-        this.#renderer.setCamera(this.#renderer.cameraAfterPan(
-          transformed,
-          nextCenter.x - this.#pinchCenter.x,
-          nextCenter.y - this.#pinchCenter.y,
-        ));
-      }
+    if (this.#mode === "pinch") {
+      // PointerEvents for two contacts may arrive in separate bursts. Sample
+      // once per frame so the camera sees the latest pair together.
+      this.#motionFrame ??= window.requestAnimationFrame(() => {
+        this.#motionFrame = null;
+        this.#applyTwoFingerGesture();
+      });
       event.preventDefault();
       return;
     }
@@ -328,6 +307,71 @@ export class GestureController {
     event.preventDefault();
   };
 
+  #applyTwoFingerGesture(flushPending = false): void {
+    if (this.#mode !== "pinch") return;
+    const [first, second] = [...this.#pointers.values()] as [PointerRecord, PointerRecord];
+    const start = this.#pinchCamera!;
+    const center = this.#pinchCenter!;
+    const nextDistance = Math.max(1, distance(first, second));
+    const nextCenter = midpoint(first, second);
+    const dx = nextCenter.x - center.x;
+    const deltaY = nextCenter.y - center.y;
+    const firstY = first.y - first.startY;
+    const secondY = second.y - second.startY;
+    const abs = Math.abs;
+    // Compare the shortest angular distance so a pair crossing the atan2
+    // branch cut doesn't suddenly look like a large twist.
+    const rawRotation = angle(first, second) - this.#pinchAngle;
+    const rotation = Math.atan2(Math.sin(rawRotation), Math.cos(rawRotation));
+    const rotationSize = abs(rotation);
+    // Real fingers do not track perfectly in parallel. A small amount of
+    // spread and twist is normal during an intended vertical tilt; keep the
+    // thresholds below deliberate pinch/twist motion while tolerating that.
+    const smallRotation = rotationSize < 0.08;
+    const distanceChange = abs(nextDistance - this.#pinchDistance) / this.#pinchDistance;
+    const verticalMotion = abs(deltaY) > abs(dx) * 1.25;
+    const sameDirection = firstY * secondY > 0;
+    const tiltCandidate = !start.orthographic && verticalMotion && sameDirection
+      && distanceChange <= 0.04 && smallRotation;
+    const bothFingersPastIntentThreshold = Math.min(abs(firstY), abs(secondY)) >= 12;
+    const firstTravel = Math.hypot(first.x - first.startX, first.y - first.startY);
+    const secondTravel = Math.hypot(second.x - second.startX, second.y - second.startY);
+    // Ignore no-op and touch-sensor jitter before choosing a transform mode.
+    // Otherwise a zero/one-pixel horizontal sample can latch pan before the
+    // user's deliberate vertical tilt has enough movement to be recognized.
+    if (!flushPending && !this.#twoFingerTilt && !this.#twoFingerTransform
+      && !start.orthographic && Math.max(firstTravel, secondTravel) < 3) return;
+    // Near-vertical pointer streams are commonly delivered one contact at a
+    // time. Hold ambiguous samples until both fingers confirm tilt, the pair
+    // clearly expresses a different transform, or the gesture ends. This
+    // prevents a noisy early pan from being reset to the starting camera when
+    // a later sample finally qualifies as tilt.
+    // A lone leading finger also changes the pair's angle and spread, so close
+    // fingers can look like a twist before the partner's sample arrives. Keep
+    // holding that lead, however far it gets, until its partner moves or the
+    // gesture ends; release still applies a stationary-anchor transform.
+    const loneLead = Math.min(firstTravel, secondTravel) < 3;
+    const clearlyComposed = !loneLead && (distanceChange >= 0.08 || rotationSize >= 0.18);
+    if (!flushPending && !this.#twoFingerTilt && !this.#twoFingerTransform
+      && !start.orthographic && verticalMotion && !tiltCandidate && !clearlyComposed
+      && !bothFingersPastIntentThreshold) return;
+    if (!this.#twoFingerTilt && !this.#twoFingerTransform && tiltCandidate) {
+      this.#twoFingerTilt = Math.min(abs(firstY), abs(secondY)) >= 12;
+      if (!this.#twoFingerTilt && !flushPending) return;
+    }
+    // Outside the deliberate parallel vertical 3D gesture, preserve the
+    // combined native transform: pinch scale, twist rotation, and centroid
+    // translation may all change together. A stationary anchor is valid.
+    if (!this.#twoFingerTilt) this.#twoFingerTransform = true;
+    this.#renderer.setCamera(this.#twoFingerTilt
+      ? { ...start, pitch: start.pitch - deltaY * 0.004 }
+      : this.#renderer.cameraAfterPan({
+        ...start,
+        distance: start.distance * this.#pinchDistance / nextDistance,
+        yaw: start.yaw + rotation,
+      }, dx, deltaY));
+  }
+
   readonly #pointerUp = (event: PointerEvent): void => {
     const currentState = this.#callbacks.state();
     if (!currentState.pageActive) {
@@ -342,6 +386,10 @@ export class GestureController {
     const pointer = this.#pointers.get(event.pointerId);
     if (!pointer) return;
     const completedMode = this.#mode;
+    if (this.#mode === "pinch") {
+      this.#cancelMotion();
+      this.#applyTwoFingerGesture(event.type !== "pointercancel");
+    }
     this.#pointers.delete(event.pointerId);
     this.#host.releasePointerCapture?.(event.pointerId);
     this.#cancelTouchArm();
@@ -373,8 +421,6 @@ export class GestureController {
       this.#coordinateCapture = null;
       this.#host.classList.remove("navigating");
       this.#navigationUntilRelease = false;
-      this.#pinchCenter = null;
-      this.#pinchCamera = null;
       this.#dragCamera = null;
       this.#lastMapPoint = null;
       if ((completedMode === "pan" || completedMode === "orbit")
@@ -392,7 +438,6 @@ export class GestureController {
         remaining.velocityY = 0;
       }
       this.#dragCamera = this.#renderer.camera;
-      this.#pinchCamera = null;
     }
     event.preventDefault();
   };
@@ -595,6 +640,13 @@ export class GestureController {
   readonly #blur = (): void => {
     this.#spacePressed = false;
     this.#cancelCoordinateGesture();
+    this.#cancelMotion();
+    for (const id of this.#pointers.keys()) {
+      if (this.#host.hasPointerCapture?.(id)) this.#host.releasePointerCapture?.(id);
+    }
+    this.#mode = "idle";
+    this.#navigationUntilRelease = false;
+    this.#pointers.clear();
     this.#renderer.setCursor(null);
     this.#host.classList.remove("navigating");
   };

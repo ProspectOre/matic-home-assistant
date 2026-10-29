@@ -10,26 +10,26 @@ Pair once over Bluetooth; everyday control, maps, and state use your local netwo
 
 ## Home Assistant cleaning workflows
 
-- **Give every room a turn.** Intelligent rotation starts with rooms that have waited longest. Short trips away won't keep restarting the same first rooms; cleaning from the Matic app also informs the order.
-- **Build a plan around each room.** Save room order, vacuum/mop mode, and Quick, Optimal, or Heavy duty vacuum coverage per room. Preview the next run before starting it.
-- **Clean around your life.** Run plans when everyone leaves, clean during quiet hours, or clean a named area after a litter-box cycle. Ready-to-import blueprints get you started.
-- **Choose how to stop.** Stop immediately or let the active room finish based on a configurable progress estimate, then dock without starting another room.
-- **Use cleaning results in your smart home.** Trigger actions on confirmed room completion, track last-cleaned times and durations, and distinguish completed, partial, and unattempted vacuum/mop work.
+- **Give every room a turn.** Smart Order starts with the rooms and custom areas that have waited longest. Short trips away won't keep restarting the same first rooms, and cleaning from the Matic app also counts.
+- **Build a plan around your home.** Save rooms and custom areas in one order, each with its own vacuum, mop or vacuum and mop setting and Quick, Optimal or Heavy duty coverage. Preview the next run before starting it.
+- **Mop and deep-clean when it's due.** Room schedules mop a room every few cleans or rotate its vacuum coverage, counted across all your plans by default or in just one. A one-time clean can pick up work that's due.
+- **Clean around your life.** Run plans when everyone leaves, clean during quiet hours, or clean a named custom area after a litter-box cycle. Ready-to-import blueprints get you started.
+- **Choose how to stop.** Stop now, or let Smart Stop finish the current room when it's far enough along, then dock without starting another.
+- **Use cleaning results in your smart home.** Trigger automations when a room, plan or clean finishes, and track last-cleaned times and durations. Only work the robot confirms counts.
 
 [Explore plans and rotation](docs/cleaning.md#saved-plans) ·
 [Use the automation blueprints](docs/automation.md#ready-to-import-blueprints)
 
 ## Maps, areas and controls in Home Assistant
 
-- **Matic Map:** a sidebar page with interactive 3D and 2D maps, robot position, room selection, plans, and saved map history.
-- **Named custom areas:** draw and edit reusable areas, including across room boundaries, then run them from a dashboard or automation.
-- **Controls and dashboards:** start, pause, stop, dock, adjust robot settings, and use map cameras, sensors, and switches.
-- **Run insight:** inspect plan outcomes, command activity, and per-mode history through local diagnostics and administrator-only assistant tools for Assist and MCP.
+- **Matic Map:** a sidebar page with a photographic 3D map and a 2D plan, robot position, room selection, plans, custom areas and saved map history. Move around with a mouse, touch gestures or the keyboard.
+- **Named custom areas:** draw and edit reusable areas, including across room boundaries, then run them on their own, in a plan, from a dashboard or from an automation.
+- **Controls and dashboards:** start, pause, stop, dock, adjust robot settings, and use map cameras, sensors and switches.
+- **Run insight:** inspect plan results, command activity and history through local diagnostics and administrator-only assistant tools for Assist and MCP.
 - **Firmware tracking:** see in Home Assistant when a firmware update changes what the robot reports.
 
-Home Assistant schedules and automations can run saved named areas or room
-plans. This integration also provides per-room plan settings and intelligent
-rotation. See the [full feature guide](docs/features.md).
+Home Assistant schedules and automations decide when plans and custom areas
+run. See the [full feature guide](docs/features.md).
 
 The integration has no telemetry or cloud service. Maps and plan data are stored
 locally in Home Assistant. [Matic Cues](docs/privacy.md#matic-cues) uses Matic's own voice service.
@@ -65,7 +65,10 @@ and keeps your plans and areas. [Pairing and recovery guide](docs/hermes-pairing
 
 Back up Home Assistant, let the robot dock, update through HACS, and restart.
 Saved plans, areas, and the robot's pairing are kept. Check the map before cleaning;
-areas affected by a changed map may need confirmation.
+areas affected by a changed map may need confirmation. Read the
+[release notes](https://github.com/ProspectOre/matic-home-assistant/releases)
+first: 0.5 needs Home Assistant 2026.10 and removes four duplicate entities, and
+going back to 0.4 needs the backup.
 
 <a id="cleaning-ux-and-automation"></a>
 
@@ -77,7 +80,7 @@ Open **Matic Map** from the sidebar:
 - **Home shortcuts** run a saved plan or custom area in one tap; turn on
   **Show on home** in a plan or area to add one.
 - **Clean custom area** opens **Your areas**: clean, change, or draw an area.
-- **Your plans** lists, runs, and creates saved room plans.
+- **Your plans** lists, runs, and creates saved plans of rooms and custom areas.
 - **Map history** shows saved maps by date; they are read-only and never
   show the robot's position.
 - **Full map** hides the panel; **?** on the map explains how to move it.
@@ -91,7 +94,7 @@ and [automation examples](docs/automation.md).
 ## Help
 
 - [Pairing and Bluetooth](docs/hermes-pairing.md#troubleshooting)
-- [Compatibility](docs/acceptance-0.4.md) and [firmware notes](docs/firmware-compatibility.md)
+- [Compatibility](docs/acceptance-0.4.md), [0.5 tested limits](docs/verification-0.5-stable.md) and [firmware notes](docs/firmware-compatibility.md)
 - [Report a bug](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=bug_report.yml)
 - [Community discussion](https://community.home-assistant.io/t/matic-unofficial-local-robot-vacuum-control-map-room-plans-and-intelligent-rotation/1017684)
 

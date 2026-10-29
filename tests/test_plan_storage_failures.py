@@ -125,7 +125,9 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
     with pytest.raises(
         HomeAssistantError, match="Cleaning plan state could not be saved"
     ) as raised:
-        await manager.async_mark_completed("synthetic-robot", "home", room)
+        await manager.async_mark_completed(
+            "synthetic-robot", "home", room, duration_seconds=90
+        )
 
     assert "PRIVATE-JSON-CONTENT-DO-NOT-LEAK" not in str(raised.value)
     assert "synthetic disk-full failure" not in str(raised.value)
@@ -142,7 +144,9 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
     else:
         store._encoder = real_encoder
 
-    await manager.async_mark_completed("synthetic-robot", "home", room)
+    await manager.async_mark_completed(
+        "synthetic-robot", "home", room, duration_seconds=90
+    )
     after_retry = manager._robot("synthetic-robot")
     assert after_retry["rooms"][room.room_id]["completed_runs"] == 1
     assert after_retry["plan_room_cadence"]["home"][room.room_id]["progress"] == {
@@ -153,9 +157,16 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
         room.room_id
     ]
     assert len(notifications) == 1
+    profile = after_retry["rotations"]["home"]["rooms"][room.room_id][
+        "duration_profiles"
+    ]["vacuum:standard"]
+    assert profile["duration_history_seconds"] == [90]
+    assert profile["duration_samples"] == 1
 
     # Duplicate verified evidence retries persistence but never credits twice.
-    await manager.async_mark_completed("synthetic-robot", "home", room)
+    await manager.async_mark_completed(
+        "synthetic-robot", "home", room, duration_seconds=90
+    )
     assert after_retry["rooms"][room.room_id]["completed_runs"] == 1
     assert after_retry["plan_room_cadence"]["home"][room.room_id]["progress"] == {
         "mop": 1,
@@ -164,6 +175,12 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
 
     durable_after_retry = await _load_from_disk(hass)
     durable_robot = durable_after_retry["robots"]["synthetic-robot"]
+    assert (
+        durable_robot["rotations"]["home"]["rooms"][room.room_id]["duration_profiles"][
+            "vacuum:standard"
+        ]
+        == profile
+    )
     assert durable_robot["rooms"][room.room_id]["completed_runs"] == 1
     assert durable_robot["plan_room_cadence"]["home"][room.room_id]["progress"] == {
         "mop": 1,

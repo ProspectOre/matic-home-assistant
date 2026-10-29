@@ -62,11 +62,11 @@ class MaticMapCamera(MaticEntity, Camera):
     """Render the stable labeled room map."""
 
     _attr_translation_key = "map"
-    _attr_content_type = "image/png"
     _unrecorded_attributes = frozenset({"matic_entry_id"})
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         Camera.__init__(self)
+        self.content_type = "image/png"
         MaticEntity.__init__(self, entry)
         self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_map"
         self._store = entry.runtime_data.slam_map
@@ -215,7 +215,6 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
     """Accumulate and render Matic's private local color SLAM tiles."""
 
     _attr_translation_key = "photorealistic_map"
-    _attr_content_type = "image/png"
     _unrecorded_attributes = frozenset({"matic_entry_id"})
     # Unlike the geometric room map, this image can reveal the interior of a
     # home. Keep it out of the state machine and camera proxy unless an
@@ -224,6 +223,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         Camera.__init__(self)
+        self.content_type = "image/png"
         MaticEntity.__init__(self, entry)
         self._attr_unique_id = (
             f"{self.coordinator.data.info.serial_number}_photorealistic_map"

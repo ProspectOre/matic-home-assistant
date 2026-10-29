@@ -1,5 +1,10 @@
 # Matic 0.5 evidence matrix
 
+For the RC43-based stable candidate, start with the [current qualification
+summary](verification-0.5-stable.md). The candidate-specific rows below retain
+their historical scope; their open labels are not a fresh RC43 assessment.
+The summary records current evidence, remaining limits, and the owner release hold.
+
 Use the public repository's free standard hosted CI route described in
 [Contributing](../CONTRIBUTING.md#ci-routing); a local Linux runner is not a gate.
 

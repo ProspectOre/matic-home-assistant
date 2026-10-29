@@ -31,6 +31,25 @@ export const translate = (
 export const formatList = (language: string, items: readonly string[]): string =>
   new Intl.ListFormat(language, { style: "long", type: "conjunction" }).format(items);
 
+/** Format a duration as localized day, hour, and minute parts. */
+export const formatDuration = (language: string, seconds: number): string => {
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  const minutes = seconds === 0 ? 0 : Math.max(1, Math.round(seconds / 60));
+  const units: [number, "day" | "hour" | "minute"][] = [
+    [Math.floor(minutes / 1_440), "day"],
+    [Math.floor((minutes % 1_440) / 60), "hour"],
+    [minutes % 60, "minute"],
+  ];
+  const parts = units.filter(([count]) => count > 0).map(([count, unit]) =>
+    new Intl.NumberFormat(language, { style: "unit", unit, unitDisplay: "short", maximumFractionDigits: 0 }).format(count));
+  if (parts.length === 0) {
+    return new Intl.NumberFormat(language, { style: "unit", unit: "minute", unitDisplay: "short", maximumFractionDigits: 0 }).format(0);
+  }
+  return parts.length === 1
+    ? parts[0]!
+    : new Intl.ListFormat(language, { style: "long", type: "conjunction" }).format(parts);
+};
+
 const DATE_TIME: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "short" };
 
 /**

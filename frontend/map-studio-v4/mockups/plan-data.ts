@@ -6,6 +6,7 @@ import type {
   SavedPlan,
 } from "../backend-contracts";
 import { syntheticMockupPlans } from "../synthetic-fixtures";
+import { formatDuration } from "../localize";
 import { ROTATION_LEVEL, listOf, num, t, type CopyKey, type RotationLevel } from "./copy";
 import type { Variants } from "./frame";
 
@@ -101,7 +102,7 @@ export const runSummary = (plan: SavedPlan, runnable: boolean): string => {
   const count = num(plan.rooms.length);
   const seconds = plan.nextRunEstimateSeconds;
   if (!runnable || seconds === null || plan.nextRunPreview?.blocker) return t("v4_plan_summary_rooms", { count });
-  return t("v4_plan_summary_rooms_estimate", { count, minutes: num(Math.round(seconds / 60)) });
+  return t("v4_plan_summary_rooms_estimate_duration", { count, duration: formatDuration("en", seconds) });
 };
 
 /**

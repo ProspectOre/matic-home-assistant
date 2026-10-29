@@ -78,8 +78,8 @@ const drawPointerHelp = (tool: DrawTool, coarse: boolean, t: MapHelpContext["t"]
  * non-modal dialog the canvas renders in its rail beside the "?" that opens
  * it. Rows follow the input: a coarse pointer reads Touch only, a fine one
  * Trackpad, Mouse and Keyboard; Draw swaps in the drawing rows, with the
- * keyboard recipe that used to sit in the Draw panel. The gesture model is
- * D1: a drag moves the map on every input, rotation takes a modifier. Rows
+ * keyboard recipe that used to sit in the Draw panel. Touch follows the
+ * owner-updated D1 gesture model. Rows
  * follow the view the map shows: in 2D and the area review the modifiers
  * and arrows move the map, so no orbit row is offered.
  */
@@ -90,7 +90,9 @@ export const renderMapHelp = ({ state, coarse, t, close }: MapHelpContext) => {
   const rows: readonly (readonly [string, string])[] = coarse
     ? [[t("v4_touch", "Touch"), draw
       ? drawPointerHelp(state.draw.tool, true, t)
-      : t("v4_touch_help", "Drag to move the map · pinch to zoom · twist two fingers to rotate")]]
+      : flat
+        ? t("v4_touch_top_help", "Drag to move the map · pinch to zoom · twist two fingers to rotate")
+        : t("v4_touch_three_help", "Drag to move the map · pinch to zoom · twist two fingers to rotate · drag two fingers up or down to tilt")]]
     : [
       [t("v4_trackpad", "Trackpad"), t("v4_trackpad_help", "Scroll to move the map · pinch to zoom · twist to rotate")],
       [t("v4_mouse", "Mouse"), draw
