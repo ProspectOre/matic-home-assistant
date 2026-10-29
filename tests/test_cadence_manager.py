@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot.cadence import advance_cadence
 from custom_components.matic_robot.cadence_accounting import (
     validated_cadence_snapshots,
 )
@@ -772,6 +773,108 @@ async def test_tracked_manual_override_counts_only_verified_compatible_work(hass
     )
     await manager.async_mark_completed("serial", "quick_clean", vacuum_override)
     assert schedule["progress"]["mop"] == 1
+
+
+@pytest.mark.parametrize("plan_id", [None, "home"])
+@pytest.mark.parametrize("requested_mode", ["vacuum_and_mop", "mop"])
+@pytest.mark.parametrize("apply_due_settings", [True, False])
+async def test_one_time_due_shared_schedule_accepts_requested_mop_modes(
+    hass, plan_id, requested_mode, apply_due_settings
+):
+    manager = _manager(hass)
+    identity = room_cadence_identity(_floor(), "room-a")
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-a",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {
+                        "scope": "shared",
+                        "mop_every_n": 3,
+                        "coverage_every_n": 3,
+                        "periodic_coverage_setting": "heavy_duty",
+                    },
+                }
+            ],
+        },
+        room_identities={"room-a": identity},
+        floor_token=plan_floor_token(_floor()),
+    )
+    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule["progress"] = {"mop": 2, "coverage": 2}
+    before = deepcopy(manager._robot("serial"))
+
+    effective, snapshots = manager.resolve_cadence(
+        "serial",
+        plan_id,
+        [CleaningRoom("room-a", "Kitchen", requested_mode, "standard")],
+        room_identities={"room-a": identity},
+        use_shared_schedule=True,
+        apply_due_settings=apply_due_settings,
+    )
+    expected_coverage = "heavy_duty" if apply_due_settings else "standard"
+    expected_mode = "vacuum_and_mop" if apply_due_settings else requested_mode
+    assert effective == [
+        CleaningRoom("room-a", "Kitchen", expected_mode, expected_coverage)
+    ]
+    assert snapshots["room-a"]["mop_due"] is True
+    assert snapshots["room-a"]["coverage_due"] is True
+    assert snapshots["room-a"]["effective_cleaning_mode"] == expected_mode
+    assert snapshots["room-a"]["effective_coverage_setting"] == expected_coverage
+    assert manager._robot("serial") == before
+
+
+@pytest.mark.parametrize("plan_id", [None, "home"])
+async def test_one_time_mop_borrowing_due_coverage_keeps_its_coverage(hass, plan_id):
+    manager = _manager(hass)
+    identity = room_cadence_identity(_floor(), "room-a")
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-a",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {
+                        "scope": "shared",
+                        "coverage_every_n": 3,
+                        "periodic_coverage_setting": "heavy_duty",
+                    },
+                }
+            ],
+        },
+        room_identities={"room-a": identity},
+        floor_token=plan_floor_token(_floor()),
+    )
+    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule["progress"] = {"mop": 0, "coverage": 2}
+
+    effective, snapshots = manager.resolve_cadence(
+        "serial",
+        plan_id,
+        [CleaningRoom("room-a", "Kitchen", "mop", "standard")],
+        room_identities={"room-a": identity},
+        use_shared_schedule=True,
+    )
+
+    assert effective == [CleaningRoom("room-a", "Kitchen", "mop", "standard")]
+    snapshot = snapshots["room-a"]
+    assert snapshot["coverage_due"] is True
+    assert snapshot["effective_coverage_setting"] == "standard"
+    assert advance_cadence(
+        snapshot,
+        schedule["progress"],
+        verified_mode="mop",
+        verified_coverage="standard",
+    ) == {"mop": 0, "coverage": 2}
 
 
 async def test_cadence_editor_state_uses_the_dispatch_policy_and_explanation(hass):
