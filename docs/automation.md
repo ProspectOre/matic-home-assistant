@@ -56,7 +56,7 @@ plan in Matic Map, see [plan Run and Edit](cleaning.md#run-and-edit).
 A plan runs in [one or more parts](cleaning.md#how-a-plan-runs). Rooms next to
 each other share a part, each with its own settings, and the robot docks between
 them only to recharge or refill. Each custom area is its own part, after which
-the robot returns to the dock; with Smart Stop on, so is each room. Group areas
+the robot usually returns to the dock; with Smart Stop on, so is each room. Group areas
 first or last to save dock trips.
 
 <a id="painted-custom-areas"></a><a id="drawn-custom-areas"></a>

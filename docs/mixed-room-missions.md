@@ -13,11 +13,13 @@ handles battery, water, and other servicing as needed.
 Custom areas never share a mission with rooms. `plan_legs` and
 `entry_mission_boundaries` in `plans.py` close the current room mission at each
 area, run the area as its own mission, and start a new mission for the rooms
-after it. The robot returns to its dock after each area before the next mission
-starts, as observed on every area of a three-area plan on 0.5.0rc44. With Smart Stop
-(finish current room) enabled, every room is also its own mission, so a STOP at
-a room boundary cannot let the next room start. The plan preview reports these
-boundaries, and Matic Map shows them as parts.
+after it. The robot heads back to its dock after each area, and it docked after
+every area of a three-area plan on 0.5.0rc44. Docking isn't a required
+boundary, though: `_async_wait_for_settled_leg_handoff` starts the next mission
+once the area's native session has ended and the robot is returning, idle or
+docked. With Smart Stop (finish current room) enabled, every room is also its
+own mission, so a STOP at a room boundary cannot let the next room start. The
+plan preview reports these boundaries, and Matic Map shows them as parts.
 
 ## Dispatch and recovery
 

@@ -35,12 +35,12 @@ A plan runs in one or more parts, and the Run view says when there are several:
 - Rooms next to each other in the order run as one part. The robot goes from
   room to room without returning to the dock, and each room keeps its own
   settings. It may still stop at the dock on its own to recharge or refill.
-- Each custom area is a part of its own. After an area, the robot returns to
-  the dock, then starts the next room or area.
+- Each custom area is a part of its own. After an area, the robot heads back
+  to the dock, and the next room or area usually starts from there.
 - With **Smart Stop** on, each room is also a part of its own, so pressing Stop
   never lets the next room begin.
 
-So "Kitchen, Rug, Hall" runs in three parts with two trips to the dock, while
+So "Kitchen, Rug, Hall" runs in three parts, usually with two dock trips, while
 "Kitchen, Hall, Rug" runs in two. To keep dock trips down, put custom areas at
 the start or end of a plan. Each room and area gets its own result, and **Plan
 finished** fires once, after the last part. After a Home Assistant restart the
@@ -129,7 +129,7 @@ Areas may cross room boundaries. Add one to a plan under **Custom areas** in
 the plan's **Edit** view (a plan holds up to 100), pick it from the robot's
 **Custom cleaning area** entity, or call it by name in an
 [automation](automation.md#custom-areas). Each area cleans as its own part, and
-the robot returns to the dock when the area is done
+the robot usually returns to the dock when the area is done
 ([how a plan runs](#how-a-plan-runs)).
 
 Map updates away from an area don't need it saved again. If the map near an

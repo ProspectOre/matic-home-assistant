@@ -101,10 +101,10 @@ parts ([how a plan runs](cleaning.md#how-a-plan-runs)):
 - Rooms next to each other in the run order share one part. The robot goes
   from room to room without returning to the dock, apart from recharging or
   refilling on its own, and each room keeps its own settings.
-- Each custom area is a part of its own. After an area, the robot returns to
-  the dock before the next room or area starts, so an area between two rooms
-  splits them into separate parts and adds dock trips. Put areas together at
-  the start or end of a plan to keep the rooms in one part.
+- Each custom area is a part of its own. After an area, the robot usually
+  returns to the dock before the next room or area starts, so an area between
+  two rooms splits them into separate parts and adds dock trips. Put areas
+  together at the start or end of a plan to keep the rooms in one part.
 - With Smart Stop on, each room is a part of its own, so the next room starts
   only after the previous one ends.
 
