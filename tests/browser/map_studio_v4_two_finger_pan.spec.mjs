@@ -62,7 +62,7 @@ async function gesture(page, view, kind, delta = 60) {
         : kind === "angleWrap" ? [520, 320] : [320, 320];
       const second = kind === "largeGapStationary" ? [700, 320]
         : kind === "angleWrap" ? [320, 321.75]
-        : kind === "closeLeadTilt" ? [380, 320] : [520, 320];
+        : kind.startsWith("closeLead") ? [380, 320] : [520, 320];
       dispatch("pointerdown", 11, ...first);
       if (kind === "singlePan") {
         const samples = [];
@@ -135,13 +135,15 @@ async function gesture(page, view, kind, delta = 60) {
         dispatch("pointerup", 12, ...second);
         return { before, samples, mutations, cancelledFrames };
       }
-      if (kind === "closeLeadTilt") {
-        // Close fingers make a lone 11px lead look like an 0.18rad twist.
-        first[1] = 331;
+      if (kind.startsWith("closeLead")) {
+        // Close fingers make a lone 11px lead look like an 0.18rad twist and
+        // a 16px lead like an 0.26rad twist.
+        const lead = kind === "closeLeadTilt" ? 331 : 336;
+        first[1] = lead;
         dispatch("pointermove", 11, ...first);
         await frame();
         const firstOnly = renderer.camera;
-        second[1] = 331;
+        second[1] = lead;
         dispatch("pointermove", 12, ...second);
         await frame();
         const aligned = renderer.camera;
@@ -434,19 +436,22 @@ test("a large one-finger lead stays buffered until the second finger confirms 3D
   expect(mutations).toBe(0);
 });
 
-test("a lone lead between close fingers is not mistaken for a twist before 3D tilt", async ({ page }) => {
-  const { before, samples, mutations } = await gesture(page, "three", "closeLeadTilt");
-  for (const sample of samples) {
-    expect(sample.targetX).toBeCloseTo(before.targetX, 8);
-    expect(sample.targetZ).toBeCloseTo(before.targetZ, 8);
-    expect(sample.yaw).toBeCloseTo(before.yaw, 8);
-    expect(sample.distance).toBeCloseTo(before.distance, 8);
-  }
-  expect(samples[0].pitch).toBeCloseTo(before.pitch, 8);
-  expect(samples[1].pitch).toBeCloseTo(before.pitch, 8);
-  expect(Math.abs(samples.at(-1).pitch - before.pitch)).toBeGreaterThan(0.05);
-  expect(mutations).toBe(0);
-});
+for (const kind of ["closeLeadTilt", "closeLeadLongTilt"]) {
+  test(`a lone ${kind === "closeLeadTilt" ? "11px" : "16px"} lead between close fingers is not mistaken for a twist before 3D tilt`, async ({ page }) => {
+    const { before, samples, mutations } = await gesture(page, "three", kind);
+    for (const sample of samples) {
+      expect(sample.targetX).toBeCloseTo(before.targetX, 8);
+      expect(sample.targetZ).toBeCloseTo(before.targetZ, 8);
+      expect(sample.yaw).toBeCloseTo(before.yaw, 8);
+      expect(sample.distance).toBeCloseTo(before.distance, 8);
+    }
+    expect(samples[0].pitch).toBeCloseTo(before.pitch, 8);
+    // An 11px pair is still below the tilt threshold; 16px confirms tilt.
+    if (kind === "closeLeadTilt") expect(samples[1].pitch).toBeCloseTo(before.pitch, 8);
+    expect(Math.abs(samples.at(-1).pitch - before.pitch)).toBeGreaterThan(0.05);
+    expect(mutations).toBe(0);
+  });
+}
 
 test("a slightly uneven parallel two-finger drag still tilts smoothly", async ({ page }) => {
   const { before, samples, mutations } = await gesture(page, "three", "noisyTilt");

@@ -348,9 +348,9 @@ export class GestureController {
     // a later sample finally qualifies as tilt.
     // A lone leading finger also changes the pair's angle and spread, so close
     // fingers can look like a twist before the partner's sample arrives. Keep
-    // holding until that lead is past the tilt intent threshold on its own.
-    const loneLead = Math.min(firstTravel, secondTravel) < 3
-      && Math.max(abs(firstY), abs(secondY)) < 12;
+    // holding that lead, however far it gets, until its partner moves or the
+    // gesture ends; release still applies a stationary-anchor transform.
+    const loneLead = Math.min(firstTravel, secondTravel) < 3;
     const clearlyComposed = !loneLead && (distanceChange >= 0.08 || rotationSize >= 0.18);
     if (!flushPending && !this.#twoFingerTilt && !this.#twoFingerTransform
       && !start.orthographic && verticalMotion && !tiltCandidate && !clearlyComposed
