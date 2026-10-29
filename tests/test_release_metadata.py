@@ -560,6 +560,7 @@ _HOUSEHOLD_DOCS = (
     "docs/cleaning.md",
     "docs/entities.md",
     "docs/features.md",
+    "docs/release-notes-0.5.0.md",
     "docs/room-schedules.md",
 )
 # Code, link targets and HTML anchors name things; the prose around them is copy.
