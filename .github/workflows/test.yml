@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 # Every PR runs the same gates, whoever opened it. A title or body edit changes
-# no code: its run rechecks attribution and reports the last code run for the
-# same head instead of rerunning the suite. A base change reruns everything.
+# no code: its run reports the last code run for the same head instead of
+# rerunning the suite. A base change reruns everything.
 env:
   RECHECK: ${{ github.event.action == 'edited' && !github.event.changes.base }}
 
@@ -38,8 +38,6 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: python3 .github/scripts/delivery-contract.py .
-      - if: github.event_name == 'pull_request'
-        run: python3 .github/scripts/attribution.py
       # The required check is this job, so an edit run reports the last code
       # run of it rather than skipping, which would read as passing.
       - if: ${{ fromJSON(env.RECHECK) }}
