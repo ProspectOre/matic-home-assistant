@@ -112,7 +112,9 @@ your home.
 
 Plans, room settings and custom areas carry over. To go back to 0.4, restore
 the backup you made before updating: reinstalling the 0.4 files alone can't
-read the 0.5 plan data. See the [rollback guidance](verification-0.5-rc24.md).
+read the 0.5 plan data. Restoring also removes plans, room settings and
+cleaning results made after that backup, so note any you want to keep first.
+See the [rollback guidance](verification-0.5-rc24.md).
 
 Entity IDs stay the same, though some names are clearer. 4 duplicate entities
 are removed, so update any dashboards or automations that use them (examples
@@ -137,6 +139,8 @@ some duplicate status and technical entities by default.
   but there are no translations yet.
 - A dedicated cleaning history view is planned for 0.6.
 
+Every change since 0.4.8 is in the
+[full commit history](https://github.com/ProspectOre/matic-home-assistant/compare/v0.4.8...v0.5.0).
 The release candidate notes, from [RC7](release-notes-0.5.0-rc7.md) to
-[RC43](release-notes-0.5.0-rc43.md), list every change and fix since 0.4.
+[RC43](release-notes-0.5.0-rc43.md), describe what each test build changed.
 Testing scope and limits are in [0.5 qualification](verification-0.5-stable.md).
