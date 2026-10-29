@@ -53,7 +53,12 @@ MAX_CANDIDATE_MISSIONS = 2
 # or the selected-floor watcher catches up. Keep that floor within the same
 # bounds as an active map; the candidate count remains separately bounded.
 MAX_CANDIDATE_TILES_PER_LAYER = MAX_TILES
+# All pending candidates share one floor's raw-byte allowance. A newer
+# observed mission is authoritative, so an older candidate yields pages first.
+# Together with the active map this bounds resident raw page bytes to
+# ``MAX_RESIDENT_BYTES`` regardless of how many candidates are pending.
 MAX_CANDIDATE_BYTES = MAX_STORED_BYTES
+MAX_RESIDENT_BYTES = MAX_STORED_BYTES + MAX_CANDIDATE_BYTES
 MAP_SNAPSHOT_MAX_PAGES = MAX_TILES * (MAX_CANDIDATE_MISSIONS + 1)
 MAP_SNAPSHOT_MAX_BYTES = MAX_STORED_BYTES * (MAX_CANDIDATE_MISSIONS + 1)
 MAP_SNAPSHOT_TIMEOUT = 30.0
@@ -175,6 +180,10 @@ class SlamMapStore:
         self._dropped_photo_tiles = 0
         self._dropped_structure_tiles = 0
         self._invalid_tiles = 0
+        # Pages a restored truncated cache still holds that the live replay has
+        # not re-delivered yet, per layer. ``None`` means the latch cannot be
+        # recovered in this session; see ``_recover_legacy_truncation``.
+        self._pending_legacy_keys: tuple[set[str], set[str]] | None = None
         self._stream_states: dict[str, MapStreamState] = {
             "map_compressed_rgb": "idle",
             "map_integrated": "idle",
@@ -212,6 +221,15 @@ class SlamMapStore:
         self._dropped_photo_tiles = loaded.dropped_photo_tiles
         self._dropped_structure_tiles = loaded.dropped_structure_tiles
         self._invalid_tiles = loaded.invalid_tiles
+        # An older cache may have been truncated by bounds this build no longer
+        # applies. Its surviving pages identify how much of the live replay
+        # must be re-observed before the latch may clear; a cache that kept no
+        # page in either layer offers no such evidence and stays latched.
+        self._pending_legacy_keys = (
+            (set(self._entries), set(self._structure_entries))
+            if self._truncated and self._entries and self._structure_entries
+            else None
+        )
         self._candidates.clear()
         self._retired_missions.clear()
         self._candidate_generation = 0
@@ -306,6 +324,10 @@ class SlamMapStore:
             else self._entry_content_digests
         )
         key = _tile_key(tile)
+        if self._pending_legacy_keys is not None:
+            # Live delivery of a page the truncated cache retained is evidence
+            # that this session's replay reaches at least that far.
+            self._pending_legacy_keys[int(structural)].discard(key)
         previous = target.get(key)
         content_digest = _tile_content_digest(tile)
         previous_digest = content_digests.get(key)
@@ -631,6 +653,7 @@ class SlamMapStore:
         self._dropped_photo_tiles = candidate.dropped_photo_tiles
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
         self._invalid_tiles = 0
+        self._pending_legacy_keys = None
         self._candidates.pop(mission_token, None)
         # Promotion itself requires live photographic and structural evidence.
         self._live_photo_seen = True
@@ -642,11 +665,45 @@ class SlamMapStore:
         self._retired_missions.append(mission_token)
 
     def _enforce_candidate_bounds(self, candidate: _MissionCandidate) -> None:
+        """Bound one candidate, then the raw bytes shared by all candidates."""
+        self._bound_candidate(
+            candidate,
+            max_tiles=MAX_CANDIDATE_TILES_PER_LAYER,
+            max_bytes=MAX_CANDIDATE_BYTES,
+        )
+        # Older candidates yield first: the newest observed mission remains
+        # authoritative until classified. The newest candidate only shrinks
+        # once every other candidate is empty.
+        for pending in sorted(self._candidates.values(), key=_candidate_age):
+            excess = self._candidate_bytes() - MAX_CANDIDATE_BYTES
+            if excess <= 0:
+                return
+            self._bound_candidate(
+                pending,
+                max_tiles=MAX_CANDIDATE_TILES_PER_LAYER,
+                max_bytes=max(0, _candidate_stored_bytes(pending) - excess),
+            )
+
+    def _candidate_bytes(self) -> int:
+        """Return raw key/value bytes retained by every pending candidate."""
+        return sum(map(_candidate_stored_bytes, self._candidates.values()))
+
+    def resident_bytes(self) -> int:
+        """Return raw page bytes held by the active map and all candidates."""
+        return (
+            _stored_bytes(self._entries, self._structure_entries)
+            + self._candidate_bytes()
+        )
+
+    @staticmethod
+    def _bound_candidate(
+        candidate: _MissionCandidate, *, max_tiles: int, max_bytes: int
+    ) -> None:
         dropped_photo, dropped_structure = _enforce_collection_bounds(
             candidate.entries,
             candidate.structure_entries,
-            max_tiles=MAX_CANDIDATE_TILES_PER_LAYER,
-            max_bytes=MAX_CANDIDATE_BYTES,
+            max_tiles=max_tiles,
+            max_bytes=max_bytes,
         )
         if dropped_photo or dropped_structure:
             candidate.truncated = True
@@ -947,16 +1004,46 @@ class SlamMapStore:
         """Return whether both untruncated layers settled for the current mission."""
         if not self.live_session_verified:
             return False
-        if self._truncated:
+        if self._truncated and not self._recover_legacy_truncation():
             return False
         if self._map_complete:
             return True
         if not self._has_balanced_layers():
             return False
-        self._map_complete = (
-            monotonic() - self._last_topology_change >= MAP_SETTLE_SECONDS
-        )
+        self._map_complete = self._settled()
         return self._map_complete
+
+    def _settled(self) -> bool:
+        return monotonic() - self._last_topology_change >= MAP_SETTLE_SECONDS
+
+    def _recover_legacy_truncation(self) -> bool:
+        """Clear a restored truncation latch once a live replay supersedes it.
+
+        Older caches record eviction counts, not the identity of evicted
+        pages, and the Hermes map collections carry no completion marker. A
+        latch is released only when, within one live session for the same
+        mission: both layers are verified live; every page the truncated
+        cache retained has been re-delivered in both layers, so the replay
+        provably reached at least the whole retained set; nothing was evicted
+        under the current bounds; both layers agree spatially; and the map
+        has settled. The cache then holds everything the robot replayed.
+        """
+        pending = self._pending_legacy_keys
+        if (
+            pending is None
+            or pending[0]
+            or pending[1]
+            or not self._has_balanced_layers()
+            or not self._settled()
+        ):
+            return False
+        self._pending_legacy_keys = None
+        self._truncated = False
+        self._dropped_photo_tiles = 0
+        self._dropped_structure_tiles = 0
+        self._schedule_save()
+        self._notify_listeners()
+        return True
 
     @property
     def health(self) -> SlamMapHealth:
@@ -1046,6 +1133,7 @@ class SlamMapStore:
         self._dropped_photo_tiles = 0
         self._dropped_structure_tiles = 0
         self._invalid_tiles = 0
+        self._pending_legacy_keys = None
         self._notify_listeners()
         await self._store.async_remove()
 
@@ -1076,7 +1164,10 @@ class SlamMapStore:
             max_bytes=MAX_STORED_BYTES,
         )
         if dropped_photo or dropped_structure:
+            # Pages evicted under the current bounds are genuinely missing;
+            # no replay evidence can clear this latch within the session.
             self._truncated = True
+            self._pending_legacy_keys = None
             self._dropped_photo_tiles = _increment_by(
                 self._dropped_photo_tiles, dropped_photo
             )
@@ -1328,6 +1419,15 @@ def _enforce_collection_bounds(
         if entries:
             drop_layer(entries, structural=False)
     return dropped_photo, dropped_structure
+
+
+def _candidate_stored_bytes(candidate: _MissionCandidate) -> int:
+    return _stored_bytes(candidate.entries, candidate.structure_entries)
+
+
+def _candidate_age(candidate: _MissionCandidate) -> int:
+    """Sort key placing the oldest observed candidate first."""
+    return candidate.generation
 
 
 def _stored_bytes(
