@@ -1,137 +1,150 @@
-# Matic 0.5 — Your home. Your cleaning routine.
+# Matic 0.5
 
-Matic 0.5 brings a redesigned map workspace, more flexible cleaning routines,
-and clearer results to Home Assistant. Move from a quick room clean to a saved
-plan, see what is due before you start, and stay in control as the run unfolds.
-Everyday control, maps, and plan storage remain local to your home.
+Matic 0.5 is the biggest update yet. A new Matic Map puts planning, cleaning
+and results in one place. Room schedules mop or vacuum deeper when it's due,
+and you decide how a run stops. Maps, plans and everyday control stay local to
+your home.
 
-## One workspace, from planning to results
+## Highlights
 
-- **A clearer home screen.** Keep favorite plans and custom areas within reach
-  with shortcuts you can show, hide, and reorder. New plans and areas appear
-  automatically; your existing hidden choices stay hidden.
-- **Plans that are easier to use.** Separate Run and Edit views keep the next
-  clean distinct from future changes. Preview effective settings and order,
-  adjust individual rooms, and leave a draft with a clear save-or-discard choice.
-- **Rooms and areas in one plan.** Mix rooms with saved custom areas, or use an
-  area-only plan. Smart Order gives waiting rooms and areas an earlier turn;
-  Saved order follows your sequence every time.
-- **A more useful map.** Switch between photographic 3D and top-down 2D, with
-  Photo and Room colors appearances. Selection stays in sync with the room list.
-  Full map gives the floor more space while keeping status and controls nearby.
-- **Precise navigation.** Set map zoom from 100–1000%, choose a preset, or use
-  Fit map to recenter. On touch screens, one finger pans, pinch zooms, twist
-  rotates, and two fingers moving up or down together tilt the 3D view; a
-  gesture keeps its mode until you lift your fingers. Contextual help explains
-  mouse, touch, and drawing controls. The camera stays steady through updates,
-  history browsing, and draft cancellation.
-- **Large single-floor homes.** The photographic map and camera keep up to four
-  times as many map pages as before within a bounded memory budget. A map that
-  an earlier version cut short keeps its warning until the robot re-sends pages
-  that were missing; replaying only the surviving pages never clears it.
+- **Matic Map, rebuilt.** Photographic 3D and top-down 2D maps with smooth
+  touch, mouse and keyboard control, from a phone to a wall tablet.
+- **Plans with rooms and custom areas.** Mix rooms and drawn areas in one plan,
+  see the run before it starts, and keep favorites one tap away.
+- **Room schedules.** Mop every few cleans or rotate in a deeper vacuum.
+  Progress counts across all plans, and only finished work counts.
+- **Smart Stop.** Finish the current room before docking, or stop now and dock.
+- **Clear results.** Finished rooms, active cleaning time and a room time
+  estimate that learns from your home.
 
-## Cleaning that follows your routine
+## Matic Map
 
-- **Mop or vacuum more thoroughly when it is due.** Set a room to mop every few
-  cleans or schedule a Quick, Optimal, or Heavy duty vacuum rotation. See when
-  each is due, bring it forward once, or reset its progress with confirmation.
-- **Share progress across plans.** New room schedules count across all plans by
-  default; choose In this plan only for an independent routine. Deleting a shared
-  schedule names the affected plans and preserves their usual cleaning settings
-  and cleaning history.
-- **Let a one-time clean do the due work.** Clean rooms can include an existing
-  shared schedule without creating a plan, including mop and vacuum-and-mop
-  requests. Review each room's effective settings, or turn off due work for that
-  clean. Work you skip stays due, and mop-only work never resets a due vacuum
-  rotation.
-- **Count confirmed work.** Partial, stopped, failed, or unconfirmed work does
-  not advance room schedules. Vacuum rotations stay due until their requested
-  coverage is confirmed. When firmware clears live goals after completion, the
-  exact completed native session can supply the evidence; missing or contradictory
-  evidence never clears the due work.
+- **3D or 2D.** Switch between photographic 3D and top-down 2D, shown as Photo
+  or Room colors. Room names, boundaries and colors are easier to read, and on
+  small screens labels make way for the rooms that matter.
+- **Move the map your way.** Zoom from 100% to 1000%, pick a preset, or use
+  **Fit map** to see the whole floor. On touch, one finger moves, pinch zooms,
+  twist rotates and two fingers sliding up or down tilt the 3D view. A gesture
+  keeps its mode until you lift your fingers, so the map never jumps. **How to
+  move the map** explains mouse, touch and drawing controls.
+- **Full map.** Give the floor the whole screen while status and controls stay
+  in reach.
+- **A home screen that fits your house.** Keep favorite plans and custom areas
+  as shortcuts, then show, hide or reorder them with **Edit shortcuts**.
+- **Map history.** Browse dated saved maps, read only, then return to the live
+  map. Cleaning always waits for a live map that is ready.
+- **Large homes.** Big single-floor homes keep up to 4 times more map detail
+  within a fixed memory budget. A map an earlier version cut short keeps its
+  warning until the robot sends the missing parts. The map stays visible while
+  the robot reconnects.
 
-## Know what is happening—and choose how to stop
+## Plans and custom areas
 
-- **Clearer progress.** See verified completed-room counts, active cleaning time,
-  and a separately labeled estimate of the current room's elapsed cleaning time.
-  The estimate uses successful runs with the same cleaning mode and coverage;
-  switching settings preserves each learned timing tier across restarts. It
-  does not measure cleaned floor area or award completion credit. Without
-  enough matching history, it stays unknown.
-- **Time in familiar units.** Plan estimates use compact hours and minutes.
-  New duration entities suggest minutes for room timings and hours for the last
-  clean, while their native measurements remain numeric seconds. See
-  [timing scopes](native-cleaning-results.md) for active time, native work time
-  and session span.
-- **Smart Stop.** Choose a threshold for finishing the current room before
-  docking. Later rooms stay out of that mission. While the current room finishes,
-  **Stop now & dock** gives you an immediate override.
-- **Results that stay visible.** Incomplete and unverified outcomes remain
-  available after docking. Status explains when a result is being checked,
-  cleaning is stopping, or the robot is returning.
+- **Run and Edit, kept apart.** A plan opens in **Run**, showing the order,
+  each room's settings and what's due. **Edit** keeps your changes as a draft
+  until you save or discard them.
+- **Rooms and custom areas together.** Draw a custom area, such as a rug or the
+  spot by the litter box, and add it to any plan, or build a plan of areas only.
+  Each area has its own cleaning mode and coverage.
+- **Choose the order.** **Smart Order** gives the rooms and areas that have
+  waited longest an earlier turn. **Saved order** follows your sequence every
+  time.
+- **Clean a few rooms now.** **Clean rooms** picks rooms for a one-time clean
+  without saving a plan.
+- **Areas that survive map updates.** When the robot refines its map, saved
+  areas stay put if Home Assistant can match them. If it can't, **Confirm area
+  on current map** lets you check the outline without starting a clean.
 
-## A steadier map on desktop, phone, and tablet
+## Room schedules
 
-- Readable room colors, stronger boundaries, and improved label placement make
-  selection easier. Shallow landscape views prioritize nearby, current, and
-  selected rooms; more labels return when the map has space.
-- Compact controls, improved keyboard focus, clearer drawing tools, and layouts
-  that adapt to rotation and large text make the workspace easier to navigate.
-- A retained map stays visible during connection recovery. Saved maps are dated,
-  read-only, and show no live robot position. Cleaning waits for a verified live map.
-- Saved areas survive compatible map refinements when their original location
-  can be verified. When it cannot, **Confirm area on current map** lets you review
-  the outline without starting a clean. Stale robot positions are hidden.
+- **Mop or vacuum deeper when it's due.** Set a room to mop every few cleans, or
+  to rotate in a Quick, Optimal or Heavy duty vacuum. See what's due before
+  each run, do it once on the next clean, or reset progress.
+- **Progress across all plans.** New room schedules count cleans from every plan
+  by default. Choose **In this plan only** for a separate pattern. Deleting a
+  shared schedule names the plans it affects and keeps their usual settings and
+  history.
+- **One-time cleans do the due work too.** A one-time clean can use a room's
+  shared schedule, including mop and vacuum and mop requests. Review each
+  room's settings first, or turn due work off for that clean. Work you skip
+  stays due, and mop-only work never resets a due vacuum rotation.
+- **Only finished work counts.** A room that is stopped, interrupted or can't be
+  confirmed doesn't move its schedule forward. A vacuum rotation stays due until
+  its deeper clean finishes.
 
-## Better connected to Home Assistant
+## While it cleans
 
-- Use **Room finished**, **Plan finished**, and **Cleaning finished** device
-  triggers in automations. Refreshed blueprints explain their inputs and start
-  only when the robot is docked or idle; re-import them to receive the changes.
-- Everyday actions use familiar control names; advanced identifiers and developer
-  actions are separated. Entity states offer clearer choices in the automation editor.
-- The default device page centers on standard vacuum controls. Specialized plan
-  and area buttons and selectors are opt-in; default mode and coverage live under
-  Configuration. Existing enabled entities and automations keep working.
-- Dashboard map images correctly identify their PNG format, including resized
-  requests from Home Assistant cards.
-- Administrator-only Assist and MCP tools can inspect plans, readiness, activity,
-  and history, and run plans, clean rooms, stop, or reset room-schedule progress.
-  Assist requires a configured tool-capable agent; the built-in sentence agent
-  alone does not provide these conversations. Firmware research uses a separate API.
-- Firmware comparisons and optional notification blueprints help surface changes
-  relevant to the integration. The robot continues to install its own firmware.
-- Pairing has clearer progress and recovery guidance. **Robot was reset** verifies
-  identity before saving replacement credentials and preserves saved plans and
-  areas. Experimental pairing import supports hosts without local Bluetooth;
-  the external helper has separate platform and hardware qualification.
+- **Smart Stop.** Set how far into a room the robot must be for Stop to finish
+  that room before docking. Later rooms wait for the next run. While the room
+  finishes, **Stop now & dock** overrides it immediately.
+- **Progress you can read.** See finished rooms, active cleaning time and an
+  estimate for the current room. The estimate learns from finished runs with
+  the same cleaning mode and coverage, and stays blank until it has enough
+  history.
+- **Times in familiar units.** Plans show compact hours and minutes. Duration
+  sensors suggest minutes for rooms and hours for the last clean.
+- **Results that stay.** An unfinished or unconfirmed run stays visible after
+  docking, and status says when the robot is stopping, returning or checking a
+  result.
+
+## Home Assistant
+
+- **Automation triggers.** **Room finished**, **Plan finished** and **Cleaning
+  finished** device triggers. Refreshed blueprints explain every input and only
+  start when the robot is docked or idle. Re-import them to get the update.
+- **A tidier device page.** Standard vacuum controls come first. Plan and area
+  buttons and selectors are opt-in, and default cleaning settings live under
+  Configuration. Entities and automations you already use keep working.
+- **Dashboard maps.** Both map cameras send correct PNG images, including the
+  resized images Home Assistant cards ask for.
+- **Assist and MCP.** Administrators can ask a tool-capable Assist agent about
+  plans, readiness, activity and history, or have it run a plan, clean rooms,
+  stop, or reset room schedule progress.
+- **Firmware awareness.** Firmware comparisons and an optional notification
+  blueprint point out robot updates that matter to the integration. The robot
+  still installs its own firmware.
+- **Pairing.** Clearer progress and recovery. **Robot was reset** checks that
+  it's your robot before saving a new pairing, and keeps plans and custom areas.
 
 ## Before you update
 
-**Requires Home Assistant 2026.10 or later.** Preserve a verified Home Assistant
-backup, the installed integration, and its plan/configuration stores. Let the
-robot dock, update through HACS, restart Home Assistant, and check the live map.
-The plan store migrates to retain timing tiers. A source-only downgrade cannot
-restore the older store format; use a matching backup and preserve newer run records. See the [rollback guidance](verification-0.5-rc24.md).
+0.5 requires **Home Assistant 2026.10 or later**.
 
-Retained entities keep their IDs, although several display names are clearer.
-Four duplicate entities are removed on upgrade; update any dashboards or
-custom automations that use them (examples assume a robot named Matic):
+1. Make a Home Assistant backup and check that it completed.
+2. Let the robot finish and dock.
+3. Update **Matic (Unofficial)** in HACS, then restart Home Assistant.
+4. Open Matic Map and check that the live map loads.
 
-| Removed entity | Replacement |
+Plans, room settings and custom areas carry over, and room time estimates are
+kept per cleaning setting from now on. To go back to 0.4, restore the backup
+you made before updating: reinstalling the 0.4 files alone can't read the 0.5
+plan data. See the [rollback guidance](verification-0.5-rc24.md).
+
+Entity IDs stay the same, though some names are clearer. 4 duplicate entities
+are removed, so update any dashboards or automations that use them (examples
+use a robot named Matic):
+
+| Removed entity | Use instead |
 | --- | --- |
 | `binary_sensor.matic_active_cleaning_session` | `binary_sensor.matic_cleaning` |
 | `binary_sensor.matic_update_available` | `update.matic_firmware` |
 | `sensor.matic_software_version` | Software version on the device page |
 | `sensor.matic_hardware_revision` | Hardware version on the device page |
 
-Existing enabled/disabled entity choices are preserved. New installations hide
-some duplicate status and technical entities by default. The interface ships
-in English; layout support for other locales is not a translated catalog.
+Enabled and disabled choices for existing entities are kept. New installs hide
+some duplicate status and technical entities by default.
 
-This stable candidate builds on [RC43](release-notes-0.5.0-rc43.md) with the final
-timing, display, control-default, camera, touch-gesture, large-floor, and
-one-time due-work corrections above. Dedicated
-contextual Cleaning history is planned for 0.6; saved-map history and current run results remain available now.
-See [current qualification and its limits](verification-0.5-stable.md) for device,
-accessibility, Assist, notification-delivery, and final release acceptance status.
+## Good to know
+
+- Assist conversations need a configured tool-capable agent. Home Assistant's
+  built-in sentence agent doesn't run these tools.
+- Pairing import for hosts without Bluetooth is experimental.
+- Matic Map ships in English. Layouts handle longer and right-to-left text,
+  but there are no translations yet.
+- A dedicated cleaning history view is planned for 0.6. Saved maps and the
+  latest run results are available now.
+
+Every change since 0.4 is listed in the release candidate notes, from
+[RC7](release-notes-0.5.0-rc7.md) to [RC43](release-notes-0.5.0-rc43.md), plus
+the final large-home, touch gesture and one-time due work changes above.
+Testing scope and limits are in [0.5 qualification](verification-0.5-stable.md).
