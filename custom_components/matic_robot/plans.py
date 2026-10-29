@@ -3501,7 +3501,14 @@ class CleaningPlanManager:
                         )
                     policy = normalize_cadence_policy(
                         {"scope": "shared", **schedule["policy"]},
-                        cleaning_mode=validation_mode,
+                        # Shared schedules are defined against their saved normal
+                        # vacuum mode. A one-time caller's selected mode is an
+                        # override, not a redefinition of that schedule.
+                        cleaning_mode=(
+                            "vacuum"
+                            if use_shared_schedule
+                            else str(raw.get("cleaning_mode", "vacuum"))
+                        ),
                         coverage_setting=room.coverage_setting,
                     )
                     progress = schedule.get("progress")
@@ -3536,7 +3543,9 @@ class CleaningPlanManager:
                         )
                     policy = normalize_cadence_policy(
                         {"scope": "shared", **schedule["policy"]},
-                        cleaning_mode=validation_mode,
+                        # A manual one-time mode must not invalidate the shared
+                        # schedule it is borrowing.
+                        cleaning_mode="vacuum",
                         coverage_setting=room.coverage_setting,
                     )
                     progress = schedule.get("progress")
@@ -3598,6 +3607,10 @@ class CleaningPlanManager:
             snapshot["shared_schedule_participating"] = (
                 use_shared_schedule or snapshot.get("scope") == "shared"
             )
+            if snapshot["effective_cleaning_mode"] == "mop":
+                # A borrowed vacuum-strength schedule cannot change a mop-only
+                # one-time run. Due coverage stays due for a vacuum run.
+                snapshot["effective_coverage_setting"] = room.coverage_setting
             if not apply_due_settings:
                 # A tracked one-off may explicitly keep its chosen settings.
                 # Keep the shared due state in the checkpoint so compatible

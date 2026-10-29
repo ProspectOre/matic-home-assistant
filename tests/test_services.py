@@ -2090,8 +2090,9 @@ async def test_preview_room_sequence_requires_administrator(hass) -> None:
     ("use_room_schedule", "override_room_schedule"),
     [(False, False), (True, False), (True, True)],
 )
+@pytest.mark.parametrize("requested_mode", ["vacuum", "vacuum_and_mop", "mop"])
 async def test_clean_room_sequence_schedule_selection_controls_shared_accounting(
-    hass, use_room_schedule, override_room_schedule
+    hass, use_room_schedule, override_room_schedule, requested_mode
 ) -> None:
     """Only a manual run using the room schedule may advance shared progress."""
     manager = CleaningPlanManager(hass)
@@ -2199,7 +2200,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
         "rooms": [
             {
                 "room": room.id,
-                "cleaning_mode": "vacuum",
+                "cleaning_mode": requested_mode,
                 "coverage_setting": "standard",
             }
         ],
@@ -2254,13 +2255,16 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     ):
         await _registered_handler(services, "clean_room_sequence")(call)
 
+    effective_mode = (
+        "vacuum_and_mop"
+        if use_room_schedule and not override_room_schedule
+        else requested_mode
+    )
     assert execute.await_args.args[5] == [
         CleaningRoom(
             room.id,
             room.name,
-            "vacuum_and_mop"
-            if use_room_schedule and not override_room_schedule
-            else "vacuum",
+            effective_mode,
             "quick" if use_room_schedule and not override_room_schedule else "standard",
         )
     ]
@@ -2274,7 +2278,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     assert snapshot["coverage_due"] is use_room_schedule
     expected_progress = (
         {"mop": 0, "coverage": 1}
-        if use_room_schedule and not override_room_schedule
+        if use_room_schedule and effective_mode == "vacuum_and_mop"
         else {"mop": 1, "coverage": 1}
     )
     assert (
