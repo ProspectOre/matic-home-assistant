@@ -37,6 +37,8 @@ MAX_TILES = MAX_SLAM_TILES
 # Base64 adds roughly one third on disk. Candidates use the same ceiling;
 # at most two candidates plus the active floor can be retained concurrently.
 MAX_STORED_BYTES = 64 * 1024 * 1024
+# Bounds applied by releases before snapshots recorded their provenance.
+LEGACY_BOUNDS = (1024, 16 * 1024 * 1024)
 STREAM_RETRY_SECONDS = 5
 SAVE_DELAY_SECONDS = 1
 MAP_SETTLE_SECONDS = 3
@@ -70,6 +72,8 @@ MAX_RETIRED_MISSIONS = 8
 # one-sided candidate so it cannot hold the active map unavailable forever.
 CANDIDATE_CLASSIFICATION_SECONDS = STREAM_RETRY_SECONDS * 3
 CANDIDATE_REFRESH_RETRY_SECONDS = STREAM_RETRY_SECONDS
+
+_SnapshotHealth = tuple[str | None, bool, int, int, tuple[int, int]]
 
 MapHealthState = Literal[
     "empty", "collecting", "incomplete", "ready", "truncated", "degraded"
@@ -144,6 +148,17 @@ class _LoadedMap:
     dropped_structure_tiles: int
     invalid_tiles: int
     dirty: bool
+    # The (tiles, bytes) bounds the truncation latch was recorded under. A
+    # latch from bounds smaller than this build applies may be cleared by a
+    # complete live replay; one from the current bounds cannot.
+    bounds: tuple[int, int]
+
+    @property
+    def recoverable(self) -> bool:
+        """Return whether a complete live replay may clear the latch."""
+        return self.truncated and (
+            self.bounds[0] < MAX_TILES or self.bounds[1] < MAX_STORED_BYTES
+        )
 
 
 class SlamMapStore:
@@ -184,6 +199,7 @@ class SlamMapStore:
         # not re-delivered yet, per layer. ``None`` means the latch cannot be
         # recovered in this session; see ``_recover_legacy_truncation``.
         self._pending_legacy_keys: tuple[set[str], set[str]] | None = None
+        self._truncation_bounds = _current_bounds()
         self._stream_states: dict[str, MapStreamState] = {
             "map_compressed_rgb": "idle",
             "map_integrated": "idle",
@@ -221,13 +237,17 @@ class SlamMapStore:
         self._dropped_photo_tiles = loaded.dropped_photo_tiles
         self._dropped_structure_tiles = loaded.dropped_structure_tiles
         self._invalid_tiles = loaded.invalid_tiles
+        self._truncation_bounds = loaded.bounds
         # An older cache may have been truncated by bounds this build no longer
         # applies. Its surviving pages identify how much of the live replay
         # must be re-observed before the latch may clear; a cache that kept no
-        # page in either layer offers no such evidence and stays latched.
+        # page in either layer offers no such evidence and stays latched, as
+        # does one truncated under the current bounds. The original bounds
+        # are persisted until the latch clears, so a restart mid-replay keeps
+        # the latch recoverable.
         self._pending_legacy_keys = (
             (set(self._entries), set(self._structure_entries))
-            if self._truncated and self._entries and self._structure_entries
+            if loaded.recoverable and self._entries and self._structure_entries
             else None
         )
         self._candidates.clear()
@@ -654,6 +674,7 @@ class SlamMapStore:
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
         self._invalid_tiles = 0
         self._pending_legacy_keys = None
+        self._truncation_bounds = _current_bounds()
         self._candidates.pop(mission_token, None)
         # Promotion itself requires live photographic and structural evidence.
         self._live_photo_seen = True
@@ -1038,6 +1059,7 @@ class SlamMapStore:
         ):
             return False
         self._pending_legacy_keys = None
+        self._truncation_bounds = _current_bounds()
         self._truncated = False
         self._dropped_photo_tiles = 0
         self._dropped_structure_tiles = 0
@@ -1134,6 +1156,7 @@ class SlamMapStore:
         self._dropped_structure_tiles = 0
         self._invalid_tiles = 0
         self._pending_legacy_keys = None
+        self._truncation_bounds = _current_bounds()
         self._notify_listeners()
         await self._store.async_remove()
 
@@ -1168,6 +1191,7 @@ class SlamMapStore:
             # no replay evidence can clear this latch within the session.
             self._truncated = True
             self._pending_legacy_keys = None
+            self._truncation_bounds = _current_bounds()
             self._dropped_photo_tiles = _increment_by(
                 self._dropped_photo_tiles, dropped_photo
             )
@@ -1209,12 +1233,13 @@ class SlamMapStore:
             SAVE_DELAY_SECONDS,
         )
 
-    def _snapshot_health(self) -> tuple[str | None, bool, int, int]:
+    def _snapshot_health(self) -> _SnapshotHealth:
         return (
             self._mission_token,
             self._truncated,
             self._dropped_photo_tiles,
             self._dropped_structure_tiles,
+            self._truncation_bounds,
         )
 
     def _serialized_data(self) -> dict[str, Any]:
@@ -1229,15 +1254,19 @@ class SlamMapStore:
 def _serialize_snapshot(
     photo_entries: tuple[HermesCollectionEntry, ...],
     structure_entries: tuple[HermesCollectionEntry, ...],
-    health: tuple[str | None, bool, int, int],
+    health: _SnapshotHealth,
 ) -> dict[str, Any]:
     """Encode an immutable private snapshot for Home Assistant storage."""
-    mission_token, truncated, dropped_photo_tiles, dropped_structure_tiles = health
+    mission_token, truncated, dropped_photo, dropped_structure, bounds = health
     return {
         "mission_token": mission_token,
         "truncated": truncated,
-        "dropped_photo_tiles": dropped_photo_tiles,
-        "dropped_structure_tiles": dropped_structure_tiles,
+        "dropped_photo_tiles": dropped_photo,
+        "dropped_structure_tiles": dropped_structure,
+        # Provenance of any truncation latch. A build with larger bounds may
+        # recover the latch from a complete live replay; the same bounds
+        # cannot, because the evicted pages would be evicted again.
+        "bounds": {"tiles": bounds[0], "bytes": bounds[1]},
         "tiles": [_serialize_entry(item) for item in photo_entries],
         "structure_tiles": [_serialize_entry(item) for item in structure_entries],
     }
@@ -1253,16 +1282,23 @@ def _serialize_entry(item: HermesCollectionEntry) -> dict[str, str]:
 def _decode_stored_snapshot(stored: object) -> _LoadedMap:
     """Decode and bound one private cache snapshot away from the event loop."""
     if not isinstance(stored, Mapping):
-        return _LoadedMap(None, None, {}, {}, False, 0, 0, 1, True)
+        return _LoadedMap(None, None, {}, {}, False, 0, 0, 1, True, _current_bounds())
     stored_mission = _stored_mission_token(stored.get("mission_token"))
     mission_token = stored_mission
     truncated = stored.get("truncated") is True
     dropped_photo = _bounded_count(stored.get("dropped_photo_tiles", 0))
     dropped_structure = _bounded_count(stored.get("dropped_structure_tiles", 0))
     invalid = 0
+    # Snapshots written before provenance was recorded come from the smaller
+    # pre-0.5 limits. A malformed record is not evidence of smaller bounds.
+    stored_bounds = (
+        _stored_bounds(stored["bounds"]) if "bounds" in stored else LEGACY_BOUNDS
+    )
+    bounds = _current_bounds() if stored_bounds is None else stored_bounds
     dirty = (
         (stored.get("mission_token") is not None and stored_mission is None)
         or ("truncated" in stored and not isinstance(stored["truncated"], bool))
+        or stored_bounds is None
         or dropped_photo != stored.get("dropped_photo_tiles", 0)
         or dropped_structure != stored.get("dropped_structure_tiles", 0)
     )
@@ -1280,6 +1316,7 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
         if len(items) > item_limit:
             overflow = len(items) - item_limit
             truncated = True
+            bounds = _current_bounds()
             if structural:
                 dropped_structure = _increment_by(dropped_structure, overflow)
             else:
@@ -1333,6 +1370,7 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
                 structure_entries.clear()
                 mission_ids.clear()
                 truncated = False
+                bounds = _current_bounds()
                 dropped_photo = 0
                 dropped_structure = 0
                 invalid = 0
@@ -1352,7 +1390,9 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
                 max_bytes=MAX_STORED_BYTES,
             )
             if evicted_photo or evicted_structure:
+                # Evicted under the current bounds: not recoverable by replay.
                 truncated = True
+                bounds = _current_bounds()
                 dropped_photo = _increment_by(dropped_photo, evicted_photo)
                 dropped_structure = _increment_by(dropped_structure, evicted_structure)
                 dirty = True
@@ -1369,7 +1409,28 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
         dropped_structure,
         invalid,
         dirty,
+        bounds,
     )
+
+
+def _current_bounds() -> tuple[int, int]:
+    """Return the (tiles, bytes) bounds this build applies to the active map."""
+    return MAX_TILES, MAX_STORED_BYTES
+
+
+def _stored_bounds(value: object) -> tuple[int, int] | None:
+    """Return the (tiles, bytes) bounds a snapshot was written under."""
+    if not isinstance(value, Mapping):
+        return None
+    tiles = value.get("tiles")
+    stored_bytes = value.get("bytes")
+    if any(
+        not isinstance(item, int) or isinstance(item, bool) or item < 0
+        for item in (tiles, stored_bytes)
+    ):
+        return None
+    assert isinstance(tiles, int) and isinstance(stored_bytes, int)
+    return tiles, stored_bytes
 
 
 def _enforce_collection_bounds(

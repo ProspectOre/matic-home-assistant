@@ -95,11 +95,11 @@ async def test_legacy_truncated_cache_reacquires_both_layers_without_reset(hass)
         for photo, structure in entries:
             await old.async_add(photo)
             await old.async_add_structure(structure)
-    assert old.health.truncated
-    old_drops = (old.health.dropped_photo_tiles, old.health.dropped_structure_tiles)
-    retained_photo = set(old._entries)
-    retained_structure = set(old._structure_entries)
-    await old.async_shutdown()
+        assert old.health.truncated
+        old_drops = (old.health.dropped_photo_tiles, old.health.dropped_structure_tiles)
+        retained_photo = set(old._entries)
+        retained_structure = set(old._structure_entries)
+        await old.async_shutdown()
     store = storage.SlamMapStore(hass, "legacy-large-floor")
     await store.async_load()
     store.set_expected_mission_id(1)
@@ -124,10 +124,15 @@ async def test_legacy_truncated_cache_reacquires_both_layers_without_reset(hass)
     await restored.async_load()
     assert restored.tile_count == restored.structure_tile_count == len(entries)
     assert restored.health.truncated
+    # A restart before the replay settles keeps the latch recoverable.
     assert restored._pending_legacy_keys == (
         set(restored._entries),
         set(restored._structure_entries),
     )
+    assert restored._serialized_data()["bounds"] == {
+        "tiles": 1024,
+        "bytes": 16 * 1024**2,
+    }
 
 
 def test_large_floor_hard_count_and_shared_byte_boundaries():
@@ -180,7 +185,7 @@ def test_large_floor_renderers_accept_capacity_and_keep_output_bounds():
     snapshot = storage._serialize_snapshot(
         tuple(photo for photo, _ in entries),
         tuple(structure for _, structure in entries),
-        (photos[0].mission_token, False, 0, 0),
+        (photos[0].mission_token, False, 0, 0, storage._current_bounds()),
     )
     assert len(json.dumps(snapshot)) < 90 * 1024**2
     loaded = storage._decode_stored_snapshot(snapshot)
@@ -296,8 +301,9 @@ async def legacy_truncated_store(hass, name, entries):
         for photo, structure in entries:
             await old.async_add(photo)
             await old.async_add_structure(structure)
-    assert old.health.truncated
-    await old.async_shutdown()
+        assert old.health.truncated
+        # The snapshot records the bounds it was truncated under.
+        await old.async_shutdown()
     store = storage.SlamMapStore(hass, name)
     await store.async_load()
     assert store.health.truncated
@@ -339,6 +345,10 @@ async def test_legacy_truncation_clears_after_full_replay_settles(hass):
     assert not restored.health.truncated
     assert restored.tile_count == restored.structure_tile_count == len(entries)
     assert restored._pending_legacy_keys is None
+    assert restored._serialized_data()["bounds"] == {
+        "tiles": storage.MAX_TILES,
+        "bytes": storage.MAX_STORED_BYTES,
+    }
 
 
 async def test_legacy_truncation_recovery_notifies_listeners_once(hass):
@@ -511,3 +521,117 @@ def test_resident_byte_ceiling_is_derived_from_the_shared_budgets():
     assert storage.MAX_CANDIDATE_BYTES == storage.MAX_STORED_BYTES
     assert storage.MAX_RESIDENT_BYTES == 2 * storage.MAX_STORED_BYTES
     assert storage.MAX_RESIDENT_BYTES == 128 * 1024**2
+
+
+async def test_truncation_under_current_bounds_survives_restart_unrecovered(hass):
+    """Only bounds this build has outgrown make a latch eligible for recovery."""
+    entries = floor_entries(40)
+    store = storage.SlamMapStore(hass, "current-bounds")
+    store.set_expected_mission_id(1)
+    with patch.object(storage, "MAX_TILES", 32):
+        await replay(store, entries)
+        assert store.health.truncated and store.tile_count == 32
+        retained = {
+            index
+            for index, (photo, _) in enumerate(entries)
+            if storage._tile_key(decode_slam_tile(photo)) in store._entries
+        }
+        await store.async_shutdown()
+        serialized = store._serialized_data()
+        assert serialized["bounds"] == {
+            "tiles": 32,
+            "bytes": storage.MAX_STORED_BYTES,
+        }
+        restored = storage.SlamMapStore(hass, "current-bounds")
+        await restored.async_load()
+        assert restored._pending_legacy_keys is None
+        restored.set_expected_mission_id(1)
+        # Replaying only the pages that fit, then settling, must not clear it.
+        await replay(restored, [entries[index] for index in sorted(retained)])
+        assert restored.live_session_verified
+        with patch.object(storage, "MAP_SETTLE_SECONDS", 0):
+            assert not restored.map_complete
+        assert restored.health.truncated
+        await restored.async_shutdown()
+    # The same snapshot becomes recoverable once the bounds grow.
+    grown = storage.SlamMapStore(hass, "current-bounds")
+    await grown.async_load()
+    assert grown._pending_legacy_keys == (
+        set(grown._entries),
+        set(grown._structure_entries),
+    )
+    await grown.async_shutdown()
+
+
+@pytest.mark.parametrize(
+    ("bounds", "recoverable", "dirty"),
+    [
+        (None, True, False),
+        ({"tiles": 1024, "bytes": storage.MAX_STORED_BYTES}, True, False),
+        ({"tiles": storage.MAX_TILES, "bytes": 16 * 1024**2}, True, False),
+        ({"tiles": storage.MAX_TILES, "bytes": storage.MAX_STORED_BYTES}, False, False),
+        ({"tiles": storage.MAX_TILES * 2, "bytes": 2**40}, False, False),
+        ("legacy", False, True),
+        ({"tiles": True, "bytes": storage.MAX_STORED_BYTES}, False, True),
+        ({"tiles": -1, "bytes": storage.MAX_STORED_BYTES}, False, True),
+        ({"tiles": 1024}, False, True),
+    ],
+)
+def test_snapshot_bounds_provenance_gates_recovery(bounds, recoverable, dirty):
+    snapshot = storage._serialize_snapshot(
+        (synthetic_slam_entry(),),
+        (synthetic_structure_entry(),),
+        (
+            decode_slam_tile(synthetic_slam_entry()).mission_token,
+            True,
+            1,
+            1,
+            storage.LEGACY_BOUNDS,
+        ),
+    )
+    if bounds is None:
+        del snapshot["bounds"]
+    else:
+        snapshot["bounds"] = bounds
+    loaded = storage._decode_stored_snapshot(snapshot)
+    assert loaded.truncated
+    assert loaded.recoverable is recoverable
+    assert loaded.dirty is dirty
+    assert loaded.bounds == (
+        storage.LEGACY_BOUNDS
+        if bounds is None
+        else (bounds["tiles"], bounds["bytes"])
+        if not dirty
+        else storage._current_bounds()
+    )
+    assert not storage._decode_stored_snapshot({"tiles": []}).recoverable
+    assert not storage._decode_stored_snapshot(None).recoverable
+
+
+def test_load_time_eviction_is_not_recoverable():
+    pairs = floor_entries(3)
+    snapshot = storage._serialize_snapshot(
+        tuple(p for p, _ in pairs),
+        tuple(s for _, s in pairs),
+        (
+            decode_slam_tile(pairs[0][0]).mission_token,
+            True,
+            0,
+            0,
+            storage.LEGACY_BOUNDS,
+        ),
+    )
+    with patch.object(storage, "MAX_TILES", 2):
+        loaded = storage._decode_stored_snapshot(snapshot)
+        assert loaded.truncated and loaded.bounds == storage._current_bounds()
+        assert not loaded.recoverable
+    with patch.object(storage, "MAX_LOAD_ITEMS_PER_LAYER", 2):
+        loaded = storage._decode_stored_snapshot(snapshot)
+    assert loaded.truncated and loaded.bounds == storage._current_bounds()
+    assert not loaded.recoverable
+    # A mission change during legacy repair starts a fresh, untruncated cache.
+    snapshot["tiles"].append(
+        storage._serialize_entry(synthetic_slam_entry(mission_id=9, page_x=9))
+    )
+    loaded = storage._decode_stored_snapshot(snapshot)
+    assert not loaded.truncated and loaded.bounds == storage._current_bounds()
