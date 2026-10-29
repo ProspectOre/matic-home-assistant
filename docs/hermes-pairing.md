@@ -45,8 +45,8 @@ Home Assistant OS configures these requirements automatically.
 | Code expired or rejected | Turn Pairing mode off and on; use the new code. |
 | Bluetooth connection fails | Check distance and obstructions. A proxy detecting Matic does not prove the local adapter can connect. |
 | Local adapter sees no nearby devices | Reload Bluetooth or replug the adapter. Reboot the host if scanning still fails. |
-| Pairing hangs or times out | Read the `matic_robot` warning in **Settings > System > Logs**; it identifies the failing stage. |
-| Existing Bluetooth pairing is reused but no code appears | If the credential write is rejected, setup asks **Remove the robot's saved pairing?** Select the affected robot by its Bluetooth name and address, enable Pairing mode, and submit. Setup removes only that bond once, rediscovers that device, and requests a fresh code. Cancel if you cannot identify the robot. |
+| Pairing hangs or times out | Setup gives up after 5 minutes. Read the `matic_robot` warning in **Settings > System > Logs**; it identifies the failing stage. |
+| Existing Bluetooth pairing is reused but no code appears | If the credential write is rejected, setup asks **Reset this Bluetooth pairing?** Select the affected robot by its Bluetooth name and address, enable Pairing mode, and choose **Remove**. Setup removes only that bond once, rediscovers that device, and requests a fresh code. Close the dialog if you cannot identify the robot. |
 
 For details, enable `custom_components.matic_robot: debug`; share only redacted logs.
 
@@ -68,15 +68,15 @@ Reauthentication and **Robot was reset** remove this robot's existing
 Bluetooth pairing before asking for a code, so they never guess which robot to
 pair. Each entry records the Bluetooth address of the robot that issued its
 credential, saved only after that credential works on the robot. Robots
-recorded by other entries are never contacted, by setup either. Of the rest,
-Home Assistant uses this entry's recorded robot if it can see it, otherwise
-the one robot heard advertising during the scan; a robot advertises only while
-its Pairing mode is open. A robot only remembered from earlier scans is never
-unpaired, so if none is advertising it stops with "can't see the robot". If
-more than one is advertising, it stops with "can see more than one robot" and
+recorded by other entries are never contacted, by setup either. Home Assistant
+uses this entry's recorded robot if it can see it and never falls back to
+another. An entry paired by an earlier version has no address until it pairs
+again: it uses the one robot heard advertising during the scan (only while its
+Pairing mode is open) and asks before removing an existing pairing on it; a
+robot only remembered from earlier scans is never unpaired. If no robot fits,
+setup stops with "can't see the robot", or with "can see more than one robot" and
 changes nothing: turn Pairing mode off on the other robots, wait a few minutes
-for their cached advertisements to expire, then retry. An entry paired by an
-earlier version records its address the next time it pairs.
+for their cached advertisements to expire, then retry.
 
 ## Robot was reset
 

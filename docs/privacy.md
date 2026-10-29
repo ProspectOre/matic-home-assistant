@@ -11,11 +11,12 @@ analytics, or maintainer cloud service.
 | Data | Where it lives |
 | --- | --- |
 | Local credential, endpoint, certificate identity, and the robot's Bluetooth address | Home Assistant config entry |
-| Plans, room preferences, results, and custom-area geometry | Private integration storage |
-| Current photographic map and saved map history | Private integration storage; history is capped at 12 scenes and 48 MiB |
-| Firmware endpoint summaries | Private storage, up to 52 snapshots; sizes, hashes, and field shapes without payload values |
+| Plans, room preferences, schedule progress, room duration history, results, custom-area geometry, and a running plan's restart checkpoint | Private integration storage |
+| Current photographic map and saved map history | Private integration storage; the current map holds up to 4,096 pages per layer and 64 MiB of raw page data, and history is capped at 12 scenes and 48 MiB |
+| Firmware endpoint summaries and research reports | Private storage, up to 52 snapshots and 8 superseded reports; sizes, hashes, and field shapes without payload values, plus any investigator's research text and public source links |
 | Activity and enabled entity states | Home Assistant Recorder, according to its configuration |
 | Command names, transport outcomes, and raw state transitions with timestamps | Last 512 observations in memory; local events follow Recorder retention |
+| Recent room, plan, firmware, and Cues events for the assistant tools | Last 64 in memory, limited to short scalar fields; cleared on restart |
 
 Room lists, Wi-Fi SSID, schedules, detailed session results, and plan history are
 live template attributes but are excluded from Recorder. Opt-in room statistics
@@ -37,6 +38,14 @@ Map responses are not browser-cached. An ordinary reload preserves the local
 map store; removing the integration deletes it. Home Assistant backups may
 include credentials, plans, and maps—protect backups and screenshots accordingly.
 
+## Assistant tools
+
+The [assistant and MCP tools](assistant-tools.md) are offered only to
+administrators. Their results include robot, plan, room, and area names,
+cleaning history, and command activity, but no map geometry or area
+coordinates. Results go to the conversation agent or MCP client you connect; if
+that agent runs in the cloud, they leave your network.
+
 ## Matic Cues
 
 The integration receives Cues status and intent categories, not transcripts,
@@ -51,8 +60,10 @@ The integration offers no recording, clip-sharing, or clip-deletion controls.
 
 **Download diagnostics** (Settings > Devices & services > Matic (Unofficial) >
 ⋮ on the robot's entry) creates a report only when requested. It contains
-software/protocol versions, state and error codes, counters, and endpoint/map
-health, plus the bounded [command and state observation trail](activity-diagnostics.md).
+software/protocol versions, state and error codes, counters, endpoint/map
+health, the pairing method, a check that the running code matches the
+installed integration files, and the bounded
+[command and state observation trail](activity-diagnostics.md).
 Observations contain no command payloads or exception messages.
 The report omits credentials, addresses, serials, certificate identity, names,
 room/map content, Wi-Fi identities, schedules, and detailed cleaning history.

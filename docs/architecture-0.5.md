@@ -34,7 +34,7 @@ withholds them until verification returns. Stop uses the selected, connected HA 
 ## Principles and ownership
 
 - Preserve credentials, entities, actions, automations, plans, Areas, preferences, local-only privacy, pinned
-  transport identity, and safe upgrade/rollback. Direct Bluetooth pairing remains supported; proxy pairing is deferred.
+  transport identity, and safe upgrade/rollback. Direct Bluetooth pairing remains supported; importing a pairing made on another device is experimental; proxy pairing is deferred.
 - Keep Home Assistant language, tokens, and supported panel interfaces. Bundle frontend dependencies
   locally; wrap internal Home Assistant components behind capability-tested fallbacks.
 - Every asynchronous spatial result belongs to its entry, generation, floor, mission, and relevant resource revision.
@@ -49,21 +49,21 @@ withholds them until verification returns. Stop uses the selected, connected HA 
 |---|---|---|
 | Protocol client | Pinned transport, vetted commands, candidate-channel cleanup until ownership transfer | HA workflows or policy |
 | Coordinator | Observed floor mission and matching published floor plan; revoke old truth before awaiting refresh | Treating a cached previous floor as current after a transition |
-| Map store | Resource identity, bounds, and live admission against observed floor truth | Reasserting floor identity from stale geometry |
+| Map store | Resource identity, bounds, truncation latches, and live admission against observed floor truth | Reasserting floor identity from stale geometry |
 | Coherence machine | Verified entry/floor/map identity and resource admission | Presentation or rendering |
 | Cleaning policy | Rotation, cadence, effective settings, explanations | Native dispatch or completion proof |
-| Managed executor | Dispatch, ownership, stop settlement, restart recovery | A second completion ledger |
+| Managed executor | Leg dispatch, ownership, handoff checkpoints, stop settlement, restart recovery | A second completion ledger |
 | Command admission | Manager-owned phase and epoch; reject new/queued commands during teardown and drain accepted lock owners | Revoke an accepted external operation midway through ownership transfer |
-| Completion accounting | Native verified outcomes and exactly-once credit | UI-derived completion |
+| Completion accounting | Native verified room outcomes, owned-session area ends, and exactly-once credit | UI-derived completion or the robot's unnamed area summary |
 | Planning persistence | Mutation admission before shared-state edits, owned commit/rollback, lifecycle draining and post-commit notification | Request cancellation or observer failures changing a committed outcome |
 | Firmware tracker | Serialized committed observations; publish after persistence succeeds | Advancing read state or emitting events after a failed save |
 | HA/HTTP/WebSocket adapters | Authorized bounded projections and invalidation | Independent business rules |
 
 Preview, dispatch, operational reads, and explanations consume the same policy and accounting outputs. `MaticGetPlan` projects `CleaningPlanManager.preview`; it cannot
-reconstruct selection or rotation. Cadence normalization alone validates intervals and one-shot flags; editors pass submitted values through without lossy coercion. Existing
-vetted protocol commands remain the command boundary. `managed_executor.py` owns dispatch/recovery; `native_completion.py` owns shared native proof; `cadence_accounting.py`
+reconstruct selection or rotation. `plan_legs` and `leg_groups` (`plans.py`) alone split a run into native missions (legs): consecutive rooms share one, each custom area is its own and the robot returns to its dock before the next leg, and Smart Stop gives each room its own; the preview's mission boundaries, `MaticGetPlan` legs and the executor use that grouping. Cadence normalization alone validates intervals and one-shot flags; editors pass submitted values through without lossy coercion. Existing
+vetted protocol commands remain the command boundary. `managed_executor.py` owns dispatch and leg execution; its run checkpoint records `leg_index`, `finished_area_legs` and a handoff phase with a native-history fingerprint, so `restart.py` can reattach the accepted mission or resume the queue at the next leg without replaying a command. `native_completion.py` owns shared native room proof; a custom area counts as finished only when its owned, generated session ends normally, never from the robot's unnamed area summary, and never advances room cadence; `cadence_accounting.py`
 applies verified credit inside the manager’s durable transaction. Service adapters retain authorization and request validation. Coverage preflight owns typed, non-sensitive
-failure reasons; a known pre-write rejection neither attempts cleanup STOP nor claims completion. HA adapters and UI project those reasons without exposing raw exceptions.
+failure reasons; a known pre-write rejection neither attempts cleanup STOP nor claims completion. HA adapters and UI project those reasons without exposing raw exceptions. The map store bounds one floor to 4,096 pages per layer and 64 MiB of raw page bytes shared by both layers; pending floors share one more 64 MiB, so resident raw pages stay at or below 128 MiB. A map truncated under an earlier version's smaller bounds keeps its warning until a live replay re-sends the missing pages. A binary tile store is planned ([#330](https://github.com/ProspectOre/matic-home-assistant/issues/330), design in [#334](https://github.com/ProspectOre/matic-home-assistant/pull/334)) and is not part of 0.5.0.
 
 ## Frontend authority
 
@@ -114,13 +114,13 @@ identity change.
 The storage minor-10 migration isolates a legacy tracked-room rotation row only when its run ID matches the manual run being migrated. Because older private cadence aggregates
 do not retain per-run provenance, active private cadence modes on a colliding legacy plan ID keep their stored counts but become unverified. Preview and dispatch stay blocked
 until the owner explicitly resets each affected mode. Shared schedules and unrelated plans are left intact; the migration never reconstructs cadence from aggregate cleaning
-history. Minor 11 stamps each plan's rooms as ordered room `entries`; saved custom areas join that one list (with no cadence), and earlier builds refuse the store.
+history. Minor 11 stamps each plan's rooms as ordered room `entries`; saved custom areas join that one list (with no cadence), and earlier builds refuse the store. Minor 12 keeps each room's learned durations separately for each mode and coverage combination.
 
 Effective mode and coverage are resolved before mixed mission grouping and are persisted, with policy identity and cadence snapshot, before dispatch. Manual and saved-plan
 starts consume the authoritative preview, bound to identity, order, settings, and progress by a fingerprint revalidated after preparation awaits. Stop policy belongs to the
 frozen run. Only a unique, verified managed room completion advances progress. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to
 match before comparing goals. A bounded receipt requires the echoed generated session and every vacuum-goal UUID plus its setting; the manager binds it to the owned leg and
-floor/room identities. Credit also requires the uniquely matched native history session, inactive state, the same floor, and matching vacuum goals in two fresh completion samples.
+floor/room identities. Credit also requires the uniquely matched native history session, inactive state, the same floor, and matching vacuum goals in two fresh completion samples; when firmware has cleared the live goals, the goals retained in that session's unique history record must match in both samples instead.
 This proves observed dispatch/completion consistency, not an atomic snapshot or unchanged settings between observations. Legacy flags and malformed receipts never grant credit. Partial,
 interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate, or ambiguous floor/name evidence does not. Keep the bounded 64-key completion
 receipt dedupe independent of the Activity journal. Dispatch markers freeze the requested mode/coverage; live and startup reconciliation share one recorder. Completion proof is independent of settings-qualified duration estimates; changed or unknown settings invalidate prior samples. A due rule stays due until
@@ -144,7 +144,6 @@ status separate from release status. The release requires the security/resource 
 install/readback, runtime recovery, and physical evidence on the same accepted commit. An independent product and architecture review must find no unresolved P0/P1 findings;
 owner interaction and language acceptance is a separate gate. Each gate is independent; none is implied by another.
 
-Physical acceptance is separate and requires explicit authorization for a bounded run. Preserve rollback/fingerprints, stop automations/scripts, use administrator MCP/native
-preflight and post-run evidence, verify STOP/DOCK settlement, and retain cleanup receipts. Never infer motion/completion from screenshots, Activity, transient state, CI, or UI.
+Physical acceptance is separate and requires explicit authorization for a bounded run. Preserve rollback/fingerprints, stop automations/scripts, use administrator MCP/native preflight and post-run evidence, verify STOP/DOCK settlement, and retain cleanup receipts. Never infer motion/completion from screenshots, Activity, transient state, CI, or UI.
 
-Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement; reconsider mutation only if 0.4/0.5 evidence shows HA services cannot solve a stale-write or workflow limitation. Owner refinement (2026-10-11): 0.5.0 stable is blocked on the human-interface overhaul in [`ux-spec-0.5.md`](ux-spec-0.5.md); it refines the existing `ms-*` design system and copy inside the invariants above (one canvas, one status strip, one contextual primary action, fail-closed selectors, read-only history) and keeps HA theme tokens, service names, entity unique_ids, storage and the frozen responsive table; it is not the wholesale redesign excluded here.
+Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement; reconsider mutation only if 0.4/0.5 evidence shows HA services cannot solve a stale-write or workflow limitation. Owner refinement (2026-10-11): the human-interface overhaul in [`ux-spec-0.5.md`](ux-spec-0.5.md), first shipped in RC24, refines the existing `ms-*` design system and copy inside the invariants above (one canvas, one status strip, one contextual primary action, fail-closed selectors, read-only history) and keeps HA theme tokens, service names, entity unique_ids, storage and the frozen responsive table; it is not the wholesale redesign excluded here.

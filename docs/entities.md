@@ -6,7 +6,7 @@ Build dashboards, adjust settings, and use cleaning results in automations.
 Enable per-room statistics to track each room’s last clean and successful duration.
 
 Each robot has 54 fixed entities — 24 sensors, 11 binary sensors, 5 buttons,
-4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and 1 vacuum —
+4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and 1 vacuum,
 plus two opt-in statistics sensors per mapped room.
 
 ## Names and entity IDs
@@ -22,13 +22,13 @@ are disabled by default; enable them from the device's entity list.
 | --- | --- | --- |
 | (the robot) | `vacuum.matic` | on |
 | Run plan · Stop cleaning | `button.matic_run_selected_plan` · `button.matic_stop_intelligent_cleaning` | off |
-| Run intelligent rotation · Run saved order | `button.matic_intelligent_clean` · `button.matic_clean_entire_plan` | off |
+| Run Smart Order · Run saved order | `button.matic_intelligent_clean` · `button.matic_clean_entire_plan` | off |
 | Clean custom area | `button.matic_clean_selected_area` | off |
 | Default cleaning mode · Default vacuum coverage | `select.matic_cleaning_mode` · `select.matic_coverage` | on |
 | Default cleaning plan · Custom cleaning area | `select.matic_saved_cleaning_plan` · `select.matic_custom_cleaning_area` | off |
 | Child lock · Pet-waste avoidance | `switch.matic_child_lock` · `switch.matic_pet_waste_avoidance` | on |
 | Cues voice assistant · Double-pass mopping | `switch.matic_voice_assistant` · `switch.matic_deep_mop` | on |
-| Mopping water flow (×) | `number.matic_water_flow` | on |
+| Mopping water flow (0.5× to 2.0×) | `number.matic_water_flow` | on |
 | Map · 3D photo map | `camera.matic_map` · `camera.matic_photorealistic_map` | on · off |
 | Cues | `event.matic_cues` | on |
 | Firmware | `update.matic_firmware` | on |
@@ -56,73 +56,74 @@ are disabled by default; enable them from the device's entity list.
 Paused, Returning to dock and Fully charged repeat **Activity**, so they start
 disabled. The status sensors (Activity, Firmware check status, Update status,
 Wi-Fi status, both Cues statuses) offer their states as a pick list in the
-automation editor. Duration sources remain numeric seconds. New room-timing and
-coverage sensors suggest minutes; whole-run duration suggests hours. Home Assistant
-formats these as time and lets you choose another unit. Existing unit choices stay
-unchanged; raw attributes and API fields ending in `_seconds` remain seconds.
+automation editor. Duration sensors store seconds: room timing and coverage time
+suggest minutes, Last clean duration suggests hours, and you can choose another
+unit. Existing unit choices stay, and fields ending in `_seconds` stay seconds.
 
-The three current-room sensors refresh together every five seconds,
-without extra robot requests. They apply to the current room of a clean
-started in Home Assistant; active time excludes pauses. Expected duration is the median
-of up to seven successful samples, with at least three required. Samples can come
-from different plans but must match the room, cleaning mode, and vacuum coverage.
-Quick, Optimal, and Heavy duty do not share an estimate, nor do vacuum, mop, and
-combined cleaning. Switching settings retains each learned tier across restarts.
-Double-pass mopping and water flow are not separate timing tiers.
-Without that history, expected duration and percentage stay unknown. Matic Map reads
-this same percentage, and Stop evaluates the same clock and baseline at the
-time of the command. A displayed estimate can be up to five seconds behind.
-Even **Estimated 100%** does not prove completion. Use confirmed room results
-for completion automations. An area-only, stale or unmatched run has no estimate.
+The three current-room sensors refresh together every five seconds, without
+extra robot requests. They cover the room a plan or a one-time room clean from
+Matic Map is cleaning, while the robot reports it as the current room; active
+time excludes pauses. Expected duration is the median of up to seven successful
+samples, with at least three required. Samples can come from different plans
+but must match the room, cleaning mode and vacuum coverage; each combination
+keeps its own estimate across restarts and setting changes. Double-pass mopping
+and water flow don't split estimates. Without that history, expected duration
+and percentage stay unknown. Matic Map and Smart Stop use the same estimate,
+which can be up to five seconds behind. Even **Estimated 100%** does not prove
+completion, so use confirmed room results for completion automations. A custom
+area, or a run Home Assistant can't match to the current room, has no estimate.
 
 ## Controls
 
 Use Matic Map for plans, room selection, and custom areas, or the standard vacuum
-controls for a full-floor clean, pause/resume, Stop, and dock. Default mode and
-coverage appear under **Configuration**. The five specialized buttons and the
-plan/area selectors are opt-in dashboard and automation shortcuts; existing
-enabled choices and entity IDs are preserved.
+controls for a full-floor clean, pause/resume, Stop, and dock; the vacuum's Stop
+follows a running plan's Smart Stop setting. Default mode and coverage appear
+under **Configuration**. The five specialized buttons and the plan/area selectors
+are opt-in dashboard and automation shortcuts; existing enabled choices and
+entity IDs are preserved.
 
 The plan buttons have the same names as their actions: **Run plan** runs the
-default plan with its saved behavior, **Run intelligent rotation** cleans the
-rooms that have waited longest first, and **Run saved order** cleans them top to
-bottom. **Stop cleaning** never asks for confirmation; the plan's saved stop
-policy decides whether the current room finishes before the robot docks.
+default plan the way it is saved, **Run Smart Order** cleans the rooms and
+custom areas that have waited longest first, and **Run saved order** cleans
+them top to bottom; a plan runs in one or more [parts](cleaning.md#how-a-plan-runs).
+They are unavailable until the map is ready and the default plan can run. **Stop
+cleaning** is available only while a plan or a one-time room clean from Matic
+Map runs, and never asks for confirmation; the plan's Smart Stop setting decides
+whether the current room finishes first. **Clean custom area** cleans the area
+chosen in **Custom cleaning area**, so enable both. **Next room to clean** names
+the first room or custom area of the default plan's next run; its `preview`
+attribute holds the whole preview.
 
 ## Maps
 
 `camera.matic_map` provides a labeled room map for dashboards. The photographic
 SLAM camera is disabled by default; enable it from the device's entity list if
-needed. Administrators can use the interactive **Matic Map** sidebar panel.
+needed. Both return PNG images. Administrators also get the **Matic Map** panel.
 
 ## Firmware
 
-The firmware update entity is read-only; the robot installs updates itself.
-While the robot reports an update, the latest version reads "Newer than" the
-installed version (or "Newer firmware" if that is unknown), in Home Assistant's
-language; the robot does not publish the new version number in advance. **Skip**
-hides the update only while that text stays the same: it shows again after the
-robot installs firmware (the installed version changes) or when Home Assistant's
-language changes, but a second update offered before the robot installs the
-first stays skipped. With no installed version the text stays "Newer firmware"
-and Home Assistant shows the update's state as unknown, so there is nothing to
-skip. The device page shows the software and hardware versions.
+The firmware update entity is read-only; the robot installs updates itself and
+doesn't publish the new version number in advance. While it reports an update,
+the latest version reads "Newer than" the installed version (or "Newer
+firmware" if that is unknown), in Home Assistant's language. **Skip** lasts
+until that text changes: after the robot installs firmware or when Home
+Assistant's language changes. A second update offered before the robot installs
+the first stays skipped. With no installed version, Home Assistant shows the
+update's state as unknown, so there is nothing to skip. The device page shows
+the software and hardware versions.
 
-If **Problem** turns on, inspect `sensor.matic_activity`:
-
-- `errors` and `primary_error` identify reported conditions.
-- `hermes_error_codes` preserves numeric codes; unknown meanings appear as `error_code_<n>`.
-
-Errors must persist across two normal polls before they appear, filtering brief
-firmware pulses. Recorded activity can help diagnose an error after it clears.
+If **Problem** turns on, `sensor.matic_activity` names the reported conditions
+in `errors` and `primary_error` and keeps their numeric codes in
+`hermes_error_codes`; a code with no known meaning appears as `error_code_<n>`.
+An error must persist across two normal polls before it appears, which filters
+brief firmware pulses. Recorded activity can help diagnose an error after it clears.
 
 ## Room statistics and the recorder
 
 Each room's **Last cleaned** and **Last clean duration** sensors are disabled
 by default. Enable them to retain room-specific history and duration statistics.
-The robot-wide **Last clean duration** is recorded by default.
-
-Room sensors show the latest confirmed result across settings; estimates use matching tiers.
+The robot-wide **Last clean duration** is recorded by default. Room sensors
+show the latest confirmed result, whatever its cleaning mode and coverage.
 
 Room lists, SSID, schedules, detailed run results, and plan history remain
 available to templates through `state_attr()` but are excluded from Recorder
@@ -139,7 +140,7 @@ switch also activates [Matic's voice processing](privacy.md#matic-cues).
 
 The one-time 0.2 migration renamed older numbered IDs where possible. 0.5
 removed four duplicate entities once, on its first start; see the
-[release notes](release-notes-0.5.0-rc24.md#entity-changes) for replacements.
+[release notes](release-notes-0.5.0.md#before-you-update) for replacements.
 User-assigned names and IDs are preserved.
 
 ## Assistant tools

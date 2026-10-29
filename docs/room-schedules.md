@@ -48,9 +48,10 @@ progress to it.
 
 Matic Map room cleans use an existing shared schedule by default and do not
 create a saved plan. When scheduled work is due, **Cleaning settings** shows
-**Include scheduled work that's due**; turn it off to use only your settings for
-that clean. Compatible confirmed work still counts; skipped work stays due for
-the next clean.
+**Use room schedules**, turned on; turn it off to use only your settings for
+that clean. This works for vacuum, mop, and vacuum and mop cleans. Compatible
+confirmed work still counts, skipped work stays due for the next clean, and a
+mop-only clean never resets a vacuum rotation that's due.
 
 Each selected room shows what will run under its name, and lines above the
 rooms explain due work and any extra passes. Matic Map refreshes that check

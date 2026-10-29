@@ -10,6 +10,15 @@ For example, a plan can vacuum one room on Quick and mop the next
 without an integration-imposed dock visit between settings. The robot still
 handles battery, water, and other servicing as needed.
 
+Custom areas never share a mission with rooms. `plan_legs` and
+`entry_mission_boundaries` in `plans.py` close the current room mission at each
+area, run the area as its own mission, and start a new mission for the rooms
+after it. The robot returns to its dock after each area before the next mission
+starts, as observed on every area of a three-area plan on 0.5.0rc44. With Smart Stop
+(finish current room) enabled, every room is also its own mission, so a STOP at
+a room boundary cannot let the next room start. The plan preview reports these
+boundaries, and Matic Map shows them as parts.
+
 ## Dispatch and recovery
 
 - Per-room updates require the generated native session, the original room map,
