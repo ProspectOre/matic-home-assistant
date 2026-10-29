@@ -7,6 +7,7 @@ import json
 import math
 import struct
 from collections.abc import Iterator
+from contextlib import closing
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -24,7 +25,9 @@ FLOOR_RGBA_BYTES = TILE_SIDE * TILE_SIDE * 4 * 2
 SEMANTIC_BYTES = TILE_SIDE * TILE_SIDE
 # Each page covers 32 x 32 cells at the robot's verified 1.5 cm map resolution.
 VOXEL_SCALE_METERS = 0.015
-_MAX_TILES = 1024
+# Storage and both renderers must admit the same number of pages. Raster,
+# point-count and output-pixel bounds below remain independent hard ceilings.
+MAX_SLAM_TILES = 4096
 _MAX_TILE_PAGE_COORDINATE = 4096
 MAX_TILE_ENTRY_BYTES = 128 * 1024
 _MAX_MISSION_ID_BYTES = 64
@@ -241,7 +244,7 @@ def encode_slam_scene(
     """
     if not tiles:
         raise DecodeError("no photorealistic SLAM tiles are cached")
-    if len(tiles) > _MAX_TILES or max_points < 1:
+    if len(tiles) > MAX_SLAM_TILES or max_points < 1:
         raise DecodeError("invalid photorealistic SLAM scene bounds")
     min_cell_x = min(tile.page_x * TILE_SIDE for tile in tiles)
     min_cell_y = min(tile.page_y * TILE_SIDE for tile in tiles)
@@ -666,7 +669,7 @@ def render_slam_map(
     """Render a complete local isometric map without retaining a huge point cloud."""
     if not tiles:
         raise DecodeError("no photorealistic SLAM tiles are cached")
-    if len(tiles) > _MAX_TILES or len(structure_tiles) > _MAX_TILES:
+    if len(tiles) > MAX_SLAM_TILES or len(structure_tiles) > MAX_SLAM_TILES:
         raise DecodeError("too many photorealistic SLAM tiles")
     page_coordinates = {(tile.page_x, tile.page_y) for tile in tiles}
     page_coordinates.update((tile.page_x, tile.page_y) for tile in structure_tiles)
@@ -743,40 +746,56 @@ def render_slam_map(
     vertical_headroom = round((TILE_HEIGHT - 7) * 2.5) + 8
     projected_width = 2 * (grid_width + grid_height - 2) + margin_x * 2 + 1
     projected_height = grid_width + grid_height - 1 + vertical_headroom + 8
-    if projected_width * projected_height > MAX_RENDER_PIXELS:
-        raise DecodeError("photorealistic SLAM projection is too large")
-    floor_projection = top_down.transform(
+    # Fit the entire floor into a bounded intermediate image. Rejecting a
+    # large projection here defeats the larger tile store; clipping pages
+    # would recreate holes. Apply one scale to every geometry layer instead.
+    # Two intermediate pixels per final output pixel on each axis retain
+    # antialiasing without allocating a native-resolution image for a camera
+    # thumbnail. Keep the independent hard ceiling for larger requested sizes.
+    projection_budget = min(MAX_RENDER_PIXELS, max(1, width * height * 4))
+    projection_scale = min(
+        1.0, math.sqrt(projection_budget / (projected_width * projected_height))
+    )
+    projected_width = max(1, math.floor(projected_width * projection_scale))
+    projected_height = max(1, math.floor(projected_height * projection_scale))
+    del top_draw
+    scene = top_down.transform(
         (projected_width, projected_height),
         Image.Transform.AFFINE,
         (
-            0.25,
-            0.5,
+            0.25 / projection_scale,
+            0.5 / projection_scale,
             -0.25 * margin_x - 0.5 * vertical_headroom - 0.5 * (grid_height - 1),
-            -0.25,
-            0.5,
+            -0.25 / projection_scale,
+            0.5 / projection_scale,
             0.25 * margin_x - 0.5 * vertical_headroom + 0.5 * (grid_height - 1),
         ),
         resample=Image.Resampling.BILINEAR,
     )
-    scene = floor_projection
+    # Release each raster after its last use. At the pixel ceiling a single
+    # RGBA image is 64 MiB; retained draw contexts also keep its core alive.
+    top_down.close()
 
     def project_cell(x: float, y: float, z: float = 0) -> tuple[float, float]:
         local_x = x - min_cell_x
         local_y = y - min_cell_y
         return (
-            margin_x + 2 * (local_x - local_y) + 2 * (grid_height - 1),
-            vertical_headroom + local_x + local_y - z * 2.5,
+            (margin_x + 2 * (local_x - local_y) + 2 * (grid_height - 1))
+            * projection_scale,
+            (vertical_headroom + local_x + local_y - z * 2.5) * projection_scale,
         )
 
-    scene = _paint_voxels(
-        scene,
-        tiles,
-        min_cell_x=min_cell_x,
-        min_cell_y=min_cell_y,
-        grid_height=grid_height,
-        margin_x=margin_x,
-        vertical_headroom=vertical_headroom,
-    )
+    with closing(scene):
+        scene = _paint_voxels(
+            scene,
+            tiles,
+            min_cell_x=min_cell_x,
+            min_cell_y=min_cell_y,
+            grid_height=grid_height,
+            margin_x=margin_x,
+            vertical_headroom=vertical_headroom,
+            projection_scale=projection_scale,
+        )
     draw = ImageDraw.Draw(scene, "RGBA")
 
     labels: list[tuple[str, float, float]] = []
@@ -803,7 +822,9 @@ def render_slam_map(
     # house from the raw x-y projection above. Mirror the finished geometry,
     # then mirror only the pending overlay coordinates so labels themselves
     # remain readable and the robot marker stays exact.
-    scene = ImageOps.mirror(scene)
+    del draw
+    with closing(scene):
+        scene = ImageOps.mirror(scene)
     mirror_x = scene.width - 1
     labels = [(name, mirror_x - x, y) for name, x, y in labels]
     if robot_marker is not None:
@@ -812,19 +833,29 @@ def render_slam_map(
     bounds = scene.getbbox()
     if bounds is None:
         raise DecodeError("photorealistic SLAM map has no visible content")
-    cropped = scene.crop(bounds)
+    with closing(scene):
+        cropped = scene.crop(bounds)
     scale = min((width - 32) / cropped.width, (height - 32) / cropped.height)
     target = (
         max(1, round(cropped.width * scale)),
         max(1, round(cropped.height * scale)),
     )
-    cropped = cropped.resize(target, Image.Resampling.LANCZOS)
+    if cropped.size != target:
+        # Pillow resamples RGBA via premultiplied RGBa. Perform those same steps
+        # explicitly so the old full-size core can be closed between phases.
+        with closing(cropped):
+            cropped = cropped.convert("RGBa")
+        with closing(cropped):
+            cropped = cropped.resize(target, Image.Resampling.LANCZOS)
+        with closing(cropped):
+            cropped = cropped.convert("RGBA")
     image = Image.new("RGB", (width, height), "#0b1118")
     image.paste(
         cropped,
         ((width - target[0]) // 2, (height - target[1]) // 2),
         cropped,
     )
+    cropped.close()
     output_draw = ImageDraw.Draw(image, "RGBA")
     offset_x = (width - target[0]) // 2
     offset_y = (height - target[1]) // 2
@@ -888,6 +919,8 @@ def render_slam_map(
     # process for seconds on a detailed map. Moderate compression keeps camera
     # refreshes responsive while preserving the exact image.
     image.save(output, "PNG", compress_level=4)
+    del output_draw
+    image.close()
     return output.getvalue()
 
 
@@ -937,6 +970,7 @@ def _paint_voxels(
     grid_height: int,
     margin_x: int,
     vertical_headroom: int,
+    projection_scale: float = 1.0,
 ) -> Image.Image:
     """Rasterize the point cloud in bounded vector batches."""
     width, height = scene.size
@@ -979,10 +1013,12 @@ def _paint_voxels(
         local_x = page_x[tile_indexes] * TILE_SIDE + outers - min_cell_x
         local_y = page_y[tile_indexes] * TILE_SIDE + inners - min_cell_y
         projected_x = (
-            margin_x + 2 * (local_x - local_y) + 2 * (grid_height - 1)
+            (margin_x + 2 * (local_x - local_y) + 2 * (grid_height - 1))
+            * projection_scale
         ).astype(np.int32)
         projected_y = np.rint(
-            vertical_headroom + local_x + local_y - (levels - 7) * 2.5
+            (vertical_headroom + local_x + local_y - (levels - 7) * 2.5)
+            * projection_scale
         ).astype(np.int32)
         for offset_y in (-1, 0):
             for offset_x in (-1, 0, 1):
