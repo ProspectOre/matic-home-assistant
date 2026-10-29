@@ -45,7 +45,9 @@ your home.
   until you save or discard them.
 - **Rooms and custom areas together.** Draw a custom area, such as a rug or the
   spot by the litter box, and add it to any plan, or build a plan of areas only.
-  Each area has its own cleaning mode and coverage.
+  Each area runs as its own part with its own settings, so the robot returns to
+  the dock before the next room or area. Rooms that share settings run together;
+  a settings change starts a new part, and the robot may stop at the dock first.
 - **Choose the order.** **Smart Order** gives the rooms and areas that have
   waited longest an earlier turn. **Saved order** follows your sequence every
   time.
@@ -80,9 +82,7 @@ your home.
 - **Progress you can read.** See finished rooms, active cleaning time and an
   estimate for the current room. The estimate learns from finished runs with
   the same cleaning mode and coverage, and stays blank until it has enough
-  history.
-- **Times in familiar units.** Plans show compact hours and minutes. Duration
-  sensors suggest minutes for rooms and hours for the last clean.
+  history. Times show in hours and minutes.
 - **Results that stay.** An unfinished or unconfirmed run stays visible after
   docking, and status says when the robot is stopping, returning or checking a
   result.
