@@ -80,6 +80,7 @@ export class GestureController {
   #pinchAngle = 0;
   #pinchCamera: CameraState | null = null;
   #twoFingerTilt = false;
+  #twoFingerTransform = false;
   #dragCamera: CameraState | null = null;
   #gestureCamera: CameraState | null = null;
   #gestureRotation = 0;
@@ -141,6 +142,7 @@ export class GestureController {
       this.#coordinateCapture = null;
       this.#mode = "pinch";
       this.#twoFingerTilt = false;
+      this.#twoFingerTransform = false;
       this.#host.classList.add("navigating");
       this.#navigationUntilRelease = true;
       const [first, second] = [...this.#pointers.values()];
@@ -317,26 +319,50 @@ export class GestureController {
     const firstY = first.y - first.startY;
     const secondY = second.y - second.startY;
     const abs = Math.abs;
-    const rotation = angle(first, second) - this.#pinchAngle;
+    // Compare the shortest angular distance so a pair crossing the atan2
+    // branch cut doesn't suddenly look like a large twist.
+    const rawRotation = angle(first, second) - this.#pinchAngle;
+    const rotation = Math.atan2(Math.sin(rawRotation), Math.cos(rawRotation));
     const rotationSize = abs(rotation);
-    const smallRotation = rotationSize < 0.04 || rotationSize > 6.24;
-    const verticalPair = abs(deltaY) > abs(dx) * 1.25
-      && abs(nextDistance - this.#pinchDistance) <= this.#pinchDistance * 0.025
-      && smallRotation;
-    const tiltCandidate = !start.orthographic && verticalPair && firstY * secondY > 0;
-    // PointerEvents for the two contacts can straddle a frame. Hold a lone
-    // near-vertical update until its partner arrives or the gesture ends, so
-    // the first half cannot pan before a later tilt classification.
-    if (!flushPending && !this.#twoFingerTilt && !start.orthographic
-      && abs(firstY * secondY) < 1
-      && abs(deltaY) > abs(dx) * 1.25) return;
-    if (!this.#twoFingerTilt && tiltCandidate) {
+    // Real fingers do not track perfectly in parallel. A small amount of
+    // spread and twist is normal during an intended vertical tilt; keep the
+    // thresholds below deliberate pinch/twist motion while tolerating that.
+    const smallRotation = rotationSize < 0.08;
+    const distanceChange = abs(nextDistance - this.#pinchDistance) / this.#pinchDistance;
+    const verticalMotion = abs(deltaY) > abs(dx) * 1.25;
+    const sameDirection = firstY * secondY > 0;
+    const tiltCandidate = !start.orthographic && verticalMotion && sameDirection
+      && distanceChange <= 0.04 && smallRotation;
+    const bothFingersPastIntentThreshold = Math.min(abs(firstY), abs(secondY)) >= 12;
+    const firstTravel = Math.hypot(first.x - first.startX, first.y - first.startY);
+    const secondTravel = Math.hypot(second.x - second.startX, second.y - second.startY);
+    // Ignore no-op and touch-sensor jitter before choosing a transform mode.
+    // Otherwise a zero/one-pixel horizontal sample can latch pan before the
+    // user's deliberate vertical tilt has enough movement to be recognized.
+    if (!flushPending && !this.#twoFingerTilt && !this.#twoFingerTransform
+      && !start.orthographic && Math.max(firstTravel, secondTravel) < 3) return;
+    // Near-vertical pointer streams are commonly delivered one contact at a
+    // time. Hold ambiguous samples until both fingers confirm tilt, the pair
+    // clearly expresses a different transform, or the gesture ends. This
+    // prevents a noisy early pan from being reset to the starting camera when
+    // a later sample finally qualifies as tilt.
+    // A lone leading finger also changes the pair's angle and spread, so close
+    // fingers can look like a twist before the partner's sample arrives. Keep
+    // holding until that lead is past the tilt intent threshold on its own.
+    const loneLead = Math.min(firstTravel, secondTravel) < 3
+      && Math.max(abs(firstY), abs(secondY)) < 12;
+    const clearlyComposed = !loneLead && (distanceChange >= 0.08 || rotationSize >= 0.18);
+    if (!flushPending && !this.#twoFingerTilt && !this.#twoFingerTransform
+      && !start.orthographic && verticalMotion && !tiltCandidate && !clearlyComposed
+      && !bothFingersPastIntentThreshold) return;
+    if (!this.#twoFingerTilt && !this.#twoFingerTransform && tiltCandidate) {
       this.#twoFingerTilt = Math.min(abs(firstY), abs(secondY)) >= 12;
       if (!this.#twoFingerTilt && !flushPending) return;
     }
     // Outside the deliberate parallel vertical 3D gesture, preserve the
     // combined native transform: pinch scale, twist rotation, and centroid
     // translation may all change together. A stationary anchor is valid.
+    if (!this.#twoFingerTilt) this.#twoFingerTransform = true;
     this.#renderer.setCamera(this.#twoFingerTilt
       ? { ...start, pitch: start.pitch - deltaY * 0.004 }
       : this.#renderer.cameraAfterPan({

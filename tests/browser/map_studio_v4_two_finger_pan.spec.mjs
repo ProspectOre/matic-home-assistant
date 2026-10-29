@@ -58,8 +58,11 @@ async function gesture(page, view, kind, delta = 60) {
       renderer.setCamera({ ...renderer.camera, yaw: 0.3, pitch: 1,
         distance: renderer.camera.distance * 0.7, targetX: 0, targetZ: 0 });
       const before = renderer.camera;
-      const first = kind === "largeGapStationary" ? [100, 320] : [320, 320];
-      const second = kind === "largeGapStationary" ? [700, 320] : [520, 320];
+      const first = kind === "largeGapStationary" ? [100, 320]
+        : kind === "angleWrap" ? [520, 320] : [320, 320];
+      const second = kind === "largeGapStationary" ? [700, 320]
+        : kind === "angleWrap" ? [320, 321.75]
+        : kind === "closeLeadTilt" ? [380, 320] : [520, 320];
       dispatch("pointerdown", 11, ...first);
       if (kind === "singlePan") {
         const samples = [];
@@ -93,6 +96,15 @@ async function gesture(page, view, kind, delta = 60) {
         return { before: joinCamera, samples: [after], mutations };
       }
       dispatch("pointerdown", 12, ...second);
+      if (kind === "angleWrap") {
+        second[1] = 318.25;
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const pending = renderer.camera;
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples: [pending, renderer.camera], mutations };
+      }
       if (kind === "largeGapStationary") {
         second[1] = 344;
         dispatch("pointermove", 12, ...second);
@@ -123,6 +135,25 @@ async function gesture(page, view, kind, delta = 60) {
         dispatch("pointerup", 12, ...second);
         return { before, samples, mutations, cancelledFrames };
       }
+      if (kind === "closeLeadTilt") {
+        // Close fingers make a lone 11px lead look like an 0.18rad twist.
+        first[1] = 331;
+        dispatch("pointermove", 11, ...first);
+        await frame();
+        const firstOnly = renderer.camera;
+        second[1] = 331;
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const aligned = renderer.camera;
+        first[1] = second[1] = 352;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const tilted = renderer.camera;
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples: [firstOnly, aligned, tilted], mutations };
+      }
       if (kind === "largeLeadTilt") {
         first[1] = 336;
         dispatch("pointermove", 11, ...first);
@@ -140,6 +171,63 @@ async function gesture(page, view, kind, delta = 60) {
         dispatch("pointerup", 11, ...first);
         dispatch("pointerup", 12, ...second);
         return { before, samples: [firstOnly, aligned, tilted], mutations };
+      }
+      if (kind === "noisyTilt") {
+        const samples = [];
+        for (const [firstX, firstY, secondX, secondY] of [
+          [315, 328, 525, 330],
+          [318, 334, 524, 338],
+          [318, 346, 524, 344],
+        ]) {
+          first[0] = firstX;
+          first[1] = firstY;
+          second[0] = secondX;
+          second[1] = secondY;
+          dispatch("pointermove", 11, ...first);
+          dispatch("pointermove", 12, ...second);
+          await frame();
+          samples.push(renderer.camera);
+        }
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples, mutations };
+      }
+      if (kind === "spreadThenParallel") {
+        const samples = [];
+        first[0] = 315;
+        first[1] = 333;
+        second[0] = 525;
+        second[1] = 333;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        samples.push(renderer.camera);
+        first[0] = 318;
+        first[1] = 353;
+        second[0] = 524;
+        second[1] = 353;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        samples.push(renderer.camera);
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples, mutations };
+      }
+      if (kind === "zeroJitterThenTilt" || kind === "horizontalJitterThenTilt") {
+        if (kind === "horizontalJitterThenTilt") first[0] += 1;
+        dispatch("pointermove", 11, ...first);
+        await frame();
+        const jitter = renderer.camera;
+        first[1] += 60;
+        second[1] += 60;
+        dispatch("pointermove", 11, ...first);
+        dispatch("pointermove", 12, ...second);
+        await frame();
+        const tilted = renderer.camera;
+        dispatch("pointerup", 11, ...first);
+        dispatch("pointerup", 12, ...second);
+        return { before, samples: [jitter, tilted], mutations };
       }
       if (kind === "shortVerticalRelease") {
         first[1] = second[1] = 328;
@@ -197,10 +285,9 @@ async function gesture(page, view, kind, delta = 60) {
         dispatch("pointermove", 11, ...first);
         dispatch("pointermove", 12, ...second);
         await frame();
-        const samples = [renderer.camera];
         dispatch("pointerup", 11, ...first);
         dispatch("pointerup", 12, ...second);
-        return { before, samples, mutations };
+        return { before, samples: [renderer.camera], mutations };
       }
       if (kind === "blurQueued") {
         first[1] = second[1] = 350;
@@ -344,6 +431,70 @@ test("a large one-finger lead stays buffered until the second finger confirms 3D
   expect(Math.abs(after.pitch - before.pitch)).toBeGreaterThan(0.02);
   expect(after.targetX).toBeCloseTo(before.targetX, 8);
   expect(after.targetZ).toBeCloseTo(before.targetZ, 8);
+  expect(mutations).toBe(0);
+});
+
+test("a lone lead between close fingers is not mistaken for a twist before 3D tilt", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "closeLeadTilt");
+  for (const sample of samples) {
+    expect(sample.targetX).toBeCloseTo(before.targetX, 8);
+    expect(sample.targetZ).toBeCloseTo(before.targetZ, 8);
+    expect(sample.yaw).toBeCloseTo(before.yaw, 8);
+    expect(sample.distance).toBeCloseTo(before.distance, 8);
+  }
+  expect(samples[0].pitch).toBeCloseTo(before.pitch, 8);
+  expect(samples[1].pitch).toBeCloseTo(before.pitch, 8);
+  expect(Math.abs(samples.at(-1).pitch - before.pitch)).toBeGreaterThan(0.05);
+  expect(mutations).toBe(0);
+});
+
+test("a slightly uneven parallel two-finger drag still tilts smoothly", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "noisyTilt");
+  expect(samples[0].pitch).toBeCloseTo(before.pitch, 8);
+  expect(samples[0].targetX).toBeCloseTo(before.targetX, 8);
+  expect(samples[0].targetZ).toBeCloseTo(before.targetZ, 8);
+  for (const sample of samples) {
+    expect(sample.targetX).toBeCloseTo(before.targetX, 8);
+    expect(sample.targetZ).toBeCloseTo(before.targetZ, 8);
+    expect(sample.yaw).toBeCloseTo(before.yaw, 8);
+    expect(sample.distance).toBeCloseTo(before.distance, 8);
+  }
+  expect(Math.abs(samples.at(-1).pitch - before.pitch)).toBeGreaterThan(0.05);
+  expect(mutations).toBe(0);
+});
+
+test("a composed vertical transform stays composed when finger spread settles", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "spreadThenParallel");
+  expect(samples[0].pitch).toBeCloseTo(before.pitch, 8);
+  expect(samples[1].pitch).toBeCloseTo(before.pitch, 8);
+  expect(samples[1].yaw).toBeCloseTo(before.yaw, 8);
+  expect(samples[0].distance).toBeLessThan(before.distance);
+  expect(samples[1].distance).toBeGreaterThan(samples[0].distance);
+  expect(mutations).toBe(0);
+});
+
+for (const kind of ["zeroJitterThenTilt", "horizontalJitterThenTilt"]) {
+  test(`${kind === "zeroJitterThenTilt" ? "a zero-delta move" : "one-pixel horizontal jitter"} does not preempt 3D tilt`, async ({ page }) => {
+    const { before, samples, mutations } = await gesture(page, "three", kind);
+    const [jitter, tilted] = samples;
+    expect(jitter.targetX).toBeCloseTo(before.targetX, 8);
+    expect(jitter.targetZ).toBeCloseTo(before.targetZ, 8);
+    expect(jitter.pitch).toBeCloseTo(before.pitch, 8);
+    expect(tilted.targetX).toBeCloseTo(before.targetX, 8);
+    expect(tilted.targetZ).toBeCloseTo(before.targetZ, 8);
+    expect(tilted.yaw).toBeCloseTo(before.yaw, 8);
+    expect(tilted.distance).toBeCloseTo(before.distance, 8);
+    expect(Math.abs(tilted.pitch - before.pitch)).toBeGreaterThan(0.15);
+    expect(mutations).toBe(0);
+  });
+}
+
+test("a small twist crossing the atan2 boundary stays small and does not jump", async ({ page }) => {
+  const { before, samples, mutations } = await gesture(page, "three", "angleWrap");
+  expect(samples[0].yaw).toBeCloseTo(before.yaw, 8);
+  expect(samples[0].pitch).toBeCloseTo(before.pitch, 8);
+  expect(Math.abs(samples[1].yaw - before.yaw)).toBeGreaterThan(0.01);
+  expect(Math.abs(samples[1].yaw - before.yaw)).toBeLessThan(0.03);
   expect(mutations).toBe(0);
 });
 
