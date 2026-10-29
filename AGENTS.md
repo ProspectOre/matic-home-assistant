@@ -4,10 +4,11 @@
 
 Follow the [review and manual-merge checklist](docs/maintenance-reviews.md). Every candidate requires an authentic complete Codex review bound to its exact head and intended base, meaningful required CI, finding dispositions and a designated-owner manual merge. The request coordinator and bespoke custom status gate are retired by owner approval. Request regular `@codex review` directly on each opened or pushed PR head; check existing requests to avoid duplicates. Preserve historical review gaps and keep runtime, physical, release and human approval boundaries separate.
 
-## Workspace and attribution
+## Workspace and writing
 
-- Inherit `/Users/alec/Dev/AGENTS.md` when present (native `xcode-tools` preference included); this file adds repository facts only.
-- No AI attribution: no AI co-author or `Assisted-by` trailers, agent session links, "Generated with/by" footers or AI sign-offs in commits, PR titles or bodies, reviews or comments; commit as the account owner; name branches by purpose. `.github/scripts/attribution.py` enforces it in Test.
+- Inherit the shared [AGENTS.md](https://github.com/ProspectOre/dev-workspace/blob/main/AGENTS.md) (`/Users/alec/Dev/AGENTS.md` when present; native `xcode-tools` preference included); this file adds repository facts only.
+- Before substantive work, at material milestones and at handoff, follow the canonical [Linear work-tracking workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/linear-work-tracking.md). When local ancestor or wiki files are absent, read the linked canonical sources through existing authorized session connectors as that workflow requires; report unavailable routes separately.
+- Write commits, PR text, reviews, comments and docs as plain, specific, human-quality prose: no AI slop such as filler, hype, restated summaries or decorative emoji. Attribution trailers and tool footers are tolerated here, overriding the shared rule, and nothing checks for them. Commit as the account owner; name branches by purpose.
 
 ## Release candidate cleanup
 

@@ -31,6 +31,6 @@ For a Home Assistant restart during a clean, see [restart recovery](restart-reco
 ## Technical reference
 
 [Actions](actions.md) · [Rooms with different settings in one run](mixed-room-missions.md) ·
-[Plan run contract](e2e-contract.md) · [Firmware compatibility](firmware-compatibility.md) ·
+[Plan run contract](e2e-contract.md) · [Roadmap](roadmap.md) · [Firmware compatibility](firmware-compatibility.md) ·
 [Robot protocol map](firmware-endpoint-map.md) · [Recording protocol](recording-protocol.md) ·
 [Contributing](../CONTRIBUTING.md) · [Security](../SECURITY.md)
