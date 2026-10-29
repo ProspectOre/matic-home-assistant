@@ -138,17 +138,20 @@ exercise missing behaviors rather than rerunning the entire historical matrix.
 
 ## Release decision
 
-The initial source-promotion audit found no new runtime implementation. The
-broader live audit then found PNG camera images advertised as JPEG, and the
-owner requested timing/display/control refinements. The revised runtime now has
-installed preservation, camera, frontend and Assist receipts. Broader physical,
-fault, device, notification and owner gates still prevent complete end-to-end
-certification.
+The final candidate adds [#331](https://github.com/ProspectOre/matic-home-assistant/pull/331)
+(large-floor capacity, bounded legacy-truncation recovery) and
+[#332](https://github.com/ProspectOre/matic-home-assistant/pull/332) (shared-schedule
+one-time mop requests, stable two-finger gestures). Both are source-tested only
+until the next RC is installed; the assembled #324 head needs a fresh complete review.
 
-Stable merge and publication remain held for completed qualification and the
-owner's walkthrough and fresh explicit approval. PR #324 stays draft until that
-decision. A published stable build still needs installation/version readback
-before it can be called installed. Track the outcome in
-[PRO-34](https://linear.app/prospectore/issue/PRO-34), and use the
-[review and manual-merge checklist](maintenance-reviews.md) for the final
-head/base, review, CI, finding dispositions, and owner merge decision.
+On October 28, 2026 (Pacific) the owner accepted as documented limits: spare-robot
+pairing/re-pair, Windows NVDA/High Contrast, a full restore drill, endurance and
+sustained resources (including the Android p95 miss), a real firmware-transition
+alert, model-selected Assist physical writes, the full live fault matrix, proof
+of complete recovery for maps truncated by earlier versions, and an installed
+large-map memory ceiling. Stable still requires, on the installed RC, exact-file
+readback, an iPhone gesture retest, a large-floor camera/3D check, one one-time
+Vacuum+Mop pass with due work, one room-plus-area plan run with its finish
+automations, the owner walkthrough and fresh explicit approval. Track it in
+[PRO-34](https://linear.app/prospectore/issue/PRO-34) and use the
+[review and manual-merge checklist](maintenance-reviews.md) for the merge.
