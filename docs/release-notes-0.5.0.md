@@ -45,12 +45,12 @@ your home.
   until you save or discard them.
 - **Rooms and custom areas together.** Draw a custom area, such as a rug or the
   spot by the litter box, and add it to any plan, or build a plan of areas only.
-  Each area runs as its own part with its own settings, so the robot returns to
-  the dock before the next room or area. Rooms that share settings run together;
-  a settings change starts a new part, and the robot may stop at the dock first.
+  Rooms next to each other run together as one part, each with its own settings,
+  though the robot may stop at the dock on its own to recharge or refill. Each
+  area runs as its own part, so the robot returns to the dock after an area
+  before the next room or area. With Smart Stop on, each room is its own part.
 - **Choose the order.** **Smart Order** gives the rooms and areas that have
-  waited longest an earlier turn. **Saved order** follows your sequence every
-  time.
+  waited longest an earlier turn. **Saved order** follows your sequence.
 - **Clean a few rooms now.** **Clean rooms** picks rooms for a one-time clean
   without saving a plan.
 - **Areas that survive map updates.** When the robot refines its map, saved
