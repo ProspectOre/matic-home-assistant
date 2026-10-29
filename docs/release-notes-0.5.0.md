@@ -20,8 +20,15 @@ Everyday control, maps, and plan storage remain local to your home.
   Photo and Room colors appearances. Selection stays in sync with the room list.
   Full map gives the floor more space while keeping status and controls nearby.
 - **Precise navigation.** Set map zoom from 100–1000%, choose a preset, or use
-  Fit map to recenter. Contextual help explains mouse, touch, and drawing controls.
-  The camera stays steady through updates, history browsing, and draft cancellation.
+  Fit map to recenter. On touch screens, one finger pans, pinch zooms, twist
+  rotates, and two fingers moving up or down together tilt the 3D view; a
+  gesture keeps its mode until you lift your fingers. Contextual help explains
+  mouse, touch, and drawing controls. The camera stays steady through updates,
+  history browsing, and draft cancellation.
+- **Large single-floor homes.** The photographic map and camera keep up to four
+  times as many map pages as before within a bounded memory budget. A map that
+  an earlier version cut short keeps its warning until the robot re-sends pages
+  that were missing; replaying only the surviving pages never clears it.
 
 ## Cleaning that follows your routine
 
@@ -33,8 +40,10 @@ Everyday control, maps, and plan storage remain local to your home.
   schedule names the affected plans and preserves their usual cleaning settings
   and cleaning history.
 - **Let a one-time clean do the due work.** Clean rooms can include an existing
-  shared schedule without creating a plan. Review each room's effective settings,
-  or turn off due work for that clean. Work you skip stays due.
+  shared schedule without creating a plan, including mop and vacuum-and-mop
+  requests. Review each room's effective settings, or turn off due work for that
+  clean. Work you skip stays due, and mop-only work never resets a due vacuum
+  rotation.
 - **Count confirmed work.** Partial, stopped, failed, or unconfirmed work does
   not advance room schedules. Vacuum rotations stay due until their requested
   coverage is confirmed. When firmware clears live goals after completion, the
@@ -121,7 +130,8 @@ some duplicate status and technical entities by default. The interface ships
 in English; layout support for other locales is not a translated catalog.
 
 This stable candidate builds on [RC43](release-notes-0.5.0-rc43.md) with the final
-timing, display, control-default, and camera corrections above. Dedicated
+timing, display, control-default, camera, touch-gesture, large-floor, and
+one-time due-work corrections above. Dedicated
 contextual Cleaning history is planned for 0.6; saved-map history and current run results remain available now.
 See [current qualification and its limits](verification-0.5-stable.md) for device,
 accessibility, Assist, notification-delivery, and final release acceptance status.
