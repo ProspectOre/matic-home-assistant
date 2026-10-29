@@ -13,7 +13,12 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
    A later `matic_robot_plan_docked` event
    upgrades a cancelled or unverified stop to `stopped_docked` only after the
    correlated final DOCK is accepted. `room_completed` is emitted only after
-   the existing native completion guard passes.
+   the existing native completion guard passes. A custom area in a plan is
+   its own native mission: `matic_robot_area_started` fires when it is
+   dispatched and `matic_robot_area_finished` when that owned session ends;
+   `matic_robot_area_failed` carries a `reason_code` such as
+   `native_task_taken_over`. Area results update area rotation history only,
+   never room schedules, and `room_count` in `plan_finished` counts rooms only.
 2. **Trigger provenance.** The run record carries the safe `trigger` label and
    Home Assistant service name. It never carries a context user ID, account
    name, or email. An OEM-app, physical, or robot-originated action remains
@@ -50,6 +55,7 @@ For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
 | Finish-current-room threshold | Policy decision, threshold/progress, and either room completion or cancelled stop | Credit only when native completion verification passes |
 | Recharge and resume | Suspended event, native recharge/resume transition, and resumed room timeline | A resumed room can complete; an unreconciled low-charge stop is `recharge_suspended` |
 | Mixed settings | Per-room settings, owned native session, and command timeline | Preserve per-room settings; verify completion for every requested mode |
+| Custom areas in a plan | `area_started` and `area_finished` per area in run order, the robot heading back to the dock between missions, then one `plan_finished` | Each area's own owned session ends; the robot's unnamed native area summary is not used for credit |
 | All selected rooms verify | `plan_finished: completed`, matching `run_id`, all room events | Credit verified rooms only |
 | Native session ends early | `plan_finished: unverified`, `partial_native_result`, `stopped_in_place`, or `unverified_completion` | Leave unverified rooms without completion credit; a known in-place stop is a controlled unverified result, not a generic service fault |
 | Delayed native history | Initial `unverified`/pending reconciliation, then exact room/run match or expiry | Award completion only on an exact match; cleaning opportunity is tracked separately |

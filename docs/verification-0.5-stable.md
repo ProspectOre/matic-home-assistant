@@ -1,6 +1,6 @@
 # Matic 0.5 stable qualification
 
-Updated October 27, 2026. This summary reconciles the current candidate with
+Updated October 29, 2026. This summary reconciles the current candidate with
 historical entries in the [acceptance matrix](acceptance-0.5.md). It preserves
 their evidence and limitations; it does not turn older observations into new tests.
 
@@ -138,20 +138,31 @@ exercise missing behaviors rather than rerunning the entire historical matrix.
 
 ## Release decision
 
-The final candidate adds [#331](https://github.com/ProspectOre/matic-home-assistant/pull/331)
-(large-floor capacity, bounded legacy-truncation recovery) and
-[#332](https://github.com/ProspectOre/matic-home-assistant/pull/332) (shared-schedule
-one-time mop requests, stable two-finger gestures). Both are source-tested only
-until the next RC is installed; the assembled #324 head needs a fresh complete review.
+RC44 (`v0.5.0-rc44`, commit `e911b11843e198181baa47f10c17451ef0835c6e`) is
+release/0.5-stable with #331 (large floors) and #332 (one-time mop with due
+work, stable two-finger gestures) plus the version bump. It had a clean Codex
+review and green hosted checks. On October 28 and 29, 2026 (Pacific) it was
+installed through HACS on the owner's Home Assistant after a fresh encrypted
+backup, and checked:
 
-On October 28, 2026 (Pacific) the owner accepted as documented limits: spare-robot
-pairing/re-pair, Windows NVDA/High Contrast, a full restore drill, endurance and
-sustained resources (including the Android p95 miss), a real firmware-transition
-alert, model-selected Assist physical writes, the full live fault matrix, proof
-of complete recovery for maps truncated by earlier versions, and an installed
-large-map memory ceiling. Stable still requires, on the installed RC, exact-file
-readback, an iPhone gesture retest, a large-floor camera/3D check, one one-time
-Vacuum+Mop pass with due work, one room-plus-area plan run with its finish
-automations, the owner walkthrough and fresh explicit approval. Track it in
-[PRO-34](https://linear.app/prospectore/issue/PRO-34) and use the
-[review and manual-merge checklist](maintenance-reviews.md) for the merge.
+- Readback: the loaded manifest is 0.5.0rc44, no Matic log errors, all 29
+  served frontend files and all 117 integration files match the tag.
+- iPhone: the owner retested two-finger gestures and reported them working.
+- Large floor: Full map, Photo 2D and 3D show all 12 rooms with 808 of 808
+  photo tiles and no truncation warning; Core memory stayed near 800 MiB.
+- One-time Vacuum+Mop with mop and vacuum rotation due (Dining Room): one room
+  confirmed, both counters reset, temporary schedules removed. An earlier
+  stopped attempt earned no credit. The mop-only rule is source-tested only.
+- Room plus area plan (Office, Litter Box): completed, robot docked. The owner
+  has no automations on finish events, so the events themselves were checked.
+- Three custom areas in one plan: each area started and finished in order with
+  one credit each and a dock return between areas; the plan completed.
+
+The owner accepted as documented limits: spare-robot pairing and re-pair,
+Windows NVDA and High Contrast, a full restore drill, endurance and sustained
+resources (including the Android p95 miss), a real firmware-transition alert,
+model-selected Assist physical writes, the full live fault matrix, complete
+recovery of maps truncated by earlier versions, and an installed large-map
+memory ceiling. Stable needs the owner's explicit approval and a manual merge
+of #324 after its review ([checklist](maintenance-reviews.md)); tracking is in
+[PRO-34](https://linear.app/prospectore/issue/PRO-34).

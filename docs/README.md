@@ -7,9 +7,11 @@
 
 | I want to… | Start here |
 | --- | --- |
-| Rotate fairly through rooms and save per-room settings | [Plans and rotation](cleaning.md#saved-plans) |
+| Rotate fairly through rooms and save per-room settings | [Plans and Smart Order](cleaning.md#saved-plans) |
+| Mix rooms and custom areas, and know when the robot docks | [How a plan runs](cleaning.md#how-a-plan-runs) |
+| Mop or deep-clean a room every few cleans | [Room schedules](room-schedules.md) |
 | Clean when I leave or another device triggers it | [Automations and blueprints](automation.md) |
-| Finish the active room before docking | [Stop policies](cleaning.md#stopping-a-plan) |
+| Finish the current room before docking | [Smart Stop](cleaning.md#stopping-a-plan) |
 | Draw reusable areas and use live maps | [Cleaning and maps](cleaning.md) |
 | Build a dashboard or use room statistics | [Entities](entities.md) |
 | Understand what actually finished | [Cleaning results](native-cleaning-results.md) |
@@ -17,7 +19,7 @@
 ## Setup and support
 
 [Install or update](../README.md#install) · [Pairing](hermes-pairing.md) ·
-[Compatibility](acceptance-0.4.md) · [Privacy](privacy.md)
+[Compatibility and tested limits](verification-0.5-stable.md) · [Privacy](privacy.md)
 
 For unexpected stops or docking, start with [activity diagnostics](activity-diagnostics.md).
 For a Home Assistant restart during a clean, see [restart recovery](restart-recovery.md).
