@@ -50,9 +50,9 @@ your home.
   own cleaning mode and coverage.
 - **How a plan runs.** Rooms next to each other run together as one part, each
   with its own settings; the robot may stop at the dock on its own to recharge
-  or refill. Each area runs as its own part, so the robot returns to the dock
-  after an area before the next room or area. With Smart Stop on, each room is
-  its own part.
+  or refill. Each area runs as its own part: the robot ends that task, often
+  heading back toward the dock, before it starts the next room or area. With
+  Smart Stop on, each room is its own part.
 - **Choose the order.** **Smart Order** gives the rooms and areas that have
   waited longest an earlier turn. **Saved order** follows your sequence.
 - **Clean a few rooms now.** **Clean rooms** picks rooms for a one-time clean
