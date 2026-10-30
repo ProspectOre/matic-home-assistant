@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
@@ -497,3 +498,25 @@ def test_readback_needs_every_required_goal_sent():
         dropped=set(),
         expected_order=[CURRENT],
     )
+
+
+def _held(goals):
+    return coverage_plan_goals(_readback(goals))
+
+
+def test_readback_compares_each_sent_goal_spec():
+    vacuum = _goal(CURRENT, str(UUID(int=1)), setting=0)
+    mop = _goal(CURRENT, str(UUID(int=2)), mode=1, setting=1)
+    sent = [vacuum, mop]
+
+    def matches(held):
+        return api_module._queue_readback_matches(
+            sent, _held(held), dropped=set(), expected_order=[CURRENT]
+        )
+
+    # The robot reports Heavy Duty vacuum and double-pass mop as setting 3.
+    assert matches([replace(vacuum, setting=3), replace(mop, setting=3)])
+    assert matches(sent)
+    assert not matches([replace(vacuum, setting=2), mop])
+    assert not matches([replace(vacuum, behavior=1), mop])
+    assert not matches([vacuum, replace(mop, mode=0, setting=3)])

@@ -246,20 +246,36 @@ def _queue_readback_matches(
     dropped: set[str],
     expected_order: list[str],
 ) -> bool:
-    """Match the plan after a queue change by round IDs and room order.
+    """Match the plan after a queue change by round IDs, specs and room order.
 
     The robot lists a room's behaviors in its own order and may leave out the
     last floor mop behavior, so the check compares rooms, not goal positions.
     """
-    held_rounds = {goal.round_id for goal in held}
-    if dropped & held_rounds:
+    held_rounds = {goal.round_id: goal.signature for goal in held}
+    if dropped & held_rounds.keys():
         return False
-    if any(
-        goal.round_id not in held_rounds
-        and (goal.floor, goal.mode, goal.behavior) != (0, 1, 3)
-        for goal in sent
-    ):
-        return False
+    for goal in sent:
+        signature = held_rounds.get(goal.round_id)
+        if signature is None:
+            if (goal.floor, goal.mode, goal.behavior) != (0, 1, 3):
+                return False
+            continue
+        # Heavy Duty vacuum and double-pass mop read back as setting 3.
+        region, setting, floor, mode, behavior = signature
+        if (region, floor, mode, behavior) != (
+            goal.region_id,
+            goal.floor,
+            goal.mode,
+            goal.behavior,
+        ) or (
+            setting != goal.setting
+            and (setting, goal.setting, mode)
+            not in {
+                (3, 0, 0),
+                (3, 1, 1),
+            }
+        ):
+            return False
     sent_rounds = {goal.round_id for goal in sent}
     return (
         _region_order([goal for goal in held if goal.round_id in sent_rounds])
