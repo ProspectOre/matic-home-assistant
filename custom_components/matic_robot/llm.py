@@ -170,6 +170,7 @@ _SAFE_EVENT_FIELDS = (
     "cleaning_mode",
     "coverage_setting",
     "reason_code",
+    "sensor",
     "cause",
     "error",
     "native_stop_reconciled",
