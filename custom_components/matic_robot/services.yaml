@@ -24,6 +24,15 @@ clean:
       selector:
         boolean:
 
+go_to_room:
+  target: *vacuum_target
+  fields:
+    room:
+      required: true
+      example: Kitchen
+      selector:
+        text:
+
 clean_room_sequence:
   target: *vacuum_target
   fields:

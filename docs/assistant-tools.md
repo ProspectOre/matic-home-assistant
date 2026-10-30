@@ -14,11 +14,15 @@ history, recent events and command activity (`MaticGetOperations`,
 `MaticGetRecentEvents`, `MaticGetActivity`, `MaticGetFirmware`). Its write tools
 use Matic Map's own actions and checks: `MaticRunPlan` (a plan name or the
 default plan), `MaticCleanRooms` (up to 100 room names and one cleaning mode;
-each room keeps its saved schedule), `MaticStopCleaning` and
+each room keeps its saved schedule), `MaticStopCleaning`,
 `MaticResetSchedule` (mopping or vacuum rotation progress for one room or a
-whole plan). When Matic Map would refuse, the tool returns the same reason
-instead. `MaticRunPlan` and `MaticCleanRooms` wait five seconds for an early
-refusal, then report that the run started; the run continues after the reply.
+whole plan), `MaticGoToRoom` (one room, using
+[Go to room](actions.md#go-to-room)) and `MaticSendToSink` (the
+[sink refill](actions.md#sink-refill)). When Matic Map would refuse, the tool
+returns the same reason instead. The last two also refuse while the robot is
+offline, still stopping or on an unconfirmed map, and relay the action's own
+refusal, such as no saved sink location. `MaticRunPlan` and `MaticCleanRooms`
+wait five seconds for an early refusal, then report that the run started; the run continues after the reply.
 Assist agents get these tools, prefixed `matic_robot__`, only for robots whose
 vacuum is exposed to Assist.
 
