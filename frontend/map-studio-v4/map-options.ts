@@ -121,6 +121,14 @@ export class MapOptions {
           ${detail("balanced", t("map_quality_balanced", "Balanced"))}
           ${detail("maximum", t("map_quality_maximum", "Maximum"))}
         </div>
+        ${state.dataMode === "live" ? html`<button
+          class="ms-row ms-row--menu"
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked=${String(state.trail?.id === "live")}
+          tabindex="-1"
+          @click=${() => intent({ type: "show-trail", trail: state.trail?.id === "live" ? null : "live" })}
+        ><span>${t("v4_robot_trail", "Robot trail")}</span><span class="ms-switch" aria-checked=${String(state.trail?.id === "live")} aria-hidden="true"></span></button>` : nothing}
         ${this.#zoom.available() ? html`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${() => this.#zoom.show()}>${t("v4_map_zoom", "Map zoom")}</button>` : nothing}
         <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${() => { this.menu.close(false); diagnostics(); }}>${t("v4_map_diagnostics", "Map diagnostics")}</button>
       </div>`}

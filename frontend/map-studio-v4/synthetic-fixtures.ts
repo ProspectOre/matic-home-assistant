@@ -9,6 +9,7 @@ import type {
   RoomCadenceProgress,
   SceneModel,
 } from "./backend-contracts";
+import type { RunHistory, RunTrail } from "./run-history-data";
 
 const SYNTHETIC_MAP_SESSION_KEY = "a".repeat(64);
 
@@ -232,6 +233,39 @@ export const syntheticPose = (): PoseModel => ({
   floorCoherent: true,
   mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
   freshness: "live",
+});
+
+// Cleaning history: the last run stopped early, an earlier one finished, and
+// one was started from the Matic app.
+export const syntheticRuns = (): RunHistory => ({
+  entryId: "synthetic-entry",
+  mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
+  robotHistory: true,
+  runs: [
+    {
+      id: "run-3", source: "home_assistant", startedAt: "2026-10-29T16:05:00+00:00", endedAt: "2026-10-29T16:41:00+00:00",
+      planName: "Daily clean", outcome: "not_finished", ending: "low_battery",
+      rooms: [{ name: "Kitchen", result: "completed" }, { name: "Living room", result: "interrupted" }, { name: "Office", result: "not_started" }],
+      areas: [], trail: "trail-3",
+    },
+    {
+      id: "run-2", source: "home_assistant", startedAt: "2026-10-28T16:00:00+00:00", endedAt: "2026-10-28T16:52:00+00:00",
+      planName: "Daily clean", outcome: "finished", ending: "finished",
+      rooms: [{ name: "Kitchen", result: "completed" }, { name: "Living room", result: "completed" }, { name: "Office", result: "completed" }],
+      areas: [], trail: null,
+    },
+    {
+      id: "robot-1", source: "robot", startedAt: "2026-10-27T09:12:00+00:00", endedAt: "2026-10-27T09:30:00+00:00",
+      planName: null, outcome: "unknown", ending: "unknown",
+      rooms: [{ name: "Bedroom", result: "partial" }], areas: [], trail: null,
+    },
+  ],
+});
+
+export const syntheticTrail = (): RunTrail => ({
+  id: "trail-3",
+  mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
+  segments: [[[1, 1], [3.5, 1], [3.5, 1.6], [1, 1.6], [1, 2.2], [3.5, 2.2], [4.6, 2.2], [6, 1.2], [7.8, 1.2]]],
 });
 
 // ---- 0.5 sign-off mockups (/map-studio-v4-mockups) ------------------------

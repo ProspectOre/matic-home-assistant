@@ -137,6 +137,7 @@ line-height: var(--ms-lh-snug);
   retry!: (event: Event) => void;
   _historyPreviewPosition: number | null = null;
   readonly #diagnostics = new LazyChunk(this, () => import("./diagnostics-panel"));
+  readonly #runHistory = new LazyChunk(this, () => import("./run-history"));
   #historySelectionKey = "";
 
   protected override willUpdate(changed: PropertyValues<this>): void {
@@ -192,6 +193,8 @@ line-height: var(--ms-lh-snug);
   }
 
 
+
+  readonly #emit = (intent: WorkspaceIntent): void => this.#intent(intent);
 
   #intent(intent: WorkspaceIntent): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_INTENT_EVENT, {
@@ -511,6 +514,12 @@ line-height: var(--ms-lh-snug);
     ></matic-map-diagnostics-v4>`;
   }
 
+  #runs() {
+    this.#runHistory.request();
+    if (this.#runHistory.status !== "ready") return chunkStatus(this.#runHistory.status, this.localize, this.retry);
+    return html`<matic-run-history-v4 .state=${this.state} .localize=${this.localize} .dates=${this.dates} .emit=${this.#emit}></matic-run-history-v4>`;
+  }
+
   protected override render() {
     switch (this.state.workflow) {
       case "rooms": return this.#rooms();
@@ -521,6 +530,7 @@ line-height: var(--ms-lh-snug);
       case "areaReview": return this.#areaReview();
       case "history": return this.#history();
       case "support": return this.#support();
+      case "runs": return this.#runs();
       case "none": return nothing;
     }
   }

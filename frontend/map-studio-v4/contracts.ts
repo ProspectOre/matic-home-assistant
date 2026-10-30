@@ -1,5 +1,6 @@
 import type { AreaOutline } from "./area-outline";
 import type { ManualRoomSequencePreview } from "./backend-contracts";
+import type { RunHistory, RunTrail } from "./run-history-data";
 export const MAP_ZOOM_MIN = 100;
 export const MAP_ZOOM_MAX = 1000;
 export const MAX_ROOM_SEQUENCE_SIZE = 100;
@@ -57,6 +58,7 @@ export type Workflow =
   | "areas"
   | "areaReview"
   | "history"
+  | "runs"
   | "support";
 
 export type CommandState = "idle" | "pending" | "starting" | "settling" | "failed";
@@ -157,6 +159,7 @@ export interface WorkspaceResources {
   readonly history: ResourceState<HistoryCatalog>;
   readonly plans: ResourceState<PlansCatalog>;
   readonly areas: ResourceState<AreasCatalog>;
+  readonly runs: ResourceState<RunHistory>;
 }
 
 export interface AdmittedManualRoomPreview {
@@ -320,6 +323,8 @@ export interface WorkspaceState {
   readonly deepMop: RobotSetting | null;
   readonly lastRun: ManagedRunSummary | null;
   readonly smartStop: SmartStopStatus | null;
+  /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
+  readonly trail: RunTrail | null;
   readonly pageActive: boolean;
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;
   readonly draftFloorOrdinal: number | null;
@@ -468,7 +473,9 @@ export type WorkspaceIntent =
   | { readonly type: "return-live" }
   | { readonly type: "set-home-pin"; readonly pin: HomePin; readonly pinned: boolean }
   | { readonly type: "move-home-pin"; readonly pin: HomePin; readonly direction: -1 | 1 }
-  | { readonly type: "reload-home-pins" };
+  | { readonly type: "reload-home-pins" }
+  /** Draws a trail on the map, `live` for the run in progress; null hides it. */
+  | { readonly type: "show-trail"; readonly trail: string | null };
 
 /** A saved plan or custom area shown on home as a one-tap shortcut. */
 export interface HomePin {
@@ -668,6 +675,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-home-pin": true,
   "move-home-pin": true,
   "reload-home-pins": true,
+  "show-trail": true,
 };
 
 export const isWorkspaceIntent = (value: unknown): value is WorkspaceIntent => {

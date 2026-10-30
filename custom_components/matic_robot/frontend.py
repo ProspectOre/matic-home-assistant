@@ -18,6 +18,7 @@ from .floor_layers import MaticFloorLayersView
 from .slam_scene import (
     MaticAreasView,
     MaticPlansView,
+    MaticRunHistoryView,
     MaticSlamCatalogView,
     MaticSlamDeltaView,
     MaticSlamHistorySceneView,
@@ -114,6 +115,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticSlamCatalogView(scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
+    hass.http.register_view(MaticRunHistoryView)
     hass.http.register_view(MaticWifiHeatmapView)
     hass.http.register_view(floor_layers_view)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)

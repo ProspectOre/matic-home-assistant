@@ -389,7 +389,7 @@ test("an area delete asked for while an area save loads is refused", async ({ pa
   expect(result).toEqual({ writes: ["save"], notice: "v4_notice_area_saved" });
 });
 
-for (const scenario of ["draw", "history"]) {
+for (const scenario of ["draw", "history", "runs"]) {
 for (const change of ["user", "robot", "access", "removed"]) {
   test(`clears private ${scenario} state when ${change} changes`, async ({ page }) => {
     await loadQualityModules(page);
@@ -401,11 +401,11 @@ for (const change of ["user", "robot", "access", "removed"]) {
       const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
       effects.sync(projection);
       effects.sync({ ...projection, ...(change === "user" ? { userKey: "two" } : change === "robot" ? { entryKey: "other" } : { host: { ...initial.host, ...(change === "removed" ? { robotCount: 0 } : { administrator: false }) } }) });
-      const result = { circles: store.value.draw.circles, undo: store.value.draw.undo, areaName: store.value.areaDraft.name, planName: store.value.planDraft.name, rooms: store.value.selection.roomSettings, workflow: store.value.workflow, dataMode: store.value.dataMode, label: store.value.floor.displayName, readOnly: store.value.floor.readOnly };
+      const result = { circles: store.value.draw.circles, undo: store.value.draw.undo, areaName: store.value.areaDraft.name, planName: store.value.planDraft.name, rooms: store.value.selection.roomSettings, workflow: store.value.workflow, dataMode: store.value.dataMode, label: store.value.floor.displayName, readOnly: store.value.floor.readOnly, trail: store.value.trail };
       effects.dispose();
       return result;
     }, { change, scenario });
-    expect(result).toEqual({ circles: [], undo: [], areaName: "", planName: "", rooms: [], workflow: "none", dataMode: "live", label: "Current floor", readOnly: false });
+    expect(result).toEqual({ circles: [], undo: [], areaName: "", planName: "", rooms: [], workflow: "none", dataMode: "live", label: "Current floor", readOnly: false, trail: null });
   });
 }
 

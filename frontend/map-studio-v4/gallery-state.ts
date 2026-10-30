@@ -21,7 +21,9 @@ import {
   syntheticHistory,
   syntheticPlans,
   syntheticPose,
+  syntheticRuns,
   syntheticScene,
+  syntheticTrail,
 } from "./synthetic-fixtures";
 
 export type GalleryScenario =
@@ -65,6 +67,7 @@ export type GalleryScenario =
   | "area-review-rebind"
   | "area-review-stale"
   | "support"
+  | "runs"
   | "full-map"
   | "full-map-cleaning"
   | "full-map-locating"
@@ -134,6 +137,7 @@ const verified = (): WorkspaceState => ({
     history: { status: "ready", value: syntheticHistory(), problem: null },
     plans: { status: "ready", value: syntheticPlans(), problem: null },
     areas: { status: "ready", value: syntheticAreas(), problem: null },
+    runs: { status: "ready", value: syntheticRuns(), problem: null },
   },
   // A user whose default plan was seeded as their first home shortcut.
   homePins: { status: "ready", pins: [{ kind: "plan", id: "daily" }] },
@@ -704,6 +708,8 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
     }
     case "support":
       return { ...state, workflow: "support" };
+    case "runs":
+      return { ...state, workflow: "runs", trail: syntheticTrail() };
     case "full-map":
       return { ...state, fullMap: true };
     case "full-map-cleaning":
@@ -1034,6 +1040,7 @@ export const GALLERY_SCENARIOS: readonly GalleryScenario[] = [
   "area-review-rebind",
   "area-review-stale",
   "support",
+  "runs",
   "full-map",
   "full-map-cleaning",
   "full-map-locating",

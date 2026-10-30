@@ -93,6 +93,12 @@ from .coverage_accounting import (
 )
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
+from .run_history import (
+    append_run_history,
+    history_entries,
+    repair_run_history,
+    update_run_history,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _MetadataResult = TypeVar("_MetadataResult")
@@ -4856,6 +4862,9 @@ class CleaningPlanManager:
                 ),
             }
         )
+        if terminal_activity is not None and not docked:
+            last_run["terminal_activity"] = terminal_activity[:64]
+        append_run_history(robot, last_run)
         last_run.pop("recovery_checkpoint", None)
         last_run.pop("native_reconciled_completion", None)
         last_run.pop("recovery_status", None)
@@ -4863,8 +4872,6 @@ class CleaningPlanManager:
         active = robot.get("active_plan")
         if isinstance(active, dict) and active.get("run_id") == run_id:
             robot["active_plan"] = None
-        if terminal_activity is not None and not docked:
-            last_run["terminal_activity"] = terminal_activity[:64]
         try:
             await self._store.async_save(self._data)
         finally:
@@ -4920,6 +4927,15 @@ class CleaningPlanManager:
                     "docked_at": now,
                     "provenance": provenance,
                 }
+            )
+            update_run_history(
+                robot,
+                run_id,
+                {
+                    "outcome": "stopped_docked",
+                    "reason_code": "stopped_docked",
+                    "terminal_activity": "docked",
+                },
             )
             if stop_fence_token is not None:
                 self.clear_stop_pending(serial_number)
@@ -5794,6 +5810,18 @@ class CleaningPlanManager:
             "status": active["status"],
             **_room_timing(robot, active, dt_util.utcnow()),
         }
+
+    def run_history(
+        self,
+        serial_number: str,
+        native: Sequence[CleaningSessionRecord] = (),
+    ) -> list[dict[str, Any]]:
+        """Return recent runs, newest first, with robot-started sessions merged in."""
+        return history_entries(
+            self._robot(serial_number),
+            native,
+            manual=_is_manual_room_sequence_plan_id,
+        )
 
     def snapshot(self, serial_number: str) -> dict[str, Any]:
         """Return compact, automation-friendly plan and room history state."""
@@ -7060,6 +7088,7 @@ def _repair_native_reconciled_run(
                 "cause": "verified_completion",
             }
         )
+    repair_run_history(robot, last_run, pending.get("room"))
 
 
 def _record_native_completion(
