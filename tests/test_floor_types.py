@@ -131,6 +131,19 @@ def test_outlines_stop_at_the_point_budget_largest_first() -> None:
     assert MAX_FLOOR_TYPE_POINTS > 5
 
 
+def test_a_class_with_too_many_edges_is_skipped() -> None:
+    cells = _blank()
+    cells[::4, ::4] = SemanticKind.CARPET
+    cells[0:8, 0:8] = SemanticKind.VENT
+    with patch(
+        "custom_components.matic_robot.client.floor_types.MAX_FLOOR_TYPE_EDGES", 100
+    ):
+        layer = floor_type_layer([_page(cells)], mission=MISSION)
+    assert layer.truncated
+    assert layer.layers["carpet"] == ()
+    assert len(layer.layers["vent"]) == 1
+
+
 def test_page_and_raster_bounds_are_enforced() -> None:
     cells = _blank()
     with (
@@ -228,6 +241,35 @@ async def test_view_reports_unavailable_when_the_read_fails() -> None:
         runtime = _runtime(read=AsyncMock(side_effect=error))
         response = await MaticFloorLayersView().get(_request(runtime), "entry")
         assert response.status == 503
+
+
+async def test_view_discards_a_layer_read_across_a_floor_change() -> None:
+    runtime = _runtime()
+    view = MaticFloorLayersView()
+    request = _request(runtime)
+    hass = request.app[KEY_HASS]
+    reads = runtime.client.async_get_tracked_collection_entries.side_effect
+
+    async def change_floor(name, limit):
+        runtime.slam_map.mission_identity = SlamMapIdentity("other", 7)
+        return reads(name, limit)
+
+    runtime.client.async_get_tracked_collection_entries.side_effect = change_floor
+    assert (await view.get(request, "entry")).status == 409
+
+    replaced = _runtime()
+    runtime.client.async_get_tracked_collection_entries.side_effect = reads
+
+    async def replace_runtime(name, limit):
+        hass.config_entries.async_get_entry.return_value = SimpleNamespace(
+            domain=DOMAIN, state=ConfigEntryState.LOADED, runtime_data=replaced
+        )
+        return reads(name, limit)
+
+    runtime.slam_map.mission_identity = SlamMapIdentity(MISSION, 0x1234ABCD)
+    runtime.client.async_get_tracked_collection_entries.side_effect = replace_runtime
+    assert (await view.get(request, "entry")).status == 409
+    assert view._cache == {}
 
 
 async def test_concurrent_requests_share_one_read() -> None:

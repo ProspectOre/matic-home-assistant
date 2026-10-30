@@ -86,6 +86,16 @@ class MaticFloorLayersView(HomeAssistantView):
                         status=HTTPStatus.SERVICE_UNAVAILABLE,
                         headers=PRIVATE_NO_STORE_HEADERS,
                     )
+                # The robot can change floors during the reads; a layer built
+                # for the old floor must not be served or cached for the new.
+                current = _runtime_for_entry(hass, entry_id)
+                if (
+                    current is not runtime
+                    or runtime.slam_map.mission_identity != identity
+                ):
+                    return web.Response(
+                        status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+                    )
                 cached = _CachedLayers(mission_id, monotonic(), layer)
                 self._cache[entry_id] = cached
         return self.json(

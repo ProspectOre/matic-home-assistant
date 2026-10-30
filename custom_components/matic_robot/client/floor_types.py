@@ -33,6 +33,10 @@ _CELL_GROUP = 2
 # noise rather than a rug or a vent.
 _MIN_GROUPED_CELLS = 4
 MAX_FLOOR_TYPE_POINTS = 40_000
+# Tracing builds every boundary edge before specks are dropped. A real home's
+# rugs and vents have a few thousand edges at 3 cm; a class with more than
+# this is noise, so it is skipped rather than traced.
+MAX_FLOOR_TYPE_EDGES = 200_000
 
 
 class SemanticKind(IntEnum):
@@ -136,6 +140,12 @@ def _outlines(
     )
     if not grouped.any():
         return (), budget, False
+    padded = np.pad(grouped, 1)
+    edges = int(np.count_nonzero(padded[1:, :] != padded[:-1, :])) + int(
+        np.count_nonzero(padded[:, 1:] != padded[:, :-1])
+    )
+    if edges > MAX_FLOOR_TYPE_EDGES:
+        return (), budget, True
     contours = [
         contour
         for contour in _mask_contours(grouped)
