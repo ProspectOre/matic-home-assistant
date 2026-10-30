@@ -65,7 +65,10 @@ async def async_setup_entry(
 ) -> None:
     """Set up verified Matic settings."""
     async_add_entities(
-        MaticSettingSwitch(entry, description) for description in DESCRIPTIONS
+        [
+            *(MaticSettingSwitch(entry, description) for description in DESCRIPTIONS),
+            MaticWifiSurveySwitch(entry),
+        ]
     )
 
 
@@ -131,3 +134,30 @@ class MaticSettingSwitch(MaticEntity, SwitchEntity):
                 translation_key="setting_unconfirmed",
             ) from None
         await self.coordinator.async_request_full_refresh()
+
+
+class MaticWifiSurveySwitch(MaticEntity, SwitchEntity):
+    """Opt in to Wi-Fi scans that build the Matic Map signal layer."""
+
+    _attr_translation_key = "wifi_survey"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._survey = entry.runtime_data.wifi_survey
+        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_wifi_survey"
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether the survey is sampling."""
+        return self._survey.enabled
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        """Start scanning while the robot is off the dock."""
+        self._survey.set_enabled(True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        """Stop scanning; collected cells are kept."""
+        self._survey.set_enabled(False)
+        self.async_write_ha_state()

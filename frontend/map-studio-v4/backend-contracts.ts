@@ -30,6 +30,8 @@ export interface MapEntry {
   readonly historyUrl: string;
   readonly areasUrl: string;
   readonly plansUrl: string;
+  /** Absent on integrations without the Wi-Fi survey. */
+  readonly wifiHeatmapUrl: string | null;
   readonly mapRevision: number;
   readonly mapSceneEpoch: string | null;
   readonly mapFloorCoherent: boolean;
@@ -116,6 +118,8 @@ export interface PoseModel {
   readonly freshness: "live" | "coordinator_fallback" | "unavailable";
   /** Native observation age; undefined only for pre-age-field responses. */
   readonly nativeObservationAgeSeconds?: number | null;
+  /** Map-frame yaw in radians when the pose carried a rotation. */
+  readonly heading?: number | null;
 }
 
 export interface HistorySnapshot {
@@ -165,10 +169,21 @@ export interface SavedArea {
   readonly canRebind: boolean;
 }
 
+/** A zone the robot keeps, in map metres, and what it overlaps. */
+export interface MapZoneOverlay {
+  readonly kind: "no_go" | "unknown";
+  readonly outline: readonly (readonly [number, number])[];
+  readonly holes: readonly (readonly (readonly [number, number])[])[];
+  readonly roomIds: readonly string[];
+  readonly areaIds: readonly string[];
+}
+
 export interface AreasCatalog {
   readonly sceneUrl: string;
   readonly rooms: readonly MapRoom[];
   readonly areas: readonly SavedArea[];
+  /** Robot zones on this map; empty when an older backend omits them. */
+  readonly zones: readonly MapZoneOverlay[];
   /**
    * The area the "Custom cleaning area" select and Clean custom area button
    * use (`selected_area`); null when none is selected or an older backend omits it.
@@ -469,6 +484,9 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
       historyUrl: privatePath(entry.history_url, "invalid-history-url"),
       areasUrl: privatePath(entry.areas_url, "invalid-areas-url"),
       plansUrl: privatePath(entry.plans_url, "invalid-plans-url"),
+      wifiHeatmapUrl: entry.wifi_heatmap_url === undefined || entry.wifi_heatmap_url === null
+        ? null
+        : privatePath(entry.wifi_heatmap_url, "invalid-wifi-heatmap-url"),
       mapRevision,
       mapSceneEpoch: selectedId(entry.map_scene_epoch, "invalid-scene-epoch"),
       mapFloorCoherent: booleanValue(entry.map_floor_coherent, "invalid-floor-coherence"),
@@ -872,6 +890,12 @@ export const parsePose = (value: unknown): PoseModel => {
     mapSessionKey: mapSessionKey(payload.map_session_key),
     freshness,
     ...(nativeObservationAgeSeconds === undefined ? {} : { nativeObservationAgeSeconds }),
+    // An unreadable heading falls back to the plain dot instead of dropping
+    // an otherwise valid position.
+    heading: position !== null && typeof payload.heading === "number"
+      && Number.isFinite(payload.heading) && Math.abs(payload.heading) <= Math.PI + 1e-3
+      ? payload.heading
+      : null,
   };
 };
 

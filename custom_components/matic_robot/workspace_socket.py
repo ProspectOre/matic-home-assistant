@@ -56,6 +56,11 @@ def _coordinator_recovery_reason(coordinator: Any) -> RecoveryReason:
     return "snapshot_required"
 
 
+def _coordinator_zones(coordinator: Any) -> object:
+    telemetry = getattr(getattr(coordinator, "data", None), "telemetry", None)
+    return getattr(telemetry, "zones", ())
+
+
 def _next_resource_revision(current: int) -> int:
     """Advance a JSON-safe, bounded resource revision."""
     return min(MAX_RESOURCE_REVISION, max(0, current) + 1)
@@ -235,6 +240,7 @@ class WorkspaceSocket:
         coordinator = getattr(runtime, "coordinator", None)
         if coordinator is not None:
             tracked.source_state["coordinator"] = self._coordinator_state(coordinator)
+            tracked.source_state["zones"] = _coordinator_zones(coordinator)
             revisions = self._resource_revisions.setdefault(entry_id, {})
             revisions.update({"status": 0, "robot_state": 0})
             add_listener = getattr(coordinator, "async_add_listener", None)
@@ -344,6 +350,12 @@ class WorkspaceSocket:
             resources.append("status")
         if previous is None or current[1] != previous[1]:
             resources.append("robot_state")
+        # Robot zones ride the areas view; a zone drawn in the Matic app
+        # reaches an open map through this revision.
+        zones = _coordinator_zones(coordinator)
+        if zones != tracked.source_state.get("zones"):
+            resources.append("areas")
+        tracked.source_state["zones"] = zones
         if resources:
             self._invalidate(entry_id, resources)
         self._async_scene_changed(entry_id)

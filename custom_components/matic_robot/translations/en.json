@@ -238,6 +238,11 @@
     "v4_robot_position_verified": "The robot's position is confirmed.",
     "v4_room_colours": "Room colors",
     "v4_room_names": "Room names",
+    "v4_wifi_signal": "Wi-Fi signal",
+    "v4_wifi_signal_failed": "Couldn't load the survey",
+    "v4_wifi_signal_legend": "Green is strong, red is weak",
+    "v4_wifi_signal_waiting": "No samples yet · they arrive during cleaning",
+    "v4_wifi_signal_off": "Turn on Wi-Fi survey in the robot's settings",
     "v4_room_limit_reached": "Up to {limit} rooms fit in one clean, so remove one to add another.",
     "v4_rooms_selected": "{count} selected",
     "v4_rooms_to_clean": "Rooms to clean",
@@ -606,6 +611,7 @@
     "v4_no_areas_hint": "Draw an area on the map to clean just that spot.",
     "v4_area_row_check": "Map changed · Check it before cleaning",
     "v4_area_row_redraw": "Redraw it before cleaning",
+    "v4_zone_overlap": "Overlaps a no-go zone · Matic skips that part",
     "v4_reason_check_area": "Can't clean this area until you check it.",
     "v4_clean_named_area": "Clean {area}",
     "v4_shortcuts_unavailable": "Home Assistant couldn't load your home shortcuts.",
@@ -657,7 +663,46 @@
     "v4_live_map_read_only_title": "Map is read only",
     "v4_smart_stop_checking_home": "Before returning to the dock.",
     "v4_live_read_only_held_reason": "Cleaning is unavailable while the map is read only.",
-    "v4_returning_held_reason": "Wait until the robot returns to the dock before starting another clean."
+    "v4_returning_held_reason": "Wait until the robot returns to the dock before starting another clean.",
+    "v4_run_clean": "Clean",
+    "v4_run_time_unknown": "Time not reported",
+    "v4_run_running": "In progress",
+    "v4_run_finished": "Finished",
+    "v4_run_stopped": "Stopped before it finished",
+    "v4_run_smart_stop": "Smart Stop ended it after the current room",
+    "v4_run_replaced": "Another clean took over",
+    "v4_run_low_battery": "Stopped because the battery was low",
+    "v4_run_robot_problem": "The robot reported a problem",
+    "v4_run_taken_over": "The robot started a different task",
+    "v4_run_home_assistant": "Home Assistant restarted during the clean",
+    "v4_run_interrupted": "Interrupted before it finished",
+    "v4_run_not_finished": "Didn't finish; the reason wasn't reported",
+    "v4_run_unknown": "Result not reported",
+    "v4_run_next_battery": "Let the robot charge, then clean the rest.",
+    "v4_run_next_problem": "Check the robot, then clean the rest.",
+    "v4_run_next_unfinished": "Rooms and areas that didn't finish weren't marked as cleaned.",
+    "v4_run_item_completed": "Done",
+    "v4_run_item_partial": "Partly done",
+    "v4_run_item_stopped": "Stopped",
+    "v4_run_item_interrupted": "Interrupted",
+    "v4_run_item_problem": "Problem",
+    "v4_run_item_unconfirmed": "Not confirmed",
+    "v4_run_item_running": "In progress",
+    "v4_run_item_not_started": "Not started",
+    "v4_run_item_unknown": "Not reported",
+    "v4_run_from_robot": "Started from the Matic app or the robot",
+    "v4_run_rooms_unknown": "Rooms not reported",
+    "v4_run_show_trail": "Show trail on map",
+    "v4_runs_unavailable": "Cleaning history isn't available right now.",
+    "v4_runs_loading": "Loading cleaning history…",
+    "v4_runs_robot_unavailable": "Cleans started from the Matic app can't be read right now.",
+    "v4_runs_empty": "No cleans yet. Each clean appears here once it starts.",
+    "v4_runs_earlier": "Earlier",
+    "v4_cleaning_history": "Cleaning history",
+    "v4_runs_last_unfinished": "The last run didn't finish. See what happened.",
+    "v4_runs_quick_detail": "See recent cleans and how they ended.",
+    "v4_robot_trail": "Robot trail",
+    "v4_notice_trail_unavailable": "That trail isn't available on this map."
   },
   "config": {
     "flow_title": "{name}",
@@ -956,6 +1001,7 @@
         "map_integrated": "Structural map",
         "map_semantics": "Map labels",
         "map_semantics_override": "Edited map labels",
+        "map_vents": "Vents",
         "matter_pairing_state": "Matter pairing",
         "planned_path": "Planned path",
         "petwaste_enabled_state": "Pet-waste avoidance",
@@ -972,7 +1018,9 @@
         "voice_enabled_state": "Cues voice assistant",
         "water_flow_override_state": "Mopping water flow",
         "wifi_status": "Wi-Fi status",
-        "zones": "Areas saved on the robot"
+        "zones": "Areas saved on the robot",
+        "bag_pass_status": "Bag pass",
+        "recap_history": "Monthly recaps"
       }
     },
     "run_behavior": {
@@ -1026,6 +1074,12 @@
       "problem": {
         "name": "Problem"
       },
+      "bag_full": {
+        "name": "Bag full"
+      },
+      "bag_missing": {
+        "name": "Bag missing"
+      },
       "diagnostic_upload": {
         "name": "Diagnostic upload",
         "state": {
@@ -1042,6 +1096,9 @@
       },
       "following_person": {
         "name": "Following a person"
+      },
+      "maintenance_suggested": {
+        "name": "Maintenance suggested"
       }
     },
     "button": {
@@ -1059,6 +1116,9 @@
       },
       "clean_selected_area": {
         "name": "Clean custom area"
+      },
+      "clear_wifi_survey": {
+        "name": "Clear Wi-Fi survey"
       }
     },
     "calendar": {
@@ -1137,6 +1197,15 @@
           "thinking_for_intent": "Working out the command",
           "classified": "Command understood",
           "rejected": "Command not understood"
+        }
+      },
+      "robot_alert": {
+        "name": "Robot alert",
+        "state": {
+          "none": "None",
+          "bag_full": "Bag is full",
+          "bag_missing": "Bag is missing",
+          "unknown": "Unknown alert"
         }
       },
       "cues_gesture_status": {
@@ -1241,6 +1310,9 @@
       },
       "current_room_estimated_progress": {
         "name": "Current room estimated progress"
+      },
+      "bag_pass_expires": {
+        "name": "Bag pass ends"
       }
     },
     "switch": {
@@ -1255,6 +1327,9 @@
       },
       "voice_assistant": {
         "name": "Cues voice assistant"
+      },
+      "wifi_survey": {
+        "name": "Wi-Fi survey"
       }
     },
     "event": {
@@ -1585,6 +1660,14 @@
         }
       }
     },
+    "robot_alert_bag_full": {
+      "title": "{name}: the bag is full",
+      "description": "Insert a new bag and close the lid. {name} resumes cleaning once the lid is closed. This Repair clears when the robot stops reporting a full bag."
+    },
+    "robot_alert_bag_missing": {
+      "title": "{name}: the bag is missing",
+      "description": "Fully insert a bag, then close the lid. This Repair clears when the robot detects the bag."
+    },
     "time_zone_mismatch": {
       "title": "{name} uses a different time zone",
       "description": "{name} keeps its schedules in {robot_time_zone} time, but Home Assistant uses {home_time_zone}. The robot starts each schedule on that clock, so it can run at a different hour than you expect. Change the time zone in the Matic app, or Home Assistant's under Settings > System > General. This Repair clears once the two match."
@@ -1592,6 +1675,10 @@
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
       "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean custom area, then confirm or redraw it."
+    },
+    "maintenance_suggested": {
+      "title": "{name}: maintenance suggested",
+      "description": "The robot's cleaning recap for {month} suggests maintenance. The Matic app's maintenance guide shows how to check the brush roll, side brush, mop roll, and caster and wedge. This notice clears when a newer recap no longer suggests maintenance. Open the [device page]({device_url}) to see the Maintenance suggested sensor."
     }
   },
   "services": {

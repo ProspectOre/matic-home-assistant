@@ -1,5 +1,5 @@
 import type { AreaOutline } from "./area-outline";
-import { MAX_ROOM_SEQUENCE_SIZE, type HassLike } from "./contracts";
+import { MAX_ROOM_SEQUENCE_SIZE, type HassLike, type WifiSignalLayer } from "./contracts";
 import {
   areaCatalogHelpers,
   CATALOG_URL,
@@ -38,6 +38,7 @@ const REQUEST_TIMEOUTS = {
   delta: 35_000,
   pose: 10_000,
   history: 15_000,
+  runs: 25_000,
   workflow: 15_000,
   mutation: 20_000,
 } as const;
@@ -377,6 +378,12 @@ export class MaticBackend {
     return parseHistoryCatalog(await this.#json("history", path, REQUEST_TIMEOUTS.history, signal));
   }
 
+  /** Cleaning history, or one trail; run-history-data.ts decodes it. */
+  async runs(entryId: string, trail: string | null, signal?: AbortSignal): Promise<unknown> {
+    const query = trail ? `?trail=${encodeURIComponent(trail)}` : "";
+    return this.#json("runs", `/api/matic_robot/runs/${encodeURIComponent(entryId)}${query}`, REQUEST_TIMEOUTS.runs, signal);
+  }
+
   async plans(path: string, signal?: AbortSignal): Promise<PlansCatalog> {
     return parsePlansCatalog(await this.#json("plans", path, REQUEST_TIMEOUTS.workflow, signal));
   }
@@ -388,6 +395,14 @@ export class MaticBackend {
       this.#json("areas", path, REQUEST_TIMEOUTS.workflow, signal),
     ]);
     return parseAreasCatalog(value, areaCatalogHelpers, geometry);
+  }
+
+  async wifiSignal(path: string, signal?: AbortSignal): Promise<WifiSignalLayer> {
+    const [{ parseWifiSignal }, value] = await Promise.all([
+      import("./wifi-signal"),
+      this.#json("wifiSignal", path, REQUEST_TIMEOUTS.workflow, signal),
+    ]);
+    return parseWifiSignal(value);
   }
 
   async previewRoomSequence(

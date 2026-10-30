@@ -12,6 +12,7 @@ import pytest
 from google.protobuf.message import DecodeError
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.matic_robot.client.api import MaticHermesClient
@@ -35,7 +36,11 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.coordinator import MaticCoordinator, MaticCuesEvent
+from custom_components.matic_robot.coordinator import (
+    MaticCoordinator,
+    MaticCuesEvent,
+    async_delete_robot_alert_issues,
+)
 
 
 def _client() -> AsyncMock:
@@ -2329,3 +2334,65 @@ async def test_retired_watcher_finishes_after_subscription_ends(hass, watcher) -
     client.async_subscribe_collection_entries = subscription
     client.async_subscribe_state = subscription
     await asyncio.wait_for(getattr(coordinator, watcher)(), 0.5)
+
+
+async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
+    coordinator = _coordinator(hass, _client())
+    base = (await coordinator._async_update_data()).operational
+    registry = ir.async_get(hass)
+    issue = "robot_alert_bag_full_entry"
+
+    clock = [datetime(2026, 10, 30, 3, 0, tzinfo=UTC)]
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        side_effect=lambda: clock[0],
+    ):
+        coordinator._async_track_alerts(replace(base, error_codes=(206, 304)))
+        assert registry.async_get_issue(DOMAIN, issue) is not None
+        clock[0] = datetime(2026, 10, 30, 3, 1, tzinfo=UTC)
+        coordinator._async_track_alerts(replace(base, error_codes=(304, 207)))
+        assert registry.async_get_issue(DOMAIN, issue) is None
+        clock[0] = datetime(2026, 10, 30, 3, 2, tzinfo=UTC)
+        coordinator._async_track_alerts(replace(base, error_codes=()))
+        clock[0] = datetime(2026, 10, 30, 3, 3, tzinfo=UTC)
+        coordinator._async_track_alerts(replace(base, error_codes=(207,)))
+
+    # 304 ran on from 03:00 without restarting; 207 cleared and came back.
+    assert coordinator.unknown_alert_codes == {
+        "207": {
+            "first_seen": "2026-10-30T03:01:00+00:00",
+            "last_seen": "2026-10-30T03:03:00+00:00",
+        },
+        "304": {
+            "first_seen": "2026-10-30T03:00:00+00:00",
+            "last_seen": "2026-10-30T03:00:00+00:00",
+        },
+    }
+    # A reload starts a new coordinator; a Repair the old one raised is cleared
+    # once the robot reports the bag fine again.
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "robot_alert_bag_missing_entry",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="robot_alert_bag_missing",
+    )
+    reloaded = _coordinator(hass, _client())
+    # The first poll after a reload is still unconfirmed, so it leaves the
+    # previous Repair alone instead of clearing it for one poll.
+    reloaded._async_confirm_robot_errors(replace(base, error_codes=(206,)))
+    reloaded._async_track_alerts(replace(base, error_codes=()))
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry")
+    reloaded._async_confirm_robot_errors(replace(base, error_codes=(206,)))
+    reloaded._async_track_alerts(replace(base, error_codes=(206,)))
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry") is None
+    assert registry.async_get_issue(DOMAIN, issue) is not None
+    # Removing the robot clears its Repairs, since no poll will reach them.
+    async_delete_robot_alert_issues(hass, "entry")
+    assert registry.async_get_issue(DOMAIN, issue) is None
+
+    assert replace(base, error_codes=(304, 205)).alert == "bag_missing"
+    assert replace(base, error_codes=(304,)).alerts == ("unknown",)
+    assert replace(base, error_codes=(304,)).alert == "unknown"
+    assert replace(base, error_codes=()).alert == "none"

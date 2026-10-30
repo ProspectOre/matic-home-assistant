@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.const import ATTR_ENTITY_ID, EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -30,6 +30,7 @@ async def async_setup_entry(
             MaticPlanButton(entry, "clean_entire_plan"),
             MaticPlanButton(entry, "stop_intelligent_cleaning"),
             MaticAreaButton(entry),
+            MaticWifiSurveyClearButton(entry),
         ]
     )
 
@@ -224,3 +225,21 @@ class MaticAreaButton(_MaticFloorBoundButton):
             },
             blocking=True,
         )
+
+
+class MaticWifiSurveyClearButton(MaticEntity, ButtonEntity):
+    """Forget the collected Wi-Fi survey, for example after moving a router."""
+
+    _attr_translation_key = "clear_wifi_survey"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._survey = entry.runtime_data.wifi_survey
+        self._attr_unique_id = (
+            f"{self.coordinator.data.info.serial_number}_clear_wifi_survey"
+        )
+
+    async def async_press(self) -> None:
+        """Delete every stored signal cell."""
+        self._survey.clear()

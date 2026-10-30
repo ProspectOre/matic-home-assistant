@@ -63,6 +63,7 @@ export const normalizeBrush = (value: number): number =>
 export const initialWorkspaceState = (): WorkspaceState => ({
   lastRun: null,
   smartStop: null,
+  trail: null,
   pageActive: true,
   owner: null,
   draftFloorOrdinal: null,
@@ -84,6 +85,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   view: "top",
   appearance: "photo",
   labelsVisible: true,
+  wifiSignal: null,
   quality: "auto",
   cameras: {},
   cameraKey: null,
@@ -130,6 +132,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
     history: emptyResource(),
     plans: emptyResource(),
     areas: emptyResource(),
+    runs: emptyResource(),
   },
   manualRoomPreview: emptyResource(),
   manualRoomPreviewRetry: 0,
@@ -371,6 +374,8 @@ export const reduceWorkspace = (
     }
     case "toggle-labels":
       return { ...state, labelsVisible: !state.labelsVisible };
+    case "toggle-wifi-signal":
+      return { ...state, wifiSignal: state.wifiSignal ? null : { status: "loading", surveying: false, cellSize: 0, cells: [] } };
     case "open-workflow":
       if (isReadOnlyWorkspace(state) && readOnlyWorkflows.has(intent.workflow)) return state;
       return {
@@ -639,7 +644,7 @@ export const reduceWorkspace = (
       return (state.selection.entryId === intent.entryId && state.selection.entrySource === "user")
         || !state.robots.some((robot) => robot.entryId === intent.entryId)
         ? state
-        : { ...state, selection: { ...state.selection, entryId: intent.entryId, entrySource: "user" } };
+        : { ...state, wifiSignal: null, selection: { ...state.selection, entryId: intent.entryId, entrySource: "user" } };
     case "set-history":
       return {
         ...state,

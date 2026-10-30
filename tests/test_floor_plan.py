@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import struct
 import time
 from io import BytesIO
@@ -704,3 +705,80 @@ def test_floor_plan_shared_budget_bounds_total_nested_allocations(monkeypatch) -
     with pytest.raises(DecodeError, match="aggregate field budget"):
         decode_floor_plans(_floor_plan_payload())
     assert count == 32
+
+
+def _quaternion_message(
+    x: float, y: float, z: float, w: float, *, named: bool = True
+) -> bytes:
+    """Build the v181 rotation: repeated x, y, z, w, then vector plus scalar."""
+    repeated = b"".join(_fixed32(1, value) for value in (x, y, z, w))
+    if not named:
+        return repeated
+    vector = _fixed32(1, x) + _fixed32(2, y) + _fixed32(3, z)
+    return repeated + _field(2, vector) + _fixed32(3, w)
+
+
+def _v181_pose(rotation: bytes | None) -> bytes:
+    translation = b"".join(_fixed32(1, value) for value in (-4.5, 2.25, 0.0))
+    info = translation
+    if rotation is not None:
+        info += _field(3, _field(2, rotation))
+    info += _field(4, _fixed32(1, -4.5) + _fixed32(2, 2.25) + _fixed32(3, 0.0))
+    return _field(2, _field(1, info))
+
+
+def _yaw_quaternion(yaw: float) -> tuple[float, float, float, float]:
+    return (0.0, 0.0, math.sin(yaw / 2), math.cos(yaw / 2))
+
+
+def test_decode_pose_reads_heading_from_the_v181_rotation() -> None:
+    # Recorded docked sample from firmware v181.10: yaw is about -1.08 degrees.
+    recorded = decode_pose(
+        _v181_pose(_quaternion_message(-0.00353629, 0.00431537, -0.00944875, 0.999936))
+    )
+    assert (recorded.x, recorded.y) == (-4.5, 2.25)
+    assert recorded.heading is not None
+    assert math.degrees(recorded.heading) == pytest.approx(-1.08, abs=0.01)
+
+    for yaw in (0.0, math.pi / 2, -2.5, math.pi - 0.01):
+        pose = decode_pose(_v181_pose(_quaternion_message(*_yaw_quaternion(yaw))))
+        assert pose.heading == pytest.approx(yaw, abs=1e-5)
+
+    # The repeated form alone is enough, and a slightly unnormalized
+    # quaternion is normalized rather than rejected.
+    unnamed = _quaternion_message(*_yaw_quaternion(1.0), named=False)
+    assert decode_pose(_v181_pose(unnamed)).heading == pytest.approx(1.0, abs=1e-5)
+    scaled = _quaternion_message(*(value * 1.05 for value in _yaw_quaternion(1.0)))
+    assert decode_pose(_v181_pose(scaled)).heading == pytest.approx(1.0, abs=1e-5)
+
+
+@pytest.mark.parametrize(
+    "rotation",
+    [
+        None,
+        b"",
+        _fixed32(1, 0.0) * 3,
+        _quaternion_message(0.0, 0.0, 0.0, 0.0),
+        _quaternion_message(0.0, 0.0, 0.0, 2.0),
+        _quaternion_message(float("nan"), 0.0, 0.0, 1.0),
+        _field(2, _fixed32(1, 0.0) + _fixed32(2, 0.0)) + _fixed32(3, 1.0),
+        b"\xff",
+    ],
+)
+def test_decode_pose_hides_an_ambiguous_heading(rotation: bytes | None) -> None:
+    pose = decode_pose(_v181_pose(rotation))
+
+    assert (pose.x, pose.y, pose.heading) == (-4.5, 2.25, None)
+
+
+def test_decode_pose_hides_heading_when_rotation_containers_repeat() -> None:
+    rotation = _quaternion_message(*_yaw_quaternion(0.3))
+    translation = b"".join(_fixed32(1, value) for value in (1.0, 2.0, 0.0))
+    twice_outer = translation + _field(3, _field(2, rotation)) * 2
+    twice_inner = translation + _field(3, _field(2, rotation) * 2)
+
+    assert decode_pose(_field(2, _field(1, twice_outer))).heading is None
+    assert decode_pose(_field(2, _field(1, twice_inner))).heading is None
+    # Legacy layouts never carried a rotation.
+    legacy = _field(5, _field(1, struct.pack("<3f", 3, 2, 1)))
+    assert decode_pose(legacy).heading is None

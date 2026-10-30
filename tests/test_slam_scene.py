@@ -30,6 +30,7 @@ from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
     MappedFloor,
+    MapZone,
     RobotPose,
     Room,
 )
@@ -103,7 +104,7 @@ def _floor_plan() -> FloorPlan:
 
 
 def _fresh_pose(x: float, y: float, z: float) -> RobotPose:
-    return RobotPose(x, y, z, mission_id=1, observed_at=time())
+    return RobotPose(x, y, z, mission_id=1, observed_at=time(), heading=0.5)
 
 
 def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
@@ -162,7 +163,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 floor_plan=floor_plan,
                 pose=robot_pose,
                 operational=SimpleNamespace(current_area="Kitchen"),
-                telemetry=SimpleNamespace(active_cleaning_session=False),
+                telemetry=SimpleNamespace(active_cleaning_session=False, zones=()),
             ),
         ),
         slam_history=SimpleNamespace(
@@ -899,6 +900,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
     assert exact.status == HTTPStatus.OK
     assert json.loads(exact.body) == {
         "position": [0.1, 0.2],
+        "heading": 0.5,
         "source": "exact_pose",
         "revision": 7,
         "scene_revision": None,
@@ -924,6 +926,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         fallback = await MaticSlamPoseView().get(_request(fallback_hass), "entry")
     fallback_payload = json.loads(fallback.body)
     assert fallback_payload["position"] is None
+    assert fallback_payload["heading"] is None
     assert fallback_payload["source"] == "current_area"
     assert fallback_payload["pose_freshness"] == "coordinator_fallback"
     assert fallback_payload["map_session_key"] == _browser_session_key(fallback_runtime)
@@ -935,6 +938,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         unavailable = await MaticSlamPoseView().get(_request(unavailable_hass), "entry")
     assert json.loads(unavailable.body) == {
         "position": None,
+        "heading": None,
         "source": "unavailable",
         "revision": 7,
         "scene_revision": None,
@@ -1273,6 +1277,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "history_url": f"/api/matic_robot/slam_history/{loaded.entry_id}",
                 "areas_url": f"/api/matic_robot/areas/{loaded.entry_id}",
                 "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
+                "wifi_heatmap_url": f"/api/matic_robot/wifi_heatmap/{loaded.entry_id}",
                 "history_count": 0,
                 "history_floor_count": 0,
                 "map_revision": 7,
@@ -1446,6 +1451,12 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
         "legacy": {"name": "Legacy"},
     }
     runtime.cleaning_plans.selected_area.return_value = "review"
+    no_go = ((0.2, 0.2), (0.6, 0.2), (0.6, 0.6), (0.2, 0.6))
+    runtime.coordinator.data.telemetry.zones = (
+        MapZone(1, "no_go", 1, no_go),
+        # A zone from another mission never reaches this map.
+        MapZone(2, "unknown", 0, no_go),
+    )
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
@@ -1505,6 +1516,15 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
             },
         ],
         "selected_area": "review",
+        "zones": [
+            {
+                "kind": "no_go",
+                "outline": [[0.2, 0.2], [0.6, 0.2], [0.6, 0.6], [0.2, 0.6]],
+                "holes": [],
+                "room_ids": ["room-1"],
+                "area_ids": ["table"],
+            }
+        ],
     }
     assert areas_api_url("entry") == AREAS_API_URL.format(entry_id="entry")
     with pytest.raises(Unauthorized):

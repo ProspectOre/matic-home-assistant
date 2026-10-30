@@ -543,6 +543,7 @@ export class MaticPlanViewsV4 extends LitElement {
             <bdi>${name}</bdi>
             <small>${settingLabel(this.#t, room)}</small>
             ${schedule ? html`<small>${schedule}</small>` : nothing}
+            ${this.#overlapsNoGo("room", roomId) ? html`<small data-zone-overlap>${this.#t("v4_zone_overlap", "Overlaps a no-go zone · Matic skips that part")}</small>` : nothing}
             ${blocked ? html`<span class="ms-chip chip-attention">${this.#t("v4_needs_attention", "Needs attention")}</span>` : nothing}
           </span>
           ${icon(iconChevronRight)}
@@ -620,6 +621,11 @@ export class MaticPlanViewsV4 extends LitElement {
     </div>`;
   }
 
+  #overlapsNoGo(kind: "room" | "area", id: string): boolean {
+    return (this.state.resources.areas.value?.zones ?? []).some((zone) =>
+      zone.kind === "no_go" && (kind === "room" ? zone.roomIds : zone.areaIds).includes(id));
+  }
+
   /**
    * What a custom area in the plan needs before it can clean, as Your areas
    * says it: a check after the map changed or a redraw; one the saved areas
@@ -676,6 +682,7 @@ export class MaticPlanViewsV4 extends LitElement {
           <small>${this.#t("v4_plan_area_every_run", "Custom area · Every run")}</small>
           ${problem ? html`<span class="ms-chip chip-attention">${this.#t("v4_needs_attention", "Needs attention")}</span>
             <small id=${problemId}>${problem}</small>` : nothing}
+          ${this.#overlapsNoGo("area", area.areaId) ? html`<small data-zone-overlap>${this.#t("v4_zone_overlap", "Overlaps a no-go zone · Matic skips that part")}</small>` : nothing}
         </span>
         ${icon(iconChevronRight)}
       </button>

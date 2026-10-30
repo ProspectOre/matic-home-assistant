@@ -73,6 +73,18 @@ DESCRIPTIONS = (
         value_fn=lambda state: bool(state.operational.error_codes),
     ),
     MaticBinarySensorDescription(
+        key="bag_full",
+        translation_key="bag_full",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        value_fn=lambda state: state.operational.bag_full,
+    ),
+    MaticBinarySensorDescription(
+        key="bag_missing",
+        translation_key="bag_missing",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        value_fn=lambda state: state.operational.bag_missing,
+    ),
+    MaticBinarySensorDescription(
         key="matter_pairing_mode",
         translation_key="matter_pairing_mode",
         entity_category=EntityCategory.DIAGNOSTIC,
@@ -98,6 +110,16 @@ DESCRIPTIONS = (
         translation_key="following_person",
         device_class=BinarySensorDeviceClass.RUNNING,
         value_fn=lambda state: state.operational.following_person,
+    ),
+    MaticBinarySensorDescription(
+        key="maintenance_suggested",
+        translation_key="maintenance_suggested",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        value_fn=lambda state: (
+            None
+            if state.telemetry.maintenance_suggestions is None
+            else bool(state.telemetry.maintenance_suggestions)
+        ),
     ),
 )
 
