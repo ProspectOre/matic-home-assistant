@@ -11,7 +11,11 @@
       "matter_pairing_mode": { "default": "mdi:access-point" },
       "ssh_tunnel_permission": { "default": "mdi:console-network" },
       "diagnostic_upload": { "default": "mdi:cloud-upload" },
-      "following_person": { "default": "mdi:account-arrow-right" }
+      "following_person": { "default": "mdi:account-arrow-right" },
+      "brush_roll_maintenance": { "default": "mdi:wrench-clock" },
+      "side_brush_maintenance": { "default": "mdi:wrench-clock" },
+      "mop_roll_maintenance": { "default": "mdi:wrench-clock" },
+      "caster_and_wedge_maintenance": { "default": "mdi:wrench-clock" }
     },
     "button": {
       "run_selected_plan": { "default": "mdi:play-circle-outline" },
@@ -37,6 +41,7 @@
       "custom_cleaning_area": { "default": "mdi:vector-square" }
     },
     "sensor": {
+      "bag_pass_expires": { "default": "mdi:calendar-clock" },
       "activity": {
         "default": "mdi:robot-vacuum",
         "state": {

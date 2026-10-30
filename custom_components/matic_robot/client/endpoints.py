@@ -52,6 +52,7 @@ def _collection(
 HERMES_ENDPOINTS = (
     _property("active_session_key"),
     _collection("approximate_trajectory"),
+    _collection("bag_pass_status", HermesEndpointSensitivity.DIAGNOSTIC),
     _property("child_lock_enabled_state", HermesEndpointSensitivity.DIAGNOSTIC),
     _collection("coverage_corridor"),
     _collection("coverage_marker"),
@@ -76,6 +77,7 @@ HERMES_ENDPOINTS = (
     _property("matter_pairing_state", HermesEndpointSensitivity.DIAGNOSTIC),
     _collection("planned_path"),
     _property("petwaste_enabled_state", HermesEndpointSensitivity.DIAGNOSTIC),
+    _collection("recap_history", tracked=True),
     _collection("schedule_event_previews"),
     _collection("schedule_events"),
     _collection("semantics_override", tracked=True),

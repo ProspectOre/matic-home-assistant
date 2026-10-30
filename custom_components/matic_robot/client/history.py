@@ -10,7 +10,8 @@ from io import BytesIO
 from google.protobuf.message import DecodeError
 from PIL import Image, UnidentifiedImageError
 
-from .models import HermesCollectionEntry
+from .consumables import decode_maintenance_suggestions
+from .models import HermesCollectionEntry, MaintenancePart
 from .wire import WireField, decode_fields, uuid_string
 
 MAX_SESSION_IMAGE_BYTES = 8 * 1024 * 1024
@@ -43,6 +44,7 @@ class MonthlyCleaningRecap:
     sweep_duration_seconds: float
     mop_duration_seconds: float
     favorite_room_name: str | None
+    maintenance_suggestions: tuple[MaintenancePart, ...] = ()
 
 
 def decode_cleaning_session_image(entry: HermesCollectionEntry) -> CleaningSessionImage:
@@ -111,12 +113,15 @@ def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleani
     counts = _varint_values(fields, 2)
     favorites = _bytes_values(fields, 6)
     durations = _bytes_values(fields, 7)
+    # Field 4 lists the parts the robot suggests servicing; a month with no
+    # suggestion omits it.
+    maintenance = tuple(field for field in fields if field.number == 4)
     if (
         len(areas) != 1
         or len(counts) != 1
         or len(favorites) > 1
         or len(durations) != 1
-        or len(fields) != 3 + len(favorites)
+        or len(fields) != 3 + len(favorites) + len(maintenance)
         or counts[0] > MAX_RECAP_SESSION_COUNT
     ):
         raise DecodeError("monthly recap has an invalid shape")
@@ -133,6 +138,7 @@ def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleani
         sweep_duration_seconds=sweep_duration,
         mop_duration_seconds=mop_duration,
         favorite_room_name=favorite_name,
+        maintenance_suggestions=decode_maintenance_suggestions(maintenance),
     )
 
 

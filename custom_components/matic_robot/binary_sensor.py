@@ -15,7 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.models import RobotState
+from .client.models import MaintenancePart, RobotState
 from .entity import MaticEntity
 
 PARALLEL_UPDATES = 0
@@ -102,6 +102,27 @@ DESCRIPTIONS = (
 )
 
 
+def _maintenance_due(part: MaintenancePart) -> Callable[[RobotState], bool | None]:
+    """Report whether the newest monthly recap suggests servicing ``part``."""
+
+    def value(state: RobotState) -> bool | None:
+        suggestions = state.telemetry.maintenance_suggestions
+        return None if suggestions is None else part in suggestions
+
+    return value
+
+
+MAINTENANCE_DESCRIPTIONS = tuple(
+    MaticBinarySensorDescription(
+        key=f"{part}_maintenance",
+        translation_key=f"{part}_maintenance",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        value_fn=_maintenance_due(part),
+    )
+    for part in MaintenancePart
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
@@ -109,7 +130,8 @@ async def async_setup_entry(
 ) -> None:
     """Set up verified Matic binary sensors."""
     async_add_entities(
-        MaticBinarySensor(entry, description) for description in DESCRIPTIONS
+        MaticBinarySensor(entry, description)
+        for description in (*DESCRIPTIONS, *MAINTENANCE_DESCRIPTIONS)
     )
 
 

@@ -161,7 +161,7 @@ BAG_LAST_REPLACED_DESCRIPTION = SensorEntityDescription(
 class MaticStateSensorDescription(SensorEntityDescription):
     """Describe one stable field on the coordinated robot state."""
 
-    value_fn: Callable[[RobotState], str | int | None]
+    value_fn: Callable[[RobotState], str | int | datetime | None]
 
 
 STATE_DESCRIPTIONS = (
@@ -286,6 +286,12 @@ STATE_DESCRIPTIONS = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.wifi_signal_dbm,
+    ),
+    MaticStateSensorDescription(
+        key="bag_pass_expires",
+        translation_key="bag_pass_expires",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda state: state.telemetry.bag_pass_expires_at,
     ),
 )
 
@@ -468,7 +474,7 @@ class MaticStateSensor(MaticEntity, SensorEntity):
         )
 
     @property
-    def native_value(self) -> str | int | None:
+    def native_value(self) -> str | int | datetime | None:
         """Return the decoded field."""
         return self.entity_description.value_fn(self.coordinator.data)
 

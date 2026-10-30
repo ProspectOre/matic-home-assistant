@@ -19,7 +19,10 @@ from custom_components.matic_robot.client.history import (
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
 )
-from custom_components.matic_robot.client.models import HermesCollectionEntry
+from custom_components.matic_robot.client.models import (
+    HermesCollectionEntry,
+    MaintenancePart,
+)
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -189,6 +192,16 @@ def test_decode_monthly_cleaning_recap_rejects_invalid_durations(
 ) -> None:
     with pytest.raises(DecodeError, match="duration"):
         decode_monthly_cleaning_recap(_recap_entry(durations=durations))
+
+
+def test_decode_monthly_cleaning_recap_reads_maintenance_suggestions() -> None:
+    # Field 4 lists suggested maintenance; it used to fail the shape check.
+    recap = decode_monthly_cleaning_recap(_recap_entry(suffix=_bfield(4, b"\x01\x02")))
+    assert recap.maintenance_suggestions == (
+        MaintenancePart.BRUSH_ROLL,
+        MaintenancePart.SIDE_BRUSH,
+    )
+    assert decode_monthly_cleaning_recap(_recap_entry()).maintenance_suggestions == ()
 
 
 def test_decode_monthly_cleaning_recap_accepts_default_duration_fields() -> None:

@@ -2085,8 +2085,13 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_area_issue,
+        patch(
+            "custom_components.matic_robot.async_delete_maintenance_issues"
+        ) as delete_maintenance_issues,
     ):
         await async_remove_entry(hass, entry)
+
+    delete_maintenance_issues.assert_called_once_with(hass, "entry")
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
     get_plan_manager.assert_awaited_once_with(hass)
@@ -2114,6 +2119,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_bare_area_issue,
+        patch("custom_components.matic_robot.async_delete_maintenance_issues"),
     ):
         await async_remove_entry(bare, entry)
 

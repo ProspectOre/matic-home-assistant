@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -72,6 +73,15 @@ class CuesIntent(StrEnum):
     FOLLOW_PERSON = "follow_person"
     POINT_TO_CLEAN = "point_to_clean"
     UNKNOWN = "unknown"
+
+
+class MaintenancePart(StrEnum):
+    """Parts the robot's monthly recap can suggest servicing."""
+
+    BRUSH_ROLL = "brush_roll"
+    SIDE_BRUSH = "side_brush"
+    MOP_ROLL = "mop_roll"
+    CASTER_AND_WEDGE = "caster_and_wedge"
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +213,11 @@ class RobotTelemetry:
     dock_detections: int | None = None
     sink_summon_locations: int | None = None
     coverage_time_seconds: int | None = None
+    # None when no monthly recap could be read; empty when the latest recap
+    # suggests nothing.
+    maintenance_suggestions: tuple[MaintenancePart, ...] | None = None
+    maintenance_recap_month: str | None = None
+    bag_pass_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
