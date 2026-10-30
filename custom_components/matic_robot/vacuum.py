@@ -72,6 +72,10 @@ _FLOOR_SCOPE_DOMAIN = b"matic-vacuum-floor-segments-v1\0"
 _MAX_FLOOR_CATALOGS = 12
 
 
+# Sends one resolved navigation command for the floor current at send time.
+type _Navigation = Callable[[FloorPlan], Awaitable[None]]
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
@@ -638,6 +642,48 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     async def async_sink_summon(self) -> None:
         """Send the robot to its saved sink location to await a refill."""
+
+        async def resolve(floor_plan: FloorPlan) -> _Navigation:
+            try:
+                posture = await self.coordinator.client.async_get_sink_posture(
+                    floor_plan
+                )
+            except SinkLocationUnavailableError as err:
+                raise _validation_error(
+                    "No sink location is saved for this floor",
+                    "sink_location_unavailable",
+                ) from err
+            except (MaticError, ValueError) as err:
+                raise _navigation_failed("sink") from err
+            return lambda current: self.coordinator.client.async_sink_summon(
+                current, posture
+            )
+
+        await self._async_navigate(
+            resolve, destination="sink", task_changed=_sink_task_changed
+        )
+
+    async def async_go_to_room(self, room: str) -> None:
+        """Send the robot to one named room on this floor without cleaning it."""
+
+        async def resolve(floor_plan: FloorPlan) -> _Navigation:
+            target = _resolve_one_room(room, floor_plan)
+            return lambda current: self.coordinator.client.async_go_to_room(
+                current, target
+            )
+
+        await self._async_navigate(
+            resolve, destination="room", task_changed=_room_task_changed
+        )
+
+    async def _async_navigate(
+        self,
+        resolve: Callable[[FloorPlan], Awaitable[_Navigation]],
+        *,
+        destination: str,
+        task_changed: Callable[[], HomeAssistantError],
+    ) -> None:
+        """Send one navigation command under the sink summon's ownership rules."""
         serial_number = self.coordinator.data.info.serial_number
         request_generation = self._plans.motion_generation(serial_number)
         request_stop_generation = self._plans.stop_request_generation(serial_number)
@@ -649,20 +695,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             serial_number, expected_epoch=request_admission_epoch
         )
         # Resolve the destination before taking any lease, so a floor without a
-        # sink or a stale map never replaces the ownership of a docked plan.
+        # sink, an unknown room or a stale map never replaces the ownership of a
+        # docked plan.
         floor_plan = self._current_floor_plan()
         floor_token = plan_floor_token(floor_plan)
-        try:
-            posture = await self.coordinator.client.async_get_sink_posture(floor_plan)
-        except SinkLocationUnavailableError as err:
-            raise _validation_error(
-                "No sink location is saved for this floor",
-                "sink_location_unavailable",
-            ) from err
-        except (MaticError, ValueError) as err:
-            raise _sink_summon_failed() from err
+        send = await resolve(floor_plan)
         # The robot keeps a task it holds, and so the plan driving it, through
-        # the sink visit and resumes it on Resume. Only a summon without a task
+        # the visit and resumes it on Resume. Only navigation without a task
         # starts new motion, which takes ownership like any other direct clean.
         joins_task = self._holds_task()
         lease = (
@@ -684,17 +723,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             )
             floor_plan = self._current_floor_plan(floor_token)
             if joins_task and not self._holds_task():
-                # The task ended while this summon waited, so only the motion
+                # The task ended while this command waited, so only the motion
                 # lease could own what it would start now.
-                raise HomeAssistantError(
-                    "The robot's task ended before the sink summon was sent",
-                    translation_domain=DOMAIN,
-                    translation_key="robot_task_changed",
-                )
+                raise task_changed()
             try:
-                await self.coordinator.client.async_sink_summon(floor_plan, posture)
+                await send(floor_plan)
             except (MaticError, ValueError) as err:
-                raise _sink_summon_failed() from err
+                raise _navigation_failed(destination) from err
             await self.coordinator.async_request_refresh()
 
     def _holds_task(self) -> bool:
@@ -942,6 +977,15 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if normalized == "sink_summon":
             await self.async_sink_summon()
             return
+        if normalized == "go_to_room":
+            room = params.get("room") if isinstance(params, dict) else None
+            if not isinstance(room, str) or not room.strip():
+                raise _validation_error(
+                    "go_to_room requires params.room as one room name or ID",
+                    "go_to_room_room_required",
+                )
+            await self.async_go_to_room(room)
+            return
         simple_commands = {
             "pause": UserCommand.PAUSE,
             "resume": UserCommand.RESUME,
@@ -1027,8 +1071,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             return
         raise _validation_error(
             "Unsupported Matic command. Use start, clean_all, clean_rooms, "
-            "clean_segments, pause, resume, stop, dock, return_home, or "
-            "sink_summon",
+            "clean_segments, pause, resume, stop, dock, return_home, "
+            "sink_summon, or go_to_room",
             "unsupported_command",
         )
 
@@ -1187,13 +1231,53 @@ def _enum_option[CleaningOptionT: (CleaningMode, CoverageSetting)](
     raise ValueError(f"{_OPTION_LABELS[enum_type]} must be one of: {choices}.")
 
 
-def _sink_summon_failed() -> HomeAssistantError:
-    """Create the error for a sink summon the robot could not take."""
+def _navigation_failed(destination: str) -> HomeAssistantError:
+    """Create the error for a navigation command the robot could not take."""
     return HomeAssistantError(
-        "The robot could not be sent to the sink",
+        f"The robot could not be sent to the {destination}",
         translation_domain=DOMAIN,
         translation_key="robot_command_failed",
     )
+
+
+def _sink_task_changed() -> HomeAssistantError:
+    """Create the error for a task that ended while a sink summon waited."""
+    return HomeAssistantError(
+        "The robot's task ended before the sink summon was sent",
+        translation_domain=DOMAIN,
+        translation_key="robot_task_changed",
+    )
+
+
+def _room_task_changed() -> HomeAssistantError:
+    """Create the error for a task that ended while go to room waited."""
+    return HomeAssistantError(
+        "The robot's task ended before it was sent to the room",
+        translation_domain=DOMAIN,
+        translation_key="go_to_room_task_changed",
+    )
+
+
+def _resolve_one_room(identifier: str, floor_plan: FloorPlan) -> Room:
+    """Resolve one room by ID or name, refusing an ambiguous name."""
+    rooms_by_id = {room.id: room for room in floor_plan.rooms}
+    try:
+        room_id, _room_name = resolve_room_reference(
+            identifier, {room.id: room.name for room in floor_plan.rooms}
+        )
+    except ValueError as err:
+        if str(err).startswith("ambiguous room"):
+            raise _validation_error(
+                f"More than one room matches {identifier}",
+                "ambiguous_room",
+                {"room": identifier},
+            ) from err
+        raise _validation_error(
+            f"Unknown Matic room(s): {identifier}",
+            "unknown_rooms",
+            {"rooms": identifier},
+        ) from err
+    return rooms_by_id[room_id]
 
 
 def _validation_error(

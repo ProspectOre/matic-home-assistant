@@ -34,6 +34,7 @@ from .commands import (
     UserCommand,
     encode_coverage_command,
     encode_custom_coverage_command,
+    encode_go_to_room_command,
     encode_mission_id,
     encode_mixed_coverage_commands,
     encode_sink_summon_command,
@@ -90,6 +91,7 @@ from .models import (
     RobotPose,
     RobotTelemetry,
     RobotTrajectory,
+    Room,
     WifiNetwork,
 )
 from .observations import ActivityJournal, ObservationCallback
@@ -1517,6 +1519,17 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 mission_id=floor_plan.mission_id, posture=posture
             ),
             command_name="SINK_SUMMON",
+        )
+
+    async def async_go_to_room(self, floor_plan: FloorPlan, room: Room) -> None:
+        """Send the robot to a room on this floor without cleaning it."""
+        await self._async_send_user_payload(
+            encode_go_to_room_command(
+                mission_id=floor_plan.mission_id,
+                partition_id=floor_plan.partition_protocol_id,
+                region_id=room.protocol_id,
+            ),
+            command_name="GO_TO_ROOM",
         )
 
     async def async_start_coverage(
