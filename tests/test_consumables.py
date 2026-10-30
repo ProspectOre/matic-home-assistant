@@ -11,7 +11,7 @@ import pytest
 from google.protobuf.message import DecodeError
 from homeassistant.helpers import issue_registry as ir
 
-from custom_components.matic_robot.binary_sensor import MAINTENANCE_DESCRIPTIONS
+from custom_components.matic_robot.binary_sensor import DESCRIPTIONS
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.consumables import (
     MAX_BAG_PASS_PAYLOAD_BYTES,
@@ -21,7 +21,6 @@ from custom_components.matic_robot.client.consumables import (
 )
 from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
-    MaintenancePart,
     RobotTelemetry,
 )
 from custom_components.matic_robot.client.wire import WireField, packed_varints
@@ -62,16 +61,9 @@ def test_maintenance_suggestions_accept_packed_and_unpacked_values() -> None:
     fields = (
         WireField(4, 2, bytes((3, 1))),
         WireField(4, 0, 2),
-        WireField(4, 0, 99),
+        WireField(4, 0, 1),
     )
-    assert decode_maintenance_suggestions(fields) == (
-        MaintenancePart.BRUSH_ROLL,
-        MaintenancePart.SIDE_BRUSH,
-        MaintenancePart.MOP_ROLL,
-    )
-    assert decode_maintenance_suggestions((WireField(4, 0, 4),)) == (
-        MaintenancePart.CASTER_AND_WEDGE,
-    )
+    assert decode_maintenance_suggestions(fields) == (1, 2, 3)
     assert decode_maintenance_suggestions(()) == ()
 
 
@@ -178,11 +170,7 @@ async def test_telemetry_reads_the_newest_recap_and_bag_pass() -> None:
     telemetry = await client.async_get_telemetry()
 
     assert telemetry.maintenance_recap_month == "2026-10"
-    assert telemetry.maintenance_suggestions == (
-        MaintenancePart.BRUSH_ROLL,
-        MaintenancePart.SIDE_BRUSH,
-        MaintenancePart.MOP_ROLL,
-    )
+    assert telemetry.maintenance_suggestions == (1, 2, 3)
     assert telemetry.bag_pass_expires_at == datetime.fromtimestamp(PASS_END, UTC)
     client.async_get_tracked_collection_entries.assert_any_await(
         "recap_history", limit=120
@@ -204,29 +192,17 @@ async def test_telemetry_reads_the_newest_recap_and_bag_pass() -> None:
     assert telemetry.bag_pass_expires_at is None
 
 
-def test_maintenance_binary_sensors_follow_the_newest_recap() -> None:
-    def values(telemetry: RobotTelemetry) -> list[bool | None]:
-        state = SimpleNamespace(telemetry=telemetry)
-        return [
-            description.value_fn(state)  # type: ignore[arg-type]
-            for description in MAINTENANCE_DESCRIPTIONS
-        ]
+def test_maintenance_binary_sensor_follows_the_newest_recap() -> None:
+    description = next(
+        item for item in DESCRIPTIONS if item.key == "maintenance_suggested"
+    )
 
-    assert [description.key for description in MAINTENANCE_DESCRIPTIONS] == [
-        "brush_roll_maintenance",
-        "side_brush_maintenance",
-        "mop_roll_maintenance",
-        "caster_and_wedge_maintenance",
-    ]
-    assert values(RobotTelemetry()) == [None, None, None, None]
-    assert values(
-        RobotTelemetry(
-            maintenance_suggestions=(
-                MaintenancePart.BRUSH_ROLL,
-                MaintenancePart.CASTER_AND_WEDGE,
-            )
-        )
-    ) == [True, False, False, True]
+    def value(telemetry: RobotTelemetry) -> bool | None:
+        return description.value_fn(SimpleNamespace(telemetry=telemetry))  # type: ignore[arg-type]
+
+    assert value(RobotTelemetry()) is None
+    assert value(RobotTelemetry(maintenance_suggestions=())) is False
+    assert value(RobotTelemetry(maintenance_suggestions=(1, 3))) is True
 
 
 def _issue_ids(hass) -> set[str]:
@@ -237,34 +213,26 @@ def _issue_ids(hass) -> set[str]:
     }
 
 
-async def test_maintenance_issues_track_the_newest_recap(hass) -> None:
+async def test_maintenance_issue_tracks_the_newest_recap(hass) -> None:
     issues = MaintenanceIssues(hass, "entry")
-    other = MaintenanceIssues(hass, "other")
-    other.async_sync(
-        RobotTelemetry(
-            maintenance_recap_month="2026-10",
-            maintenance_suggestions=(MaintenancePart.SIDE_BRUSH,),
-        )
+    MaintenanceIssues(hass, "other").async_sync(
+        RobotTelemetry(maintenance_recap_month="2026-10", maintenance_suggestions=(2,))
     )
 
     issues.async_sync(RobotTelemetry())
-    assert _issue_ids(hass) == {"maintenance_other_2026-10_side_brush"}
+    assert _issue_ids(hass) == {"maintenance_other_2026-10"}
 
     october = RobotTelemetry(
-        maintenance_recap_month="2026-10",
-        maintenance_suggestions=(MaintenancePart.BRUSH_ROLL, MaintenancePart.MOP_ROLL),
+        maintenance_recap_month="2026-10", maintenance_suggestions=(1, 3)
     )
     issues.async_sync(october)
     assert _issue_ids(hass) == {
-        "maintenance_entry_2026-10_brush_roll",
-        "maintenance_entry_2026-10_mop_roll",
-        "maintenance_other_2026-10_side_brush",
+        "maintenance_entry_2026-10",
+        "maintenance_other_2026-10",
     }
-    issue = ir.async_get(hass).async_get_issue(
-        DOMAIN, "maintenance_entry_2026-10_brush_roll"
-    )
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "maintenance_entry_2026-10")
     assert issue is not None
-    assert issue.translation_key == "maintenance_brush_roll"
+    assert issue.translation_key == "maintenance_suggested"
     assert issue.severity is ir.IssueSeverity.WARNING
     assert issue.is_fixable is False
     assert issue.translation_placeholders is not None
@@ -273,23 +241,20 @@ async def test_maintenance_issues_track_the_newest_recap(hass) -> None:
     # An unreadable recap keeps what is shown; a repeat changes nothing.
     issues.async_sync(RobotTelemetry())
     issues.async_sync(october)
-    assert len(_issue_ids(hass)) == 3
+    assert len(_issue_ids(hass)) == 2
 
     issues.async_sync(
-        RobotTelemetry(
-            maintenance_recap_month="2026-11",
-            maintenance_suggestions=(MaintenancePart.BRUSH_ROLL,),
-        )
+        RobotTelemetry(maintenance_recap_month="2026-11", maintenance_suggestions=(1,))
     )
     assert _issue_ids(hass) == {
-        "maintenance_entry_2026-11_brush_roll",
-        "maintenance_other_2026-10_side_brush",
+        "maintenance_entry_2026-11",
+        "maintenance_other_2026-10",
     }
 
     issues.async_sync(
         RobotTelemetry(maintenance_recap_month="2026-12", maintenance_suggestions=())
     )
-    assert _issue_ids(hass) == {"maintenance_other_2026-10_side_brush"}
+    assert _issue_ids(hass) == {"maintenance_other_2026-10"}
 
     async_delete_maintenance_issues(hass, "other")
     assert _issue_ids(hass) == set()

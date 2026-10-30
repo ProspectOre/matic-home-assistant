@@ -1040,17 +1040,8 @@
       "following_person": {
         "name": "Following a person"
       },
-      "brush_roll_maintenance": {
-        "name": "Brush roll maintenance"
-      },
-      "side_brush_maintenance": {
-        "name": "Side brush maintenance"
-      },
-      "mop_roll_maintenance": {
-        "name": "Mop roll maintenance"
-      },
-      "caster_and_wedge_maintenance": {
-        "name": "Caster and wedge maintenance"
+      "maintenance_suggested": {
+        "name": "Maintenance suggested"
       }
     },
     "button": {
@@ -1602,21 +1593,9 @@
       "title": "{name}: custom areas need attention",
       "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean custom area, then confirm or redraw it."
     },
-    "maintenance_brush_roll": {
-      "title": "{name}: check the brush roll",
-      "description": "The robot's cleaning recap for {month} suggests servicing the brush roll. The Matic app's maintenance guide shows how. This notice clears when a newer recap no longer suggests it. Open the [device page]({device_url}) to see every maintenance sensor."
-    },
-    "maintenance_side_brush": {
-      "title": "{name}: check the side brush",
-      "description": "The robot's cleaning recap for {month} suggests servicing the side brush. The Matic app's maintenance guide shows how. This notice clears when a newer recap no longer suggests it. Open the [device page]({device_url}) to see every maintenance sensor."
-    },
-    "maintenance_mop_roll": {
-      "title": "{name}: check the mop roll",
-      "description": "The robot's cleaning recap for {month} suggests servicing the mop roll. The Matic app's maintenance guide shows how. This notice clears when a newer recap no longer suggests it. Open the [device page]({device_url}) to see every maintenance sensor."
-    },
-    "maintenance_caster_and_wedge": {
-      "title": "{name}: check the caster and wedge",
-      "description": "The robot's cleaning recap for {month} suggests servicing the caster and wedge. The Matic app's maintenance guide shows how. This notice clears when a newer recap no longer suggests it. Open the [device page]({device_url}) to see every maintenance sensor."
+    "maintenance_suggested": {
+      "title": "{name}: maintenance suggested",
+      "description": "The robot's cleaning recap for {month} suggests maintenance. The Matic app's maintenance guide shows how to check the brush roll, side brush, mop roll, and caster and wedge. This notice clears when a newer recap no longer suggests maintenance. Open the [device page]({device_url}) to see the Maintenance suggested sensor."
     }
   },
   "services": {

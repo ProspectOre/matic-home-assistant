@@ -362,7 +362,7 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
 
     # 55 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
-        "binary_sensor": 15,
+        "binary_sensor": 12,
         "button": 5,
         "calendar": 1,
         "camera": 2,
@@ -374,8 +374,8 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 64
-    assert len({entity.unique_id for entity in entities}) == 64
+    assert len(entities) == 61
+    assert len({entity.unique_id for entity in entities}) == 61
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -463,9 +463,7 @@ async def test_bag_capability_is_not_exposed_before_real_world_verification(
     await binary_sensor.async_setup_entry(
         hass, entry, lambda values: added.extend(values)
     )
-    assert len(added) == len(binary_sensor.DESCRIPTIONS) + len(
-        binary_sensor.MAINTENANCE_DESCRIPTIONS
-    )
+    assert len(added) == len(binary_sensor.DESCRIPTIONS)
     assert not any(entity.entity_description.key.startswith("bag_") for entity in added)
 
     added.clear()
@@ -1270,6 +1268,7 @@ def test_sensor_and_binary_sensor_values() -> None:
         False,
         False,
         False,
+        None,
         None,
         None,
         None,

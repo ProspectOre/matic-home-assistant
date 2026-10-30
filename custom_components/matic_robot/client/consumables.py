@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 
 from google.protobuf.message import DecodeError
 
-from .models import HermesCollectionEntry, MaintenancePart
+from .models import HermesCollectionEntry
 from .wire import WireField, decode_fields, packed_varints
 
 MAX_MAINTENANCE_SUGGESTIONS = 64
@@ -17,24 +17,13 @@ MAX_BAG_PASS_PAYLOAD_BYTES = 256
 _MIN_PASS_SECONDS = 946_684_800
 _MAX_PASS_SECONDS = 4_102_444_800
 
-# The app declares BRUSH_ROLL, SIDE_BRUSH, MOP_ROLL, CASTER_AND_WEDGE. The
-# robot sent 1, 2 and 3 and never 0, so the wire values are taken to start at
-# 1 in that order. The app's recap screen has not confirmed the mapping yet.
-MAINTENANCE_PARTS_BY_WIRE = {
-    1: MaintenancePart.BRUSH_ROLL,
-    2: MaintenancePart.SIDE_BRUSH,
-    3: MaintenancePart.MOP_ROLL,
-    4: MaintenancePart.CASTER_AND_WEDGE,
-}
 
-
-def decode_maintenance_suggestions(
-    fields: Sequence[WireField],
-) -> tuple[MaintenancePart, ...]:
+def decode_maintenance_suggestions(fields: Sequence[WireField]) -> tuple[int, ...]:
     """Decode a recap's repeated maintenance enum, packed or unpacked.
 
-    Values the integration does not know are skipped so a new part does not
-    hide the known ones.
+    The app names four parts (brush roll, side brush, mop roll, caster and
+    wedge), but nothing yet ties a wire value to a part, so the raw values
+    are kept in ascending order without duplicates.
     """
     values: list[int] = []
     for field in fields:
@@ -46,8 +35,7 @@ def decode_maintenance_suggestions(
             raise DecodeError("maintenance suggestions have an invalid shape")
         if len(values) > MAX_MAINTENANCE_SUGGESTIONS:
             raise DecodeError("maintenance suggestions exceed the size limit")
-    parts = {MAINTENANCE_PARTS_BY_WIRE.get(value) for value in values}
-    return tuple(part for part in MaintenancePart if part in parts)
+    return tuple(sorted(set(values)))
 
 
 def decode_bag_pass_expiry(entry: HermesCollectionEntry) -> datetime | None:

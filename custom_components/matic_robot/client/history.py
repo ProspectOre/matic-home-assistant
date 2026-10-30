@@ -11,7 +11,7 @@ from google.protobuf.message import DecodeError
 from PIL import Image, UnidentifiedImageError
 
 from .consumables import decode_maintenance_suggestions
-from .models import HermesCollectionEntry, MaintenancePart
+from .models import HermesCollectionEntry
 from .wire import WireField, decode_fields, uuid_string
 
 MAX_SESSION_IMAGE_BYTES = 8 * 1024 * 1024
@@ -44,7 +44,7 @@ class MonthlyCleaningRecap:
     sweep_duration_seconds: float
     mop_duration_seconds: float
     favorite_room_name: str | None
-    maintenance_suggestions: tuple[MaintenancePart, ...] = ()
+    maintenance_suggestions: tuple[int, ...] = ()
 
 
 def decode_cleaning_session_image(entry: HermesCollectionEntry) -> CleaningSessionImage:

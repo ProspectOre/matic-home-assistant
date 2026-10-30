@@ -15,10 +15,10 @@ def _issue_prefix(entry_id: str) -> str:
 
 
 class MaintenanceIssues:
-    """Keep one Repair per part the newest recap suggests servicing.
+    """Keep one Repair while the newest recap suggests maintenance.
 
-    Issue ids carry the recap month, so dismissing this month's notice does
-    not hide next month's.
+    The issue id carries the recap month, so dismissing this month's notice
+    does not hide next month's.
     """
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
@@ -28,16 +28,15 @@ class MaintenanceIssues:
 
     @callback
     def async_sync(self, telemetry: RobotTelemetry) -> None:
-        """Match the Repairs to the newest recap; keep them if it is unreadable."""
+        """Match the Repair to the newest recap; keep it if the recap is unreadable."""
         suggestions = telemetry.maintenance_suggestions
         month = telemetry.maintenance_recap_month
         if suggestions is None or month is None:
             return
-        prefix = _issue_prefix(self._entry_id)
-        wanted = {f"{prefix}{month}_{part}": part for part in suggestions}
+        wanted = {f"{_issue_prefix(self._entry_id)}{month}"} if suggestions else set()
         if self._published == frozenset(wanted):
             return
-        for issue_id, part in wanted.items():
+        for issue_id in wanted:
             ir.async_create_issue(
                 self._hass,
                 DOMAIN,
@@ -45,7 +44,7 @@ class MaintenanceIssues:
                 is_fixable=False,
                 is_persistent=False,
                 severity=ir.IssueSeverity.WARNING,
-                translation_key=f"maintenance_{part}",
+                translation_key="maintenance_suggested",
                 translation_placeholders={
                     **repair_placeholders(self._hass, self._entry_id),
                     "month": month,
@@ -59,7 +58,7 @@ class MaintenanceIssues:
 
 @callback
 def async_delete_maintenance_issues(hass: HomeAssistant, entry_id: str) -> None:
-    """Remove every maintenance Repair for a removed robot."""
+    """Remove the maintenance Repair for a removed robot."""
     for issue_id in _existing_issue_ids(hass, entry_id):
         ir.async_delete_issue(hass, DOMAIN, issue_id)
 

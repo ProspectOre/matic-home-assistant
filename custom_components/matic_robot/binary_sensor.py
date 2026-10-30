@@ -15,7 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.models import MaintenancePart, RobotState
+from .client.models import RobotState
 from .entity import MaticEntity
 
 PARALLEL_UPDATES = 0
@@ -99,27 +99,16 @@ DESCRIPTIONS = (
         device_class=BinarySensorDeviceClass.RUNNING,
         value_fn=lambda state: state.operational.following_person,
     ),
-)
-
-
-def _maintenance_due(part: MaintenancePart) -> Callable[[RobotState], bool | None]:
-    """Report whether the newest monthly recap suggests servicing ``part``."""
-
-    def value(state: RobotState) -> bool | None:
-        suggestions = state.telemetry.maintenance_suggestions
-        return None if suggestions is None else part in suggestions
-
-    return value
-
-
-MAINTENANCE_DESCRIPTIONS = tuple(
     MaticBinarySensorDescription(
-        key=f"{part}_maintenance",
-        translation_key=f"{part}_maintenance",
+        key="maintenance_suggested",
+        translation_key="maintenance_suggested",
         device_class=BinarySensorDeviceClass.PROBLEM,
-        value_fn=_maintenance_due(part),
-    )
-    for part in MaintenancePart
+        value_fn=lambda state: (
+            None
+            if state.telemetry.maintenance_suggestions is None
+            else bool(state.telemetry.maintenance_suggestions)
+        ),
+    ),
 )
 
 
@@ -130,8 +119,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up verified Matic binary sensors."""
     async_add_entities(
-        MaticBinarySensor(entry, description)
-        for description in (*DESCRIPTIONS, *MAINTENANCE_DESCRIPTIONS)
+        MaticBinarySensor(entry, description) for description in DESCRIPTIONS
     )
 
 

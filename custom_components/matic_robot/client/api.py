@@ -88,7 +88,6 @@ from .models import (
     CuesVoiceStatus,
     FloorPlan,
     HermesCollectionEntry,
-    MaintenancePart,
     RobotInfo,
     RobotOperationalState,
     RobotPose,
@@ -2806,7 +2805,7 @@ def _decode_uploader_state(payload: object) -> bool | None:
 
 def _decode_latest_maintenance(
     entries: tuple[HermesCollectionEntry, ...],
-) -> tuple[str, tuple[MaintenancePart, ...]] | None:
+) -> tuple[str, tuple[int, ...]] | None:
     """Return the newest recap month and its maintenance suggestions.
 
     An unreadable newest recap yields None rather than an older month, so
