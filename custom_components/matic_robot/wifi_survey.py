@@ -84,7 +84,9 @@ class WifiSurveyStore:
 
     async def async_load(self) -> None:
         """Load stored cells, dropping anything malformed."""
-        stored = await self._store.async_load() or {}
+        stored = await self._store.async_load()
+        if not isinstance(stored, dict):
+            stored = {}
         self._enabled = stored.get("enabled") is True
         self._floors = _decode_floors(stored.get("floors"))
         self._closed = False

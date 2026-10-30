@@ -193,6 +193,10 @@ async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
     await store.async_load()
     assert store.cells(7) == []
 
+    hass_storage[f"{DOMAIN}.wifi_survey.entry"]["data"] = ["not", "a", "survey"]
+    await store.async_load()
+    assert (store.enabled, store.cells(7)) == (False, [])
+
 
 def _coordinator(*, charging: bool = False, mission: int | None = 7):
     floor_plan = SimpleNamespace(mission_id=7) if mission is not None else None

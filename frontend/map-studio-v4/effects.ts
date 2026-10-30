@@ -1107,7 +1107,9 @@ export class EffectController {
   #abortResources(except: readonly string[] = []): void {
     let mutationCancelled = false;
     for (const [name, controller] of this.#controllers) {
-      if (except.includes(name)) continue;
+      // The Wi-Fi layer owns its read: a new read, turning it off or dispose
+      // aborts it, and a frame change starts a fresh one.
+      if (except.includes(name) || name === "wifi-signal") continue;
       mutationCancelled ||= name === "plan-mutation" || name === "area-mutation" || name === "setting-mutation" || name === "plan-preflight";
       controller.abort();
       this.#controllers.delete(name);
@@ -1418,7 +1420,9 @@ export class EffectController {
       && previousDraftSession === entry.mapSessionKey;
     const preserve = ["catalog"];
     if (previousEntry?.entryId === entry.entryId) preserve.push("setting-mutation");
-    if (sameResourceBoundary) preserve.push("wifi-signal");
+    // Survey cells are drawn in one floor's map frame.
+    const sameWifiFrame = sameResourceBoundary
+      && previousEntry?.mapSessionKey === entry.mapSessionKey;
     if (sameResourceBoundary && !resetDrafts) preserve.push("plans", "areas");
     if (sameVerifiedFrame) preserve.push("plan-mutation", "area-mutation");
     const stamp = this.#coherence.begin(
@@ -1508,7 +1512,7 @@ export class EffectController {
       void this.loadPlans();
     }
     this.#resumeAreaCatalog();
-    if (!sameResourceBoundary) this.#reloadWifiSignalForNewFloor();
+    if (!sameWifiFrame) this.#reloadWifiSignalForNewFloor();
     if (coherent) {
       void this.#loadLiveScene(entry, stamp);
       void this.#loadPose(entry, stamp);
