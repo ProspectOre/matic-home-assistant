@@ -5,8 +5,9 @@
 Build dashboards, adjust settings, and use cleaning results in automations.
 Enable per-room statistics to track each room’s last clean and successful duration.
 
-Each robot has 54 fixed entities — 24 sensors, 11 binary sensors, 5 buttons,
-4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and 1 vacuum,
+Each robot has 55 fixed entities — 24 sensors, 11 binary sensors, 5 buttons,
+4 switches, 4 selects, 1 number, 2 cameras, 1 calendar, 1 event, 1 update, and
+1 vacuum,
 plus two opt-in statistics sensors per mapped room.
 
 ## Names and entity IDs
@@ -30,6 +31,7 @@ are disabled by default; enable them from the device's entity list.
 | Cues voice assistant · Double-pass mopping | `switch.matic_voice_assistant` · `switch.matic_deep_mop` | on |
 | Mopping water flow (0.5× to 2.0×) | `number.matic_water_flow` | on |
 | Map · 3D photo map | `camera.matic_map` · `camera.matic_photorealistic_map` | on · off |
+| Robot schedules | `calendar.matic_native_schedules` | on |
 | Cues | `event.matic_cues` | on |
 | Firmware | `update.matic_firmware` | on |
 | Activity · Battery · Rooms | `sensor.matic_activity` · `sensor.matic_battery` · `sensor.matic_rooms` | on |
@@ -136,6 +138,14 @@ show the latest confirmed result, whatever its cleaning mode and coverage.
 Room lists, SSID, schedules, detailed run results, and plan history remain
 available to templates through `state_attr()` but are excluded from Recorder
 attributes. See [privacy](privacy.md) for stored data and event data.
+
+## Robot schedules
+
+**Robot schedules** is a read-only calendar of the weekly schedules set in the
+Matic app, in each schedule's time zone (else the robot's). The robot stores no
+end time, so each run is a one-hour block. Descriptions give the cleaning mode,
+the rooms and whether order is kept. Switched-off schedules are hidden; details stay out of
+Recorder.
 
 ## Matic Cues
 

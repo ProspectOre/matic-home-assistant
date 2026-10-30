@@ -27,6 +27,7 @@ from custom_components.matic_robot.client.api import (
     _decode_water_flow_factor,
     _decode_wifi_status,
 )
+from custom_components.matic_robot.client.commands import CleaningMode, _coverage_specs
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
@@ -566,3 +567,46 @@ def test_decoders_fail_closed_and_use_safe_defaults() -> None:
     session = _decode_cleaning_session(empty_summary)
     assert session is not None
     assert session.rooms == ()
+
+
+def _schedule_with_goals(*specs: bytes) -> bytes:
+    weekly = _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 630))
+    goals = b"".join(
+        _bfield(1, _bfield(6, _bfield(1, b"") + _bfield(3, spec))) for spec in specs
+    )
+    return _bfield(1, weekly) + _bfield(7, goals)
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        (CleaningMode.VACUUM, "vacuum"),
+        (CleaningMode.MOP, "mop"),
+        (CleaningMode.BOTH, "vacuum_and_mop"),
+    ],
+)
+def test_schedule_cleaning_mode_reads_goal_specs(
+    mode: CleaningMode, expected: str
+) -> None:
+    schedule = _decode_schedule(_schedule_with_goals(*_coverage_specs(mode, 1)))
+
+    assert schedule is not None
+    assert schedule.cleaning_mode == expected
+
+
+def test_schedule_cleaning_mode_edge_cases() -> None:
+    def mode_of(payload: bytes) -> str | None:
+        schedule = _decode_schedule(payload)
+        assert schedule is not None
+        return schedule.cleaning_mode
+
+    # Proto3 leaves zero values out, so an empty spec is a vacuum goal.
+    assert mode_of(_schedule_with_goals(b"")) == "vacuum"
+    # A malformed spec is skipped rather than read as vacuum.
+    assert mode_of(_schedule_with_goals(b"\x0a\xff", _vfield(4, 1))) == "mop"
+    assert mode_of(_schedule_with_goals(_vfield(4, 2))) is None
+    assert mode_of(_schedule_with_goals()) is None
+    weekly = _bfield(1, _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 630)))
+    assert mode_of(weekly + _bfield(7, b"\x0a\xff")) is None
+    assert mode_of(weekly + _bfield(7, _fixed64(1, 1) + _fixed64(2, 2))) is None
+    assert mode_of(weekly + _vfield(7, 1)) is None
