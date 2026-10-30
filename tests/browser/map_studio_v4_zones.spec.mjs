@@ -72,7 +72,7 @@ test("Your areas notes a saved area that reaches into a no-go zone", async ({ pa
   ]);
 });
 
-test("renderer shades no-go zones and only outlines robot-made zones", async ({ page }) => {
+test("renderer shades no-go zones, only outlines robot-made zones and skips history maps", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zones-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
@@ -91,14 +91,22 @@ test("renderer shades no-go zones and only outlines robot-made zones", async ({ 
     const renderer = new RendererController(scene, overlay);
     const initial = createGalleryState("ready");
     const zone = (kind) => ({ kind, outline, holes: [[[1, 1], [1.2, 1], [1.2, 1.2]]], roomIds: [], areaIds: [] });
-    renderer.setState({ ...initial, resources: { ...initial.resources, areas: { status: "ready", problem: null,
-      value: { ...initial.resources.areas.value, zones: [zone("no_go"), zone("unknown")] } } } });
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const withZones = { ...initial, resources: { ...initial.resources, areas: { status: "ready", problem: null,
+      value: { ...initial.resources.areas.value, zones: [zone("no_go"), zone("unknown")] } } } };
+    renderer.setState(withZones);
+    await frame();
+    const live = { fills: fills.splice(0), dashes: dashes.splice(0) };
+    renderer.setState({ ...withZones, dataMode: "history" });
+    await frame();
     renderer.dispose();
-    return { fills, dashes };
+    return { ...live, historyFills: fills, historyDashes: dashes };
   }, NO_GO);
   // One even-odd fill (the no-go zone with its hole); the unknown zone is a
   // dashed outline only.
   expect(result.fills).toEqual(["evenodd"]);
   expect(result.dashes).toEqual([0, 0, 2, 0]);
+  // A history map draws neither.
+  expect(result.historyFills).toEqual([]);
+  expect(result.historyDashes).toEqual([]);
 });

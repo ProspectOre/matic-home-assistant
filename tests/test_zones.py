@@ -109,6 +109,37 @@ def test_zone_overlap_with_rooms_respects_holes() -> None:
     assert not zone_overlaps_polygon(zone, ((1.0, 1.0), (2.0, 2.0)))
 
 
+@pytest.mark.parametrize(
+    ("room", "overlaps"),
+    [
+        # Aligned edges with no vertex strictly inside the other shape.
+        (((3.0, 0.0), (3.0, 2.0), (1.0, 2.0), (1.0, 0.0)), True),
+        (SQUARE, True),
+        (((0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (0.0, 2.0), (0.0, 2.0)), True),
+        # Sharing an edge or a corner from outside is not shared area.
+        (((2.0, 0.0), (3.0, 0.0), (3.0, 2.0), (2.0, 2.0)), False),
+        (((2.0, 2.0), (3.0, 2.0), (3.0, 3.0)), False),
+        (((0.0, 0.0), (-1.0, 0.0), (-1.0, -1.0)), False),
+        # The zone sits inside the room, touching no room edge.
+        (((-1.0, -1.0), (3.0, -1.0), (3.0, 3.0), (-1.0, 3.0)), True),
+        # The bounds overlap but the room wraps around the zone's corner.
+        (
+            (
+                (2.5, -1.0),
+                (2.5, 2.5),
+                (-1.0, 2.5),
+                (-1.0, 2.2),
+                (2.2, 2.2),
+                (2.2, -1.0),
+            ),
+            False,
+        ),
+    ],
+)
+def test_zone_overlap_counts_only_shared_area(room, overlaps) -> None:
+    assert zone_overlaps_polygon(_zone(), room) is overlaps
+
+
 def test_zone_overlap_with_cleaning_circles() -> None:
     zone = _zone(holes=(HOLE,))
 

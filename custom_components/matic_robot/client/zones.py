@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import struct
+from itertools import pairwise
 
 from google.protobuf.message import DecodeError
 
@@ -102,6 +103,8 @@ def decode_zones(entries: tuple[HermesCollectionEntry, ...]) -> tuple[MapZone, .
 
 
 _Point = tuple[float, float]
+# How far off a room edge overlap probes sit; well under the 1.5 cm map grid.
+_PROBE_OFFSET_METERS = 1e-4
 
 
 def _contains(polygon: tuple[_Point, ...], point: _Point) -> bool:
@@ -151,17 +154,99 @@ def _zone_edges(zone: MapZone) -> list[tuple[_Point, _Point]]:
     return edges
 
 
+def _bounds(points: tuple[_Point, ...]) -> tuple[float, float, float, float]:
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _edge_in_bounds(
+    edge: tuple[_Point, _Point], bounds: tuple[float, float, float, float]
+) -> bool:
+    (x1, y1), (x2, y2) = edge
+    return not (
+        max(x1, x2) < bounds[0]
+        or max(y1, y2) < bounds[1]
+        or min(x1, x2) > bounds[2]
+        or min(y1, y2) > bounds[3]
+    )
+
+
+def _split_points(
+    start: _Point, end: _Point, others: list[tuple[_Point, _Point]]
+) -> list[float]:
+    """Return where other edges meet this edge, as fractions along it."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length = dx * dx + dy * dy
+    cuts = [0.0, 1.0]
+    for c, d in others:
+        ex, ey = d[0] - c[0], d[1] - c[1]
+        denominator = dx * ey - dy * ex
+        if denominator:
+            t = ((c[0] - start[0]) * ey - (c[1] - start[1]) * ex) / denominator
+            u = ((c[0] - start[0]) * dy - (c[1] - start[1]) * dx) / denominator
+            if 0 <= t <= 1 and 0 <= u <= 1:
+                cuts.append(t)
+        elif not _cross(start, end, c):
+            # Collinear: the other edge's ends split this one where they land.
+            cuts.extend(
+                t
+                for point in (c, d)
+                if 0
+                < (
+                    t := ((point[0] - start[0]) * dx + (point[1] - start[1]) * dy)
+                    / length
+                )
+                < 1
+            )
+    return sorted(cuts)
+
+
 def zone_overlaps_polygon(zone: MapZone, polygon: tuple[_Point, ...]) -> bool:
-    """Return whether a zone and a room polygon share any area."""
+    """Return whether a zone and a room polygon share area.
+
+    Touching boundaries do not count. Each room edge near the zone is split
+    where the zone boundary meets it, and a point just off either side of each
+    piece is tested against both shapes, so aligned edges are handled too.
+    """
     if len(polygon) < 3:
         return False
-    if _zone_contains(zone, polygon[0]) or _contains(polygon, zone.outline[0]):
+    zone_bounds = _bounds(zone.outline)
+    room_bounds = _bounds(polygon)
+    if not (
+        zone_bounds[0] < room_bounds[2]
+        and room_bounds[0] < zone_bounds[2]
+        and zone_bounds[1] < room_bounds[3]
+        and room_bounds[1] < zone_bounds[3]
+    ):
+        return False
+    # A zone wholly inside the room touches no room edge, so test one of its
+    # corners; a corner on the room's boundary is left to the edge probes.
+    corner = zone.outline[0]
+    if _contains(polygon, corner) and all(
+        _segment_distance(corner, a, b) > _PROBE_OFFSET_METERS
+        for a, b in _edges(polygon)
+    ):
         return True
-    return any(
-        _cross(a, b, c) * _cross(a, b, d) < 0 and _cross(c, d, a) * _cross(c, d, b) < 0
-        for a, b in _zone_edges(zone)
-        for c, d in _edges(polygon)
-    )
+    zone_edges = [
+        edge for edge in _zone_edges(zone) if _edge_in_bounds(edge, room_bounds)
+    ]
+    for start, end in _edges(polygon):
+        if (start == end) or not _edge_in_bounds((start, end), zone_bounds):
+            continue
+        dx, dy = end[0] - start[0], end[1] - start[1]
+        scale = _PROBE_OFFSET_METERS / math.hypot(dx, dy)
+        cuts = _split_points(start, end, zone_edges)
+        for low, high in pairwise(cuts):
+            if high - low <= 1e-9:
+                continue
+            middle = (low + high) / 2
+            x, y = start[0] + middle * dx, start[1] + middle * dy
+            for side in (1, -1):
+                probe = (x - side * dy * scale, y + side * dx * scale)
+                if _zone_contains(zone, probe) and _contains(polygon, probe):
+                    return True
+    return False
 
 
 def zone_overlaps_circle(zone: MapZone, center: _Point, radius: float) -> bool:

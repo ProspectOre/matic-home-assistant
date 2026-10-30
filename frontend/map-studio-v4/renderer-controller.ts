@@ -1640,7 +1640,10 @@ export class RendererController {
         for (const circle of circles) this.#drawCircle(context, circle);
       }
     }
-    this.#drawZones(context, state.resources.areas.value?.zones ?? [], palette);
+    // Zones describe the robot's current map, so a saved history map leaves them out.
+    if (state.dataMode === "live" && state.selection.floorId === "current") {
+      this.#drawZones(context, state.resources.areas.value?.zones ?? [], palette);
+    }
     const outline = state.draw.outline;
     if (outline && (state.workflow === "draw" || state.workflow === "areaReview")
       && !(state.workflow === "draw" && state.draw.tool === "outline")) {

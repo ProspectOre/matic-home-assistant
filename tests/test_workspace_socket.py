@@ -772,6 +772,36 @@ def test_coordinator_publishes_status_and_operational_changes_only() -> None:
     }
 
 
+def test_coordinator_invalidates_areas_when_zones_change() -> None:
+    entry = _LifecycleEntry("entry-a")
+
+    def state(zones: tuple[str, ...]) -> SimpleNamespace:
+        return SimpleNamespace(
+            info=SimpleNamespace(serial_number="private-serial"),
+            operational=SimpleNamespace(cleaning=False),
+            telemetry=SimpleNamespace(zones=zones),
+        )
+
+    coordinator = _CoordinatorPublisher(state(("kitchen-no-go",)))
+    entry.runtime_data.coordinator = coordinator
+    manager = WorkspaceSocket(_Hass([entry]))
+    connection = _connection()
+    manager.track_entry(entry)
+    manager.subscribe(connection, "entry-a", 23)
+
+    coordinator.publish()
+    assert connection.send_event.call_count == 0
+
+    coordinator.data = state(("kitchen-no-go", "stairs"))
+    coordinator.publish()
+    event = connection.send_event.call_args.args[1]["invalidation"]
+    assert event["resources"] == ["areas"]
+    assert event["revisions"]["areas"] == 1
+
+    coordinator.publish()
+    assert connection.send_event.call_count == 1
+
+
 @pytest.mark.asyncio
 async def test_unavailable_sources_and_idempotent_cleanup_are_safe() -> None:
     entry = _LifecycleEntry("entry-a")
