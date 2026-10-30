@@ -2354,15 +2354,18 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
         assert registry.async_get_issue(DOMAIN, issue) is None
         clock[0] = datetime(2026, 10, 30, 3, 2, tzinfo=UTC)
         coordinator._async_track_alerts(replace(base, error_codes=()))
+        clock[0] = datetime(2026, 10, 30, 3, 3, tzinfo=UTC)
+        coordinator._async_track_alerts(replace(base, error_codes=(207,)))
 
+    # 304 ran on from 03:00 without restarting; 207 cleared and came back.
     assert coordinator.unknown_alert_codes == {
         "207": {
             "first_seen": "2026-10-30T03:01:00+00:00",
-            "last_seen": "2026-10-30T03:01:00+00:00",
+            "last_seen": "2026-10-30T03:03:00+00:00",
         },
         "304": {
             "first_seen": "2026-10-30T03:00:00+00:00",
-            "last_seen": "2026-10-30T03:01:00+00:00",
+            "last_seen": "2026-10-30T03:00:00+00:00",
         },
     }
     # A reload starts a new coordinator; a Repair the old one raised is cleared

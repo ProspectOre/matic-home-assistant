@@ -123,8 +123,8 @@ brief firmware pulses. Recorded activity can help diagnose an error after it cle
 
 **Robot alert** names the alert when its code has a known meaning (bag full,
 bag missing) and shows Unknown alert otherwise. Its `unknown_codes_seen`
-attribute keeps when each unmapped code was first and last reported, so a code
-can be named later by matching it to what the Matic app showed at that time.
+attribute keeps when each unmapped code first and most recently started, so a
+code can be named later by matching it to what the Matic app showed at that time.
 A full or missing bag also raises a Repair with the fix, which clears when the
 robot stops reporting it.
 

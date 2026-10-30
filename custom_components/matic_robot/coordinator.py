@@ -167,6 +167,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._bag_previous_full: bool | None = None
         self._bag_errors_observed = False
         self._unknown_alert_codes: dict[int, dict[str, str]] = {}
+        self._confirmed_error_codes: frozenset[int] = frozenset()
         # None until the first confirmed state, so Repairs left by a coordinator
         # this reload replaced are reconciled too.
         self._alert_issues: set[str] | None = None
@@ -579,7 +580,14 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         ):
             return
         now = dt_util.utcnow().isoformat()
-        for code in state.error_codes:
+        previous, self._confirmed_error_codes = (
+            self._confirmed_error_codes,
+            frozenset(state.error_codes),
+        )
+        # Sightings change only when a code starts, which also changes the
+        # error codes in RobotState, so the sensor is notified without a
+        # separate refresh.
+        for code in self._confirmed_error_codes - previous:
             if code in ROBOT_ALERTS:
                 continue
             seen = self._unknown_alert_codes.get(code)
@@ -612,7 +620,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
     @property
     def unknown_alert_codes(self) -> dict[str, dict[str, str]]:
-        """Return when each unmapped alert code was first and last confirmed."""
+        """Return when each unmapped alert code first and most recently started."""
         return {
             str(code): dict(seen)
             for code, seen in sorted(self._unknown_alert_codes.items())
