@@ -1064,6 +1064,11 @@
         "name": "Clear Wi-Fi survey"
       }
     },
+    "calendar": {
+      "native_schedules": {
+        "name": "Robot schedules"
+      }
+    },
     "camera": {
       "map": {
         "name": "Map"

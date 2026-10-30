@@ -1,0 +1,42 @@
+import { expect, test } from "@playwright/test";
+
+// Drives Matic Map in Home Assistant while tests/live/server.py plays the
+// robot. Robot steps go through the simulator's control server.
+const control = "http://127.0.0.1:8124";
+
+async function step(request, name) {
+  const response = await request.post(`${control}/step/${name}`);
+  expect(response.ok()).toBe(true);
+}
+
+async function robotState(request) {
+  const response = await request.get(`${control}/state`);
+  expect(response.ok()).toBe(true);
+  return response.json();
+}
+
+test("rooms chosen in Matic Map are cleaned and the run finishes", async ({ page, request }) => {
+  await page.goto("/matic-map");
+  await expect(page.getByText("Docked").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Clean rooms" }).click();
+  await page.getByRole("checkbox", { name: "Kitchen" }).check();
+  await page.getByRole("checkbox", { name: "Study" }).check();
+  await page.getByRole("button", { name: "Clean 2 rooms" }).click();
+
+  // The robot receives one coverage command and starts in the Kitchen.
+  await expect.poll(async () => (await robotState(request)).phase).toBe("cleaning");
+  const started = await robotState(request);
+  expect(started.current_area).toBe("Kitchen");
+  expect(started.commands.filter(({ channel }) => channel === "user_command")).toHaveLength(1);
+  await expect(page.getByText("0 of 2 rooms completed · In Kitchen")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
+
+  await step(request, "finish_room");
+  await expect(page.getByText("In Study")).toBeVisible({ timeout: 30_000 });
+  await step(request, "finish_room");
+  await step(request, "finish_session");
+  await step(request, "arrive_at_dock");
+  await expect(page.getByText("Docked").first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("button", { name: "Clean 2 rooms" })).toBeEnabled();
+});
