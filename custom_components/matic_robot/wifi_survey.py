@@ -74,6 +74,8 @@ class WifiSurveyStore:
         self._enabled = False
         self._floors: dict[int, dict[_CellKey, SignalCell]] = {}
         self._closed = False
+        # Bumped by clear() so a scan that straddles it is discarded.
+        self._clears = 0
 
     @property
     def enabled(self) -> bool:
@@ -95,6 +97,7 @@ class WifiSurveyStore:
     def clear(self) -> None:
         """Forget every sample on every floor."""
         self._floors.clear()
+        self._clears += 1
         self._schedule_save()
 
     def add_sample(
@@ -161,6 +164,7 @@ class WifiSurveyStore:
         ):
             return
         mission_id = floor_plan.mission_id
+        clears = self._clears
         try:
             before = await client.async_get_pose(expected_mission_id=mission_id)
             dbm = await client.async_scan_wifi_signal()
@@ -168,7 +172,7 @@ class WifiSurveyStore:
         except MaticError as err:
             _LOGGER.debug("Wi-Fi survey sample skipped: %s", err)
             return
-        if dbm is None or not _poses_agree(before, after):
+        if dbm is None or clears != self._clears or not _poses_agree(before, after):
             return
         self.add_sample(
             mission_id, (before.x + after.x) / 2, (before.y + after.y) / 2, dbm, time()

@@ -220,6 +220,19 @@ async def test_sample_pairs_the_scan_with_the_pose_around_it(hass) -> None:
     client.async_get_pose.assert_awaited_with(expected_mission_id=7)
 
 
+async def test_sample_from_before_a_clear_is_dropped(hass) -> None:
+    store = WifiSurveyStore(hass, "entry")
+    client = _sampling_client(_pose(1.0, 1.0, 10.0), _pose(1.2, 1.0, 12.0))
+
+    async def _scan_then_clear() -> int | None:
+        store.clear()
+        return -55
+
+    client.async_scan_wifi_signal.side_effect = _scan_then_clear
+    await store._async_sample(client, _coordinator())
+    assert store.cells(7) == []
+
+
 @pytest.mark.parametrize(
     ("coordinator", "client"),
     [
