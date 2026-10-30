@@ -909,6 +909,11 @@ export class EffectController {
 
   #startPolling(): void {
     if (!this.#pageLifecycle.active) return;
+    // The store outlives a remounted panel, so a layer left on resumes here.
+    if (this.#store.value.wifiSignal && this.#wifiSignalTimer === null) {
+      this.#startWifiSignal();
+      void this.#loadWifiSignal();
+    }
     if (this.#catalogTimer === null) {
       this.#catalogTimer = window.setInterval(() => {
         void this.refreshCatalog();
@@ -2003,10 +2008,14 @@ export class EffectController {
   /** Show or hide the Wi-Fi signal layer; showing reads the current floor's survey. */
   async toggleWifiSignal(): Promise<void> {
     this.#store.dispatch({ type: "toggle-wifi-signal" });
+    this.#startWifiSignal();
+    await this.#loadWifiSignal();
+  }
+
+  #startWifiSignal(): void {
     this.#wifiSignalTimer ??= window.setInterval(() => {
       if (this.#pageLifecycle.active) void this.#loadWifiSignal();
     }, WIFI_SIGNAL_REFRESH_MS);
-    await this.#loadWifiSignal();
   }
 
   #stopWifiSignal(): void {
