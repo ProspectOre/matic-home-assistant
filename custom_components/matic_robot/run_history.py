@@ -521,19 +521,32 @@ class RunTrails:
         map_key: str | None,
         *,
         run_id: str | None = None,
-        window: tuple[str, str] | None = None,
+        window: tuple[str, str | None] | None = None,
     ) -> str | None:
-        """Find the saved trail for a managed run, or for a robot run's time window."""
+        """Find the trail for a managed run, or for a robot run's time window.
+
+        A window with no end is a robot task still running, drawn by the live
+        robot trail when one is recording on this map.
+        """
         if map_key is None:
             return None
         live = self._live
         if (
-            run_id is not None
-            and live is not None
-            and live.run_id == run_id
+            live is not None
             and live.map_key == map_key
+            and (
+                (run_id is not None and live.run_id == run_id)
+                or (
+                    window is not None
+                    and window[1] is None
+                    and live.run_id is None
+                    and live.started_at >= window[0]
+                )
+            )
         ):
             return LIVE_TRAIL_ID
+        if window is not None and window[1] is None:
+            window = (window[0], window[0])
         for trail in reversed(self._trails):
             if trail["map_key"] != map_key:
                 continue

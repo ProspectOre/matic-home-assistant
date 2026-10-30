@@ -527,6 +527,26 @@ async def test_robot_started_trails_match_by_time_and_stay_bounded(
     assert trails.trail_id(MAP, run_id="nope") is None
 
 
+async def test_an_open_robot_task_matches_the_live_robot_trail(
+    hass: HomeAssistant,
+) -> None:
+    trails = RunTrails(hass, "entry")
+    with patch.object(
+        run_history.dt_util,
+        "utcnow",
+        return_value=datetime(2026, 10, 29, 16, 0, 30, tzinfo=UTC),
+    ):
+        trails.observe(run_id=None, native_active=True, map_key=MAP, point=(0, 0))
+    started = "2026-10-29T16:00:00+00:00"
+    assert trails.trail_id(MAP, window=(started, None)) == LIVE_TRAIL_ID
+    # A session that started after this trail began, another map, or the live
+    # trail of a managed run does not match.
+    assert trails.trail_id(MAP, window=("2026-10-29T17:00:00+00:00", None)) is None
+    assert trails.trail_id("other-map", window=(started, None)) is None
+    trails.observe(run_id="run-1", native_active=True, map_key=MAP, point=(1, 1))
+    assert trails.trail_id(MAP, window=(started, None)) is None
+
+
 async def test_trails_reload_and_reject_damaged_storage(
     hass: HomeAssistant, hass_storage
 ) -> None:

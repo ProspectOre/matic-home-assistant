@@ -1911,7 +1911,7 @@ class MaticRunHistoryView(HomeAssistantView):
                 if run["source"] == "home_assistant"
                 else trails.trail_id(
                     map_key,
-                    window=(run["started_at"], run["ended_at"] or run["started_at"]),
+                    window=(run["started_at"], run["ended_at"]),
                 )
                 if run["started_at"] is not None
                 else None
