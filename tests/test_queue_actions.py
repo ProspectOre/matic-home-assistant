@@ -299,7 +299,7 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
 
 
 async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> None:
-    """The leg's own settlement closes a skipped room as skipped."""
+    """The leg closes a skipped room as skipped and lets the run continue."""
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
         0,
@@ -334,6 +334,7 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
             return ()
         return (_leg_record(("Kitchen",), ("Kitchen",)),)
 
+    prefetch_next = AsyncMock()
     completed = await _async_run_leg(
         hass,
         _call(hass),
@@ -345,10 +346,13 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         managed_user_command=AsyncMock(),
         motion_token=7,
         run_id="run-1",
+        prefetch_next=prefetch_next,
     )
     await hass.async_block_till_done()
 
-    assert completed is False
+    # The skipped room is settled, so the run goes on to its next leg.
+    assert completed is True
+    prefetch_next.assert_awaited_once()
     manager.async_mark_ended_unverified.assert_not_awaited()
     manager.async_mark_skipped.assert_awaited_once_with(
         "serial", "away", rooms[1], run_id="run-1"
