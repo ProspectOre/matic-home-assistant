@@ -34,7 +34,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false, viewport 
 async function loadStoreHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { WorkspaceStore, selectPrimaryAction, canSelectRooms } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view";',
+      contents: 'export { WorkspaceStore, selectPrimaryAction, canSelectRooms } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail } from "./frontend/map-studio-v4/run-history-data";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -1757,5 +1757,35 @@ test.describe("cleaning history", () => {
     await patchState(gallery, { resources: { ...(await snapshot(page)).resources, runs: { status: "error", value: null, problem: "runs-unavailable" } } });
     await expect(gallery.getByText("Cleaning history isn't available right now.")).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Try again" })).toBeVisible();
+  });
+
+  test("the live trail grows only during a run and starts empty for the next one", async ({ page }) => {
+    await loadStoreHarness(page);
+    const steps = await page.evaluate(async (harness) => {
+      const { WorkspaceStore, createGalleryState, extendLiveTrail } = await import(harness);
+      const ready = createGalleryState("ready");
+      const key = ready.resources.entry.mapSessionKey;
+      const store = new WorkspaceStore({ ...ready, activity: "cleaning", trail: { id: "live", mapSessionKey: key, segments: [[[0, 0]]] } });
+      const pose = (x) => ({ ...ready.resources.pose.value, mapSessionKey: key, position: [x, 0] });
+      const points = () => store.value.trail.segments.flat().map(([x]) => x);
+      const seen = [];
+      extendLiveTrail(store, pose(1));
+      extendLiveTrail(store, pose(1.1));
+      seen.push(points());
+      store.patch({ activity: "docked" });
+      extendLiveTrail(store, pose(2));
+      seen.push(points());
+      store.patch({ activity: "cleaning" });
+      extendLiveTrail(store, pose(3));
+      seen.push(points());
+      store.patch({ lastRun: { runId: "run-2", outcome: "running", completedRoomCount: 0, roomCount: 1 } });
+      extendLiveTrail(store, pose(4));
+      seen.push(points());
+      store.patch({ activity: "recharging" });
+      extendLiveTrail(store, pose(5));
+      seen.push(points());
+      return seen;
+    }, HARNESS);
+    expect(steps).toEqual([[0, 1], [0, 1], [3], [4], [4, 5]]);
   });
 });

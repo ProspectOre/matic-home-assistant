@@ -4,7 +4,7 @@
 // Runtime helpers arrive from effects so this module adds no startup edge.
 import type { MaticBackend } from "./backend";
 import type { MapEntry, PoseModel } from "./backend-contracts";
-import type { WorkspaceNotice } from "./contracts";
+import type { RobotActivity, WorkspaceNotice } from "./contracts";
 import type { WorkspaceStore } from "./state";
 
 export type RunOutcome = "running" | "finished" | "not_finished" | "unknown";
@@ -177,10 +177,25 @@ export const readRuns = async (
   }
 };
 
-/** Adds a verified live pose to the run-in-progress trail, keeping points at least 15 cm apart. */
+const WORKING: readonly RobotActivity[] = ["starting", "cleaning", "paused", "returning", "stopping"];
+// The run each store's live trail last grew for; null while no run is active.
+const trailRuns = new WeakMap<WorkspaceStore, string | null>();
+
+/**
+ * Adds a verified live pose to the run-in-progress trail, keeping points at
+ * least 15 cm apart. As in run_history.py, a managed run is its own trail
+ * and a robot-started task lasts while the robot works; poses between runs
+ * are not drawn, and a new run starts an empty trail.
+ */
 export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void => {
-  const trail = store.value.trail;
-  if (!pose.position || trail?.id !== "live" || trail.mapSessionKey !== pose.mapSessionKey) return;
+  const state = store.value;
+  const managed = state.lastRun?.outcome === "running" ? `run:${state.lastRun.runId}` : null;
+  const run = managed ?? (WORKING.includes(state.activity) ? "robot" : null);
+  const previous = trailRuns.get(store);
+  trailRuns.set(store, run);
+  let trail = state.trail;
+  if (!run || !pose.position || trail?.id !== "live" || trail.mapSessionKey !== pose.mapSessionKey) return;
+  if (previous !== undefined && previous !== run) trail = { ...trail, segments: [[]] };
   const segment = trail.segments.at(-1) ?? [];
   const last = segment.at(-1);
   const [x, y] = pose.position;
