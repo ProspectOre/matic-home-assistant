@@ -1005,7 +1005,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 9
+    assert hass.http.register_view.call_count == 10
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_SLAM_POSE_VIEW,
