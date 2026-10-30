@@ -1,7 +1,7 @@
 // Custom-area decoding is loaded only when a workflow or pinned area needs it.
 // Runtime helpers arrive from the backend so this module adds no startup edge.
 import type { AreaOutline } from "./area-outline";
-import type { AreaCircle, AreaBindingStatus, AreasCatalog, SavedArea } from "./backend-contracts";
+import type { AreaCircle, AreaBindingStatus, AreasCatalog, MapZoneOverlay, SavedArea } from "./backend-contracts";
 type AreaCatalogHelpers = typeof import("./backend-contracts").areaCatalogHelpers;
 type AreaCatalogGeometry = Pick<typeof import("./area-outline"), "validOutline">;
 
@@ -35,6 +35,32 @@ export const parseAreasCatalog = (value: unknown, helpers: AreaCatalogHelpers, g
     return "unknown";
   };
 
+  const parseRing = (value: unknown): (readonly [number, number])[] => {
+    if (!Array.isArray(value) || value.length < 3 || value.length > 4096) throw new ContractError("invalid-zone");
+    return value.map((p) => {
+      if (!Array.isArray(p) || p.length !== 2) throw new ContractError("invalid-zone");
+      return [
+        boundedNumber(p[0], -1_000_000, 1_000_000, "invalid-zone"),
+        boundedNumber(p[1], -1_000_000, 1_000_000, "invalid-zone"),
+      ] as const;
+    });
+  };
+  const parseIds = (value: unknown): string[] => {
+    if (!Array.isArray(value) || value.length > 256) throw new ContractError("invalid-zone");
+    return value.map((id) => boundedString(id, 128, "invalid-zone"));
+  };
+  const parseZone = (value: unknown): MapZoneOverlay => {
+    const zone = objectValue(value, "invalid-zone");
+    if (!Array.isArray(zone.holes) || zone.holes.length > 64) throw new ContractError("invalid-zone");
+    return {
+      kind: zone.kind === "no_go" ? "no_go" : "unknown",
+      outline: parseRing(zone.outline),
+      holes: zone.holes.map(parseRing),
+      roomIds: parseIds(zone.room_ids),
+      areaIds: parseIds(zone.area_ids),
+    };
+  };
+
   const payload = objectValue(value, "invalid-areas");
   if (!Array.isArray(payload.areas) || payload.areas.length > 256) {
     throw new ContractError("invalid-area-list");
@@ -59,5 +85,8 @@ export const parseAreasCatalog = (value: unknown, helpers: AreaCatalogHelpers, g
       } satisfies SavedArea;
     }),
     selectedArea: selectedId(payload.selected_area, "invalid-selected-area"),
+    zones: payload.zones === undefined ? []
+      : Array.isArray(payload.zones) && payload.zones.length <= 64 ? payload.zones.map(parseZone)
+        : (() => { throw new ContractError("invalid-zone"); })(),
   };
 };

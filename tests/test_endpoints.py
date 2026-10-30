@@ -10,14 +10,15 @@ from custom_components.matic_robot.client.endpoints import (
 
 
 def test_endpoint_registry_is_unique_typed_and_excludes_credentials() -> None:
-    assert len(HERMES_ENDPOINTS) == 40
+    assert len(HERMES_ENDPOINTS) == 43
     assert len(HERMES_ENDPOINT_MAP) == len(HERMES_ENDPOINTS)
     assert HERMES_ENDPOINT_NAMES == tuple(HERMES_ENDPOINT_MAP)
     assert HERMES_ENDPOINT_MAP["current_version"].kind is HermesEndpointKind.PROPERTY
     assert HERMES_ENDPOINT_MAP["zones"].kind is HermesEndpointKind.COLLECTION
     assert HERMES_ENDPOINT_MAP["coverage_session_history"].tracked is True
     assert HERMES_ENDPOINT_MAP["displayed_mission"].tracked is True
-    assert HERMES_ENDPOINT_MAP["zones"].tracked is False
+    assert HERMES_ENDPOINT_MAP["zones"].tracked is True
+    assert HERMES_ENDPOINT_MAP["planned_path"].tracked is False
     assert (
         HERMES_ENDPOINT_MAP["current_version"].sensitivity
         is HermesEndpointSensitivity.DIAGNOSTIC

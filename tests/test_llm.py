@@ -6,10 +6,13 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import probatio
 import pytest
@@ -18,6 +21,7 @@ from homeassistant.core import Context, Event, State
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.area_binding import (
@@ -30,9 +34,11 @@ from custom_components.matic_robot.area_binding import (
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     CleaningModeResult,
+    CleaningSchedule,
     CleaningSession,
     CleaningSessionRecord,
     FloorPlan,
+    MapZone,
     RobotInfo,
     RobotOperationalState,
     RobotState,
@@ -61,6 +67,9 @@ from custom_components.matic_robot.llm import (
     MaticGetPlanReadinessTool,
     MaticGetPlanTool,
     MaticGetRecentEventsTool,
+    MaticGetRunHistoryTool,
+    MaticGetSchedulesTool,
+    MaticGetZonesTool,
     MaticGoToRoomTool,
     MaticResetScheduleTool,
     MaticRobotStatusAPI,
@@ -212,7 +221,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     hass = _hass(_entry())
     api = MaticRobotStatusAPI(hass)
     api.async_start()
-    assert hass.bus.async_listen.call_count == 18
+    assert hass.bus.async_listen.call_count == 21
 
     event_callback = hass.bus.async_listen.call_args_list[0].args[1]
     event_callback(
@@ -242,6 +251,23 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     assert event["data"]["device_id"] is None
     assert "ignored" not in event["data"]
     assert "software_version" not in event["data"]
+
+    event_callback(
+        Event(
+            "matic_robot_room_held",
+            {
+                "room_id": "7",
+                "reason_code": "occupied",
+                "sensor": "binary_sensor.nursery",
+            },
+            time_fired_timestamp=0,
+        )
+    )
+    assert api.recent_events[-1]["data"] == {
+        "room_id": "7",
+        "reason_code": "occupied",
+        "sensor": "binary_sensor.nursery",
+    }
 
     event_callback(
         Event(
@@ -389,6 +415,9 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "MaticGetNativeHistory",
         "MaticGetRecentEvents",
         "MaticGetActivity",
+        "MaticGetRunHistory",
+        "MaticGetSchedules",
+        "MaticGetZones",
         "MaticGetFirmware",
         "MaticRunPlan",
         "MaticCleanRooms",
@@ -423,7 +452,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "matic_robot_firmware_research",
     ]
     assert register.call_args_list[0].args == (hass, registered)
-    assert hass.bus.async_listen.call_count == 36
+    assert hass.bus.async_listen.call_count == 42
 
 
 async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:
@@ -2916,3 +2945,255 @@ async def test_assist_tools_only_see_robots_exposed_to_the_assistant() -> None:
             with pytest.raises(HomeAssistantError, match="No robot is set up"):
                 await call(assist[name], {})
     should_expose.assert_called_with(hass, "conversation", "vacuum.hidden")
+
+
+async def test_run_history_explains_endings_and_survives_robot_history_failures() -> (
+    None
+):
+    entry = _entry()
+    rooms = [{"name": f"Room {index}", "result": "cleaned"} for index in range(70)]
+    runs = [
+        {
+            "id": "run-new",
+            "source": "home_assistant",
+            "started_at": "2026-10-30T10:00:00+00:00",
+            "ended_at": "2026-10-30T10:30:00+00:00",
+            "plan_name": "Whole home",
+            "outcome": "partial",
+            "ending": "low_battery",
+            "rooms": rooms,
+            "areas": [],
+            "trail": "private",
+        },
+        {
+            "id": "robot-old",
+            "source": "robot",
+            "started_at": "2026-10-29T10:00:00+00:00",
+            "ended_at": None,
+            "plan_name": None,
+            "outcome": "unknown",
+            "ending": "unknown",
+            "rooms": [],
+            "areas": [],
+        },
+    ]
+    entry.runtime_data.cleaning_plans.run_history.return_value = runs
+    records = (MagicMock(),)
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = records
+    hass = _hass(entry)
+    tool = MaticGetRunHistoryTool()
+    result = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {"limit": 1}), _context())
+    ).data
+    entry.runtime_data.cleaning_plans.run_history.assert_called_with(
+        "synthetic-serial", records
+    )
+    assert result["robot_history"] is True
+    assert "low_battery" in result["ending_meaning"]
+    assert result["runs"] == [
+        {
+            "source": "home_assistant",
+            "started_at": "2026-10-30T10:00:00+00:00",
+            "ended_at": "2026-10-30T10:30:00+00:00",
+            "plan_name": "Whole home",
+            "outcome": "partial",
+            "ending": "low_battery",
+            "rooms": rooms[:64],
+            "areas": [],
+        }
+    ]
+
+    entry.runtime_data.client.async_get_cleaning_session_records.side_effect = (
+        CannotConnectError("offline")
+    )
+    failed = (
+        await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    ).data
+    entry.runtime_data.cleaning_plans.run_history.assert_called_with(
+        "synthetic-serial", ()
+    )
+    assert failed["robot_history"] is False
+    assert len(failed["runs"]) == 2
+
+
+def _schedule(**changes: Any) -> CleaningSchedule:
+    values: dict[str, Any] = {
+        "name": "Weekday mornings",
+        "weekdays": ("monday", "wednesday"),
+        "minute_of_day": 9 * 60 + 30,
+        "timezone": None,
+        "ordered": True,
+        "enabled": True,
+        "room_ids": ("room-study", "room-gone"),
+        "cleaning_mode": "vacuum_and_mop",
+    }
+    values.update(changes)
+    return CleaningSchedule(**values)
+
+
+def _with_telemetry(entry: Any, **changes: Any) -> None:
+    state = entry.runtime_data.coordinator.data
+    entry.runtime_data.coordinator.data = replace(
+        state, telemetry=replace(state.telemetry, **changes)
+    )
+
+
+async def test_schedules_list_rooms_by_name_and_the_runs_coming_up() -> None:
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (Room("study", "Study", "room-study", b"study", ()),),
+    )
+    entry = _entry(floor_plan=floor_plan)
+    _with_telemetry(
+        entry,
+        timezone="America/Los_Angeles",
+        scheduled_cleanings=2,
+        schedules=(
+            _schedule(),
+            _schedule(
+                name=None,
+                weekdays=("sunday",),
+                timezone="UTC",
+                ordered=False,
+                enabled=False,
+                room_ids=(),
+                cleaning_mode=None,
+            ),
+        ),
+    )
+    hass = _hass(entry)
+    tool = MaticGetSchedulesTool()
+    now = datetime(2026, 11, 2, 8, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+    with patch.object(dt_util, "now", return_value=now):
+        result = (
+            await tool.async_call(
+                hass, llm.ToolInput(tool.name, {"days": "3"}), _context()
+            )
+        ).data
+    assert result["schedules"] == [
+        {
+            "name": "Weekday mornings",
+            "enabled": True,
+            "weekdays": ["monday", "wednesday"],
+            "time": "09:30",
+            "timezone": "America/Los_Angeles",
+            "cleaning_mode": "vacuum_and_mop",
+            "rooms": ["Study", "Unknown room"],
+            "rooms_in_order": True,
+        },
+        {
+            "name": None,
+            "enabled": False,
+            "weekdays": ["sunday"],
+            "time": "09:30",
+            "timezone": "UTC",
+            "cleaning_mode": None,
+            "rooms": [],
+            "rooms_in_order": False,
+        },
+    ]
+    assert result["upcoming"] == [
+        {"name": "Weekday mornings", "starts_at": "2026-11-02T09:30:00-08:00"},
+        {"name": "Weekday mornings", "starts_at": "2026-11-04T09:30:00-08:00"},
+    ]
+    assert result["upcoming_truncated"] is False
+    assert result["schedules_readable"] is True
+
+    # Half an hour into Monday's run, only later starts are listed.
+    with patch.object(dt_util, "now", return_value=now.replace(hour=10)):
+        later = (
+            await tool.async_call(
+                hass, llm.ToolInput(tool.name, {"days": "3"}), _context()
+            )
+        ).data
+    assert later["upcoming"] == [
+        {"name": "Weekday mornings", "starts_at": "2026-11-04T09:30:00-08:00"}
+    ]
+
+    every_day = tuple(
+        _schedule(
+            weekdays=(
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            ),
+            minute_of_day=minute,
+        )
+        for minute in range(65)
+    )
+    _with_telemetry(entry, schedules=every_day)
+    with patch.object(dt_util, "now", return_value=now):
+        full = (
+            await tool.async_call(
+                hass, llm.ToolInput(tool.name, {"days": 14}), _context()
+            )
+        ).data
+    assert len(full["schedules"]) == len(full["upcoming"]) == 64
+    assert full["upcoming_truncated"] is True
+
+    no_map = _entry()
+    _with_telemetry(no_map, schedules=(_schedule(),))
+    with patch.object(dt_util, "now", return_value=now):
+        bare = (
+            await tool.async_call(
+                _hass(no_map), llm.ToolInput(tool.name, {}), _context()
+            )
+        ).data
+    assert bare["schedules"][0]["rooms"] == ["Unknown room", "Unknown room"]
+    assert bare["schedules"][0]["timezone"] is None
+    assert bare["schedules_readable"] is False
+
+
+async def test_zones_name_the_rooms_they_cover_on_the_current_map() -> None:
+    square = ((0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0))
+    floor_plan = FloorPlan(
+        7,
+        "partition",
+        b"partition",
+        (
+            Room("study", "Study", "room-study", b"study", square),
+            Room(
+                "hall",
+                "Hall",
+                "room-hall",
+                b"hall",
+                ((10.0, 0.0), (14.0, 0.0), (14.0, 4.0), (10.0, 4.0)),
+            ),
+        ),
+    )
+    zone = MapZone(7, "no_go", 1, ((1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)))
+    other_floor = MapZone(8, "no_go", 1, square)
+    entry = _entry(floor_plan=floor_plan)
+    _with_telemetry(entry, zones=(zone, other_floor))
+    entry.runtime_data.client.endpoint_health = {"zones": "ok"}
+    tool = MaticGetZonesTool()
+    result = (
+        await tool.async_call(_hass(entry), llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert result["map_available"] is True
+    assert result["zones_readable"] is True
+    assert result["zones"] == [{"kind": "no_go", "rooms": ["Study"]}]
+    assert result["zones_on_other_maps"] == 1
+
+    no_map = _entry()
+    _with_telemetry(no_map, zones=(zone,))
+    no_map.runtime_data.client.endpoint_health = {"zones": "CannotConnectError"}
+    bare = (
+        await tool.async_call(_hass(no_map), llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert bare["map_available"] is False
+    assert bare["zones_readable"] is False
+    assert bare["zones"] == []
+
+    _with_telemetry(entry, zones=(zone,) * 65)
+    many = (
+        await tool.async_call(_hass(entry), llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert len(many["zones"]) == 64
+    assert bare["zones_on_other_maps"] is None

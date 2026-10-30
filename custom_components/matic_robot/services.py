@@ -65,6 +65,7 @@ from .managed_executor import (
     _ensure_stop_settled,
     _validation_error,
 )
+from .occupancy import occupancy_holds
 from .plans import (
     CadenceBindingError,
     CleaningPlanManager,
@@ -76,6 +77,7 @@ from .plans import (
     PlanAreaMapChangedError,
     PlanAreaMissingError,
     PlanDisabledError,
+    PlanRoomsHeldError,
     RoomSequenceLimitError,
     SavedPlanLimitError,
     SharedRoomScheduleLockedError,
@@ -96,6 +98,9 @@ SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
 SERVICE_CLEAN_AREA = "clean_area"
 SERVICE_GO_TO_ROOM = "go_to_room"
+SERVICE_SKIP_ROOM = "skip_room"
+SERVICE_CLEAN_ROOM_NEXT = "clean_room_next"
+SERVICE_CLEAN_ROOM_AGAIN = "clean_room_again"
 SERVICE_INTELLIGENT_CLEAN = "intelligent_clean"
 SERVICE_CLEAN_ENTIRE_PLAN = "clean_entire_plan"
 SERVICE_RUN_SELECTED_PLAN = "run_selected_plan"
@@ -142,6 +147,20 @@ GO_TO_ROOM_SERVICE_SCHEMA = cv.make_entity_service_schema(
         probatio.Required("room"): probatio.All(
             cv.string, probatio.Length(min=1, max=128)
         )
+    }
+)
+
+CLEAN_ROOM_AGAIN_SERVICE_SCHEMA = cv.make_entity_service_schema(
+    {
+        probatio.Required("room"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Optional("cleaning_mode"): probatio.In(
+            [mode.value for mode in CleaningMode]
+        ),
+        probatio.Optional("coverage_setting"): probatio.In(
+            [setting.value for setting in CoverageSetting]
+        ),
     }
 )
 
@@ -342,6 +361,15 @@ SAVE_PLAN_SCHEMA = cv.make_entity_service_schema(
         probatio.Optional("finish_current_room", default=False): cv.boolean,
         probatio.Optional("finish_current_room_threshold", default=50): probatio.All(
             probatio.Coerce(int), probatio.Range(min=0, max=100)
+        ),
+        probatio.Optional("occupancy_aware", default=False): cv.boolean,
+        probatio.Optional("occupancy_sensors", default=dict): probatio.All(
+            {
+                probatio.All(cv.string, probatio.Length(min=1, max=128)): (
+                    cv.entity_domain("binary_sensor")
+                )
+            },
+            probatio.Length(max=MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE),
         ),
         probatio.Optional("start_timeout", default=120): probatio.All(
             probatio.Coerce(int), probatio.Range(min=10, max=600)
@@ -633,6 +661,42 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=GO_TO_ROOM_SERVICE_SCHEMA,
     )
 
+    def queue_handler(
+        command: str,
+    ) -> Callable[[ServiceCall], Coroutine[Any, Any, None]]:
+        async def async_change_queue(call: ServiceCall) -> None:
+            """Change one room's place in the clean that is running."""
+            params = {"room": call.data["room"]}
+            if "cleaning_mode" in call.data:
+                params["cleaning_mode"] = call.data["cleaning_mode"]
+            if "coverage_setting" in call.data:
+                params["coverage"] = call.data["coverage_setting"]
+            await hass.services.async_call(
+                VACUUM_DOMAIN,
+                "send_command",
+                {
+                    ATTR_ENTITY_ID: _resolve_loaded_matic_vacuums(hass, call),
+                    "command": command,
+                    "params": params,
+                },
+                blocking=True,
+                context=call.context,
+            )
+
+        return async_change_queue
+
+    for service, schema in (
+        (SERVICE_SKIP_ROOM, GO_TO_ROOM_SERVICE_SCHEMA),
+        (SERVICE_CLEAN_ROOM_NEXT, GO_TO_ROOM_SERVICE_SCHEMA),
+        (SERVICE_CLEAN_ROOM_AGAIN, CLEAN_ROOM_AGAIN_SERVICE_SCHEMA),
+    ):
+        hass.services.async_register(
+            DOMAIN,
+            service,
+            _require_matic_control(hass, queue_handler(service)),
+            schema=schema,
+        )
+
     async def async_clean_area(call: ServiceCall) -> None:
         """Clean one private saved area without putting coordinates in the call."""
         entity_id, entry, serial_number, _room_map = _saved_plan_context(
@@ -768,6 +832,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
 
         initial_preview_token: str | None = None
+        # Occupancy is read once at admission. A sensor that changes while the
+        # run waits for the robot does not invalidate the run.
+        held_rooms = _plan_occupancy_holds(
+            hass, manager, serial_number, entity_id, call.data.get("plan"), room_map
+        )
         try:
             _preview_floor, preview, initial_preview_token = _saved_plan_preview(
                 manager,
@@ -776,6 +845,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 room_map,
                 call.data.get("plan"),
                 intelligent=intelligent,
+                held_rooms=held_rooms,
             )
             if preview_token is not None and preview_token != initial_preview_token:
                 raise _validation_error(
@@ -806,6 +876,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     current_room_map,
                     call.data.get("plan"),
                     intelligent=intelligent,
+                    held_rooms=held_rooms,
                 )
             except (KeyError, TypeError, ValueError) as err:
                 raise _validation_error(
@@ -881,6 +952,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             validate_prepared_run=validate_prepared_run,
             # The run order of rooms and custom areas, when there is an area.
             entries=preview["entries"] if _preview_has_area(preview) else None,
+            held_rooms=preview.get("held_rooms", ()),
         )
 
     async def async_clean_room_sequence(call: ServiceCall) -> None:
@@ -1124,6 +1196,14 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 entry,
                 room_map,
                 call.data.get("plan"),
+                held_rooms=_plan_occupancy_holds(
+                    hass,
+                    manager,
+                    serial_number,
+                    entity_id,
+                    call.data.get("plan"),
+                    room_map,
+                ),
             )
         except KeyError as err:
             raise _validation_error(
@@ -1399,6 +1479,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "return_to_base": call.data["return_to_base"],
             "finish_current_room": call.data["finish_current_room"],
             "finish_current_room_threshold": call.data["finish_current_room_threshold"],
+            "occupancy_aware": call.data["occupancy_aware"],
+            "occupancy_sensors": {
+                room_id: sensor
+                for room_id, sensor in call.data["occupancy_sensors"].items()
+                if room_id in {room["room_id"] for room in rooms}
+            },
             "start_timeout": call.data["start_timeout"],
             "completion_timeout": call.data["completion_timeout"],
         }
@@ -1558,6 +1644,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 room for room in plan["rooms"] if room["room_id"] == removed["room_id"]
             )
             plan["rooms"].remove(deleted)
+            sensors = plan.get("occupancy_sensors")
+            if isinstance(sensors, dict):
+                sensors.pop(str(removed["room_id"]), None)
         plan["entries"] = entries
         if not entries:
             plan["enabled"] = False
@@ -1816,6 +1905,7 @@ def _saved_plan_preview(
     plan_reference: str | None,
     *,
     intelligent: bool | None = None,
+    held_rooms: Mapping[str, Mapping[str, str]] | None = None,
 ) -> tuple[FloorPlan, dict[str, Any], str]:
     """Resolve one saved plan and its stable execution fingerprint."""
     floor_plan = _current_floor_plan(entry)
@@ -1828,6 +1918,8 @@ def _saved_plan_preview(
     }
     if intelligent is not None:
         preview_kwargs["intelligent"] = intelligent
+    if held_rooms:
+        preview_kwargs["held_rooms"] = held_rooms
     preview = manager.preview(serial_number, room_map, plan_reference, **preview_kwargs)
     token = saved_plan_preview_token(
         preview,
@@ -1836,6 +1928,23 @@ def _saved_plan_preview(
         room_identities=room_identities,
     )
     return floor_plan, preview, token
+
+
+def _plan_occupancy_holds(
+    hass: HomeAssistant,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str,
+    plan_reference: str | None,
+    room_map: Mapping[str, str],
+) -> dict[str, dict[str, str]]:
+    """Read which rooms an occupancy-aware plan holds right now."""
+    try:
+        plan = manager.plan(serial_number, plan_reference)
+    except KeyError:
+        # The preview reports the unknown plan in its own words.
+        return {}
+    return occupancy_holds(hass, entity_id, plan, room_map)
 
 
 def _saved_plan_execution(
@@ -1909,6 +2018,10 @@ def _plan_request_error(err: ValueError) -> ServiceValidationError:
         return _validation_error("The plan is turned off", "plan_disabled")
     if isinstance(err, EmptyPlanError):
         return _validation_error("The plan has no rooms", "plan_empty")
+    if isinstance(err, PlanRoomsHeldError):
+        return _validation_error(
+            "Every room in the plan is occupied", "plan_rooms_held"
+        )
     if isinstance(err, DuplicateRoomError):
         return _validation_error("A room appears more than once", "duplicate_room")
     if isinstance(err, CadenceBindingError):

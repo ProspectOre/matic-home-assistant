@@ -365,34 +365,239 @@ def encode_custom_coverage_command(
     return _field(15, _field(1, _field(3, coverage)))
 
 
-def _coverage_specs(
-    cleaning_mode: CleaningMode, setting_value: int
-) -> tuple[bytes, ...]:
-    specs: list[bytes] = []
-    if cleaning_mode in {CleaningMode.VACUUM, CleaningMode.BOTH}:
-        for floor in (0, 1):
-            specs.extend(
-                (
-                    _varint_field(1, setting_value)
-                    + _varint_field(2, floor)
-                    + _varint_field(4, 0)
-                    + _varint_field(5, behavior)
-                )
-                for behavior in range(4)
+class QueueAction(StrEnum):
+    """Changes the app's queue sheet makes to a running clean."""
+
+    SKIP = "skip"
+    CLEAN_NEXT = "clean_next"
+    CLEAN_AGAIN = "clean_again"
+
+
+class QueueChangeError(ValueError):
+    """A queue change that the running clean cannot take."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+@dataclass(frozen=True, slots=True)
+class CoverageUpdateGoal:
+    """One goal of a running task: its round ID, room and spec."""
+
+    round_id: str
+    region_id: str
+    setting: int
+    floor: int
+    mode: int
+    behavior: int
+
+
+# The robot reports a Heavy Duty vacuum goal and a double-pass mop goal with
+# setting 3. That value is never sent; the goal goes back as it was asked for.
+_READBACK_SETTINGS = {0: 0, 1: 1}
+
+
+def requeue_coverage_goals(
+    goals: Sequence[CoverageUpdateGoal],
+    *,
+    action: QueueAction,
+    current_region: str,
+    target_region: str,
+    cleaning_mode: CleaningMode | None = None,
+    coverage_setting: CoverageSetting | None = None,
+    round_id_factory: Callable[[], UUID] = uuid4,
+) -> tuple[CoverageUpdateGoal, ...]:
+    """Return the goal list the app sends for one queue change.
+
+    ``goals`` is the robot's plan in order. Rooms before the current one are
+    finished; the robot keeps them, so like the app this returns only the
+    current room and the rooms after it. Kept goals keep their round IDs and
+    goals for a room cleaned again get fresh ones.
+    """
+    # A room cleaned again after it finished appears twice, so the plan is
+    # split into consecutive visits rather than grouped by room.
+    visits: list[tuple[str, list[CoverageUpdateGoal]]] = []
+    for goal in goals:
+        if goal.setting == 3:
+            goal = CoverageUpdateGoal(
+                goal.round_id,
+                goal.region_id,
+                _READBACK_SETTINGS[goal.mode],
+                goal.floor,
+                goal.mode,
+                goal.behavior,
             )
+        if visits and visits[-1][0] == goal.region_id:
+            visits[-1][1].append(goal)
+        else:
+            visits.append((goal.region_id, [goal]))
+    queue = visits[queue_start_visit(visits, current_region) :]
+    queued = [region for region, _goals in queue]
+    if action is QueueAction.SKIP:
+        if target_region not in queued:
+            raise QueueChangeError("room_not_queued")
+        if len(queue) == 1:
+            raise QueueChangeError("last_room")
+        del queue[queued.index(target_region)]
+    elif action is QueueAction.CLEAN_NEXT:
+        if target_region not in queued:
+            raise QueueChangeError("room_not_queued")
+        index = queued.index(target_region)
+        if index <= 1:
+            raise QueueChangeError("already_next")
+        queue.insert(1, queue.pop(index))
+    else:
+        fresh = _fresh_goals(
+            target_region,
+            [
+                goal
+                for region, room in visits
+                if region == target_region
+                for goal in room
+            ],
+            cleaning_mode,
+            coverage_setting,
+            round_id_factory,
+        )
+        if target_region in queued:
+            queue[queued.index(target_region)] = (target_region, fresh)
+        else:
+            queue.append((target_region, fresh))
+    return tuple(goal for _region, room in queue for goal in room)
+
+
+def queue_start_visit(
+    visits: Sequence[tuple[str, Sequence[object]]], current_region: str
+) -> int:
+    """Return the index of the visit the robot is on: the room's last visit.
+
+    A room appears twice only when it finished and was added again, and the
+    robot reaches that second visit after the first.
+    """
+    for index in range(len(visits) - 1, -1, -1):
+        if visits[index][0] == current_region:
+            return index
+    raise QueueChangeError("current_room_unknown")
+
+
+def _fresh_goals(
+    region_id: str,
+    existing: Sequence[CoverageUpdateGoal],
+    cleaning_mode: CleaningMode | None,
+    coverage_setting: CoverageSetting | None,
+    round_id_factory: Callable[[], UUID],
+) -> list[CoverageUpdateGoal]:
+    if not existing and (cleaning_mode is None or coverage_setting is None):
+        # The plan no longer holds this room's goals, so its settings are unknown.
+        raise QueueChangeError("room_settings_unknown")
+    modes = {goal.mode for goal in existing}
+    if cleaning_mode is None:
+        cleaning_mode = (
+            CleaningMode.VACUUM
+            if modes == {0}
+            else CleaningMode.MOP
+            if modes == {1}
+            else CleaningMode.BOTH
+        )
+    if coverage_setting is not None:
+        setting = _COVERAGE_SETTING_VALUES[coverage_setting]
+    else:
+        setting = next(
+            (goal.setting for goal in existing if goal.mode == 0),
+            _COVERAGE_SETTING_VALUES[CoverageSetting.OPTIMAL],
+        )
+    fresh = []
+    for setting_value, floor, mode, behavior in _coverage_spec_values(
+        cleaning_mode, setting
+    ):
+        fresh.append(
+            CoverageUpdateGoal(
+                str(round_id_factory()),
+                region_id,
+                setting_value,
+                floor,
+                mode,
+                behavior,
+            )
+        )
+    return fresh
+
+
+def encode_coverage_goal_update(
+    *,
+    mission_id: int,
+    partition_id: str,
+    session_id: str,
+    goals: Sequence[CoverageUpdateGoal],
+    command_id_factory: Callable[[], UUID] = uuid4,
+) -> bytes:
+    """Encode an ordered goal list for a task the robot is already running.
+
+    This is the coverage command with the task's own session ID, as the app's
+    queue sheet sends it; the robot replaces the goals still ahead of it.
+    """
+    if not goals:
+        raise ValueError("at least one goal is required")
+    partition_id = str(UUID(partition_id))
+    encoded = b"".join(
+        _field(
+            1,
+            _coverage_goal(
+                partition_id=partition_id,
+                region_id=str(UUID(goal.region_id)),
+                spec=_coverage_spec(goal.setting, goal.floor, goal.mode, goal.behavior),
+                command_id=str(UUID(goal.round_id)),
+            ),
+        )
+        for goal in goals
+    )
+    coverage = (
+        _field(2, _field(2, _field(1, b"")))
+        + _field(3, encode_mission_id(mission_id))
+        + _field(5, encoded)
+        + _field(6, _field(2, _wrapped_uuid(str(UUID(session_id)))))
+        + _field(7, _field(1, _wrapped_uuid(str(command_id_factory()))))
+    )
+    return _field(15, _field(1, _field(3, coverage)))
+
+
+def _coverage_spec(setting: int, floor: int, mode: int, behavior: int) -> bytes:
+    return (
+        _varint_field(1, setting)
+        + _varint_field(2, floor)
+        + _varint_field(4, mode)
+        + _varint_field(5, behavior)
+    )
+
+
+def _coverage_spec_values(
+    cleaning_mode: CleaningMode, setting_value: int
+) -> tuple[tuple[int, int, int, int], ...]:
+    values: list[tuple[int, int, int, int]] = []
+    if cleaning_mode in {CleaningMode.VACUUM, CleaningMode.BOTH}:
+        values.extend(
+            (setting_value, floor, 0, behavior)
+            for floor in (0, 1)
+            for behavior in range(4)
+        )
     if cleaning_mode in {CleaningMode.MOP, CleaningMode.BOTH}:
         # The native app's strength selector controls vacuum coverage only.
         # Mop goals always request Standard; double-pass is a robot override.
-        specs.extend(
-            (
-                _varint_field(1, _COVERAGE_SETTING_VALUES[CoverageSetting.STANDARD])
-                + _varint_field(2, 0)
-                + _varint_field(4, 1)
-                + _varint_field(5, behavior)
-            )
+        values.extend(
+            (_COVERAGE_SETTING_VALUES[CoverageSetting.STANDARD], 0, 1, behavior)
             for behavior in range(4)
         )
-    return tuple(specs)
+    return tuple(values)
+
+
+def _coverage_specs(
+    cleaning_mode: CleaningMode, setting_value: int
+) -> tuple[bytes, ...]:
+    return tuple(
+        _coverage_spec(*values)
+        for values in _coverage_spec_values(cleaning_mode, setting_value)
+    )
 
 
 def _coverage_goal(

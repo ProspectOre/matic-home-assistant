@@ -111,6 +111,16 @@ DESCRIPTIONS = (
         device_class=BinarySensorDeviceClass.RUNNING,
         value_fn=lambda state: state.operational.following_person,
     ),
+    MaticBinarySensorDescription(
+        key="maintenance_suggested",
+        translation_key="maintenance_suggested",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        value_fn=lambda state: (
+            None
+            if state.telemetry.maintenance_suggestions is None
+            else bool(state.telemetry.maintenance_suggestions)
+        ),
+    ),
 )
 
 

@@ -219,6 +219,49 @@ test("cadence flags preserve supplied booleans and default omitted flags to fals
   expect(result).toEqual({ supplied: [true, false, false, true], omitted: [false, false, false, false] });
 });
 
+test("plan catalog reads occupancy settings and held rooms", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async payload => {
+    const { parsePlansCatalog } = await import("/backend-contracts.js");
+    const rejects = (change) => {
+      const invalid = structuredClone(payload);
+      change(invalid.plans[0]);
+      try { parsePlansCatalog(invalid); return false; } catch { return true; }
+    };
+    const defaults = parsePlansCatalog(payload).plans[0];
+    const candidate = structuredClone(payload);
+    Object.assign(candidate.plans[0], {
+      occupancy_aware: true,
+      occupancy_sensors: { "room-a": "binary_sensor.kitchen" },
+      next_run_preview: {
+        rooms: [], mission_boundaries: [], blocker: "plan_rooms_held",
+        held_rooms: [{ room_id: "room-a", name: "Kitchen", reason: "occupied", sensor: "binary_sensor.kitchen" }],
+      },
+    });
+    const parsed = parsePlansCatalog(candidate).plans[0];
+    return {
+      defaults: [defaults.occupancyAware, defaults.occupancySensors],
+      parsed: [parsed.occupancyAware, parsed.occupancySensors, parsed.nextRunPreview],
+      rejected: [
+        rejects((plan) => { plan.occupancy_aware = "yes"; }),
+        rejects((plan) => { plan.occupancy_sensors = ["binary_sensor.kitchen"]; }),
+        rejects((plan) => { plan.occupancy_sensors = { "room-a": "" }; }),
+        rejects((plan) => { plan.occupancy_sensors = Object.fromEntries(Array.from({ length: 257 }, (_, index) => [`room-${index}`, "binary_sensor.x"])); }),
+        rejects((plan) => { plan.next_run_preview = { rooms: [], mission_boundaries: [], blocker: "invalid_plan", held_rooms: {} }; }),
+        rejects((plan) => { plan.next_run_preview = { rooms: [], mission_boundaries: [], blocker: "invalid_plan", held_rooms: [{ room_id: "room-a", name: "Kitchen" }] }; }),
+      ],
+    };
+  }, plansPayload());
+  expect(result).toEqual({
+    defaults: [false, {}],
+    parsed: [true, { "room-a": "binary_sensor.kitchen" }, {
+      rooms: [], steps: [], missionBoundaries: [], blocker: "plan_rooms_held",
+      heldRooms: [{ roomId: "room-a", name: "Kitchen", sensor: "binary_sensor.kitchen" }],
+    }],
+    rejected: [true, true, true, true, true, true],
+  });
+});
+
 test("native plan catalog accepts room names up to 256 UTF-8 bytes", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async payload => {

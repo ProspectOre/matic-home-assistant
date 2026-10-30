@@ -433,6 +433,43 @@ async def test_go_to_room_action_routes_the_room_to_send_command() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("service", "data", "params"),
+    [
+        ("skip_room", {}, {"room": "Study"}),
+        ("clean_room_next", {}, {"room": "Study"}),
+        ("clean_room_again", {}, {"room": "Study"}),
+        (
+            "clean_room_again",
+            {"cleaning_mode": "mop", "coverage_setting": "quick"},
+            {"room": "Study", "cleaning_mode": "mop", "coverage": "quick"},
+        ),
+    ],
+)
+async def test_queue_actions_route_to_send_command(service, data, params) -> None:
+    hass = SimpleNamespace(data={})
+    services = await _registered_services(hass)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        service,
+        {"entity_id": ["vacuum.test"], "room": "Study", **data},
+    )
+    with patch(
+        "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+        return_value=["vacuum.test"],
+    ):
+        await _registered_handler(services, service)(call)
+
+    services.async_call.assert_awaited_once_with(
+        "vacuum",
+        "send_command",
+        {"entity_id": ["vacuum.test"], "command": service, "params": params},
+        blocking=True,
+        context=call.context,
+    )
+
+
 async def test_clean_action_without_rooms_targets_entire_floor() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
@@ -5454,6 +5491,8 @@ async def test_deleting_the_last_room_disables_the_plan(hass) -> None:
         {
             "name": "Solo",
             "enabled": True,
+            "occupancy_aware": True,
+            "occupancy_sensors": {"room-kitchen": "binary_sensor.kitchen"},
             "rooms": [
                 {
                     "room_id": "room-kitchen",
@@ -5482,6 +5521,7 @@ async def test_deleting_the_last_room_disables_the_plan(hass) -> None:
     saved = manager.plan("serial", "solo")
     assert saved["rooms"] == []
     assert saved["enabled"] is False
+    assert saved["occupancy_sensors"] == {}
 
 
 async def test_room_edits_reject_rooms_outside_the_plan_or_map(hass) -> None:

@@ -541,6 +541,10 @@ const planSaveRequest = (draft: PlanDraft, select: boolean): Record<string, unkn
   return_to_base: draft.returnToBase,
   finish_current_room: draft.finishCurrentRoom,
   finish_current_room_threshold: draft.finishCurrentRoomThreshold,
+  occupancy_aware: draft.occupancyAware,
+  // Overrides for rooms still in the plan; the action drops the rest anyway.
+  occupancy_sensors: Object.fromEntries(Object.entries(draft.occupancySensors)
+    .filter(([roomId]) => draft.rooms.some((room) => room.roomId === roomId))),
   select,
 });
 

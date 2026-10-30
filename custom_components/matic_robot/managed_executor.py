@@ -981,6 +981,19 @@ async def _async_run_room(
             {**event_data, "reason_code": "verified_completion"},
             context=call.context,
         )
+    elif run_id is not None and room.room_id in manager.skipped_room_ids(
+        serial_number, run_id
+    ):
+        # Skipped without credit, but settled, so the run goes on.
+        await manager.async_mark_skipped(
+            serial_number, call.data["plan_id"], room, run_id=run_id
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_skipped",
+            {**event_data, "reason_code": "owner_skipped"},
+            context=call.context,
+        )
+        completion_verified = True
     else:
         await manager.async_mark_ended_unverified(
             serial_number, call.data["plan_id"], room
@@ -1855,6 +1868,11 @@ async def _async_run_leg(
         completion_sessions[-1] if completion_sessions else None,
         coverage_verifier,
     )
+    skipped = (
+        manager.skipped_room_ids(serial_number, run_id)
+        if run_id is not None
+        else frozenset()
+    )
     for room in leg:
         if room.room_id in credited:
             completed_at, duration_seconds = credited[room.room_id]
@@ -1890,6 +1908,15 @@ async def _async_run_leg(
                 {**event_data(room), "reason_code": "verified_completion"},
                 context=call.context,
             )
+        elif run_id is not None and room.room_id in skipped:
+            await manager.async_mark_skipped(
+                serial_number, call.data["plan_id"], room, run_id=run_id
+            )
+            hass.bus.async_fire(
+                f"{DOMAIN}_room_skipped",
+                {**event_data(room), "reason_code": "owner_skipped"},
+                context=call.context,
+            )
         elif stop_sent and room.room_id not in observed_ids:
             await manager.async_mark_cancelled(
                 serial_number, call.data["plan_id"], room
@@ -1916,7 +1943,11 @@ async def _async_run_leg(
                 },
                 context=call.context,
             )
-    all_verified = all(room.room_id in credited for room in leg)
+    # A room the owner skipped is settled without credit, so the run goes on
+    # to its next leg.
+    all_verified = all(
+        room.room_id in credited or room.room_id in skipped for room in leg
+    )
     if all_verified and prefetch_next is not None and not stop_sent:
         # Start the next settings leg only after evidence and persistence finish.
         # Otherwise a short next mission can end before its observer attaches.
@@ -3495,6 +3526,7 @@ async def _async_execute_rooms_reserved(
     validate_prepared_run: Callable[[], None] | None = None,
     coverage_verifier: CoverageVerifier | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
+    held_rooms: Sequence[Mapping[str, str]] = (),
 ) -> None:
     """Execute every resolved room and custom area with safe cancellation.
 
@@ -3665,7 +3697,23 @@ async def _async_execute_rooms_reserved(
                     provenance=run_provenance,
                     finish_current_room=finish_current_room,
                     finish_current_room_threshold=finish_current_room_threshold,
+                    held_rooms=held_rooms,
                 )
+                for held in held_rooms:
+                    hass.bus.async_fire(
+                        f"{DOMAIN}_room_held",
+                        {
+                            ATTR_ENTITY_ID: entity_id,
+                            "plan_id": call.data["plan_id"],
+                            "room_id": held["room_id"],
+                            "room": held["name"],
+                            "run_id": run_id,
+                            "provenance": run_provenance,
+                            "reason_code": held["reason"],
+                            "sensor": held["sensor"],
+                        },
+                        context=call.context,
+                    )
             if mapped_room_names:
                 mapped_keys = [native_room_key(name) for name in mapped_room_names]
                 ambiguous = [
@@ -4341,6 +4389,7 @@ async def _async_execute_rooms(
     validate_prepared_run: Callable[[], None] | None = None,
     coverage_verifier: CoverageVerifier | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
+    held_rooms: Sequence[Mapping[str, str]] = (),
 ) -> None:
     """Reserve queued cadence synchronously, then execute the prepared run."""
     manager.require_command_admission(serial_number)
@@ -4412,6 +4461,7 @@ async def _async_execute_rooms(
             validate_prepared_run=validate_prepared_run,
             coverage_verifier=coverage_verifier,
             entries=entries,
+            held_rooms=held_rooms,
         )
     finally:
         manager.release_prepared_run(serial_number, run_id)

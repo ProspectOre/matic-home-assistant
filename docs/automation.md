@@ -110,6 +110,7 @@ Each event's type is `matic_robot_` plus the name in the second column.
 | Room cancelled | `room_cancelled` | room fields, `reason_code`, `cause` |
 | Room stopped early | `room_interrupted` | room fields, `reason_code`, `cause`, usually `error` |
 | Room ended unconfirmed | `room_ended_unverified` | room fields, `reason_code`, `cause` |
+| Room held | `room_held` | `entity_id`, `plan_id`, `run_id`, `room_id`, `room`, `provenance`, `reason_code` (`occupied`), `sensor` |
 | Room confirmed late | `room_reconciled` | `entity_id`, `plan_id`, `run_id`, `room_id`, `room`, `reason_code`, `cause` |
 | Plan area started | `area_started` | `entity_id`, `plan_id`, `run_id`, `area_id`, `area`, `cleaning_mode`, `coverage_setting`, `provenance` |
 | Plan area finished | `area_finished` | area fields |
