@@ -68,7 +68,8 @@ to try new features before 0.6.0.
 - **Skip, next and again.** **Skip room**, **Clean room next** and **Clean room
   again** change what the robot cleans next, as the queue sheet in the Matic
   app does. Each takes one room by name or ID and returns once the robot
-  confirms the change.
+  confirms the change. Clean room next hasn't been tried on a robot yet, so
+  check the order the robot follows.
 - **In plan runs.** A skipped room gets no credit and keeps its place, so the
   next run still treats it as due.
 
