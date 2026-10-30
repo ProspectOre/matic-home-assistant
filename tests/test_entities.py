@@ -360,22 +360,22 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 58 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 60 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
-        "binary_sensor": 13,
+        "binary_sensor": 14,
         "button": 5,
         "calendar": 1,
         "camera": 2,
         "event": 1,
         "number": 1,
         "select": 4,
-        "sensor": 29,
+        "sensor": 30,
         "switch": 4,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 62
-    assert len({entity.unique_id for entity in entities}) == 62
+    assert len(entities) == 64
+    assert len({entity.unique_id for entity in entities}) == 64
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -475,7 +475,12 @@ async def test_bag_alerts_are_exposed_but_bag_statistics_stay_latent(
 
     added.clear()
     await sensor.async_setup_entry(hass, entry, lambda values: added.extend(values))
-    assert not any(entity.entity_description.key.startswith("bag_") for entity in added)
+    # The bag pass is a purchase, not the latent bag-full statistics.
+    assert not any(
+        entity.entity_description.key.startswith("bag_")
+        and entity.entity_description.key != "bag_pass_expires"
+        for entity in added
+    )
 
 
 async def test_bag_statistics_restore_and_count_full_transitions() -> None:
@@ -1275,6 +1280,7 @@ def test_sensor_and_binary_sensor_values() -> None:
         None,
         None,
         None,
+        None,
     ]
     assert {
         description.key
@@ -1332,6 +1338,7 @@ def test_sensor_and_binary_sensor_values() -> None:
         600,
         600,
         -45,
+        None,
     ]
 
     state_sensors = {

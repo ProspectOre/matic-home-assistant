@@ -52,6 +52,7 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
 )
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
+from .maintenance import MaintenanceIssues
 from .repairs import repair_placeholders
 from .session_tracking import (
     CleaningSessionTracker,
@@ -177,6 +178,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._bag_last_full_at: str | None = None
         self._bag_last_replaced_at: str | None = None
         self._identity_issue_active = False
+        self._maintenance_issues = MaintenanceIssues(hass, config_entry.entry_id)
         self._time_zone_checked = False
         self._time_zone_issue: tuple[str, str] | None = None
         self._time_zone_scans: dict[tuple[str, str, date], bool | None] = {}
@@ -433,6 +435,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             if version is not None:
                 self._async_update_device_software(version, info.serial_number)
             self._async_clear_identity_issue()
+            self._maintenance_issues.async_sync(telemetry)
             self._async_check_time_zone(telemetry)
             # Events require native evidence; local estimates are display-only.
             self._async_fire_session_finished(state, version)

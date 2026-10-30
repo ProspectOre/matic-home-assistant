@@ -41,6 +41,7 @@ from .commands import (
     encode_user_command,
     encode_user_data,
 )
+from .consumables import decode_bag_pass_expiry
 from .coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
@@ -74,6 +75,7 @@ from .history import (
     MonthlyCleaningRecap,
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
+    decode_monthly_recap_key,
 )
 from .mission import MissionClientState, decode_mission_client_state
 from .models import (
@@ -1011,6 +1013,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             self._async_optional_collection("coverage_session_history", limit=64),
             self._async_optional_collection_count("dock_detections"),
             self._async_optional_collection_count("sink_summon_locations"),
+            self._async_optional_collection("recap_history", limit=120),
+            self._async_optional_collection("bag_pass_status", limit=4),
         )
         property_count = len(_TELEMETRY_PROPERTIES)
         values = dict(zip(_TELEMETRY_PROPERTIES, results[:property_count], strict=True))
@@ -1018,6 +1022,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         session_entries = results[property_count + 1]
         dock_detections = results[property_count + 2]
         sink_summon_locations = results[property_count + 3]
+        recap_entries = results[property_count + 4]
+        bag_pass_entries = results[property_count + 5]
+        maintenance = _decode_latest_maintenance(
+            recap_entries if isinstance(recap_entries, tuple) else ()
+        )
 
         schedules = (
             tuple(
@@ -1090,6 +1099,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 else None
             ),
             coverage_time_seconds=_decode_coverage_time(values["coverage_time"]),
+            maintenance_recap_month=maintenance[0] if maintenance else None,
+            maintenance_suggestions=maintenance[1] if maintenance else None,
+            bag_pass_expires_at=_decode_bag_pass(
+                bag_pass_entries if isinstance(bag_pass_entries, tuple) else ()
+            ),
         )
 
     async def _async_optional_property(self, name: str) -> bytes | None:
@@ -2786,6 +2800,45 @@ def _decode_uploader_state(payload: object) -> bool | None:
                     return bool(_telemetry_varint(field.value, 1))
                 except DecodeError:
                     return False
+    return None
+
+
+def _decode_latest_maintenance(
+    entries: tuple[HermesCollectionEntry, ...],
+) -> tuple[str, tuple[int, ...]] | None:
+    """Return the newest recap month and its maintenance suggestions.
+
+    An unreadable newest recap yields None rather than an older month, so
+    stale suggestions never replace current ones.
+    """
+    keyed: list[tuple[tuple[int, int], HermesCollectionEntry]] = []
+    for entry in entries:
+        try:
+            month, year = decode_monthly_recap_key(entry)
+        except DecodeError:
+            continue
+        keyed.append(((year, month), entry))
+    if not keyed:
+        return None
+    (year, month), newest = max(keyed, key=lambda item: item[0])
+    try:
+        recap = decode_monthly_cleaning_recap(newest)
+    except DecodeError:
+        return None
+    return f"{year:04d}-{month:02d}", recap.maintenance_suggestions
+
+
+def _decode_bag_pass(
+    entries: tuple[HermesCollectionEntry, ...],
+) -> datetime | None:
+    """Return the expiry of the first decodable active bag pass."""
+    for entry in entries:
+        try:
+            expires_at = decode_bag_pass_expiry(entry)
+        except DecodeError:
+            continue
+        if expires_at is not None:
+            return expires_at
     return None
 
 

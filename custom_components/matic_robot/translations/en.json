@@ -967,7 +967,9 @@
         "voice_enabled_state": "Cues voice assistant",
         "water_flow_override_state": "Mopping water flow",
         "wifi_status": "Wi-Fi status",
-        "zones": "Areas saved on the robot"
+        "zones": "Areas saved on the robot",
+        "bag_pass_status": "Bag pass",
+        "recap_history": "Monthly recaps"
       }
     },
     "run_behavior": {
@@ -1043,6 +1045,9 @@
       },
       "following_person": {
         "name": "Following a person"
+      },
+      "maintenance_suggested": {
+        "name": "Maintenance suggested"
       }
     },
     "button": {
@@ -1251,6 +1256,9 @@
       },
       "current_room_estimated_progress": {
         "name": "Current room estimated progress"
+      },
+      "bag_pass_expires": {
+        "name": "Bag pass ends"
       }
     },
     "switch": {
@@ -1607,6 +1615,10 @@
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
       "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean custom area, then confirm or redraw it."
+    },
+    "maintenance_suggested": {
+      "title": "{name}: maintenance suggested",
+      "description": "The robot's cleaning recap for {month} suggests maintenance. The Matic app's maintenance guide shows how to check the brush roll, side brush, mop roll, and caster and wedge. This notice clears when a newer recap no longer suggests maintenance. Open the [device page]({device_url}) to see the Maintenance suggested sensor."
     }
   },
   "services": {

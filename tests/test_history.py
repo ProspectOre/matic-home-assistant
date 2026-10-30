@@ -191,6 +191,13 @@ def test_decode_monthly_cleaning_recap_rejects_invalid_durations(
         decode_monthly_cleaning_recap(_recap_entry(durations=durations))
 
 
+def test_decode_monthly_cleaning_recap_reads_maintenance_suggestions() -> None:
+    # Field 4 lists suggested maintenance; it used to fail the shape check.
+    recap = decode_monthly_cleaning_recap(_recap_entry(suffix=_bfield(4, b"\x01\x02")))
+    assert recap.maintenance_suggestions == (1, 2)
+    assert decode_monthly_cleaning_recap(_recap_entry()).maintenance_suggestions == ()
+
+
 def test_decode_monthly_cleaning_recap_accepts_default_duration_fields() -> None:
     recap = decode_monthly_cleaning_recap(
         _recap_entry(durations=_bfield(1, b"") + _bfield(2, b""))

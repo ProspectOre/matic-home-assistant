@@ -13,7 +13,8 @@
       "matter_pairing_mode": { "default": "mdi:access-point" },
       "ssh_tunnel_permission": { "default": "mdi:console-network" },
       "diagnostic_upload": { "default": "mdi:cloud-upload" },
-      "following_person": { "default": "mdi:account-arrow-right" }
+      "following_person": { "default": "mdi:account-arrow-right" },
+      "maintenance_suggested": { "default": "mdi:wrench-clock" }
     },
     "button": {
       "run_selected_plan": { "default": "mdi:play-circle-outline" },
@@ -39,6 +40,7 @@
       "custom_cleaning_area": { "default": "mdi:vector-square" }
     },
     "sensor": {
+      "bag_pass_expires": { "default": "mdi:calendar-clock" },
       "robot_alert": {
         "default": "mdi:alert-outline",
         "state": { "none": "mdi:check-circle-outline" }

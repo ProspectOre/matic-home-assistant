@@ -52,6 +52,8 @@ are disabled by default; enable them from the device's entity list.
 | Cleaning · Charging · Low charge · Problem | `binary_sensor.matic_cleaning` · `_charging` · `_low_charge` · `_problem` | on |
 | Robot alert · Bag full · Bag missing | `sensor.matic_robot_alert` · `binary_sensor.matic_bag_full` · `_bag_missing` | on |
 | Following a person | `binary_sensor.matic_following_person` | on |
+| Maintenance suggested | `binary_sensor.matic_maintenance_suggested` | on |
+| Bag pass ends | `sensor.matic_bag_pass_expires` | on |
 | Paused · Returning to dock · Fully charged | `binary_sensor.matic_paused` · `_returning` · `_fully_charged` | off |
 | Matter pairing mode | `binary_sensor.matic_matter_pairing_mode` | off |
 | Support tunnel permission · Diagnostic upload | `binary_sensor.matic_ssh_tunnel_permission` · `_diagnostic_upload` | off |
@@ -102,6 +104,19 @@ attribute holds the whole preview.
 `camera.matic_map` provides a labeled room map for dashboards. The photographic
 SLAM camera is disabled by default; enable it from the device's entity list if
 needed. Both return PNG images. Administrators also get the **Matic Map** panel.
+
+## Maintenance
+
+The robot's monthly cleaning recap can suggest maintenance. **Maintenance
+suggested** is on while the newest recap does, and a Repair names the recap
+month. The Repair clears when a newer recap stops suggesting maintenance, and
+dismissing it hides only that month's notice. The sensor stays unknown until a
+recap can be read. The recap lists parts by code, and which code means which
+part (brush roll, side brush, mop roll, caster and wedge) is not known yet, so
+check them all.
+
+**Bag pass ends** shows when an active bag pass runs out, and is unknown without
+one.
 
 ## Firmware
 

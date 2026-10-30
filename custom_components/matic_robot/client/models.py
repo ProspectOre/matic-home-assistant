@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 
 
@@ -223,6 +224,11 @@ class RobotTelemetry:
     dock_detections: int | None = None
     sink_summon_locations: int | None = None
     coverage_time_seconds: int | None = None
+    # Raw part codes from the newest monthly recap. None when it could not be
+    # read; empty when it suggests nothing.
+    maintenance_suggestions: tuple[int, ...] | None = None
+    maintenance_recap_month: str | None = None
+    bag_pass_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
