@@ -296,6 +296,10 @@ export class MaticMapPanelV4 extends LitElement {
       this.#effects?.moveHomePin(intent.pin, intent.direction);
       return;
     }
+    if (intent.type === "show-trail") {
+      void this.#effects?.showTrail(intent.trail);
+      return;
+    }
     if (intent.type === "reload-home-pins") {
       void this.#effects?.loadHomePins();
       return;

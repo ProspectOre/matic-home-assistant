@@ -90,6 +90,8 @@ interface StatusPresentation {
   readonly notable: boolean;
   /** True for the idle "Map limited" row, whose sheet body offers Try again. */
   readonly recheck?: boolean;
+  /** True for the last-run row, which links to Cleaning history. */
+  readonly history?: boolean;
 }
 
 // How managed_executor.py matches a firmware room phrase to a room's ID or
@@ -207,6 +209,7 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
       detail: run.roomCount ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: run.completedRoomCount, total: run.roomCount }) : "",
       icon: iconPlan,
       notable: true,
+      history: true,
     };
   }
   return {
@@ -338,6 +341,8 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
       return { title: t("v4_map_history", "Map history"), description: t("v4_map_history_detail", "Saved maps show one floor each. They can't be edited and never show where the robot is now.") };
     case "support":
       return { title: t("v4_map_diagnostics", "Map diagnostics"), description: t("v4_map_support_detail", "Details to share with support") };
+    case "runs":
+      return { title: t("v4_cleaning_history", "Cleaning history"), description: "" };
     case "none":
       return homeCopy(homeState(state), state, t);
   }
@@ -371,6 +376,7 @@ const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {
   areas: "half",
   areaReview: "half",
   history: "half",
+  runs: "half",
   support: "full",
 };
 const startingDetent = (state: WorkspaceState, compact: boolean): SheetDetent =>
@@ -1622,11 +1628,14 @@ export class MaticMapShellV4 extends LitElement {
     const kind = homeState(state);
     // Built where shown, so only a shown row counts as a launcher.
     const maps = (diagnosticsFirst: boolean) => {
+      const runs = this.#shelfRow(t("v4_cleaning_history", "Cleaning history"), iconPlan, "runs", statusCopy(state).history
+        ? t("v4_runs_last_unfinished", "The last run didn't finish. See what happened.")
+        : t("v4_runs_quick_detail", "See recent cleans and how they ended."));
       const history = this.#shelfRow(t("v4_map_history", "Map history"), iconHistory, "history", t("v4_history_quick_detail", "Browse earlier floor maps."));
       const diagnostics = this.#shelfRow(t("v4_map_diagnostics", "Map diagnostics"), iconDiagnostics, "support", t("v4_diagnostics_quick_detail", "Check the map and copy details for support."));
       return html`
         <h3 class="ms-section-heading">${t("v4_maps_heading", "Maps")}</h3>
-        <div class="shelf maps">${diagnosticsFirst ? [diagnostics, history] : [history, diagnostics]}</div>
+        <div class="shelf maps">${diagnosticsFirst ? [diagnostics, runs, history] : [runs, history, diagnostics]}</div>
       `;
     };
     switch (kind) {

@@ -1664,6 +1664,23 @@ export class RendererController {
         context.stroke();
       }
     }
+    // A trail is drawn only over the map session it was recorded on
+    // (run_history.py); a past run's trail only while Cleaning history is open.
+    const trail = state.trail;
+    if (trail && state.dataMode === "live" && (trail.id === "live" || state.workflow === "runs")
+      && trail.mapSessionKey === state.resources.entry?.mapSessionKey) {
+      context.beginPath();
+      for (const segment of trail.segments) {
+        segment.forEach(([x, y], i) => {
+          const p = this.#projectMeters(x, y, 0, false);
+          if (p) { if (i === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }
+        });
+      }
+      context.lineJoin = context.lineCap = "round";
+      context.strokeStyle = rgba(palette.accent, .7);
+      context.lineWidth = 3;
+      context.stroke();
+    }
     const pose = state.resources.pose.value;
     if (canShowExactPose(state) && pose?.position) {
       // Pose coordinates share the floor-plan's meter space. Scene geometry is

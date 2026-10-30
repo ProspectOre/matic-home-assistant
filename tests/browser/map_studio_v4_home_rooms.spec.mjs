@@ -263,9 +263,10 @@ test.describe("home by state", () => {
       await expect(cards(gallery).nth(1)).toHaveAccessibleName(/^Clean custom area Draw or choose a custom area/);
       expect(await shortcutsGroup(gallery).evaluate((element, other) => !!(element.compareDocumentPosition(other) & Node.DOCUMENT_POSITION_FOLLOWING), await group.elementHandle())).toBe(true);
       await expect(gallery.getByRole("heading", { name: "Maps", level: 3 })).toBeVisible();
-      await expect(mapsRows(gallery)).toHaveCount(2);
-      await expect(mapsRows(gallery).nth(0)).toHaveAccessibleName(/^Map history Browse earlier floor maps\./);
-      await expect(mapsRows(gallery).nth(1)).toHaveAccessibleName(/^Map diagnostics Check the map and copy details for support\./);
+      await expect(mapsRows(gallery)).toHaveCount(3);
+      await expect(mapsRows(gallery).nth(0)).toHaveAccessibleName(/^Cleaning history See recent cleans and how they ended\./);
+      await expect(mapsRows(gallery).nth(1)).toHaveAccessibleName(/^Map history Browse earlier floor maps\./);
+      await expect(mapsRows(gallery).nth(2)).toHaveAccessibleName(/^Map diagnostics Check the map and copy details for support\./);
       await expect(panelOf(gallery).locator(".action-bar")).toHaveCount(0);
       await expect(gallery.getByRole("heading", { name: "Map tools" })).toHaveCount(0);
       await expect(panelOf(gallery).getByRole("group", { name: "Map display" })).toHaveCount(0);
@@ -319,7 +320,7 @@ test.describe("home by state", () => {
         await expect(homeCards(gallery).nth(index)).toHaveAttribute("aria-disabled", "true");
         await expect(homeCards(gallery).nth(index)).toHaveAccessibleDescription(BUSY);
       }
-      await expect(mapsRows(gallery)).toHaveCount(2);
+      await expect(mapsRows(gallery)).toHaveCount(3);
       await expect(mapsRows(gallery).nth(0)).not.toHaveAttribute("aria-disabled", "true");
       if (scenario === "starting-command") {
         await expect(gallery.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
@@ -351,7 +352,8 @@ test.describe("home by state", () => {
     await expect(gallery.getByRole("group", { name: "Cleaning choices" })).toHaveCount(0);
     await expect(panelOf(gallery).locator("h3")).toHaveCount(1);
     await expect(mapsRows(gallery).nth(0)).toHaveAccessibleName(/^Map diagnostics/);
-    await expect(mapsRows(gallery).nth(1)).toHaveAccessibleName(/^Map history/);
+    await expect(mapsRows(gallery).nth(1)).toHaveAccessibleName(/^Cleaning history/);
+    await expect(mapsRows(gallery).nth(2)).toHaveAccessibleName(/^Map history/);
     await panelOf(gallery).getByRole("button", { name: "Open map diagnostics" }).click();
     expect((await snapshot(page)).workflow).toBe("support");
   });
@@ -387,7 +389,7 @@ test.describe("home by state", () => {
     await expect(cards(gallery).nth(0)).toHaveAttribute("aria-disabled", "true");
     await expect(cards(gallery).nth(1)).toHaveAttribute("aria-disabled", "true");
     await expect(plansRow(gallery)).toHaveAttribute("aria-disabled", "true");
-    await expect(mapsRows(gallery)).toHaveCount(2);
+    await expect(mapsRows(gallery)).toHaveCount(3);
   });
 
   for (const kind of ["reconnecting", "offline", "read-only"]) {
@@ -467,7 +469,7 @@ test.describe("home by state", () => {
     await patchState(gallery, { workflow: "none" });
     await expect(gallery.getByRole("heading", { name: "Saved map is read only", level: 2 })).toBeVisible();
     await expect(gallery.getByRole("group", { name: "Cleaning choices" })).toHaveCount(0);
-    await expect(mapsRows(gallery)).toHaveCount(2);
+    await expect(mapsRows(gallery)).toHaveCount(3);
   });
 
   test("a live read-only map keeps Smart Stop understandable and reachable", async ({ page }) => {
@@ -789,11 +791,16 @@ test.describe("the plan card", () => {
     await expect.poll(() => focusedText(page)).toMatch(/^button Clean custom area/);
 
     await mapsRows(gallery).nth(0).click();
+    await expect(gallery.getByRole("heading", { level: 2, name: "Cleaning history" })).toBeVisible();
+    await back();
+    await expect.poll(() => focusedText(page)).toMatch(/^button Cleaning history/);
+
+    await mapsRows(gallery).nth(1).click();
     await expect(gallery.getByRole("heading", { level: 2, name: "Map history" })).toBeVisible();
     await back();
     await expect.poll(() => focusedText(page)).toMatch(/^button Map history/);
 
-    await mapsRows(gallery).nth(1).click();
+    await mapsRows(gallery).nth(2).click();
     await expect(gallery.getByRole("heading", { level: 2, name: "Map diagnostics" })).toBeVisible();
     await back();
     await expect.poll(() => focusedText(page)).toMatch(/^button Map diagnostics/);
@@ -870,7 +877,7 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     await expect(menu).toHaveId("map-options");
     await expect.poll(() => focusedText(page)).toBe("button Photo");
     expect(await rowNames(menu)).toEqual([
-      "Photo", "Room colors", "Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics",
+      "Photo", "Room colors", "Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics",
     ]);
     await expect(menu.getByRole("group", { name: "Map display" })).toBeVisible();
     await expect(menu.getByRole("group", { name: "Map detail" })).toBeVisible();
@@ -887,11 +894,11 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await openOptions(gallery);
     const names = [];
-    for (let step = 0; step < 9; step += 1) {
+    for (let step = 0; step < 10; step += 1) {
       await page.keyboard.press("ArrowDown");
       names.push((await focusedText(page)).replace(/^button /, ""));
     }
-    expect(names).toEqual(["Room colors", "Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics", "Photo"]);
+    expect(names).toEqual(["Room colors", "Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics", "Photo"]);
     await page.keyboard.press("ArrowUp");
     await expect.poll(() => focusedText(page)).toBe("button Map diagnostics");
     await page.keyboard.press("Home");
@@ -944,12 +951,12 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await patchState(gallery, { view: "three" });
     const menu = await openOptions(gallery);
-    expect(await rowNames(menu)).toEqual(["Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics"]);
+    expect(await rowNames(menu)).toEqual(["Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics"]);
     await page.keyboard.press("Escape");
 
     const wide = await loadGallery(page, { scenario: "ready", viewport: { width: 1180, height: 760 } });
     const wideMenu = await openOptions(wide);
-    expect(await rowNames(wideMenu)).toEqual(["Auto detail", "Efficient", "Balanced", "Maximum", "Map zoom", "Map diagnostics"]);
+    expect(await rowNames(wideMenu)).toEqual(["Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics"]);
     await expect(wideMenu.getByRole("group", { name: "Map display" })).toHaveCount(0);
     await expect.poll(() => focusedText(page)).toBe("button Auto detail");
     await page.keyboard.press("Escape");
@@ -1711,5 +1718,44 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
     expect(result.heldTaps).toBe(1);
     expect(result.heldSelection).toEqual([]);
     expect(result.planTaps).toBe(0);
+  });
+});
+
+// ---- Cleaning history (PRO-60) and the robot trail (PRO-83) ---------------
+
+test.describe("cleaning history", () => {
+  test("explains the last run first and keeps earlier runs one tap away", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "runs" });
+    await expect(gallery.getByRole("heading", { level: 2, name: "Cleaning history" })).toBeVisible();
+    const last = gallery.getByRole("region", { name: "Daily clean" });
+    await expect(last).toContainText("Stopped because the battery was low");
+    await expect(last).toContainText("Let the robot charge, then clean the rest.");
+    await expect(last.locator("dt")).toHaveText(["Kitchen", "Living room", "Office"]);
+    await expect(last.locator("dd")).toHaveText(["Done", "Interrupted", "Not started"]);
+    const trail = last.getByRole("button", { name: "Show trail on map" });
+    await expect(trail).toHaveAttribute("aria-pressed", "true");
+
+    const earlier = gallery.getByRole("list", { name: "Earlier" }).getByRole("button");
+    await expect(earlier).toHaveCount(2);
+    await expect(earlier.nth(0)).toHaveAttribute("aria-expanded", "false");
+    await expect(earlier.nth(1)).toContainText("Result not reported");
+    await earlier.nth(1).click();
+    await expect(earlier.nth(1)).toHaveAttribute("aria-expanded", "true");
+    const robot = gallery.getByRole("list", { name: "Earlier" }).getByRole("listitem").nth(1);
+    await expect(robot).toContainText("Started from the Matic app or the robot");
+    await expect(robot.locator("dd")).toHaveText(["Partly done"]);
+    await expect(robot.getByRole("button", { name: "Show trail on map" })).toHaveCount(0);
+  });
+
+  test("an empty history, a failed read and a robot whose history can't be read each say so", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "runs" });
+    const runs = (await snapshot(page)).resources.runs;
+    await patchState(gallery, { resources: { ...(await snapshot(page)).resources, runs: { ...runs, value: { ...runs.value, robotHistory: false, runs: [] } } } });
+    await expect(gallery.getByText("No cleans yet. Each clean appears here once it starts.")).toBeVisible();
+    await expect(gallery.getByText("Cleans started from the Matic app can't be read right now.")).toBeVisible();
+
+    await patchState(gallery, { resources: { ...(await snapshot(page)).resources, runs: { status: "error", value: null, problem: "runs-unavailable" } } });
+    await expect(gallery.getByText("Cleaning history isn't available right now.")).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Try again" })).toBeVisible();
   });
 });

@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant
 from .slam_scene import (
     MaticAreasView,
     MaticPlansView,
+    MaticRunHistoryView,
     MaticSlamCatalogView,
     MaticSlamDeltaView,
     MaticSlamHistorySceneView,
@@ -107,6 +108,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticSlamCatalogView(scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
+    hass.http.register_view(MaticRunHistoryView)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)
     # Keep panel_custom optional for headless installations.
     from homeassistant.components.panel_custom import async_register_panel

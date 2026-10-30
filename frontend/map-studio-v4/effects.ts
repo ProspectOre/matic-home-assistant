@@ -83,6 +83,7 @@ const NOTICES = {
   statusRefreshed: notice("info", "v4_notice_status_refreshed", "Status refreshed, so check the robot before trying again."),
   planSaveFailed: notice("error", "v4_notice_plan_save_failed", "Home Assistant can't confirm the plan was saved, so check your plans, then try again."),
   planDeleteFailed: notice("error", "v4_notice_plan_delete_failed", "The plan wasn't deleted; try again."),
+  trailUnavailable: notice("info", "v4_notice_trail_unavailable", "That trail isn't available on this map."),
   planPreviewMissing: notice("warning", "v4_notice_plan_preview_missing", "The next-run preview isn't ready; reload your plans, then try again."),
   planRemoved: notice("warning", "v4_notice_plan_removed", "This plan was removed elsewhere, so nothing was changed."),
   planPreviewRefreshFailed: notice("warning", "v4_notice_plan_preview_refresh_failed", "The next-run preview didn't refresh; check the plan, then try again."),
@@ -1150,6 +1151,7 @@ export class EffectController {
         history: resource("idle", null),
         plans: resource("idle", null),
         areas: resource("idle", null),
+        runs: resource("idle", null),
       },
       manualRoomPreview: resource("idle", null),
       map: {
@@ -1856,6 +1858,7 @@ export class EffectController {
           exactPose: exactLivePose,
         },
       });
+      if (exactLivePose) this.#runs?.extendLiveTrail(this.#store, pose);
       if (exactLivePose) {
         this.#poseExpiryTimer = window.setTimeout(() => {
           this.#poseExpiryTimer = null;
@@ -2082,8 +2085,35 @@ export class EffectController {
         await this.#loadHistory(entry, stamp);
       }
     }
+    if (workflow === "runs") await this.loadRuns();
     if (workflow === "plans" || workflow === "plan" || workflow === "rooms") await this.loadPlans();
     if (workflow === "areas" || workflow === "draw" || workflow === "areaReview" || workflow === "plan") await this.loadAreas();
+  }
+
+  // Cleaning history and trails (run_history.py) load their code with the
+  // first read.
+  #runs: typeof import("./run-history-data") | null = null;
+
+  async loadRuns(): Promise<void> {
+    await this.#runRead("runs", null);
+  }
+
+  async showTrail(trail: string | null): Promise<void> {
+    await this.#runRead("trail", trail);
+  }
+
+  async #runRead(name: "runs" | "trail", trail: string | null): Promise<void> {
+    const entry = this.#store.value.resources.entry;
+    const controller = this.#controller(name);
+    try {
+      if (name === "trail" && !trail) this.#store.patch({ trail: null });
+      else if (entry && this.#pageLifecycle.active) {
+        this.#runs = await import("./run-history-data");
+        await this.#runs.readRuns(this.#store, this.#backend, entry, trail, controller.signal, NOTICES.trailUnavailable);
+      }
+    } finally {
+      this.#release(name, controller);
+    }
   }
 
   // `inPlace` keeps a ready catalog on screen: the read never shows loading

@@ -63,6 +63,7 @@ export const normalizeBrush = (value: number): number =>
 export const initialWorkspaceState = (): WorkspaceState => ({
   lastRun: null,
   smartStop: null,
+  trail: null,
   pageActive: true,
   owner: null,
   draftFloorOrdinal: null,
@@ -130,6 +131,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
     history: emptyResource(),
     plans: emptyResource(),
     areas: emptyResource(),
+    runs: emptyResource(),
   },
   manualRoomPreview: emptyResource(),
   manualRoomPreviewRetry: 0,

@@ -40,7 +40,12 @@ from .client.floor_plan import (
     resolve_robot_map_position,
     robot_location_source,
 )
-from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
+from .client.models import (
+    CleaningSessionRecord,
+    FloorPlan,
+    HermesCollectionEntry,
+    RobotPose,
+)
 from .client.slam_map import decode_slam_tile, encode_slam_scene
 from .const import DOMAIN
 from .plans import (
@@ -58,6 +63,7 @@ from .plans import (
     room_cadence_identity,
 )
 from .room_sequence import saved_plan_preview_token
+from .run_history import RUN_HISTORY_LIMIT, RunTrails
 from .slam_delta import encode_slam_scene_delta
 from .slam_map_store import SlamMapIdentity
 
@@ -75,6 +81,8 @@ HISTORY_API_URL = "/api/matic_robot/slam_history/{entry_id}"
 HISTORY_SCENE_API_URL = "/api/matic_robot/slam_history_scene/{entry_id}/{snapshot_id}"
 AREAS_API_URL = "/api/matic_robot/areas/{entry_id}"
 PLANS_API_URL = "/api/matic_robot/plans/{entry_id}"
+RUNS_API_URL = "/api/matic_robot/runs/{entry_id}"
+RUNS_NATIVE_READ_SECONDS = 15
 POSE_CACHE_SECONDS = 1.0
 SCENE_ENCODE_ATTEMPTS = 2
 SCENE_CACHE_REVISIONS = 2
@@ -106,6 +114,33 @@ def _map_session_key(runtime: MaticRuntimeData) -> str | None:
         + b"\0"
         + floor_plan.partition_id_wire
     ).hexdigest()
+
+
+def observe_run_trail(
+    runtime: MaticRuntimeData, position: tuple[float, float] | None
+) -> None:
+    """Give the trail recorder one verified position, or only the run state."""
+    trails: RunTrails | None = getattr(runtime, "run_trails", None)
+    if trails is None:
+        return
+    data = runtime.coordinator.data
+    trails.observe(
+        run_id=runtime.cleaning_plans.active_run_id(str(data.info.serial_number)),
+        native_active=data.telemetry.active_cleaning_session,
+        map_key=_map_session_key(runtime),
+        point=position,
+    )
+
+
+def observe_coordinator_trail(runtime: MaticRuntimeData) -> None:
+    """Record the coordinator's own pose read, which also closes finished runs."""
+    data = runtime.coordinator.data
+    position = (
+        resolve_robot_map_position(data.floor_plan, data.pose, None)
+        if runtime.slam_map.floor_plan_is_current(data.floor_plan)
+        else None
+    )
+    observe_run_trail(runtime, position[:2] if position is not None else None)
 
 
 def _pose_frame_key(
@@ -963,6 +998,8 @@ class MaticSlamPoseView(HomeAssistantView):
             if floor_plan_coherent
             else "unavailable"
         )
+        if cached.freshness == "live":
+            observe_run_trail(runtime, position[:2] if position is not None else None)
         return self.json(
             {
                 "position": list(position[:2]) if position is not None else None,
@@ -1775,3 +1812,65 @@ def _history_metadata(
         }
         for snapshot in snapshots
     ]
+
+
+class MaticRunHistoryView(HomeAssistantView):
+    """Serve recent cleaning runs and their trails to the private workspace."""
+
+    url = RUNS_API_URL
+    name = "api:matic_robot:runs"
+
+    @require_admin
+    async def get(self, request: web.Request, entry_id: str) -> web.Response:
+        """Return the run list, or one trail when ``trail`` names it."""
+        runtime = _runtime_for_entry(request.app[KEY_HASS], entry_id)
+        trails: RunTrails | None = getattr(runtime, "run_trails", None)
+        if runtime is None or trails is None:
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        map_key = _map_session_key(runtime)
+        trail_id = request.query.get("trail")
+        if trail_id is not None:
+            segments = trails.segments(trail_id, map_key)
+            if segments is None:
+                return web.Response(
+                    status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+                )
+            return self.json(
+                {
+                    "trail": trail_id,
+                    "map_session_key": map_key,
+                    "segments": [
+                        [list(point) for point in segment] for segment in segments
+                    ],
+                },
+                headers=PRIVATE_NO_STORE_HEADERS,
+            )
+        native: tuple[CleaningSessionRecord, ...] = ()
+        robot_history = True
+        try:
+            async with asyncio.timeout(RUNS_NATIVE_READ_SECONDS):
+                native = await runtime.client.async_get_cleaning_session_records()
+        except MaticError, TimeoutError:
+            robot_history = False
+        serial_number = str(runtime.coordinator.data.info.serial_number)
+        runs = runtime.cleaning_plans.run_history(serial_number, native)
+        for run in runs:
+            run["trail"] = (
+                trails.trail_id(map_key, run_id=run["id"])
+                if run["source"] == "home_assistant"
+                else trails.trail_id(
+                    map_key,
+                    window=(run["started_at"], run["ended_at"] or run["started_at"]),
+                )
+            )
+        return self.json(
+            {
+                "entry_id": entry_id,
+                "map_session_key": map_key,
+                "robot_history": robot_history,
+                "runs": runs[: RUN_HISTORY_LIMIT * 2],
+            },
+            headers=PRIVATE_NO_STORE_HEADERS,
+        )
