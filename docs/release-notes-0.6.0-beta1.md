@@ -16,6 +16,8 @@ to try new features before 0.6.0.
   sensor is on when the run starts.
 - **Sink refill and Go to room.** Send the robot to its sink location or to any
   room without cleaning it.
+- **Change a running clean.** Skip a room, clean one next or clean one again
+  while the robot is cleaning.
 - **More of the Matic app.** Robot schedules on a calendar, no-go zones on the
   map, named robot alerts, maintenance reminders and an opt-in Wi-Fi signal map.
 
@@ -61,6 +63,15 @@ to try new features before 0.6.0.
   `go_to_room` command send the robot to one room, by name or ID, without
   marking it cleaned. In Matic Map, pick one room and press **Go to room**.
 
+## Change a running clean
+
+- **Skip, next and again.** **Skip room**, **Clean room next** and **Clean room
+  again** change what the robot cleans next, as the queue sheet in the Matic
+  app does. Each takes one room by name or ID and returns once the robot
+  confirms the change.
+- **In plan runs.** A skipped room gets no credit and keeps its place, so the
+  next run still treats it as due.
+
 ## Robot status
 
 - **Robot schedules.** `calendar.matic_native_schedules` shows each enabled
@@ -100,5 +111,6 @@ to try new features before 0.6.0.
   history, robot trails, Wi-Fi survey readings and **Hold occupied rooms**.
 
 See [Matic Map and features](features.md), [Actions](actions.md),
-[Entities](entities.md), [Cleaning](cleaning.md) and
+[Entities](entities.md), [Cleaning](cleaning.md),
+[Changing a running clean](queue-changes.md) and
 [Assistant tools](assistant-tools.md) for details.
