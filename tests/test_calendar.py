@@ -10,13 +10,13 @@ from zoneinfo import ZoneInfo
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot import calendar as calendar_platform
-from custom_components.matic_robot.calendar import (
+from custom_components.matic_robot.calendar import MaticScheduleCalendar
+from custom_components.matic_robot.client.models import CleaningSchedule, RobotState
+from custom_components.matic_robot.native_schedules import (
     SCHEDULED_RUN_DURATION,
-    MaticScheduleCalendar,
     schedule_occurrences,
     schedule_zone,
 )
-from custom_components.matic_robot.client.models import CleaningSchedule, RobotState
 from tests.test_entities import _entry, _floor_plan, _state
 
 LOS_ANGELES = ZoneInfo("America/Los_Angeles")
