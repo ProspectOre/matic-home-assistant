@@ -30,7 +30,7 @@ Hermes is Matic's local gRPC protocol. The registry in
 | `current_version`, `update_config`, `update_state` | Software/protocol versions, update channel and state |
 | `wifi_status` | Connection and signal; SSID is a live, unrecorded attribute |
 | `time_zone` | Robot timezone |
-| `schedule_events` | Schedule count and live, unrecorded definitions |
+| `schedule_events` | Schedule count, live unrecorded definitions, and the schedule calendar |
 | `coverage_session_history` | Native session and per-mode room results |
 | `dock_detections`, `sink_summon_locations` | Location counts |
 | `coverage_time` | Accumulated coverage seconds |
