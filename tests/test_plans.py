@@ -2435,11 +2435,11 @@ async def test_plan_store_migrates_interrupted_manual_run_without_private_credit
     migrated_robot = migrated["robots"]["serial"]
     run = migrated_robot["last_run"]
     assert run["plan_id"] == target
-    assert run["plan_name"] == "Map Studio room clean"
+    assert run["plan_name"] == "One-time room clean"
     assert run["recovery_checkpoint"]["data"]["plan_id"] == target
     assert run["recovery_checkpoint"]["cadence_by_room"] == {"room-kitchen": shared}
     assert migrated_robot["active_plan"]["plan_id"] == target
-    assert migrated_robot["active_plan"]["plan_name"] == "Map Studio room clean"
+    assert migrated_robot["active_plan"]["plan_name"] == "One-time room clean"
     migrated_pending = migrated_robot["pending_native_reconciliation"]
     assert migrated_pending["plan_id"] == target
     assert "cadence_state" not in migrated_pending
@@ -11524,3 +11524,38 @@ async def test_stop_during_an_area_finishes_the_area_or_stops_now(
     else:
         assert decision == PlanStopDecision("immediate")
         assert cancel.is_set()
+
+
+def test_normalize_renames_stored_one_time_room_runs() -> None:
+    """Stores from 0.5 show one-time room runs under their current name."""
+    manual_id = f"{plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
+    legacy_name = "Map Studio room clean"
+    robot: dict[str, Any] = {
+        "last_run": {
+            "run_id": "run-one",
+            "plan_id": manual_id,
+            "plan_name": legacy_name,
+            "outcome": "completed",
+        },
+        "active_plan": {
+            "run_id": "run-one",
+            "plan_id": manual_id,
+            "plan_name": legacy_name,
+            "room_id": "room-a",
+        },
+    }
+    saved = {
+        "last_run": {
+            "run_id": "run-two",
+            "plan_id": "saved",
+            "plan_name": legacy_name,
+            "outcome": "completed",
+        }
+    }
+
+    assert CleaningPlanManager._normalize_robot(robot) is True
+    CleaningPlanManager._normalize_robot(saved)
+
+    assert robot["last_run"]["plan_name"] == "One-time room clean"
+    assert robot["active_plan"]["plan_name"] == "One-time room clean"
+    assert saved["last_run"]["plan_name"] == legacy_name
