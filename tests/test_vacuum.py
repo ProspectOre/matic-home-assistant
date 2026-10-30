@@ -25,6 +25,7 @@ from custom_components.matic_robot.client.exceptions import (
     CoverageGuardError,
     CoverageGuardReason,
     MaticError,
+    SinkLocationUnavailableError,
 )
 from custom_components.matic_robot.client.mission import decode_mission_client_state
 from custom_components.matic_robot.const import MAX_ROOM_SEQUENCE_SIZE
@@ -1167,6 +1168,59 @@ async def test_sink_summon_without_a_task_replaces_a_docked_plan(hass) -> None:
     entry.runtime_data.coordinator.client.async_sink_summon.assert_awaited_once()
     assert not manager.managed_motion_is_current(serial_number, token)
     assert manager.cancellation_event(serial_number).is_set()
+
+
+async def test_sink_summon_decides_ownership_after_the_lookup(hass) -> None:
+    """A task that ends while the sink posture is read leaves new motion."""
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    state = coordinator.data
+    coordinator.data = replace(
+        state, operational=replace(state.operational, cleaning=True)
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+
+    async def task_ends(_floor_plan):
+        coordinator.data = replace(
+            state, operational=replace(state.operational, cleaning=False)
+        )
+        return b"synthetic-posture"
+
+    coordinator.client.async_get_sink_posture.side_effect = task_ends
+    await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+
+    coordinator.client.async_sink_summon.assert_awaited_once()
+    assert not manager.managed_motion_is_current(serial_number, token)
+
+
+@pytest.mark.parametrize("failure", ["no_sink", "stale_map"])
+async def test_sink_summon_that_cannot_go_keeps_a_docked_plan(
+    hass, failure: str
+) -> None:
+    """A refused summon never takes ownership from a plan docked between rooms."""
+    entry = _entry(idle=True)
+    if failure == "no_sink":
+        entry.runtime_data.coordinator.client.async_get_sink_posture.side_effect = (
+            SinkLocationUnavailableError("synthetic")
+        )
+    else:
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+
+    with pytest.raises(ServiceValidationError):
+        await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+
+    entry.runtime_data.coordinator.client.async_sink_summon.assert_not_awaited()
+    assert manager.managed_motion_is_current(serial_number, token)
+    assert not manager.cancellation_event(serial_number).is_set()
 
 
 async def test_sink_summon_without_a_task_cancels_a_recovering_plan(hass) -> None:

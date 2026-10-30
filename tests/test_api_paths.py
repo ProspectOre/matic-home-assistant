@@ -3016,7 +3016,7 @@ async def test_optional_unsupported_collection_readers_are_isolated() -> None:
 _SYNTHETIC_SINK_POSTURE = bytes.fromhex("0d0000c03f15000000c0220515000080bf")
 
 
-async def test_sink_summon_sends_the_last_posture_for_the_floor() -> None:
+async def test_sink_posture_is_the_last_saved_for_the_floor() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     floor_key = bytes.fromhex("1504030201")
     client.async_get_collection_entries = AsyncMock(
@@ -3027,13 +3027,25 @@ async def test_sink_summon_sends_the_last_posture_for_the_floor() -> None:
             HermesCollectionEntry(floor_key, b""),
         )
     )
-    client._async_send_user_payload = AsyncMock()
 
-    await client.async_sink_summon(FloorPlan(0x01020304, "partition", b"partition", ()))
+    posture = await client.async_get_sink_posture(
+        FloorPlan(0x01020304, "partition", b"partition", ())
+    )
 
+    assert posture == _SYNTHETIC_SINK_POSTURE
     client.async_get_collection_entries.assert_awaited_once_with(
         "sink_summon_locations"
     )
+
+
+async def test_sink_summon_sends_the_posture_and_refill_wait() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._async_send_user_payload = AsyncMock()
+
+    await client.async_sink_summon(
+        FloorPlan(0x01020304, "partition", b"partition", ()), _SYNTHETIC_SINK_POSTURE
+    )
+
     client._async_send_user_payload.assert_awaited_once_with(
         bytes.fromhex(
             "122722250a110d0000c03f15000000c0220515000080bf"
@@ -3043,18 +3055,15 @@ async def test_sink_summon_sends_the_last_posture_for_the_floor() -> None:
     )
 
 
-async def test_sink_summon_requires_a_location_for_the_current_floor() -> None:
+async def test_sink_posture_requires_a_location_for_the_current_floor() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client.async_get_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(bytes.fromhex("1508070605"), _SYNTHETIC_SINK_POSTURE),
         )
     )
-    client._async_send_user_payload = AsyncMock()
 
     with pytest.raises(SinkLocationUnavailableError):
-        await client.async_sink_summon(
+        await client.async_get_sink_posture(
             FloorPlan(0x01020304, "partition", b"partition", ())
         )
-
-    client._async_send_user_payload.assert_not_awaited()

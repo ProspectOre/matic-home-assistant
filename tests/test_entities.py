@@ -205,6 +205,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             ),
             async_send_user_command=AsyncMock(),
             async_start_coverage=AsyncMock(),
+            async_get_sink_posture=AsyncMock(return_value=b"synthetic-posture"),
             async_sink_summon=AsyncMock(),
             async_set_binary_setting=AsyncMock(),
             async_set_deep_mop=AsyncMock(),
@@ -2654,13 +2655,15 @@ async def test_sink_summon_sends_the_current_floor_when_idle() -> None:
 
     await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
 
-    client.async_sink_summon.assert_awaited_once_with(_floor_plan())
+    client.async_sink_summon.assert_awaited_once_with(
+        _floor_plan(), b"synthetic-posture"
+    )
     entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once_with()
 
 
 async def test_sink_summon_rejects_a_floor_without_a_saved_location() -> None:
     unsaved = _entry(idle=True)
-    unsaved.runtime_data.coordinator.client.async_sink_summon.side_effect = (
+    unsaved.runtime_data.coordinator.client.async_get_sink_posture.side_effect = (
         SinkLocationUnavailableError("synthetic")
     )
     with pytest.raises(ServiceValidationError) as missing:
@@ -2677,15 +2680,16 @@ async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> No
     assert unavailable.value.translation_key == "room_plan_unavailable"
     stale.runtime_data.coordinator.client.async_sink_summon.assert_not_awaited()
 
-    unsupported = _entry(idle=True)
-    unsupported.runtime_data.coordinator.client.async_sink_summon.side_effect = (
-        EndpointUnsupportedError("synthetic")
-    )
-    with pytest.raises(HomeAssistantError) as failed:
-        await vacuum.MaticVacuum(unsupported).async_sink_summon()
-    assert not isinstance(failed.value, ServiceValidationError)
-    assert failed.value.translation_key == "robot_command_failed"
-    unsupported.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+    for method in ("async_get_sink_posture", "async_sink_summon"):
+        unsupported = _entry(idle=True)
+        getattr(
+            unsupported.runtime_data.coordinator.client, method
+        ).side_effect = EndpointUnsupportedError("synthetic")
+        with pytest.raises(HomeAssistantError) as failed:
+            await vacuum.MaticVacuum(unsupported).async_sink_summon()
+        assert not isinstance(failed.value, ServiceValidationError)
+        assert failed.value.translation_key == "robot_command_failed"
+        unsupported.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
 
 
 async def test_vacuum_dock_from_idle_sends_no_stop() -> None:

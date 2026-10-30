@@ -648,11 +648,23 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         self._plans.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
+        # Resolve the destination before taking any lease, so a floor without a
+        # sink or a stale map never replaces the ownership of a docked plan.
+        floor_plan = self._current_floor_plan()
+        floor_token = plan_floor_token(floor_plan)
+        try:
+            posture = await self.coordinator.client.async_get_sink_posture(floor_plan)
+        except SinkLocationUnavailableError as err:
+            raise _validation_error(
+                "No sink location is saved for this floor",
+                "sink_location_unavailable",
+            ) from err
+        except (MaticError, ValueError) as err:
+            raise _sink_summon_failed() from err
         # The robot keeps a task it holds, and so the plan driving it, through
         # the sink visit and resumes it on Resume. Only a summon without a task
         # starts new motion, which takes ownership like any other direct clean.
-        operational = self.coordinator.data.operational
-        joins_task = operational.cleaning or operational.paused or operational.returning
+        joins_task = self._holds_task()
         lease = (
             self._plans.external_command(serial_number)
             if joins_task
@@ -670,33 +682,25 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             self._require_stop_request_generation(
                 serial_number, request_stop_generation
             )
-            operational = self.coordinator.data.operational
-            if joins_task and not (
-                operational.cleaning or operational.paused or operational.returning
-            ):
-                # The task ended while this summon waited for the command lock,
-                # so only the motion lease could own what it would start now.
+            floor_plan = self._current_floor_plan(floor_token)
+            if joins_task and not self._holds_task():
+                # The task ended while this summon waited, so only the motion
+                # lease could own what it would start now.
                 raise HomeAssistantError(
                     "The robot's task ended before the sink summon was sent",
                     translation_domain=DOMAIN,
                     translation_key="robot_task_changed",
                 )
             try:
-                await self.coordinator.client.async_sink_summon(
-                    self._current_floor_plan()
-                )
-            except SinkLocationUnavailableError as err:
-                raise _validation_error(
-                    "No sink location is saved for this floor",
-                    "sink_location_unavailable",
-                ) from err
+                await self.coordinator.client.async_sink_summon(floor_plan, posture)
             except (MaticError, ValueError) as err:
-                raise HomeAssistantError(
-                    "The robot could not be sent to the sink",
-                    translation_domain=DOMAIN,
-                    translation_key="robot_command_failed",
-                ) from err
+                raise _sink_summon_failed() from err
             await self.coordinator.async_request_refresh()
+
+    def _holds_task(self) -> bool:
+        """Return whether the robot holds a task a sink summon would join."""
+        operational = self.coordinator.data.operational
+        return operational.cleaning or operational.paused or operational.returning
 
     def _schedule_dock_after_stop(
         self, serial_number: str, *, run_id: str | None = None
@@ -1181,6 +1185,15 @@ def _enum_option[CleaningOptionT: (CleaningMode, CoverageSetting)](
                 return option
     choices = ", ".join(option.value for option in enum_type)
     raise ValueError(f"{_OPTION_LABELS[enum_type]} must be one of: {choices}.")
+
+
+def _sink_summon_failed() -> HomeAssistantError:
+    """Create the error for a sink summon the robot could not take."""
+    return HomeAssistantError(
+        "The robot could not be sent to the sink",
+        translation_domain=DOMAIN,
+        translation_key="robot_command_failed",
+    )
 
 
 def _validation_error(
