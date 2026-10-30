@@ -2252,6 +2252,9 @@ async def test_mixed_plan_runs_each_area_as_its_own_owned_mission(
     assert handoffs[0]["finished_area_legs"] == [0]
     # The next leg's history fence includes the area's own record.
     assert len(handoffs[0]["handoff_history"]) == 1
+    # No handoff follows the last area, so its finish is saved on its own.
+    assert checkpoints[-1]["leg_index"] == 2
+    assert checkpoints[-1]["finished_area_legs"] == [0, 2]
     snapshot = manager.snapshot("serial")
     assert snapshot["last_run"]["outcome"] == "completed"
     assert snapshot["last_run"]["completed_room_count"] == 2
