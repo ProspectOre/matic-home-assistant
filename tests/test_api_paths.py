@@ -1331,7 +1331,9 @@ async def test_endpoint_inspection_routes_properties_collections_and_health() ->
     assert paths[0].value == b"path"
     assert history[0].value == b"session"
     client.async_get_property.assert_awaited_once_with("current_version")
-    client.async_get_collection_entries.assert_awaited_once_with("planned_path", limit=2)
+    client.async_get_collection_entries.assert_awaited_once_with(
+        "planned_path", limit=2
+    )
     client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=3
     )
