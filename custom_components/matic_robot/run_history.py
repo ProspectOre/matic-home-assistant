@@ -351,10 +351,16 @@ def _outcome(
 
 
 def _native_room_result(session: CleaningSession, name: str) -> str:
-    statuses = {result.status for result in session.mode_results if result.room == name}
-    if not statuses:
+    results = [result for result in session.mode_results if result.room == name]
+    if not results:
         return "completed" if name in session.completed_rooms else "unknown"
-    if None in statuses:
+    statuses = {result.status for result in results}
+    # A mode the session ran with no result for this room is unknown, as in
+    # the client decoder; it can still show partial, never done or not started.
+    missing = {result.cleaning_mode for result in session.mode_results} - {
+        result.cleaning_mode for result in results
+    }
+    if None in statuses or (missing and statuses in ({"completed"}, {"unattempted"})):
         return "unknown"
     if statuses == {"completed"}:
         return "completed"

@@ -286,7 +286,10 @@ def _session(**changes) -> CleaningSession:
             CleaningModeResult("Hall", "vacuum", "completed", 10),
             CleaningModeResult("Hall", "mop", "partial", 5),
             CleaningModeResult("Bath", "vacuum", "unattempted", 0),
+            CleaningModeResult("Bath", "mop", "unattempted", 0),
             CleaningModeResult("Den", "vacuum", None, None),
+            # The mop result is missing: done for vacuum alone is not done.
+            CleaningModeResult("Attic", "vacuum", "completed", 3),
         ),
     }
     return CleaningSession(**{**values, **changes})
