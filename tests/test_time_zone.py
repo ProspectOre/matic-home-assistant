@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 
-from custom_components.matic_robot.time_zone import time_zones_differ
+from custom_components.matic_robot.time_zone import known_zone, time_zones_differ
 
 DAY = date(2026, 10, 30)
 
@@ -28,3 +28,8 @@ DAY = date(2026, 10, 30)
 )
 def test_time_zones_differ(robot: str, home: str, expected: bool | None) -> None:
     assert time_zones_differ(robot, home, DAY) is expected
+
+
+def test_known_zone_returns_the_first_resolvable_name() -> None:
+    assert known_zone(None, "", "Not/A_Zone", "America/Denver") == "America/Denver"
+    assert known_zone("Not/A_Zone", None) is None

@@ -57,7 +57,7 @@ from .session_tracking import (
     _parse_timestamp,
     _sessions_overlap,
 )
-from .time_zone import time_zones_differ
+from .time_zone import known_zone, time_zones_differ
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -997,27 +997,32 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     def _async_check_time_zone(self, telemetry: RobotTelemetry) -> None:
         """Raise a Repair while the robot's schedules keep a different clock.
 
-        Each schedule stores its own zone and falls back to the robot's, as the
-        schedules calendar does; with no enabled schedule the robot's zone is
-        checked. An unread or unresolvable zone keeps the last decision rather
-        than clearing a real mismatch.
+        Each enabled schedule runs in the zone the schedules calendar uses: its
+        own, else the robot's, else Home Assistant's. With no enabled schedule
+        the robot's zone is checked, and an unread or unresolvable robot zone
+        keeps the last decision rather than clearing a real mismatch.
         """
-        robot_zone = telemetry.timezone or None
-        schedule_zones = [
-            schedule.timezone or robot_zone
+        home_zone = self.hass.config.time_zone
+        enabled = [
+            schedule
             for schedule in telemetry.schedules
             if schedule.enabled is not False
         ]
-        zones = schedule_zones if schedule_zones else [robot_zone]
-        if None in zones:
+        if enabled:
+            zones = [
+                known_zone(schedule.timezone, telemetry.timezone) or home_zone
+                for schedule in enabled
+            ]
+        elif (robot_zone := known_zone(telemetry.timezone)) is not None:
+            zones = [robot_zone]
+        else:
             return
-        home_zone = self.hass.config.time_zone
         # A year of offsets takes tens of milliseconds; scan once per UTC day.
         today = dt_util.utcnow().date()
         if any(day != today for _, _, day in self._time_zone_scans):
             self._time_zone_scans.clear()
         mismatch: tuple[str, str] | None = None
-        for zone in dict.fromkeys(cast(list[str], zones)):
+        for zone in dict.fromkeys(zones):
             key = (zone, home_zone, today)
             if key not in self._time_zone_scans:
                 self._time_zone_scans[key] = time_zones_differ(*key)

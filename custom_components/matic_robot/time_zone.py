@@ -38,3 +38,16 @@ def time_zones_differ(robot_zone: str, home_zone: str, day: date) -> bool | None
         ):
             return True
     return False
+
+
+def known_zone(*names: str | None) -> str | None:
+    """Return the first name this Python build resolves, as the calendar does."""
+    for name in names:
+        if not name:
+            continue
+        try:
+            ZoneInfo(name)
+        except ZoneInfoNotFoundError, ValueError:
+            continue
+        return name
+    return None
