@@ -845,12 +845,7 @@ export class EffectController {
   #refreshSpatialBoundary(entryId: string, invalidated: readonly string[] = []): void {
     this.#clearSpatialReadRecovery();
     this.#invalidateSpatialFence();
-    // Survey cells belong to one floor; drop them until the new floor's arrive.
-    const wifiSignal = this.#store.value.wifiSignal;
-    if (wifiSignal) {
-      this.#store.patch({ wifiSignal: { ...wifiSignal, status: "loading", cells: [] } });
-      void this.#loadWifiSignal();
-    }
+    this.#reloadWifiSignalForNewFloor();
     void this.refreshCatalog(true, true).then(() => {
       if (this.#disposed || this.#projection?.entryKey !== entryId
         || !this.#projection.host.administrator || !this.#projection.host.connected) return;
@@ -1423,6 +1418,7 @@ export class EffectController {
       && previousDraftSession === entry.mapSessionKey;
     const preserve = ["catalog"];
     if (previousEntry?.entryId === entry.entryId) preserve.push("setting-mutation");
+    if (sameResourceBoundary) preserve.push("wifi-signal");
     if (sameResourceBoundary && !resetDrafts) preserve.push("plans", "areas");
     if (sameVerifiedFrame) preserve.push("plan-mutation", "area-mutation");
     const stamp = this.#coherence.begin(
@@ -1512,6 +1508,7 @@ export class EffectController {
       void this.loadPlans();
     }
     this.#resumeAreaCatalog();
+    if (!sameResourceBoundary) this.#reloadWifiSignalForNewFloor();
     if (coherent) {
       void this.#loadLiveScene(entry, stamp);
       void this.#loadPose(entry, stamp);
@@ -2016,6 +2013,14 @@ export class EffectController {
     this.#wifiSignalTimer ??= window.setInterval(() => {
       if (this.#pageLifecycle.active) void this.#loadWifiSignal();
     }, WIFI_SIGNAL_REFRESH_MS);
+  }
+
+  // Survey cells belong to one floor; drop them until the new floor's arrive.
+  #reloadWifiSignalForNewFloor(): void {
+    const wifiSignal = this.#store.value.wifiSignal;
+    if (!wifiSignal) return;
+    this.#store.patch({ wifiSignal: { ...wifiSignal, status: "loading", cells: [] } });
+    void this.#loadWifiSignal();
   }
 
   #stopWifiSignal(): void {

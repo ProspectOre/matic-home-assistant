@@ -103,6 +103,28 @@ test("a reattached panel keeps refreshing a layer left on", async ({ page }) => 
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.cells.length)).toBe(2);
 });
 
+test("a floor change from the catalog drops the old floor's cells", async ({ page }) => {
+  await page.clock.install();
+  const panel = await mountPanel(page, SURVEY);
+  await clickInShadow(panel, "[aria-controls=map-options]");
+  await clickInShadow(panel, "[data-wifi-signal]");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.cells.length)).toBe(2);
+
+  await panel.evaluate(async (element) => {
+    const { entries } = await (await element.hass.fetchWithAuth("/api/matic_robot/slam_entries")).json();
+    window.__panelFixture.setCatalogEntries(entries.map((entry) => ({
+      ...entry, selected_floor_ordinal: 2, map_floor_ordinal: 2,
+    })));
+    window.__wifiSignalReply = { enabled: true, cell_size: 0.5, cells: [] };
+    element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-action", {
+      detail: { id: "recheck-status" }, bubbles: true, composed: true,
+    }));
+  });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toEqual({
+    status: "ready", surveying: true, cellSize: 0.5, cells: [],
+  });
+});
+
 test("an empty survey says how to start one", async ({ page }) => {
   const panel = await mountPanel(page, { enabled: false, cell_size: 0.5, cells: [] });
   await clickInShadow(panel, "[aria-controls=map-options]");
