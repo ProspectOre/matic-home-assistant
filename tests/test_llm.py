@@ -3080,6 +3080,34 @@ async def test_schedules_list_rooms_by_name_and_the_runs_coming_up() -> None:
         {"name": "Weekday mornings", "starts_at": "2026-11-02T09:30:00-08:00"},
         {"name": "Weekday mornings", "starts_at": "2026-11-04T09:30:00-08:00"},
     ]
+    assert result["schedules_truncated"] is False
+    assert result["upcoming_truncated"] is False
+
+    every_day = tuple(
+        _schedule(
+            weekdays=(
+                "monday",
+                "tuesday",
+                "wednesday",
+                "thursday",
+                "friday",
+                "saturday",
+                "sunday",
+            ),
+            minute_of_day=minute,
+        )
+        for minute in range(65)
+    )
+    _with_telemetry(entry, schedules=every_day)
+    with patch.object(dt_util, "now", return_value=now):
+        full = (
+            await tool.async_call(
+                hass, llm.ToolInput(tool.name, {"days": 14}), _context()
+            )
+        ).data
+    assert len(full["schedules"]) == len(full["upcoming"]) == 64
+    assert full["schedules_truncated"] is True
+    assert full["upcoming_truncated"] is True
 
     no_map = _entry()
     _with_telemetry(no_map, schedules=(_schedule(),))
@@ -3120,6 +3148,7 @@ async def test_zones_name_the_rooms_they_cover_on_the_current_map() -> None:
     ).data
     assert result["map_available"] is True
     assert result["zones"] == [{"kind": "no_go", "rooms": ["Study"]}]
+    assert result["zones_truncated"] is False
     assert result["zones_on_other_maps"] == 1
 
     no_map = _entry()
@@ -3129,4 +3158,11 @@ async def test_zones_name_the_rooms_they_cover_on_the_current_map() -> None:
     ).data
     assert bare["map_available"] is False
     assert bare["zones"] == []
+
+    _with_telemetry(entry, zones=(zone,) * 65)
+    many = (
+        await tool.async_call(_hass(entry), llm.ToolInput(tool.name, {}), _context())
+    ).data
+    assert len(many["zones"]) == 64
+    assert many["zones_truncated"] is True
     assert bare["zones_on_other_maps"] == 1

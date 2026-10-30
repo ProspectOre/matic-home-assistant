@@ -1557,6 +1557,10 @@ class MaticGetSchedulesTool(_MaticTool):
                     )
                     for event in upcoming[:MAX_SCHEDULE_RESULTS]
                 ],
+                "schedules_truncated": (
+                    len(state.telemetry.schedules) > MAX_SCHEDULE_RESULTS
+                ),
+                "upcoming_truncated": len(upcoming) > MAX_SCHEDULE_RESULTS,
             }
         )
 
@@ -1609,6 +1613,7 @@ class MaticGetZonesTool(_MaticTool):
                     for zone in zones[:MAX_ZONE_RESULTS]
                     if floor_plan is not None
                 ],
+                "zones_truncated": len(zones) > MAX_ZONE_RESULTS,
                 "zones_on_other_maps": len(state.telemetry.zones) - len(zones),
             }
         )
