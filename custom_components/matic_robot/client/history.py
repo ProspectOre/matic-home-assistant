@@ -89,13 +89,10 @@ def decode_cleaning_session_image(entry: HermesCollectionEntry) -> CleaningSessi
     return CleaningSessionImage(entry.key, image, width, height)
 
 
-def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleaningRecap:
-    """Decode one verified monthly recap while preserving protocol-native units."""
-    if not entry.key or len(entry.key) > 64 or not entry.value:
-        raise DecodeError("monthly recap entry is empty or oversized")
-    if len(entry.value) > MAX_RECAP_PAYLOAD_BYTES:
-        raise DecodeError("monthly recap payload exceeds the size limit")
-
+def decode_monthly_recap_key(entry: HermesCollectionEntry) -> tuple[int, int]:
+    """Return a monthly recap's ``(month, year)`` without decoding its value."""
+    if not entry.key or len(entry.key) > 64:
+        raise DecodeError("monthly recap key has an invalid shape")
     key_fields = decode_fields(entry.key)
     months = _varint_values(key_fields, 1)
     years = _varint_values(key_fields, 2)
@@ -107,6 +104,17 @@ def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleani
         or not 2000 <= years[0] <= 9999
     ):
         raise DecodeError("monthly recap key has an invalid shape")
+    return months[0], years[0]
+
+
+def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleaningRecap:
+    """Decode one verified monthly recap while preserving protocol-native units."""
+    if not entry.key or len(entry.key) > 64 or not entry.value:
+        raise DecodeError("monthly recap entry is empty or oversized")
+    if len(entry.value) > MAX_RECAP_PAYLOAD_BYTES:
+        raise DecodeError("monthly recap payload exceeds the size limit")
+
+    month, year = decode_monthly_recap_key(entry)
 
     fields = decode_fields(entry.value)
     areas = _bytes_values(fields, 1)
@@ -130,8 +138,8 @@ def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleani
     sweep_duration, mop_duration = _decode_mode_durations(durations[0])
     favorite_name = _decode_favorite_room(favorites[0]) if favorites else None
     return MonthlyCleaningRecap(
-        month=months[0],
-        year=years[0],
+        month=month,
+        year=year,
         sweep_area_m2=sweep_area,
         mop_area_m2=mop_area,
         session_count=counts[0],

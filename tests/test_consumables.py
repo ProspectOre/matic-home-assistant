@@ -18,7 +18,6 @@ from custom_components.matic_robot.client.consumables import (
     MAX_MAINTENANCE_SUGGESTIONS,
     decode_bag_pass_expiry,
     decode_maintenance_suggestions,
-    latest_maintenance_suggestions,
 )
 from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
@@ -96,17 +95,6 @@ def test_packed_varints_decode_multibyte_values() -> None:
     assert packed_varints(b"\x01\xac\x02", 2) == (1, 300)
 
 
-def test_latest_maintenance_suggestions_pick_the_newest_month() -> None:
-    assert latest_maintenance_suggestions([]) is None
-    assert latest_maintenance_suggestions(
-        [
-            (12, 2025, (MaintenancePart.MOP_ROLL,)),
-            (10, 2026, (MaintenancePart.BRUSH_ROLL,)),
-            (9, 2026, ()),
-        ]
-    ) == ("2026-10", (MaintenancePart.BRUSH_ROLL,))
-
-
 def test_bag_pass_reports_the_end_of_an_active_pass() -> None:
     expires = decode_bag_pass_expiry(
         _bag_pass(_timestamp(PASS_START), _timestamp(PASS_END, 5))
@@ -170,7 +158,7 @@ async def test_telemetry_reads_the_newest_recap_and_bag_pass() -> None:
             _recap(7, 2026),
             _recap(10, 2026, _bfield(4, bytes((1, 2, 3)))),
             _recap(9, 2026, _bfield(4, bytes((1, 2)))),
-            HermesCollectionEntry(b"\x08\x0b\x10\xea\x0f", b"\x0a\xff"),
+            HermesCollectionEntry(b"", b"unkeyed"),
         ),
         "bag_pass_status": (
             HermesCollectionEntry(b"", b"\x0a\xff"),
@@ -200,6 +188,14 @@ async def test_telemetry_reads_the_newest_recap_and_bag_pass() -> None:
         "recap_history", limit=120
     )
     client.async_get_collection_entries.assert_any_await("bag_pass_status", limit=4)
+
+    # An unreadable newest month must not fall back to an older one.
+    collections["recap_history"] += (
+        HermesCollectionEntry(_vfield(1, 11) + _vfield(2, 2026), b"\x0a\xff"),
+    )
+    telemetry = await client.async_get_telemetry()
+    assert telemetry.maintenance_suggestions is None
+    assert telemetry.maintenance_recap_month is None
 
     collections.clear()
     telemetry = await client.async_get_telemetry()

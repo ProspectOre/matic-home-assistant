@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from google.protobuf.message import DecodeError
@@ -48,17 +48,6 @@ def decode_maintenance_suggestions(
             raise DecodeError("maintenance suggestions exceed the size limit")
     parts = {MAINTENANCE_PARTS_BY_WIRE.get(value) for value in values}
     return tuple(part for part in MaintenancePart if part in parts)
-
-
-def latest_maintenance_suggestions(
-    recaps: Iterable[tuple[int, int, tuple[MaintenancePart, ...]]],
-) -> tuple[str, tuple[MaintenancePart, ...]] | None:
-    """Return the newest month as ``YYYY-MM`` with its suggestions."""
-    latest = max(recaps, key=lambda recap: (recap[1], recap[0]), default=None)
-    if latest is None:
-        return None
-    month, year, parts = latest
-    return f"{year:04d}-{month:02d}", parts
 
 
 def decode_bag_pass_expiry(entry: HermesCollectionEntry) -> datetime | None:

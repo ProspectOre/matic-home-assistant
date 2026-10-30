@@ -41,7 +41,7 @@ from .commands import (
     encode_user_command,
     encode_user_data,
 )
-from .consumables import decode_bag_pass_expiry, latest_maintenance_suggestions
+from .consumables import decode_bag_pass_expiry
 from .coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
@@ -75,6 +75,7 @@ from .history import (
     MonthlyCleaningRecap,
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
+    decode_monthly_recap_key,
 )
 from .mission import MissionClientState, decode_mission_client_state
 from .models import (
@@ -2806,15 +2807,26 @@ def _decode_uploader_state(payload: object) -> bool | None:
 def _decode_latest_maintenance(
     entries: tuple[HermesCollectionEntry, ...],
 ) -> tuple[str, tuple[MaintenancePart, ...]] | None:
-    """Return the newest readable recap month and its maintenance suggestions."""
-    recaps = []
+    """Return the newest recap month and its maintenance suggestions.
+
+    An unreadable newest recap yields None rather than an older month, so
+    stale suggestions never replace current ones.
+    """
+    keyed: list[tuple[tuple[int, int], HermesCollectionEntry]] = []
     for entry in entries:
         try:
-            recap = decode_monthly_cleaning_recap(entry)
+            month, year = decode_monthly_recap_key(entry)
         except DecodeError:
             continue
-        recaps.append((recap.month, recap.year, recap.maintenance_suggestions))
-    return latest_maintenance_suggestions(recaps)
+        keyed.append(((year, month), entry))
+    if not keyed:
+        return None
+    (year, month), newest = max(keyed, key=lambda item: item[0])
+    try:
+        recap = decode_monthly_cleaning_recap(newest)
+    except DecodeError:
+        return None
+    return f"{year:04d}-{month:02d}", recap.maintenance_suggestions
 
 
 def _decode_bag_pass(
