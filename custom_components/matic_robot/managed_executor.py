@@ -3860,6 +3860,13 @@ async def _async_execute_rooms_reserved(
                     )
                     finished_area_legs.add(index)
                     checkpoint["finished_area_legs"] = sorted(finished_area_legs)
+                    if durable and index + 1 == len(legs):
+                        # No handoff save follows the last leg. Persist the
+                        # finish so a restart before finalization still
+                        # completes the run instead of leaving it unverified.
+                        await manager.async_set_recovery_checkpoint(
+                            serial_number, run_id, checkpoint
+                        )
                 else:
                     completion_verified = await _async_run_leg(
                         hass,
