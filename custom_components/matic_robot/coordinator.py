@@ -67,6 +67,18 @@ SNAPSHOT_RETRY_SECONDS = 900
 ERROR_CONFIRMATION_POLLS = 2
 # Alerts the user has to act on, each with a Repair that names the fix.
 ACTIONABLE_ALERTS = frozenset({"bag_full", "bag_missing"})
+
+
+def _robot_alert_issue_id(name: str, entry_id: str) -> str:
+    return f"robot_alert_{name}_{entry_id}"
+
+
+def async_delete_robot_alert_issues(hass: HomeAssistant, entry_id: str) -> None:
+    """Remove every bag Repair raised for a robot that is going away."""
+    for name in ACTIONABLE_ALERTS:
+        ir.async_delete_issue(hass, DOMAIN, _robot_alert_issue_id(name, entry_id))
+
+
 # Limit robot-driven Cues fan-out while retaining the newest state received during
 # each interval. This bounds coordinator, event-bus, automation, and Recorder work.
 CUES_UPDATE_INTERVAL_SECONDS = 1.0
@@ -572,7 +584,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             ir.async_create_issue(
                 self.hass,
                 DOMAIN,
-                f"robot_alert_{name}_{entry_id}",
+                _robot_alert_issue_id(name, entry_id),
                 is_fixable=False,
                 is_persistent=False,
                 severity=ir.IssueSeverity.WARNING,
@@ -582,7 +594,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         for name in (
             ACTIONABLE_ALERTS if self._alert_issues is None else raised
         ) - active:
-            ir.async_delete_issue(self.hass, DOMAIN, f"robot_alert_{name}_{entry_id}")
+            ir.async_delete_issue(
+                self.hass, DOMAIN, _robot_alert_issue_id(name, entry_id)
+            )
         self._alert_issues = active
 
     @property

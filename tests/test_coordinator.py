@@ -36,7 +36,11 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.coordinator import MaticCoordinator, MaticCuesEvent
+from custom_components.matic_robot.coordinator import (
+    MaticCoordinator,
+    MaticCuesEvent,
+    async_delete_robot_alert_issues,
+)
 
 
 def _client() -> AsyncMock:
@@ -2246,6 +2250,9 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
     reloaded._async_track_alerts(replace(base, error_codes=(206,)))
     assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry") is None
     assert registry.async_get_issue(DOMAIN, issue) is not None
+    # Removing the robot clears its Repairs, since no poll will reach them.
+    async_delete_robot_alert_issues(hass, "entry")
+    assert registry.async_get_issue(DOMAIN, issue) is None
 
     assert replace(base, error_codes=(304, 205)).alert == "bag_missing"
     assert replace(base, error_codes=(304,)).alerts == ("unknown",)
