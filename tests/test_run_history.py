@@ -333,6 +333,36 @@ def test_history_merges_newest_first_without_duplicate_missions() -> None:
     entries = history_entries(robot, [later], manual=lambda plan_id: False)
     assert [entry["id"] for entry in entries] == ["run-2", "run-1"]
 
+    # A task started from the app that took over a run is listed on its own;
+    # the run's own mission, which ended with it, is not.
+    robot["run_history"][0]["reason_code"] = "native_task_taken_over"
+    takeover = [
+        CleaningSessionRecord(
+            b"e",
+            _session(
+                started_at="2026-10-29T16:30:00+00:00",
+                ended_at="2026-10-29T17:30:00+00:00",
+            ),
+        ),
+        CleaningSessionRecord(
+            b"f", _session(started_at="2026-10-29T16:35:00+00:00", ended_at=None)
+        ),
+        CleaningSessionRecord(
+            b"g",
+            _session(
+                started_at="2026-10-29T16:05:00+00:00",
+                ended_at="2026-10-29T16:30:00+00:00",
+            ),
+        ),
+    ]
+    entries = history_entries(robot, takeover, manual=lambda plan_id: False)
+    assert [entry["id"] for entry in entries] == [
+        "run-2",
+        native_entry(takeover[1])["id"],
+        native_entry(takeover[0])["id"],
+        "run-1",
+    ]
+
     robot["last_run"] = {"outcome": "running", "run_id": None, "started_at": None}
     robot["run_history"][0]["started_at"] = None
     entries = history_entries(robot, native[:1], manual=lambda plan_id: True)

@@ -287,12 +287,15 @@ def history_entries(
                 robot, last_run, manual=manual(last_run.get("plan_id")), live=True
             )
         )
-    # A run still in progress owns every mission that starts after it.
+    # A run still in progress owns every mission that starts after it. A run
+    # that another task took over owns only the missions that ended with it;
+    # the takeover task outlasts the run and is listed on its own.
     windows = [
         (
             start,
             entry["ended_at"]
             or (_OPEN_END if entry["outcome"] == "running" else start),
+            entry["ending"] == "taken_over",
         )
         for entry in entries
         if (start := entry["started_at"]) is not None
@@ -303,7 +306,12 @@ def history_entries(
         if start is None:
             continue
         end = entry["ended_at"] or start
-        if any(start <= until and since <= end for since, until in windows):
+        if any(
+            start <= until
+            and since <= end
+            and not (taken_over and (entry["ended_at"] or _OPEN_END) > until)
+            for since, until, taken_over in windows
+        ):
             continue
         entries.append(entry)
     entries.sort(key=lambda entry: entry["started_at"] or "", reverse=True)
