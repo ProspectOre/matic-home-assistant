@@ -1544,6 +1544,24 @@ async def test_restart_does_not_rejoin_an_area_whose_session_ended(
     assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
 
 
+async def test_restart_completes_a_run_whose_last_area_finished(hass, recovery_state):
+    manager, entry, checkpoint, room = recovery_state
+    await manager.async_mark_completed(
+        "serial", "plan", room, run_id="run", duration_seconds=30
+    )
+    await _area_leg_checkpoint(manager, checkpoint, room, finished_area_legs=[1])
+    entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
+
+    with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:
+        await async_recover_managed_run(hass, entry, "serial")
+
+    execute.assert_not_called()
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+    snapshot = manager.snapshot("serial")
+    assert snapshot["last_run"]["outcome"] == "completed"
+    assert snapshot["last_run"]["completed_room_count"] == 1
+
+
 @pytest.mark.parametrize("phase", ["verifying", "dispatching"])
 async def test_restart_never_verifies_or_mixes_an_area_leg(hass, recovery_state, phase):
     manager, entry, checkpoint, room = recovery_state
