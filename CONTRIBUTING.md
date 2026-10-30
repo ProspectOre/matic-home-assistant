@@ -49,6 +49,8 @@ checklist, see [Review and manual merge](docs/maintenance-reviews.md).
 - Use synthetic fixtures. Keep credentials, identifiers, room names, maps,
   captures, backups, raw timings, and Home Assistant storage out of public files and discussion.
 - Preserve TLS validation, certificate pinning, diagnostic privacy, entity availability, and unload cleanup.
+- Changes that read robot state or send commands follow the
+  [rules for working alongside the Matic app](docs/coexistence.md); say in the PR which rules apply.
 - New commands require an exact synthetic fixture, successful robot validation, and Home Assistant-native error handling. Never guess enums or payloads.
 - Pairing changes must preserve the scoped BlueZ agent and cover success, malformed/rejected/expired codes, cancellation, and unavailable adapters.
 - Tests must retain 100% coverage. Required CI, privacy, HACS, Hassfest, and review must pass before a manual merge.

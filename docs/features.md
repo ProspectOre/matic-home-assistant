@@ -17,6 +17,7 @@ These are the integration's main additions:
 | Room statistics | Put last-cleaned times and cleaning durations on dashboards and in Recorder. |
 | Assistant tools | Ask about plans, run status, recent events and history, and run plans, clean rooms, stop or reset schedule progress, through administrator-only tools for Assist and MCP. |
 | Firmware comparisons | See when a firmware update changes how the robot talks to Home Assistant, with a Repair when something the integration uses changes. |
+| Works with the Matic app | Home Assistant gives way when the app, the robot or its schedules take over, and raises a Repair when the robot's time zone differs from Home Assistant's. [Rules](coexistence.md). |
 
 The live map and robot position update on their own; there's nothing to set.
 
