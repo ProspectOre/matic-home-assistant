@@ -968,7 +968,9 @@
         "voice_enabled_state": "Cues voice assistant",
         "water_flow_override_state": "Mopping water flow",
         "wifi_status": "Wi-Fi status",
-        "zones": "Areas saved on the robot"
+        "zones": "Areas saved on the robot",
+        "bag_pass_status": "Bag pass",
+        "recap_history": "Monthly recaps"
       }
     },
     "run_behavior": {
@@ -1022,6 +1024,12 @@
       "problem": {
         "name": "Problem"
       },
+      "bag_full": {
+        "name": "Bag full"
+      },
+      "bag_missing": {
+        "name": "Bag missing"
+      },
       "diagnostic_upload": {
         "name": "Diagnostic upload",
         "state": {
@@ -1038,6 +1046,9 @@
       },
       "following_person": {
         "name": "Following a person"
+      },
+      "maintenance_suggested": {
+        "name": "Maintenance suggested"
       }
     },
     "button": {
@@ -1133,6 +1144,15 @@
           "thinking_for_intent": "Working out the command",
           "classified": "Command understood",
           "rejected": "Command not understood"
+        }
+      },
+      "robot_alert": {
+        "name": "Robot alert",
+        "state": {
+          "none": "None",
+          "bag_full": "Bag is full",
+          "bag_missing": "Bag is missing",
+          "unknown": "Unknown alert"
         }
       },
       "cues_gesture_status": {
@@ -1237,6 +1257,9 @@
       },
       "current_room_estimated_progress": {
         "name": "Current room estimated progress"
+      },
+      "bag_pass_expires": {
+        "name": "Bag pass ends"
       }
     },
     "switch": {
@@ -1578,6 +1601,14 @@
         }
       }
     },
+    "robot_alert_bag_full": {
+      "title": "{name}: the bag is full",
+      "description": "Insert a new bag and close the lid. {name} resumes cleaning once the lid is closed. This Repair clears when the robot stops reporting a full bag."
+    },
+    "robot_alert_bag_missing": {
+      "title": "{name}: the bag is missing",
+      "description": "Fully insert a bag, then close the lid. This Repair clears when the robot detects the bag."
+    },
     "time_zone_mismatch": {
       "title": "{name} uses a different time zone",
       "description": "{name} keeps its schedules in {robot_time_zone} time, but Home Assistant uses {home_time_zone}. The robot starts each schedule on that clock, so it can run at a different hour than you expect. Change the time zone in the Matic app, or Home Assistant's under Settings > System > General. This Repair clears once the two match."
@@ -1585,6 +1616,10 @@
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
       "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean custom area, then confirm or redraw it."
+    },
+    "maintenance_suggested": {
+      "title": "{name}: maintenance suggested",
+      "description": "The robot's cleaning recap for {month} suggests maintenance. The Matic app's maintenance guide shows how to check the brush roll, side brush, mop roll, and caster and wedge. This notice clears when a newer recap no longer suggests maintenance. Open the [device page]({device_url}) to see the Maintenance suggested sensor."
     }
   },
   "services": {

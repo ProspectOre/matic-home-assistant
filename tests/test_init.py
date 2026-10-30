@@ -2093,8 +2093,16 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_area_issue,
+        patch(
+            "custom_components.matic_robot.async_delete_maintenance_issues"
+        ) as delete_maintenance_issues,
+        patch(
+            "custom_components.matic_robot.async_delete_robot_alert_issues"
+        ) as delete_alert_issues,
     ):
         await async_remove_entry(hass, entry)
+
+    delete_maintenance_issues.assert_called_once_with(hass, "entry")
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
     get_plan_manager.assert_awaited_once_with(hass)
@@ -2106,6 +2114,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     slam_map.async_remove.assert_awaited_once()
     slam_history.async_remove.assert_awaited_once()
     delete_area_issue.assert_called_once_with(hass, "entry")
+    delete_alert_issues.assert_called_once_with(hass, "entry")
 
     bare = SimpleNamespace(data={})
     bare_plans = SimpleNamespace(async_remove_robot=AsyncMock())
@@ -2122,6 +2131,8 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_bare_area_issue,
+        patch("custom_components.matic_robot.async_delete_maintenance_issues"),
+        patch("custom_components.matic_robot.async_delete_robot_alert_issues"),
     ):
         await async_remove_entry(bare, entry)
 
@@ -2151,6 +2162,7 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
         ),
         patch("custom_components.matic_robot.clear_slam_scene_cache"),
         patch("custom_components.matic_robot.async_delete_custom_area_issue"),
+        patch("custom_components.matic_robot.async_delete_robot_alert_issues"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch(
             "custom_components.matic_robot.SlamHistoryStore",

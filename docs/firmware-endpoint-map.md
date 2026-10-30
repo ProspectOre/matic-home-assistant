@@ -41,10 +41,11 @@ Hermes is Matic's local gRPC protocol. The registry in
 | `matter_pairing_state` | Matter pairing presence |
 | `user_tunnel_ssh_permission`, `uploader_config_state` | Diagnostic settings |
 | `active_session_key` | Active native session identity |
+| `recap_history` | Maintenance suggestions from the newest monthly recap |
+| `bag_pass_status` | Bag pass end date while a pass is active |
 
 Client-only decoders also handle `approximate_trajectory`, `flythrough`,
-`coverage_session_thumbnails` and `recap_history`. These do not add entities or
-browser overlays.
+and `coverage_session_thumbnails`. These do not add entities or browser overlays.
 
 ## Other inspection endpoints
 

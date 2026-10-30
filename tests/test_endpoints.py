@@ -10,7 +10,7 @@ from custom_components.matic_robot.client.endpoints import (
 
 
 def test_endpoint_registry_is_unique_typed_and_excludes_credentials() -> None:
-    assert len(HERMES_ENDPOINTS) == 41
+    assert len(HERMES_ENDPOINTS) == 43
     assert len(HERMES_ENDPOINT_MAP) == len(HERMES_ENDPOINTS)
     assert HERMES_ENDPOINT_NAMES == tuple(HERMES_ENDPOINT_MAP)
     assert HERMES_ENDPOINT_MAP["current_version"].kind is HermesEndpointKind.PROPERTY
