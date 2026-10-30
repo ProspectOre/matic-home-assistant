@@ -357,21 +357,21 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 54 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 57 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
-        "binary_sensor": 11,
+        "binary_sensor": 13,
         "button": 5,
         "camera": 2,
         "event": 1,
         "number": 1,
         "select": 4,
-        "sensor": 28,
+        "sensor": 29,
         "switch": 4,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 58
-    assert len({entity.unique_id for entity in entities}) == 58
+    assert len(entities) == 61
+    assert len({entity.unique_id for entity in entities}) == 61
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -443,15 +443,18 @@ async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
     assert len(added) == 2
 
 
-async def test_bag_capability_is_not_exposed_before_real_world_verification(
+async def test_bag_alerts_are_exposed_but_bag_statistics_stay_latent(
     hass,
 ) -> None:
+    # Owner decision 2026-10-30: the natively mapped bag alerts (205, 206)
+    # get binary sensors. The full/replacement statistics wait for a real
+    # robot transition.
     entry = _entry()
     coordinator = entry.runtime_data.coordinator
     coordinator.data = replace(
         coordinator.data,
         operational=replace(
-            coordinator.data.operational, bag_full=False, bag_missing=False
+            coordinator.data.operational, bag_full=True, bag_missing=False
         ),
     )
     added: list[object] = []
@@ -460,7 +463,11 @@ async def test_bag_capability_is_not_exposed_before_real_world_verification(
         hass, entry, lambda values: added.extend(values)
     )
     assert len(added) == len(binary_sensor.DESCRIPTIONS)
-    assert not any(entity.entity_description.key.startswith("bag_") for entity in added)
+    assert {
+        entity.entity_description.key: entity.is_on
+        for entity in added
+        if entity.entity_description.key.startswith("bag_")
+    } == {"bag_full": True, "bag_missing": False}
 
     added.clear()
     await sensor.async_setup_entry(hass, entry, lambda values: added.extend(values))
@@ -1258,6 +1265,8 @@ def test_sensor_and_binary_sensor_values() -> None:
         False,
         False,
         False,
+        None,
+        None,
         False,
         None,
         None,
@@ -2935,3 +2944,32 @@ def test_rarely_useful_entities_are_off_by_default() -> None:
     ):
         assert entity.entity_registry_enabled_default is True
         assert entity.entity_category == "config"
+
+
+def test_robot_alert_sensor_names_known_codes_and_keeps_unknown_ones() -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, error_codes=(304, 206)),
+    )
+    coordinator.unknown_alert_codes = {
+        "304": {"first_seen": "2026-10-30T03:00:00+00:00", "last_seen": "now"}
+    }
+    alert = sensor.MaticRobotAlertSensor(entry)
+
+    assert alert.unique_id.endswith("_robot_alert")
+    assert alert.native_value == "bag_full"
+    assert alert.extra_state_attributes == {
+        "alerts": ["unknown", "bag_full"],
+        "codes": [304, 206],
+        "unknown_codes_seen": {
+            "304": {"first_seen": "2026-10-30T03:00:00+00:00", "last_seen": "now"}
+        },
+    }
+    assert alert.entity_description.options == [
+        "none",
+        "bag_missing",
+        "bag_full",
+        "unknown",
+    ]

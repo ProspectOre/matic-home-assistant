@@ -12,6 +12,7 @@ import pytest
 from google.protobuf.message import DecodeError
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.matic_robot.client.api import MaticHermesClient
@@ -2200,3 +2201,38 @@ async def test_retired_watcher_finishes_after_subscription_ends(hass, watcher) -
     client.async_subscribe_collection_entries = subscription
     client.async_subscribe_state = subscription
     await asyncio.wait_for(getattr(coordinator, watcher)(), 0.5)
+
+
+async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
+    coordinator = _coordinator(hass, _client())
+    base = (await coordinator._async_update_data()).operational
+    registry = ir.async_get(hass)
+    issue = "robot_alert_bag_full_entry"
+
+    clock = [datetime(2026, 10, 30, 3, 0, tzinfo=UTC)]
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        side_effect=lambda: clock[0],
+    ):
+        coordinator._async_track_alerts(replace(base, error_codes=(206, 304)))
+        assert registry.async_get_issue(DOMAIN, issue) is not None
+        clock[0] = datetime(2026, 10, 30, 3, 1, tzinfo=UTC)
+        coordinator._async_track_alerts(replace(base, error_codes=(304, 207)))
+        assert registry.async_get_issue(DOMAIN, issue) is None
+        clock[0] = datetime(2026, 10, 30, 3, 2, tzinfo=UTC)
+        coordinator._async_track_alerts(replace(base, error_codes=()))
+
+    assert coordinator.unknown_alert_codes == {
+        "207": {
+            "first_seen": "2026-10-30T03:01:00+00:00",
+            "last_seen": "2026-10-30T03:01:00+00:00",
+        },
+        "304": {
+            "first_seen": "2026-10-30T03:00:00+00:00",
+            "last_seen": "2026-10-30T03:01:00+00:00",
+        },
+    }
+    assert replace(base, error_codes=(304, 205)).alert == "bag_missing"
+    assert replace(base, error_codes=(304,)).alerts == ("unknown",)
+    assert replace(base, error_codes=(304,)).alert == "unknown"
+    assert replace(base, error_codes=()).alert == "none"

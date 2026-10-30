@@ -48,6 +48,7 @@ are disabled by default; enable them from the device's entity list.
 | Robot cleaning runs | `sensor.matic_local_cleaning_sessions` | off |
 | Dock detections · Sink summon locations | `sensor.matic_dock_detections` · `sensor.matic_sink_summon_locations` | off |
 | Cleaning · Charging · Low charge · Problem | `binary_sensor.matic_cleaning` · `_charging` · `_low_charge` · `_problem` | on |
+| Robot alert · Bag full · Bag missing | `sensor.matic_robot_alert` · `binary_sensor.matic_bag_full` · `_bag_missing` | on |
 | Following a person | `binary_sensor.matic_following_person` | on |
 | Paused · Returning to dock · Fully charged | `binary_sensor.matic_paused` · `_returning` · `_fully_charged` | off |
 | Matter pairing mode | `binary_sensor.matic_matter_pairing_mode` | off |
@@ -117,6 +118,13 @@ in `errors` and `primary_error` and keeps their numeric codes in
 `hermes_error_codes`; a code with no known meaning appears as `error_code_<n>`.
 An error must persist across two normal polls before it appears, which filters
 brief firmware pulses. Recorded activity can help diagnose an error after it clears.
+
+**Robot alert** names the alert when its code has a known meaning (bag full,
+bag missing) and shows Unknown alert otherwise. Its `unknown_codes_seen`
+attribute keeps when each unmapped code was first and last reported, so a code
+can be named later by matching it to what the Matic app showed at that time.
+A full or missing bag also raises a Repair with the fix, which clears when the
+robot stops reporting it.
 
 ## Room statistics and the recorder
 
