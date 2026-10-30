@@ -670,6 +670,17 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             self._require_stop_request_generation(
                 serial_number, request_stop_generation
             )
+            operational = self.coordinator.data.operational
+            if joins_task and not (
+                operational.cleaning or operational.paused or operational.returning
+            ):
+                # The task ended while this summon waited for the command lock,
+                # so only the motion lease could own what it would start now.
+                raise HomeAssistantError(
+                    "The robot's task ended before the sink summon was sent",
+                    translation_domain=DOMAIN,
+                    translation_key="robot_task_changed",
+                )
             try:
                 await self.coordinator.client.async_sink_summon(
                     self._current_floor_plan()

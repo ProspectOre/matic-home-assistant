@@ -1415,6 +1415,9 @@
     "sink_location_unavailable": {
       "message": "No sink location is saved for this floor. Save one in the Matic app, then try again."
     },
+    "robot_task_changed": {
+      "message": "The clean ended before the robot could be sent to the sink. Try again."
+    },
     "robot_stop_pending": {
       "message": "The robot is stopping. Wait until it docks, then try again."
     },

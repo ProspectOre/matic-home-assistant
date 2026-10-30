@@ -1104,6 +1104,51 @@ async def test_sink_summon_keeps_the_plan_driving_the_task_it_joins(
     assert not manager.cancellation_event(serial_number).is_set()
 
 
+async def test_sink_summon_refuses_when_the_task_ends_while_queued(hass) -> None:
+    """A task ending behind the command lock must not send motion under it."""
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    state = coordinator.data
+    coordinator.data = replace(
+        state, operational=replace(state.operational, cleaning=True)
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+    command_lock = manager.command_lock(serial_number)
+    await command_lock.acquire()
+    task = asyncio.create_task(
+        vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+    )
+    try:
+        for _ in range(30):
+            waiters = getattr(command_lock, "_waiters", None)
+            if waiters is not None and any(not waiter.done() for waiter in waiters):
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("Sink summon never queued for the command lock")
+
+        coordinator.data = replace(
+            state, operational=replace(state.operational, cleaning=False)
+        )
+        command_lock.release()
+        with pytest.raises(HomeAssistantError) as raised:
+            await task
+    finally:
+        if command_lock.locked():
+            command_lock.release()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert raised.value.translation_key == "robot_task_changed"
+    coordinator.client.async_sink_summon.assert_not_awaited()
+    assert manager.managed_motion_is_current(serial_number, token)
+
+
 async def test_sink_summon_without_a_task_replaces_a_docked_plan(hass) -> None:
     """A plan docked between rooms holds no task, so the summon is new motion."""
     entry = _entry(idle=True)
