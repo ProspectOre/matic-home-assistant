@@ -66,6 +66,7 @@ fingerprints and value-free wire shapes; it does not decode these into entities.
 | `voice_enabled_command` | Matic Cues |
 | `deep_mop_override_setting_command` | Double-pass mopping |
 | `water_flow_override_command` | Water flow, 0.5–2.0 in 0.1 steps |
+| `wifi_scan_command` | One Wi-Fi scan for the opt-in signal survey; empty payload, result read from `wifi_status` |
 
 New commands follow [Contributing](../CONTRIBUTING.md#changes-and-pull-requests).
 [Recording endpoints](recording-protocol.md) are outside the integration.

@@ -269,6 +269,10 @@ export class MaticMapPanelV4 extends LitElement {
       this.#store.dispatch(intent);
       return;
     }
+    if (intent.type === "toggle-wifi-signal") {
+      void this.#effects?.toggleWifiSignal();
+      return;
+    }
     if (intent.type === "set-history") {
       void this.#effects?.selectHistory(intent.historyId);
       return;

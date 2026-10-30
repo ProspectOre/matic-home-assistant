@@ -25,6 +25,7 @@ from .slam_scene import (
     MaticSlamPoseView,
     MaticSlamSceneView,
 )
+from .wifi_survey import MaticWifiHeatmapView
 from .workspace_socket import async_register as async_register_workspace_socket
 
 # Keep the custom icons cache-busted by both integration and asset versions.
@@ -113,6 +114,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticSlamCatalogView(scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
+    hass.http.register_view(MaticWifiHeatmapView)
     hass.http.register_view(floor_layers_view)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)
     # Keep panel_custom optional for headless installations.

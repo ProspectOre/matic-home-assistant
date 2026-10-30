@@ -17,6 +17,7 @@
       "maintenance_suggested": { "default": "mdi:wrench-clock" }
     },
     "button": {
+      "clear_wifi_survey": { "default": "mdi:wifi-remove" },
       "run_selected_plan": { "default": "mdi:play-circle-outline" },
       "intelligent_clean": { "default": "mdi:sort-clock-ascending-outline" },
       "clean_entire_plan": { "default": "mdi:home-floor-0" },
@@ -86,7 +87,8 @@
       "child_lock": { "default": "mdi:lock" },
       "pet_waste_avoidance": { "default": "mdi:paw-off" },
       "voice_assistant": { "default": "mdi:microphone-message" },
-      "deep_mop": { "default": "mdi:water-plus" }
+      "deep_mop": { "default": "mdi:water-plus" },
+      "wifi_survey": { "default": "mdi:wifi-marker" }
     }
   },
   "services": {

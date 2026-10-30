@@ -238,6 +238,11 @@
     "v4_robot_position_verified": "The robot's position is confirmed.",
     "v4_room_colours": "Room colors",
     "v4_room_names": "Room names",
+    "v4_wifi_signal": "Wi-Fi signal",
+    "v4_wifi_signal_failed": "Couldn't load the survey",
+    "v4_wifi_signal_legend": "Green is strong, red is weak",
+    "v4_wifi_signal_waiting": "No samples yet · they arrive during cleaning",
+    "v4_wifi_signal_off": "Turn on Wi-Fi survey in the robot's settings",
     "v4_room_limit_reached": "Up to {limit} rooms fit in one clean, so remove one to add another.",
     "v4_rooms_selected": "{count} selected",
     "v4_rooms_to_clean": "Rooms to clean",
@@ -1067,6 +1072,9 @@
       },
       "clean_selected_area": {
         "name": "Clean custom area"
+      },
+      "clear_wifi_survey": {
+        "name": "Clear Wi-Fi survey"
       }
     },
     "calendar": {
@@ -1275,6 +1283,9 @@
       },
       "voice_assistant": {
         "name": "Cues voice assistant"
+      },
+      "wifi_survey": {
+        "name": "Wi-Fi survey"
       }
     },
     "event": {

@@ -1,5 +1,5 @@
 import type { AreaOutline } from "./area-outline";
-import { MAX_ROOM_SEQUENCE_SIZE, type HassLike } from "./contracts";
+import { MAX_ROOM_SEQUENCE_SIZE, type HassLike, type WifiSignalLayer } from "./contracts";
 import {
   areaCatalogHelpers,
   CATALOG_URL,
@@ -388,6 +388,14 @@ export class MaticBackend {
       this.#json("areas", path, REQUEST_TIMEOUTS.workflow, signal),
     ]);
     return parseAreasCatalog(value, areaCatalogHelpers, geometry);
+  }
+
+  async wifiSignal(path: string, signal?: AbortSignal): Promise<WifiSignalLayer> {
+    const [{ parseWifiSignal }, value] = await Promise.all([
+      import("./wifi-signal"),
+      this.#json("wifiSignal", path, REQUEST_TIMEOUTS.workflow, signal),
+    ]);
+    return parseWifiSignal(value);
   }
 
   async previewRoomSequence(

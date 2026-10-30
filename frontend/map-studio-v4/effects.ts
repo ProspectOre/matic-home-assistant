@@ -135,6 +135,8 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
   && left.missionKey === right.missionKey;
 
 const POSE_POLL_INTERVAL_MS = 1_000;
+// Matches the backend's sampling pace, so new cells appear during a clean.
+const WIFI_SIGNAL_REFRESH_MS = 30_000;
 const SPATIAL_READ_RECOVERY_INTERVAL_MS = 5_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "areas", "draw", "areaReview"];
 const MUTATION_RESOURCES = ["plan-mutation", "area-mutation", "setting-mutation"] as const;
@@ -192,6 +194,7 @@ export class EffectController {
   #projection: HassProjection | null = null;
   #catalogTimer: number | null = null;
   #poseTimer: number | null = null;
+  #wifiSignalTimer: number | null = null;
   #poseExpiryTimer: number | null = null;
   #settleTimer: number | null = null;
   #motionRevision = 0;
@@ -842,6 +845,7 @@ export class EffectController {
   #refreshSpatialBoundary(entryId: string, invalidated: readonly string[] = []): void {
     this.#clearSpatialReadRecovery();
     this.#invalidateSpatialFence();
+    this.#reloadWifiSignalForNewFloor();
     void this.refreshCatalog(true, true).then(() => {
       if (this.#disposed || this.#projection?.entryKey !== entryId
         || !this.#projection.host.administrator || !this.#projection.host.connected) return;
@@ -900,6 +904,11 @@ export class EffectController {
 
   #startPolling(): void {
     if (!this.#pageLifecycle.active) return;
+    // The store outlives a remounted panel, so a layer left on resumes here.
+    if (this.#store.value.wifiSignal && this.#wifiSignalTimer === null) {
+      this.#startWifiSignal();
+      void this.#loadWifiSignal();
+    }
     if (this.#catalogTimer === null) {
       this.#catalogTimer = window.setInterval(() => {
         void this.refreshCatalog();
@@ -1098,7 +1107,9 @@ export class EffectController {
   #abortResources(except: readonly string[] = []): void {
     let mutationCancelled = false;
     for (const [name, controller] of this.#controllers) {
-      if (except.includes(name)) continue;
+      // The Wi-Fi layer owns its read: a new read, turning it off or dispose
+      // aborts it, and a frame change starts a fresh one.
+      if (except.includes(name) || name === "wifi-signal") continue;
       mutationCancelled ||= name === "plan-mutation" || name === "area-mutation" || name === "setting-mutation" || name === "plan-preflight";
       controller.abort();
       this.#controllers.delete(name);
@@ -1409,6 +1420,9 @@ export class EffectController {
       && previousDraftSession === entry.mapSessionKey;
     const preserve = ["catalog"];
     if (previousEntry?.entryId === entry.entryId) preserve.push("setting-mutation");
+    // Survey cells are drawn in one floor's map frame.
+    const sameWifiFrame = sameResourceBoundary
+      && previousEntry?.mapSessionKey === entry.mapSessionKey;
     if (sameResourceBoundary && !resetDrafts) preserve.push("plans", "areas");
     if (sameVerifiedFrame) preserve.push("plan-mutation", "area-mutation");
     const stamp = this.#coherence.begin(
@@ -1498,6 +1512,7 @@ export class EffectController {
       void this.loadPlans();
     }
     this.#resumeAreaCatalog();
+    if (!sameWifiFrame) this.#reloadWifiSignalForNewFloor();
     if (coherent) {
       void this.#loadLiveScene(entry, stamp);
       void this.#loadPose(entry, stamp);
@@ -1989,6 +2004,53 @@ export class EffectController {
       },
     });
     if (snapshot) await this.#loadHistoryScene(snapshot, stamp);
+  }
+
+  /** Show or hide the Wi-Fi signal layer; showing reads the current floor's survey. */
+  async toggleWifiSignal(): Promise<void> {
+    this.#store.dispatch({ type: "toggle-wifi-signal" });
+    this.#startWifiSignal();
+    await this.#loadWifiSignal();
+  }
+
+  #startWifiSignal(): void {
+    this.#wifiSignalTimer ??= window.setInterval(() => {
+      if (this.#pageLifecycle.active) void this.#loadWifiSignal();
+    }, WIFI_SIGNAL_REFRESH_MS);
+  }
+
+  // Survey cells belong to one floor; drop them until the new floor's arrive.
+  #reloadWifiSignalForNewFloor(): void {
+    const wifiSignal = this.#store.value.wifiSignal;
+    if (!wifiSignal) return;
+    this.#store.patch({ wifiSignal: { ...wifiSignal, status: "loading", cells: [] } });
+    void this.#loadWifiSignal();
+  }
+
+  #stopWifiSignal(): void {
+    this.#controllers.get("wifi-signal")?.abort();
+    if (this.#wifiSignalTimer !== null) window.clearInterval(this.#wifiSignalTimer);
+    this.#wifiSignalTimer = null;
+  }
+
+  async #loadWifiSignal(): Promise<void> {
+    const entry = this.#store.value.resources.entry;
+    if (!this.#store.value.wifiSignal || !entry?.wifiHeatmapUrl) {
+      this.#stopWifiSignal();
+      return;
+    }
+    const controller = this.#controller("wifi-signal");
+    const current = (): boolean => !controller.signal.aborted && !this.#disposed
+      && Boolean(this.#store.value.wifiSignal) && this.#store.value.resources.entry?.entryId === entry.entryId;
+    try {
+      const layer = await this.#backend.wifiSignal(entry.wifiHeatmapUrl, controller.signal);
+      if (current()) this.#store.patch({ wifiSignal: layer });
+    } catch (error) {
+      const shown = this.#store.value.wifiSignal;
+      if (!isAbort(error) && current() && shown) this.#store.patch({ wifiSignal: { ...shown, status: "failed" } });
+    } finally {
+      this.#release("wifi-signal", controller);
+    }
   }
 
   async selectHistory(snapshotId: string | null): Promise<void> {
@@ -2785,6 +2847,7 @@ export class EffectController {
     this.#storeUnsubscribe = null;
     this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false });
     this.#stopPolling();
+    this.#stopWifiSignal();
     this.#clearPoseExpiry();
     this.#abortResources();
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);

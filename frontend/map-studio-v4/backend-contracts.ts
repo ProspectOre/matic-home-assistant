@@ -30,6 +30,8 @@ export interface MapEntry {
   readonly historyUrl: string;
   readonly areasUrl: string;
   readonly plansUrl: string;
+  /** Absent on integrations without the Wi-Fi survey. */
+  readonly wifiHeatmapUrl: string | null;
   readonly mapRevision: number;
   readonly mapSceneEpoch: string | null;
   readonly mapFloorCoherent: boolean;
@@ -469,6 +471,9 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
       historyUrl: privatePath(entry.history_url, "invalid-history-url"),
       areasUrl: privatePath(entry.areas_url, "invalid-areas-url"),
       plansUrl: privatePath(entry.plans_url, "invalid-plans-url"),
+      wifiHeatmapUrl: entry.wifi_heatmap_url === undefined || entry.wifi_heatmap_url === null
+        ? null
+        : privatePath(entry.wifi_heatmap_url, "invalid-wifi-heatmap-url"),
       mapRevision,
       mapSceneEpoch: selectedId(entry.map_scene_epoch, "invalid-scene-epoch"),
       mapFloorCoherent: booleanValue(entry.map_floor_coherent, "invalid-floor-coherence"),

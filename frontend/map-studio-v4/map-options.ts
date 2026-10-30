@@ -6,6 +6,19 @@ import { topView } from "./state";
 import { switchStyles } from "./switch-styles";
 import { MapZoom } from "./map-zoom";
 
+// The row's second line explains an empty or failed layer and reads the colours.
+const wifiNote = (layer: WorkspaceState["wifiSignal"], t: MapOptionsContext["t"]) => {
+  if (!layer || layer.status === "loading") return nothing;
+  const note = layer.status === "failed"
+    ? t("v4_wifi_signal_failed", "Couldn't load the survey")
+    : layer.cells.length
+      ? t("v4_wifi_signal_legend", "Green is strong, red is weak")
+      : layer.surveying
+        ? t("v4_wifi_signal_waiting", "No samples yet · they arrive during cleaning")
+        : t("v4_wifi_signal_off", "Turn on Wi-Fi survey in the robot's settings");
+  return html`<small class="menu-note">${note}</small>`;
+};
+
 type Host = ReactiveControllerHost & HTMLElement & { readonly renderRoot: ParentNode };
 
 export type MapOptionsContext = {
@@ -67,6 +80,8 @@ export class MapOptions {
     .overflow-menu [role="menuitemcheckbox"] { justify-content: space-between; gap: var(--ms-space-3); }
     .overflow-menu [role="group"] { display: grid; gap: var(--ms-space-1); }
     .overflow-menu [role="group"] + * { border-block-start: 1px solid var(--ms-line); padding-block-start: var(--ms-space-1); }
+    .overflow-menu [data-wifi-signal] > span:first-child { display: grid; text-align: start; }
+    .menu-note { color: var(--ms-text-quiet); font-size: var(--ms-t-sm); }
     .menu-heading { margin: 0; padding: var(--ms-space-2) var(--ms-space-3) var(--ms-space-1); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
 
       </style>
@@ -87,6 +102,17 @@ export class MapOptions {
               @click=${() => intent({ type: "toggle-labels" })}
             ><span>${t("v4_room_names", "Room names")}</span><span class="ms-switch" aria-checked=${String(state.labelsVisible)} aria-hidden="true"></span></button>
           </div>
+        ` : nothing}
+        ${state.resources.entry?.wifiHeatmapUrl ? html`
+          <button
+            class="ms-row ms-row--menu"
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked=${String(Boolean(state.wifiSignal))}
+            tabindex="-1"
+            data-wifi-signal
+            @click=${() => intent({ type: "toggle-wifi-signal" })}
+          ><span>${t("v4_wifi_signal", "Wi-Fi signal")}${wifiNote(state.wifiSignal, t)}</span><span class="ms-switch" aria-checked=${String(Boolean(state.wifiSignal))} aria-hidden="true"></span></button>
         ` : nothing}
         <div role="group" aria-labelledby="menu-detail">
           <p class="menu-heading" id="menu-detail" role="presentation">${t("map_quality_label", "Map detail")}</p>

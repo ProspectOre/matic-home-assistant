@@ -2,7 +2,7 @@ import { clamp } from "./numeric";
 import { liveCameraKey, cameraPreferences, mapCameraIdentity } from "./camera-preferences";
 import type { AreaCircle, MapZoneOverlay, SceneModel, SceneRoom } from "./backend-contracts";
 import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
-import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
+import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WifiSignalCell, WorkspaceState } from "./contracts";
 import { canShowExactPose, hasCoordinateEditAdmission, forcesTop, topView } from "./state";
 import { rgba, type CanvasPalette, type Channel } from "./theme-probe";
 import type { drawRobot as DrawRobot } from "./robot-model";
@@ -1463,6 +1463,16 @@ export class RendererController {
       // A WebGL canvas cannot acquire a 2D context after context loss.
       context.drawImage(this.#fallbackCanvas, 0, 0, bounds.width, bounds.height);
     }
+    const wifi = state.wifiSignal;
+    // Drawn above the room fills, which are nearly opaque in Room colors, and
+    // below the room names. A retained scene stays read-only until the live
+    // one is admitted, so its geometry may belong to another floor or frame.
+    let wifiPending = wifi?.status === "ready" && state.dataMode === "live"
+      && !state.floor.readOnly && state.selection.floorId === "current";
+    const drawWifi = (): void => {
+      if (wifiPending && wifi) this.#drawWifiSignal(context, wifi.cells, wifi.cellSize / 2);
+      wifiPending = false;
+    };
     const selectedNames = this.#selectedRoomNames(state);
     const selectedPositions = state.workflow === "plan" && state.planDraft.runBehavior === "ordered"
       ? (() => {
@@ -1516,6 +1526,7 @@ export class RendererController {
           context.stroke();
         }
       }
+      drawWifi();
       // Labels draw after all fills. Place selected/current rooms first so a
       // crowded viewport keeps the names that explain the user's current work.
       const currentName = state.currentArea?.toLocaleLowerCase();
@@ -1614,6 +1625,7 @@ export class RendererController {
       }
       for (const paint of labels) paint();
     }
+    drawWifi();
     this.#labelOffsets = labelOffsets;
     const preview = this.#circlePreview;
     const circles = preview && hasCoordinateEditAdmission(state, preview.capture)
@@ -1779,6 +1791,23 @@ export class RendererController {
       if (selectedRoomIds.has(room.roomId)) selectedNames.add(room.name.toLocaleLowerCase());
     }
     return selectedNames;
+  }
+
+  // Strong signal (-50 dBm or better) is green, weak (-85 or worse) is red.
+  #drawWifiSignal(context: CanvasRenderingContext2D, cells: readonly WifiSignalCell[], half: number): void {
+    context.save();
+    for (const cell of cells) {
+      const corners = ([[-half, -half], [half, -half], [half, half], [-half, half]] as const)
+        .map(([dx, dy]) => this.#projectMeters(cell.x + dx, cell.y + dy, 0.1, false));
+      if (corners.some((corner) => !corner)) continue;
+      const strength = Math.min(1, Math.max(0, (cell.dbm + 85) / 35));
+      context.fillStyle = `hsl(${Math.round(strength * 120)} 75% 45% / .45)`;
+      context.beginPath();
+      corners.forEach((corner, index) => index ? context.lineTo(corner!.x, corner!.y) : context.moveTo(corner!.x, corner!.y));
+      context.closePath();
+      context.fill();
+    }
+    context.restore();
   }
 
   #drawCircle(context: CanvasRenderingContext2D, circle: AreaCircle, paint = true): void {
