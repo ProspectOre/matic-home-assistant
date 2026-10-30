@@ -135,6 +135,8 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
   && left.missionKey === right.missionKey;
 
 const POSE_POLL_INTERVAL_MS = 1_000;
+// Matches the backend's sampling pace, so new cells appear during a clean.
+const WIFI_SIGNAL_REFRESH_MS = 30_000;
 const SPATIAL_READ_RECOVERY_INTERVAL_MS = 5_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "areas", "draw", "areaReview"];
 const MUTATION_RESOURCES = ["plan-mutation", "area-mutation", "setting-mutation"] as const;
@@ -192,6 +194,7 @@ export class EffectController {
   #projection: HassProjection | null = null;
   #catalogTimer: number | null = null;
   #poseTimer: number | null = null;
+  #wifiSignalTimer: number | null = null;
   #poseExpiryTimer: number | null = null;
   #settleTimer: number | null = null;
   #motionRevision = 0;
@@ -842,6 +845,12 @@ export class EffectController {
   #refreshSpatialBoundary(entryId: string, invalidated: readonly string[] = []): void {
     this.#clearSpatialReadRecovery();
     this.#invalidateSpatialFence();
+    // Survey cells belong to one floor; drop them until the new floor's arrive.
+    const wifiSignal = this.#store.value.wifiSignal;
+    if (wifiSignal) {
+      this.#store.patch({ wifiSignal: { ...wifiSignal, status: "loading", cells: [] } });
+      void this.#loadWifiSignal();
+    }
     void this.refreshCatalog(true, true).then(() => {
       if (this.#disposed || this.#projection?.entryKey !== entryId
         || !this.#projection.host.administrator || !this.#projection.host.connected) return;
@@ -1994,9 +2003,22 @@ export class EffectController {
   /** Show or hide the Wi-Fi signal layer; showing reads the current floor's survey. */
   async toggleWifiSignal(): Promise<void> {
     this.#store.dispatch({ type: "toggle-wifi-signal" });
+    this.#wifiSignalTimer ??= window.setInterval(() => {
+      if (this.#pageLifecycle.active) void this.#loadWifiSignal();
+    }, WIFI_SIGNAL_REFRESH_MS);
+    await this.#loadWifiSignal();
+  }
+
+  #stopWifiSignal(): void {
+    this.#controllers.get("wifi-signal")?.abort();
+    if (this.#wifiSignalTimer !== null) window.clearInterval(this.#wifiSignalTimer);
+    this.#wifiSignalTimer = null;
+  }
+
+  async #loadWifiSignal(): Promise<void> {
     const entry = this.#store.value.resources.entry;
     if (!this.#store.value.wifiSignal || !entry?.wifiHeatmapUrl) {
-      this.#controllers.get("wifi-signal")?.abort();
+      this.#stopWifiSignal();
       return;
     }
     const controller = this.#controller("wifi-signal");
@@ -2807,6 +2829,7 @@ export class EffectController {
     this.#storeUnsubscribe = null;
     this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false });
     this.#stopPolling();
+    this.#stopWifiSignal();
     this.#clearPoseExpiry();
     this.#abortResources();
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);

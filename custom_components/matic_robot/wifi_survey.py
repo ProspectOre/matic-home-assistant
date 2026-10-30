@@ -33,9 +33,10 @@ _LOGGER = logging.getLogger(__name__)
 
 STORAGE_VERSION = 1
 SAVE_DELAY_SECONDS = 30
-CELL_SIZE_METERS = 0.5
+CELL_SIZE_METERS = 1.0
 SAMPLE_INTERVAL_SECONDS = 30
-MAX_POSE_DRIFT_METERS = 0.5
+# A scan takes about 7 seconds, so a cleaning robot covers a metre or two.
+MAX_POSE_DRIFT_METERS = 2.0
 MAX_CELLS_PER_FLOOR = 4096
 MAX_FLOORS = 8
 # A cell's value follows recent scans: older samples fade once it has this many.

@@ -73,6 +73,19 @@ test("Map options turns on the Wi-Fi signal layer and reads the survey", async (
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toBeNull();
 });
 
+test("the layer picks up new cells while it stays on", async ({ page }) => {
+  await page.clock.install();
+  const panel = await mountPanel(page, { enabled: true, cell_size: 0.5, cells: [] });
+  await clickInShadow(panel, "[aria-controls=map-options]");
+  await clickInShadow(panel, "[data-wifi-signal]");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.status)).toBe("ready");
+  expect(await panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal.cells)).toEqual([]);
+
+  await page.evaluate((survey) => { window.__wifiSignalReply = survey; }, SURVEY);
+  await page.clock.fastForward(30_000);
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.cells.length)).toBe(2);
+});
+
 test("an empty survey says how to start one", async ({ page }) => {
   const panel = await mountPanel(page, { enabled: false, cell_size: 0.5, cells: [] });
   await clickInShadow(panel, "[aria-controls=map-options]");

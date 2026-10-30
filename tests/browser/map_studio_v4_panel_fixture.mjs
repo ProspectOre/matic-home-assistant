@@ -257,7 +257,7 @@ export async function installPanelFixture(page, {
         }
         return result;
       }
-      if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(wifiSignal);
+      if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(window.__wifiSignalReply ?? wifiSignal);
       if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
       if (/slam_pose\/synthetic(?:-b)?$/.test(path)) return json({
         position: posePosition,

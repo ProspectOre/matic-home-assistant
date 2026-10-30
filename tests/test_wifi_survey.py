@@ -167,8 +167,8 @@ async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
     await store.async_load()
     assert store.enabled is False
     assert [(cell["x"], cell["samples"]) for cell in store.cells(7)] == [
-        (0.25, 2),
-        (0.75, 1),
+        (0.5, 2),
+        (1.5, 1),
     ]
 
     hass_storage[f"{DOMAIN}.wifi_survey.entry"]["data"]["floors"] = []
@@ -200,7 +200,7 @@ async def test_sample_pairs_the_scan_with_the_pose_around_it(hass) -> None:
     with patch.object(wifi_survey, "time", return_value=99.0):
         await store._async_sample(client, _coordinator())
     assert store.cells(7) == [
-        {"x": 1.25, "y": 1.25, "dbm": -55.0, "samples": 1, "updated_at": 99}
+        {"x": 1.5, "y": 1.5, "dbm": -55.0, "samples": 1, "updated_at": 99}
     ]
     client.async_get_pose.assert_awaited_with(expected_mission_id=7)
 
@@ -225,7 +225,7 @@ async def test_sample_pairs_the_scan_with_the_pose_around_it(hass) -> None:
         (_coordinator(), _sampling_client(_pose(0, 0, 1.0), _pose(0, 0, 1.0))),
         (_coordinator(), _sampling_client(_pose(0, 0, None), _pose(0, 0, 2.0))),
         (_coordinator(), _sampling_client(_pose(0, 0, 1.0), _pose(0, 0, None))),
-        (_coordinator(), _sampling_client(_pose(0, 0, 1.0), _pose(0.6, 0, 2.0))),
+        (_coordinator(), _sampling_client(_pose(0, 0, 1.0), _pose(2.1, 0, 8.0))),
         (
             _coordinator(),
             SimpleNamespace(
