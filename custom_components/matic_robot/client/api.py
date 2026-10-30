@@ -34,6 +34,7 @@ from .commands import (
     UserCommand,
     encode_coverage_command,
     encode_custom_coverage_command,
+    encode_go_to_room_command,
     encode_mission_id,
     encode_mixed_coverage_commands,
     encode_sink_summon_command,
@@ -90,6 +91,7 @@ from .models import (
     RobotPose,
     RobotTelemetry,
     RobotTrajectory,
+    Room,
     WifiNetwork,
 )
 from .observations import ActivityJournal, ObservationCallback
@@ -1513,6 +1515,17 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             command_name="SINK_SUMMON",
         )
 
+    async def async_go_to_room(self, floor_plan: FloorPlan, room: Room) -> None:
+        """Send the robot to a room on this floor without cleaning it."""
+        await self._async_send_user_payload(
+            encode_go_to_room_command(
+                mission_id=floor_plan.mission_id,
+                partition_id=floor_plan.partition_protocol_id,
+                region_id=room.protocol_id,
+            ),
+            command_name="GO_TO_ROOM",
+        )
+
     async def async_start_coverage(
         self,
         floor_plan: FloorPlan,
@@ -2857,7 +2870,66 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
         ordered=ordered,
         enabled=enabled,
         room_ids=room_ids,
+        cleaning_mode=_schedule_cleaning_mode(name_fields),
     )
+
+
+def _schedule_cleaning_mode(fields: tuple[WireField, ...]) -> str | None:
+    """Summarize the modes of a schedule's cleaning goals.
+
+    Goals sit at 7.1 and carry the same 6.3 coverage spec as a start command;
+    spec field 4 is the mode, 0 for vacuum and 1 for mop, omitted when 0.
+    The room walk in ``_uuid_candidates`` already rejects a schedule over the
+    shared field budget, so this budget only guards against a second walk.
+    """
+    field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
+    modes: set[int] = set()
+
+    def children(payload: bytes) -> tuple[WireField, ...] | None:
+        try:
+            return decode_fields(payload, field_budget=field_budget)
+        except DecodeError:
+            return None
+
+    def nested(payload: bytes, number: int) -> list[bytes]:
+        return [
+            field.value
+            for field in children(payload) or ()
+            if field.number == number
+            and field.wire_type == 2
+            and isinstance(field.value, bytes)
+        ]
+
+    specs = [
+        spec
+        for field in fields
+        if field.number == 7 and isinstance(field.value, bytes)
+        for goal in nested(field.value, 1)
+        for wrapper in nested(goal, 6)
+        for spec in nested(wrapper, 3)
+    ]
+    for spec in specs:
+        # Proto3 omits zero values, so an empty spec is a vacuum goal.
+        spec_fields = children(spec)
+        if spec_fields is None:
+            continue
+        modes.add(
+            next(
+                (
+                    spec_field.value
+                    for spec_field in spec_fields
+                    if spec_field.number == 4 and isinstance(spec_field.value, int)
+                ),
+                0,
+            )
+        )
+    if modes == {0}:
+        return "vacuum"
+    if modes == {1}:
+        return "mop"
+    if modes == {0, 1}:
+        return "vacuum_and_mop"
+    return None
 
 
 def _uuid_candidates(payload: bytes) -> tuple[str, ...]:

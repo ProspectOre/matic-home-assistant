@@ -6,6 +6,7 @@ DOMAIN: Final = "matic_robot"
 PLATFORMS: Final = [
     "binary_sensor",
     "button",
+    "calendar",
     "camera",
     "event",
     "number",
