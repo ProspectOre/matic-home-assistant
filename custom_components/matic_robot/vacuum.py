@@ -1381,6 +1381,11 @@ _QUEUE_ERRORS: dict[str, Callable[[dict[str, str]], ServiceValidationError]] = {
     "last_room": lambda room: _validation_error(
         "The room is the only one left", "queue_last_room", room
     ),
+    "room_settings_unknown": lambda room: _validation_error(
+        "The room's settings in this clean are unknown",
+        "queue_room_settings_unknown",
+        room,
+    ),
     "already_next": lambda room: _validation_error(
         "The room is already current or next", "queue_already_next", room
     ),

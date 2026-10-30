@@ -488,6 +488,9 @@ def _fresh_goals(
     coverage_setting: CoverageSetting | None,
     round_id_factory: Callable[[], UUID],
 ) -> list[CoverageUpdateGoal]:
+    if not existing and (cleaning_mode is None or coverage_setting is None):
+        # The plan no longer holds this room's goals, so its settings are unknown.
+        raise QueueChangeError("room_settings_unknown")
     modes = {goal.mode for goal in existing}
     if cleaning_mode is None:
         cleaning_mode = (

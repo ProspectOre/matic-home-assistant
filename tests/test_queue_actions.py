@@ -21,8 +21,10 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.managed_executor import (
+    RoomRunOutcome,
     _async_execute_rooms,
     _async_run_leg,
+    _async_run_room,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
 from custom_components.matic_robot.run_history import _ROOM_RESULTS
@@ -358,3 +360,59 @@ async def test_leg_settles_a_skipped_room_without_credit(hass, monkeypatch) -> N
         "serial", "away", rooms[1], run_id="run-1"
     )
     assert [event.data["run_id"] for event in skipped] == ["run-1"]
+
+
+async def test_one_room_leg_settles_a_skipped_room() -> None:
+    """A one-room mission skipped after Clean room again added a room settles."""
+    bus = SimpleNamespace(async_fire=MagicMock())
+    hass = SimpleNamespace(
+        services=SimpleNamespace(async_call=AsyncMock()),
+        bus=bus,
+        states=SimpleNamespace(get=MagicMock(return_value=None)),
+    )
+    manager = SimpleNamespace(
+        async_mark_started=AsyncMock(),
+        async_mark_completed=AsyncMock(),
+        async_mark_ended_unverified=AsyncMock(),
+        async_mark_verifying=AsyncMock(),
+        async_mark_failed=AsyncMock(),
+        async_mark_resumed=AsyncMock(),
+        async_mark_skipped=AsyncMock(),
+        skipped_room_ids=MagicMock(return_value=frozenset({"room-study"})),
+    )
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    prefetch_next = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
+            AsyncMock(return_value="cleaning"),
+        ),
+        patch(
+            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
+            AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
+        ),
+    ):
+        settled = await _async_run_room(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            room,
+            motion_token=3,
+            active_session=AsyncMock(return_value=False),
+            run_id="run-1",
+            prefetch_next=prefetch_next,
+        )
+
+    assert settled is True
+    prefetch_next.assert_awaited_once()
+    manager.async_mark_skipped.assert_awaited_once_with(
+        "serial", "away", room, run_id="run-1"
+    )
+    manager.async_mark_ended_unverified.assert_not_awaited()
+    manager.async_mark_completed.assert_not_awaited()
+    event, data = bus.async_fire.call_args_list[-1].args
+    assert event == "matic_robot_room_skipped"
+    assert (data["run_id"], data["reason_code"]) == ("run-1", "owner_skipped")

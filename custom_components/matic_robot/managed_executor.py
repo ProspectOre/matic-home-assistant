@@ -981,6 +981,19 @@ async def _async_run_room(
             {**event_data, "reason_code": "verified_completion"},
             context=call.context,
         )
+    elif run_id is not None and room.room_id in manager.skipped_room_ids(
+        serial_number, run_id
+    ):
+        # Skipped without credit, but settled, so the run goes on.
+        await manager.async_mark_skipped(
+            serial_number, call.data["plan_id"], room, run_id=run_id
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_skipped",
+            {**event_data, "reason_code": "owner_skipped"},
+            context=call.context,
+        )
+        completion_verified = True
     else:
         await manager.async_mark_ended_unverified(
             serial_number, call.data["plan_id"], room

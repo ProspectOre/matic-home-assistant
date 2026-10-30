@@ -14,7 +14,8 @@ the queue sheet in the Matic app does. Each takes the target vacuum and one
 
 Clean room again keeps the room's modes and vacuum coverage unless you pass
 `cleaning_mode` or `coverage_setting` (`coverage` in `params` for
-`vacuum.send_command`).
+`vacuum.send_command`). When the robot's plan no longer holds the room, for
+example a room from an earlier mission of a plan run, pass both.
 
 ```yaml
 actions:

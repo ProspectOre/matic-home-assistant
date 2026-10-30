@@ -208,6 +208,7 @@ def test_clean_again_keeps_the_room_mode(modes, expected):
         current_region=CURRENT,
         target_region=target,
         cleaning_mode=None if modes else CleaningMode.VACUUM,
+        coverage_setting=None if modes else CoverageSetting.OPTIMAL,
     )
 
     assert {goal.mode for goal in goals if goal.region_id == target} == expected
@@ -573,3 +574,22 @@ async def test_plan_with_a_repeat_visit_starts_at_the_current_visit(monkeypatch)
     await client.async_change_queue(FLOOR, QueueAction.SKIP, ROOMS[0])
 
     assert [goal.region_id for goal in _sent(client)] == [THIRD, THIRD]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"cleaning_mode": CleaningMode.MOP},
+        {"coverage_setting": CoverageSetting.QUICK},
+    ],
+)
+def test_clean_again_needs_settings_for_a_room_the_plan_no_longer_holds(options):
+    with pytest.raises(QueueChangeError, match="room_settings_unknown"):
+        requeue_coverage_goals(
+            [_goal(CURRENT)],
+            action=QueueAction.CLEAN_AGAIN,
+            current_region=CURRENT,
+            target_region=NEW,
+            **options,
+        )

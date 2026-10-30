@@ -1531,6 +1531,9 @@
     "queue_already_next": {
       "message": "{room} is already being cleaned or is next."
     },
+    "queue_room_settings_unknown": {
+      "message": "{room} isn't in this clean's plan anymore, so choose its cleaning mode and coverage to clean it again."
+    },
     "queue_change_failed": {
       "message": "The robot didn't confirm the change to {room}. Check the queue in the Matic app."
     },
