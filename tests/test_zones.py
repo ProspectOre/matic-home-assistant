@@ -77,6 +77,7 @@ def test_decode_zone_reads_class_from_the_key_and_keeps_holes() -> None:
         HermesCollectionEntry(_key(1), _value(outline=((float("nan"), 0.0),) * 3)),
         HermesCollectionEntry(_key(1), _value(outline=((20_000.0, 0.0),) * 3)),
         HermesCollectionEntry(_key(1), _value(holes=(HOLE[:2],))),
+        HermesCollectionEntry(_key(1), _value(holes=(HOLE,) * 65)),
         HermesCollectionEntry(_key(1), b"\x0a" + _varint(300_000) + b"\x00" * 300_000),
     ],
 )

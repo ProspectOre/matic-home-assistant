@@ -15,6 +15,8 @@ from .wire import decode_fields, point
 
 MAX_ZONES = 64
 MAX_ZONE_POINTS = 4096
+# Matic Map rejects a catalog with more, so a zone past this is dropped here.
+MAX_ZONE_HOLES = 64
 _MAX_ZONE_VALUE_BYTES = 256 * 1024
 
 # Zone class values at key field 2, verified against zones drawn in the Matic
@@ -83,6 +85,8 @@ def decode_zone(entry: HermesCollectionEntry) -> MapZone:
         for field in border_fields
         if field.number == 3 and field.wire_type == 2 and isinstance(field.value, bytes)
     )
+    if len(holes) > MAX_ZONE_HOLES:
+        raise DecodeError("zone has too many holes")
     return MapZone(
         mission_id=mission_id,
         kind=_ZONE_KINDS.get(class_value, "unknown"),
