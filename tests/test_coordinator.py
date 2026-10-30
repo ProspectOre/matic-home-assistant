@@ -1966,6 +1966,14 @@ async def test_time_zone_mismatch_raises_repair_until_clocks_match(hass) -> None
     await coordinator._async_update_data()
     assert registry.async_get_issue(DOMAIN, issue_id) is not None
 
+    # So does a zone name Python can't resolve.
+    coordinator._cached_telemetry = None
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        protocol_version=25, timezone="Not/A_Zone"
+    )
+    await coordinator._async_update_data()
+    assert registry.async_get_issue(DOMAIN, issue_id) is not None
+
     # An alias of the same clock clears it.
     coordinator._cached_telemetry = None
     client.async_get_telemetry.return_value = RobotTelemetry(

@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from functools import partial
 from time import monotonic
 from typing import Any, cast
@@ -159,6 +159,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._identity_issue_active = False
         self._time_zone_checked = False
         self._time_zone_issue: tuple[str, str] | None = None
+        self._time_zone_scan: tuple[tuple[str, str, date], bool | None] | None = None
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
         self._latest_cues_state: RobotOperationalState | None = None
         self._cues_push_sequence = 0
@@ -996,17 +997,20 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     def _async_check_time_zone(self, robot_zone: str | None) -> None:
         """Raise a Repair while the robot keeps a different clock than HA.
 
-        Native schedules start on the robot's clock. An unread time zone keeps
-        the last decision rather than clearing a real mismatch on a failed read.
+        Native schedules start on the robot's clock. An unread or unresolvable
+        time zone keeps the last decision rather than clearing a real mismatch.
         """
         if robot_zone is None:
             return
         home_zone = self.hass.config.time_zone
-        mismatch = (
-            (robot_zone, home_zone)
-            if time_zones_differ(robot_zone, home_zone, dt_util.utcnow())
-            else None
-        )
+        # A year of offsets takes tens of milliseconds; scan once per UTC day.
+        scan_key = (robot_zone, home_zone, dt_util.utcnow().date())
+        if self._time_zone_scan is None or self._time_zone_scan[0] != scan_key:
+            self._time_zone_scan = (scan_key, time_zones_differ(*scan_key))
+        differ = self._time_zone_scan[1]
+        if differ is None:
+            return
+        mismatch = (robot_zone, home_zone) if differ else None
         # The first check always writes: a reloaded entry starts unset, and
         # a Repair raised before the reload must still clear on a match.
         if self._time_zone_checked and mismatch == self._time_zone_issue:
