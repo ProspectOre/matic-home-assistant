@@ -293,6 +293,34 @@ async def test_collector_samples_only_while_enabled(hass, monkeypatch) -> None:
     store.set_enabled(False)
 
 
+async def test_collector_starts_scans_on_a_fixed_cadence(hass) -> None:
+    store = WifiSurveyStore(hass, "entry")
+    loop = asyncio.get_running_loop()
+    clock = [100.0]
+    sleeps: list[float] = []
+    scans = iter([7.0, 40.0, 0.0])
+
+    async def _sleep(delay: float) -> None:
+        sleeps.append(delay)
+        clock[0] += delay
+
+    async def _sample(_client, _coordinator) -> None:
+        duration = next(scans)
+        clock[0] += duration
+        if not duration:
+            await store.async_shutdown()
+
+    store.set_enabled(True)
+    with (
+        patch.object(loop, "time", side_effect=lambda: clock[0]),
+        patch.object(wifi_survey.asyncio, "sleep", side_effect=_sleep),
+        patch.object(store, "_async_sample", side_effect=_sample),
+    ):
+        await store.async_collect(MagicMock(), MagicMock())
+    # A 7 s scan leaves 23 s to the next start; a 40 s scan runs past it.
+    assert sleeps == [30.0, 23.0, 0.0]
+
+
 def _hass(runtime) -> SimpleNamespace:
     entry = SimpleNamespace(
         domain=DOMAIN, state=ConfigEntryState.LOADED, runtime_data=runtime

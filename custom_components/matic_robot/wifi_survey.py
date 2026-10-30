@@ -146,8 +146,12 @@ class WifiSurveyStore:
         self, client: MaticHermesClient, coordinator: MaticCoordinator
     ) -> None:
         """Scan at a fixed pace while the survey is on and the robot is out."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time()
         while not self._closed:
-            await asyncio.sleep(SAMPLE_INTERVAL_SECONDS)
+            # Start scans on a fixed cadence; a slow scan never stacks up a backlog.
+            deadline = max(deadline + SAMPLE_INTERVAL_SECONDS, loop.time())
+            await asyncio.sleep(deadline - loop.time())
             if self._enabled and not self._closed:
                 await self._async_sample(client, coordinator)
 
