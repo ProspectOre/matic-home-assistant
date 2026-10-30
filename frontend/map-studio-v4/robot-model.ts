@@ -198,7 +198,7 @@ const loadAtlas = async (): Promise<void> => {
     if (metadata.frameSize !== 128 || metadata.headings !== 32 || metadata.columns !== 32
       || metadata.headingStep !== 11.25 || String(metadata.pitches) !== "90,55,25"
       || metadata.layers?.body !== 0 || metadata.layers.shadow !== 3 || metadata.layers.accent !== 6
-      || metadata.frameMeters !== 0.66 || metadata.lengthMeters !== 0.378
+      || metadata.frameMeters !== 0.66 || metadata.lengthMeters !== 0.406
       || image.naturalWidth !== 4096 || image.naturalHeight !== 1152) throw new Error("Invalid robot atlas");
     atlas = { image, metadata };
   } catch {
