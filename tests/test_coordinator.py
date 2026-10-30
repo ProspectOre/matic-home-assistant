@@ -1936,6 +1936,135 @@ async def test_identity_mismatch_raises_repair_until_recovery(hass) -> None:
     assert registry.async_get_issue(DOMAIN, issue_id) is None
 
 
+async def test_time_zone_mismatch_raises_repair_until_clocks_match(hass) -> None:
+    from homeassistant.helpers import issue_registry as ir
+
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    registry = ir.async_get(hass)
+    issue_id = "time_zone_mismatch_entry"
+    await hass.config.async_update(time_zone="America/Los_Angeles")
+
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        protocol_version=25, timezone="America/New_York"
+    )
+    with patch.object(
+        ir, "async_create_issue", wraps=ir.async_create_issue
+    ) as create_issue:
+        await coordinator._async_update_data()
+        await coordinator._async_update_data()
+    create_issue.assert_called_once()
+    issue = registry.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.translation_key == "time_zone_mismatch"
+    assert issue.translation_placeholders["robot_time_zone"] == "America/New_York"
+    assert issue.translation_placeholders["home_time_zone"] == "America/Los_Angeles"
+
+    # A failed optional read keeps the last decision.
+    coordinator._cached_telemetry = None
+    client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
+    await coordinator._async_update_data()
+    assert registry.async_get_issue(DOMAIN, issue_id) is not None
+
+    # So does a zone name Python can't resolve.
+    coordinator._cached_telemetry = None
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        protocol_version=25, timezone="Not/A_Zone"
+    )
+    await coordinator._async_update_data()
+    assert registry.async_get_issue(DOMAIN, issue_id) is not None
+
+    # An alias of the same clock clears it.
+    coordinator._cached_telemetry = None
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        protocol_version=25, timezone="US/Pacific"
+    )
+    await coordinator._async_update_data()
+    assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+
+async def test_time_zone_repair_follows_each_enabled_schedule_zone(hass) -> None:
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.matic_robot.client.models import CleaningSchedule
+
+    def schedule(zone: str | None, enabled: bool | None = True) -> CleaningSchedule:
+        return CleaningSchedule("Daily", ("mon",), 630, zone, False, enabled, ())
+
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    registry = ir.async_get(hass)
+    issue_id = "time_zone_mismatch_entry"
+    await hass.config.async_update(time_zone="America/Los_Angeles")
+
+    async def check(
+        *schedules: CleaningSchedule, robot: str | None = "America/New_York"
+    ) -> ir.IssueEntry | None:
+        coordinator._cached_telemetry = None
+        client.async_get_telemetry.return_value = RobotTelemetry(
+            protocol_version=25, timezone=robot, schedules=schedules
+        )
+        await coordinator._async_update_data()
+        return registry.async_get_issue(DOMAIN, issue_id)
+
+    # Schedules written in Home Assistant's zone run at the expected hour,
+    # and a disabled schedule never runs.
+    assert (
+        await check(schedule("America/Los_Angeles"), schedule(None, enabled=False))
+        is None
+    )
+    # A schedule without its own zone uses the robot's.
+    issue = await check(schedule("America/Los_Angeles"), schedule(None))
+    assert issue is not None
+    assert issue.translation_placeholders["robot_time_zone"] == "America/New_York"
+    # An unresolvable schedule zone falls back to the robot's, as the calendar
+    # does, and then to Home Assistant's.
+    assert await check(schedule("Not/A_Zone")) is not None
+    assert await check(schedule("Not/A_Zone"), robot=None) is None
+    # With no enabled schedule, an unresolvable robot zone keeps the decision.
+    assert await check(robot="America/New_York") is not None
+    assert await check(robot="Not/A_Zone") is not None
+    # So does a zone pair that can't be compared.
+    with patch(
+        "custom_components.matic_robot.coordinator.time_zones_differ",
+        return_value=None,
+    ):
+        assert await check(schedule("America/Chicago")) is not None
+
+    # Scans are kept for one UTC day only.
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        return_value=datetime(2030, 1, 1, tzinfo=UTC),
+    ):
+        assert await check(schedule("America/Los_Angeles")) is None
+    assert {day for _, _, day in coordinator._time_zone_scans} == {
+        datetime(2030, 1, 1).date()
+    }
+
+
+async def test_time_zone_repair_from_before_a_reload_clears_on_match(hass) -> None:
+    from homeassistant.helpers import issue_registry as ir
+
+    issue_id = "time_zone_mismatch_entry"
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="time_zone_mismatch",
+    )
+    await hass.config.async_update(time_zone="America/Los_Angeles")
+    client = _client()
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        protocol_version=25, timezone="America/Los_Angeles"
+    )
+
+    await _coordinator(hass, client)._async_update_data()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
 async def test_coordinator_updates_device_registry_firmware_once(hass) -> None:
     client = _client()
     client.async_get_telemetry.return_value = RobotTelemetry(
