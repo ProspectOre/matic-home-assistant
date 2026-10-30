@@ -10,10 +10,12 @@ import asyncio
 from dataclasses import dataclass
 from http import HTTPStatus
 from time import monotonic
+from typing import TYPE_CHECKING
 
 from aiohttp import web
 from google.protobuf.message import DecodeError
 from homeassistant.components.http.decorators import require_admin
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .client.exceptions import MaticError
@@ -24,7 +26,11 @@ from .client.slam_map import (
     SlamSemanticTile,
     decode_slam_semantic_tile,
 )
+from .slam_map_store import SlamMapIdentity
 from .slam_scene import PRIVATE_NO_STORE_HEADERS, _runtime_for_entry
+
+if TYPE_CHECKING:
+    from . import MaticRuntimeData
 
 FLOOR_LAYERS_API_URL = "/api/matic_robot/floor_layers/{entry_id}"
 FLOOR_LAYERS_CACHE_SECONDS = 600.0
@@ -65,6 +71,8 @@ class MaticFloorLayersView(HomeAssistantView):
             )
         mission_id = identity.mission_id
         async with self._locks.setdefault(entry_id, asyncio.Lock()):
+            if not _still_current(hass, entry_id, runtime, identity):
+                return _conflict()
             cached = self._cache.get(entry_id)
             if (
                 cached is None
@@ -88,14 +96,8 @@ class MaticFloorLayersView(HomeAssistantView):
                     )
                 # The robot can change floors during the reads; a layer built
                 # for the old floor must not be served or cached for the new.
-                current = _runtime_for_entry(hass, entry_id)
-                if (
-                    current is not runtime
-                    or runtime.slam_map.mission_identity != identity
-                ):
-                    return web.Response(
-                        status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-                    )
+                if not _still_current(hass, entry_id, runtime, identity):
+                    return _conflict()
                 cached = _CachedLayers(mission_id, monotonic(), layer)
                 self._cache[entry_id] = cached
         return self.json(
@@ -110,6 +112,23 @@ class MaticFloorLayersView(HomeAssistantView):
             },
             headers=PRIVATE_NO_STORE_HEADERS,
         )
+
+
+def _still_current(
+    hass: HomeAssistant,
+    entry_id: str,
+    runtime: MaticRuntimeData,
+    identity: SlamMapIdentity,
+) -> bool:
+    """Return whether the entry still shows the floor this request started on."""
+    return (
+        _runtime_for_entry(hass, entry_id) is runtime
+        and runtime.slam_map.mission_identity == identity
+    )
+
+
+def _conflict() -> web.Response:
+    return web.Response(status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS)
 
 
 def _build_layer(

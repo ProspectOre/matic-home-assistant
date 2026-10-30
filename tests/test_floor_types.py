@@ -272,6 +272,19 @@ async def test_view_discards_a_layer_read_across_a_floor_change() -> None:
     assert view._cache == {}
 
 
+async def test_view_rechecks_the_floor_after_waiting_for_the_lock() -> None:
+    runtime = _runtime()
+    view = MaticFloorLayersView()
+    lock = view._locks.setdefault("entry", asyncio.Lock())
+    await lock.acquire()
+    waiter = asyncio.create_task(view.get(_request(runtime), "entry"))
+    await asyncio.sleep(0)
+    runtime.slam_map.mission_identity = SlamMapIdentity("other", 7)
+    lock.release()
+    assert (await waiter).status == 409
+    runtime.client.async_get_tracked_collection_entries.assert_not_awaited()
+
+
 async def test_concurrent_requests_share_one_read() -> None:
     runtime = _runtime()
     view = MaticFloorLayersView()
