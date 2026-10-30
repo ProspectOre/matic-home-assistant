@@ -3049,6 +3049,7 @@ async def test_schedules_list_rooms_by_name_and_the_runs_coming_up() -> None:
     _with_telemetry(
         entry,
         timezone="America/Los_Angeles",
+        scheduled_cleanings=2,
         schedules=(
             _schedule(),
             _schedule(
@@ -3098,6 +3099,7 @@ async def test_schedules_list_rooms_by_name_and_the_runs_coming_up() -> None:
         {"name": "Weekday mornings", "starts_at": "2026-11-04T09:30:00-08:00"},
     ]
     assert result["upcoming_truncated"] is False
+    assert result["schedules_readable"] is True
 
     # Half an hour into Monday's run, only later starts are listed.
     with patch.object(dt_util, "now", return_value=now.replace(hour=10)):
@@ -3145,6 +3147,7 @@ async def test_schedules_list_rooms_by_name_and_the_runs_coming_up() -> None:
         ).data
     assert bare["schedules"][0]["rooms"] == ["Unknown room", "Unknown room"]
     assert bare["schedules"][0]["timezone"] is None
+    assert bare["schedules_readable"] is False
 
 
 async def test_zones_name_the_rooms_they_cover_on_the_current_map() -> None:
@@ -3168,20 +3171,24 @@ async def test_zones_name_the_rooms_they_cover_on_the_current_map() -> None:
     other_floor = MapZone(8, "no_go", 1, square)
     entry = _entry(floor_plan=floor_plan)
     _with_telemetry(entry, zones=(zone, other_floor))
+    entry.runtime_data.client.endpoint_health = {"zones": "ok"}
     tool = MaticGetZonesTool()
     result = (
         await tool.async_call(_hass(entry), llm.ToolInput(tool.name, {}), _context())
     ).data
     assert result["map_available"] is True
+    assert result["zones_readable"] is True
     assert result["zones"] == [{"kind": "no_go", "rooms": ["Study"]}]
     assert result["zones_on_other_maps"] == 1
 
     no_map = _entry()
     _with_telemetry(no_map, zones=(zone,))
+    no_map.runtime_data.client.endpoint_health = {"zones": "CannotConnectError"}
     bare = (
         await tool.async_call(_hass(no_map), llm.ToolInput(tool.name, {}), _context())
     ).data
     assert bare["map_available"] is False
+    assert bare["zones_readable"] is False
     assert bare["zones"] == []
 
     _with_telemetry(entry, zones=(zone,) * 65)

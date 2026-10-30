@@ -1500,7 +1500,9 @@ class MaticGetSchedulesTool(_MaticTool):
     description = (
         "Returns the weekly cleaning schedules set in the Matic app, with their "
         "rooms and cleaning mode, and the scheduled runs still to start. Reads up "
-        "to 64 schedules. Read-only: schedules are changed in the Matic app."
+        "to 64 schedules. When schedules_readable is false, the robot's schedules "
+        "couldn't be read, so say they are unknown. Read-only: schedules are "
+        "changed in the Matic app."
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(
@@ -1541,6 +1543,9 @@ class MaticGetSchedulesTool(_MaticTool):
             data={
                 "read_only": True,
                 "robot": _entry_name(entry),
+                # The schedule count is unknown when the robot's schedule list
+                # couldn't be read, so empty lists then mean unknown, not none.
+                "schedules_readable": state.telemetry.scheduled_cleanings is not None,
                 "schedules": [
                     cast(
                         JsonObjectType,
@@ -1580,7 +1585,9 @@ class MaticGetZonesTool(_MaticTool):
     description = (
         "Returns the zones drawn in the Matic app on the current map, such as "
         "no-go zones the robot never enters, and the rooms each one covers. Reads "
-        "up to 64 zones. Read-only: zones are changed in the Matic app."
+        "up to 64 zones. When zones_readable is false, the robot's zones couldn't "
+        "be read, so say they are unknown. Read-only: zones are changed in the "
+        "Matic app."
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(_ROBOT_FIELD)
@@ -1605,6 +1612,9 @@ class MaticGetZonesTool(_MaticTool):
                 "read_only": True,
                 "robot": _entry_name(entry),
                 "map_available": floor_plan is not None,
+                "zones_readable": (
+                    entry.runtime_data.client.endpoint_health.get("zones") == "ok"
+                ),
                 "zones": [
                     cast(
                         JsonObjectType,

@@ -47,7 +47,8 @@ be read, `robot_history` is false and only Home Assistant's runs are listed.
 scheduled runs in the next 7 days (up to 14), the same runs as the
 [robot schedules calendar](entities.md). `MaticGetZones` lists the zones on the
 current map and the rooms each one covers. Both read up to 64 schedules or zones
-from the robot; schedules and zones are changed in the Matic app.
+from the robot. When the robot's list couldn't be read, `schedules_readable`
+or `zones_readable` is false. Schedules and zones are changed in the Matic app.
 `MaticGetOperations` includes current-room active time, expected duration and
 Estimated % from the same entity sample shown in Matic Map. Paused time stays
 frozen; unknown estimates stay unknown. Even Estimated 100% does not prove a
