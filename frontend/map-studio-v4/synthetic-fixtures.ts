@@ -106,6 +106,8 @@ export const syntheticEntry = (): MapEntry => ({
   historyUrl: "/api/matic_robot/slam_history/synthetic",
   areasUrl: "/api/matic_robot/areas/synthetic",
   plansUrl: "/api/matic_robot/plans/synthetic",
+  // The gallery has no survey, so Map options leaves out the Wi-Fi row.
+  wifiHeatmapUrl: null,
   mapRevision: 7,
   mapSceneEpoch: "synthetic-scene-epoch",
   mapFloorCoherent: true,
@@ -177,6 +179,7 @@ export const syntheticAreas = (): AreasCatalog => ({
     canRebind: false,
   }],
   selectedArea: "entryway",
+  zones: [],
 });
 
 export const syntheticHistory = (): HistoryCatalog => ({

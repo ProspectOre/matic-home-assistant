@@ -65,6 +65,15 @@ from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import observe_coordinator_trail
 
 
+def _wifi_survey() -> SimpleNamespace:
+    return SimpleNamespace(
+        async_load=AsyncMock(),
+        async_collect=MagicMock(return_value=MagicMock()),
+        async_shutdown=AsyncMock(),
+        async_remove=AsyncMock(),
+    )
+
+
 def _entry() -> SimpleNamespace:
     def close_background_coroutine(hass, target, name):
         target.close()
@@ -997,8 +1006,9 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 9
+    assert hass.http.register_view.call_count == 11
     from custom_components.matic_robot.frontend import (
+        DATA_FLOOR_LAYERS_VIEW,
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
         MATIC_ICONS_PATH,
@@ -1011,6 +1021,9 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     assert hass.data[DATA_SLAM_POSE_VIEW] in {
+        call.args[0] for call in hass.http.register_view.call_args_list
+    }
+    assert hass.data[DATA_FLOOR_LAYERS_VIEW] in {
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     registered_paths = {
@@ -1181,6 +1194,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
             return_value=slam_history,
         ),
         patch(
+            "custom_components.matic_robot.WifiSurveyStore", return_value=_wifi_survey()
+        ),
+        patch(
             "custom_components.matic_robot.async_collect_slam_history",
             return_value=MagicMock(),
         ) as collect_history,
@@ -1295,7 +1311,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.run_trails is run_trails.return_value
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 5 + (
+    assert entry.async_create_background_task.call_count == 6 + (
         recovering_run or recovering_stop
     )
     coordinator.async_watch_cues.assert_called_once_with()
@@ -1393,7 +1409,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 8 + (
+    assert entry.async_create_background_task.call_count == 9 + (
         recovering_run or recovering_stop
     )
     assert plans.async_upgrade_area_bindings.await_count == 5
@@ -1563,6 +1579,9 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
             "custom_components.matic_robot.SlamHistoryStore", return_value=slam_history
         ),
         patch(
+            "custom_components.matic_robot.WifiSurveyStore", return_value=_wifi_survey()
+        ),
+        patch(
             "custom_components.matic_robot.async_collect_slam_history",
             return_value=MagicMock(),
         ),
@@ -1682,6 +1701,7 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
         patch("custom_components.matic_robot.HermesCredential.from_storage"),
         patch("custom_components.matic_robot.SlamMapStore") as slam_store,
         patch("custom_components.matic_robot.SlamHistoryStore") as history_store,
+        patch("custom_components.matic_robot.WifiSurveyStore") as survey_store,
         pytest.raises(ConfigEntryAuthFailed, match="rejected"),
     ):
         await async_setup_entry(hass, entry)
@@ -1690,6 +1710,7 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
     hass.config_entries.async_forward_entry_setups.assert_not_awaited()
     slam_store.assert_not_called()
     history_store.assert_not_called()
+    survey_store.assert_not_called()
 
 
 async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
@@ -1745,6 +1766,9 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
             "custom_components.matic_robot.SlamHistoryStore",
             return_value=slam_history,
         ),
+        patch(
+            "custom_components.matic_robot.WifiSurveyStore", return_value=_wifi_survey()
+        ),
         pytest.raises(RuntimeError, match="platform setup failed"),
     ):
         await async_setup_entry(hass, entry)
@@ -1782,12 +1806,15 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             slam_map=slam_map,
             slam_history=slam_history,
             run_trails=run_trails,
+            wifi_survey=_wifi_survey(),
             cleaning_plans=plans,
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
     pose_view = SimpleNamespace(clear_entry=MagicMock())
+    floor_layers_view = SimpleNamespace(clear_entry=MagicMock())
     from custom_components.matic_robot.frontend import (
+        DATA_FLOOR_LAYERS_VIEW,
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
     )
@@ -1800,6 +1827,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         data={
             DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
+            DATA_FLOOR_LAYERS_VIEW: floor_layers_view,
         },
     )
 
@@ -1824,6 +1852,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     assert client.async_shutdown.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
+    assert floor_layers_view.clear_entry.called is unload_ok
     assert slam_map.async_shutdown.await_count == int(unload_ok)
     assert slam_history.async_shutdown.await_count == int(unload_ok)
     assert run_trails.async_shutdown.await_count == int(unload_ok)
@@ -1866,6 +1895,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             slam_map=slam_map,
             slam_history=slam_history,
             run_trails=run_trails,
+            wifi_survey=_wifi_survey(),
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
@@ -2099,10 +2129,21 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
             return_value=slam_history,
         ),
         patch(
+            "custom_components.matic_robot.WifiSurveyStore", return_value=_wifi_survey()
+        ),
+        patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_area_issue,
+        patch(
+            "custom_components.matic_robot.async_delete_maintenance_issues"
+        ) as delete_maintenance_issues,
+        patch(
+            "custom_components.matic_robot.async_delete_robot_alert_issues"
+        ) as delete_alert_issues,
     ):
         await async_remove_entry(hass, entry)
+
+    delete_maintenance_issues.assert_called_once_with(hass, "entry")
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
     get_plan_manager.assert_awaited_once_with(hass)
@@ -2116,6 +2157,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     run_trails.assert_called_once_with(hass, "entry")
     run_trails.return_value.async_remove.assert_awaited_once_with()
     delete_area_issue.assert_called_once_with(hass, "entry")
+    delete_alert_issues.assert_called_once_with(hass, "entry")
 
     bare = SimpleNamespace(data={})
     bare_plans = SimpleNamespace(async_remove_robot=AsyncMock())
@@ -2131,8 +2173,13 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
             return_value=slam_history,
         ),
         patch(
+            "custom_components.matic_robot.WifiSurveyStore", return_value=_wifi_survey()
+        ),
+        patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_bare_area_issue,
+        patch("custom_components.matic_robot.async_delete_maintenance_issues"),
+        patch("custom_components.matic_robot.async_delete_robot_alert_issues"),
     ):
         await async_remove_entry(bare, entry)
 
@@ -2162,11 +2209,15 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
         ),
         patch("custom_components.matic_robot.clear_slam_scene_cache"),
         patch("custom_components.matic_robot.async_delete_custom_area_issue"),
+        patch("custom_components.matic_robot.async_delete_robot_alert_issues"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch("custom_components.matic_robot.RunTrails", autospec=True),
         patch(
             "custom_components.matic_robot.SlamHistoryStore",
             return_value=slam_history,
+        ),
+        patch(
+            "custom_components.matic_robot.WifiSurveyStore", return_value=_wifi_survey()
         ),
     ):
         removing = asyncio.create_task(async_remove_entry(hass, entry))

@@ -41,6 +41,7 @@ from .commands import (
     encode_user_command,
     encode_user_data,
 )
+from .consumables import decode_bag_pass_expiry
 from .coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
@@ -74,6 +75,7 @@ from .history import (
     MonthlyCleaningRecap,
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
+    decode_monthly_recap_key,
 )
 from .mission import MissionClientState, decode_mission_client_state
 from .models import (
@@ -122,6 +124,7 @@ from .wire import (
     decode_fields,
     uuid_string,
 )
+from .zones import MAX_ZONES, decode_zones
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -185,6 +188,11 @@ _TELEMETRY_NESTED_MAX_BYTES = 64 * 1024
 _TELEMETRY_NESTED_MAX_FIELDS = 256
 _WIFI_STATUS_MAX_BYTES = 256 * 1024
 _WIFI_NETWORK_MAX_COUNT = 256
+_WIFI_SCAN_RESULT_TIMEOUT_SECONDS = 8.0
+_WIFI_SCAN_RESULT_INTERVAL_SECONDS = 1.0
+# The scan reply arrives once the scan is done and wifi_status follows within
+# about a quarter second, so an unchanged block after two reads is a repeat.
+_WIFI_SCAN_SETTLE_READS = 2
 _SCHEDULE_MAX_BYTES = 64 * 1024
 _SCHEDULE_MAX_FIELDS = 1024
 _SCHEDULE_MAX_UUIDS = 256
@@ -1011,6 +1019,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             self._async_optional_collection("coverage_session_history", limit=64),
             self._async_optional_collection_count("dock_detections"),
             self._async_optional_collection_count("sink_summon_locations"),
+            self._async_optional_collection("recap_history", limit=120),
+            self._async_optional_collection("bag_pass_status", limit=4),
+            self._async_optional_collection("zones", limit=MAX_ZONES),
         )
         property_count = len(_TELEMETRY_PROPERTIES)
         values = dict(zip(_TELEMETRY_PROPERTIES, results[:property_count], strict=True))
@@ -1018,6 +1029,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         session_entries = results[property_count + 1]
         dock_detections = results[property_count + 2]
         sink_summon_locations = results[property_count + 3]
+        recap_entries = results[property_count + 4]
+        bag_pass_entries = results[property_count + 5]
+        zone_entries = results[property_count + 6]
+        maintenance = _decode_latest_maintenance(
+            recap_entries if isinstance(recap_entries, tuple) else ()
+        )
 
         schedules = (
             tuple(
@@ -1090,6 +1107,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 else None
             ),
             coverage_time_seconds=_decode_coverage_time(values["coverage_time"]),
+            maintenance_recap_month=maintenance[0] if maintenance else None,
+            maintenance_suggestions=maintenance[1] if maintenance else None,
+            bag_pass_expires_at=_decode_bag_pass(
+                bag_pass_entries if isinstance(bag_pass_entries, tuple) else ()
+            ),
+            zones=(
+                decode_zones(zone_entries) if isinstance(zone_entries, tuple) else ()
+            ),
         )
 
     async def _async_optional_property(self, name: str) -> bytes | None:
@@ -2124,6 +2149,32 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             "water_flow_override_state", _decode_water_flow_factor, rounded
         )
 
+    async def async_scan_wifi_signal(self) -> int | None:
+        """Ask the robot for one Wi-Fi scan and return its link signal in dBm.
+
+        The robot replies once the scan is done. The scan reply is unread;
+        the result is taken from ``wifi_status`` once its scan block differs
+        from the one read before the request, or after a short settle when an
+        identical scan left it unchanged. ``None`` means no scan block
+        appeared in time or the connected network was not listed.
+        """
+        baseline = _wifi_scan_block(await self.async_get_property("wifi_status"))
+        await self._async_send_channel_payload("wifi_scan_command", b"")
+        reads = 0
+        try:
+            async with asyncio.timeout(_WIFI_SCAN_RESULT_TIMEOUT_SECONDS):
+                while True:
+                    await asyncio.sleep(_WIFI_SCAN_RESULT_INTERVAL_SECONDS)
+                    payload = await self.async_get_property("wifi_status")
+                    scan = _wifi_scan_block(payload)
+                    reads += 1
+                    if scan is not None and (
+                        scan != baseline or reads >= _WIFI_SCAN_SETTLE_READS
+                    ):
+                        return _decode_wifi_status(payload)[2]
+        except TimeoutError:
+            return None
+
     async def _async_confirm_setting_readback(
         self,
         property_name: str,
@@ -2667,6 +2718,19 @@ def _decode_timezone(payload: object) -> str | None:
         return None
 
 
+def _wifi_scan_block(payload: bytes) -> bytes | None:
+    """Return the raw scan-result block of a ``wifi_status`` value."""
+    try:
+        return _telemetry_bytes(
+            payload,
+            7,
+            max_bytes=_WIFI_STATUS_MAX_BYTES,
+            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+        )
+    except DecodeError:
+        return None
+
+
 def _decode_wifi_status(
     payload: object,
 ) -> tuple[str | None, str | None, int | None, tuple[WifiNetwork, ...]]:
@@ -2786,6 +2850,45 @@ def _decode_uploader_state(payload: object) -> bool | None:
                     return bool(_telemetry_varint(field.value, 1))
                 except DecodeError:
                     return False
+    return None
+
+
+def _decode_latest_maintenance(
+    entries: tuple[HermesCollectionEntry, ...],
+) -> tuple[str, tuple[int, ...]] | None:
+    """Return the newest recap month and its maintenance suggestions.
+
+    An unreadable newest recap yields None rather than an older month, so
+    stale suggestions never replace current ones.
+    """
+    keyed: list[tuple[tuple[int, int], HermesCollectionEntry]] = []
+    for entry in entries:
+        try:
+            month, year = decode_monthly_recap_key(entry)
+        except DecodeError:
+            continue
+        keyed.append(((year, month), entry))
+    if not keyed:
+        return None
+    (year, month), newest = max(keyed, key=lambda item: item[0])
+    try:
+        recap = decode_monthly_cleaning_recap(newest)
+    except DecodeError:
+        return None
+    return f"{year:04d}-{month:02d}", recap.maintenance_suggestions
+
+
+def _decode_bag_pass(
+    entries: tuple[HermesCollectionEntry, ...],
+) -> datetime | None:
+    """Return the expiry of the first decodable active bag pass."""
+    for entry in entries:
+        try:
+            expires_at = decode_bag_pass_expiry(entry)
+        except DecodeError:
+            continue
+        if expires_at is not None:
+            return expires_at
     return None
 
 

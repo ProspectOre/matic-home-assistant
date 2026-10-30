@@ -12,7 +12,7 @@ from functools import partial
 from hashlib import sha256
 from http import HTTPStatus
 from time import monotonic, time
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import probatio
 from aiohttp import web
@@ -44,9 +44,11 @@ from .client.models import (
     CleaningSessionRecord,
     FloorPlan,
     HermesCollectionEntry,
+    MapZone,
     RobotPose,
 )
 from .client.slam_map import decode_slam_tile, encode_slam_scene
+from .client.zones import zone_overlaps_circle, zone_overlaps_polygon
 from .const import DOMAIN
 from .plans import (
     AreaFramePointLimitError,
@@ -83,6 +85,7 @@ AREAS_API_URL = "/api/matic_robot/areas/{entry_id}"
 PLANS_API_URL = "/api/matic_robot/plans/{entry_id}"
 RUNS_API_URL = "/api/matic_robot/runs/{entry_id}"
 RUNS_NATIVE_READ_SECONDS = 15
+WIFI_HEATMAP_API_URL = "/api/matic_robot/wifi_heatmap/{entry_id}"
 POSE_CACHE_SECONDS = 1.0
 SCENE_ENCODE_ATTEMPTS = 2
 SCENE_CACHE_REVISIONS = 2
@@ -248,6 +251,7 @@ def catalog_entry_projection(
         "history_url": history_api_url(entry_id),
         "areas_url": areas_api_url(entry_id),
         "plans_url": plans_api_url(entry_id),
+        "wifi_heatmap_url": WIFI_HEATMAP_API_URL.format(entry_id=entry_id),
         "history_count": len(_mission_history(runtime)),
         "history_floor_count": len(runtime.slam_history.catalogs_by_mission()),
         "map_revision": (
@@ -1003,6 +1007,13 @@ class MaticSlamPoseView(HomeAssistantView):
         return self.json(
             {
                 "position": list(position[:2]) if position is not None else None,
+                "heading": (
+                    round(visible_pose.heading, 4)
+                    if position is not None
+                    and visible_pose is not None
+                    and visible_pose.heading is not None
+                    else None
+                ),
                 "source": source,
                 "revision": runtime.slam_map.revision,
                 "scene_revision": (
@@ -1041,6 +1052,7 @@ class MaticSlamPoseView(HomeAssistantView):
         return self.json(
             {
                 "position": None,
+                "heading": None,
                 "source": "unavailable",
                 "revision": runtime.slam_map.revision,
                 "scene_revision": (
@@ -1137,6 +1149,40 @@ class MaticAreasView(HomeAssistantView):
             for room in floor_plan.rooms
         ]
 
+    @staticmethod
+    def _zones(
+        zones: tuple[MapZone, ...],
+        floor_plan: FloorPlan,
+        areas: list[dict[str, Any]],
+    ) -> list[dict[str, object]]:
+        """Project the robot's zones on this map and what each one overlaps."""
+        return [
+            {
+                "kind": zone.kind,
+                "outline": [list(point) for point in zone.outline],
+                "holes": [[list(point) for point in hole] for hole in zone.holes],
+                "room_ids": [
+                    room.id
+                    for room in floor_plan.rooms
+                    if zone_overlaps_polygon(zone, room.boundary)
+                ],
+                "area_ids": [
+                    area["id"]
+                    for area in areas
+                    if any(
+                        zone_overlaps_circle(
+                            zone,
+                            (float(circle["x"]), float(circle["y"])),
+                            float(circle["radius"]),
+                        )
+                        for circle in area["circles"]
+                    )
+                ],
+            }
+            for zone in zones
+            if zone.mission_id == floor_plan.mission_id
+        ]
+
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return the live map geometry and private saved-area definitions."""
@@ -1209,6 +1255,9 @@ class MaticAreasView(HomeAssistantView):
                 "rooms": self._rooms(floor_plan),
                 "areas": areas,
                 "selected_area": runtime.cleaning_plans.selected_area(serial_number),
+                "zones": self._zones(
+                    runtime.coordinator.data.telemetry.zones, floor_plan, areas
+                ),
             },
             headers=PRIVATE_NO_STORE_HEADERS,
         )

@@ -43,6 +43,26 @@ test("catalog, pose, history, and area parsers reject their own malformed root s
   ]);
 });
 
+test("pose heading is kept only beside a position and inside one turn", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async () => {
+    const { parsePose } = await import("/backend-contracts.js");
+    const pose = (position, heading) => parsePose({
+      position, heading, source: "exact_pose", revision: 1, scene_revision: null, scene_epoch: null,
+      pose_revision: 1, map_floor_coherent: true, map_session_key: null, pose_freshness: "live",
+    }).heading;
+    return [
+      pose([1, 2], 1.25),
+      pose([1, 2], -Math.PI),
+      pose([1, 2], 4),
+      pose([1, 2], "1"),
+      pose([1, 2], undefined),
+      pose(null, 1.25),
+    ];
+  });
+  expect(result).toEqual([1.25, -Math.PI, null, null, null, null]);
+});
+
 test("the area catalog names the selected custom area, or none", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async () => {

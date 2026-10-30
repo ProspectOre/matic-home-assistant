@@ -7,7 +7,7 @@ These are the integration's main additions:
 
 | Feature | What you can do |
 | --- | --- |
-| Matic Map | A sidebar page with a photographic 3D map and a 2D plan, live robot position, room selection, plans, custom areas and saved map history. Works with a mouse, touch or keyboard. |
+| Matic Map | A sidebar page with a photographic 3D map and a 2D plan, a 3D robot that shows its live position and heading, room selection, plans, custom areas, no-go zones from the Matic app (read only) and saved map history. Works with a mouse, touch or keyboard. |
 | Plans with rooms and custom areas | Save rooms and custom areas in one order, each with its own cleaning mode and vacuum coverage, and preview the next run. Rooms next to each other run in one part; each custom area is its own part, after which the robot usually returns to the dock. [How a plan runs](cleaning.md#how-a-plan-runs). |
 | Smart Order | Clean the rooms and custom areas that have waited longest first on the next run, or keep your saved order. |
 | Room schedules | Mop every few cleans or rotate the vacuum coverage, counted across all plans or in one plan. One-time room cleans can include work that's due. Only confirmed work counts. [Guide](room-schedules.md). |
@@ -37,7 +37,8 @@ works](cleaning.md#intelligent-rotation).
 ## Maps and controls alongside your other devices
 
 Matic Map brings live 3D and 2D maps, room selection, plan Run and Edit views,
-named custom areas, and saved map history into Home Assistant. Dashboard cameras
+named custom areas, saved map history and an opt-in Wi-Fi signal map into Home
+Assistant. Dashboard cameras
 and entities let you build your own view. Settings include water flow,
 double-pass mopping, child lock, pet-waste avoidance, and the Cues voice
 assistant.
