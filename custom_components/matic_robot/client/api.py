@@ -10,7 +10,13 @@ import socket
 import ssl
 import struct
 from collections import Counter
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Sequence,
+)
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -30,9 +36,13 @@ from .auth import HermesCredential
 from .commands import (
     CleaningMode,
     CoverageSetting,
+    CoverageUpdateGoal,
     HermesConnectionKind,
+    QueueAction,
+    QueueChangeError,
     UserCommand,
     encode_coverage_command,
+    encode_coverage_goal_update,
     encode_custom_coverage_command,
     encode_go_to_room_command,
     encode_mission_id,
@@ -40,11 +50,15 @@ from .commands import (
     encode_sink_summon_command,
     encode_user_command,
     encode_user_data,
+    queue_start_visit,
+    requeue_coverage_goals,
 )
 from .consumables import decode_bag_pass_expiry
 from .coverage_goals import (
+    CoveragePlanGoal,
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
+    coverage_plan_goals,
     coverage_plan_lacks_active_goals,
     coverage_readback_matches,
 )
@@ -205,6 +219,9 @@ _COVERAGE_START_READBACK_TIMEOUT = 30.0
 _MIXED_COVERAGE_READBACK_TIMEOUT = 8.0
 _MIXED_COVERAGE_READBACK_INTERVAL = 0.5
 _MIXED_READBACK_DELTA_LIMIT = 32
+# The app's queue changes showed in the plan within about 10 to 20 seconds.
+_QUEUE_READBACK_TIMEOUT = 45.0
+_QUEUE_READBACK_INTERVAL = 2.0
 _TRANSPORT_ERRORS = (OSError, StreamTerminatedError, ProtocolError, H2Error)
 _BINARY_SETTING_STATE_PROPERTIES = {
     "child_lock": "child_lock_enabled_state",
@@ -213,6 +230,69 @@ _BINARY_SETTING_STATE_PROPERTIES = {
 }
 _SETTING_READBACK_TIMEOUT_SECONDS = 8.0
 _SETTING_READBACK_INTERVAL_SECONDS = 0.25
+
+
+def _queue_start_index(plan: Sequence[CoveragePlanGoal], current_region: str) -> int:
+    """Return the plan index where the current room's last visit begins."""
+    visits: list[tuple[str, list[int]]] = []
+    for index, goal in enumerate(plan):
+        if visits and visits[-1][0] == goal.region_id:
+            visits[-1][1].append(index)
+        else:
+            visits.append((goal.region_id, [index]))
+    return visits[queue_start_visit(visits, current_region)][1][0]
+
+
+def _region_order(goals: Sequence[CoverageUpdateGoal | CoveragePlanGoal]) -> list[str]:
+    order: list[str] = []
+    for goal in goals:
+        if not order or order[-1] != goal.region_id:
+            order.append(goal.region_id)
+    return order
+
+
+def _queue_readback_matches(
+    sent: Sequence[CoverageUpdateGoal],
+    held: Sequence[CoveragePlanGoal],
+    *,
+    dropped: set[str],
+    expected_order: list[str],
+) -> bool:
+    """Match the plan after a queue change by round IDs, specs and room order.
+
+    The robot lists a room's behaviors in its own order and may leave out the
+    last floor mop behavior, so the check compares rooms, not goal positions.
+    """
+    held_rounds = {goal.round_id: goal.signature for goal in held}
+    if dropped & held_rounds.keys():
+        return False
+    for goal in sent:
+        signature = held_rounds.get(goal.round_id)
+        if signature is None:
+            if (goal.floor, goal.mode, goal.behavior) != (0, 1, 3):
+                return False
+            continue
+        # Heavy Duty vacuum and double-pass mop read back as setting 3.
+        region, setting, floor, mode, behavior = signature
+        if (region, floor, mode, behavior) != (
+            goal.region_id,
+            goal.floor,
+            goal.mode,
+            goal.behavior,
+        ) or (
+            setting != goal.setting
+            and (setting, goal.setting, mode)
+            not in {
+                (3, 0, 0),
+                (3, 1, 1),
+            }
+        ):
+            return False
+    sent_rounds = {goal.round_id for goal in sent}
+    return (
+        _region_order([goal for goal in held if goal.round_id in sent_rounds])
+        == expected_order
+    )
 
 
 def _log_mixed_readback_timeout(
@@ -1550,6 +1630,84 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             ),
             command_name="GO_TO_ROOM",
         )
+
+    async def async_change_queue(
+        self,
+        floor_plan: FloorPlan,
+        action: QueueAction,
+        room: Room,
+        *,
+        cleaning_mode: CleaningMode | None = None,
+        coverage_setting: CoverageSetting | None = None,
+    ) -> None:
+        """Skip, bring forward or repeat a room in the clean that is running.
+
+        Like the app's queue sheet, this resends the goals from the current
+        room onward under the task's own session ID, then waits until the
+        robot's plan holds every goal sent and none of the goals left out.
+        """
+        identity = await self.async_get_cleaning_session_identity()
+        active = await self.async_get_active_cleaning_session_state()
+        if not identity or active is not True:
+            raise QueueChangeError("no_clean_running")
+        try:
+            session_id = uuid_string(identity)
+        except DecodeError as err:
+            raise MaticError("Native task identity cannot be read") from err
+        state = await self.async_get_state()
+        area = room_name_key(state.current_area)
+        current = [
+            candidate.protocol_id
+            for candidate in floor_plan.rooms
+            if area is not None and room_name_key(candidate.name) == area
+        ]
+        if len(current) != 1:
+            raise QueueChangeError("current_room_unknown")
+        try:
+            plan = coverage_plan_goals(await self.async_get_property("coverage_plan"))
+        except DecodeError as err:
+            raise QueueChangeError("plan_unreadable") from err
+        goals = requeue_coverage_goals(
+            [CoverageUpdateGoal(goal.round_id, *goal.signature) for goal in plan],
+            action=action,
+            current_region=current[0],
+            target_region=room.protocol_id,
+            cleaning_mode=cleaning_mode,
+            coverage_setting=coverage_setting,
+        )
+        payload = encode_coverage_goal_update(
+            mission_id=floor_plan.mission_id,
+            partition_id=floor_plan.partition_protocol_id,
+            session_id=session_id,
+            goals=goals,
+        )
+        start = _queue_start_index(plan, current[0])
+        sent = {goal.round_id for goal in goals}
+        dropped = {goal.round_id for goal in plan[start:]} - sent
+        expected_order = _region_order(goals)
+        if await self.async_get_cleaning_session_identity() != identity:
+            raise MaticError("Native mission changed before the queue change")
+        await self._async_send_user_payload(payload, command_name="UPDATE_QUEUE")
+        try:
+            async with asyncio.timeout(_QUEUE_READBACK_TIMEOUT):
+                while True:
+                    await asyncio.sleep(_QUEUE_READBACK_INTERVAL)
+                    if await self.async_get_cleaning_session_identity() != identity:
+                        raise MaticError(
+                            "Native mission changed during the queue change"
+                        )
+                    try:
+                        held = coverage_plan_goals(
+                            await self.async_get_property("coverage_plan")
+                        )
+                    except DecodeError:
+                        continue
+                    if _queue_readback_matches(
+                        goals, held, dropped=dropped, expected_order=expected_order
+                    ):
+                        return
+        except TimeoutError as err:
+            raise MaticError("Robot did not confirm the queue change") from err
 
     async def async_start_coverage(
         self,

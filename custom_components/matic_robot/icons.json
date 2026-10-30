@@ -94,6 +94,9 @@
   "services": {
     "clean": { "service": "mdi:robot-vacuum" },
     "go_to_room": { "service": "mdi:map-marker-outline" },
+    "skip_room": { "service": "mdi:skip-next" },
+    "clean_room_next": { "service": "mdi:arrow-collapse-up" },
+    "clean_room_again": { "service": "mdi:repeat" },
     "clean_area": { "service": "mdi:vector-square" },
     "clean_room_sequence": { "service": "mdi:format-list-numbered" },
     "clean_entire_plan": { "service": "mdi:format-list-numbered" },

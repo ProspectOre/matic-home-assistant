@@ -1510,6 +1510,33 @@
     "go_to_room_room_required": {
       "message": "Name one room to go to, then try again."
     },
+    "queue_room_required": {
+      "message": "Name one room for {command}, then try again."
+    },
+    "queue_no_clean_running": {
+      "message": "{room} can only be skipped, moved or cleaned again while the robot is cleaning."
+    },
+    "queue_current_room_unknown": {
+      "message": "The robot isn't in a room on this map right now, so {room} can't be changed yet. Try again once it's cleaning a room."
+    },
+    "queue_plan_unreadable": {
+      "message": "This clean includes a custom area or a plan the integration can't read, so {room} can't be changed. Use the Matic app."
+    },
+    "queue_room_not_queued": {
+      "message": "{room} isn't waiting in this clean."
+    },
+    "queue_last_room": {
+      "message": "{room} is the only room left. Stop the clean instead."
+    },
+    "queue_already_next": {
+      "message": "{room} is already being cleaned or is next."
+    },
+    "queue_room_settings_unknown": {
+      "message": "{room} isn't in this clean's plan anymore, so choose its cleaning mode and coverage to clean it again."
+    },
+    "queue_change_failed": {
+      "message": "The robot didn't confirm the change to {room}. Check the queue in the Matic app."
+    },
     "robot_stop_pending": {
       "message": "The robot is stopping. Wait until it docks, then try again."
     },
@@ -1544,7 +1571,7 @@
       "message": "No custom area matches {area}. Check the name, or choose from your custom areas."
     },
     "unsupported_command": {
-      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, return_home, sink_summon, or go_to_room."
+      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, return_home, sink_summon, go_to_room, skip_room, clean_room_next or clean_room_again."
     },
     "managed_run_changed": {
       "message": "The cleaning plan changed before Stop could be sent, so Stop was not sent. Check the robot and press Stop again if it is still cleaning."
@@ -1689,6 +1716,44 @@
         "room": {
           "name": "Room",
           "description": "Room name or room ID. A name shared by two rooms is refused; use the room ID instead."
+        }
+      }
+    },
+    "skip_room": {
+      "name": "Skip room",
+      "description": "Skips a room in the clean that is running. A skipped room in a plan run gets no completion credit and stays due in the plan's rotation.",
+      "fields": {
+        "room": {
+          "name": "Room",
+          "description": "Room name or room ID. A name shared by two rooms is refused; use the room ID instead."
+        }
+      }
+    },
+    "clean_room_next": {
+      "name": "Clean room next",
+      "description": "Moves a waiting room to right after the room being cleaned.",
+      "fields": {
+        "room": {
+          "name": "Room",
+          "description": "Room name or room ID. A name shared by two rooms is refused; use the room ID instead."
+        }
+      }
+    },
+    "clean_room_again": {
+      "name": "Clean room again",
+      "description": "Cleans a room again in the clean that is running. A waiting room gets new passes in its place; a finished room is added at the end.",
+      "fields": {
+        "room": {
+          "name": "Room",
+          "description": "Room name or room ID. A name shared by two rooms is refused; use the room ID instead."
+        },
+        "cleaning_mode": {
+          "name": "Cleaning mode",
+          "description": "Defaults to the modes the room had in this clean."
+        },
+        "coverage_setting": {
+          "name": "Coverage",
+          "description": "Vacuum coverage. Defaults to the room's coverage in this clean."
         }
       }
     },

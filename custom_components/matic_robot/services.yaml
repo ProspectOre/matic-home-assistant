@@ -33,6 +33,43 @@ go_to_room:
       selector:
         text:
 
+skip_room:
+  target: *vacuum_target
+  fields:
+    room:
+      required: true
+      example: Kitchen
+      selector:
+        text:
+
+clean_room_next:
+  target: *vacuum_target
+  fields:
+    room:
+      required: true
+      example: Kitchen
+      selector:
+        text:
+
+clean_room_again:
+  target: *vacuum_target
+  fields:
+    room:
+      required: true
+      example: Kitchen
+      selector:
+        text:
+    cleaning_mode:
+      selector:
+        select:
+          translation_key: cleaning_mode
+          options: [vacuum, mop, vacuum_and_mop]
+    coverage_setting:
+      selector:
+        select:
+          translation_key: coverage_setting
+          options: [quick, standard, heavy_duty]
+
 clean_room_sequence:
   target: *vacuum_target
   fields:

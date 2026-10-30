@@ -46,6 +46,7 @@ _ROOM_RESULTS = {
     "interrupted": "interrupted",
     "failed": "problem",
     "ended_unverified": "unconfirmed",
+    "skipped": "skipped",
     "running": "running",
     "suspended": "running",
     "verifying": "running",
