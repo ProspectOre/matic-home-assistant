@@ -220,6 +220,10 @@ class EmptyPlanError(ValueError):
     """Raised when a run names a plan without rooms."""
 
 
+class PlanRoomsHeldError(ValueError):
+    """Raised when occupancy holds every room in a plan run."""
+
+
 class DuplicateRoomError(ValueError):
     """Raised when one cleaning definition names the same room twice."""
 
@@ -3306,11 +3310,14 @@ class CleaningPlanManager:
         room_identities: Mapping[str, str] | None = None,
         intelligent: bool | None = None,
         floor_plan: FloorPlan | None = None,
+        held_rooms: Mapping[str, Mapping[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Return the next complete execution order without changing state.
 
         Intelligent rotation ranks rooms and custom areas together. Saved
         order preserves every entry's exact position. Areas must match the map.
+        ``held_rooms`` leaves rooms out of this run without touching their
+        rotation, so they stay first in line for the next one.
         """
         plan = self.plan(serial_number, plan_id)
         entries = plan_entries(plan)
@@ -3349,6 +3356,27 @@ class CleaningPlanManager:
             else room_by_id[entry["room_id"]]
             for entry in entries
         ]
+        held = [
+            {
+                "room_id": target.room_id,
+                "name": target.name,
+                **held_rooms[target.room_id],
+            }
+            for target in targets
+            if held_rooms
+            and isinstance(target, CleaningRoom)
+            and target.room_id in held_rooms
+        ]
+        if held:
+            held_ids = {room["room_id"] for room in held}
+            targets = [
+                target
+                for target in targets
+                if not isinstance(target, CleaningRoom)
+                or target.room_id not in held_ids
+            ]
+            if not targets:
+                raise PlanRoomsHeldError("occupancy holds every room in the plan")
         candidates = self._rotation_candidates(serial_number, plan["id"], targets)
         ordered_candidates = (
             sorted(candidates, key=_rotation_sort_key)
@@ -3392,6 +3420,7 @@ class CleaningPlanManager:
                 ordered_candidates, intelligent=use_intelligent
             ),
             "room_count": len(effective),
+            **({"held_rooms": held} if held else {}),
             "return_to_base": bool(plan.get("return_to_base", True)),
             "finish_current_room": bool(plan.get("finish_current_room", False)),
             "finish_current_room_threshold": int(
@@ -4350,6 +4379,7 @@ class CleaningPlanManager:
         provenance: str | None = None,
         finish_current_room: bool | None = None,
         finish_current_room_threshold: int | None = None,
+        held_rooms: Sequence[Mapping[str, str]] = (),
     ) -> None:
         """Persist the bounded identity and provenance of a managed run."""
 
@@ -4382,6 +4412,10 @@ class CleaningPlanManager:
                     "finish_current_room": stop_enabled,
                     "finish_current_room_threshold": stop_threshold,
                 }
+                if held_rooms:
+                    robot["last_run"]["held_rooms"] = [
+                        dict(room) for room in held_rooms
+                    ]
                 await self._store.async_save(self._data)
 
         await self._async_run_owned_metadata(serial_number, commit, notify=True)

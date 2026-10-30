@@ -43,6 +43,11 @@ from .client.floor_plan import (
 from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
 from .client.slam_map import decode_slam_tile, encode_slam_scene
 from .const import DOMAIN
+from .occupancy import (
+    entry_vacuum_entity_id,
+    occupancy_holds,
+    plan_occupancy_sensors,
+)
 from .plans import (
     AreaFramePointLimitError,
     AreaInUseError,
@@ -51,6 +56,7 @@ from .plans import (
     MetadataAdmissionClosedError,
     PlanAreaMapChangedError,
     PlanAreaMissingError,
+    PlanRoomsHeldError,
     RoomSequenceLimitError,
     entry_mission_boundaries,
     plan_entries,
@@ -1385,7 +1391,9 @@ class MaticPlansView(HomeAssistantView):
             except ValueError:
                 identity_error = True
 
-        def next_run_preview(plan_id: str) -> dict[str, object]:
+        def next_run_preview(
+            plan_id: str, plan: Mapping[str, object]
+        ) -> dict[str, object]:
             """Project the authoritative next run without changing plan state."""
             if identity_error:
                 return {
@@ -1401,6 +1409,16 @@ class MaticPlansView(HomeAssistantView):
                     "blocker": "preview_unavailable",
                 }
             try:
+                vacuum_entity_id = (
+                    entry_vacuum_entity_id(hass, entry_id)
+                    if plan.get("occupancy_aware") is True
+                    else None
+                )
+                held_rooms = (
+                    occupancy_holds(hass, vacuum_entity_id, plan, room_map)
+                    if vacuum_entity_id is not None
+                    else {}
+                )
                 preview = previewer(
                     serial_number,
                     room_map,
@@ -1408,6 +1426,7 @@ class MaticPlansView(HomeAssistantView):
                     floor_token=floor_token,
                     room_identities=room_identities,
                     floor_plan=floor_plan,
+                    **({"held_rooms": held_rooms} if held_rooms else {}),
                 )
                 preview_entries = preview.get("entries")
                 if not isinstance(preview_entries, list):
@@ -1474,6 +1493,16 @@ class MaticPlansView(HomeAssistantView):
                     "mission_boundaries": [],
                     "blocker": "area_map_changed",
                 }
+            except PlanRoomsHeldError:
+                return {
+                    "rooms": [],
+                    "mission_boundaries": [],
+                    "blocker": "plan_rooms_held",
+                    "held_rooms": [
+                        {"room_id": room_id, "name": room_map[room_id], **hold}
+                        for room_id, hold in held_rooms.items()
+                    ],
+                }
             except (KeyError, TypeError, ValueError) as err:
                 message = str(err).casefold()
                 blocker = (
@@ -1502,6 +1531,11 @@ class MaticPlansView(HomeAssistantView):
                 "rooms": projected_rooms,
                 "entries": projected_entries,
                 "mission_boundaries": boundaries,
+                **(
+                    {"held_rooms": preview["held_rooms"]}
+                    if "held_rooms" in preview
+                    else {}
+                ),
                 "preview_token": saved_plan_preview_token(
                     preview,
                     entry_id=entry_id,
@@ -1625,7 +1659,7 @@ class MaticPlansView(HomeAssistantView):
                 else entry
                 for entry in entries
             ]
-            preview = next_run_preview(plan_id)
+            preview = next_run_preview(plan_id, plan)
             plans.append(
                 {
                     "id": plan_id,
@@ -1642,6 +1676,8 @@ class MaticPlansView(HomeAssistantView):
                     "finish_current_room_threshold": int(
                         plan.get("finish_current_room_threshold", 50)
                     ),
+                    "occupancy_aware": plan.get("occupancy_aware") is True,
+                    "occupancy_sensors": plan_occupancy_sensors(plan),
                     "next_run_preview": preview,
                     "next_run_estimate_seconds": next_run_estimate(preview),
                 }

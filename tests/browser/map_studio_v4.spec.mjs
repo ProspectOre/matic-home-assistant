@@ -1206,6 +1206,23 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("button", { name: /^Weekend refresh/ })).toBeFocused();
   });
 
+  test("Run names the rooms an occupancy-aware plan holds", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "plan-saved-intelligent" });
+    await settleWorkspace(gallery);
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      const catalog = state.resources.plans.value;
+      const heldRooms = [
+        { roomId: "room-x", name: "Nursery", sensor: "binary_sensor.nursery" },
+        { roomId: "room-y", name: "Study", sensor: "binary_sensor.study" },
+      ];
+      const plans = catalog.plans.map((plan) => ({ ...plan, nextRunPreview: { ...plan.nextRunPreview, heldRooms } }));
+      element.replaceWorkspaceState({ ...state, resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...catalog, plans } } } });
+    });
+    await expect(gallery.getByText("Held while occupied: Nursery and Study. They stay first in line for the next run.", { exact: true })).toBeVisible();
+    await expect(gallery.getByText("3 rooms · about 33 min", { exact: true })).toBeVisible();
+  });
+
   // plan.md §3 Run view, R1 ready, at the phone sheet and the inspector.
   for (const [width, height, narrow] of [[390, 844, true], [1024, 768, false]]) {
     test(`Run shows the next run's summary, due work and rooms at ${width}px`, async ({ page }) => {
@@ -5030,6 +5047,16 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(dock).toHaveAttribute("aria-checked", "true");
     await dock.click();
     expect((await snapshot(page)).planDraft.returnToBase).toBe(false);
+  });
+
+  test("Hold occupied rooms is a plan switch kept in the draft", async ({ page }) => {
+    const { gallery } = await editDaily(page, { occupancyAware: false });
+    const hold = gallery.getByRole("switch", { name: "Hold occupied rooms" });
+    await expect(hold).toHaveAttribute("aria-checked", "false");
+    await expect(hold).toHaveAccessibleDescription("Leave out a room while an occupancy or presence sensor in its Home Assistant area is on. It stays first in line for the next run.");
+    await hold.click();
+    await expect(hold).toHaveAttribute("aria-checked", "true");
+    expect((await snapshot(page)).planDraft.occupancyAware).toBe(true);
   });
 
   test("a save holds every Edit control with one shared reason", async ({ page }) => {

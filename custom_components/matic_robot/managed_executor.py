@@ -3495,6 +3495,7 @@ async def _async_execute_rooms_reserved(
     validate_prepared_run: Callable[[], None] | None = None,
     coverage_verifier: CoverageVerifier | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
+    held_rooms: Sequence[Mapping[str, str]] = (),
 ) -> None:
     """Execute every resolved room and custom area with safe cancellation.
 
@@ -3665,7 +3666,23 @@ async def _async_execute_rooms_reserved(
                     provenance=run_provenance,
                     finish_current_room=finish_current_room,
                     finish_current_room_threshold=finish_current_room_threshold,
+                    held_rooms=held_rooms,
                 )
+                for held in held_rooms:
+                    hass.bus.async_fire(
+                        f"{DOMAIN}_room_held",
+                        {
+                            ATTR_ENTITY_ID: entity_id,
+                            "plan_id": call.data["plan_id"],
+                            "room_id": held["room_id"],
+                            "room": held["name"],
+                            "run_id": run_id,
+                            "provenance": run_provenance,
+                            "reason_code": held["reason"],
+                            "sensor": held["sensor"],
+                        },
+                        context=call.context,
+                    )
             if mapped_room_names:
                 mapped_keys = [native_room_key(name) for name in mapped_room_names]
                 ambiguous = [
@@ -4334,6 +4351,7 @@ async def _async_execute_rooms(
     validate_prepared_run: Callable[[], None] | None = None,
     coverage_verifier: CoverageVerifier | None = None,
     entries: Sequence[Mapping[str, Any]] | None = None,
+    held_rooms: Sequence[Mapping[str, str]] = (),
 ) -> None:
     """Reserve queued cadence synchronously, then execute the prepared run."""
     manager.require_command_admission(serial_number)
@@ -4405,6 +4423,7 @@ async def _async_execute_rooms(
             validate_prepared_run=validate_prepared_run,
             coverage_verifier=coverage_verifier,
             entries=entries,
+            held_rooms=held_rooms,
         )
     finally:
         manager.release_prepared_run(serial_number, run_id)

@@ -140,6 +140,7 @@ _MATIC_EVENT_TYPES = (
     f"{DOMAIN}_room_cancelled",
     f"{DOMAIN}_room_interrupted",
     f"{DOMAIN}_room_reconciled",
+    f"{DOMAIN}_room_held",
 )
 _SAFE_EVENT_FIELDS = (
     "observation_session",

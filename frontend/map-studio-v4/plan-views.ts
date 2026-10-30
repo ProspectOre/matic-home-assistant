@@ -22,7 +22,7 @@ import {
   initialWorkspaceState,
   roomBlocker,
 } from "./state";
-import { formatDuration, translate } from "./localize";
+import { formatDuration, formatList, translate } from "./localize";
 import {
   draftSteps, dueLines, formatNumber, fromSteps, planAreas, planRowLine2, planRowLine3, roomsAndAreas, withPlanAreas,
 } from "./plan-copy";
@@ -361,6 +361,9 @@ export class MaticPlanViewsV4 extends LitElement {
         : state.resources.entry?.activePlan
           ? this.#t("v4_next_run_after_active", "After this run")
           : this.#t("v4_next_run_preview", "Next run")}</h3>
+      ${!paused && preview?.heldRooms?.length ? html`<p class="quiet" data-held-rooms>${this.#t("v4_plan_held_rooms", "Held while occupied: {rooms}. They stay first in line for the next run.", {
+        rooms: formatList(state.locale, preview.heldRooms.map((room) => room.name)),
+      })}</p>` : nothing}
       ${ready && !ordered ? html`<p class="quiet">${this.#t("v4_plan_rotation_settings", "Smart Order cleans the rooms and areas that have waited longest first, checking again each time.")}</p>` : nothing}
       ${boundaries.length ? html`<p class="quiet">${this.#t("v4_room_parts", "The robot cleans in {count} parts and may stop at the dock between parts.", {
         count: this.#count(boundaries.length + 1),
@@ -810,6 +813,9 @@ export class MaticPlanViewsV4 extends LitElement {
           : this.#t("v4_plan_order_intelligent_hint", "Longest-waiting first")}</p>
         ${areas && !ordered ? html`<p class="quiet">${this.#t("v4_plan_areas_rotation_hint", "Smart Order chooses the longest-waiting rooms and areas first. Saved order follows your list.")}</p>` : nothing}
       </div>
+      ${this.#endSwitch("hold-occupied", this.#t("v4_plan_hold_occupied", "Hold occupied rooms"),
+        this.#t("v4_plan_hold_occupied_hint", "Leave out a room while an occupancy or presence sensor in its Home Assistant area is on. It stays first in line for the next run."),
+        draft.occupancyAware, held, (on) => this.#patch({ occupancyAware: on }))}
       <div class="list-header">
         <h3 class="heading" id="edit-rooms">${areas
           ? this.#t("v4_plan_steps_heading", "Rooms and custom areas")

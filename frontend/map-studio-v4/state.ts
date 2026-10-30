@@ -155,6 +155,8 @@ export const initialWorkspaceState = (): WorkspaceState => ({
     returnToBase: true,
     finishCurrentRoom: false,
     finishCurrentRoomThreshold: 50,
+    occupancyAware: false,
+    occupancySensors: {},
     dirty: false,
     parkedRooms: [],
     areas: [],
@@ -262,6 +264,8 @@ export const draftForPlan = (plan: SavedPlan): WorkspaceState["planDraft"] => {
     returnToBase: plan.returnToBase,
     finishCurrentRoom: plan.finishCurrentRoom,
     finishCurrentRoomThreshold: plan.finishCurrentRoomThreshold,
+    occupancyAware: plan.occupancyAware,
+    occupancySensors: plan.occupancySensors,
     dirty: false,
     parkedRooms: [],
     // The entries as sent: each custom area after the rooms before it. One
@@ -1074,6 +1078,7 @@ export const PLAN_BLOCKERS: Partial<Record<NextRunPreviewBlocker, Reason>> = {
   plan_has_no_rooms: { reason: "Can't run this plan until it has at least one room.", reasonKey: "v4_preview_no_rooms" },
   plan_room_limit: { reason: "Can't run this plan until it has 100 rooms or fewer.", reasonKey: "v4_preview_room_limit" },
   invalid_plan: { reason: "Can't run this plan until you open Edit and save it again.", reasonKey: "v4_preview_invalid" },
+  plan_rooms_held: { reason: "Can't run this plan while every room in it is occupied.", reasonKey: "v4_preview_rooms_held" },
   // No `plan_disabled`: a paused draft gives PLAN_PAUSED first, and a preview
   // still paused after the switch turned it on is stale, so it is retried.
 };
