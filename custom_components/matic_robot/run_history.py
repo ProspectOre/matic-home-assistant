@@ -92,6 +92,9 @@ def append_run_history(robot: dict[str, Any], run: Mapping[str, Any]) -> None:
         )
         if key in run
     }
+    stop_intent = _mapping(run.get("recovery_checkpoint")).get("stop_intent")
+    if stop_intent is not None:
+        record["stop_intent"] = stop_intent
     record["rooms"] = run_rooms(robot, run)
     record["areas"] = run_areas(robot, run)
     history = [
@@ -199,7 +202,11 @@ def run_ending(run: Mapping[str, Any]) -> str:
     if outcome == "stopped_docked":
         return "stopped"
     if reason == "managed_stop":
-        return "smart_stop" if run.get("finish_current_room") is True else "stopped"
+        # The accepted stop, not the plan's policy: Stop now overrides Smart Stop.
+        intent = run.get("stop_intent") or _mapping(run.get("recovery_checkpoint")).get(
+            "stop_intent"
+        )
+        return "smart_stop" if intent == "after_room" else "stopped"
     if reason == "managed_replaced":
         return "replaced"
     if outcome == "recharge_suspended" or reason == "low_charge":
@@ -281,7 +288,11 @@ def history_entries(
         for run in run_history(robot)
     ]
     last_run = _mapping(robot.get("last_run"))
-    if last_run.get("outcome") == "running" and isinstance(last_run.get("run_id"), str):
+    # The run in progress, or a finished one saved before history existed.
+    if isinstance(last_run.get("run_id"), str) and (
+        last_run.get("outcome") == "running"
+        or last_run["run_id"] not in {entry["id"] for entry in entries}
+    ):
         entries.append(
             managed_entry(
                 robot, last_run, manual=manual(last_run.get("plan_id")), live=True

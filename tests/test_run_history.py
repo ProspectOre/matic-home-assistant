@@ -149,8 +149,24 @@ def test_run_areas_merge_plan_and_area_history_once() -> None:
         ({"outcome": "running"}, "running"),
         ({"outcome": "completed"}, "finished"),
         ({"outcome": "stopped_docked"}, "stopped"),
-        ({"reason_code": "managed_stop", "finish_current_room": True}, "smart_stop"),
-        ({"reason_code": "managed_stop", "finish_current_room": False}, "stopped"),
+        ({"reason_code": "managed_stop", "stop_intent": "after_room"}, "smart_stop"),
+        (
+            {
+                "reason_code": "managed_stop",
+                "recovery_checkpoint": {"stop_intent": "after_room"},
+            },
+            "smart_stop",
+        ),
+        # Stop now overrides a Smart Stop plan's policy.
+        (
+            {
+                "reason_code": "managed_stop",
+                "finish_current_room": True,
+                "stop_intent": "immediate",
+            },
+            "stopped",
+        ),
+        ({"reason_code": "managed_stop", "finish_current_room": True}, "stopped"),
         ({"reason_code": "managed_replaced"}, "replaced"),
         ({"outcome": "recharge_suspended"}, "low_battery"),
         ({"reason_code": "low_charge"}, "low_battery"),
@@ -175,12 +191,16 @@ def test_append_run_history_freezes_results_replaces_and_bounds() -> None:
         {"run_id": 3},
         {"run_id": "run-1"},
     ]
-    append_run_history(robot, _run(finish_current_room=True, extra="dropped"))
+    run = _run(finish_current_room=True, reason_code="managed_stop", extra="dropped")
+    run["recovery_checkpoint"]["stop_intent"] = "after_room"
+    append_run_history(robot, run)
     assert [item["run_id"] for item in robot["run_history"]] == ["old-0", "run-1"]
     record = robot["run_history"][-1]
     assert "extra" not in record
     assert "recovery_checkpoint" not in record
     assert record["finish_current_room"] is True
+    assert record["stop_intent"] == "after_room"
+    assert run_ending(record) == "smart_stop"
     assert record["rooms"][0] == {"name": "Hall", "result": "stopped"}
     assert record["areas"][0] == {"name": "Living rug", "result": "completed"}
 
@@ -195,6 +215,7 @@ def test_append_run_history_freezes_results_replaces_and_bounds() -> None:
     robot["run_history"] = "corrupt"
     append_run_history(robot, _run())
     assert [item["run_id"] for item in robot["run_history"]] == ["run-1"]
+    assert "stop_intent" not in robot["run_history"][0]
 
 
 def test_managed_entry_projects_stored_and_live_runs() -> None:
@@ -558,3 +579,18 @@ def test_late_completion_repairs_only_the_matching_saved_run() -> None:
             "rooms": ["damaged", {"name": "Den", "result": "completed"}],
         },
     ]
+
+
+def test_a_finished_run_saved_before_history_existed_is_listed() -> None:
+    robot = _robot()
+    robot["last_run"] = _run(outcome="cancelled", reason_code="managed_stop")
+    (entry,) = history_entries(robot, (), manual=lambda plan_id: False)
+    assert (entry["id"], entry["outcome"], entry["ending"]) == (
+        "run-1",
+        "not_finished",
+        "stopped",
+    )
+    assert entry["rooms"][0] == {"name": "Hall", "result": "stopped"}
+
+    append_run_history(robot, robot["last_run"])
+    assert len(history_entries(robot, (), manual=lambda plan_id: False)) == 1
