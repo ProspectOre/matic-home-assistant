@@ -1983,6 +1983,52 @@ async def test_time_zone_mismatch_raises_repair_until_clocks_match(hass) -> None
     assert registry.async_get_issue(DOMAIN, issue_id) is None
 
 
+async def test_time_zone_repair_follows_each_enabled_schedule_zone(hass) -> None:
+    from homeassistant.helpers import issue_registry as ir
+
+    from custom_components.matic_robot.client.models import CleaningSchedule
+
+    def schedule(zone: str | None, enabled: bool | None = True) -> CleaningSchedule:
+        return CleaningSchedule("Daily", ("mon",), 630, zone, False, enabled, ())
+
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    registry = ir.async_get(hass)
+    issue_id = "time_zone_mismatch_entry"
+    await hass.config.async_update(time_zone="America/Los_Angeles")
+
+    async def check(*schedules: CleaningSchedule) -> ir.IssueEntry | None:
+        coordinator._cached_telemetry = None
+        client.async_get_telemetry.return_value = RobotTelemetry(
+            protocol_version=25, timezone="America/New_York", schedules=schedules
+        )
+        await coordinator._async_update_data()
+        return registry.async_get_issue(DOMAIN, issue_id)
+
+    # Schedules written in Home Assistant's zone run at the expected hour,
+    # and a disabled schedule never runs.
+    assert (
+        await check(schedule("America/Los_Angeles"), schedule(None, enabled=False))
+        is None
+    )
+    # A schedule without its own zone uses the robot's.
+    issue = await check(schedule("America/Los_Angeles"), schedule(None))
+    assert issue is not None
+    assert issue.translation_placeholders["robot_time_zone"] == "America/New_York"
+    # An unresolvable schedule zone keeps the last decision.
+    assert await check(schedule("Not/A_Zone")) is not None
+
+    # Scans are kept for one UTC day only.
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        return_value=datetime(2030, 1, 1, tzinfo=UTC),
+    ):
+        assert await check(schedule("America/Los_Angeles")) is None
+    assert {day for _, _, day in coordinator._time_zone_scans} == {
+        datetime(2030, 1, 1).date()
+    }
+
+
 async def test_time_zone_repair_from_before_a_reload_clears_on_match(hass) -> None:
     from homeassistant.helpers import issue_registry as ir
 

@@ -159,7 +159,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._identity_issue_active = False
         self._time_zone_checked = False
         self._time_zone_issue: tuple[str, str] | None = None
-        self._time_zone_scan: tuple[tuple[str, str, date], bool | None] | None = None
+        self._time_zone_scans: dict[tuple[str, str, date], bool | None] = {}
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
         self._latest_cues_state: RobotOperationalState | None = None
         self._cues_push_sequence = 0
@@ -412,7 +412,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             if version is not None:
                 self._async_update_device_software(version, info.serial_number)
             self._async_clear_identity_issue()
-            self._async_check_time_zone(telemetry.timezone)
+            self._async_check_time_zone(telemetry)
             # Events require native evidence; local estimates are display-only.
             self._async_fire_session_finished(state, version)
             state = await self._async_track_cleaning_session(state)
@@ -994,23 +994,39 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         )
 
     @callback
-    def _async_check_time_zone(self, robot_zone: str | None) -> None:
-        """Raise a Repair while the robot keeps a different clock than HA.
+    def _async_check_time_zone(self, telemetry: RobotTelemetry) -> None:
+        """Raise a Repair while the robot's schedules keep a different clock.
 
-        Native schedules start on the robot's clock. An unread or unresolvable
-        time zone keeps the last decision rather than clearing a real mismatch.
+        Each schedule stores its own zone and falls back to the robot's, as the
+        schedules calendar does; with no enabled schedule the robot's zone is
+        checked. An unread or unresolvable zone keeps the last decision rather
+        than clearing a real mismatch.
         """
-        if robot_zone is None:
+        robot_zone = telemetry.timezone or None
+        schedule_zones = [
+            schedule.timezone or robot_zone
+            for schedule in telemetry.schedules
+            if schedule.enabled is not False
+        ]
+        zones = schedule_zones if schedule_zones else [robot_zone]
+        if None in zones:
             return
         home_zone = self.hass.config.time_zone
         # A year of offsets takes tens of milliseconds; scan once per UTC day.
-        scan_key = (robot_zone, home_zone, dt_util.utcnow().date())
-        if self._time_zone_scan is None or self._time_zone_scan[0] != scan_key:
-            self._time_zone_scan = (scan_key, time_zones_differ(*scan_key))
-        differ = self._time_zone_scan[1]
-        if differ is None:
-            return
-        mismatch = (robot_zone, home_zone) if differ else None
+        today = dt_util.utcnow().date()
+        if any(day != today for _, _, day in self._time_zone_scans):
+            self._time_zone_scans.clear()
+        mismatch: tuple[str, str] | None = None
+        for zone in dict.fromkeys(cast(list[str], zones)):
+            key = (zone, home_zone, today)
+            if key not in self._time_zone_scans:
+                self._time_zone_scans[key] = time_zones_differ(*key)
+            differ = self._time_zone_scans[key]
+            if differ is None:
+                return
+            if differ:
+                mismatch = (zone, home_zone)
+                break
         # The first check always writes: a reloaded entry starts unset, and
         # a Repair raised before the reload must still clear on a match.
         if self._time_zone_checked and mismatch == self._time_zone_issue:
@@ -1031,7 +1047,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             translation_key="time_zone_mismatch",
             translation_placeholders={
                 **repair_placeholders(self.hass, self.config_entry.entry_id),
-                "robot_time_zone": robot_zone,
+                "robot_time_zone": mismatch[0],
                 "home_time_zone": home_zone,
             },
         )

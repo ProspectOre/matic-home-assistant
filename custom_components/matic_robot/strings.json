@@ -1579,7 +1579,7 @@
     },
     "time_zone_mismatch": {
       "title": "{name} uses a different time zone",
-      "description": "{name} is set to {robot_time_zone}, but Home Assistant uses {home_time_zone}. The robot starts its own schedules on its clock, so they can run at a different hour than you expect. Change the robot's time zone in the Matic app, or Home Assistant's under Settings > System > General. This Repair clears once the two match."
+      "description": "{name} keeps its schedules in {robot_time_zone} time, but Home Assistant uses {home_time_zone}. The robot starts each schedule on that clock, so it can run at a different hour than you expect. Change the time zone in the Matic app, or Home Assistant's under Settings > System > General. This Repair clears once the two match."
     },
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
