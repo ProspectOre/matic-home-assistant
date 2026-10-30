@@ -561,6 +561,7 @@ _HOUSEHOLD_DOCS = (
     "docs/entities.md",
     "docs/features.md",
     "docs/release-notes-0.5.0.md",
+    "docs/release-notes-0.6.0-beta1.md",
     "docs/room-schedules.md",
 )
 # Code, link targets and HTML anchors name things; the prose around them is copy.
@@ -680,6 +681,7 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             "clean_entire_plan": "Run saved order",
             "stop_intelligent_cleaning": "Stop cleaning",
             "clean_selected_area": "Clean custom area",
+            "clear_wifi_survey": "Clear Wi-Fi survey",
         }
         selects = translations["entity"]["select"]
         assert selects["cleaning_mode"]["name"] == "Default cleaning mode"

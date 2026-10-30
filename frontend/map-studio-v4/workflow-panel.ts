@@ -137,6 +137,7 @@ line-height: var(--ms-lh-snug);
   retry!: (event: Event) => void;
   _historyPreviewPosition: number | null = null;
   readonly #diagnostics = new LazyChunk(this, () => import("./diagnostics-panel"));
+  readonly #runHistory = new LazyChunk(this, () => import("./run-history"));
   #historySelectionKey = "";
 
   protected override willUpdate(changed: PropertyValues<this>): void {
@@ -192,6 +193,8 @@ line-height: var(--ms-lh-snug);
   }
 
 
+
+  readonly #emit = (intent: WorkspaceIntent): void => this.#intent(intent);
 
   #intent(intent: WorkspaceIntent): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_INTENT_EVENT, {
@@ -313,6 +316,7 @@ line-height: var(--ms-lh-snug);
           // As the area's screen reads it (map-surfaces.md §4): changed, or unusable.
           const check = area.canRebind || area.status === "review";
           const redraw = !check && area.status !== "current";
+          const noGo = value?.zones.some((zone) => zone.kind === "no_go" && zone.areaIds.includes(area.id));
           return html`<div role="listitem"><button
             class="ms-row ms-row--card area-row"
             type="button"
@@ -328,6 +332,7 @@ line-height: var(--ms-lh-snug);
               ${check || redraw ? html`<span class="lines"><span class="line" data-tone="warning">${icon(iconNoticeWarning)}<span>${check
                 ? this.#t("v4_area_row_check", "Map changed · Check it before cleaning")
                 : this.#t("v4_area_row_redraw", "Redraw it before cleaning")}</span></span></span>` : nothing}
+              ${noGo ? html`<small data-zone-overlap>${this.#t("v4_zone_overlap", "Overlaps a no-go zone · Matic skips that part")}</small>` : nothing}
             </span>
             <span class="ms-row__trail">${icon(iconChevronRight)}</span>
           </button></div>`;
@@ -509,6 +514,12 @@ line-height: var(--ms-lh-snug);
     ></matic-map-diagnostics-v4>`;
   }
 
+  #runs() {
+    this.#runHistory.request();
+    if (this.#runHistory.status !== "ready") return chunkStatus(this.#runHistory.status, this.localize, this.retry);
+    return html`<matic-run-history-v4 .state=${this.state} .localize=${this.localize} .dates=${this.dates} .emit=${this.#emit}></matic-run-history-v4>`;
+  }
+
   protected override render() {
     switch (this.state.workflow) {
       case "rooms": return this.#rooms();
@@ -519,6 +530,7 @@ line-height: var(--ms-lh-snug);
       case "areaReview": return this.#areaReview();
       case "history": return this.#history();
       case "support": return this.#support();
+      case "runs": return this.#runs();
       case "none": return nothing;
     }
   }

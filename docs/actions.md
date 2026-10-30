@@ -96,7 +96,8 @@ actions:
 is rather than return to the dock. The Matic app sends it when you cancel the
 offer to dock after a task. `command: emote` with `params: {kind: nod}` plays a
 gesture: `nod`, `shake`, `pirouette` or `snap`. Both match what the Matic
-app sends, as read from its code, but neither has been tried on a real robot yet.
+app sends, as read from its code. The robot accepts all five; nobody has yet
+watched which gesture each name plays.
 
 ```yaml
 actions:
@@ -108,6 +109,11 @@ actions:
       params:
         kind: pirouette
 ```
+
+## Skip, clean next or clean again
+
+**Skip room**, **Clean room next** and **Clean room again** change the clean
+that is running. See [Changing a running clean](queue-changes.md).
 
 ## Plans
 
@@ -129,8 +135,11 @@ actions:
 (`intelligent` for Smart Order, the default, or `ordered` for Saved order),
 `return_to_base` (**Return to the dock when finished**, default `true`),
 `finish_current_room` (**Smart Stop**, default `false`),
-`finish_current_room_threshold` (0 to 100%, default 50) and `select` (make it
-the default plan, default `true`). Room items default to `vacuum_and_mop` and `standard`.
+`finish_current_room_threshold` (0 to 100%, default 50), `occupancy_aware`
+(**Hold occupied rooms**, default `false`), `occupancy_sensors` (room ID to
+`binary_sensor` overrides; see [occupied rooms](cleaning.md#occupied-rooms))
+and `select` (make it the default plan, default `true`). Room items default to
+`vacuum_and_mop` and `standard`.
 
 ### Custom areas in plans
 

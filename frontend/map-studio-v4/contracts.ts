@@ -1,5 +1,6 @@
 import type { AreaOutline } from "./area-outline";
 import type { ManualRoomSequencePreview } from "./backend-contracts";
+import type { RunHistory, RunTrail } from "./run-history-data";
 export const MAP_ZOOM_MIN = 100;
 export const MAP_ZOOM_MAX = 1000;
 export const MAX_ROOM_SEQUENCE_SIZE = 100;
@@ -57,6 +58,7 @@ export type Workflow =
   | "areas"
   | "areaReview"
   | "history"
+  | "runs"
   | "support";
 
 export type CommandState = "idle" | "pending" | "starting" | "settling" | "failed";
@@ -157,6 +159,7 @@ export interface WorkspaceResources {
   readonly history: ResourceState<HistoryCatalog>;
   readonly plans: ResourceState<PlansCatalog>;
   readonly areas: ResourceState<AreasCatalog>;
+  readonly runs: ResourceState<RunHistory>;
 }
 
 export interface AdmittedManualRoomPreview {
@@ -168,6 +171,20 @@ export interface AdmittedManualRoomPreview {
 }
 
 export type PlanView = "run" | "edit";
+/** One surveyed map cell: its centre in metres and mean signal in dBm. */
+export interface WifiSignalCell {
+  readonly x: number;
+  readonly y: number;
+  readonly dbm: number;
+}
+
+export interface WifiSignalLayer {
+  readonly status: "loading" | "ready" | "failed";
+  readonly surveying: boolean;
+  readonly cellSize: number;
+  readonly cells: readonly WifiSignalCell[];
+}
+
 export type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";
 
 export interface PlanDraft {
@@ -179,6 +196,9 @@ export interface PlanDraft {
   readonly returnToBase: boolean;
   readonly finishCurrentRoom: boolean;
   readonly finishCurrentRoomThreshold: number;
+  readonly occupancyAware: boolean;
+  /** Per-room sensor overrides set by action; Matic Map keeps them as saved. */
+  readonly occupancySensors: Readonly<Record<string, string>>;
   readonly dirty: boolean;
   /** Rooms unticked in Edit keep their settings and schedule here until Save; never sent. */
   readonly parkedRooms: readonly import("./backend-contracts").PlanRoom[];
@@ -306,6 +326,8 @@ export interface WorkspaceState {
   readonly deepMop: RobotSetting | null;
   readonly lastRun: ManagedRunSummary | null;
   readonly smartStop: SmartStopStatus | null;
+  /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
+  readonly trail: RunTrail | null;
   readonly pageActive: boolean;
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;
   readonly draftFloorOrdinal: number | null;
@@ -335,6 +357,8 @@ export interface WorkspaceState {
   readonly view: MapView;
   readonly appearance: MapAppearance;
   readonly labelsVisible: boolean;
+  /** The Wi-Fi signal layer; null while hidden. */
+  readonly wifiSignal: WifiSignalLayer | null;
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   /** Only preferences belonging to the verified live map can be restored. */
@@ -388,6 +412,7 @@ export type WorkspaceIntent =
       readonly camera: CameraPreference;
     }
   | { readonly type: "toggle-labels" }
+  | { readonly type: "toggle-wifi-signal" }
   | { readonly type: "open-workflow"; readonly workflow: Workflow }
   | { readonly type: "enter-full-map" }
   | { readonly type: "exit-full-map" }
@@ -451,7 +476,9 @@ export type WorkspaceIntent =
   | { readonly type: "return-live" }
   | { readonly type: "set-home-pin"; readonly pin: HomePin; readonly pinned: boolean }
   | { readonly type: "move-home-pin"; readonly pin: HomePin; readonly direction: -1 | 1 }
-  | { readonly type: "reload-home-pins" };
+  | { readonly type: "reload-home-pins" }
+  /** Draws a trail on the map, `live` for the run in progress; null hides it. */
+  | { readonly type: "show-trail"; readonly trail: string | null };
 
 /** A saved plan or custom area shown on home as a one-tap shortcut. */
 export interface HomePin {
@@ -611,6 +638,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-quality": true,
   "set-camera": true,
   "toggle-labels": true,
+  "toggle-wifi-signal": true,
   "open-workflow": true,
   "enter-full-map": true,
   "exit-full-map": true,
@@ -650,6 +678,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-home-pin": true,
   "move-home-pin": true,
   "reload-home-pins": true,
+  "show-trail": true,
 };
 
 export const isWorkspaceIntent = (value: unknown): value is WorkspaceIntent => {

@@ -33,6 +33,43 @@ go_to_room:
       selector:
         text:
 
+skip_room:
+  target: *vacuum_target
+  fields:
+    room:
+      required: true
+      example: Kitchen
+      selector:
+        text:
+
+clean_room_next:
+  target: *vacuum_target
+  fields:
+    room:
+      required: true
+      example: Kitchen
+      selector:
+        text:
+
+clean_room_again:
+  target: *vacuum_target
+  fields:
+    room:
+      required: true
+      example: Kitchen
+      selector:
+        text:
+    cleaning_mode:
+      selector:
+        select:
+          translation_key: cleaning_mode
+          options: [vacuum, mop, vacuum_and_mop]
+    coverage_setting:
+      selector:
+        select:
+          translation_key: coverage_setting
+          options: [quick, standard, heavy_duty]
+
 clean_room_sequence:
   target: *vacuum_target
   fields:
@@ -279,6 +316,13 @@ save_plan:
           step: 5
           unit_of_measurement: "%"
           mode: box
+    occupancy_aware:
+      default: false
+      selector:
+        boolean:
+    occupancy_sensors:
+      selector:
+        object:
     select:
       default: true
       selector:
@@ -393,6 +437,7 @@ inspect_hermes_endpoint:
           options:
             - active_session_key
             - approximate_trajectory
+            - bag_pass_status
             - child_lock_enabled_state
             - coverage_corridor
             - coverage_marker
@@ -414,9 +459,11 @@ inspect_hermes_endpoint:
             - map_integrated
             - map_semantics
             - map_semantics_override
+            - map_vents
             - matter_pairing_state
             - planned_path
             - petwaste_enabled_state
+            - recap_history
             - schedule_event_previews
             - schedule_events
             - semantics_override

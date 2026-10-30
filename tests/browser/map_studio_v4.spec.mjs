@@ -1206,6 +1206,23 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("button", { name: /^Weekend refresh/ })).toBeFocused();
   });
 
+  test("Run names the rooms an occupancy-aware plan holds", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "plan-saved-intelligent" });
+    await settleWorkspace(gallery);
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      const catalog = state.resources.plans.value;
+      const heldRooms = [
+        { roomId: "room-x", name: "Nursery", sensor: "binary_sensor.nursery" },
+        { roomId: "room-y", name: "Study", sensor: "binary_sensor.study" },
+      ];
+      const plans = catalog.plans.map((plan) => ({ ...plan, nextRunPreview: { ...plan.nextRunPreview, heldRooms } }));
+      element.replaceWorkspaceState({ ...state, resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...catalog, plans } } } });
+    });
+    await expect(gallery.getByText("Held while occupied: Nursery (binary_sensor.nursery) and Study (binary_sensor.study). They stay first in line for the next run.", { exact: true })).toBeVisible();
+    await expect(gallery.getByText("3 rooms · about 33 min", { exact: true })).toBeVisible();
+  });
+
   // plan.md §3 Run view, R1 ready, at the phone sheet and the inspector.
   for (const [width, height, narrow] of [[390, 844, true], [1024, 768, false]]) {
     test(`Run shows the next run's summary, due work and rooms at ${width}px`, async ({ page }) => {
@@ -5032,6 +5049,16 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect((await snapshot(page)).planDraft.returnToBase).toBe(false);
   });
 
+  test("Hold occupied rooms is a plan switch kept in the draft", async ({ page }) => {
+    const { gallery } = await editDaily(page, { occupancyAware: false });
+    const hold = gallery.getByRole("switch", { name: "Hold occupied rooms" });
+    await expect(hold).toHaveAttribute("aria-checked", "false");
+    await expect(hold).toHaveAccessibleDescription("Leave out a room while an occupancy or presence sensor in its Home Assistant area is on. It stays first in line for the next run.");
+    await hold.click();
+    await expect(hold).toHaveAttribute("aria-checked", "true");
+    expect((await snapshot(page)).planDraft.occupancyAware).toBe(true);
+  });
+
   test("a save holds every Edit control with one shared reason", async ({ page }) => {
     const { gallery, rooms } = await editDaily(page, { runBehavior: "ordered", finishCurrentRoom: true, dirty: true },
       { command: "pending", pendingAction: "save-plan", expandedRoom: "room-a" });
@@ -8343,7 +8370,7 @@ test("renderer hides a new pose until the read-only scene is replaced", async ({
   expect(results).toEqual([false, true, false]);
 });
 
-test("renderer turns the robot marker with its heading and the camera", async ({ page }) => {
+test("renderer draws the robot model turned with its heading and the camera", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/pose-heading.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
@@ -8355,9 +8382,13 @@ test("renderer turns the robot marker with its heading and the camera", async ({
       document.body.append(canvas);
     }
     const context = overlay.getContext("2d");
-    let rotations = [], dots = 0;
-    const { rotate, arc } = context;
-    context.rotate = function(angle) { rotations.push(angle); return rotate.call(this, angle); };
+    // Record each filled path so the lid and the front visor can be found by
+    // their colours: the visor is the last trim fill, the lid the last body fill.
+    let points = [], fills = [], dots = 0;
+    const { moveTo, lineTo, fill, arc } = context;
+    context.moveTo = function(x, y) { points = [[x, y]]; return moveTo.call(this, x, y); };
+    context.lineTo = function(x, y) { points.push([x, y]); return lineTo.call(this, x, y); };
+    context.fill = function(...rest) { fills.push({ style: this.fillStyle, points }); return fill.apply(this, rest); };
     context.arc = function(x, y, radius, ...rest) {
       if (radius === 7) dots++;
       return arc.call(this, x, y, radius, ...rest);
@@ -8368,26 +8399,42 @@ test("renderer turns the robot marker with its heading and the camera", async ({
       resources: { ...initial.resources, pose: { status: "ready", problem: null,
         value: { ...initial.resources.pose.value, position: [1.3, 1.6], heading } } } });
     const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const centre = (path) => path.reduce(([x, y], [px, py]) => [x + px / path.length, y + py / path.length], [0, 0]);
     const draw = async (heading) => {
-      rotations = []; dots = 0;
+      fills = []; dots = 0;
       renderer.setState(withHeading(heading));
       await frame();
-      return { rotation: rotations.at(-1) ?? null, dots };
+      const lid = fills.findLast(({ style }) => style === "#ecf0f2");
+      const visor = fills.findLast(({ style }) => style === "#263238");
+      if (!lid || !visor) return { facing: null, dots };
+      const [lidX, lidY] = centre(lid.points), [visorX, visorY] = centre(visor.points);
+      return { facing: Math.atan2(visorY - lidY, visorX - lidX), dots };
     };
+    // The model is a lazy chunk; the first frames may still show the flat marker.
+    await draw(0);
+    await frame();
     const east = await draw(0), north = await draw(Math.PI / 2), none = await draw(null);
     renderer.setCamera({ ...renderer.camera, yaw: Math.PI / 2 });
     const turned = await draw(0);
+    // Aim the 3D camera at the robot; scene x is mirrored about the span centre.
+    const { metersPerCell, origin, span } = initial.resources.scene.value.metadata;
+    renderer.setCamera({ ...renderer.camera, orthographic: false, pitch: 0.7, distance: 2,
+      targetX: -(1.3 / metersPerCell - origin[0] - (span[0] - 1) / 2) * metersPerCell,
+      targetZ: (1.6 / metersPerCell - origin[1] - (span[1] - 1) / 2) * metersPerCell });
+    const tilted = await draw(0);
     renderer.dispose();
-    return { east, north, none, turned };
+    return { east, north, none, turned, tilted };
   });
   const turn = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
-  expect(results.east.dots).toBe(0);
-  expect(results.north.dots).toBe(0);
+  for (const view of [results.east, results.north, results.turned, results.tilted]) {
+    expect(view.dots).toBe(0);
+    expect(view.facing).not.toBeNull();
+  }
   // A quarter turn of the robot is a quarter turn on screen, and so is a
   // quarter turn of the camera with the robot still.
-  expect(turn(results.east.rotation, results.north.rotation)).toBeCloseTo(Math.PI / 2, 2);
-  expect(turn(results.east.rotation, results.turned.rotation)).toBeCloseTo(Math.PI / 2, 2);
-  expect(results.none).toEqual({ rotation: null, dots: 1 });
+  expect(turn(results.east.facing, results.north.facing)).toBeCloseTo(Math.PI / 2, 1);
+  expect(turn(results.east.facing, results.turned.facing)).toBeCloseTo(Math.PI / 2, 1);
+  expect(results.none).toEqual({ facing: null, dots: 1 });
 });
 
 test("rotated zone coordinates match rendered coverage and preserve zoom anchors", async ({ page }) => {

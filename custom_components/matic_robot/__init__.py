@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from time import monotonic
 from typing import Any, cast
 
@@ -45,16 +46,20 @@ from .coordinator import MaticCoordinator, async_delete_robot_alert_issues
 from .firmware import FirmwareTracker
 from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
+from .maintenance import async_delete_maintenance_issues
 from .managed_executor import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
+from .run_history import RunTrails
 from .services import async_register_services
 from .slam_history import (
     SlamHistoryStore,
     async_collect_slam_history,
 )
 from .slam_map_store import SlamMapIdentity, SlamMapStore
+from .slam_scene import observe_coordinator_trail
+from .wifi_survey import WifiSurveyStore
 
 __all__ = ["async_migrate_entry"]
 
@@ -79,6 +84,8 @@ class MaticRuntimeData:
     firmware_tracker: FirmwareTracker
     slam_map: SlamMapStore
     slam_history: SlamHistoryStore
+    run_trails: RunTrails
+    wifi_survey: WifiSurveyStore
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -183,6 +190,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
     )
     slam_map: SlamMapStore | None = None
     slam_history: SlamHistoryStore | None = None
+    wifi_survey: WifiSurveyStore | None = None
     try:
         firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         coordinator = MaticCoordinator(
@@ -237,13 +245,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await slam_map.async_prime(client)
         slam_history = SlamHistoryStore(hass, entry.entry_id)
         await slam_history.async_load()
-        entry.runtime_data = MaticRuntimeData(
+        run_trails = RunTrails(hass, entry.entry_id)
+        await run_trails.async_load()
+        wifi_survey = WifiSurveyStore(hass, entry.entry_id)
+        await wifi_survey.async_load()
+        runtime_data = MaticRuntimeData(
             client,
             coordinator,
             plans,
             firmware_tracker,
             slam_map,
             slam_history,
+            run_trails,
+            wifi_survey,
+        )
+        entry.runtime_data = runtime_data
+        entry.async_on_unload(
+            coordinator.async_add_listener(
+                partial(observe_coordinator_trail, runtime_data)
+            )
         )
         workspace_socket = hass.data.get(DOMAIN, {}).get("workspace_socket")
         track_workspace_entry = getattr(workspace_socket, "track_entry", None)
@@ -301,6 +321,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 coordinator.async_add_listener,
             ),
             f"{DOMAIN} map history collector",
+        )
+        entry.async_create_background_task(
+            hass,
+            wifi_survey.async_collect(client, coordinator),
+            f"{DOMAIN} Wi-Fi survey collector",
         )
 
         def _schedule_area_binding_upgrade(floor_plan: FloorPlan) -> None:
@@ -361,6 +386,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         _async_sync_area_issue()
     except BaseException:
+        if wifi_survey is not None:
+            await wifi_survey.async_shutdown()
         if slam_history is not None:
             await slam_history.async_shutdown()
         if slam_map is not None:
@@ -714,6 +741,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
                 f"{DOMAIN} managed run recovery after unload failure",
             )
     if unload_ok:
+        await entry.runtime_data.run_trails.async_shutdown()
+        await entry.runtime_data.wifi_survey.async_shutdown()
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)
@@ -730,6 +759,7 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     await plans.async_remove_robot(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)
     async_delete_custom_area_issue(hass, entry.entry_id)
+    async_delete_maintenance_issues(hass, entry.entry_id)
     async_delete_robot_alert_issues(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(
         DATA_FIRMWARE_TRACKER
@@ -740,3 +770,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     await slam_map.async_remove()
     slam_history = SlamHistoryStore(hass, entry.entry_id)
     await slam_history.async_remove()
+    await RunTrails(hass, entry.entry_id).async_remove()
+    await WifiSurveyStore(hass, entry.entry_id).async_remove()

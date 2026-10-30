@@ -83,6 +83,7 @@ const NOTICES = {
   statusRefreshed: notice("info", "v4_notice_status_refreshed", "Status refreshed, so check the robot before trying again."),
   planSaveFailed: notice("error", "v4_notice_plan_save_failed", "Home Assistant can't confirm the plan was saved, so check your plans, then try again."),
   planDeleteFailed: notice("error", "v4_notice_plan_delete_failed", "The plan wasn't deleted; try again."),
+  trailUnavailable: notice("info", "v4_notice_trail_unavailable", "That trail isn't available on this map."),
   planPreviewMissing: notice("warning", "v4_notice_plan_preview_missing", "The next-run preview isn't ready; reload your plans, then try again."),
   planRemoved: notice("warning", "v4_notice_plan_removed", "This plan was removed elsewhere, so nothing was changed."),
   planPreviewRefreshFailed: notice("warning", "v4_notice_plan_preview_refresh_failed", "The next-run preview didn't refresh; check the plan, then try again."),
@@ -135,6 +136,8 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
   && left.missionKey === right.missionKey;
 
 const POSE_POLL_INTERVAL_MS = 1_000;
+// Matches the backend's sampling pace, so new cells appear during a clean.
+const WIFI_SIGNAL_REFRESH_MS = 30_000;
 const SPATIAL_READ_RECOVERY_INTERVAL_MS = 5_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "areas", "draw", "areaReview"];
 const MUTATION_RESOURCES = ["plan-mutation", "area-mutation", "setting-mutation"] as const;
@@ -192,6 +195,7 @@ export class EffectController {
   #projection: HassProjection | null = null;
   #catalogTimer: number | null = null;
   #poseTimer: number | null = null;
+  #wifiSignalTimer: number | null = null;
   #poseExpiryTimer: number | null = null;
   #settleTimer: number | null = null;
   #motionRevision = 0;
@@ -842,6 +846,7 @@ export class EffectController {
   #refreshSpatialBoundary(entryId: string, invalidated: readonly string[] = []): void {
     this.#clearSpatialReadRecovery();
     this.#invalidateSpatialFence();
+    this.#reloadWifiSignalForNewFloor();
     void this.refreshCatalog(true, true).then(() => {
       if (this.#disposed || this.#projection?.entryKey !== entryId
         || !this.#projection.host.administrator || !this.#projection.host.connected) return;
@@ -900,6 +905,11 @@ export class EffectController {
 
   #startPolling(): void {
     if (!this.#pageLifecycle.active) return;
+    // The store outlives a remounted panel, so a layer left on resumes here.
+    if (this.#store.value.wifiSignal && this.#wifiSignalTimer === null) {
+      this.#startWifiSignal();
+      void this.#loadWifiSignal();
+    }
     if (this.#catalogTimer === null) {
       this.#catalogTimer = window.setInterval(() => {
         void this.refreshCatalog();
@@ -1098,7 +1108,9 @@ export class EffectController {
   #abortResources(except: readonly string[] = []): void {
     let mutationCancelled = false;
     for (const [name, controller] of this.#controllers) {
-      if (except.includes(name)) continue;
+      // The Wi-Fi layer owns its read: a new read, turning it off or dispose
+      // aborts it, and a frame change starts a fresh one.
+      if (except.includes(name) || name === "wifi-signal") continue;
       mutationCancelled ||= name === "plan-mutation" || name === "area-mutation" || name === "setting-mutation" || name === "plan-preflight";
       controller.abort();
       this.#controllers.delete(name);
@@ -1142,6 +1154,7 @@ export class EffectController {
       coherence: state.host.administrator ? "unavailable" : "blocked",
       fullMap: false,
       precisionOpen: false,
+      trail: null,
       resources: {
         catalog: resource("error", null, problem),
         entry: null,
@@ -1150,6 +1163,7 @@ export class EffectController {
         history: resource("idle", null),
         plans: resource("idle", null),
         areas: resource("idle", null),
+        runs: resource("idle", null),
       },
       manualRoomPreview: resource("idle", null),
       map: {
@@ -1409,6 +1423,9 @@ export class EffectController {
       && previousDraftSession === entry.mapSessionKey;
     const preserve = ["catalog"];
     if (previousEntry?.entryId === entry.entryId) preserve.push("setting-mutation");
+    // Survey cells are drawn in one floor's map frame.
+    const sameWifiFrame = sameResourceBoundary
+      && previousEntry?.mapSessionKey === entry.mapSessionKey;
     if (sameResourceBoundary && !resetDrafts) preserve.push("plans", "areas");
     if (sameVerifiedFrame) preserve.push("plan-mutation", "area-mutation");
     const stamp = this.#coherence.begin(
@@ -1498,6 +1515,7 @@ export class EffectController {
       void this.loadPlans();
     }
     this.#resumeAreaCatalog();
+    if (!sameWifiFrame) this.#reloadWifiSignalForNewFloor();
     if (coherent) {
       void this.#loadLiveScene(entry, stamp);
       void this.#loadPose(entry, stamp);
@@ -1856,6 +1874,7 @@ export class EffectController {
           exactPose: exactLivePose,
         },
       });
+      if (exactLivePose) this.#runs?.extendLiveTrail(this.#store, pose);
       if (exactLivePose) {
         this.#poseExpiryTimer = window.setTimeout(() => {
           this.#poseExpiryTimer = null;
@@ -1991,6 +2010,53 @@ export class EffectController {
     if (snapshot) await this.#loadHistoryScene(snapshot, stamp);
   }
 
+  /** Show or hide the Wi-Fi signal layer; showing reads the current floor's survey. */
+  async toggleWifiSignal(): Promise<void> {
+    this.#store.dispatch({ type: "toggle-wifi-signal" });
+    this.#startWifiSignal();
+    await this.#loadWifiSignal();
+  }
+
+  #startWifiSignal(): void {
+    this.#wifiSignalTimer ??= window.setInterval(() => {
+      if (this.#pageLifecycle.active) void this.#loadWifiSignal();
+    }, WIFI_SIGNAL_REFRESH_MS);
+  }
+
+  // Survey cells belong to one floor; drop them until the new floor's arrive.
+  #reloadWifiSignalForNewFloor(): void {
+    const wifiSignal = this.#store.value.wifiSignal;
+    if (!wifiSignal) return;
+    this.#store.patch({ wifiSignal: { ...wifiSignal, status: "loading", cells: [] } });
+    void this.#loadWifiSignal();
+  }
+
+  #stopWifiSignal(): void {
+    this.#controllers.get("wifi-signal")?.abort();
+    if (this.#wifiSignalTimer !== null) window.clearInterval(this.#wifiSignalTimer);
+    this.#wifiSignalTimer = null;
+  }
+
+  async #loadWifiSignal(): Promise<void> {
+    const entry = this.#store.value.resources.entry;
+    if (!this.#store.value.wifiSignal || !entry?.wifiHeatmapUrl) {
+      this.#stopWifiSignal();
+      return;
+    }
+    const controller = this.#controller("wifi-signal");
+    const current = (): boolean => !controller.signal.aborted && !this.#disposed
+      && Boolean(this.#store.value.wifiSignal) && this.#store.value.resources.entry?.entryId === entry.entryId;
+    try {
+      const layer = await this.#backend.wifiSignal(entry.wifiHeatmapUrl, controller.signal);
+      if (current()) this.#store.patch({ wifiSignal: layer });
+    } catch (error) {
+      const shown = this.#store.value.wifiSignal;
+      if (!isAbort(error) && current() && shown) this.#store.patch({ wifiSignal: { ...shown, status: "failed" } });
+    } finally {
+      this.#release("wifi-signal", controller);
+    }
+  }
+
   async selectHistory(snapshotId: string | null): Promise<void> {
     const history = this.#store.value.resources.history.value;
     const entry = this.#store.value.resources.entry;
@@ -2082,8 +2148,37 @@ export class EffectController {
         await this.#loadHistory(entry, stamp);
       }
     }
+    if (workflow === "runs") await this.loadRuns();
     if (workflow === "plans" || workflow === "plan" || workflow === "rooms") await this.loadPlans();
     if (workflow === "areas" || workflow === "draw" || workflow === "areaReview" || workflow === "plan") await this.loadAreas();
+  }
+
+  // Cleaning history and trails (run_history.py) load their code with the
+  // first read.
+  #runs: typeof import("./run-history-data") | null = null;
+  #unwatchRuns: (() => void) | null = null;
+
+  async loadRuns(): Promise<void> {
+    await this.#runRead("runs", null);
+  }
+
+  async showTrail(trail: string | null): Promise<void> {
+    await this.#runRead("trail", trail);
+  }
+
+  async #runRead(name: "runs" | "trail", trail: string | null): Promise<void> {
+    const entry = this.#store.value.resources.entry;
+    const controller = this.#controller(name);
+    try {
+      if (name === "trail" && !trail) this.#store.patch({ trail: null });
+      else if (entry && this.#pageLifecycle.active) {
+        this.#runs = await import("./run-history-data");
+        if (!this.#unwatchRuns && !this.#disposed) this.#unwatchRuns = this.#runs.watchRuns(this.#store, () => void this.loadRuns());
+        await this.#runs.readRuns(this.#store, this.#backend, entry, trail, controller.signal, NOTICES.trailUnavailable);
+      }
+    } finally {
+      this.#release(name, controller);
+    }
   }
 
   // `inPlace` keeps a ready catalog on screen: the read never shows loading
@@ -2783,8 +2878,11 @@ export class EffectController {
     this.#invalidateSpatialFence(false);
     this.#storeUnsubscribe?.();
     this.#storeUnsubscribe = null;
+    this.#unwatchRuns?.();
+    this.#unwatchRuns = null;
     this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false });
     this.#stopPolling();
+    this.#stopWifiSignal();
     this.#clearPoseExpiry();
     this.#abortResources();
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);

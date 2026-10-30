@@ -131,7 +131,7 @@ def test_every_pick_list_is_translated() -> None:
         labels = STRINGS["selector"][select["translation_key"]]["options"]
         assert set(select["options"]) == set(labels)
     items = STRINGS["selector"]["robot_data_item"]["options"]
-    assert len(items) == 40
+    assert len(items) == 43
     for label in items.values():
         assert len(label.split()) <= 5
         assert "_" not in label

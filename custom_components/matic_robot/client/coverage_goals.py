@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 
 from google.protobuf.message import DecodeError
 
@@ -23,6 +24,19 @@ _MAX_COVERAGE_GOALS = 4096
 _SPEC_FIELDS = frozenset((1, 2, 4, 5))
 
 type CoverageGoalSignature = tuple[str, int, int, int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class CoveragePlanGoal:
+    """One goal the robot holds, with the round ID that names it."""
+
+    round_id: str
+    signature: CoverageGoalSignature
+
+    @property
+    def region_id(self) -> str:
+        """Return the room region this goal covers."""
+        return self.signature[0]
 
 
 def coverage_readback_matches(
@@ -159,6 +173,34 @@ def coverage_plan_goal_signatures(payload: bytes) -> tuple[CoverageGoalSignature
             if len(goals) + len(candidates) > _MAX_COVERAGE_GOALS:
                 raise DecodeError("coverage plan has too many active goals")
             goals.extend(_goal_signature(candidate, budget) for candidate in candidates)
+    return tuple(goals)
+
+
+def coverage_plan_goals(payload: bytes) -> tuple[CoveragePlanGoal, ...]:
+    """Read the live plan's goals in order, keeping each goal's round ID.
+
+    The robot keeps finished rooms' goals ahead of the room it is cleaning,
+    so the order here is the order the task works through its rooms.
+    """
+    if len(payload) > _MAX_COVERAGE_PLAN_BYTES:
+        raise DecodeError("coverage plan exceeds the byte limit")
+    budget = WireFieldBudget(remaining=_MAX_COVERAGE_FIELDS_PER_PLAN)
+    goals: list[CoveragePlanGoal] = []
+    for root in _bytes_fields(payload, 7, budget):
+        for group in _bytes_fields(root, 1, budget):
+            # The field budget caps the goal count below _MAX_COVERAGE_GOALS.
+            for candidate in _bytes_fields(group, 1, budget):
+                round_key = _single_bytes_field(_bounded_fields(candidate, budget), 6)
+                round_id = uuid_string(
+                    _single_bytes_field(_bounded_fields(round_key, budget), 1),
+                    max_fields=_MAX_COVERAGE_FIELDS_PER_MESSAGE,
+                    field_budget=budget,
+                )
+                goals.append(
+                    CoveragePlanGoal(round_id, _goal_signature(candidate, budget))
+                )
+    if not goals:
+        raise DecodeError("coverage plan has no active goals")
     return tuple(goals)
 
 

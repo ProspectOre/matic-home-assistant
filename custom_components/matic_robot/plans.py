@@ -93,6 +93,12 @@ from .coverage_accounting import (
 )
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
+from .run_history import (
+    append_run_history,
+    history_entries,
+    repair_run_history,
+    update_run_history,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _MetadataResult = TypeVar("_MetadataResult")
@@ -221,6 +227,10 @@ class PlanDisabledError(ValueError):
 
 class EmptyPlanError(ValueError):
     """Raised when a run names a plan without rooms."""
+
+
+class PlanRoomsHeldError(ValueError):
+    """Raised when occupancy holds every room in a plan run."""
 
 
 class DuplicateRoomError(ValueError):
@@ -3309,11 +3319,14 @@ class CleaningPlanManager:
         room_identities: Mapping[str, str] | None = None,
         intelligent: bool | None = None,
         floor_plan: FloorPlan | None = None,
+        held_rooms: Mapping[str, Mapping[str, str]] | None = None,
     ) -> dict[str, Any]:
         """Return the next complete execution order without changing state.
 
         Intelligent rotation ranks rooms and custom areas together. Saved
         order preserves every entry's exact position. Areas must match the map.
+        ``held_rooms`` leaves rooms out of this run without touching their
+        rotation, so they stay first in line for the next one.
         """
         plan = self.plan(serial_number, plan_id)
         entries = plan_entries(plan)
@@ -3352,6 +3365,27 @@ class CleaningPlanManager:
             else room_by_id[entry["room_id"]]
             for entry in entries
         ]
+        held = [
+            {
+                "room_id": target.room_id,
+                "name": target.name,
+                **held_rooms[target.room_id],
+            }
+            for target in targets
+            if held_rooms
+            and isinstance(target, CleaningRoom)
+            and target.room_id in held_rooms
+        ]
+        if held:
+            held_ids = {room["room_id"] for room in held}
+            targets = [
+                target
+                for target in targets
+                if not isinstance(target, CleaningRoom)
+                or target.room_id not in held_ids
+            ]
+            if not targets:
+                raise PlanRoomsHeldError("occupancy holds every room in the plan")
         candidates = self._rotation_candidates(serial_number, plan["id"], targets)
         ordered_candidates = (
             sorted(candidates, key=_rotation_sort_key)
@@ -3395,6 +3429,7 @@ class CleaningPlanManager:
                 ordered_candidates, intelligent=use_intelligent
             ),
             "room_count": len(effective),
+            **({"held_rooms": held} if held else {}),
             "return_to_base": bool(plan.get("return_to_base", True)),
             "finish_current_room": bool(plan.get("finish_current_room", False)),
             "finish_current_room_threshold": int(
@@ -4353,6 +4388,7 @@ class CleaningPlanManager:
         provenance: str | None = None,
         finish_current_room: bool | None = None,
         finish_current_room_threshold: int | None = None,
+        held_rooms: Sequence[Mapping[str, str]] = (),
     ) -> None:
         """Persist the bounded identity and provenance of a managed run."""
 
@@ -4385,6 +4421,10 @@ class CleaningPlanManager:
                     "finish_current_room": stop_enabled,
                     "finish_current_room_threshold": stop_threshold,
                 }
+                if held_rooms:
+                    robot["last_run"]["held_rooms"] = [
+                        dict(room) for room in held_rooms
+                    ]
                 await self._store.async_save(self._data)
 
         await self._async_run_owned_metadata(serial_number, commit, notify=True)
@@ -4771,14 +4811,23 @@ class CleaningPlanManager:
                 return
             self._notify_listeners(serial_number)
             for room in unfinished:
+                skipped = room.pop("result") == "skipped"
                 self.hass.bus.async_fire(
-                    f"{DOMAIN}_room_ended_unverified",
+                    f"{DOMAIN}_room_skipped"
+                    if skipped
+                    else f"{DOMAIN}_room_ended_unverified",
                     {
                         **({"entity_id": entity_id} if entity_id else {}),
                         **room,
                         "run_id": run_id,
-                        "reason_code": "unverified_completion",
-                        "cause": "unknown",
+                        **(
+                            {"reason_code": "owner_skipped"}
+                            if skipped
+                            else {
+                                "reason_code": "unverified_completion",
+                                "cause": "unknown",
+                            }
+                        ),
                     },
                     context=context,
                 )
@@ -4812,6 +4861,7 @@ class CleaningPlanManager:
             plan_id=last_run["plan_id"],
             run_id=run_id,
             ended_at=ended_at,
+            skipped=self.skipped_room_ids(serial_number, run_id),
         )
         _close_unfinished_area_records(robot, run_id=run_id, ended_at=ended_at)
         docked = last_run.get("outcome") == "stopped_docked"
@@ -4856,6 +4906,9 @@ class CleaningPlanManager:
                 ),
             }
         )
+        if terminal_activity is not None and not docked:
+            last_run["terminal_activity"] = terminal_activity[:64]
+        append_run_history(robot, last_run)
         last_run.pop("recovery_checkpoint", None)
         last_run.pop("native_reconciled_completion", None)
         last_run.pop("recovery_status", None)
@@ -4863,8 +4916,6 @@ class CleaningPlanManager:
         active = robot.get("active_plan")
         if isinstance(active, dict) and active.get("run_id") == run_id:
             robot["active_plan"] = None
-        if terminal_activity is not None and not docked:
-            last_run["terminal_activity"] = terminal_activity[:64]
         try:
             await self._store.async_save(self._data)
         finally:
@@ -4920,6 +4971,15 @@ class CleaningPlanManager:
                     "docked_at": now,
                     "provenance": provenance,
                 }
+            )
+            update_run_history(
+                robot,
+                run_id,
+                {
+                    "outcome": "stopped_docked",
+                    "reason_code": "stopped_docked",
+                    "terminal_activity": "docked",
+                },
             )
             if stop_fence_token is not None:
                 self.clear_stop_pending(serial_number)
@@ -5701,8 +5761,14 @@ class CleaningPlanManager:
                 active["status"] = "running"
                 if not isinstance(active.get("cleaning_started"), str):
                     active["cleaning_started"] = now
-                    record["last_opportunity"] = now
                     global_room = self._global_room(robot, room)
+                    # A room skipped later in this run gets these back.
+                    for target in (record, global_room):
+                        target["opportunity_before_run"] = {
+                            "run_id": active.get("run_id"),
+                            "value": target.get("last_opportunity"),
+                        }
+                    record["last_opportunity"] = now
                     global_room["name"] = room.name
                     global_room["last_opportunity"] = now
                 if active.get("active_segment_started") is None:
@@ -5739,6 +5805,54 @@ class CleaningPlanManager:
             active = robot.get("active_plan")
             if active is not None:
                 robot["last_interrupted_plan"] = deepcopy(active)
+            robot["active_plan"] = None
+            return True
+
+        await self._async_mutate_and_save(serial_number, mutate)
+
+    async def async_note_room_skipped(
+        self, serial_number: str, run_id: str, room_id: str
+    ) -> bool:
+        """Remember a room the owner skipped while this run was cleaning."""
+
+        def mutate() -> bool:
+            run = self._robot(serial_number).get("last_run")
+            if (
+                not isinstance(run, dict)
+                or run.get("run_id") != run_id
+                or run.get("outcome") != "running"
+            ):
+                return False
+            skipped = run.setdefault("skipped_room_ids", [])
+            if room_id not in skipped:
+                skipped.append(room_id)
+            return True
+
+        return bool(await self._async_mutate_and_save(serial_number, mutate))
+
+    def skipped_room_ids(self, serial_number: str, run_id: str) -> frozenset[str]:
+        """Return the rooms skipped during a run that is still running."""
+        run = self._robot(serial_number).get("last_run")
+        if not isinstance(run, Mapping) or run.get("run_id") != run_id:
+            return frozenset()
+        skipped = run.get("skipped_room_ids")
+        if not isinstance(skipped, list):
+            return frozenset()
+        return frozenset(item for item in skipped if isinstance(item, str))
+
+    async def async_mark_skipped(
+        self, serial_number: str, plan_id: str, room: CleaningRoom, *, run_id: str
+    ) -> None:
+        """Close a skipped room without credit and give back its rotation turn."""
+
+        def mutate() -> bool:
+            robot = self._robot(serial_number)
+            _skip_room_record(
+                self._room(serial_number, plan_id, room),
+                self._global_room(robot, room),
+                run_id=run_id,
+                skipped_at=dt_util.utcnow().isoformat(),
+            )
             robot["active_plan"] = None
             return True
 
@@ -5795,6 +5909,18 @@ class CleaningPlanManager:
             **_room_timing(robot, active, dt_util.utcnow()),
         }
 
+    def run_history(
+        self,
+        serial_number: str,
+        native: Sequence[CleaningSessionRecord] = (),
+    ) -> list[dict[str, Any]]:
+        """Return recent runs, newest first, with robot-started sessions merged in."""
+        return history_entries(
+            self._robot(serial_number),
+            native,
+            manual=_is_manual_room_sequence_plan_id,
+        )
+
     def snapshot(self, serial_number: str) -> dict[str, Any]:
         """Return compact, automation-friendly plan and room history state."""
         robot = self._robot(serial_number)
@@ -5813,6 +5939,7 @@ class CleaningPlanManager:
         unverified_runs = sum(
             _stored_count(item, "unverified_runs") for item in records
         )
+        skipped_runs = sum(_stored_count(item, "skipped_runs") for item in records)
         last_completed = max(
             (
                 str(item["last_completed"])
@@ -5885,6 +6012,7 @@ class CleaningPlanManager:
             "interrupted_runs": interrupted_runs,
             "suspended_runs": suspended_runs,
             "unverified_runs": unverified_runs,
+            "skipped_runs": skipped_runs,
             "last_completed": last_completed,
             "last_completed_by_room": {
                 room_id: {
@@ -6609,6 +6737,28 @@ def _close_unfinished_area_records(
     return changed
 
 
+def _skip_room_record(
+    record: dict[str, Any],
+    global_room: dict[str, Any],
+    *,
+    run_id: str,
+    skipped_at: str,
+) -> None:
+    """Close a skipped room without credit and give back its rotation turn."""
+    record["last_result"] = "skipped"
+    record["last_skipped"] = skipped_at
+    record["skipped_runs"] = _stored_count(record, "skipped_runs") + 1
+    for target in (record, global_room):
+        baseline = target.pop("opportunity_before_run", None)
+        if not isinstance(baseline, Mapping) or baseline.get("run_id") != run_id:
+            continue
+        previous = baseline.get("value")
+        if isinstance(previous, str):
+            target["last_opportunity"] = previous
+        else:
+            target.pop("last_opportunity", None)
+
+
 def _close_unfinished_room_records(
     robot: dict[str, Any],
     *,
@@ -6616,8 +6766,13 @@ def _close_unfinished_room_records(
     run_id: str | None = None,
     ended_at: str | None = None,
     recovered_at: str | None = None,
+    skipped: frozenset[str] = frozenset(),
 ) -> list[dict[str, str]]:
-    """Close attempts lacking terminal evidence without inventing completion."""
+    """Close attempts lacking terminal evidence without inventing completion.
+
+    A room the owner skipped during ``run_id`` closes as skipped instead, and
+    its entry carries ``"result": "skipped"``.
+    """
     closed = []
     for record_plan_id, rotation in robot["rotations"].items():
         if plan_id is not None and record_plan_id != plan_id:
@@ -6630,9 +6785,18 @@ def _close_unfinished_room_records(
                 or (run_id is not None and record.get("run_id") != run_id)
             ):
                 continue
-            record["last_result"] = "ended_unverified"
-            record["unverified_runs"] = _stored_count(record, "unverified_runs") + 1
-            if ended_at is not None:
+            if room_id in skipped and run_id is not None and ended_at is not None:
+                global_room = robot["rooms"].get(room_id)
+                _skip_room_record(
+                    record,
+                    global_room if isinstance(global_room, dict) else {},
+                    run_id=run_id,
+                    skipped_at=ended_at,
+                )
+            else:
+                record["last_result"] = "ended_unverified"
+                record["unverified_runs"] = _stored_count(record, "unverified_runs") + 1
+            if ended_at is not None and room_id not in skipped:
                 record["last_ended_unverified"] = ended_at
             if recovered_at is not None:
                 record["recovered_at"] = recovered_at
@@ -6647,6 +6811,7 @@ def _close_unfinished_room_records(
                         for key in ("cleaning_mode", "coverage_setting")
                         if isinstance(record.get(key), str)
                     },
+                    "result": record["last_result"],
                 }
             )
     return closed
@@ -7060,6 +7225,7 @@ def _repair_native_reconciled_run(
                 "cause": "verified_completion",
             }
         )
+    repair_run_history(robot, last_run, pending.get("room"))
 
 
 def _record_native_completion(

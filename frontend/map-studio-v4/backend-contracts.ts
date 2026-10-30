@@ -30,6 +30,8 @@ export interface MapEntry {
   readonly historyUrl: string;
   readonly areasUrl: string;
   readonly plansUrl: string;
+  /** Absent on integrations without the Wi-Fi survey. */
+  readonly wifiHeatmapUrl: string | null;
   readonly mapRevision: number;
   readonly mapSceneEpoch: string | null;
   readonly mapFloorCoherent: boolean;
@@ -167,10 +169,21 @@ export interface SavedArea {
   readonly canRebind: boolean;
 }
 
+/** A zone the robot keeps, in map metres, and what it overlaps. */
+export interface MapZoneOverlay {
+  readonly kind: "no_go" | "unknown";
+  readonly outline: readonly (readonly [number, number])[];
+  readonly holes: readonly (readonly (readonly [number, number])[])[];
+  readonly roomIds: readonly string[];
+  readonly areaIds: readonly string[];
+}
+
 export interface AreasCatalog {
   readonly sceneUrl: string;
   readonly rooms: readonly MapRoom[];
   readonly areas: readonly SavedArea[];
+  /** Robot zones on this map; empty when an older backend omits them. */
+  readonly zones: readonly MapZoneOverlay[];
   /**
    * The area the "Custom cleaning area" select and Clean custom area button
    * use (`selected_area`); null when none is selected or an older backend omits it.
@@ -219,7 +232,8 @@ export type NextRunPreviewBlocker =
   | "shared_schedule_unavailable"
   | "cadence_progress_unverified"
   | "invalid_cadence_policy"
-  | "invalid_plan";
+  | "invalid_plan"
+  | "plan_rooms_held";
 
 /** A saved custom area in a preview; areas run every time, so it has no cadence reasons. */
 export interface NextRunPreviewArea extends Omit<NextRunPreviewRoom, "roomId"> {
@@ -228,8 +242,16 @@ export interface NextRunPreviewArea extends Omit<NextRunPreviewRoom, "roomId"> {
 
 export type NextRunPreviewStep = NextRunPreviewRoom | NextRunPreviewArea;
 
+/** A room an occupancy-aware plan leaves out of this run, and the sensor holding it. */
+export interface NextRunHeldRoom {
+  readonly roomId: string;
+  readonly name: string;
+  readonly sensor: string;
+}
+
 export interface NextRunPreview {
   readonly rooms: readonly NextRunPreviewRoom[];
+  readonly heldRooms?: readonly NextRunHeldRoom[];
   /** Every step in run order, rooms and custom areas. Synthetic fixtures may leave it out; the steps are then `rooms`. */
   readonly steps?: readonly NextRunPreviewStep[];
   /** Offsets into `steps` when sent, else `rooms`. */
@@ -282,6 +304,10 @@ export interface SavedPlan {
   readonly returnToBase: boolean;
   readonly finishCurrentRoom: boolean;
   readonly finishCurrentRoomThreshold: number;
+  /** Hold occupied rooms: a run leaves out rooms whose occupancy sensor is on. */
+  readonly occupancyAware: boolean;
+  /** Room ID to the binary sensor that replaces its area's sensors; kept on save. */
+  readonly occupancySensors: Readonly<Record<string, string>>;
   readonly nextRunPreview?: NextRunPreview;
   readonly nextRunEstimateSeconds: number | null;
   /**
@@ -458,6 +484,9 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
       historyUrl: privatePath(entry.history_url, "invalid-history-url"),
       areasUrl: privatePath(entry.areas_url, "invalid-areas-url"),
       plansUrl: privatePath(entry.plans_url, "invalid-plans-url"),
+      wifiHeatmapUrl: entry.wifi_heatmap_url === undefined || entry.wifi_heatmap_url === null
+        ? null
+        : privatePath(entry.wifi_heatmap_url, "invalid-wifi-heatmap-url"),
       mapRevision,
       mapSceneEpoch: selectedId(entry.map_scene_epoch, "invalid-scene-epoch"),
       mapFloorCoherent: booleanValue(entry.map_floor_coherent, "invalid-floor-coherence"),
@@ -652,6 +681,17 @@ const parsePlanRoom = (value: unknown): PlanRoom => {
   };
 };
 
+const occupancySensors = (value: unknown): Readonly<Record<string, string>> => {
+  if (value === undefined) return {};
+  const sensors = objectValue(value, "invalid-occupancy-sensors");
+  const entries = Object.entries(sensors);
+  if (entries.length > MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE) throw new ContractError("invalid-occupancy-sensors");
+  return Object.fromEntries(entries.map(([roomId, sensor]) => [
+    boundedString(roomId, 128, "invalid-occupancy-sensors"),
+    boundedString(sensor, 255, "invalid-occupancy-sensors"),
+  ]));
+};
+
 const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
   if (value === undefined || value === null) return undefined;
   const preview = objectValue(value, "invalid-plan-preview");
@@ -698,12 +738,25 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     "cadence_progress_unverified",
     "invalid_cadence_policy",
     "invalid_plan",
+    "plan_rooms_held",
   ];
   const rawBlocker = preview.blocker;
   if (rawBlocker !== null && !blockers.includes(rawBlocker as NextRunPreviewBlocker)) {
     throw new ContractError("invalid-plan-preview-blocker");
   }
   if (rawBlocker === null && stepCount === 0) throw new ContractError("empty-plan-preview");
+  const rawHeld = preview.held_rooms;
+  if (rawHeld !== undefined && (!Array.isArray(rawHeld) || rawHeld.length > MAX_ROOM_SEQUENCE_SIZE)) {
+    throw new ContractError("invalid-plan-preview-held");
+  }
+  const heldRooms = rawHeld?.map((candidate) => {
+    const held = objectValue(candidate, "invalid-plan-preview-held");
+    return {
+      roomId: boundedString(held.room_id, 128, "invalid-plan-preview-held"),
+      name: boundedString(held.name, 256, "invalid-plan-preview-held", true),
+      sensor: boundedString(held.sensor, 255, "invalid-plan-preview-held"),
+    };
+  });
   const previewToken = preview.preview_token;
   if (previewToken !== undefined && (typeof previewToken !== "string" || !/^[0-9a-f]{64}$/u.test(previewToken))) {
     throw new ContractError("invalid-plan-preview-token");
@@ -713,6 +766,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     steps: parsedSteps,
     missionBoundaries: boundaries,
     blocker: rawBlocker as NextRunPreviewBlocker | null,
+    ...(heldRooms?.length ? { heldRooms } : {}),
     ...(typeof previewToken === "string" ? { previewToken } : {}),
   };
 };
@@ -796,6 +850,10 @@ export const parsePlansCatalog = (value: unknown): PlansCatalog => {
           100,
           "invalid-finish-threshold",
         ),
+        occupancyAware: plan.occupancy_aware === undefined
+          ? false
+          : booleanValue(plan.occupancy_aware, "invalid-occupancy-aware"),
+        occupancySensors: occupancySensors(plan.occupancy_sensors),
         ...(nextRunPreview === undefined ? {} : { nextRunPreview }),
         nextRunEstimateSeconds: estimateSeconds(plan.next_run_estimate_seconds),
         entries: plan.entries,
