@@ -235,6 +235,7 @@ async def test_maintenance_issue_tracks_the_newest_recap(hass) -> None:
     assert issue.translation_key == "maintenance_suggested"
     assert issue.severity is ir.IssueSeverity.WARNING
     assert issue.is_fixable is False
+    assert issue.is_persistent is True
     assert issue.translation_placeholders is not None
     assert issue.translation_placeholders["month"] == "2026-10"
 

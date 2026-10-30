@@ -18,7 +18,8 @@ class MaintenanceIssues:
     """Keep one Repair while the newest recap suggests maintenance.
 
     The issue id carries the recap month, so dismissing this month's notice
-    does not hide next month's.
+    does not hide next month's. The issue persists across restarts, so an
+    unreadable recap after a restart keeps it until a readable one decides.
     """
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
@@ -42,7 +43,7 @@ class MaintenanceIssues:
                 DOMAIN,
                 issue_id,
                 is_fixable=False,
-                is_persistent=False,
+                is_persistent=True,
                 severity=ir.IssueSeverity.WARNING,
                 translation_key="maintenance_suggested",
                 translation_placeholders={
