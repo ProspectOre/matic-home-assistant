@@ -34,23 +34,25 @@ Hermes is Matic's local gRPC protocol. The registry in
 | `coverage_session_history` | Native session and per-mode room results |
 | `dock_detections`, `sink_summon_locations` | Location counts |
 | `coverage_time` | Accumulated coverage seconds |
+| `map_semantics`, `map_semantics_override` | Carpet and vent outlines for Matic Map |
 | `child_lock_enabled_state`, `petwaste_enabled_state` | Child lock and pet-waste avoidance |
 | `voice_enabled_state` | Matic Cues setting |
 | `deep_mop_override_setting_state`, `water_flow_override_state` | Double-pass mopping and water flow |
 | `matter_pairing_state` | Matter pairing presence |
 | `user_tunnel_ssh_permission`, `uploader_config_state` | Diagnostic settings |
 | `active_session_key` | Active native session identity |
+| `recap_history` | Maintenance suggestions from the newest monthly recap |
+| `bag_pass_status` | Bag pass end date while a pass is active |
 
 Client-only decoders also handle `approximate_trajectory`, `flythrough`,
-`coverage_session_thumbnails`, `recap_history`, `map_semantics`, and
-`map_semantics_override`. These do not add entities or browser overlays.
+and `coverage_session_thumbnails`. These do not add entities or browser overlays.
 
 ## Other inspection endpoints
 
 The registry includes `planned_path`, `coverage_corridor`, `coverage_marker`,
 `displayed_mission`, `labeled_missions`, `jukebox_state`,
 `map_combined_coverage`, `map_compressed_rgb_higher`, `semantics_override`,
-`zones`, `schedule_event_previews`, and `sink_summons`. Inspection returns
+`zones`, `schedule_event_previews`, `sink_summons`, and `map_vents`. Inspection returns
 fingerprints and value-free wire shapes; it does not decode these into entities.
 
 ## Writes

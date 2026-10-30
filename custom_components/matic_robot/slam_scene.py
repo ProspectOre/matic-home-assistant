@@ -967,6 +967,13 @@ class MaticSlamPoseView(HomeAssistantView):
         return self.json(
             {
                 "position": list(position[:2]) if position is not None else None,
+                "heading": (
+                    round(visible_pose.heading, 4)
+                    if position is not None
+                    and visible_pose is not None
+                    and visible_pose.heading is not None
+                    else None
+                ),
                 "source": source,
                 "revision": runtime.slam_map.revision,
                 "scene_revision": (
@@ -1005,6 +1012,7 @@ class MaticSlamPoseView(HomeAssistantView):
         return self.json(
             {
                 "position": None,
+                "heading": None,
                 "source": "unavailable",
                 "revision": runtime.slam_map.revision,
                 "scene_revision": (
