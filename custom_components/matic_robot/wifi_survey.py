@@ -39,8 +39,10 @@ SAMPLE_INTERVAL_SECONDS = 30
 MAX_POSE_DRIFT_METERS = 2.0
 MAX_CELLS_PER_FLOOR = 4096
 MAX_FLOORS = 8
-# A cell's value follows recent scans: older samples fade once it has this many.
-MEAN_WINDOW = 20
+# A cell is a plain mean of its first 20 scans, then a fading average that
+# gives each new scan a 1/20 weight. Older scans fade rather than drop out, so
+# a cell keeps no reading history.
+FADE_SAMPLES = 20
 MIN_DBM = -120
 MAX_DBM = 0
 
@@ -114,7 +116,7 @@ class WifiSurveyStore:
             cells[key] = SignalCell(float(dbm), 1, at)
         else:
             cell.samples += 1
-            cell.dbm += (dbm - cell.dbm) / min(cell.samples, MEAN_WINDOW)
+            cell.dbm += (dbm - cell.dbm) / min(cell.samples, FADE_SAMPLES)
             cell.updated_at = at
         self._schedule_save()
         return True

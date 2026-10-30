@@ -21,9 +21,9 @@ from custom_components.matic_robot.client.models import RobotPose
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.wifi_survey import (
     CELL_SIZE_METERS,
+    FADE_SAMPLES,
     MAX_CELLS_PER_FLOOR,
     MAX_FLOORS,
-    MEAN_WINDOW,
     MaticWifiHeatmapView,
     WifiSurveyStore,
 )
@@ -134,8 +134,13 @@ async def test_samples_fold_into_cells_and_survive_a_reload(hass) -> None:
 
 def test_cells_follow_recent_scans_and_stay_bounded(hass) -> None:
     store = WifiSurveyStore(hass, "entry")
-    for index in range(MEAN_WINDOW * 3):
-        store.add_sample(1, 0.0, 0.0, -80 if index < MEAN_WINDOW else -40, index)
+    for index in range(FADE_SAMPLES):
+        store.add_sample(3, 0.0, 0.0, -80, index)
+    store.add_sample(3, 0.0, 0.0, -40, FADE_SAMPLES)
+    assert store.cells(3)[0]["dbm"] == -78
+
+    for index in range(FADE_SAMPLES * 3):
+        store.add_sample(1, 0.0, 0.0, -80 if index < FADE_SAMPLES else -40, index)
     assert store.cells(1)[0]["dbm"] > -50
 
     for index in range(MAX_CELLS_PER_FLOOR + 1):
