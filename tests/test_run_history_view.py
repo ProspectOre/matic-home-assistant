@@ -94,6 +94,7 @@ async def test_history_view_lists_runs_with_trails_on_this_map(
                 "started_at": "2020-01-01T00:00:00+00:00",
                 "ended_at": "2020-01-01T00:10:00+00:00",
             },
+            {"id": "robot-3", "source": "robot", "started_at": None, "ended_at": None},
         ]
     )
     hass_stub = _hass(_entry(runtime))
@@ -107,6 +108,7 @@ async def test_history_view_lists_runs_with_trails_on_this_map(
     assert [run["trail"] for run in payload["runs"]] == [
         LIVE_TRAIL_ID,
         stored["id"],
+        None,
         None,
     ]
     runtime.cleaning_plans.run_history.assert_called_once_with(

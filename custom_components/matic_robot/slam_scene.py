@@ -1864,6 +1864,8 @@ class MaticRunHistoryView(HomeAssistantView):
                     map_key,
                     window=(run["started_at"], run["ended_at"] or run["started_at"]),
                 )
+                if run["started_at"] is not None
+                else None
             )
         return self.json(
             {
