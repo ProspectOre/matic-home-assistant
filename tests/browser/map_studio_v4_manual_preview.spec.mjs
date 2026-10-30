@@ -6,7 +6,7 @@ const bundle = await build({
     contents: `export { MaticBackend } from "./frontend/map-studio-v4/backend";
       export { EffectController } from "./frontend/map-studio-v4/effects";
       export { MAX_ROOM_SEQUENCE_SIZE } from "./frontend/map-studio-v4/contracts";
-      export { WorkspaceStore, manualRoomPreviewKey } from "./frontend/map-studio-v4/state";
+      export { WorkspaceStore, manualRoomPreviewKey, selectGoToRoomAction } from "./frontend/map-studio-v4/state";
       export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
       export { syntheticEntry } from "./frontend/map-studio-v4/synthetic-fixtures";`,
     resolveDir: process.cwd(),
@@ -601,6 +601,32 @@ test("@safety a generation and selection change discard old responses before adm
   });
   expect(result).toMatchObject({ generationCalls: 3, afterGenerationLate: null, afterSelectionLate: null,
     admittedToken: "d".repeat(64), admittedGeneration: result.currentGeneration });
+});
+
+test("go to room is offered for one room and sends only that room, with no preview", async ({ page }) => {
+  await setupEffects(page);
+  const result = await page.evaluate(async () => {
+    const { selectGoToRoomAction } = await import("/manual-preview-test.js");
+    const h = window.manualPreviewHarness;
+    const one = selectGoToRoomAction(h.store.value);
+    const two = selectGoToRoomAction({ ...h.store.value,
+      selection: { ...h.store.value.selection, roomIds: ["room-a", "room-b"] } });
+    const busy = selectGoToRoomAction({ ...h.store.value, activity: "cleaning" });
+    const previewsBefore = h.previews.length;
+    await h.effects.executeAction("go-to-room");
+    const output = { one: one && { id: one.id, enabled: one.enabled, labelKey: one.labelKey },
+      two, busy, previews: h.previews.length - previewsBefore,
+      calls: h.calls.map(([domain, service, data, entityId]) => [domain, service, data, entityId]) };
+    h.effects.dispose();
+    return output;
+  });
+  expect(result).toEqual({
+    one: { id: "go-to-room", enabled: true, labelKey: "v4_action_go_to_room" },
+    two: null,
+    busy: null,
+    previews: 0,
+    calls: [["matic_robot", "go_to_room", { room: "room-a" }, "vacuum.synthetic"]],
+  });
 });
 
 test("@safety preflight dispatches once with a fresh token when the effective preview is unchanged", async ({ page }) => {
