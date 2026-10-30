@@ -1023,6 +1023,12 @@
       "problem": {
         "name": "Problem"
       },
+      "bag_full": {
+        "name": "Bag full"
+      },
+      "bag_missing": {
+        "name": "Bag missing"
+      },
       "diagnostic_upload": {
         "name": "Diagnostic upload",
         "state": {
@@ -1137,6 +1143,15 @@
           "thinking_for_intent": "Working out the command",
           "classified": "Command understood",
           "rejected": "Command not understood"
+        }
+      },
+      "robot_alert": {
+        "name": "Robot alert",
+        "state": {
+          "none": "None",
+          "bag_full": "Bag is full",
+          "bag_missing": "Bag is missing",
+          "unknown": "Unknown alert"
         }
       },
       "cues_gesture_status": {
@@ -1584,6 +1599,14 @@
           "continue_in_reconfigure": "Go to Settings > Devices & services > Matic (Unofficial) > the entry's ⋮ menu > Reconfigure > Robot was reset."
         }
       }
+    },
+    "robot_alert_bag_full": {
+      "title": "{name}: the bag is full",
+      "description": "Insert a new bag and close the lid. {name} resumes cleaning once the lid is closed. This Repair clears when the robot stops reporting a full bag."
+    },
+    "robot_alert_bag_missing": {
+      "title": "{name}: the bag is missing",
+      "description": "Fully insert a bag, then close the lid. This Repair clears when the robot detects the bag."
     },
     "time_zone_mismatch": {
       "title": "{name} uses a different time zone",

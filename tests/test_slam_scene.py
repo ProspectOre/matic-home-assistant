@@ -103,7 +103,7 @@ def _floor_plan() -> FloorPlan:
 
 
 def _fresh_pose(x: float, y: float, z: float) -> RobotPose:
-    return RobotPose(x, y, z, mission_id=1, observed_at=time())
+    return RobotPose(x, y, z, mission_id=1, observed_at=time(), heading=0.5)
 
 
 def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
@@ -899,6 +899,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
     assert exact.status == HTTPStatus.OK
     assert json.loads(exact.body) == {
         "position": [0.1, 0.2],
+        "heading": 0.5,
         "source": "exact_pose",
         "revision": 7,
         "scene_revision": None,
@@ -924,6 +925,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         fallback = await MaticSlamPoseView().get(_request(fallback_hass), "entry")
     fallback_payload = json.loads(fallback.body)
     assert fallback_payload["position"] is None
+    assert fallback_payload["heading"] is None
     assert fallback_payload["source"] == "current_area"
     assert fallback_payload["pose_freshness"] == "coordinator_fallback"
     assert fallback_payload["map_session_key"] == _browser_session_key(fallback_runtime)
@@ -935,6 +937,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         unavailable = await MaticSlamPoseView().get(_request(unavailable_hass), "entry")
     assert json.loads(unavailable.body) == {
         "position": None,
+        "heading": None,
         "source": "unavailable",
         "revision": 7,
         "scene_revision": None,
