@@ -221,7 +221,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     hass = _hass(_entry())
     api = MaticRobotStatusAPI(hass)
     api.async_start()
-    assert hass.bus.async_listen.call_count == 18
+    assert hass.bus.async_listen.call_count == 19
 
     event_callback = hass.bus.async_listen.call_args_list[0].args[1]
     event_callback(
@@ -251,6 +251,23 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     assert event["data"]["device_id"] is None
     assert "ignored" not in event["data"]
     assert "software_version" not in event["data"]
+
+    event_callback(
+        Event(
+            "matic_robot_room_held",
+            {
+                "room_id": "7",
+                "reason_code": "occupied",
+                "sensor": "binary_sensor.nursery",
+            },
+            time_fired_timestamp=0,
+        )
+    )
+    assert api.recent_events[-1]["data"] == {
+        "room_id": "7",
+        "reason_code": "occupied",
+        "sensor": "binary_sensor.nursery",
+    }
 
     event_callback(
         Event(
@@ -435,7 +452,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "matic_robot_firmware_research",
     ]
     assert register.call_args_list[0].args == (hass, registered)
-    assert hass.bus.async_listen.call_count == 36
+    assert hass.bus.async_listen.call_count == 38
 
 
 async def test_get_firmware_reads_cached_tracker_without_robot_io() -> None:

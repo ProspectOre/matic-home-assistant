@@ -1652,6 +1652,8 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
                 "return_to_base": False,
                 "finish_current_room": True,
                 "finish_current_room_threshold": 60,
+                "occupancy_aware": False,
+                "occupancy_sensors": {},
                 "next_run_preview": {
                     "rooms": [
                         {
