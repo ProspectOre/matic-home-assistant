@@ -246,7 +246,11 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     event_callback(
         Event(
             "matic_robot_room_held",
-            {"room_id": "7", "reason_code": "occupied", "sensor": "binary_sensor.nursery"},
+            {
+                "room_id": "7",
+                "reason_code": "occupied",
+                "sensor": "binary_sensor.nursery",
+            },
             time_fired_timestamp=0,
         )
     )
