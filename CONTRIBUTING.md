@@ -64,10 +64,13 @@ user-visible changes. Keep test logs and development diaries out of user docs.
 
 ## Releasing
 
-1. Merge, then publish `vX.Y.Z-rcN` as a GitHub pre-release.
+1. Merge into `release/X.Y`, then publish `vX.Y.Z-rcN` from it as a GitHub
+   pre-release.
 2. Install it through HACS beta versions and restart Home Assistant.
 3. Verify the loaded version, changed behavior, and guarded failure on the robot.
-4. Publish `vX.Y.Z` from the same commit after validation succeeds.
+4. After validation succeeds, merge `release/X.Y` into `main`, publish `vX.Y.Z`
+   from the merge commit and delete `release/X.Y`. Hotfixes for a stable
+   release go to `main` by PR.
 
 If a candidate fails, fix it and publish the next candidate. Group related fixes
 into one release.
