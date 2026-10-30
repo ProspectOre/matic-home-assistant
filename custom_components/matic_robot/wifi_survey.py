@@ -241,6 +241,7 @@ def _decode_floors(raw: object) -> dict[int, dict[_CellKey, SignalCell]]:
     return floors
 
 
+_MAX_TIMESTAMP = 1e11
 _MAX_CELL_INDEX = math.ceil(MAX_MAP_COORDINATE / CELL_SIZE_METERS)
 
 
@@ -255,7 +256,8 @@ def _decode_cell(row: object) -> tuple[_CellKey, SignalCell] | None:
         and abs(ix) <= _MAX_CELL_INDEX
         and abs(iy) <= _MAX_CELL_INDEX
         and samples > 0
-        and math.isfinite(updated_at)
+        # A bound, not isfinite(): a huge stored int would overflow the float.
+        and 0 <= updated_at <= _MAX_TIMESTAMP
     ):
         return None
     return (ix, iy), SignalCell(float(dbm), samples, float(updated_at))

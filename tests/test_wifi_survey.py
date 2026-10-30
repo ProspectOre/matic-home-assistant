@@ -170,6 +170,7 @@ async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
                     [0, 3, -50, 1, float("inf")],
                     [0, 4, "-50", 1, 100],
                     [0, 2_000_000, -50, 1, 100],
+                    [0, 6, -50, 1, 10**400],
                     [0, 5, -50, 1],
                     "row",
                 ],
