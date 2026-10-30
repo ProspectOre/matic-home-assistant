@@ -36,6 +36,7 @@ MIN_SAVED_TRAIL_POINTS = 3
 TRAIL_STEP_METERS = 0.15
 MAX_TRAIL_COORDINATE = 10_000.0
 LIVE_TRAIL_ID = "live"
+_OPEN_END = "9999-12-31T23:59:59+00:00"
 
 # Managed room records close with one of these results; anything else is
 # reported as unconfirmed rather than guessed.
@@ -267,8 +268,13 @@ def history_entries(
                 robot, last_run, manual=manual(last_run.get("plan_id")), live=True
             )
         )
+    # A run still in progress owns every mission that starts after it.
     windows = [
-        (start, entry["ended_at"] or start)
+        (
+            start,
+            entry["ended_at"]
+            or (_OPEN_END if entry["outcome"] == "running" else start),
+        )
         for entry in entries
         if (start := entry["started_at"]) is not None
     ]

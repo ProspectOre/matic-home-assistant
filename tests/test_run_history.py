@@ -321,6 +321,17 @@ def test_history_merges_newest_first_without_duplicate_missions() -> None:
     ]
     assert entries[0]["outcome"] == "running"
 
+    # A later mission of the run in progress stays part of that run.
+    later = CleaningSessionRecord(
+        b"d",
+        _session(
+            started_at="2026-10-30T10:40:00+00:00",
+            ended_at="2026-10-30T10:55:00+00:00",
+        ),
+    )
+    entries = history_entries(robot, [later], manual=lambda plan_id: False)
+    assert [entry["id"] for entry in entries] == ["run-2", "run-1"]
+
     robot["last_run"] = {"outcome": "running", "run_id": None, "started_at": None}
     robot["run_history"][0]["started_at"] = None
     entries = history_entries(robot, native[:1], manual=lambda plan_id: True)
