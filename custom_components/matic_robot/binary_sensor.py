@@ -73,6 +73,18 @@ DESCRIPTIONS = (
         value_fn=lambda state: bool(state.operational.error_codes),
     ),
     MaticBinarySensorDescription(
+        key="bag_full",
+        translation_key="bag_full",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        value_fn=lambda state: state.operational.bag_full,
+    ),
+    MaticBinarySensorDescription(
+        key="bag_missing",
+        translation_key="bag_missing",
+        device_class=BinarySensorDeviceClass.PROBLEM,
+        value_fn=lambda state: state.operational.bag_missing,
+    ),
+    MaticBinarySensorDescription(
         key="matter_pairing_mode",
         translation_key="matter_pairing_mode",
         entity_category=EntityCategory.DIAGNOSTIC,

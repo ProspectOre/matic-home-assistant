@@ -31,6 +31,7 @@ from .client.exceptions import (
 )
 from .client.mission import decode_mission_client_state
 from .client.models import (
+    ROBOT_ALERTS,
     CleaningSession,
     CuesVoiceStatus,
     FloorPlan,
@@ -65,6 +66,20 @@ _LOGGER = logging.getLogger(__name__)
 # tracker's persisted normal discovery/recovery cadence.
 SNAPSHOT_RETRY_SECONDS = 900
 ERROR_CONFIRMATION_POLLS = 2
+# Alerts the user has to act on, each with a Repair that names the fix.
+ACTIONABLE_ALERTS = frozenset({"bag_full", "bag_missing"})
+
+
+def _robot_alert_issue_id(name: str, entry_id: str) -> str:
+    return f"robot_alert_{name}_{entry_id}"
+
+
+def async_delete_robot_alert_issues(hass: HomeAssistant, entry_id: str) -> None:
+    """Remove every bag Repair raised for a robot that is going away."""
+    for name in ACTIONABLE_ALERTS:
+        ir.async_delete_issue(hass, DOMAIN, _robot_alert_issue_id(name, entry_id))
+
+
 # Limit robot-driven Cues fan-out while retaining the newest state received during
 # each interval. This bounds coordinator, event-bus, automation, and Recorder work.
 CUES_UPDATE_INTERVAL_SECONDS = 1.0
@@ -151,6 +166,11 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._pending_error_polls = 0
         self._bag_previous_full: bool | None = None
         self._bag_errors_observed = False
+        self._unknown_alert_codes: dict[int, dict[str, str]] = {}
+        self._confirmed_error_codes: frozenset[int] = frozenset()
+        # None until the first confirmed state, so Repairs left by a coordinator
+        # this reload replaced are reconciled too.
+        self._alert_issues: set[str] | None = None
         self._bag_pending_clear = False
         self._bag_full_events = 0
         self._bag_replacement_events = 0
@@ -401,6 +421,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             operational = self._async_resolve_bag_capability(operational)
             operational = self._async_confirm_robot_errors(operational)
             self._async_track_bag_state(operational)
+            self._async_track_alerts(operational)
             state = RobotState(
                 info=info,
                 operational=operational,
@@ -544,6 +565,66 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._bag_pending_clear = True
             return
         self._bag_previous_full = False
+
+    @callback
+    def _async_track_alerts(self, state: RobotOperationalState) -> None:
+        """Record unmapped codes and keep one Repair per actionable alert.
+
+        Runs on confirmed codes only, so a one-poll firmware pulse neither
+        records a code nor raises a Repair. While new codes wait for that
+        confirmation, existing Repairs stay as they are.
+        """
+        if (
+            self._pending_error_codes
+            and self._pending_error_polls < ERROR_CONFIRMATION_POLLS
+        ):
+            return
+        now = dt_util.utcnow().isoformat()
+        previous, self._confirmed_error_codes = (
+            self._confirmed_error_codes,
+            frozenset(state.error_codes),
+        )
+        # Sightings change only when a code starts, which also changes the
+        # error codes in RobotState, so the sensor is notified without a
+        # separate refresh.
+        for code in self._confirmed_error_codes - previous:
+            if code in ROBOT_ALERTS:
+                continue
+            seen = self._unknown_alert_codes.get(code)
+            if seen is None:
+                _LOGGER.info("Matic reported an unmapped alert code %s", code)
+                self._unknown_alert_codes[code] = {"first_seen": now, "last_seen": now}
+            else:
+                seen["last_seen"] = now
+        active = {name for name in state.alerts if name in ACTIONABLE_ALERTS}
+        entry_id = self.config_entry.entry_id
+        raised = self._alert_issues or set()
+        for name in active - raised:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                _robot_alert_issue_id(name, entry_id),
+                is_fixable=False,
+                is_persistent=False,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=f"robot_alert_{name}",
+                translation_placeholders=repair_placeholders(self.hass, entry_id),
+            )
+        for name in (
+            ACTIONABLE_ALERTS if self._alert_issues is None else raised
+        ) - active:
+            ir.async_delete_issue(
+                self.hass, DOMAIN, _robot_alert_issue_id(name, entry_id)
+            )
+        self._alert_issues = active
+
+    @property
+    def unknown_alert_codes(self) -> dict[str, dict[str, str]]:
+        """Return when each unmapped alert code first and most recently started."""
+        return {
+            str(code): dict(seen)
+            for code, seen in sorted(self._unknown_alert_codes.items())
+        }
 
     @property
     def floor_read_generation(self) -> int:

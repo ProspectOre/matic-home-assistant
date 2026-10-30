@@ -8,6 +8,8 @@
       "low_charge": { "default": "mdi:battery-alert" },
       "fully_charged": { "default": "mdi:battery-check" },
       "problem": { "default": "mdi:alert-circle-outline" },
+      "bag_full": { "default": "mdi:delete-alert-outline" },
+      "bag_missing": { "default": "mdi:delete-off-outline" },
       "matter_pairing_mode": { "default": "mdi:access-point" },
       "ssh_tunnel_permission": { "default": "mdi:console-network" },
       "diagnostic_upload": { "default": "mdi:cloud-upload" },
@@ -37,6 +39,10 @@
       "custom_cleaning_area": { "default": "mdi:vector-square" }
     },
     "sensor": {
+      "robot_alert": {
+        "default": "mdi:alert-outline",
+        "state": { "none": "mdi:check-circle-outline" }
+      },
       "activity": {
         "default": "mdi:robot-vacuum",
         "state": {

@@ -74,6 +74,13 @@ class CuesIntent(StrEnum):
     UNKNOWN = "unknown"
 
 
+# Robot error-list codes with a verified meaning, from the native
+# KabukiDisplayedError mapping in the Matic 1.167.0 Android client. Every
+# other code (live firmware also sends 207 and 304) is reported as unknown.
+ROBOT_ALERTS: dict[int, str] = {205: "bag_missing", 206: "bag_full"}
+ROBOT_ALERT_OPTIONS = ("none", *ROBOT_ALERTS.values(), "unknown")
+
+
 @dataclass(frozen=True, slots=True)
 class RobotOperationalState:
     """Verified fields from the local ``kabuki_state`` property."""
@@ -170,6 +177,19 @@ class RobotOperationalState:
         without guessing a human meaning until a numeric mapping is verified.
         """
         return tuple(f"error_code_{code}" for code in self.error_codes)
+
+    @property
+    def alerts(self) -> tuple[str, ...]:
+        """Return named robot alerts, with ``unknown`` for unmapped codes."""
+        return tuple(ROBOT_ALERTS.get(code, "unknown") for code in self.error_codes)
+
+    @property
+    def alert(self) -> str:
+        """Return the first named alert, ``unknown``, or ``none``."""
+        return next(
+            (name for name in self.alerts if name != "unknown"),
+            "unknown" if self.error_codes else "none",
+        )
 
 
 @dataclass(frozen=True, slots=True)
