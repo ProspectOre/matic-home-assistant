@@ -143,6 +143,27 @@ def test_run_areas_merge_plan_and_area_history_once() -> None:
     assert areas[0] == {"name": "Area", "result": "unconfirmed"}
 
 
+def test_run_areas_list_checkpoint_legs_in_plan_order() -> None:
+    robot = _robot()
+    robot["area_history"]["door"]["last_result"] = "interrupted"
+    checkpoint = {
+        "entries": [
+            {"kind": "room", "room_id": "hall"},
+            {"kind": "area", "area_id": "door", "name": "Old door"},
+            {"kind": "area", "area_id": "sofa", "name": "Sofa"},
+            {"kind": "area", "area_id": "rug", "name": "Rug"},
+            {"kind": "area", "area_id": "door", "name": "Repeat"},
+            {"kind": "area"},
+            "junk",
+        ]
+    }
+    assert run_areas(robot, _run(recovery_checkpoint=checkpoint)) == [
+        {"name": "Old door", "result": "interrupted"},
+        {"name": "Sofa", "result": "not_started"},
+        {"name": "Living rug", "result": "completed"},
+    ]
+
+
 @pytest.mark.parametrize(
     ("run", "ending"),
     [

@@ -52,6 +52,7 @@ _ROOM_RESULTS = {
 }
 _AREA_RESULTS = {
     "completed": "completed",
+    "interrupted": "interrupted",
     "ended_unverified": "unconfirmed",
     "running": "running",
 }
@@ -164,31 +165,40 @@ def run_rooms(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[dict[str
 
 
 def run_areas(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[dict[str, str]]:
-    """Return the custom areas this run attempted, with each area's result."""
+    """Return the custom areas this run planned or attempted, with each result."""
     run_id = run.get("run_id")
-    areas = []
-    seen: set[str] = set()
     rotation = _mapping(_mapping(robot.get("rotations")).get(str(run.get("plan_id"))))
-    containers = (rotation.get("areas"), robot.get("area_history"))
-    for records in map(_mapping, containers):
+    containers = list(map(_mapping, (rotation.get("areas"), robot.get("area_history"))))
+    saved = _mapping(robot.get("areas"))
+    planned: dict[str, object] = {}
+    entries = _mapping(run.get("recovery_checkpoint")).get("entries")
+    for entry in map(_mapping, entries if isinstance(entries, list) else ()):
+        area_id = entry.get("area_id")
+        if entry.get("kind") == "area" and isinstance(area_id, str):
+            planned.setdefault(area_id, entry.get("name"))
+    for records in containers:
         for area_id, record in records.items():
-            if (
-                not isinstance(record, Mapping)
-                or record.get("run_id") != run_id
-                or area_id in seen
-            ):
-                continue
-            seen.add(area_id)
-            saved = _mapping(_mapping(robot.get("areas")).get(area_id))
-            areas.append(
-                {
-                    "name": _name(saved.get("name", record.get("name")), "Area"),
-                    "result": _AREA_RESULTS.get(
-                        str(record.get("last_result")), "unconfirmed"
-                    ),
-                }
-            )
-    return areas[:MAX_HISTORY_ROOMS]
+            if isinstance(record, Mapping) and record.get("run_id") == run_id:
+                planned.setdefault(area_id, record.get("name"))
+    areas = []
+    for area_id, name in list(planned.items())[:MAX_HISTORY_ROOMS]:
+        record = next(
+            (
+                found
+                for records in containers
+                if isinstance(found := records.get(area_id), Mapping)
+                and found.get("run_id") == run_id
+            ),
+            None,
+        )
+        result = (
+            _AREA_RESULTS.get(str(record.get("last_result")), "unconfirmed")
+            if record is not None
+            else "not_started"
+        )
+        label = _mapping(saved.get(area_id)).get("name", name)
+        areas.append({"name": _name(label, "Area"), "result": result})
+    return areas
 
 
 def run_ending(run: Mapping[str, Any]) -> str:
