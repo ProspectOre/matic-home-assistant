@@ -95,6 +95,7 @@ from .room_sequence import resolve_room_sequence, saved_plan_preview_token
 SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
 SERVICE_CLEAN_AREA = "clean_area"
+SERVICE_GO_TO_ROOM = "go_to_room"
 SERVICE_INTELLIGENT_CLEAN = "intelligent_clean"
 SERVICE_CLEAN_ENTIRE_PLAN = "clean_entire_plan"
 SERVICE_RUN_SELECTED_PLAN = "run_selected_plan"
@@ -133,6 +134,14 @@ CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
             [value.value for value in CoverageSetting]
         ),
         probatio.Optional("ordered", default=False): cv.boolean,
+    }
+)
+
+GO_TO_ROOM_SERVICE_SCHEMA = cv.make_entity_service_schema(
+    {
+        probatio.Required("room"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        )
     }
 )
 
@@ -601,6 +610,27 @@ async def async_register_services(hass: HomeAssistant) -> None:
         SERVICE_CLEAN,
         _require_matic_control(hass, async_clean),
         schema=CLEAN_SERVICE_SCHEMA,
+    )
+
+    async def async_go_to_room(call: ServiceCall) -> None:
+        """Send selected vacuums to one room without cleaning it."""
+        await hass.services.async_call(
+            VACUUM_DOMAIN,
+            "send_command",
+            {
+                ATTR_ENTITY_ID: _resolve_loaded_matic_vacuums(hass, call),
+                "command": "go_to_room",
+                "params": {"room": call.data["room"]},
+            },
+            blocking=True,
+            context=call.context,
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_GO_TO_ROOM,
+        _require_matic_control(hass, async_go_to_room),
+        schema=GO_TO_ROOM_SERVICE_SCHEMA,
     )
 
     async def async_clean_area(call: ServiceCall) -> None:
