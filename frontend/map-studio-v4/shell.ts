@@ -71,6 +71,7 @@ import {
   hasStoppableWork,
   initialWorkspaceState,
   isSelectedRobotUnavailable,
+  selectGoToRoomAction,
   selectStopSecondaryAction,
   selectPrimaryAction,
   savedMapPosition,
@@ -1875,7 +1876,7 @@ export class MaticMapShellV4 extends LitElement {
     const redraw: PrimaryAction | null = state.workflow === "areaReview" && !hasStoppableWork(state)
       ? { id: "redraw", label: "Redraw", labelKey: "v4_edit_outline", kind: "neutral", enabled: !held, ...(held ?? {}) }
       : null;
-    const secondary = selectStopSecondaryAction(state) ?? redraw;
+    const secondary = selectStopSecondaryAction(state) ?? redraw ?? selectGoToRoomAction(state);
     const statusAction = !narrow && ["stop", "stop-now"].includes(primary.id)
       ? primary
       : !narrow && secondary && ["stop", "stop-now"].includes(secondary.id) ? secondary : null;
