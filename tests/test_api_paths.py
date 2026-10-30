@@ -47,6 +47,7 @@ from custom_components.matic_robot.client.exceptions import (
     EndpointUnsupportedError,
     MaticError,
     PairingModeRequiredError,
+    SinkLocationUnavailableError,
 )
 from custom_components.matic_robot.client.mission import MissionClientState
 from custom_components.matic_robot.client.models import (
@@ -3010,3 +3011,59 @@ async def test_optional_unsupported_collection_readers_are_isolated() -> None:
     assert await client._async_optional_collection_count("optional") is None
     assert await client._async_optional_collection("optional", limit=1) is None
     assert client.endpoint_health["optional"] == "EndpointUnsupportedError"
+
+
+_SYNTHETIC_SINK_POSTURE = bytes.fromhex("0d0000c03f15000000c0220515000080bf")
+
+
+async def test_sink_posture_is_the_last_saved_for_the_floor() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor_key = bytes.fromhex("1504030201")
+    client.async_get_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(floor_key, bytes.fromhex("0d0000803f")),
+            HermesCollectionEntry(bytes.fromhex("1508070605"), bytes.fromhex("0d00")),
+            HermesCollectionEntry(floor_key, _SYNTHETIC_SINK_POSTURE),
+            HermesCollectionEntry(floor_key, b""),
+        )
+    )
+
+    posture = await client.async_get_sink_posture(
+        FloorPlan(0x01020304, "partition", b"partition", ())
+    )
+
+    assert posture == _SYNTHETIC_SINK_POSTURE
+    client.async_get_collection_entries.assert_awaited_once_with(
+        "sink_summon_locations"
+    )
+
+
+async def test_sink_summon_sends_the_posture_and_refill_wait() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._async_send_user_payload = AsyncMock()
+
+    await client.async_sink_summon(
+        FloorPlan(0x01020304, "partition", b"partition", ()), _SYNTHETIC_SINK_POSTURE
+    )
+
+    client._async_send_user_payload.assert_awaited_once_with(
+        bytes.fromhex(
+            "122722250a110d0000c03f15000000c0220515000080bf"
+            "1205150403020122090a070a030884071000"
+        ),
+        command_name="SINK_SUMMON",
+    )
+
+
+async def test_sink_posture_requires_a_location_for_the_current_floor() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(bytes.fromhex("1508070605"), _SYNTHETIC_SINK_POSTURE),
+        )
+    )
+
+    with pytest.raises(SinkLocationUnavailableError):
+        await client.async_get_sink_posture(
+            FloorPlan(0x01020304, "partition", b"partition", ())
+        )

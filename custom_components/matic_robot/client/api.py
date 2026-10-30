@@ -34,7 +34,9 @@ from .commands import (
     UserCommand,
     encode_coverage_command,
     encode_custom_coverage_command,
+    encode_mission_id,
     encode_mixed_coverage_commands,
+    encode_sink_summon_command,
     encode_user_command,
     encode_user_data,
 )
@@ -62,6 +64,7 @@ from .exceptions import (
     InvalidRobotCertificateError,
     MaticError,
     PairingModeRequiredError,
+    SinkLocationUnavailableError,
 )
 from .floor_plan import decode_floor_plans, decode_pose, room_name_key
 from .flythrough import Flythrough, decode_flythrough
@@ -1484,6 +1487,31 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         if await self.async_get_cleaning_session_identity() != baseline_identity:
             raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
         return baseline_identity
+
+    async def async_get_sink_posture(self, floor_plan: FloorPlan) -> bytes:
+        """Return this floor's saved sink posture, as the app stored it."""
+        mission_key = encode_mission_id(floor_plan.mission_id)
+        postures = [
+            entry.value
+            for entry in await self.async_get_collection_entries(
+                "sink_summon_locations"
+            )
+            if entry.key == mission_key and entry.value
+        ]
+        if not postures:
+            raise SinkLocationUnavailableError(
+                "No sink location is saved for the current floor"
+            )
+        return postures[-1]
+
+    async def async_sink_summon(self, floor_plan: FloorPlan, posture: bytes) -> None:
+        """Send the robot to a sink posture on this floor to await a refill."""
+        await self._async_send_user_payload(
+            encode_sink_summon_command(
+                mission_id=floor_plan.mission_id, posture=posture
+            ),
+            command_name="SINK_SUMMON",
+        )
 
     async def async_start_coverage(
         self,

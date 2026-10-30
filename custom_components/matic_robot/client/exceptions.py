@@ -70,5 +70,9 @@ class EndpointUnsupportedError(MaticError):
     """The robot's current firmware does not implement this endpoint."""
 
 
+class SinkLocationUnavailableError(MaticError):
+    """The robot has no saved sink location for the current floor."""
+
+
 class PairingModeRequiredError(MaticError):
     """The robot is not accepting a new local Hermes user."""

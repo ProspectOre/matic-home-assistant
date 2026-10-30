@@ -25,6 +25,7 @@ from custom_components.matic_robot.client.exceptions import (
     CoverageGuardError,
     CoverageGuardReason,
     MaticError,
+    SinkLocationUnavailableError,
 )
 from custom_components.matic_robot.client.mission import decode_mission_client_state
 from custom_components.matic_robot.const import MAX_ROOM_SEQUENCE_SIZE
@@ -935,7 +936,7 @@ async def test_command_admission_closure_rejects_late_managed_dispatch(hass) -> 
     dispatch.assert_not_awaited()
 
 
-@pytest.mark.parametrize("command", ["resume", "clean_all"])
+@pytest.mark.parametrize("command", ["resume", "clean_all", "sink_summon"])
 @pytest.mark.parametrize("waiting_check", [1, 2])
 async def test_stop_cancels_undispatched_direct_motion(
     hass, command: str, waiting_check: int
@@ -966,6 +967,7 @@ async def test_stop_cancels_undispatched_direct_motion(
     client = entry.runtime_data.coordinator.client
     client.async_start_coverage.assert_not_awaited()
     client.async_send_user_command.assert_not_awaited()
+    client.async_sink_summon.assert_not_awaited()
 
 
 async def test_stop_supersedes_direct_room_clean_queued_for_command_lock(hass) -> None:
@@ -1066,6 +1068,181 @@ async def test_after_room_stop_supersedes_queued_direct_motion(
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize(
+    "held_task",
+    [
+        {"cleaning": True},
+        {"cleaning": False, "paused": True},
+        {"cleaning": True, "charging": True},
+    ],
+    ids=["cleaning", "paused", "docked_to_recharge"],
+)
+async def test_sink_summon_keeps_the_plan_driving_the_task_it_joins(
+    hass, held_task: dict[str, bool]
+) -> None:
+    """The robot carries its task, and the owning plan, through the sink visit."""
+    entry = _entry()
+    state = entry.runtime_data.coordinator.data
+    entry.runtime_data.coordinator.data = replace(
+        state, operational=replace(state.operational, **held_task)
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    try:
+        await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+    finally:
+        plan_lock.release()
+
+    entry.runtime_data.coordinator.client.async_sink_summon.assert_awaited_once()
+    assert manager.managed_motion_is_current(serial_number, token)
+    assert not manager.cancellation_event(serial_number).is_set()
+
+
+async def test_sink_summon_refuses_when_the_task_ends_while_queued(hass) -> None:
+    """A task ending behind the command lock must not send motion under it."""
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    state = coordinator.data
+    coordinator.data = replace(
+        state, operational=replace(state.operational, cleaning=True)
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+    command_lock = manager.command_lock(serial_number)
+    await command_lock.acquire()
+    task = asyncio.create_task(
+        vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+    )
+    try:
+        for _ in range(30):
+            waiters = getattr(command_lock, "_waiters", None)
+            if waiters is not None and any(not waiter.done() for waiter in waiters):
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("Sink summon never queued for the command lock")
+
+        coordinator.data = replace(
+            state, operational=replace(state.operational, cleaning=False)
+        )
+        command_lock.release()
+        with pytest.raises(HomeAssistantError) as raised:
+            await task
+    finally:
+        if command_lock.locked():
+            command_lock.release()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert raised.value.translation_key == "robot_task_changed"
+    coordinator.client.async_sink_summon.assert_not_awaited()
+    assert manager.managed_motion_is_current(serial_number, token)
+
+
+async def test_sink_summon_without_a_task_replaces_a_docked_plan(hass) -> None:
+    """A plan docked between rooms holds no task, so the summon is new motion."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    try:
+        await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+    finally:
+        plan_lock.release()
+
+    entry.runtime_data.coordinator.client.async_sink_summon.assert_awaited_once()
+    assert not manager.managed_motion_is_current(serial_number, token)
+    assert manager.cancellation_event(serial_number).is_set()
+
+
+async def test_sink_summon_decides_ownership_after_the_lookup(hass) -> None:
+    """A task that ends while the sink posture is read leaves new motion."""
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    state = coordinator.data
+    coordinator.data = replace(
+        state, operational=replace(state.operational, cleaning=True)
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+
+    async def task_ends(_floor_plan):
+        coordinator.data = replace(
+            state, operational=replace(state.operational, cleaning=False)
+        )
+        return b"synthetic-posture"
+
+    coordinator.client.async_get_sink_posture.side_effect = task_ends
+    await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+
+    coordinator.client.async_sink_summon.assert_awaited_once()
+    assert not manager.managed_motion_is_current(serial_number, token)
+
+
+@pytest.mark.parametrize("failure", ["no_sink", "stale_map"])
+async def test_sink_summon_that_cannot_go_keeps_a_docked_plan(
+    hass, failure: str
+) -> None:
+    """A refused summon never takes ownership from a plan docked between rooms."""
+    entry = _entry(idle=True)
+    if failure == "no_sink":
+        entry.runtime_data.coordinator.client.async_get_sink_posture.side_effect = (
+            SinkLocationUnavailableError("synthetic")
+        )
+    else:
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+
+    with pytest.raises(ServiceValidationError):
+        await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+
+    entry.runtime_data.coordinator.client.async_sink_summon.assert_not_awaited()
+    assert manager.managed_motion_is_current(serial_number, token)
+    assert not manager.cancellation_event(serial_number).is_set()
+
+
+async def test_sink_summon_without_a_task_cancels_a_recovering_plan(hass) -> None:
+    """A plan reconnecting after a restart is replaced like any direct motion."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    await manager.async_begin_run(
+        serial_number, "plan", "run", 2, trigger="user", service="clean_entire_plan"
+    )
+    await manager.async_set_recovery_checkpoint(
+        serial_number, "run", {"version": 1, "phase": "handoff", "leg_index": 1}
+    )
+    generation = manager.motion_generation(serial_number)
+
+    await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+
+    entry.runtime_data.coordinator.client.async_sink_summon.assert_awaited_once()
+    assert manager.cancellation_event(serial_number).is_set()
+    assert manager.motion_generation(serial_number) != generation
 
 
 # Plan custom areas -----------------------------------------------------------
