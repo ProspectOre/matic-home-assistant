@@ -17,6 +17,7 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from homeassistant.helpers.storage import Store
 
 from .client.exceptions import MaticError
+from .client.floor_plan import MAX_MAP_COORDINATE
 from .client.models import RobotPose
 from .const import DOMAIN
 from .slam_scene import (
@@ -100,7 +101,11 @@ class WifiSurveyStore:
         self, mission_id: int, x: float, y: float, dbm: int, at: float
     ) -> bool:
         """Fold one scan into its cell; refuse out-of-range input."""
-        if not (math.isfinite(x) and math.isfinite(y) and MIN_DBM <= dbm <= MAX_DBM):
+        if not (
+            abs(x) <= MAX_MAP_COORDINATE
+            and abs(y) <= MAX_MAP_COORDINATE
+            and MIN_DBM <= dbm <= MAX_DBM
+        ):
             return False
         key = (math.floor(x / CELL_SIZE_METERS), math.floor(y / CELL_SIZE_METERS))
         cells = self._floors.get(mission_id)
@@ -228,6 +233,9 @@ def _decode_floors(raw: object) -> dict[int, dict[_CellKey, SignalCell]]:
     return floors
 
 
+_MAX_CELL_INDEX = math.ceil(MAX_MAP_COORDINATE / CELL_SIZE_METERS)
+
+
 def _decode_cell(row: object) -> tuple[_CellKey, SignalCell] | None:
     if not isinstance(row, list) or len(row) != 5:
         return None
@@ -236,6 +244,8 @@ def _decode_cell(row: object) -> tuple[_CellKey, SignalCell] | None:
         all(type(value) is int for value in (ix, iy, samples))
         and all(type(value) in (int, float) for value in (dbm, updated_at))
         and MIN_DBM <= dbm <= MAX_DBM
+        and abs(ix) <= _MAX_CELL_INDEX
+        and abs(iy) <= _MAX_CELL_INDEX
         and samples > 0
         and math.isfinite(updated_at)
     ):

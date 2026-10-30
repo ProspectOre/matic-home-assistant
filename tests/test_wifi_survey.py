@@ -108,6 +108,7 @@ async def test_samples_fold_into_cells_and_survive_a_reload(hass) -> None:
     assert store.add_sample(7, 0.4, 0.4, -60, 20.0)
     assert store.add_sample(7, -0.1, 0.2, -70, 30.0)
     assert not store.add_sample(7, float("nan"), 0.0, -50, 40.0)
+    assert not store.add_sample(7, 0.0, 10_000.1, -50, 40.0)
     assert not store.add_sample(7, 0.0, 0.0, 5, 40.0)
     assert not store.add_sample(7, 0.0, 0.0, -121, 40.0)
 
@@ -168,6 +169,7 @@ async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
                     [0, 2, -50, 0, 100],
                     [0, 3, -50, 1, float("inf")],
                     [0, 4, "-50", 1, 100],
+                    [0, 2_000_000, -50, 1, 100],
                     [0, 5, -50, 1],
                     "row",
                 ],
