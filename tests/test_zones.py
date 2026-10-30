@@ -115,6 +115,8 @@ def test_zone_overlap_with_rooms_respects_holes() -> None:
         # Aligned edges with no vertex strictly inside the other shape.
         (((3.0, 0.0), (3.0, 2.0), (1.0, 2.0), (1.0, 0.0)), True),
         (SQUARE, True),
+        # A room wholly inside the zone, meeting none of its edges.
+        (((0.5, 0.5), (1.0, 0.5), (1.0, 1.0)), True),
         (((0.0, 0.0), (1.0, 0.0), (1.0, 2.0), (0.0, 2.0), (0.0, 2.0)), True),
         # Sharing an edge or a corner from outside is not shared area.
         (((2.0, 0.0), (3.0, 0.0), (3.0, 2.0), (2.0, 2.0)), False),

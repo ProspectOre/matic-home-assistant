@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import struct
+from collections import defaultdict
 from itertools import pairwise
 
 from google.protobuf.message import DecodeError
@@ -105,6 +106,9 @@ def decode_zones(entries: tuple[HermesCollectionEntry, ...]) -> tuple[MapZone, .
 _Point = tuple[float, float]
 # How far off a room edge overlap probes sit; well under the 1.5 cm map grid.
 _PROBE_OFFSET_METERS = 1e-4
+# Zone edges are bucketed on this many cells per side of the shared bounds,
+# so each room edge is only compared with zone edges near it.
+_EDGE_GRID_CELLS = 64
 
 
 def _contains(polygon: tuple[_Point, ...], point: _Point) -> bool:
@@ -172,6 +176,76 @@ def _edge_in_bounds(
     )
 
 
+class _EdgeGrid:
+    """Bucket edges by the grid cells their bounds cover."""
+
+    def __init__(
+        self,
+        edges: list[tuple[_Point, _Point]],
+        bounds: tuple[float, float, float, float],
+    ) -> None:
+        self._edges = edges
+        self._origin = bounds[0], bounds[1]
+        self._cell = (
+            max(bounds[2] - bounds[0], 1e-9) / _EDGE_GRID_CELLS,
+            max(bounds[3] - bounds[1], 1e-9) / _EDGE_GRID_CELLS,
+        )
+        self._cells: defaultdict[tuple[int, int], list[int]] = defaultdict(list)
+        for index, edge in enumerate(edges):
+            for key in self._keys(edge):
+                self._cells[key].append(index)
+
+    def _keys(self, edge: tuple[_Point, _Point]) -> list[tuple[int, int]]:
+        (x1, y1), (x2, y2) = edge
+
+        def span(low: float, high: float, axis: int) -> range:
+            def cell(value: float) -> int:
+                index = int((value - self._origin[axis]) / self._cell[axis])
+                return min(max(index, 0), _EDGE_GRID_CELLS - 1)
+
+            return range(cell(low), cell(high) + 1)
+
+        return [
+            (cx, cy)
+            for cx in span(min(x1, x2), max(x1, x2), 0)
+            for cy in span(min(y1, y2), max(y1, y2), 1)
+        ]
+
+    def near(self, edge: tuple[_Point, _Point]) -> list[tuple[_Point, _Point]]:
+        indexes = {
+            index for key in self._keys(edge) for index in self._cells.get(key, ())
+        }
+        return [self._edges[index] for index in sorted(indexes)]
+
+
+class _StripIndex:
+    """Even-odd containment that only scans the edges crossing a point's row."""
+
+    def __init__(self, polygon: tuple[_Point, ...]) -> None:
+        bounds = _bounds(polygon)
+        self._low = bounds[1]
+        self._height = max(bounds[3] - bounds[1], 1e-9) / _EDGE_GRID_CELLS
+        self._strips: list[list[tuple[_Point, _Point]]] = [
+            [] for _ in range(_EDGE_GRID_CELLS)
+        ]
+        for edge in _edges(polygon):
+            (_, y1), (_, y2) = edge
+            for strip in range(self._strip(min(y1, y2)), self._strip(max(y1, y2)) + 1):
+                self._strips[strip].append(edge)
+
+    def _strip(self, y: float) -> int:
+        index = int((y - self._low) / self._height)
+        return min(max(index, 0), _EDGE_GRID_CELLS - 1)
+
+    def contains(self, point: _Point) -> bool:
+        inside = False
+        x, y = point
+        for (x1, y1), (x2, y2) in self._strips[self._strip(y)]:
+            if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+                inside = not inside
+        return inside
+
+
 def _split_points(
     start: _Point, end: _Point, others: list[tuple[_Point, _Point]]
 ) -> list[float]:
@@ -205,9 +279,11 @@ def _split_points(
 def zone_overlaps_polygon(zone: MapZone, polygon: tuple[_Point, ...]) -> bool:
     """Return whether a zone and a room polygon share area.
 
-    Touching boundaries do not count. Each room edge near the zone is split
-    where the zone boundary meets it, and a point just off either side of each
-    piece is tested against both shapes, so aligned edges are handled too.
+    Touching boundaries do not count. Each room edge that meets the zone
+    boundary is split there, and a point just off either side of each piece
+    is tested against both shapes, so aligned edges are handled too. With no
+    meeting edges, the shapes are disjoint or one holds the other, which one
+    vertex of each settles.
     """
     if len(polygon) < 3:
         return False
@@ -231,12 +307,35 @@ def zone_overlaps_polygon(zone: MapZone, polygon: tuple[_Point, ...]) -> bool:
     zone_edges = [
         edge for edge in _zone_edges(zone) if _edge_in_bounds(edge, room_bounds)
     ]
+    # The same test for a room wholly inside the zone; a vertex on the zone's
+    # boundary splits its edges, so the probes below cover it.
+    vertex = polygon[0]
+    if _zone_contains(zone, vertex) and all(
+        _segment_distance(vertex, a, b) > _PROBE_OFFSET_METERS for a, b in zone_edges
+    ):
+        return True
+    grid = _EdgeGrid(
+        zone_edges,
+        (
+            max(zone_bounds[0], room_bounds[0]),
+            max(zone_bounds[1], room_bounds[1]),
+            min(zone_bounds[2], room_bounds[2]),
+            min(zone_bounds[3], room_bounds[3]),
+        ),
+    )
+    room_index = _StripIndex(polygon)
+    outline_index = _StripIndex(zone.outline)
+    hole_indexes = [_StripIndex(hole) for hole in zone.holes]
     for start, end in _edges(polygon):
         if (start == end) or not _edge_in_bounds((start, end), zone_bounds):
             continue
+        cuts = _split_points(start, end, grid.near((start, end)))
+        if len(cuts) == 2:
+            # Nothing meets this edge, so it lies wholly inside or outside the
+            # zone and the vertex tests above already decided it.
+            continue
         dx, dy = end[0] - start[0], end[1] - start[1]
         scale = _PROBE_OFFSET_METERS / math.hypot(dx, dy)
-        cuts = _split_points(start, end, zone_edges)
         for low, high in pairwise(cuts):
             if high - low <= 1e-9:
                 continue
@@ -244,7 +343,11 @@ def zone_overlaps_polygon(zone: MapZone, polygon: tuple[_Point, ...]) -> bool:
             x, y = start[0] + middle * dx, start[1] + middle * dy
             for side in (1, -1):
                 probe = (x - side * dy * scale, y + side * dx * scale)
-                if _zone_contains(zone, probe) and _contains(polygon, probe):
+                if (
+                    room_index.contains(probe)
+                    and outline_index.contains(probe)
+                    and not any(hole.contains(probe) for hole in hole_indexes)
+                ):
                     return True
     return False
 
