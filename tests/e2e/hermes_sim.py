@@ -270,9 +270,9 @@ class SimulatedRobot:
     def set_floor(self, floor: SimFloor) -> None:
         """Map a floor: its room plan and live photographic and structural map."""
         self.floor = floor
-        photo, structure = map_pages(floor.mission_id)
-        self.set_collection("map_compressed_rgb", [photo])
-        self.set_collection("map_integrated", [structure])
+        photo, structure = map_pages(floor)
+        self.set_collection("map_compressed_rgb", photo)
+        self.set_collection("map_integrated", structure)
         self._history = [earlier_session(floor, _now() - 86_400_000_000_000)]
         self.set_collection("coverage_session_history", self._history)
         self._refresh_plan()

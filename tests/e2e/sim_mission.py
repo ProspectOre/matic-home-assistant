@@ -10,6 +10,7 @@ reuse the integration's codecs.
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -174,12 +175,12 @@ def two_room_floor() -> SimFloor:
             SimRoom(
                 UUID("11111111-1111-4111-8111-111111111111"),
                 "Kitchen",
-                ((0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)),
+                ((0.0, 0.0), (2.0, 0.0), (2.0, 1.5), (0.0, 1.5)),
             ),
             SimRoom(
                 UUID("22222222-2222-4222-8222-222222222222"),
                 "Study",
-                ((4.0, 0.0), (8.0, 0.0), (8.0, 3.0), (4.0, 3.0)),
+                ((2.0, 0.0), (4.0, 0.0), (4.0, 1.5), (2.0, 1.5)),
             ),
         ),
     )
@@ -286,6 +287,7 @@ def parse_coverage_command(payload: bytes, started_at: int) -> CoverageSession |
 
 _TILE_SIDE = 32
 _TILE_HEIGHT = 24
+_VOXEL_METERS = 0.015
 
 
 def _dimensions(*values: int) -> bytes:
@@ -294,29 +296,40 @@ def _dimensions(*values: int) -> bytes:
     )
 
 
-def map_pages(mission_id: int) -> tuple[tuple[bytes, bytes], tuple[bytes, bytes]]:
-    """One photographic and one structural page at the origin for a mission.
+def map_pages(
+    floor: SimFloor,
+) -> tuple[list[tuple[bytes, bytes]], list[tuple[bytes, bytes]]]:
+    """Photographic and structural pages covering every room of a floor.
 
-    Returns ``(map_compressed_rgb entry, map_integrated entry)``. The pages are
-    flat grey floor with a single surface column, enough for the integration
-    to confirm both live layers for the mission.
+    Returns ``(map_compressed_rgb entries, map_integrated entries)``. Each page
+    is flat grey floor with one surface column. Matic Map clips rooms to mapped
+    floor, so the pages must cover the rooms for them to appear.
     """
-    key = bytes_field(1, varint_field(3, 0) + varint_field(4, 0))
-    mission = fixed32_int(2, mission_id)
+    page_meters = _TILE_SIDE * _VOXEL_METERS
+    points = [point for room in floor.rooms for point in room.outline]
+    pages_x = range(
+        math.floor(min(x for x, _ in points) / page_meters),
+        math.ceil(max(x for x, _ in points) / page_meters),
+    )
+    pages_y = range(
+        math.floor(min(y for _, y in points) / page_meters),
+        math.ceil(max(y for _, y in points) / page_meters),
+    )
+    mission = fixed32_int(2, floor.mission_id)
     surface_bits = bytearray(_TILE_SIDE * _TILE_SIDE * _TILE_HEIGHT // 8)
     surface_bits[0] = 0x80
     surface = bytes_field(
         2, _dimensions(1, _TILE_SIDE, _TILE_SIDE, _TILE_HEIGHT)
     ) + bytes_field(3, bytes_field(1, bytes(surface_bits)))
     grey = struct.pack("<e", 128.0) * (_TILE_SIDE * _TILE_SIDE * 4)
-    floor = bytes_field(4, _dimensions(1, 4, _TILE_SIDE, _TILE_SIDE)) + bytes_field(
-        5, bytes_field(1, grey)
-    )
+    floor_texture = bytes_field(
+        4, _dimensions(1, 4, _TILE_SIDE, _TILE_SIDE)
+    ) + bytes_field(5, bytes_field(1, grey))
     photo = (
         bytes_field(4, surface)
         + bytes_field(5, mission)
         + bytes_field(6, bytes_field(1, bytes((96, 96, 96))))
-        + bytes_field(7, bytes_field(1, bytes_field(1, floor)))
+        + bytes_field(7, bytes_field(1, bytes_field(1, floor_texture)))
     )
     plane = bytes(_TILE_SIDE * _TILE_SIDE // 2)
     structure = (
@@ -325,7 +338,16 @@ def map_pages(mission_id: int) -> tuple[tuple[bytes, bytes], tuple[bytes, bytes]
         + bytes_field(7, bytes_field(1, plane))
         + bytes_field(8, bytes_field(1, plane))
     )
-    return (key, photo), (key, structure)
+    keys = [
+        bytes_field(1, varint_field(3, _zigzag(x)) + varint_field(4, _zigzag(y)))
+        for x in pages_x
+        for y in pages_y
+    ]
+    return [(key, photo) for key in keys], [(key, structure) for key in keys]
+
+
+def _zigzag(value: int) -> int:
+    return (value << 1) ^ (value >> 31)
 
 
 def earlier_session(floor: SimFloor, ended_at: int) -> tuple[bytes, bytes]:

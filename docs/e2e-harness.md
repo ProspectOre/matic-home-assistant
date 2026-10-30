@@ -11,6 +11,14 @@ over HTTP/2 to `tests/e2e/hermes_sim.py`.
 The tests run in the normal `pytest` command, so the Test workflow's `ci` job
 covers them on hosted `ubuntu-latest`.
 
+`tests/live` puts Matic Map in front of the same simulator. `server.py` writes
+a throwaway, already onboarded Home Assistant configuration with the robot
+paired, runs Home Assistant Core and its frontend in-process on 127.0.0.1:8123,
+and serves a control endpoint on 8124 that moves the robot. The Test
+workflow's `live` job runs `npx playwright test --config
+playwright.live.config.mjs` against it; `ci` requires both jobs. Locally, run
+the same command after `npm ci` and `pip install -e '.[test]'`.
+
 ## What is simulated
 
 | Part | Simulator behavior |
@@ -52,11 +60,16 @@ window) rather than wait minutes; the logic is unchanged.
 - Client level: pairing window, unknown credentials, fingerprint and serial
   pinning, snapshot, tracked and pushed collections, unsupported endpoints.
 
+- In a browser: choosing Kitchen and Study in Matic Map sends one coverage
+  command, the panel follows the robot from room to room, and returns to
+  ready once the robot docks.
+
 ## Not covered yet
 
-Saved plans with mixed per-room settings, custom areas, sink trips, delayed
-history reconciliation, and Matic Map in a browser against the simulator. The
-scripted check on an installed host is a separate milestone item.
+Saved plans with mixed per-room settings, custom areas, sink trips and
+delayed history reconciliation in the simulator; more Matic Map flows in the
+live lane. The scripted check on an installed host is a separate milestone
+item.
 
 ## What this proves
 
