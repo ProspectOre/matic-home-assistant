@@ -154,7 +154,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._bag_previous_full: bool | None = None
         self._bag_errors_observed = False
         self._unknown_alert_codes: dict[int, dict[str, str]] = {}
-        self._alert_issues: set[str] = set()
+        # None until the first confirmed state, so Repairs left by a coordinator
+        # this reload replaced are reconciled too.
+        self._alert_issues: set[str] | None = None
         self._bag_pending_clear = False
         self._bag_full_events = 0
         self._bag_replacement_events = 0
@@ -565,7 +567,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 seen["last_seen"] = now
         active = {name for name in state.alerts if name in ACTIONABLE_ALERTS}
         entry_id = self.config_entry.entry_id
-        for name in active - self._alert_issues:
+        raised = self._alert_issues or set()
+        for name in active - raised:
             ir.async_create_issue(
                 self.hass,
                 DOMAIN,
@@ -576,7 +579,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 translation_key=f"robot_alert_{name}",
                 translation_placeholders=repair_placeholders(self.hass, entry_id),
             )
-        for name in self._alert_issues - active:
+        for name in (
+            ACTIONABLE_ALERTS if self._alert_issues is None else raised
+        ) - active:
             ir.async_delete_issue(self.hass, DOMAIN, f"robot_alert_{name}_{entry_id}")
         self._alert_issues = active
 

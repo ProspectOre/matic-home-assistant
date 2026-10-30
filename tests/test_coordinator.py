@@ -2232,6 +2232,21 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
             "last_seen": "2026-10-30T03:01:00+00:00",
         },
     }
+    # A reload starts a new coordinator; a Repair the old one raised is cleared
+    # once the robot reports the bag fine again.
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "robot_alert_bag_missing_entry",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="robot_alert_bag_missing",
+    )
+    reloaded = _coordinator(hass, _client())
+    reloaded._async_track_alerts(replace(base, error_codes=(206,)))
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry") is None
+    assert registry.async_get_issue(DOMAIN, issue) is not None
+
     assert replace(base, error_codes=(304, 205)).alert == "bag_missing"
     assert replace(base, error_codes=(304,)).alerts == ("unknown",)
     assert replace(base, error_codes=(304,)).alert == "unknown"
