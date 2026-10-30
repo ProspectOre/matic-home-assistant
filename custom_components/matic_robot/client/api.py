@@ -124,6 +124,7 @@ from .wire import (
     decode_fields,
     uuid_string,
 )
+from .zones import MAX_ZONES, decode_zones
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1015,6 +1016,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             self._async_optional_collection_count("sink_summon_locations"),
             self._async_optional_collection("recap_history", limit=120),
             self._async_optional_collection("bag_pass_status", limit=4),
+            self._async_optional_collection("zones", limit=MAX_ZONES),
         )
         property_count = len(_TELEMETRY_PROPERTIES)
         values = dict(zip(_TELEMETRY_PROPERTIES, results[:property_count], strict=True))
@@ -1024,6 +1026,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         sink_summon_locations = results[property_count + 3]
         recap_entries = results[property_count + 4]
         bag_pass_entries = results[property_count + 5]
+        zone_entries = results[property_count + 6]
         maintenance = _decode_latest_maintenance(
             recap_entries if isinstance(recap_entries, tuple) else ()
         )
@@ -1103,6 +1106,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             maintenance_suggestions=maintenance[1] if maintenance else None,
             bag_pass_expires_at=_decode_bag_pass(
                 bag_pass_entries if isinstance(bag_pass_entries, tuple) else ()
+            ),
+            zones=(
+                decode_zones(zone_entries) if isinstance(zone_entries, tuple) else ()
             ),
         )
 

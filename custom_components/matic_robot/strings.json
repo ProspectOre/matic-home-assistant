@@ -601,6 +601,7 @@
     "v4_no_areas_hint": "Draw an area on the map to clean just that spot.",
     "v4_area_row_check": "Map changed · Check it before cleaning",
     "v4_area_row_redraw": "Redraw it before cleaning",
+    "v4_zone_overlap": "Overlaps a no-go zone · Matic skips that part",
     "v4_reason_check_area": "Can't clean this area until you check it.",
     "v4_clean_named_area": "Clean {area}",
     "v4_shortcuts_unavailable": "Home Assistant couldn't load your home shortcuts.",

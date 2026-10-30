@@ -167,10 +167,21 @@ export interface SavedArea {
   readonly canRebind: boolean;
 }
 
+/** A zone the robot keeps, in map metres, and what it overlaps. */
+export interface MapZoneOverlay {
+  readonly kind: "no_go" | "unknown";
+  readonly outline: readonly (readonly [number, number])[];
+  readonly holes: readonly (readonly (readonly [number, number])[])[];
+  readonly roomIds: readonly string[];
+  readonly areaIds: readonly string[];
+}
+
 export interface AreasCatalog {
   readonly sceneUrl: string;
   readonly rooms: readonly MapRoom[];
   readonly areas: readonly SavedArea[];
+  /** Robot zones on this map; empty when an older backend omits them. */
+  readonly zones: readonly MapZoneOverlay[];
   /**
    * The area the "Custom cleaning area" select and Clean custom area button
    * use (`selected_area`); null when none is selected or an older backend omits it.

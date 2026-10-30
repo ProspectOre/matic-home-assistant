@@ -92,7 +92,7 @@ HERMES_ENDPOINTS = (
     _property("voice_enabled_state", HermesEndpointSensitivity.DIAGNOSTIC),
     _property("water_flow_override_state", HermesEndpointSensitivity.DIAGNOSTIC),
     _property("wifi_status"),
-    _collection("zones"),
+    _collection("zones", tracked=True),
 )
 
 HERMES_ENDPOINT_MAP = {endpoint.name: endpoint for endpoint in HERMES_ENDPOINTS}
