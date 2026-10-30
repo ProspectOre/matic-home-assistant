@@ -373,8 +373,8 @@ async def test_clean_next_waits_for_the_new_room_order(monkeypatch):
     # The robot lists behaviors in its own order and may leave out the last
     # floor mop behavior of a room.
     mop = _goal(THIRD, str(UUID(int=99)), mode=1, behavior=3)
-    live = LIVE + [mop]
-    reordered = LIVE[:4] + [LIVE[7], LIVE[6]] + LIVE[4:6]
+    live = [*LIVE, mop]
+    reordered = [*LIVE[:4], LIVE[7], LIVE[6], *LIVE[4:6]]
     client = _client(
         monkeypatch, _readback(live), _readback(live), _readback(reordered)
     )

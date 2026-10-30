@@ -1890,6 +1890,17 @@ async def _async_run_leg(
                 {**event_data(room), "reason_code": "verified_completion"},
                 context=call.context,
             )
+        elif run_id is not None and room.room_id in manager.skipped_room_ids(
+            serial_number, run_id
+        ):
+            await manager.async_mark_skipped(
+                serial_number, call.data["plan_id"], room, run_id=run_id
+            )
+            hass.bus.async_fire(
+                f"{DOMAIN}_room_skipped",
+                {**event_data(room), "reason_code": "owner_skipped"},
+                context=call.context,
+            )
         elif stop_sent and room.room_id not in observed_ids:
             await manager.async_mark_cancelled(
                 serial_number, call.data["plan_id"], room

@@ -90,6 +90,11 @@ actions:
       room: Kitchen
 ```
 
+## Skip, clean next or clean again
+
+**Skip room**, **Clean room next** and **Clean room again** change the clean
+that is running. See [Changing a running clean](queue-changes.md).
+
 ## Plans
 
 | Action | Fields and behavior |

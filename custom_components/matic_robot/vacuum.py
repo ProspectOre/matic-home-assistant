@@ -10,6 +10,7 @@ from uuid import UUID
 
 from homeassistant.components.vacuum import Segment, StateVacuumEntity
 from homeassistant.components.vacuum.const import VacuumActivity, VacuumEntityFeature
+from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import area_registry as ar
@@ -18,7 +19,13 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .area_binding import AreaBindingStatus, area_binding_status
-from .client.commands import CleaningMode, CoverageSetting, UserCommand
+from .client.commands import (
+    CleaningMode,
+    CoverageSetting,
+    QueueAction,
+    QueueChangeError,
+    UserCommand,
+)
 from .client.exceptions import (
     CoverageGuardError,
     MaticError,
@@ -676,6 +683,56 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             resolve, destination="room", task_changed=_room_task_changed
         )
 
+    async def async_change_queue(
+        self,
+        action: QueueAction,
+        room: str,
+        *,
+        cleaning_mode: CleaningMode | None = None,
+        coverage_setting: CoverageSetting | None = None,
+    ) -> None:
+        """Skip, bring forward or repeat a room in the clean that is running."""
+        serial_number = self.coordinator.data.info.serial_number
+        floor_plan = self._current_floor_plan()
+        target = _resolve_one_room(room, floor_plan)
+        if not self.coordinator.data.operational.cleaning:
+            raise _queue_error("no_clean_running", target)
+        # The robot keeps the task, so the plan run driving it keeps ownership.
+        async with self._plans.external_command(serial_number):
+            if not self.coordinator.data.operational.cleaning:
+                raise _queue_error("no_clean_running", target)
+            try:
+                await self.coordinator.client.async_change_queue(
+                    self._current_floor_plan(plan_floor_token(floor_plan)),
+                    action,
+                    target,
+                    cleaning_mode=cleaning_mode,
+                    coverage_setting=coverage_setting,
+                )
+            except QueueChangeError as err:
+                raise _queue_error(err.reason, target) from err
+            except (MaticError, ValueError) as err:
+                raise HomeAssistantError(
+                    f"The robot did not take the change to {target.name}",
+                    translation_domain=DOMAIN,
+                    translation_key="queue_change_failed",
+                    translation_placeholders={"room": target.name},
+                ) from err
+        run_id = self._plans.active_run_id(serial_number)
+        if action is QueueAction.SKIP and run_id is not None:
+            await self._plans.async_note_room_skipped(serial_number, run_id, target.id)
+        self.hass.bus.async_fire(
+            f"{DOMAIN}_queue_changed",
+            {
+                ATTR_ENTITY_ID: self.entity_id,
+                "action": action.value,
+                "room_id": target.id,
+                "room": target.name,
+                "run_id": run_id,
+            },
+        )
+        await self.coordinator.async_request_refresh()
+
     async def _async_navigate(
         self,
         resolve: Callable[[FloorPlan], Awaitable[_Navigation]],
@@ -986,6 +1043,25 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 )
             await self.async_go_to_room(room)
             return
+        if normalized in _QUEUE_COMMANDS:
+            room = params.get("room") if isinstance(params, dict) else None
+            if (
+                not isinstance(params, dict)
+                or not isinstance(room, str)
+                or not room.strip()
+            ):
+                raise _validation_error(
+                    f"{normalized} requires params.room as one room name or ID",
+                    "queue_room_required",
+                    {"command": normalized},
+                )
+            options = (
+                self._queue_options(params)
+                if _QUEUE_COMMANDS[normalized] is QueueAction.CLEAN_AGAIN
+                else {}
+            )
+            await self.async_change_queue(_QUEUE_COMMANDS[normalized], room, **options)
+            return
         simple_commands = {
             "pause": UserCommand.PAUSE,
             "resume": UserCommand.RESUME,
@@ -1072,7 +1148,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         raise _validation_error(
             "Unsupported Matic command. Use start, clean_all, clean_rooms, "
             "clean_segments, pause, resume, stop, dock, return_home, "
-            "sink_summon, or go_to_room",
+            "sink_summon, go_to_room, skip_room, clean_room_next or "
+            "clean_room_again",
             "unsupported_command",
         )
 
@@ -1107,6 +1184,22 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 {"rooms": invalid_names},
             )
         return resolved
+
+    def _queue_options(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Read clean again's optional mode and coverage, keeping the room's own."""
+        try:
+            return {
+                "cleaning_mode": _enum_option(CleaningMode, params["cleaning_mode"])
+                if params.get("cleaning_mode") is not None
+                else None,
+                "coverage_setting": _enum_option(CoverageSetting, params["coverage"])
+                if params.get("coverage") is not None
+                else None,
+            }
+        except ValueError as err:
+            raise _validation_error(
+                str(err), "invalid_cleaning_option", {"error": str(err)}
+            ) from err
 
     def _clean_options(
         self, params: dict[str, Any] | list[Any] | None
@@ -1256,6 +1349,42 @@ def _room_task_changed() -> HomeAssistantError:
         translation_domain=DOMAIN,
         translation_key="go_to_room_task_changed",
     )
+
+
+_QUEUE_COMMANDS = {
+    "skip_room": QueueAction.SKIP,
+    "clean_room_next": QueueAction.CLEAN_NEXT,
+    "clean_room_again": QueueAction.CLEAN_AGAIN,
+}
+
+
+def _queue_error(reason: str, room: Room) -> ServiceValidationError:
+    """Create the error for a queue change the running clean cannot take."""
+    return _QUEUE_ERRORS[reason]({"room": room.name})
+
+
+_QUEUE_ERRORS: dict[str, Callable[[dict[str, str]], ServiceValidationError]] = {
+    "no_clean_running": lambda room: _validation_error(
+        "A room can only be changed while the robot is cleaning",
+        "queue_no_clean_running",
+        room,
+    ),
+    "current_room_unknown": lambda room: _validation_error(
+        "The robot isn't in a room on this map", "queue_current_room_unknown", room
+    ),
+    "plan_unreadable": lambda room: _validation_error(
+        "The running clean's plan can't be read", "queue_plan_unreadable", room
+    ),
+    "room_not_queued": lambda room: _validation_error(
+        "The room isn't waiting in this clean", "queue_room_not_queued", room
+    ),
+    "last_room": lambda room: _validation_error(
+        "The room is the only one left", "queue_last_room", room
+    ),
+    "already_next": lambda room: _validation_error(
+        "The room is already current or next", "queue_already_next", room
+    ),
+}
 
 
 def _resolve_one_room(identifier: str, floor_plan: FloorPlan) -> Room:

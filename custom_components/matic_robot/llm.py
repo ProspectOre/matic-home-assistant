@@ -139,6 +139,8 @@ _MATIC_EVENT_TYPES = (
     f"{DOMAIN}_room_ended_unverified",
     f"{DOMAIN}_room_failed",
     f"{DOMAIN}_room_cancelled",
+    f"{DOMAIN}_room_skipped",
+    f"{DOMAIN}_queue_changed",
     f"{DOMAIN}_room_interrupted",
     f"{DOMAIN}_room_reconciled",
 )
@@ -150,6 +152,7 @@ _SAFE_EVENT_FIELDS = (
     "source",
     "command_id",
     "run_id",
+    "action",
     "command",
     "channel",
     "outcome",

@@ -96,6 +96,9 @@ SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
 SERVICE_CLEAN_AREA = "clean_area"
 SERVICE_GO_TO_ROOM = "go_to_room"
+SERVICE_SKIP_ROOM = "skip_room"
+SERVICE_CLEAN_ROOM_NEXT = "clean_room_next"
+SERVICE_CLEAN_ROOM_AGAIN = "clean_room_again"
 SERVICE_INTELLIGENT_CLEAN = "intelligent_clean"
 SERVICE_CLEAN_ENTIRE_PLAN = "clean_entire_plan"
 SERVICE_RUN_SELECTED_PLAN = "run_selected_plan"
@@ -142,6 +145,20 @@ GO_TO_ROOM_SERVICE_SCHEMA = cv.make_entity_service_schema(
         probatio.Required("room"): probatio.All(
             cv.string, probatio.Length(min=1, max=128)
         )
+    }
+)
+
+CLEAN_ROOM_AGAIN_SERVICE_SCHEMA = cv.make_entity_service_schema(
+    {
+        probatio.Required("room"): probatio.All(
+            cv.string, probatio.Length(min=1, max=128)
+        ),
+        probatio.Optional("cleaning_mode"): probatio.In(
+            [mode.value for mode in CleaningMode]
+        ),
+        probatio.Optional("coverage_setting"): probatio.In(
+            [setting.value for setting in CoverageSetting]
+        ),
     }
 )
 
@@ -632,6 +649,42 @@ async def async_register_services(hass: HomeAssistant) -> None:
         _require_matic_control(hass, async_go_to_room),
         schema=GO_TO_ROOM_SERVICE_SCHEMA,
     )
+
+    def queue_handler(
+        command: str,
+    ) -> Callable[[ServiceCall], Coroutine[Any, Any, None]]:
+        async def async_change_queue(call: ServiceCall) -> None:
+            """Change one room's place in the clean that is running."""
+            params = {"room": call.data["room"]}
+            if "cleaning_mode" in call.data:
+                params["cleaning_mode"] = call.data["cleaning_mode"]
+            if "coverage_setting" in call.data:
+                params["coverage"] = call.data["coverage_setting"]
+            await hass.services.async_call(
+                VACUUM_DOMAIN,
+                "send_command",
+                {
+                    ATTR_ENTITY_ID: _resolve_loaded_matic_vacuums(hass, call),
+                    "command": command,
+                    "params": params,
+                },
+                blocking=True,
+                context=call.context,
+            )
+
+        return async_change_queue
+
+    for service, schema in (
+        (SERVICE_SKIP_ROOM, GO_TO_ROOM_SERVICE_SCHEMA),
+        (SERVICE_CLEAN_ROOM_NEXT, GO_TO_ROOM_SERVICE_SCHEMA),
+        (SERVICE_CLEAN_ROOM_AGAIN, CLEAN_ROOM_AGAIN_SERVICE_SCHEMA),
+    ):
+        hass.services.async_register(
+            DOMAIN,
+            service,
+            _require_matic_control(hass, queue_handler(service)),
+            schema=schema,
+        )
 
     async def async_clean_area(call: ServiceCall) -> None:
         """Clean one private saved area without putting coordinates in the call."""
