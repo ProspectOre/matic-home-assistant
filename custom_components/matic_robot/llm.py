@@ -7,6 +7,7 @@ import logging
 from abc import abstractmethod
 from collections import deque
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any, cast, override
 
 import probatio
@@ -23,6 +24,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm, translation
+from homeassistant.util import dt as dt_util
 from homeassistant.util.json import JsonObjectType
 
 from .area_binding import (
@@ -36,6 +38,7 @@ from .client.commands import CleaningMode
 from .client.exceptions import MaticError
 from .client.models import CleaningSession, FloorPlan
 from .client.observations import MAX_OBSERVATIONS
+from .client.zones import zone_overlaps_polygon
 from .const import (
     DATA_LLM_API,
     DOMAIN,
@@ -49,6 +52,7 @@ from .const import (
     MAX_ROOM_SEQUENCE_SIZE,
 )
 from .firmware_reports import ASSESSMENTS
+from .native_schedules import schedule_occurrences
 from .plans import (
     CleaningPlanManager,
     CleaningRoom,
@@ -58,7 +62,8 @@ from .plans import (
     resolve_room_reference,
     room_cadence_identity,
 )
-from .slam_scene import catalog_entry_projection
+from .run_history import MAX_HISTORY_ROOMS
+from .slam_scene import RUNS_NATIVE_READ_SECONDS, catalog_entry_projection
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,6 +76,11 @@ MAX_NATIVE_HISTORY_RESULTS = 20
 MAX_NATIVE_HISTORY_ROOM_EVIDENCE = 64
 MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES = 32 * 1024
 MAX_ACTIVITY_RESULTS = 128
+MAX_RUN_HISTORY_RESULTS = 20
+MAX_SCHEDULE_RESULTS = 64
+MAX_SCHEDULE_DAYS = 14
+MAX_ZONE_RESULTS = 64
+_RUN_FIELDS = ("source", "started_at", "ended_at", "plan_name", "outcome", "ending")
 # A started cleaning run keeps its action call open until the run ends; wait
 # this long for an early refusal before reporting that the run started.
 RUN_START_WAIT_SECONDS = 5.0
@@ -324,6 +334,9 @@ class MaticRobotStatusAPI(_AdministratorAPI):
             MaticGetNativeHistoryTool(exposed_only=exposed_only),
             MaticGetRecentEventsTool(self, exposed_only=exposed_only),
             MaticGetActivityTool(exposed_only=exposed_only),
+            MaticGetRunHistoryTool(exposed_only=exposed_only),
+            MaticGetSchedulesTool(exposed_only=exposed_only),
+            MaticGetZonesTool(exposed_only=exposed_only),
             MaticGetFirmwareTool(exposed_only=exposed_only),
             MaticRunPlanTool(exposed_only=exposed_only),
             MaticCleanRoomsTool(exposed_only=exposed_only),
@@ -1404,6 +1417,226 @@ def _activity_observation(item: dict[str, Any]) -> dict[str, Any]:
         if isinstance(codes, list) and all(type(code) is int for code in codes):
             result[key] = codes[:256]
     return result
+
+
+class MaticGetRunHistoryTool(_MaticTool):
+    """Return recent runs and why each Home Assistant run ended."""
+
+    name = "MaticGetRunHistory"
+    title = "Get recent runs"
+    description = (
+        "Returns recent cleaning runs, newest first, with each room's result. Runs "
+        "Home Assistant started name their plan and why they ended; runs started "
+        "in the Matic app or by a robot schedule come from the robot's history. "
+        "Use it to answer why the last clean stopped."
+    )
+    annotations = _READ_ONLY
+    parameters = llm.Tool.parameters.extend(
+        {
+            **_ROBOT_FIELD,
+            probatio.Optional("limit", default=5): probatio.All(
+                probatio.Coerce(int),
+                probatio.Range(min=1, max=MAX_RUN_HISTORY_RESULTS),
+            ),
+        }
+    )
+
+    @override
+    async def async_run(
+        self,
+        hass: HomeAssistant,
+        args: dict[str, Any],
+        llm_context: llm.LLMContext,
+    ) -> llm.ToolResult:
+        entry = self.resolve_entry(hass, llm_context, args.get("robot"))
+        runtime = entry.runtime_data
+        native = ()
+        robot_history = True
+        try:
+            async with asyncio.timeout(RUNS_NATIVE_READ_SECONDS):
+                native = await runtime.client.async_get_cleaning_session_records()
+        except MaticError, TimeoutError:
+            robot_history = False
+        runs = runtime.cleaning_plans.run_history(
+            str(runtime.coordinator.data.info.serial_number), native
+        )
+        return llm.ToolResult(
+            data={
+                "read_only": True,
+                "robot": _entry_name(entry),
+                "robot_history": robot_history,
+                "ending_meaning": (
+                    "finished: every room was cleaned. stopped: someone stopped it. "
+                    "smart_stop: it stopped after a room as asked. replaced: "
+                    "another plan or a robot schedule took over. low_battery: it "
+                    "docked to recharge. robot_problem: the robot reported an "
+                    "error. taken_over: a task started in the Matic app took "
+                    "over. home_assistant: Home Assistant restarted or reloaded. "
+                    "interrupted: it stopped for another reason. Robot-history "
+                    "runs only show finished or unknown. robot_history false "
+                    "means the robot's own history could not be read, so runs "
+                    "started outside Home Assistant are missing."
+                ),
+                "runs": [
+                    cast(
+                        JsonObjectType,
+                        {
+                            **{key: run[key] for key in _RUN_FIELDS},
+                            "rooms": run["rooms"][:MAX_HISTORY_ROOMS],
+                            "areas": run["areas"][:MAX_HISTORY_ROOMS],
+                        },
+                    )
+                    for run in runs[: args["limit"]]
+                ],
+            }
+        )
+
+
+class MaticGetSchedulesTool(_MaticTool):
+    """Return the robot's own weekly schedules and their next runs."""
+
+    name = "MaticGetSchedules"
+    title = "Get robot schedules"
+    description = (
+        "Returns the weekly cleaning schedules set in the Matic app, with their "
+        "rooms and cleaning mode, and the scheduled runs still to start. Reads up "
+        "to 64 schedules. When schedules_readable is false, the robot's schedules "
+        "couldn't be read, so say they are unknown. Read-only: schedules are "
+        "changed in the Matic app."
+    )
+    annotations = _READ_ONLY
+    parameters = llm.Tool.parameters.extend(
+        {
+            **_ROBOT_FIELD,
+            probatio.Optional("days", default=7): probatio.All(
+                probatio.Coerce(int),
+                probatio.Range(min=1, max=MAX_SCHEDULE_DAYS),
+            ),
+        }
+    )
+
+    @override
+    async def async_run(
+        self,
+        hass: HomeAssistant,
+        args: dict[str, Any],
+        llm_context: llm.LLMContext,
+    ) -> llm.ToolResult:
+        entry = self.resolve_entry(hass, llm_context, args.get("robot"))
+        state = entry.runtime_data.coordinator.data
+        room_names = (
+            {room.protocol_id: room.name for room in state.floor_plan.rooms}
+            if state.floor_plan is not None
+            else {}
+        )
+        now = dt_util.now()
+        # A run's nominal block can overlap now after it started; list only
+        # starts still ahead.
+        upcoming = [
+            event
+            for event in schedule_occurrences(
+                state, now, now + timedelta(days=args["days"])
+            )
+            if event.start >= now
+        ]
+        return llm.ToolResult(
+            data={
+                "read_only": True,
+                "robot": _entry_name(entry),
+                # The schedule count is unknown when the robot's schedule list
+                # couldn't be read, so empty lists then mean unknown, not none.
+                "schedules_readable": state.telemetry.scheduled_cleanings is not None,
+                "schedules": [
+                    cast(
+                        JsonObjectType,
+                        {
+                            "name": schedule.name,
+                            "enabled": schedule.enabled,
+                            "weekdays": list(schedule.weekdays),
+                            "time": schedule.time,
+                            "timezone": schedule.timezone or state.telemetry.timezone,
+                            "cleaning_mode": schedule.cleaning_mode,
+                            "rooms": [
+                                room_names.get(room_id, "Unknown room")
+                                for room_id in schedule.room_ids
+                            ],
+                            "rooms_in_order": schedule.ordered,
+                        },
+                    )
+                    for schedule in state.telemetry.schedules[:MAX_SCHEDULE_RESULTS]
+                ],
+                "upcoming": [
+                    cast(
+                        JsonObjectType,
+                        {"name": event.summary, "starts_at": event.start.isoformat()},
+                    )
+                    for event in upcoming[:MAX_SCHEDULE_RESULTS]
+                ],
+                "upcoming_truncated": len(upcoming) > MAX_SCHEDULE_RESULTS,
+            }
+        )
+
+
+class MaticGetZonesTool(_MaticTool):
+    """Return the robot's zones on the current map and the rooms they cover."""
+
+    name = "MaticGetZones"
+    title = "Get no-go zones"
+    description = (
+        "Returns the zones drawn in the Matic app on the current map, such as "
+        "no-go zones the robot never enters, and the rooms each one covers. Reads "
+        "up to 64 zones. When zones_readable is false, the robot's zones couldn't "
+        "be read, so say they are unknown. Read-only: zones are changed in the "
+        "Matic app."
+    )
+    annotations = _READ_ONLY
+    parameters = llm.Tool.parameters.extend(_ROBOT_FIELD)
+
+    @override
+    async def async_run(
+        self,
+        hass: HomeAssistant,
+        args: dict[str, Any],
+        llm_context: llm.LLMContext,
+    ) -> llm.ToolResult:
+        entry = self.resolve_entry(hass, llm_context, args.get("robot"))
+        state = entry.runtime_data.coordinator.data
+        floor_plan = state.floor_plan
+        zones = [
+            zone
+            for zone in state.telemetry.zones
+            if floor_plan is not None and zone.mission_id == floor_plan.mission_id
+        ]
+        return llm.ToolResult(
+            data={
+                "read_only": True,
+                "robot": _entry_name(entry),
+                "map_available": floor_plan is not None,
+                "zones_readable": (
+                    entry.runtime_data.client.endpoint_health.get("zones") == "ok"
+                ),
+                "zones": [
+                    cast(
+                        JsonObjectType,
+                        {
+                            "kind": zone.kind,
+                            "rooms": [
+                                room.name
+                                for room in floor_plan.rooms
+                                if zone_overlaps_polygon(zone, room.boundary)
+                            ],
+                        },
+                    )
+                    for zone in zones[:MAX_ZONE_RESULTS]
+                    if floor_plan is not None
+                ],
+                "zones_on_other_maps": (
+                    len(state.telemetry.zones) - len(zones)
+                    if floor_plan is not None
+                    else None
+                ),
+            }
+        )
 
 
 class MaticRunPlanTool(_MaticTool):
