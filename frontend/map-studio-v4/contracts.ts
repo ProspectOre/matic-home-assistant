@@ -196,6 +196,9 @@ export interface PlanDraft {
   readonly returnToBase: boolean;
   readonly finishCurrentRoom: boolean;
   readonly finishCurrentRoomThreshold: number;
+  readonly occupancyAware: boolean;
+  /** Per-room sensor overrides set by action; Matic Map keeps them as saved. */
+  readonly occupancySensors: Readonly<Record<string, string>>;
   readonly dirty: boolean;
   /** Rooms unticked in Edit keep their settings and schedule here until Save; never sent. */
   readonly parkedRooms: readonly import("./backend-contracts").PlanRoom[];

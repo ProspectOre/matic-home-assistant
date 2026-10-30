@@ -163,6 +163,8 @@ export const syntheticPlans = (): PlansCatalog => ({
     returnToBase: true,
     finishCurrentRoom: false,
     finishCurrentRoomThreshold: 50,
+    occupancyAware: false,
+    occupancySensors: {},
   }],
 });
 
@@ -363,6 +365,8 @@ export const syntheticMockupPlans = (): PlansCatalog => ({
       returnToBase: true,
       finishCurrentRoom: true,
       finishCurrentRoomThreshold: 70,
+      occupancyAware: false,
+      occupancySensors: {},
       nextRunPreview: {
         previewToken: mockupPreviewToken,
         rooms: [
@@ -392,6 +396,8 @@ export const syntheticMockupPlans = (): PlansCatalog => ({
       returnToBase: true,
       finishCurrentRoom: false,
       finishCurrentRoomThreshold: 50,
+      occupancyAware: false,
+      occupancySensors: {},
       nextRunPreview: {
         previewToken: mockupPreviewToken,
         rooms: [
@@ -420,6 +426,8 @@ export const syntheticMockupPlans = (): PlansCatalog => ({
       returnToBase: true,
       finishCurrentRoom: false,
       finishCurrentRoomThreshold: 50,
+      occupancyAware: false,
+      occupancySensors: {},
       nextRunPreview: { rooms: [], missionBoundaries: [], blocker: "plan_disabled" },
       nextRunEstimateSeconds: null,
     },

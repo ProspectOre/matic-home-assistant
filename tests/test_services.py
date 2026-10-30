@@ -5491,6 +5491,8 @@ async def test_deleting_the_last_room_disables_the_plan(hass) -> None:
         {
             "name": "Solo",
             "enabled": True,
+            "occupancy_aware": True,
+            "occupancy_sensors": {"room-kitchen": "binary_sensor.kitchen"},
             "rooms": [
                 {
                     "room_id": "room-kitchen",
@@ -5519,6 +5521,7 @@ async def test_deleting_the_last_room_disables_the_plan(hass) -> None:
     saved = manager.plan("serial", "solo")
     assert saved["rooms"] == []
     assert saved["enabled"] is False
+    assert saved["occupancy_sensors"] == {}
 
 
 async def test_room_edits_reject_rooms_outside_the_plan_or_map(hass) -> None:

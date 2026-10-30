@@ -480,6 +480,11 @@
     "v4_preview_no_rooms": "Can't run this plan until it has at least one room.",
     "v4_preview_area_changed": "Can't run this plan until you review its custom areas on the current map.",
     "v4_preview_invalid": "Can't run this plan until you open Edit and save it again.",
+    "v4_preview_rooms_held": "Can't run this plan while every room in it is occupied.",
+    "v4_plan_held_room": "{room} ({sensor})",
+    "v4_plan_held_rooms": "Held while occupied: {rooms}. They stay first in line for the next run.",
+    "v4_plan_hold_occupied": "Hold occupied rooms",
+    "v4_plan_hold_occupied_hint": "Leave out a room while an occupancy or presence sensor in its Home Assistant area is on. It stays first in line for the next run.",
     "v4_room_preview_loading": "Checking settings…",
     "v4_room_preview_unavailable": "Home Assistant couldn't check the room settings.",
     "v4_room_preview_schedule_override": "Turn off \"Use room schedules\" to use this cleaning mode.",
@@ -1625,6 +1630,9 @@
     "plan_empty": {
       "message": "This plan has nothing to clean. Add rooms or custom areas in Matic Map, then try again."
     },
+    "plan_rooms_held": {
+      "message": "Every room in this plan is occupied right now. Try again when a room clears, or turn off occupancy holds for the plan."
+    },
     "invalid_plan_command": {
       "message": "Home Assistant rejected an internal plan command. Start the plan again."
     },
@@ -1964,6 +1972,14 @@
         "finish_current_room_threshold": {
           "name": "Smart Stop threshold",
           "description": "The share of estimated room time required to finish the room after you press Stop. The estimate uses earlier successful runs with the same room settings."
+        },
+        "occupancy_aware": {
+          "name": "Hold occupied rooms",
+          "description": "Leave a room out of the run while its occupancy or presence sensor is on. It stays first in line for the next run."
+        },
+        "occupancy_sensors": {
+          "name": "Occupancy sensors",
+          "description": "Room ID to binary sensor. A room listed here uses this sensor instead of the occupancy and presence sensors in its Home Assistant area."
         },
         "select": {
           "name": "Use as default plan",

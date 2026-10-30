@@ -238,6 +238,8 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
     return_to_base: true,
     finish_current_room: false,
     finish_current_room_threshold: 50,
+    occupancy_aware: false,
+    occupancy_sensors: {},
     select: true,
   });
   expect(calls).toEqual([

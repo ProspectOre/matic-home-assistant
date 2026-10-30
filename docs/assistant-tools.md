@@ -9,9 +9,11 @@ administrator.
 
 **Matic: Robot status (administrators only)** reads robot status, a plan's next
 run, whether its saved areas are ready on the current map, robot-reported
-history, recent events and command activity (`MaticGetOperations`,
-`MaticGetPlan`, `MaticGetPlanReadiness`, `MaticGetNativeHistory`,
-`MaticGetRecentEvents`, `MaticGetActivity`, `MaticGetFirmware`). Its write tools
+history, recent events, command activity, recent runs, the robot's own
+schedules and its no-go zones (`MaticGetOperations`, `MaticGetPlan`,
+`MaticGetPlanReadiness`, `MaticGetNativeHistory`, `MaticGetRecentEvents`,
+`MaticGetActivity`, `MaticGetRunHistory`, `MaticGetSchedules`, `MaticGetZones`,
+`MaticGetFirmware`). Its write tools
 use Matic Map's own actions and checks: `MaticRunPlan` (a plan name or the
 default plan), `MaticCleanRooms` (up to 100 room names and one cleaning mode;
 each room keeps its saved schedule), `MaticStopCleaning`,
@@ -35,6 +37,18 @@ since Home Assistant started, and `MaticGetActivity` pages through up to 128
 observations at a time.
 Recent events keep room and final-state evidence separate from the
 [command and raw-state observation trail](activity-diagnostics.md).
+`MaticGetRunHistory` lists up to 20 recent runs, newest first, the same runs
+as Matic Map's history. Runs Home Assistant started say why they ended (finished,
+stopped, low battery, a robot problem, taken over by the Matic app and so on);
+runs started in the Matic app or by a robot schedule come from the robot's
+history, which reports only whether they finished. If the robot's history can't
+be read, `robot_history` is false and only Home Assistant's runs are listed.
+`MaticGetSchedules` lists the weekly schedules set in the Matic app and the
+scheduled runs in the next 7 days (up to 14), the same runs as the
+[robot schedules calendar](entities.md). `MaticGetZones` lists the zones on the
+current map and the rooms each one covers. Both read up to 64 schedules or zones
+from the robot. When the robot's list couldn't be read, `schedules_readable`
+or `zones_readable` is false. Schedules and zones are changed in the Matic app.
 `MaticGetOperations` includes current-room active time, expected duration and
 Estimated % from the same entity sample shown in Matic Map. Paused time stays
 frozen; unknown estimates stay unknown. Even Estimated 100% does not prove a
