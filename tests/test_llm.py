@@ -61,9 +61,11 @@ from custom_components.matic_robot.llm import (
     MaticGetPlanReadinessTool,
     MaticGetPlanTool,
     MaticGetRecentEventsTool,
+    MaticGoToRoomTool,
     MaticResetScheduleTool,
     MaticRobotStatusAPI,
     MaticRunPlanTool,
+    MaticSendToSinkTool,
     MaticStopCleaningTool,
     _async_refusal,
     _entry_name,
@@ -392,6 +394,8 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "MaticCleanRooms",
         "MaticStopCleaning",
         "MaticResetSchedule",
+        "MaticGoToRoom",
+        "MaticSendToSink",
     ]
     research = await MaticFirmwareResearchAPI(hass).async_get_api_instance(_context())
     assert research.api.id == "matic_robot_firmware_research"
@@ -2179,6 +2183,8 @@ async def test_write_tools_fail_closed_for_non_administrators() -> None:
         MaticCleanRoomsTool(),
         MaticStopCleaningTool(),
         MaticResetScheduleTool(),
+        MaticGoToRoomTool(),
+        MaticSendToSinkTool(),
     ):
         hass, _registry, patches = _control_hass()
         hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=False)
@@ -2186,7 +2192,12 @@ async def test_write_tools_fail_closed_for_non_administrators() -> None:
             HomeAssistantError,
             match="Only a Home Assistant administrator can use the robot tools",
         ) as err:
-            await _run(hass, patches, tool, {"rooms": ["Kitchen"], "schedule": "mop"})
+            await _run(
+                hass,
+                patches,
+                tool,
+                {"rooms": ["Kitchen"], "schedule": "mop", "room": "Kitchen"},
+            )
         assert err.value.translation_key == "llm_admin_required"
         hass.services.async_call.assert_not_awaited()
 
@@ -2493,6 +2504,96 @@ async def test_stop_sends_the_panel_stop(state, attributes, projection) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("state", "projection", "category", "reason"),
+    [
+        ("unavailable", {}, "exceptions", "llm_robot_unavailable"),
+        (None, {}, "exceptions", "llm_robot_unavailable"),
+        (
+            "cleaning",
+            {"stop_settle_pending": True},
+            "common",
+            "v4_reason_stop_settle_pending",
+        ),
+        (
+            "docked",
+            {"map_complete": False},
+            "common",
+            "v4_reason_clean_rooms_verification",
+        ),
+    ],
+)
+async def test_navigation_tools_refuse_like_the_action(
+    state, projection, category, reason
+) -> None:
+    for tool, args in (
+        (MaticGoToRoomTool(), {"room": "Kitchen"}),
+        (MaticSendToSinkTool(), {}),
+    ):
+        hass, _registry, patches = _control_hass(state=state, projection=projection)
+        _refused(await _run(hass, patches, tool, args), category, reason)
+        hass.services.async_call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state", ["docked", "cleaning", "paused"])
+async def test_navigation_tools_send_the_robot_actions(state) -> None:
+    hass, _registry, patches = _control_hass(state=state)
+    result = await _run(hass, patches, MaticGoToRoomTool(), {"room": "Kitchen"})
+    assert result.data == {"sent": True, "room": "Kitchen"}
+    assert hass.services.async_call.await_args.args == (
+        DOMAIN,
+        "go_to_room",
+        {"entity_id": "vacuum.robot", "room": "Kitchen"},
+    )
+
+    hass, _registry, patches = _control_hass(state=state)
+    result = await _run(hass, patches, MaticSendToSinkTool(), {})
+    assert result.data == {"sent": True}
+    assert hass.services.async_call.await_args.args == (
+        "vacuum",
+        "send_command",
+        {"entity_id": "vacuum.robot", "command": "sink_summon"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("key", "placeholders"),
+    [
+        ("unknown_rooms", {"rooms": "Attic"}),
+        ("ambiguous_room", {"room": "Attic"}),
+        ("go_to_room_task_changed", None),
+    ],
+)
+async def test_go_to_room_relays_the_action_refusal(key, placeholders) -> None:
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = ServiceValidationError(
+        "refused",
+        translation_domain=DOMAIN,
+        translation_key=key,
+        translation_placeholders=placeholders,
+    )
+    _refused(
+        await _run(hass, patches, MaticGoToRoomTool(), {"room": "Attic"}),
+        "exceptions",
+        key,
+        **(placeholders or {}),
+    )
+
+
+async def test_send_to_sink_relays_the_action_refusal() -> None:
+    hass, _registry, patches = _control_hass()
+    hass.services.async_call.side_effect = ServiceValidationError(
+        "refused",
+        translation_domain=DOMAIN,
+        translation_key="sink_location_unavailable",
+    )
+    _refused(
+        await _run(hass, patches, MaticSendToSinkTool(), {}),
+        "exceptions",
+        "sink_location_unavailable",
+    )
+
+
 async def test_reset_schedule_uses_the_panel_reset() -> None:
     floor_plan = FloorPlan(
         1,
@@ -2792,6 +2893,8 @@ async def test_assist_tools_only_see_robots_exposed_to_the_assistant() -> None:
             ("MaticCleanRooms", {"rooms": ["Kitchen"]}),
             ("MaticStopCleaning", {}),
             ("MaticResetSchedule", {"schedule": "mop", "scope": "plan"}),
+            ("MaticGoToRoom", {"room": "Kitchen"}),
+            ("MaticSendToSink", {}),
         ):
             for robot in ("entry-hidden", "ENTRY-HIDDEN", "Hidden Robot", "hidden"):
                 with pytest.raises(HomeAssistantError) as err:

@@ -33,6 +33,7 @@ from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
     UserCommand,
+    encode_go_to_room_command,
 )
 from custom_components.matic_robot.client.endpoints import (
     HERMES_ENDPOINT_MAP,
@@ -57,6 +58,7 @@ from custom_components.matic_robot.client.models import (
     RobotActivity,
     RobotOperationalState,
     RobotTrajectory,
+    Room,
 )
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
 from custom_components.matic_robot.client.proto.hermes_pb2 import (
@@ -3067,3 +3069,31 @@ async def test_sink_posture_requires_a_location_for_the_current_floor() -> None:
         await client.async_get_sink_posture(
             FloorPlan(0x01020304, "partition", b"partition", ())
         )
+
+
+async def test_go_to_room_sends_the_room_goal_on_its_floor() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._async_send_user_payload = AsyncMock()
+    room = Room(
+        "room-1",
+        "Kitchen",
+        "11111111-1111-4111-8111-111111111111",
+        b"one",
+        ((0, 0), (1, 0), (1, 1)),
+    )
+
+    await client.async_go_to_room(
+        FloorPlan(
+            0x01020304, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", b"partition", (room,)
+        ),
+        room,
+    )
+
+    client._async_send_user_payload.assert_awaited_once_with(
+        encode_go_to_room_command(
+            mission_id=0x01020304,
+            partition_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            region_id="11111111-1111-4111-8111-111111111111",
+        ),
+        command_name="GO_TO_ROOM",
+    )

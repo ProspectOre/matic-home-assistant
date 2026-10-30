@@ -85,9 +85,10 @@ ROBOT_STATUS_PROMPT = (
     f"{PLAIN_WORDS_PROMPT} The read-only tools never change the robot or a plan. "
     "Current-room percentages estimate time, not completed work; unknown estimates "
     "must stay unknown, and even 100% is not proof of completion. "
-    "`MaticRunPlan`, `MaticCleanRooms`, `MaticStopCleaning` and "
-    "`MaticResetSchedule` act only when Matic Map would allow the same action; "
-    "start or reset something only when the user asks, and when a tool refuses, "
+    "`MaticRunPlan`, `MaticCleanRooms`, `MaticStopCleaning`, "
+    "`MaticResetSchedule`, `MaticGoToRoom` and `MaticSendToSink` act only when "
+    "Matic Map or the robot's action would allow the same thing; start, move or "
+    "reset something only when the user asks, and when a tool refuses, "
     "tell the user its reason and do not retry. Rooms with the same settings are "
     "cleaned together without docking between them; when settings change, the "
     "robot may briefly touch the dock before the next rooms. Results the robot "
@@ -327,6 +328,8 @@ class MaticRobotStatusAPI(_AdministratorAPI):
             MaticCleanRoomsTool(exposed_only=exposed_only),
             MaticStopCleaningTool(exposed_only=exposed_only),
             MaticResetScheduleTool(exposed_only=exposed_only),
+            MaticGoToRoomTool(exposed_only=exposed_only),
+            MaticSendToSinkTool(exposed_only=exposed_only),
         ]
 
     @callback
@@ -1674,6 +1677,109 @@ class MaticResetScheduleTool(_MaticTool):
                 "schedule": args["schedule"],
             }
         )
+
+
+class MaticGoToRoomTool(_MaticTool):
+    """Send the robot to a room with the Go to room action."""
+
+    name = "MaticGoToRoom"
+    title = "Go to room"
+    description = (
+        "Sends the robot to one named room without cleaning it and returns whether "
+        "the command was sent. When the robot can't go, returns the reason to tell "
+        "the user."
+    )
+    annotations = llm.ToolAnnotations(destructive=False, open_world=False)
+    parameters = llm.Tool.parameters.extend(
+        {
+            **_ROBOT_FIELD,
+            probatio.Required("room"): probatio.All(
+                cv.string, probatio.Length(min=1, max=128)
+            ),
+        }
+    )
+
+    @override
+    async def async_run(
+        self,
+        hass: HomeAssistant,
+        args: dict[str, Any],
+        llm_context: llm.LLMContext,
+    ) -> llm.ToolResult:
+        robot = _PanelRobot(
+            hass, self.resolve_entry(hass, llm_context, args.get("robot"))
+        )
+        if refusal := await _async_navigation_refusal(hass, llm_context, robot):
+            return refusal
+        try:
+            await hass.services.async_call(
+                DOMAIN,
+                "go_to_room",
+                {ATTR_ENTITY_ID: robot.entity_id, "room": args["room"]},
+                blocking=True,
+                context=llm_context.context,
+            )
+        except HomeAssistantError as err:
+            return await _async_service_refusal(hass, llm_context, err)
+        return llm.ToolResult(data={"sent": True, "room": args["room"]})
+
+
+class MaticSendToSinkTool(_MaticTool):
+    """Send the robot to its saved sink location for a water refill."""
+
+    name = "MaticSendToSink"
+    title = "Send to sink"
+    description = (
+        "Sends the robot to the sink location saved in the Matic app for this "
+        "floor, where it waits up to 15 minutes for a water refill, and returns "
+        "whether the command was sent. When the robot can't go, returns the reason "
+        "to tell the user."
+    )
+    annotations = llm.ToolAnnotations(destructive=False, open_world=False)
+    parameters = llm.Tool.parameters.extend(_ROBOT_FIELD)
+
+    @override
+    async def async_run(
+        self,
+        hass: HomeAssistant,
+        args: dict[str, Any],
+        llm_context: llm.LLMContext,
+    ) -> llm.ToolResult:
+        robot = _PanelRobot(
+            hass, self.resolve_entry(hass, llm_context, args.get("robot"))
+        )
+        if refusal := await _async_navigation_refusal(hass, llm_context, robot):
+            return refusal
+        try:
+            await hass.services.async_call(
+                VACUUM_DOMAIN,
+                "send_command",
+                {ATTR_ENTITY_ID: robot.entity_id, "command": "sink_summon"},
+                blocking=True,
+                context=llm_context.context,
+            )
+        except HomeAssistantError as err:
+            return await _async_service_refusal(hass, llm_context, err)
+        return llm.ToolResult(data={"sent": True})
+
+
+async def _async_navigation_refusal(
+    hass: HomeAssistant, llm_context: llm.LLMContext, robot: _PanelRobot
+) -> llm.ToolResult | None:
+    """Refuse navigation the robot's action would refuse or could not place."""
+    if not robot.connected:
+        return await _async_refusal(
+            hass, llm_context, "exceptions", "llm_robot_unavailable"
+        )
+    if robot.projection["stop_settle_pending"]:
+        return await _async_refusal(
+            hass, llm_context, "common", "v4_reason_stop_settle_pending"
+        )
+    if not robot.can_edit:
+        return await _async_refusal(
+            hass, llm_context, "common", "v4_reason_clean_rooms_verification"
+        )
+    return None
 
 
 class _PanelRobot:

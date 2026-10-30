@@ -29,6 +29,7 @@
     "vacuum_and_mop": "Vacuum + mop",
     "v4_access_required": "Access required",
     "v4_action_clean_rooms": "Clean rooms",
+    "v4_action_go_to_room": "Go to room",
     "v4_action_clean_rooms_count": "Clean {count} rooms",
     "v4_action_resume": "Resume cleaning",
     "v4_action_return_live": "Show live map",
@@ -1422,6 +1423,12 @@
     "robot_task_changed": {
       "message": "The clean ended before the robot could be sent to the sink. Try again."
     },
+    "go_to_room_task_changed": {
+      "message": "The clean ended before the robot could be sent to the room. Try again."
+    },
+    "go_to_room_room_required": {
+      "message": "Name one room to go to, then try again."
+    },
     "robot_stop_pending": {
       "message": "The robot is stopping. Wait until it docks, then try again."
     },
@@ -1456,7 +1463,7 @@
       "message": "No custom area matches {area}. Check the name, or choose from your custom areas."
     },
     "unsupported_command": {
-      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, return_home, or sink_summon."
+      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, return_home, sink_summon, or go_to_room."
     },
     "managed_run_changed": {
       "message": "The cleaning plan changed before Stop could be sent, so Stop was not sent. Check the robot and press Stop again if it is still cleaning."
@@ -1578,6 +1585,16 @@
     }
   },
   "services": {
+    "go_to_room": {
+      "name": "Go to room",
+      "description": "Sends the robot to a room without cleaning it.",
+      "fields": {
+        "room": {
+          "name": "Room",
+          "description": "Room name or room ID. A name shared by two rooms is refused; use the room ID instead."
+        }
+      }
+    },
     "clean_room_sequence": {
       "name": "Clean room sequence",
       "description": "Runs an ordered, unsaved room sequence with cleaning settings for each room.",

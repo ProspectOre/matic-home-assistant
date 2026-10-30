@@ -936,7 +936,9 @@ async def test_command_admission_closure_rejects_late_managed_dispatch(hass) -> 
     dispatch.assert_not_awaited()
 
 
-@pytest.mark.parametrize("command", ["resume", "clean_all", "sink_summon"])
+@pytest.mark.parametrize(
+    "command", ["resume", "clean_all", "sink_summon", "go_to_room"]
+)
 @pytest.mark.parametrize("waiting_check", [1, 2])
 async def test_stop_cancels_undispatched_direct_motion(
     hass, command: str, waiting_check: int
@@ -958,7 +960,9 @@ async def test_stop_cancels_undispatched_direct_motion(
             await release.wait()
 
     with patch.object(entity, "_async_ensure_stop_settled", side_effect=delayed_check):
-        task = asyncio.create_task(entity.async_send_command(command))
+        task = asyncio.create_task(
+            entity.async_send_command(command, {"room": "Kitchen"})
+        )
         await entered.wait()
         manager.request_stop("synthetic-serial")
         release.set()
@@ -968,6 +972,7 @@ async def test_stop_cancels_undispatched_direct_motion(
     client.async_start_coverage.assert_not_awaited()
     client.async_send_user_command.assert_not_awaited()
     client.async_sink_summon.assert_not_awaited()
+    client.async_go_to_room.assert_not_awaited()
 
 
 async def test_stop_supersedes_direct_room_clean_queued_for_command_lock(hass) -> None:
@@ -1243,6 +1248,98 @@ async def test_sink_summon_without_a_task_cancels_a_recovering_plan(hass) -> Non
     entry.runtime_data.coordinator.client.async_sink_summon.assert_awaited_once()
     assert manager.cancellation_event(serial_number).is_set()
     assert manager.motion_generation(serial_number) != generation
+
+
+async def test_go_to_room_keeps_the_plan_driving_the_task_it_joins(hass) -> None:
+    """Go to room follows the sink summon: a held task keeps its plan."""
+    entry = _entry()
+    state = entry.runtime_data.coordinator.data
+    entry.runtime_data.coordinator.data = replace(
+        state, operational=replace(state.operational, cleaning=True)
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    try:
+        await vacuum.MaticVacuum(entry).async_go_to_room("Kitchen")
+    finally:
+        plan_lock.release()
+
+    entry.runtime_data.coordinator.client.async_go_to_room.assert_awaited_once()
+    assert manager.managed_motion_is_current(serial_number, token)
+    assert not manager.cancellation_event(serial_number).is_set()
+
+
+async def test_go_to_room_refuses_when_the_task_ends_while_queued(hass) -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    state = coordinator.data
+    coordinator.data = replace(
+        state, operational=replace(state.operational, paused=True, cleaning=False)
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    command_lock = manager.command_lock("synthetic-serial")
+    await command_lock.acquire()
+    task = asyncio.create_task(vacuum.MaticVacuum(entry).async_go_to_room("Kitchen"))
+    try:
+        for _ in range(30):
+            waiters = getattr(command_lock, "_waiters", None)
+            if waiters is not None and any(not waiter.done() for waiter in waiters):
+                break
+            await asyncio.sleep(0)
+        else:
+            pytest.fail("Go to room never queued for the command lock")
+
+        coordinator.data = replace(
+            state, operational=replace(state.operational, cleaning=False)
+        )
+        command_lock.release()
+        with pytest.raises(HomeAssistantError) as raised:
+            await task
+    finally:
+        if command_lock.locked():
+            command_lock.release()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert raised.value.translation_key == "go_to_room_task_changed"
+    coordinator.client.async_go_to_room.assert_not_awaited()
+
+
+@pytest.mark.parametrize("room", ["Kitchen", "Attic"])
+async def test_go_to_room_without_a_task_owns_motion_only_when_it_goes(
+    hass, room: str
+) -> None:
+    """An unknown room is refused before it can replace a docked plan."""
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    serial_number = "synthetic-serial"
+    token = manager.begin_managed_motion(serial_number)
+
+    if room == "Attic":
+        with pytest.raises(ServiceValidationError):
+            await vacuum.MaticVacuum(entry).async_go_to_room(room)
+        entry.runtime_data.coordinator.client.async_go_to_room.assert_not_awaited()
+        assert manager.managed_motion_is_current(serial_number, token)
+        return
+    plan_lock = manager.lock(serial_number)
+    await plan_lock.acquire()
+    try:
+        await vacuum.MaticVacuum(entry).async_go_to_room(room)
+    finally:
+        plan_lock.release()
+    entry.runtime_data.coordinator.client.async_go_to_room.assert_awaited_once()
+    assert not manager.managed_motion_is_current(serial_number, token)
+    assert manager.cancellation_event(serial_number).is_set()
 
 
 # Plan custom areas -----------------------------------------------------------
