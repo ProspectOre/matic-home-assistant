@@ -20,6 +20,9 @@
       "stop_intelligent_cleaning": { "default": "mdi:home-import-outline" },
       "clean_selected_area": { "default": "mdi:vector-square" }
     },
+    "calendar": {
+      "native_schedules": { "default": "mdi:calendar-clock" }
+    },
     "camera": {
       "map": { "default": "mdi:floor-plan" },
       "photorealistic_map": { "default": "mdi:home-map-marker" }
