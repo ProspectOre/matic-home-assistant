@@ -21,6 +21,11 @@ PARALLEL_UPDATES = 0
 # rooms and the floor, so each occurrence gets a nominal one-hour block.
 SCHEDULED_RUN_DURATION = timedelta(hours=1)
 _UPCOMING_WINDOW = timedelta(days=8)
+_MODE_LABELS = {
+    "vacuum": "Vacuum",
+    "mop": "Mop",
+    "vacuum_and_mop": "Vacuum and mop",
+}
 _WEEKDAY_NUMBERS = {
     "monday": 0,
     "tuesday": 1,
@@ -113,13 +118,16 @@ def _occurrences(
 
 
 def _description(schedule: CleaningSchedule, room_names: dict[str, str]) -> str | None:
+    lines: list[str] = []
+    if schedule.cleaning_mode in _MODE_LABELS:
+        lines.append(_MODE_LABELS[schedule.cleaning_mode])
     rooms = [
         room_names[room_id] for room_id in schedule.room_ids if room_id in room_names
     ]
-    if not rooms:
-        return None
-    order = "in this order" if schedule.ordered else "in any order"
-    return f"Rooms {order}: {', '.join(rooms)}"
+    if rooms:
+        order = "in this order" if schedule.ordered else "in any order"
+        lines.append(f"Rooms {order}: {', '.join(rooms)}")
+    return "\n".join(lines) or None
 
 
 class MaticScheduleCalendar(MaticEntity, CalendarEntity):

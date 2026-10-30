@@ -1347,6 +1347,7 @@ def test_sensor_and_binary_sensor_values() -> None:
                 "timezone": "Etc/UTC",
                 "ordered": True,
                 "enabled": True,
+                "cleaning_mode": None,
                 "rooms": ["Kitchen"],
                 "room_ids": ["protocol-1"],
             }

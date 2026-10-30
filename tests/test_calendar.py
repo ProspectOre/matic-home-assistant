@@ -31,6 +31,7 @@ def _schedule(**changes: object) -> CleaningSchedule:
         ordered=True,
         enabled=True,
         room_ids=("protocol-2", "protocol-1"),
+        cleaning_mode="vacuum_and_mop",
     )
     return replace(schedule, **changes)  # type: ignore[arg-type]
 
@@ -61,7 +62,9 @@ def test_weekly_schedule_expands_in_its_own_zone_across_dst() -> None:
     assert events[2].start.utcoffset() == timedelta(hours=-8)
     assert all(event.end - event.start == SCHEDULED_RUN_DURATION for event in events)
     assert events[0].summary == "Morning"
-    assert events[0].description == "Rooms in this order: Study, Kitchen"
+    assert events[0].description == (
+        "Vacuum and mop\nRooms in this order: Study, Kitchen"
+    )
 
 
 def test_window_includes_a_run_already_under_way_and_excludes_the_edges() -> None:
@@ -114,24 +117,33 @@ def test_events_from_several_schedules_are_sorted_by_start() -> None:
     assert [event.summary for event in events] == ["Morning", "Evening"]
 
 
-def test_description_names_only_known_rooms() -> None:
+def test_description_names_the_mode_and_only_known_rooms() -> None:
     window = (
         datetime(2026, 10, 26, tzinfo=LOS_ANGELES),
         datetime(2026, 10, 27, tzinfo=LOS_ANGELES),
     )
-    unordered = _with(
-        _schedule(
-            ordered=False, room_ids=("protocol-1", "missing"), weekdays=("monday",)
-        )
-    )
-    unknown = _with(_schedule(room_ids=("missing",), weekdays=("monday",)))
-    no_plan = replace(_with(_schedule(weekdays=("monday",))), floor_plan=None)
 
-    assert schedule_occurrences(unordered, *window)[0].description == (
-        "Rooms in any order: Kitchen"
+    def description(state: RobotState) -> str | None:
+        return schedule_occurrences(state, *window)[0].description
+
+    monday = _schedule(weekdays=("monday",), cleaning_mode=None)
+    unordered = replace(monday, ordered=False, room_ids=("protocol-1", "missing"))
+
+    assert description(_with(unordered)) == "Rooms in any order: Kitchen"
+    assert description(_with(replace(monday, cleaning_mode="mop"))) == (
+        "Mop\nRooms in this order: Study, Kitchen"
     )
-    assert schedule_occurrences(unknown, *window)[0].description is None
-    assert schedule_occurrences(no_plan, *window)[0].description is None
+    assert (
+        description(
+            _with(replace(monday, room_ids=("missing",), cleaning_mode="vacuum"))
+        )
+        == "Vacuum"
+    )
+    assert description(_with(replace(monday, room_ids=("missing",)))) is None
+    assert description(replace(_with(monday), floor_plan=None)) is None
+    assert description(_with(replace(monday, cleaning_mode="unknown"))) == (
+        "Rooms in this order: Study, Kitchen"
+    )
 
 
 def test_zone_falls_back_to_the_robot_then_home_assistant() -> None:
