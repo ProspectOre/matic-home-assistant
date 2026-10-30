@@ -20,12 +20,17 @@ covers them on hosted `ubuntu-latest`.
 | `HermesDiscoveryRPC` | `GetBotInfo` returns the simulated identity. |
 | `HermesAuth` | `AuthToken` issues a credential only while `pairing_open` is set. |
 | `Hermes` | `Handshake` and `FetchCollection` require a credential the robot issued. Properties answer snapshots; tracked subscriptions wait for each sequence acknowledgment and then push changes. Unserved names return `UNIMPLEMENTED`. |
-| `user_command` | STOP, PAUSE, RESUME and DOCK are matched against the captured official-app bytes, which the simulator holds separately from the integration's encoders, and move the robot between phases. |
-| Robot state | `kabuki_state` for docked, charging, cleaning, paused, returning, stopped and low-charge recharge, with battery, errors, software version and current area. |
+| `user_command` | STOP, PAUSE, RESUME and DOCK are matched against the captured official-app bytes, which the simulator holds separately from the integration's encoders, and move the robot between phases. A coverage START or UPDATE starts a native task for the commanded rooms. |
+| Robot state | `kabuki_state` for docked, charging, cleaning, paused, returning, stopped, low-charge recharge and a blocking fault, using state-code sets seen on real robots, with battery, errors, software version and current area. |
+| Floor and task | `coverage_plan` serves the floor and retains the commanded goals; `active_session_key` carries the task's session; `coverage_session_history` gets a record with per-room results when the task ends. One live photographic and one structural map page confirm the floor. |
 
 Time does not pass on its own. A test moves the robot with scripted steps such
-as `start_cleaning`, `arrive_at_dock`, `low_charge_recharge`, `set_errors` and
-`offline`, then runs a coordinator poll, so results do not depend on timing.
+as `start_cleaning`, `finish_room`, `finish_session`, `arrive_at_dock`,
+`low_charge_recharge`, `fault`, `app_takes_over` and `offline`, then runs a
+coordinator poll, so results do not depend on timing. History timestamps use
+the wall clock because the integration binds a record to the dispatch time.
+A few tests shorten a wait constant (the dock-after-stop poll, the history
+window) rather than wait minutes; the logic is unchanged.
 
 ## Covered today
 
@@ -35,6 +40,13 @@ as `start_cleaning`, `arrive_at_dock`, `low_charge_recharge`, `set_errors` and
   held task gets STOP, then DOCK once the stop settles.
 - Low-charge recharge and resume.
 - Robot errors appear only after the confirmation poll and clear again.
+- Managed plan runs (`clean_room_sequence`, Kitchen then Study), following the
+  [plan run contract](e2e-contract.md): all rooms verified from native
+  history, a session that ends after one room (partial credit), return home
+  during a run (cancelled, STOP then DOCK, then `stopped_docked`), the app
+  taking over (no credit, no STOP), recharge and resume, a robot fault
+  (failed), a restart that rejoins the same native task without dispatching
+  again, and a restart after the task ended (unverified).
 - An unreachable robot makes entities unavailable and they recover.
 - A revoked credential starts reauthentication.
 - Client level: pairing window, unknown credentials, fingerprint and serial
@@ -42,11 +54,9 @@ as `start_cleaning`, `arrive_at_dock`, `low_charge_recharge`, `set_errors` and
 
 ## Not covered yet
 
-Managed plan runs need the simulator to serve floor plans, coverage readback
-and native session history; the scenarios in the [plan run
-contract](e2e-contract.md) are the next step. Matic Map in a browser against
-the simulator, and the scripted check on an installed host, are separate
-milestone items.
+Saved plans with mixed per-room settings, custom areas, sink trips, delayed
+history reconciliation, and Matic Map in a browser against the simulator. The
+scripted check on an installed host is a separate milestone item.
 
 ## What this proves
 

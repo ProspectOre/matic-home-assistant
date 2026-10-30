@@ -21,12 +21,15 @@ import asyncio
 import datetime
 import hashlib
 import ssl
+import time
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from secrets import token_bytes
 from typing import Any
+from uuid import uuid4
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -61,6 +64,17 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
     Value,
 )
 
+from .sim_mission import (
+    IDLE_SESSION_KEY,
+    CoverageSession,
+    SimFloor,
+    bytes_field,
+    earlier_session,
+    map_pages,
+    parse_coverage_command,
+    uuid_wire,
+)
+
 ROLE_OID = ObjectIdentifier("2.5.4.72")
 
 # Official-app payloads for the ``user_command`` channel, from captures.
@@ -68,14 +82,6 @@ STOP_PAYLOAD = bytes.fromhex("7a040a022200")
 PAUSE_PAYLOAD = bytes.fromhex("4801880101")
 RESUME_PAYLOAD = bytes.fromhex("4801880100")
 DOCK_PAYLOAD = bytes.fromhex("12042a020800")
-
-# Kabuki state codes the integration decodes.
-STATE_RETURNING = 104
-STATE_DOCKED = 106
-STATE_CHARGING = 107
-STATE_CLEANING = 119
-STATE_PAUSED = 120
-STATE_LOW_CHARGE = 206
 
 
 class Phase(StrEnum):
@@ -88,17 +94,23 @@ class Phase(StrEnum):
     RETURNING = "returning"
     STOPPED = "stopped"
     RECHARGING = "recharging"
+    FAULTED = "faulted"
 
 
+# ``kabuki_state`` codes per phase, copied from the live-verified transitions
+# in tests/test_hermes_state.py, including codes the integration does not
+# interpret. Plain charging (107 alone) is the one set not seen live.
 _PHASE_STATES: dict[Phase, tuple[int, ...]] = {
-    Phase.DOCKED: (STATE_DOCKED,),
-    Phase.CHARGING: (STATE_CHARGING,),
-    Phase.CLEANING: (STATE_CLEANING,),
-    Phase.PAUSED: (STATE_CLEANING, STATE_PAUSED),
-    Phase.RETURNING: (STATE_RETURNING,),
+    Phase.DOCKED: (106,),
+    Phase.CHARGING: (107,),
+    Phase.CLEANING: (101, 119, 209, 212),
+    Phase.PAUSED: (109, 200, 119),
+    Phase.RETURNING: (104, 105),
     Phase.STOPPED: (),
-    # Low-charge recharge-and-resume: the task is retained on the dock.
-    Phase.RECHARGING: (STATE_CLEANING, STATE_CHARGING, STATE_LOW_CHARGE),
+    # Low-charge recharge and resume: the task is retained on the dock.
+    Phase.RECHARGING: (107, 119, 206),
+    # A blocking fault: paused without the task flag, with an error code.
+    Phase.FAULTED: (109, 200),
 }
 
 
@@ -234,6 +246,9 @@ class SimulatedRobot:
         self.offline = False
         self.credentials: set[str] = set()
         self.commands: list[ReceivedCommand] = []
+        self.reads: Counter[str] = Counter()
+        self.floor: SimFloor | None = None
+        self.session: CoverageSession | None = None
         self.unsupported: set[str] = set()
         self._properties: dict[str, bytes] = {}
         self._collections: dict[str, list[tuple[bytes, bytes]]] = {}
@@ -241,6 +256,8 @@ class SimulatedRobot:
         self._changed = asyncio.Condition()
         self._start_ts = 1_700_000_000_000_000_000
         self._sequence = 0
+        self._history: list[tuple[bytes, bytes]] = []
+        self.set_property("active_session_key", IDLE_SESSION_KEY)
         self._refresh_state()
 
     # Scripted transitions -------------------------------------------------
@@ -249,6 +266,51 @@ class SimulatedRobot:
         """Begin a task as if the app, a schedule or a voice cue started it."""
         self.current_area = area
         self._set_phase(Phase.CLEANING)
+
+    def set_floor(self, floor: SimFloor) -> None:
+        """Map a floor: its room plan and live photographic and structural map."""
+        self.floor = floor
+        photo, structure = map_pages(floor.mission_id)
+        self.set_collection("map_compressed_rgb", [photo])
+        self.set_collection("map_integrated", [structure])
+        self._history = [earlier_session(floor, _now() - 86_400_000_000_000)]
+        self.set_collection("coverage_session_history", self._history)
+        self._refresh_plan()
+
+    def finish_room(self) -> None:
+        """Complete the session's current room and move on to the next."""
+        assert self.session is not None
+        current = self.session.current_room
+        assert current is not None
+        self.session.finished[current] = _now()
+        upcoming = self.session.current_room
+        self.current_area = (
+            self.floor.room(upcoming).name
+            if self.floor is not None and upcoming is not None
+            else None
+        )
+        self._refresh_state()
+
+    def finish_session(self) -> None:
+        """End the task after its last room, write history, head home."""
+        self._end_session(completed=True)
+        self.current_area = None
+        self._set_phase(Phase.RETURNING)
+
+    def app_takes_over(self) -> None:
+        """Replace the running task with one started from the Matic app."""
+        assert self.session is not None and self.floor is not None
+        session = self.session
+        self.session = CoverageSession(
+            session_wire=bytes_field(2, uuid_wire(uuid4())),
+            mission_wire=session.mission_wire,
+            goals=[],
+            rooms=list(session.rooms),
+            modes=session.modes,
+            started_at=_now(),
+        )
+        self.set_property("active_session_key", self.session.active_key)
+        self._refresh_plan()
 
     def arrive_at_dock(self) -> None:
         """Finish a return trip and start charging, or idle when full."""
@@ -264,6 +326,11 @@ class SimulatedRobot:
         """Resume a recharge-suspended task."""
         self.battery = 0.8
         self._set_phase(Phase.CLEANING)
+
+    def fault(self, code: int = 326) -> None:
+        """Stop on a blocking robot error, keeping the native task."""
+        self.errors = (code,)
+        self._set_phase(Phase.FAULTED)
 
     def set_errors(self, *codes: int) -> None:
         """Report robot error codes in ``kabuki_state``."""
@@ -336,6 +403,10 @@ class SimulatedRobot:
     def apply_command(self, channel: str, payload: bytes) -> None:
         if channel != "user_command":
             return
+        coverage = parse_coverage_command(payload, _now())
+        if coverage is not None:
+            self._start_coverage(coverage)
+            return
         if payload == PAUSE_PAYLOAD and self.phase is Phase.CLEANING:
             self._set_phase(Phase.PAUSED)
         elif payload == RESUME_PAYLOAD and self.phase is Phase.PAUSED:
@@ -345,6 +416,8 @@ class SimulatedRobot:
             Phase.PAUSED,
             Phase.RETURNING,
         ):
+            self._end_session(completed=False)
+            self.current_area = None
             self._set_phase(Phase.STOPPED)
         elif payload == STOP_PAYLOAD and self.phase is Phase.RECHARGING:
             self._set_phase(Phase.CHARGING)
@@ -367,6 +440,45 @@ class SimulatedRobot:
         async with self._changed:
             await self._changed.wait_for(lambda: self.version(name) != seen)
 
+    def _start_coverage(self, coverage: CoverageSession) -> None:
+        previous = self.session
+        if previous is not None and previous.session_wire == coverage.session_wire:
+            # An UPDATE keeps the task and its progress; only goals change.
+            coverage.finished = previous.finished
+            coverage.started_at = previous.started_at
+        self.session = coverage
+        self.set_property("active_session_key", coverage.active_key)
+        self._refresh_plan()
+        current = coverage.current_room
+        self.current_area = (
+            self.floor.room(current).name
+            if self.floor is not None and current is not None
+            else None
+        )
+        self._set_phase(Phase.CLEANING)
+
+    def _end_session(self, *, completed: bool) -> None:
+        session = self.session
+        if session is None:
+            return
+        self.session = None
+        if self.floor is not None:
+            self._history.append(
+                (
+                    session.session_wire,
+                    session.history_value(self.floor, _now(), completed=completed),
+                )
+            )
+            self.set_collection("coverage_session_history", self._history)
+        self.set_property("active_session_key", IDLE_SESSION_KEY)
+        self._refresh_plan()
+
+    def _refresh_plan(self) -> None:
+        if self.floor is None:
+            return
+        retained = self.session.retained_goals() if self.session is not None else b""
+        self.set_property("coverage_plan", self.floor.encode() + retained)
+
     def _set_phase(self, phase: Phase) -> None:
         self.phase = phase
         self._refresh_state()
@@ -386,6 +498,11 @@ class SimulatedRobot:
     async def _notify(self) -> None:
         async with self._changed:
             self._changed.notify_all()
+
+
+def _now() -> int:
+    """Wall-clock nanoseconds: history must fall between dispatch and now."""
+    return time.time_ns()
 
 
 def _require_auth(robot: SimulatedRobot, stream: Stream[Any, Any]) -> None:
@@ -410,6 +527,7 @@ class _Hermes(HermesBase):
         if request is None or not request.HasField("initial_request"):
             raise GRPCError(Status.INVALID_ARGUMENT, "initial request required")
         name = request.initial_request.collection_name
+        self._robot.reads[name] += 1
         if self._robot.entries(name) is None:
             raise GRPCError(Status.UNIMPLEMENTED, f"{name} is not served")
         # A snapshot reader half-closes after its initial request; a tracked

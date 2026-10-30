@@ -155,19 +155,19 @@ async def test_robot_errors_surface_after_confirmation_poll(
 ) -> None:
     robot.start_cleaning()
     await _poll(hass, loaded_entry)
-    robot.phase = Phase.STOPPED
-    robot.set_errors(42)
+    robot.fault(326)
 
     await _poll(hass, loaded_entry)
-    # One poll is treated as a possible firmware pulse.
-    assert _state(hass, VACUUM) == VacuumActivity.IDLE
+    # One poll is treated as a possible firmware pulse, so the robot reads as
+    # paused until the error repeats.
+    assert _state(hass, VACUUM) == VacuumActivity.PAUSED
     await _poll(hass, loaded_entry)
     assert _state(hass, VACUUM) == VacuumActivity.ERROR
     assert _state(hass, PROBLEM) == STATE_ON
 
     robot.set_errors()
     await _poll(hass, loaded_entry)
-    assert _state(hass, VACUUM) == VacuumActivity.IDLE
+    assert _state(hass, VACUUM) == VacuumActivity.PAUSED
 
 
 async def test_unreachable_robot_marks_entities_unavailable_then_recovers(
