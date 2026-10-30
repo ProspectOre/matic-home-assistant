@@ -141,6 +141,7 @@ _MATIC_EVENT_TYPES = (
     f"{DOMAIN}_room_cancelled",
     f"{DOMAIN}_room_interrupted",
     f"{DOMAIN}_room_reconciled",
+    f"{DOMAIN}_room_held",
 )
 _SAFE_EVENT_FIELDS = (
     "observation_session",
@@ -169,6 +170,7 @@ _SAFE_EVENT_FIELDS = (
     "cleaning_mode",
     "coverage_setting",
     "reason_code",
+    "sensor",
     "cause",
     "error",
     "native_stop_reconciled",

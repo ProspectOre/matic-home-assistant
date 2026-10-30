@@ -279,6 +279,13 @@ save_plan:
           step: 5
           unit_of_measurement: "%"
           mode: box
+    occupancy_aware:
+      default: false
+      selector:
+        boolean:
+    occupancy_sensors:
+      selector:
+        object:
     select:
       default: true
       selector:

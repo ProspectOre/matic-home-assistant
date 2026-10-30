@@ -56,6 +56,22 @@ even if cleaning later stops, and cleans started in the Matic app count too.
 are counted](native-cleaning-results.md)). **Saved order** runs top to bottom,
 as listed, every time.
 
+<a id="occupied-rooms"></a>
+### Occupied rooms
+
+With **Hold occupied rooms** on, a plan leaves out any room whose occupancy or
+presence sensor is on when the run starts. The sensors are the `binary_sensor`
+entities with the **Occupancy** or **Presence** class in the Home Assistant
+area the room is assigned to (the same area **Clean area** uses). A plan can
+name one sensor for a room instead with `occupancy_sensors`.
+
+A held room is not cleaned, gets no result and keeps its place, so under Smart
+Order it is first in line for the next run. The Run view lists held rooms and
+the sensor holding each one, and each held room fires **Room held**. A sensor
+that is off, unknown or unavailable never holds a room. Occupancy is read once
+when the run starts; a room that becomes occupied later is still cleaned. If
+every room is held and the plan has no custom areas, the run does not start.
+
 ### Stopping a plan
 
 Stop ends cleaning and returns the robot to the dock. With **Smart Stop** on,
