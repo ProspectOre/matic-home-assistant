@@ -727,6 +727,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
                 f"{DOMAIN} managed run recovery after unload failure",
             )
     if unload_ok:
+        await entry.runtime_data.run_trails.async_shutdown()
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)

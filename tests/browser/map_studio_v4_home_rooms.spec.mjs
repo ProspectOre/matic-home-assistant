@@ -1734,6 +1734,11 @@ test.describe("cleaning history", () => {
     await expect(last.locator("dd")).toHaveText(["Done", "Interrupted", "Not started"]);
     const trail = last.getByRole("button", { name: "Show trail on map" });
     await expect(trail).toHaveAttribute("aria-pressed", "true");
+    // A saved map draws no trail, so its run offers none either.
+    await patchState(gallery, { dataMode: "history" });
+    await expect(trail).toHaveCount(0);
+    await patchState(gallery, { dataMode: "live" });
+    await expect(trail).toBeVisible();
 
     const earlier = gallery.getByRole("list", { name: "Earlier" }).getByRole("button");
     await expect(earlier).toHaveCount(2);

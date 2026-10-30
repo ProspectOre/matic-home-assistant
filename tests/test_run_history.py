@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.util import dt as dt_util
+from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.matic_robot import run_history
 from custom_components.matic_robot.client.models import (
@@ -581,6 +583,24 @@ async def test_trails_reload_and_reject_damaged_storage(
 
     await trails.async_remove()
     assert trails._data() == {"trails": [], "live": None}
+
+
+async def test_trail_shutdown_writes_now_so_removal_stays_removed(
+    hass: HomeAssistant, hass_storage
+) -> None:
+    trails = RunTrails(hass, "entry")
+    trails.observe(run_id="run-1", native_active=True, map_key=MAP, point=(0, 0))
+    assert "matic_robot.run_trails.entry" not in hass_storage
+    await trails.async_shutdown()
+    saved = hass_storage["matic_robot.run_trails.entry"]["data"]
+    assert saved["live"]["run_id"] == "run-1"
+    await trails.async_shutdown()
+    trails.observe(run_id="run-1", native_active=True, map_key=MAP, point=(1, 1))
+
+    await RunTrails(hass, "entry").async_remove()
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(minutes=5))
+    await hass.async_block_till_done()
+    assert "matic_robot.run_trails.entry" not in hass_storage
 
 
 def test_late_completion_repairs_only_the_matching_saved_run() -> None:

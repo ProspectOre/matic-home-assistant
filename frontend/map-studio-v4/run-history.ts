@@ -120,7 +120,7 @@ export class MaticRunHistoryV4 extends LitElement {
       ${run.rooms.length || run.areas.length ? this.#items([...run.rooms, ...run.areas])
         : html`<p class="subtle">${this.#t("v4_run_rooms_unknown", "Rooms not reported")}</p>`}
       ${next ? html`<p>${next}</p>` : nothing}
-      ${run.trail ? html`<div><button class="ms-btn ms-btn--secondary" type="button" aria-pressed=${String(shown)}
+      ${run.trail && this.state.dataMode === "live" ? html`<div><button class="ms-btn ms-btn--secondary" type="button" aria-pressed=${String(shown)}
         @click=${() => this.emit({ type: "show-trail", trail: shown ? null : run.trail })}
       >${this.#t("v4_run_show_trail", "Show trail on map")}</button></div>` : nothing}
     `;

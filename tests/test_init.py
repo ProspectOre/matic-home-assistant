@@ -1764,6 +1764,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     client.async_shutdown = AsyncMock()
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
+    run_trails = SimpleNamespace(async_shutdown=AsyncMock())
     plans = SimpleNamespace(
         async_cancel_and_wait=AsyncMock(),
         async_retire_recovery=AsyncMock(),
@@ -1780,6 +1781,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             client=client,
             slam_map=slam_map,
             slam_history=slam_history,
+            run_trails=run_trails,
             cleaning_plans=plans,
         ),
     )
@@ -1824,6 +1826,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     assert pose_view.clear_entry.called is unload_ok
     assert slam_map.async_shutdown.await_count == int(unload_ok)
     assert slam_history.async_shutdown.await_count == int(unload_ok)
+    assert run_trails.async_shutdown.await_count == int(unload_ok)
 
 
 async def test_unload_fences_external_command_before_managed_cleanup_wait(
@@ -1852,6 +1855,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
     client = SimpleNamespace(async_shutdown=AsyncMock())
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
+    run_trails = SimpleNamespace(async_shutdown=AsyncMock())
     entry = SimpleNamespace(
         entry_id="entry",
         disabled_by=None,
@@ -1861,6 +1865,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             client=client,
             slam_map=slam_map,
             slam_history=slam_history,
+            run_trails=run_trails,
         ),
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())

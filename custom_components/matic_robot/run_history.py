@@ -441,6 +441,7 @@ class RunTrails:
         )
         self._trails: list[dict[str, Any]] = []
         self._live: _LiveTrail | None = None
+        self._closed = False
 
     async def async_load(self) -> None:
         """Load saved trails, dropping any that fail validation."""
@@ -465,8 +466,16 @@ class RunTrails:
                 [tuple(point) for point in live["segments"][0]],
             )
 
+    async def async_shutdown(self) -> None:
+        """Write any delayed save now and stop saving before the entry unloads."""
+        if self._closed:
+            return
+        self._closed = True
+        await self._store.async_save(self._data())
+
     async def async_remove(self) -> None:
         """Erase every saved trail."""
+        self._closed = True
         self._trails = []
         self._live = None
         await self._store.async_remove()
@@ -592,6 +601,8 @@ class RunTrails:
         self._schedule_save()
 
     def _schedule_save(self) -> None:
+        if self._closed:
+            return
         self._store.async_delay_save(self._data, TRAIL_SAVE_DELAY_SECONDS)
 
     def _data(self) -> dict[str, Any]:
