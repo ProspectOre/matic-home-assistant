@@ -1055,6 +1055,11 @@
         "name": "Clean custom area"
       }
     },
+    "calendar": {
+      "native_schedules": {
+        "name": "Robot schedules"
+      }
+    },
     "camera": {
       "map": {
         "name": "Map"

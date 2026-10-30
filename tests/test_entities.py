@@ -32,6 +32,7 @@ from custom_components.matic_robot import (
     update,
     vacuum,
 )
+from custom_components.matic_robot import calendar as calendar_platform
 from custom_components.matic_robot import event as event_platform
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
@@ -350,6 +351,7 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("button", button.async_setup_entry)
     await add_platform("sensor", sensor.async_setup_entry)
     await add_platform("select", select.async_setup_entry)
+    await add_platform("calendar", calendar_platform.async_setup_entry)
     await add_platform("camera", camera.async_setup_entry)
     await add_platform("event", event_platform.async_setup_entry)
     await add_platform("number", number.async_setup_entry)
@@ -357,10 +359,11 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 54 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 55 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
         "binary_sensor": 11,
         "button": 5,
+        "calendar": 1,
         "camera": 2,
         "event": 1,
         "number": 1,
@@ -370,8 +373,8 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 58
-    assert len({entity.unique_id for entity in entities}) == 58
+    assert len(entities) == 59
+    assert len({entity.unique_id for entity in entities}) == 59
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
