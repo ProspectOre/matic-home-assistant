@@ -92,13 +92,25 @@ def occupancy_holds(
     plan: Mapping[str, Any],
     room_ids: Iterable[str],
 ) -> dict[str, dict[str, str]]:
-    """Return the rooms an occupancy-aware plan holds right now, and why."""
+    """Return the plan's rooms it holds right now, and why.
+
+    ``room_ids`` are the rooms on the current map; only those the plan
+    cleans can be held.
+    """
     if plan.get("occupancy_aware") is not True:
         return {}
+    rooms = plan.get("rooms")
+    plan_room_ids = {
+        str(room["room_id"])
+        for room in (rooms if isinstance(rooms, list) else [])
+        if isinstance(room, Mapping) and "room_id" in room
+    }
     overrides = plan_occupancy_sensors(plan)
     areas = room_area_ids(hass, vacuum_entity_id)
     holds: dict[str, dict[str, str]] = {}
     for room_id in room_ids:
+        if room_id not in plan_room_ids:
+            continue
         if room_id in overrides:
             candidates = [overrides[room_id]]
         elif room_id in areas:

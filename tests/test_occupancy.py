@@ -193,9 +193,22 @@ async def test_occupancy_holds_reads_area_sensors_and_overrides(hass) -> None:
     hass.states.async_set(first, "unavailable")
     hass.states.async_set(second, "on")
     hass.states.async_set(study_sensor, "on")
-    plan = {"occupancy_aware": True}
+    plan = {
+        "occupancy_aware": True,
+        "rooms": [
+            {"room_id": "room-kitchen"},
+            {"room_id": "room-study"},
+            {"room_id": "room-hall"},
+            "bad",
+        ],
+    }
 
     assert occupancy_holds(hass, vacuum, {}, ROOM_MAP) == {}
+    # A room on the map that the plan does not clean is never held.
+    assert occupancy_holds(
+        hass, vacuum, {**plan, "rooms": [{"room_id": "room-study"}]}, ROOM_MAP
+    ) == {"room-study": {"reason": "occupied", "sensor": study_sensor}}
+    assert occupancy_holds(hass, vacuum, {**plan, "rooms": None}, ROOM_MAP) == {}
     assert occupancy_holds(hass, vacuum, plan, [*ROOM_MAP, "room-hall"]) == {
         "room-kitchen": {"reason": "occupied", "sensor": second},
         "room-study": {"reason": "occupied", "sensor": study_sensor},
