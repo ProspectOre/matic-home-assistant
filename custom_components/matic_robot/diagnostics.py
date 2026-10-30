@@ -102,6 +102,7 @@ async def async_get_config_entry_diagnostics(
             ),
             "visible_network_count": len(telemetry.wifi_networks),
             "scheduled_cleanings": telemetry.scheduled_cleanings,
+            "zone_kinds": [zone.kind for zone in telemetry.zones],
             "local_cleaning_sessions": telemetry.local_cleaning_sessions,
             "child_lock_enabled": telemetry.child_lock_enabled,
             "pet_waste_enabled": telemetry.pet_waste_enabled,

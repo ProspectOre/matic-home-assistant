@@ -10,6 +10,7 @@ from io import BytesIO
 from google.protobuf.message import DecodeError
 from PIL import Image, UnidentifiedImageError
 
+from .consumables import decode_maintenance_suggestions
 from .models import HermesCollectionEntry
 from .wire import WireField, decode_fields, uuid_string
 
@@ -43,6 +44,7 @@ class MonthlyCleaningRecap:
     sweep_duration_seconds: float
     mop_duration_seconds: float
     favorite_room_name: str | None
+    maintenance_suggestions: tuple[int, ...] = ()
 
 
 def decode_cleaning_session_image(entry: HermesCollectionEntry) -> CleaningSessionImage:
@@ -87,13 +89,10 @@ def decode_cleaning_session_image(entry: HermesCollectionEntry) -> CleaningSessi
     return CleaningSessionImage(entry.key, image, width, height)
 
 
-def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleaningRecap:
-    """Decode one verified monthly recap while preserving protocol-native units."""
-    if not entry.key or len(entry.key) > 64 or not entry.value:
-        raise DecodeError("monthly recap entry is empty or oversized")
-    if len(entry.value) > MAX_RECAP_PAYLOAD_BYTES:
-        raise DecodeError("monthly recap payload exceeds the size limit")
-
+def decode_monthly_recap_key(entry: HermesCollectionEntry) -> tuple[int, int]:
+    """Return a monthly recap's ``(month, year)`` without decoding its value."""
+    if not entry.key or len(entry.key) > 64:
+        raise DecodeError("monthly recap key has an invalid shape")
     key_fields = decode_fields(entry.key)
     months = _varint_values(key_fields, 1)
     years = _varint_values(key_fields, 2)
@@ -105,18 +104,32 @@ def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleani
         or not 2000 <= years[0] <= 9999
     ):
         raise DecodeError("monthly recap key has an invalid shape")
+    return months[0], years[0]
+
+
+def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleaningRecap:
+    """Decode one verified monthly recap while preserving protocol-native units."""
+    if not entry.key or len(entry.key) > 64 or not entry.value:
+        raise DecodeError("monthly recap entry is empty or oversized")
+    if len(entry.value) > MAX_RECAP_PAYLOAD_BYTES:
+        raise DecodeError("monthly recap payload exceeds the size limit")
+
+    month, year = decode_monthly_recap_key(entry)
 
     fields = decode_fields(entry.value)
     areas = _bytes_values(fields, 1)
     counts = _varint_values(fields, 2)
     favorites = _bytes_values(fields, 6)
     durations = _bytes_values(fields, 7)
+    # Field 4 lists the parts the robot suggests servicing; a month with no
+    # suggestion omits it.
+    maintenance = tuple(field for field in fields if field.number == 4)
     if (
         len(areas) != 1
         or len(counts) != 1
         or len(favorites) > 1
         or len(durations) != 1
-        or len(fields) != 3 + len(favorites)
+        or len(fields) != 3 + len(favorites) + len(maintenance)
         or counts[0] > MAX_RECAP_SESSION_COUNT
     ):
         raise DecodeError("monthly recap has an invalid shape")
@@ -125,14 +138,15 @@ def decode_monthly_cleaning_recap(entry: HermesCollectionEntry) -> MonthlyCleani
     sweep_duration, mop_duration = _decode_mode_durations(durations[0])
     favorite_name = _decode_favorite_room(favorites[0]) if favorites else None
     return MonthlyCleaningRecap(
-        month=months[0],
-        year=years[0],
+        month=month,
+        year=year,
         sweep_area_m2=sweep_area,
         mop_area_m2=mop_area,
         session_count=counts[0],
         sweep_duration_seconds=sweep_duration,
         mop_duration_seconds=mop_duration,
         favorite_room_name=favorite_name,
+        maintenance_suggestions=decode_maintenance_suggestions(maintenance),
     )
 
 

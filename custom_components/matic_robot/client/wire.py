@@ -207,6 +207,18 @@ def packed_floats(payload: bytes, count: int) -> tuple[float, ...]:
     return struct.unpack(f"<{count}f", payload)
 
 
+def packed_varints(payload: bytes, max_count: int) -> tuple[int, ...]:
+    """Decode a packed repeated varint field of at most ``max_count`` values."""
+    values: list[int] = []
+    offset = 0
+    while offset < len(payload):
+        if len(values) == max_count:
+            raise DecodeError("packed varint vector exceeds its limit")
+        value, offset = _decode_varint(payload, offset)
+        values.append(value)
+    return tuple(values)
+
+
 def point(
     payload: bytes,
     *,

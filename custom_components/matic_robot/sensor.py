@@ -28,6 +28,7 @@ from homeassistant.util import slugify
 
 from . import MaticConfigEntry
 from .client.models import (
+    ROBOT_ALERT_OPTIONS,
     CuesGestureStatus,
     CuesVoiceStatus,
     RobotActivity,
@@ -52,6 +53,13 @@ ACTIVITY_DESCRIPTION = SensorEntityDescription(
     translation_key="activity",
     device_class=SensorDeviceClass.ENUM,
     options=[activity.value for activity in RobotActivity],
+)
+
+ROBOT_ALERT_DESCRIPTION = SensorEntityDescription(
+    key="robot_alert",
+    translation_key="robot_alert",
+    device_class=SensorDeviceClass.ENUM,
+    options=list(ROBOT_ALERT_OPTIONS),
 )
 
 ROOMS_DESCRIPTION = SensorEntityDescription(
@@ -161,7 +169,7 @@ BAG_LAST_REPLACED_DESCRIPTION = SensorEntityDescription(
 class MaticStateSensorDescription(SensorEntityDescription):
     """Describe one stable field on the coordinated robot state."""
 
-    value_fn: Callable[[RobotState], str | int | None]
+    value_fn: Callable[[RobotState], str | int | datetime | None]
 
 
 STATE_DESCRIPTIONS = (
@@ -287,6 +295,12 @@ STATE_DESCRIPTIONS = (
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.wifi_signal_dbm,
     ),
+    MaticStateSensorDescription(
+        key="bag_pass_expires",
+        translation_key="bag_pass_expires",
+        device_class=SensorDeviceClass.TIMESTAMP,
+        value_fn=lambda state: state.telemetry.bag_pass_expires_at,
+    ),
 )
 
 
@@ -323,6 +337,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             MaticActivitySensor(entry),
+            MaticRobotAlertSensor(entry),
             MaticBatterySensor(entry),
             MaticRoomsSensor(entry),
             MaticCleaningHistorySensor(entry),
@@ -393,6 +408,31 @@ class MaticActivitySensor(MaticEntity, SensorEntity):
             "errors": list(state.error_names),
             "primary_error": state.error_names[0] if state.error_names else None,
             "current_area": state.current_area,
+        }
+
+
+class MaticRobotAlertSensor(MaticEntity, SensorEntity):
+    """The robot's current alert by name, or unknown with its raw code."""
+
+    entity_description = ROBOT_ALERT_DESCRIPTION
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_robot_alert"
+
+    @property
+    def native_value(self) -> str:
+        """Return the first named alert, ``unknown``, or ``none``."""
+        return self.coordinator.data.operational.alert
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose every active alert and when unmapped codes were seen."""
+        operational = self.coordinator.data.operational
+        return {
+            "alerts": list(operational.alerts),
+            "codes": list(operational.error_codes),
+            "unknown_codes_seen": self.coordinator.unknown_alert_codes,
         }
 
 
@@ -468,7 +508,7 @@ class MaticStateSensor(MaticEntity, SensorEntity):
         )
 
     @property
-    def native_value(self) -> str | int | None:
+    def native_value(self) -> str | int | datetime | None:
         """Return the decoded field."""
         return self.entity_description.value_fn(self.coordinator.data)
 

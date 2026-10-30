@@ -1,10 +1,11 @@
 import { clamp } from "./numeric";
 import { liveCameraKey, cameraPreferences, mapCameraIdentity } from "./camera-preferences";
-import type { AreaCircle, SceneModel, SceneRoom } from "./backend-contracts";
+import type { AreaCircle, MapZoneOverlay, SceneModel, SceneRoom } from "./backend-contracts";
 import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WifiSignalCell, WorkspaceState } from "./contracts";
 import { canShowExactPose, hasCoordinateEditAdmission, forcesTop, topView } from "./state";
 import { rgba, type CanvasPalette, type Channel } from "./theme-probe";
+import type { drawRobot as DrawRobot } from "./robot-model";
 
 export interface MapPoint {
   readonly x: number;
@@ -392,6 +393,8 @@ export class RendererController {
   #viewport = { width: 1, height: 1, left: 0, top: 0 };
   #fitActive = true;
   #disposed = false;
+  /** undefined until a heading needs it, null while loading or after a failed load. */
+  #robotModel: typeof DrawRobot | null | undefined;
   #palette: CanvasPalette = DEFAULT_PALETTE;
   // Saved-order numbers are drawn every frame; one formatter per locale.
   #positionFormat: { readonly locale: string; readonly format: Intl.NumberFormat } | null = null;
@@ -1651,6 +1654,10 @@ export class RendererController {
         for (const circle of circles) this.#drawCircle(context, circle);
       }
     }
+    // Zones describe the robot's current map, so a saved history map leaves them out.
+    if (state.dataMode === "live" && state.selection.floorId === "current") {
+      this.#drawZones(context, state.resources.areas.value?.zones ?? [], palette);
+    }
     const outline = state.draw.outline;
     if (outline && (state.workflow === "draw" || state.workflow === "areaReview")
       && !(state.workflow === "draw" && state.draw.tool === "outline")) {
@@ -1681,7 +1688,39 @@ export class RendererController {
       // stored in origin-relative cells, so it must cross the same conversion
       // boundary as custom-area coordinates before projection.
       const marker = this.#projectMeters(pose.position[0], pose.position[1], 3);
-      if (marker) {
+      // Project a point ahead of the robot so the marker turns with both the
+      // robot's heading and the current 2D rotation or 3D camera.
+      const ahead = typeof pose.heading === "number"
+        ? this.#projectMeters(
+          pose.position[0] + Math.cos(pose.heading) * 0.3,
+          pose.position[1] + Math.sin(pose.heading) * 0.3,
+          3,
+          false,
+        )
+        : null;
+      const heading = pose.heading;
+      if (marker && typeof heading === "number") {
+        if (this.#robotModel === undefined) {
+          // The 3D model is a lazy chunk; the flat marker stands in until it
+          // loads, and for the rest of the page if the chunk fails.
+          this.#robotModel = null;
+          import("./robot-model").then(({ drawRobot }) => {
+            this.#robotModel = drawRobot;
+            this.requestRender();
+          }, () => undefined);
+        }
+        const [x, y] = pose.position;
+        const metersPerCell = scene.metadata.metersPerCell;
+        if (this.#robotModel?.(context, (forward, left, height) => this.#projectMeters(
+          x + forward * Math.cos(heading) - left * Math.sin(heading),
+          y + forward * Math.sin(heading) + left * Math.cos(heading),
+          height / metersPerCell,
+          false,
+        ), heading, palette)) return;
+      }
+      if (marker && ahead && Math.hypot(ahead.x - marker.x, ahead.y - marker.y) > 0.5) {
+        this.#drawRobotMarker(context, marker, Math.atan2(ahead.y - marker.y, ahead.x - marker.x), palette);
+      } else if (marker) {
         context.beginPath();
         context.arc(marker.x, marker.y, 7, 0, Math.PI * 2);
         context.fillStyle = rgba(palette.accent, 1);
@@ -1691,6 +1730,53 @@ export class RendererController {
         context.stroke();
       }
     }
+  }
+
+  #drawZones(context: CanvasRenderingContext2D, zones: readonly MapZoneOverlay[], palette: CanvasPalette): void {
+    // Read-only: no-go zones are shaded and outlined; zones the robot made
+    // itself, whose meaning is not known, get only a dashed outline.
+    for (const zone of zones) {
+      context.beginPath();
+      for (const ring of [zone.outline, ...zone.holes]) {
+        ring.forEach(([x, y], index) => {
+          const p = this.#projectMeters(x, y, 0, false);
+          if (p) { if (index === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }
+        });
+        context.closePath();
+      }
+      if (zone.kind === "no_go") {
+        context.fillStyle = rgba(palette.text, .22);
+        context.fill("evenodd");
+      }
+      context.setLineDash(zone.kind === "no_go" ? [] : [5, 4]);
+      context.strokeStyle = rgba(palette.text, zone.kind === "no_go" ? .9 : .6);
+      context.lineWidth = 1.5;
+      context.stroke();
+      context.setLineDash([]);
+    }
+  }
+
+  #drawRobotMarker(context: CanvasRenderingContext2D, at: MapPoint, angle: number, palette: CanvasPalette): void {
+    // Rounded body with a pointer on the front edge, drawn facing +x and
+    // rotated to the projected heading.
+    context.save();
+    context.translate(at.x, at.y);
+    context.rotate(angle);
+    context.beginPath();
+    context.roundRect(-9, -9, 18, 18, 6);
+    context.fillStyle = rgba(palette.accent, 1);
+    context.fill();
+    context.strokeStyle = rgba(palette.onAccent, 1);
+    context.lineWidth = 2.5;
+    context.stroke();
+    context.beginPath();
+    context.moveTo(6, 0);
+    context.lineTo(-1, -5);
+    context.lineTo(-1, 5);
+    context.closePath();
+    context.fillStyle = rgba(palette.onAccent, 1);
+    context.fill();
+    context.restore();
   }
 
   #selectedRoomNames(state: WorkspaceState): Set<string> {

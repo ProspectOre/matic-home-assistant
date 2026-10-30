@@ -1007,6 +1007,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     hass.http.async_register_static_paths.assert_awaited_once()
     assert hass.http.register_view.call_count == 9
     from custom_components.matic_robot.frontend import (
+        DATA_FLOOR_LAYERS_VIEW,
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
         MATIC_ICONS_PATH,
@@ -1019,6 +1020,9 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     assert hass.data[DATA_SLAM_POSE_VIEW] in {
+        call.args[0] for call in hass.http.register_view.call_args_list
+    }
+    assert hass.data[DATA_FLOOR_LAYERS_VIEW] in {
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     registered_paths = {
@@ -1796,7 +1800,9 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
     pose_view = SimpleNamespace(clear_entry=MagicMock())
+    floor_layers_view = SimpleNamespace(clear_entry=MagicMock())
     from custom_components.matic_robot.frontend import (
+        DATA_FLOOR_LAYERS_VIEW,
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
     )
@@ -1809,6 +1815,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
         data={
             DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
+            DATA_FLOOR_LAYERS_VIEW: floor_layers_view,
         },
     )
 
@@ -1833,6 +1840,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     assert client.async_shutdown.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
+    assert floor_layers_view.clear_entry.called is unload_ok
     assert slam_map.async_shutdown.await_count == int(unload_ok)
     assert slam_history.async_shutdown.await_count == int(unload_ok)
 
@@ -2110,8 +2118,16 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_area_issue,
+        patch(
+            "custom_components.matic_robot.async_delete_maintenance_issues"
+        ) as delete_maintenance_issues,
+        patch(
+            "custom_components.matic_robot.async_delete_robot_alert_issues"
+        ) as delete_alert_issues,
     ):
         await async_remove_entry(hass, entry)
+
+    delete_maintenance_issues.assert_called_once_with(hass, "entry")
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
     get_plan_manager.assert_awaited_once_with(hass)
@@ -2123,6 +2139,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     slam_map.async_remove.assert_awaited_once()
     slam_history.async_remove.assert_awaited_once()
     delete_area_issue.assert_called_once_with(hass, "entry")
+    delete_alert_issues.assert_called_once_with(hass, "entry")
 
     bare = SimpleNamespace(data={})
     bare_plans = SimpleNamespace(async_remove_robot=AsyncMock())
@@ -2142,6 +2159,8 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_bare_area_issue,
+        patch("custom_components.matic_robot.async_delete_maintenance_issues"),
+        patch("custom_components.matic_robot.async_delete_robot_alert_issues"),
     ):
         await async_remove_entry(bare, entry)
 
@@ -2171,6 +2190,7 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
         ),
         patch("custom_components.matic_robot.clear_slam_scene_cache"),
         patch("custom_components.matic_robot.async_delete_custom_area_issue"),
+        patch("custom_components.matic_robot.async_delete_robot_alert_issues"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch(
             "custom_components.matic_robot.SlamHistoryStore",
