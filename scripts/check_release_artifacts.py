@@ -37,7 +37,11 @@ PRIVATE_ARTIFACT_SUFFIXES = {
     ".webp",
     ".zst",
 }
-ALLOWED_RASTER_ASSETS = {"brand/icon.png", "brand/icon@2x.png"}
+ALLOWED_RASTER_ASSETS = {
+    "brand/icon.png",
+    "brand/icon@2x.png",
+    "map_studio_v4/assets/robot-atlas.webp",
+}
 
 
 class ArtifactError(RuntimeError):
@@ -78,7 +82,7 @@ def _private_artifact_paths(paths: Iterable[str]) -> list[str]:
         suffix = normalized.suffix.casefold()
         if FORBIDDEN_PARTS.intersection(normalized.parts):
             private.append(path)
-        elif suffix in PRIVATE_ARTIFACT_SUFFIXES:
+        elif suffix in PRIVATE_ARTIFACT_SUFFIXES and path not in ALLOWED_RASTER_ASSETS:
             private.append(path)
         elif suffix == ".png" and path not in ALLOWED_RASTER_ASSETS:
             private.append(path)

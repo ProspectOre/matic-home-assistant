@@ -66,6 +66,7 @@ def test_release_artifact_gate_rejects_stale_dashboard_card(tmp_path) -> None:
         ".storage/matic_robot.slam_map",
         "captures/house.pcapng",
         "map/full_house.webp",
+        "map_studio_v4/assets/room.webp",
         "map/point_cloud.npz",
         "map/room_photo.png",
     ),
@@ -81,11 +82,16 @@ def test_release_artifact_gate_rejects_private_map_data(
         validate_artifact(artifact, files)
 
 
-def test_release_artifact_gate_allows_only_reviewed_brand_rasters(
+def test_release_artifact_gate_allows_only_reviewed_public_rasters(
     tmp_path: Path,
 ) -> None:
-    """Keep the two public brand icons without opening a map-photo bypass."""
-    files = {"__init__.py", "brand/icon.png", "brand/icon@2x.png"}
+    """Keep named generated assets without opening a map-photo bypass."""
+    files = {
+        "__init__.py",
+        "brand/icon.png",
+        "brand/icon@2x.png",
+        "map_studio_v4/assets/robot-atlas.webp",
+    }
     artifact = _wheel(tmp_path / "project-0.1.0-py3-none-any.whl", files)
 
     validate_artifact(artifact, files)

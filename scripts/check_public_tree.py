@@ -51,6 +51,7 @@ BINARY_SUFFIXES = {
 ALLOWED_BINARY_PATHS = {
     Path("custom_components/matic_robot/brand/icon.png"),
     Path("custom_components/matic_robot/brand/icon@2x.png"),
+    Path("custom_components/matic_robot/map_studio_v4/assets/robot-atlas.webp"),
 }
 PRIVATE_PATH_PARTS = {".storage"}
 MAC_ADDRESS = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}:){5}[0-9a-f]{2}(?![0-9a-f])")
