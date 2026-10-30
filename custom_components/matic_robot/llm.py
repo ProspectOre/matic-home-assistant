@@ -1630,7 +1630,11 @@ class MaticGetZonesTool(_MaticTool):
                     for zone in zones[:MAX_ZONE_RESULTS]
                     if floor_plan is not None
                 ],
-                "zones_on_other_maps": len(state.telemetry.zones) - len(zones),
+                "zones_on_other_maps": (
+                    len(state.telemetry.zones) - len(zones)
+                    if floor_plan is not None
+                    else None
+                ),
             }
         )
 
