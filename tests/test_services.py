@@ -408,6 +408,31 @@ async def test_clean_action_routes_every_verified_preference() -> None:
     )
 
 
+async def test_go_to_room_action_routes_the_room_to_send_command() -> None:
+    hass = SimpleNamespace(data={})
+    services = await _registered_services(hass)
+    call = ServiceCall(
+        hass, DOMAIN, "go_to_room", {"entity_id": ["vacuum.test"], "room": "Study"}
+    )
+    with patch(
+        "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+        return_value=["vacuum.test"],
+    ):
+        await _registered_handler(services, "go_to_room")(call)
+
+    services.async_call.assert_awaited_once_with(
+        "vacuum",
+        "send_command",
+        {
+            "entity_id": ["vacuum.test"],
+            "command": "go_to_room",
+            "params": {"room": "Study"},
+        },
+        blocking=True,
+        context=call.context,
+    )
+
+
 async def test_clean_action_without_rooms_targets_entire_floor() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)

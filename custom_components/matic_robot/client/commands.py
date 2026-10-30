@@ -94,6 +94,21 @@ def encode_sink_summon_command(*, mission_id: int, posture: bytes) -> bytes:
     return _field(2, _field(4, navigate_to))
 
 
+def encode_go_to_room_command(
+    *, mission_id: int, partition_id: str, region_id: str
+) -> bytes:
+    """Drive to a room on this floor, with no wait task, like a plain NavigateTo.
+
+    The app's own navigation sends a posture; firmware also accepts a room as
+    the goal (NavigateTo field 5), which leaves the robot to choose the spot.
+    """
+    room_goal = _field(1, _field(1, _wrapped_uuid(str(UUID(partition_id))))) + _field(
+        4, _field(2, _wrapped_uuid(str(UUID(region_id))))
+    )
+    navigate_to = _field(5, room_goal) + _field(2, encode_mission_id(mission_id))
+    return _field(2, _field(4, navigate_to))
+
+
 def encode_user_data(
     *,
     app_id: str,
