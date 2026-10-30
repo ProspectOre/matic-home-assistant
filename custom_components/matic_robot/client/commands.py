@@ -415,12 +415,12 @@ def requeue_coverage_goals(
     current room and the rooms after it. Kept goals keep their round IDs and
     goals for a room cleaned again get fresh ones.
     """
-    groups: dict[str, list[CoverageUpdateGoal]] = {}
+    # A room cleaned again after it finished appears twice, so the plan is
+    # split into consecutive visits rather than grouped by room.
+    visits: list[tuple[str, list[CoverageUpdateGoal]]] = []
     for goal in goals:
-        groups.setdefault(goal.region_id, []).append(
-            goal
-            if goal.setting != 3
-            else CoverageUpdateGoal(
+        if goal.setting == 3:
+            goal = CoverageUpdateGoal(
                 goal.round_id,
                 goal.region_id,
                 _READBACK_SETTINGS[goal.mode],
@@ -428,39 +428,57 @@ def requeue_coverage_goals(
                 goal.mode,
                 goal.behavior,
             )
-        )
-    order = list(groups)
-    if current_region not in groups:
-        raise QueueChangeError("current_room_unknown")
-    queue = order[order.index(current_region) :]
+        if visits and visits[-1][0] == goal.region_id:
+            visits[-1][1].append(goal)
+        else:
+            visits.append((goal.region_id, [goal]))
+    queue = visits[queue_start_visit(visits, current_region) :]
+    queued = [region for region, _goals in queue]
     if action is QueueAction.SKIP:
-        if target_region not in queue:
+        if target_region not in queued:
             raise QueueChangeError("room_not_queued")
         if len(queue) == 1:
             raise QueueChangeError("last_room")
-        queue.remove(target_region)
+        del queue[queued.index(target_region)]
     elif action is QueueAction.CLEAN_NEXT:
-        if target_region not in queue:
+        if target_region not in queued:
             raise QueueChangeError("room_not_queued")
-        if queue.index(target_region) <= 1:
+        index = queued.index(target_region)
+        if index <= 1:
             raise QueueChangeError("already_next")
-        queue.remove(target_region)
-        queue.insert(1, target_region)
+        queue.insert(1, queue.pop(index))
     else:
-        existing = groups.get(target_region, [])
         fresh = _fresh_goals(
             target_region,
-            existing,
+            [
+                goal
+                for region, room in visits
+                if region == target_region
+                for goal in room
+            ],
             cleaning_mode,
             coverage_setting,
             round_id_factory,
         )
-        if target_region in queue:
-            groups[target_region] = fresh
+        if target_region in queued:
+            queue[queued.index(target_region)] = (target_region, fresh)
         else:
-            groups[f"again:{target_region}"] = fresh
-            queue.append(f"again:{target_region}")
-    return tuple(goal for region in queue for goal in groups[region])
+            queue.append((target_region, fresh))
+    return tuple(goal for _region, room in queue for goal in room)
+
+
+def queue_start_visit(
+    visits: Sequence[tuple[str, Sequence[object]]], current_region: str
+) -> int:
+    """Return the index of the visit the robot is on: the room's last visit.
+
+    A room appears twice only when it finished and was added again, and the
+    robot reaches that second visit after the first.
+    """
+    for index in range(len(visits) - 1, -1, -1):
+        if visits[index][0] == current_region:
+            return index
+    raise QueueChangeError("current_room_unknown")
 
 
 def _fresh_goals(

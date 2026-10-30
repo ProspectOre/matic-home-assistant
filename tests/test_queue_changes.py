@@ -520,3 +520,56 @@ def test_readback_compares_each_sent_goal_spec():
     assert not matches([replace(vacuum, setting=2), mop])
     assert not matches([replace(vacuum, behavior=1), mop])
     assert not matches([vacuum, replace(mop, mode=0, setting=3)])
+
+
+def test_a_room_added_again_keeps_its_own_place_in_the_queue():
+    """The finished visit and the repeat at the end stay separate."""
+    rounds = iter(UUID(int=value) for value in range(1, 20))
+    plan = [_goal(DONE, str(UUID(int=90))), _goal(CURRENT), _goal(QUEUED)]
+    again = requeue_coverage_goals(
+        plan,
+        action=QueueAction.CLEAN_AGAIN,
+        current_region=CURRENT,
+        target_region=DONE,
+        cleaning_mode=CleaningMode.MOP,
+        round_id_factory=lambda: next(rounds),
+    )
+    plan = [plan[0], *again]
+
+    skipped = requeue_coverage_goals(
+        plan,
+        action=QueueAction.SKIP,
+        current_region=CURRENT,
+        target_region=QUEUED,
+    )
+    assert [goal.region_id for goal in skipped] == [CURRENT] + [DONE] * 4
+
+    moved = requeue_coverage_goals(
+        plan,
+        action=QueueAction.CLEAN_NEXT,
+        current_region=CURRENT,
+        target_region=DONE,
+    )
+    assert [goal.region_id for goal in moved] == [CURRENT, *[DONE] * 4, QUEUED]
+
+    # On its repeat visit, the robot is past everything before it.
+    last = requeue_coverage_goals(
+        [*plan, _goal(THIRD)],
+        action=QueueAction.SKIP,
+        current_region=DONE,
+        target_region=THIRD,
+    )
+    assert {goal.region_id for goal in last} == {DONE}
+    assert len(last) == 4
+
+
+async def test_plan_with_a_repeat_visit_starts_at_the_current_visit(monkeypatch):
+    repeat = [
+        _goal(DONE, str(UUID(int=60 + index)), behavior=index) for index in range(2)
+    ]
+    live = [*LIVE, *repeat]
+    client = _client(monkeypatch, _readback(live), _readback(LIVE), area="Third")
+
+    await client.async_change_queue(FLOOR, QueueAction.SKIP, ROOMS[0])
+
+    assert [goal.region_id for goal in _sent(client)] == [THIRD, THIRD]

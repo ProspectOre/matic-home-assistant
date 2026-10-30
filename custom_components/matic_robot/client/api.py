@@ -50,6 +50,7 @@ from .commands import (
     encode_sink_summon_command,
     encode_user_command,
     encode_user_data,
+    queue_start_visit,
     requeue_coverage_goals,
 )
 from .consumables import decode_bag_pass_expiry
@@ -229,6 +230,17 @@ _BINARY_SETTING_STATE_PROPERTIES = {
 }
 _SETTING_READBACK_TIMEOUT_SECONDS = 8.0
 _SETTING_READBACK_INTERVAL_SECONDS = 0.25
+
+
+def _queue_start_index(plan: Sequence[CoveragePlanGoal], current_region: str) -> int:
+    """Return the plan index where the current room's last visit begins."""
+    visits: list[tuple[str, list[int]]] = []
+    for index, goal in enumerate(plan):
+        if visits and visits[-1][0] == goal.region_id:
+            visits[-1][1].append(index)
+        else:
+            visits.append((goal.region_id, [index]))
+    return visits[queue_start_visit(visits, current_region)][1][0]
 
 
 def _region_order(goals: Sequence[CoverageUpdateGoal | CoveragePlanGoal]) -> list[str]:
@@ -1669,9 +1681,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             session_id=session_id,
             goals=goals,
         )
-        start = next(
-            index for index, goal in enumerate(plan) if goal.region_id == current[0]
-        )
+        start = _queue_start_index(plan, current[0])
         sent = {goal.round_id for goal in goals}
         dropped = {goal.round_id for goal in plan[start:]} - sent
         expected_order = _region_order(goals)
