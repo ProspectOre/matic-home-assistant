@@ -1451,6 +1451,13 @@ export const selectStopSecondaryAction = (
 ): PrimaryAction | null => hasStoppableWork(state) && !["stop", "stop-now"].includes(selectPrimaryAction(state).id)
   ? stopAction(state) : null;
 
+/** Go to room sits beside Clean when one room is picked and the robot can move. */
+export const selectGoToRoomAction = (state: WorkspaceState): PrimaryAction | null =>
+  state.workflow === "rooms" && state.dataMode === "live" && !state.floor.readOnly
+  && state.selection.roomIds.length === 1 && canStartMotion(state)
+    ? { id: "go-to-room", label: "Go to room", labelKey: "v4_action_go_to_room", kind: "neutral", enabled: true }
+    : null;
+
 const SCALE_OPTIONS_METERS = [2, 1, 0.5, 0.25, 0.1, 0.05] as const;
 
 export const mapScale = (

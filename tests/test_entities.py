@@ -207,6 +207,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             async_start_coverage=AsyncMock(),
             async_get_sink_posture=AsyncMock(return_value=b"synthetic-posture"),
             async_sink_summon=AsyncMock(),
+            async_go_to_room=AsyncMock(),
             async_set_binary_setting=AsyncMock(),
             async_set_deep_mop=AsyncMock(),
             async_set_water_flow=AsyncMock(),
@@ -2693,6 +2694,74 @@ async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> No
         assert not isinstance(failed.value, ServiceValidationError)
         assert failed.value.translation_key == "robot_command_failed"
         unsupported.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+
+
+async def test_go_to_room_sends_the_named_room_on_the_current_floor() -> None:
+    entry = _entry(idle=True)
+    client = entry.runtime_data.coordinator.client
+
+    await vacuum.MaticVacuum(entry).async_send_command(
+        "go_to_room", {"room": " study "}
+    )
+    await vacuum.MaticVacuum(entry).async_send_command("go-to-room", {"room": "room-1"})
+
+    assert [call.args for call in client.async_go_to_room.await_args_list] == [
+        (_floor_plan(), _floor_plan().rooms[1]),
+        (_floor_plan(), _floor_plan().rooms[0]),
+    ]
+    assert entry.runtime_data.coordinator.async_request_refresh.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "params", [None, {}, {"room": ""}, {"room": "  "}, {"room": 3}, ["Kitchen"]]
+)
+async def test_go_to_room_requires_one_room(params) -> None:
+    entry = _entry(idle=True)
+    with pytest.raises(ServiceValidationError) as raised:
+        await vacuum.MaticVacuum(entry).async_send_command("go_to_room", params)
+    assert raised.value.translation_key == "go_to_room_room_required"
+    entry.runtime_data.coordinator.client.async_go_to_room.assert_not_awaited()
+
+
+async def test_go_to_room_refuses_unknown_and_ambiguous_rooms() -> None:
+    entry = _entry(idle=True)
+    with pytest.raises(ServiceValidationError) as unknown:
+        await vacuum.MaticVacuum(entry).async_go_to_room("Attic")
+    assert unknown.value.translation_key == "unknown_rooms"
+    assert unknown.value.translation_placeholders == {"rooms": "Attic"}
+
+    twin = replace(
+        _floor_plan(),
+        rooms=(*_floor_plan().rooms, replace(_floor_plan().rooms[1], id="room-3")),
+    )
+    entry.runtime_data.coordinator.data = replace(
+        entry.runtime_data.coordinator.data, floor_plan=twin
+    )
+    with pytest.raises(ServiceValidationError) as ambiguous:
+        await vacuum.MaticVacuum(entry).async_go_to_room("Study")
+    assert ambiguous.value.translation_key == "ambiguous_room"
+    assert ambiguous.value.translation_placeholders == {"room": "Study"}
+    entry.runtime_data.coordinator.client.async_go_to_room.assert_not_awaited()
+    entry.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+
+
+async def test_go_to_room_rejects_stale_maps_and_reports_robot_failures() -> None:
+    stale = _entry(idle=True)
+    stale.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    with pytest.raises(ServiceValidationError) as unavailable:
+        await vacuum.MaticVacuum(stale).async_go_to_room("Kitchen")
+    assert unavailable.value.translation_key == "room_plan_unavailable"
+    stale.runtime_data.coordinator.client.async_go_to_room.assert_not_awaited()
+
+    unsupported = _entry(idle=True)
+    unsupported.runtime_data.coordinator.client.async_go_to_room.side_effect = (
+        EndpointUnsupportedError("synthetic")
+    )
+    with pytest.raises(HomeAssistantError) as failed:
+        await vacuum.MaticVacuum(unsupported).async_go_to_room("Kitchen")
+    assert not isinstance(failed.value, ServiceValidationError)
+    assert failed.value.translation_key == "robot_command_failed"
+    unsupported.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
 
 
 async def test_vacuum_dock_from_idle_sends_no_stop() -> None:

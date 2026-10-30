@@ -68,6 +68,28 @@ actions:
       command: sink_summon
 ```
 
+## Go to room
+
+**Go to room** (`matic_robot.go_to_room`) sends the robot to one `room`, by name
+or room ID, without cleaning it. A name shared by two rooms is refused; use the
+room ID. The same `vacuum.send_command` command is `go_to_room` with
+`params: {room: Kitchen}`. In Matic Map, pick one room and press **Go to room**.
+
+Go to room follows the sink refill's rules: sent during a clean, the robot keeps
+its task and the plan driving it, and from the dock or while idle it ends a plan
+docked between rooms. It never marks a room as cleaned. The command uses the
+robot's room goal, which the Matic app does not send itself, so how long the
+robot stays before docking has not been measured yet.
+
+```yaml
+actions:
+  - action: matic_robot.go_to_room
+    target:
+      entity_id: vacuum.matic
+    data:
+      room: Kitchen
+```
+
 ## Plans
 
 | Action | Fields and behavior |

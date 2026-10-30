@@ -2617,6 +2617,11 @@ export class EffectController {
         await this.#cleanRoomsFromPreview();
         return;
       }
+      case "go-to-room": {
+        const roomIds = this.#store.value.selection.roomIds;
+        if (roomIds.length === 1) await this.#motion("matic_robot", "go_to_room", { room: roomIds[0] });
+        return;
+      }
       case "run-area": {
         const area = this.#store.value.selection.areaId;
         if (area) await this.#motion("matic_robot", "clean_area", { area });
