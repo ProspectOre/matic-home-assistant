@@ -228,8 +228,8 @@ def _decode_floors(raw: object) -> dict[int, dict[_CellKey, SignalCell]]:
     if not isinstance(raw, dict):
         return floors
     for mission, rows in list(raw.items())[:MAX_FLOORS]:
-        if not (isinstance(mission, str) and mission.isdigit()) or not isinstance(
-            rows, list
+        if not (isinstance(mission, str) and _is_mission_key(mission)) or not (
+            isinstance(rows, list)
         ):
             continue
         cells: dict[_CellKey, SignalCell] = {}
@@ -239,6 +239,12 @@ def _decode_floors(raw: object) -> dict[int, dict[_CellKey, SignalCell]]:
                 cells[cell[0]] = cell[1]
         floors[int(mission)] = cells
     return floors
+
+
+def _is_mission_key(key: str) -> bool:
+    # ASCII and short: isdigit() alone accepts digits such as "²" that int()
+    # rejects, and strings past int()'s digit limit.
+    return key.isascii() and key.isdigit() and len(key) <= 20
 
 
 _MAX_TIMESTAMP = 1e11
