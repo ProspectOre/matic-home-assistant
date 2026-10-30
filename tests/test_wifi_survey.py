@@ -279,6 +279,31 @@ async def test_sample_taken_while_the_survey_is_turned_off_is_dropped(hass) -> N
 
 
 @pytest.mark.parametrize(
+    "replacement",
+    [
+        None,
+        SimpleNamespace(mission_id=7, partition_id_wire=b"partition-2"),
+        SimpleNamespace(mission_id=8, partition_id_wire=PARTITION),
+    ],
+)
+async def test_sample_is_dropped_when_the_frame_changes_during_the_scan(
+    hass, replacement
+) -> None:
+    store = WifiSurveyStore(hass, "entry")
+    assert store.add_sample(7, FRAME, 5.0, 5.0, -40, 1.0)
+    coordinator = _coordinator()
+    client = _sampling_client(_pose(1.0, 1.0, 10.0), _pose(1.2, 1.0, 12.0))
+
+    async def _scan_then_move() -> int | None:
+        coordinator.data.floor_plan = replacement
+        return -55
+
+    client.async_scan_wifi_signal.side_effect = _scan_then_move
+    await store._async_sample(client, coordinator)
+    assert [cell["dbm"] for cell in store.cells(7, FRAME)] == [-40.0]
+
+
+@pytest.mark.parametrize(
     ("coordinator", "client"),
     [
         (SimpleNamespace(data=None, expected_floor_mission_id=None), None),

@@ -200,6 +200,16 @@ class WifiSurveyStore:
             return
         if dbm is None or epoch != self._epoch or not _poses_agree(before, after):
             return
+        # The frame can change during the scan; a stale fingerprint would wipe
+        # the new frame's cells.
+        state = coordinator.data
+        current = state.floor_plan if state is not None else None
+        if (
+            current is None
+            or current.mission_id != mission_id
+            or survey_frame(current.partition_id_wire) != frame
+        ):
+            return
         self.add_sample(
             mission_id,
             frame,
