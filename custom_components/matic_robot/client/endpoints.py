@@ -74,6 +74,7 @@ HERMES_ENDPOINTS = (
     _collection("map_integrated", tracked=True),
     _collection("map_semantics", tracked=True),
     _collection("map_semantics_override", tracked=True),
+    _collection("map_vents"),
     _property("matter_pairing_state", HermesEndpointSensitivity.DIAGNOSTIC),
     _collection("planned_path"),
     _property("petwaste_enabled_state", HermesEndpointSensitivity.DIAGNOSTIC),

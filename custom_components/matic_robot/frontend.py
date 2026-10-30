@@ -14,6 +14,7 @@ from homeassistant.components.http import (  # type: ignore[attr-defined,unused-
 )
 from homeassistant.core import HomeAssistant
 
+from .floor_layers import MaticFloorLayersView
 from .slam_scene import (
     MaticAreasView,
     MaticPlansView,
@@ -65,6 +66,7 @@ MATIC_MAP_STUDIO_V4_PATH = f"{MATIC_MAP_STUDIO_V4_ROOT_PATH}/index.js"
 MATIC_MAP_PANEL_ELEMENT = f"matic-map-panel-v0-4-0-{MATIC_MAP_STUDIO_V4_VERSION}"
 DATA_SLAM_SCENE_VIEW = f"{__package__}_slam_scene_view"
 DATA_SLAM_POSE_VIEW = f"{__package__}_slam_pose_view"
+DATA_FLOOR_LAYERS_VIEW = f"{__package__}_floor_layers_view"
 
 
 def clear_slam_scene_cache(hass: HomeAssistant, entry_id: str) -> None:
@@ -73,6 +75,8 @@ def clear_slam_scene_cache(hass: HomeAssistant, entry_id: str) -> None:
         scene_view.clear_entry(entry_id)
     if pose_view := hass.data.get(DATA_SLAM_POSE_VIEW):
         pose_view.clear_entry(entry_id)
+    if floor_layers_view := hass.data.get(DATA_FLOOR_LAYERS_VIEW):
+        floor_layers_view.clear_entry(entry_id)
 
 
 async def async_register_frontend(hass: HomeAssistant) -> None:
@@ -99,6 +103,8 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     pose_view = MaticSlamPoseView(scene_view)
     hass.data[DATA_SLAM_SCENE_VIEW] = scene_view
     hass.data[DATA_SLAM_POSE_VIEW] = pose_view
+    floor_layers_view = MaticFloorLayersView()
+    hass.data[DATA_FLOOR_LAYERS_VIEW] = floor_layers_view
     hass.http.register_view(scene_view)
     hass.http.register_view(MaticSlamDeltaView(scene_view))
     hass.http.register_view(pose_view)
@@ -107,6 +113,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticSlamCatalogView(scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
+    hass.http.register_view(floor_layers_view)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)
     # Keep panel_custom optional for headless installations.
     from homeassistant.components.panel_custom import async_register_panel
