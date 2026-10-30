@@ -32,7 +32,10 @@ head/base, review provenance, findings, CI links and actual merge result on the 
 
 ## Maintenance and release
 
-`main` is the 0.5 line; `release/0.4` includes the merged 0.4.8 firmware features.
+`main` holds production code: the latest stable release and its hotfixes, which
+land by PR. The next release and its betas live on `release/X.Y` (now
+`release/0.6`), which merges into `main` for the stable release and is then
+deleted. `release/0.4` includes the merged 0.4.8 firmware features.
 A build from that maintenance branch must not be described as a narrow 0.4.7
 diagnostic. Resolve release composition before publishing a candidate. A new
 protected release target requires explicit authority and verified protections.
