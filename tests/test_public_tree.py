@@ -98,11 +98,19 @@ def test_privacy_scan_rejects_household_map_artifacts(
     )
 
 
-def test_privacy_scan_allows_only_reviewed_public_brand_rasters(
+@pytest.mark.parametrize(
+    "relative",
+    (
+        "custom_components/matic_robot/brand/icon.png",
+        "custom_components/matic_robot/map_studio_v4/assets/robot-atlas.webp",
+    ),
+)
+def test_privacy_scan_allows_only_reviewed_public_rasters(
     tmp_path: Path,
+    relative: str,
 ) -> None:
-    """Allow packaged brand art without broadly allowing household PNG files."""
-    candidate = tmp_path / "custom_components" / "matic_robot" / "brand" / "icon.png"
+    """Allow named public assets without broadly allowing household images."""
+    candidate = tmp_path / relative
     candidate.parent.mkdir(parents=True)
     candidate.write_bytes(b"synthetic public brand icon")
 
