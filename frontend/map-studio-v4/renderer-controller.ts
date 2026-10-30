@@ -5,6 +5,7 @@ import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
 import { canShowExactPose, hasCoordinateEditAdmission, forcesTop, topView } from "./state";
 import { rgba, type CanvasPalette, type Channel } from "./theme-probe";
+import type { drawRobot as DrawRobot } from "./robot-model";
 
 export interface MapPoint {
   readonly x: number;
@@ -392,6 +393,8 @@ export class RendererController {
   #viewport = { width: 1, height: 1, left: 0, top: 0 };
   #fitActive = true;
   #disposed = false;
+  /** undefined until a heading needs it, null while loading or after a failed load. */
+  #robotModel: typeof DrawRobot | null | undefined;
   #palette: CanvasPalette = DEFAULT_PALETTE;
   // Saved-order numbers are drawn every frame; one formatter per locale.
   #positionFormat: { readonly locale: string; readonly format: Intl.NumberFormat } | null = null;
@@ -1680,6 +1683,26 @@ export class RendererController {
           false,
         )
         : null;
+      const heading = pose.heading;
+      if (marker && typeof heading === "number") {
+        if (this.#robotModel === undefined) {
+          // The 3D model is a lazy chunk; the flat marker stands in until it
+          // loads, and for the rest of the page if the chunk fails.
+          this.#robotModel = null;
+          import("./robot-model").then(({ drawRobot }) => {
+            this.#robotModel = drawRobot;
+            this.requestRender();
+          }, () => undefined);
+        }
+        const [x, y] = pose.position;
+        const metersPerCell = scene.metadata.metersPerCell;
+        if (this.#robotModel?.(context, (forward, left, height) => this.#projectMeters(
+          x + forward * Math.cos(heading) - left * Math.sin(heading),
+          y + forward * Math.sin(heading) + left * Math.cos(heading),
+          height / metersPerCell,
+          false,
+        ), heading, palette)) return;
+      }
       if (marker && ahead && Math.hypot(ahead.x - marker.x, ahead.y - marker.y) > 0.5) {
         this.#drawRobotMarker(context, marker, Math.atan2(ahead.y - marker.y, ahead.x - marker.x), palette);
       } else if (marker) {
