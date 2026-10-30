@@ -1591,6 +1591,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 room for room in plan["rooms"] if room["room_id"] == removed["room_id"]
             )
             plan["rooms"].remove(deleted)
+            sensors = plan.get("occupancy_sensors")
+            if isinstance(sensors, dict):
+                sensors.pop(str(removed["room_id"]), None)
         plan["entries"] = entries
         if not entries:
             plan["enabled"] = False
