@@ -172,6 +172,7 @@ def test_run_areas_list_checkpoint_legs_in_plan_order() -> None:
         ({"outcome": "running"}, "running"),
         ({"outcome": "completed"}, "finished"),
         ({"outcome": "stopped_docked"}, "stopped"),
+        ({"outcome": "stopped_docked", "stop_intent": "after_room"}, "smart_stop"),
         ({"reason_code": "managed_stop", "stop_intent": "after_room"}, "smart_stop"),
         (
             {

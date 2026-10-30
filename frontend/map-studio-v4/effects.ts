@@ -2156,6 +2156,7 @@ export class EffectController {
   // Cleaning history and trails (run_history.py) load their code with the
   // first read.
   #runs: typeof import("./run-history-data") | null = null;
+  #unwatchRuns: (() => void) | null = null;
 
   async loadRuns(): Promise<void> {
     await this.#runRead("runs", null);
@@ -2172,7 +2173,7 @@ export class EffectController {
       if (name === "trail" && !trail) this.#store.patch({ trail: null });
       else if (entry && this.#pageLifecycle.active) {
         this.#runs = await import("./run-history-data");
-        this.#runs.watchRuns(this.#store, () => void this.loadRuns());
+        if (!this.#unwatchRuns && !this.#disposed) this.#unwatchRuns = this.#runs.watchRuns(this.#store, () => void this.loadRuns());
         await this.#runs.readRuns(this.#store, this.#backend, entry, trail, controller.signal, NOTICES.trailUnavailable);
       }
     } finally {
@@ -2877,6 +2878,8 @@ export class EffectController {
     this.#invalidateSpatialFence(false);
     this.#storeUnsubscribe?.();
     this.#storeUnsubscribe = null;
+    this.#unwatchRuns?.();
+    this.#unwatchRuns = null;
     this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false });
     this.#stopPolling();
     this.#stopWifiSignal();

@@ -209,10 +209,9 @@ def run_ending(run: Mapping[str, Any]) -> str:
         return "running"
     if outcome == "completed":
         return "finished"
-    if outcome == "stopped_docked":
-        return "stopped"
-    if reason == "managed_stop":
-        # The accepted stop, not the plan's policy: Stop now overrides Smart Stop.
+    if outcome == "stopped_docked" or reason == "managed_stop":
+        # The accepted stop, not the plan's policy: Stop now overrides Smart
+        # Stop, and a confirmed dock keeps the reason it stopped.
         intent = run.get("stop_intent") or _mapping(run.get("recovery_checkpoint")).get(
             "stop_intent"
         )

@@ -1803,8 +1803,10 @@ test.describe("cleaning history", () => {
       const { WorkspaceStore, createGalleryState, watchRuns } = await import(harness);
       const store = new WorkspaceStore({ ...createGalleryState("ready"), workflow: "runs" });
       let count = 0;
+      // A disposed controller's watcher stops; its replacement takes over.
+      const stop = watchRuns(store, () => { count += 100; });
+      stop();
       watchRuns(store, () => { count += 1; });
-      watchRuns(store, () => { count += 100; });
       const run = { runId: "run-1", outcome: "running", completedRoomCount: 0, roomCount: 2 };
       const seen = [];
       store.patch({ lastRun: run });
