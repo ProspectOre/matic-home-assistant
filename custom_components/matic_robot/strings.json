@@ -29,6 +29,7 @@
     "vacuum_and_mop": "Vacuum + mop",
     "v4_access_required": "Access required",
     "v4_action_clean_rooms": "Clean rooms",
+    "v4_action_go_to_room": "Go to room",
     "v4_action_clean_rooms_count": "Clean {count} rooms",
     "v4_action_resume": "Resume cleaning",
     "v4_action_return_live": "Show live map",

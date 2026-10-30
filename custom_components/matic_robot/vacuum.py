@@ -660,7 +660,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             )
 
         await self._async_navigate(
-            resolve, destination="sink", task_changed_key="robot_task_changed"
+            resolve, destination="sink", task_changed=_sink_task_changed
         )
 
     async def async_go_to_room(self, room: str) -> None:
@@ -673,7 +673,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             )
 
         await self._async_navigate(
-            resolve, destination="room", task_changed_key="go_to_room_task_changed"
+            resolve, destination="room", task_changed=_room_task_changed
         )
 
     async def _async_navigate(
@@ -681,7 +681,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         resolve: Callable[[FloorPlan], Awaitable[_Navigation]],
         *,
         destination: str,
-        task_changed_key: str,
+        task_changed: Callable[[], HomeAssistantError],
     ) -> None:
         """Send one navigation command under the sink summon's ownership rules."""
         serial_number = self.coordinator.data.info.serial_number
@@ -725,11 +725,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             if joins_task and not self._holds_task():
                 # The task ended while this command waited, so only the motion
                 # lease could own what it would start now.
-                raise HomeAssistantError(
-                    f"The robot's task ended before it was sent to the {destination}",
-                    translation_domain=DOMAIN,
-                    translation_key=task_changed_key,
-                )
+                raise task_changed()
             try:
                 await send(floor_plan)
             except (MaticError, ValueError) as err:
@@ -1241,6 +1237,24 @@ def _navigation_failed(destination: str) -> HomeAssistantError:
         f"The robot could not be sent to the {destination}",
         translation_domain=DOMAIN,
         translation_key="robot_command_failed",
+    )
+
+
+def _sink_task_changed() -> HomeAssistantError:
+    """Create the error for a task that ended while a sink summon waited."""
+    return HomeAssistantError(
+        "The robot's task ended before the sink summon was sent",
+        translation_domain=DOMAIN,
+        translation_key="robot_task_changed",
+    )
+
+
+def _room_task_changed() -> HomeAssistantError:
+    """Create the error for a task that ended while go to room waited."""
+    return HomeAssistantError(
+        "The robot's task ended before it was sent to the room",
+        translation_domain=DOMAIN,
+        translation_key="go_to_room_task_changed",
     )
 
 
