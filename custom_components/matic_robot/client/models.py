@@ -380,6 +380,9 @@ class RobotPose:
     z: float
     mission_id: int | None = None
     observed_at: float | None = None
+    # Yaw in radians, counter-clockwise from the map's +x axis. None when the
+    # pose carried no unambiguous rotation.
+    heading: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

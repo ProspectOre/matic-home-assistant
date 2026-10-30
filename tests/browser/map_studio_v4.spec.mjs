@@ -8343,6 +8343,53 @@ test("renderer hides a new pose until the read-only scene is replaced", async ({
   expect(results).toEqual([false, true, false]);
 });
 
+test("renderer turns the robot marker with its heading and the camera", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/pose-heading.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const results = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = await import("/pose-heading.js");
+    const scene = document.createElement("canvas"), overlay = document.createElement("canvas");
+    for (const canvas of [scene, overlay]) {
+      Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+      document.body.append(canvas);
+    }
+    const context = overlay.getContext("2d");
+    let rotations = [], dots = 0;
+    const { rotate, arc } = context;
+    context.rotate = function(angle) { rotations.push(angle); return rotate.call(this, angle); };
+    context.arc = function(x, y, radius, ...rest) {
+      if (radius === 7) dots++;
+      return arc.call(this, x, y, radius, ...rest);
+    };
+    const renderer = new RendererController(scene, overlay);
+    const initial = createGalleryState("ready");
+    const withHeading = (heading) => ({ ...initial, map: { ...initial.map, exactPose: true },
+      resources: { ...initial.resources, pose: { status: "ready", problem: null,
+        value: { ...initial.resources.pose.value, position: [1.3, 1.6], heading } } } });
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const draw = async (heading) => {
+      rotations = []; dots = 0;
+      renderer.setState(withHeading(heading));
+      await frame();
+      return { rotation: rotations.at(-1) ?? null, dots };
+    };
+    const east = await draw(0), north = await draw(Math.PI / 2), none = await draw(null);
+    renderer.setCamera({ ...renderer.camera, yaw: Math.PI / 2 });
+    const turned = await draw(0);
+    renderer.dispose();
+    return { east, north, none, turned };
+  });
+  const turn = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
+  expect(results.east.dots).toBe(0);
+  expect(results.north.dots).toBe(0);
+  // A quarter turn of the robot is a quarter turn on screen, and so is a
+  // quarter turn of the camera with the robot still.
+  expect(turn(results.east.rotation, results.north.rotation)).toBeCloseTo(Math.PI / 2, 2);
+  expect(turn(results.east.rotation, results.turned.rotation)).toBeCloseTo(Math.PI / 2, 2);
+  expect(results.none).toEqual({ rotation: null, dots: 1 });
+});
+
 test("rotated zone coordinates match rendered coverage and preserve zoom anchors", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-projection.js", route => route.fulfill({contentType:"text/javascript",body:bundle.outputFiles[0].text}));

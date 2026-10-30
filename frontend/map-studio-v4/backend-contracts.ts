@@ -116,6 +116,8 @@ export interface PoseModel {
   readonly freshness: "live" | "coordinator_fallback" | "unavailable";
   /** Native observation age; undefined only for pre-age-field responses. */
   readonly nativeObservationAgeSeconds?: number | null;
+  /** Map-frame yaw in radians when the pose carried a rotation. */
+  readonly heading?: number | null;
 }
 
 export interface HistorySnapshot {
@@ -830,6 +832,12 @@ export const parsePose = (value: unknown): PoseModel => {
     mapSessionKey: mapSessionKey(payload.map_session_key),
     freshness,
     ...(nativeObservationAgeSeconds === undefined ? {} : { nativeObservationAgeSeconds }),
+    // An unreadable heading falls back to the plain dot instead of dropping
+    // an otherwise valid position.
+    heading: position !== null && typeof payload.heading === "number"
+      && Number.isFinite(payload.heading) && Math.abs(payload.heading) <= Math.PI + 1e-3
+      ? payload.heading
+      : null,
   };
 };
 
