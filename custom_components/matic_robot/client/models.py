@@ -238,6 +238,8 @@ class CleaningSchedule:
     ordered: bool
     enabled: bool | None
     room_ids: tuple[str, ...]
+    # "vacuum", "mop" or "vacuum_and_mop" from the schedule's cleaning goals.
+    cleaning_mode: str | None = None
 
     @property
     def time(self) -> str | None:
