@@ -1673,21 +1673,11 @@ export class RendererController {
       // stored in origin-relative cells, so it must cross the same conversion
       // boundary as custom-area coordinates before projection.
       const marker = this.#projectMeters(pose.position[0], pose.position[1], 3);
-      // Project a point ahead of the robot so the marker turns with both the
-      // robot's heading and the current 2D rotation or 3D camera.
-      const ahead = typeof pose.heading === "number"
-        ? this.#projectMeters(
-          pose.position[0] + Math.cos(pose.heading) * 0.3,
-          pose.position[1] + Math.sin(pose.heading) * 0.3,
-          3,
-          false,
-        )
-        : null;
       const heading = pose.heading;
       if (marker && typeof heading === "number") {
         if (this.#robotModel === undefined) {
-          // The 3D model is a lazy chunk; the flat marker stands in until it
-          // loads, and for the rest of the page if the chunk fails.
+          // Heading rendering stays in a lazy chunk; a dot stands in if the
+          // chunk itself is unavailable. The chunk owns the vector fallback.
           this.#robotModel = null;
           import("./robot-model").then(({ drawRobot }) => {
             this.#robotModel = drawRobot;
@@ -1701,11 +1691,9 @@ export class RendererController {
           y + forward * Math.sin(heading) + left * Math.cos(heading),
           height / metersPerCell,
           false,
-        ), heading, palette)) return;
+        ), heading, palette, this.#camera.pitch, () => this.requestRender())) return;
       }
-      if (marker && ahead && Math.hypot(ahead.x - marker.x, ahead.y - marker.y) > 0.5) {
-        this.#drawRobotMarker(context, marker, Math.atan2(ahead.y - marker.y, ahead.x - marker.x), palette);
-      } else if (marker) {
+      if (marker) {
         context.beginPath();
         context.arc(marker.x, marker.y, 7, 0, Math.PI * 2);
         context.fillStyle = rgba(palette.accent, 1);
@@ -1715,29 +1703,6 @@ export class RendererController {
         context.stroke();
       }
     }
-  }
-
-  #drawRobotMarker(context: CanvasRenderingContext2D, at: MapPoint, angle: number, palette: CanvasPalette): void {
-    // Rounded body with a pointer on the front edge, drawn facing +x and
-    // rotated to the projected heading.
-    context.save();
-    context.translate(at.x, at.y);
-    context.rotate(angle);
-    context.beginPath();
-    context.roundRect(-9, -9, 18, 18, 6);
-    context.fillStyle = rgba(palette.accent, 1);
-    context.fill();
-    context.strokeStyle = rgba(palette.onAccent, 1);
-    context.lineWidth = 2.5;
-    context.stroke();
-    context.beginPath();
-    context.moveTo(6, 0);
-    context.lineTo(-1, -5);
-    context.lineTo(-1, 5);
-    context.closePath();
-    context.fillStyle = rgba(palette.onAccent, 1);
-    context.fill();
-    context.restore();
   }
 
   #selectedRoomNames(state: WorkspaceState): Set<string> {

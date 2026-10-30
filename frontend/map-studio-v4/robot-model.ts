@@ -1,7 +1,7 @@
 import type { MapPoint } from "./renderer-controller";
 import type { CanvasPalette, Channel } from "./theme-probe";
 
-// Original low-poly robot drawn on the map overlay: a squircle body with a
+// Vector fallback drawn on the map overlay: a squircle body with a
 // bevelled lid, a dark sensor band and visor on the front, and the theme's
 // indicator colour as a ring on the lid. No vendor artwork is used.
 //
@@ -71,9 +71,9 @@ const path = (context: CanvasRenderingContext2D, points: readonly MapPoint[]): v
 
 /**
  * Draws the robot and returns true, or returns false without drawing when a
- * point falls behind the camera so the caller can draw its flat marker.
+ * point falls behind the camera so the caller can draw its position dot.
  */
-export const drawRobot = (
+const drawVectorRobot = (
   context: CanvasRenderingContext2D,
   project: RobotProjection,
   heading: number,
@@ -164,6 +164,105 @@ export const drawRobot = (
   context.lineWidth = Math.max(1.5, scale * pixelsPerMeter * 0.008);
   context.strokeStyle = shade(forced ? palette.onAccent : palette.accent, 1);
   context.stroke();
+  context.restore();
+  return true;
+};
+
+interface AtlasMetadata {
+  frameSize: number;
+  headings: number;
+  headingStep: number;
+  pitches: number[];
+  columns: number;
+  layers: { body: number; shadow: number; accent: number };
+  frameMeters: number;
+  lengthMeters: number;
+}
+
+type Atlas = { image: HTMLImageElement; metadata: AtlasMetadata };
+let atlas: Atlas | null | undefined;
+let loading = false;
+const waiting = new Map<HTMLCanvasElement, () => void>();
+let tinted: { color: string; canvas: HTMLCanvasElement } | undefined;
+
+const loadAtlas = async (): Promise<void> => {
+  try {
+    // Relative to the lazy chunk, including HA's content-versioned URL root.
+    const image = new Image();
+    image.src = new URL("../assets/robot-atlas.webp", import.meta.url).href;
+    const [response] = await Promise.all([
+      fetch(new URL("../assets/robot-atlas.json", import.meta.url)), image.decode(),
+    ]);
+    if (!response.ok) throw new Error("Robot atlas unavailable");
+    const metadata = await response.json() as AtlasMetadata;
+    if (metadata.frameSize !== 128 || metadata.headings !== 32 || metadata.columns !== 32
+      || metadata.headingStep !== 11.25 || String(metadata.pitches) !== "90,55,25"
+      || metadata.layers?.body !== 0 || metadata.layers.shadow !== 3 || metadata.layers.accent !== 6
+      || metadata.frameMeters !== 0.66 || metadata.lengthMeters !== 0.378
+      || image.naturalWidth !== 4096 || image.naturalHeight !== 1152) throw new Error("Invalid robot atlas");
+    atlas = { image, metadata };
+  } catch {
+    atlas = null;
+  } finally {
+    for (const invalidate of waiting.values()) invalidate();
+    waiting.clear();
+  }
+};
+
+const accentLayer = ({ image, metadata }: Atlas, palette: CanvasPalette): HTMLCanvasElement | null => {
+  const color = shade(palette.accent, 1);
+  if (tinted?.color === color) return tinted.canvas;
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth;
+  canvas.height = metadata.frameSize * metadata.pitches.length;
+  const context = canvas.getContext("2d");
+  if (!context) return null;
+  context.drawImage(image, 0, metadata.layers.accent * metadata.frameSize, canvas.width, canvas.height,
+    0, 0, canvas.width, canvas.height);
+  context.globalCompositeOperation = "source-in";
+  context.fillStyle = color;
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  tinted = { color, canvas };
+  return canvas;
+};
+
+/** Draw the Cycles sprite, retaining the vector model until its assets are ready. */
+export const drawRobot = (
+  context: CanvasRenderingContext2D,
+  project: RobotProjection,
+  heading: number,
+  palette: CanvasPalette,
+  pitch: number,
+  invalidate: () => void,
+): boolean => {
+  if (palette.forced) return drawVectorRobot(context, project, heading, palette);
+  if (atlas === undefined) {
+    waiting.set(context.canvas, invalidate);
+    if (!loading) { loading = true; void loadAtlas(); }
+  }
+  if (!atlas) return drawVectorRobot(context, project, heading, palette);
+  const centre = project(0, 0, 0), ahead = project(0.3, 0, 0), left = project(0, 0.3, 0);
+  if (!centre || !ahead || !left) return false;
+  const { image, metadata } = atlas;
+  const { frameSize, headings, pitches, layers } = metadata;
+  const angle = Math.atan2(ahead.y - centre.y, ahead.x - centre.x);
+  const frame = (Math.round(angle / (Math.PI * 2) * headings) + headings) % headings;
+  const degrees = pitch * 180 / Math.PI;
+  const row = pitches.reduce((nearest, value, index) =>
+    Math.abs(value - degrees) < Math.abs((pitches[nearest] as number) - degrees) ? index : nearest, 0);
+  const pixelsPerMeter = Math.max(Math.hypot(ahead.x - centre.x, ahead.y - centre.y),
+    Math.hypot(left.x - centre.x, left.y - centre.y)) / 0.3;
+  const size = metadata.frameMeters * Math.max(pixelsPerMeter, MIN_PIXELS / metadata.lengthMeters);
+  const x = centre.x - size / 2, y = centre.y - size / 2;
+  const draw = (source: CanvasImageSource, layer: number): void => context.drawImage(source,
+    frame * frameSize, (layer + row) * frameSize, frameSize, frameSize, x, y, size, size);
+  context.save();
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  draw(image, layers.shadow);
+  draw(image, layers.body);
+  const accent = accentLayer(atlas, palette);
+  if (accent) { context.globalAlpha = 0.75; draw(accent, 0); }
   context.restore();
   return true;
 };

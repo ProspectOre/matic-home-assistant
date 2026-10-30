@@ -15,6 +15,8 @@ test("Map Studio loads exactly its startup graph within budget and no legacy edi
     .map(({ name }) => new URL(name).pathname)
     .filter((path) => path.endsWith(".js")));
   expect(scriptPaths.some((path) => /room-plan-editor|matic_map_studio\.js/u.test(path))).toBe(false);
+  expect(await page.evaluate(() => performance.getEntriesByType("resource")
+    .filter(({ name }) => name.includes("robot-atlas.")))).toEqual([]);
   const loaded = scriptPaths
     .filter((path) => path === "/matic_icons.js" || path.startsWith("/map_studio_v4/"))
     .map((path) => path.slice(1))
