@@ -1577,6 +1577,10 @@
         }
       }
     },
+    "time_zone_mismatch": {
+      "title": "{name} uses a different time zone",
+      "description": "{name} keeps its schedules in {robot_time_zone} time, but Home Assistant uses {home_time_zone}. The robot starts each schedule on that clock, so it can run at a different hour than you expect. Change the time zone in the Matic app, or Home Assistant's under Settings > System > General. This Repair clears once the two match."
+    },
     "custom_area_map_changed": {
       "title": "{name}: custom areas need attention",
       "description": "Custom areas to review: {count}. Home Assistant won't clean an area drawn on a different map, with damaged saved data, or that no longer fits the current map: open Matic Map, choose Clean custom area, then confirm or redraw it."
