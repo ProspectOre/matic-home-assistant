@@ -28,6 +28,7 @@ are disabled by default; enable them from the device's entity list.
 | Default cleaning plan · Custom cleaning area | `select.matic_saved_cleaning_plan` · `select.matic_custom_cleaning_area` | off |
 | Child lock · Pet-waste avoidance | `switch.matic_child_lock` · `switch.matic_pet_waste_avoidance` | on |
 | Cues voice assistant · Double-pass mopping | `switch.matic_voice_assistant` · `switch.matic_deep_mop` | on |
+| Wi-Fi survey · Clear Wi-Fi survey | `switch.matic_wifi_survey` · `button.matic_clear_wifi_survey` | on |
 | Mopping water flow (0.5× to 2.0×) | `number.matic_water_flow` | on |
 | Map · 3D photo map | `camera.matic_map` · `camera.matic_photorealistic_map` | on · off |
 | Cues | `event.matic_cues` | on |
@@ -52,6 +53,14 @@ are disabled by default; enable them from the device's entity list.
 | Paused · Returning to dock · Fully charged | `binary_sensor.matic_paused` · `_returning` · `_fully_charged` | off |
 | Matter pairing mode | `binary_sensor.matic_matter_pairing_mode` | off |
 | Support tunnel permission · Diagnostic upload | `binary_sensor.matic_ssh_tunnel_permission` · `_diagnostic_upload` | off |
+
+Wi-Fi survey is off until you turn it on. While it is on and the robot is
+off the dock, the robot runs one Wi-Fi scan every 30 seconds, the same scan the
+Matic app runs while its Wi-Fi screen is open. Each signal reading is stored
+against the robot's map position and shown in Matic Map: open **Map options** and turn on
+**Wi-Fi signal**. A reading is kept only if the robot moved less than half a metre
+during the scan. Clear Wi-Fi survey deletes the readings, for example after you
+move your router.
 
 Paused, Returning to dock and Fully charged repeat **Activity**, so they start
 disabled. The status sensors (Activity, Firmware check status, Update status,

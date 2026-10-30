@@ -168,6 +168,20 @@ export interface AdmittedManualRoomPreview {
 }
 
 export type PlanView = "run" | "edit";
+/** One surveyed map cell: its centre in metres and mean signal in dBm. */
+export interface WifiSignalCell {
+  readonly x: number;
+  readonly y: number;
+  readonly dbm: number;
+}
+
+export interface WifiSignalLayer {
+  readonly status: "loading" | "ready" | "failed";
+  readonly surveying: boolean;
+  readonly cellSize: number;
+  readonly cells: readonly WifiSignalCell[];
+}
+
 export type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";
 
 export interface PlanDraft {
@@ -335,6 +349,8 @@ export interface WorkspaceState {
   readonly view: MapView;
   readonly appearance: MapAppearance;
   readonly labelsVisible: boolean;
+  /** The Wi-Fi signal layer; null while hidden. */
+  readonly wifiSignal: WifiSignalLayer | null;
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   /** Only preferences belonging to the verified live map can be restored. */
@@ -388,6 +404,7 @@ export type WorkspaceIntent =
       readonly camera: CameraPreference;
     }
   | { readonly type: "toggle-labels" }
+  | { readonly type: "toggle-wifi-signal" }
   | { readonly type: "open-workflow"; readonly workflow: Workflow }
   | { readonly type: "enter-full-map" }
   | { readonly type: "exit-full-map" }
@@ -611,6 +628,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-quality": true,
   "set-camera": true,
   "toggle-labels": true,
+  "toggle-wifi-signal": true,
   "open-workflow": true,
   "enter-full-map": true,
   "exit-full-map": true,

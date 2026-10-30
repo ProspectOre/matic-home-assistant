@@ -75,6 +75,7 @@ HISTORY_API_URL = "/api/matic_robot/slam_history/{entry_id}"
 HISTORY_SCENE_API_URL = "/api/matic_robot/slam_history_scene/{entry_id}/{snapshot_id}"
 AREAS_API_URL = "/api/matic_robot/areas/{entry_id}"
 PLANS_API_URL = "/api/matic_robot/plans/{entry_id}"
+WIFI_HEATMAP_API_URL = "/api/matic_robot/wifi_heatmap/{entry_id}"
 POSE_CACHE_SECONDS = 1.0
 SCENE_ENCODE_ATTEMPTS = 2
 SCENE_CACHE_REVISIONS = 2
@@ -213,6 +214,7 @@ def catalog_entry_projection(
         "history_url": history_api_url(entry_id),
         "areas_url": areas_api_url(entry_id),
         "plans_url": plans_api_url(entry_id),
+        "wifi_heatmap_url": WIFI_HEATMAP_API_URL.format(entry_id=entry_id),
         "history_count": len(_mission_history(runtime)),
         "history_floor_count": len(runtime.slam_history.catalogs_by_mission()),
         "map_revision": (

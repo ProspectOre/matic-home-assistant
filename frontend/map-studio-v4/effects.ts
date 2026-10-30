@@ -1991,6 +1991,28 @@ export class EffectController {
     if (snapshot) await this.#loadHistoryScene(snapshot, stamp);
   }
 
+  /** Show or hide the Wi-Fi signal layer; showing reads the current floor's survey. */
+  async toggleWifiSignal(): Promise<void> {
+    this.#store.dispatch({ type: "toggle-wifi-signal" });
+    const entry = this.#store.value.resources.entry;
+    if (!this.#store.value.wifiSignal || !entry?.wifiHeatmapUrl) {
+      this.#controllers.get("wifi-signal")?.abort();
+      return;
+    }
+    const controller = this.#controller("wifi-signal");
+    const current = (): boolean => !controller.signal.aborted && !this.#disposed
+      && Boolean(this.#store.value.wifiSignal) && this.#store.value.resources.entry?.entryId === entry.entryId;
+    try {
+      const layer = await this.#backend.wifiSignal(entry.wifiHeatmapUrl, controller.signal);
+      if (current()) this.#store.patch({ wifiSignal: layer });
+    } catch (error) {
+      const shown = this.#store.value.wifiSignal;
+      if (!isAbort(error) && current() && shown) this.#store.patch({ wifiSignal: { ...shown, status: "failed" } });
+    } finally {
+      this.#release("wifi-signal", controller);
+    }
+  }
+
   async selectHistory(snapshotId: string | null): Promise<void> {
     const history = this.#store.value.resources.history.value;
     const entry = this.#store.value.resources.entry;

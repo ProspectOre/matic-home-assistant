@@ -12,6 +12,7 @@ analytics, or maintainer cloud service.
 | --- | --- |
 | Local credential, endpoint, certificate identity, and the robot's Bluetooth address | Home Assistant config entry |
 | Plans, room preferences, schedule progress, room duration history, results, custom-area geometry, and a running plan's restart checkpoint | Private integration storage |
+| Wi-Fi survey readings | Private integration storage; mean signal per half-metre map cell, up to 4,096 cells on each of 8 floors. Network names are not stored |
 | Current photographic map and saved map history | Private integration storage; the current map holds up to 4,096 pages per layer and 64 MiB of raw page data, and history is capped at 12 scenes and 48 MiB |
 | Firmware endpoint summaries and research reports | Private storage, up to 52 snapshots and 8 superseded reports; sizes, hashes, and field shapes without payload values, plus any investigator's research text and public source links |
 | Activity and enabled entity states | Home Assistant Recorder, according to its configuration |

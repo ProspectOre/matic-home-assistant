@@ -51,6 +51,8 @@ export async function installPanelFixture(page, {
   // Home Assistant's per-user frontend data (frontend/get_user_data), keyed by
   // key. Null leaves the fixture without a websocket connection, as before.
   userData = null,
+  // The Wi-Fi survey response. Null leaves the URL out of the catalog, as before.
+  wifiSignal = null,
 } = {}) {
   const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
   const bundle = moduleSource === "typescript" ? await build({
@@ -110,7 +112,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates, userData }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -123,6 +125,7 @@ export async function installPanelFixture(page, {
       history_url: "/api/matic_robot/slam_history/synthetic",
       areas_url: "/api/matic_robot/areas/synthetic",
       plans_url: "/api/matic_robot/plans/synthetic",
+      ...(wifiSignal ? { wifi_heatmap_url: "/api/matic_robot/wifi_heatmap/synthetic" } : {}),
       map_revision: 7,
       map_floor_coherent: true,
       map_session_verified: true,
@@ -254,6 +257,7 @@ export async function installPanelFixture(page, {
         }
         return result;
       }
+      if (wifiSignal && path.endsWith("wifi_heatmap/synthetic")) return json(wifiSignal);
       if (/slam_history\/synthetic(?:-b)?$/.test(path)) return json(entryB ? entryBHistory : history);
       if (/slam_pose\/synthetic(?:-b)?$/.test(path)) return json({
         position: posePosition,
@@ -489,6 +493,7 @@ export async function installPanelFixture(page, {
     initialCatalogEntries,
     initialRobotStates,
     userData,
+    wifiSignal,
   });
   await remount();
   return {

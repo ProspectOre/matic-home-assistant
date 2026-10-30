@@ -317,6 +317,9 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             cleaning_plans=history,
             firmware_tracker=firmware,
             slam_map=slam_map,
+            wifi_survey=SimpleNamespace(
+                enabled=False, set_enabled=MagicMock(), clear=MagicMock()
+            ),
         ),
         options={},
         entry_id="entry",
@@ -357,21 +360,21 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 54 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 56 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
         "binary_sensor": 11,
-        "button": 5,
+        "button": 6,
         "camera": 2,
         "event": 1,
         "number": 1,
         "select": 4,
         "sensor": 28,
-        "switch": 4,
+        "switch": 5,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 58
-    assert len({entity.unique_id for entity in entities}) == 58
+    assert len(entities) == 60
+    assert len({entity.unique_id for entity in entities}) == 60
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"

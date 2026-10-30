@@ -36,7 +36,8 @@ works](cleaning.md#intelligent-rotation).
 ## Maps and controls alongside your other devices
 
 Matic Map brings live 3D and 2D maps, room selection, plan Run and Edit views,
-named custom areas, and saved map history into Home Assistant. Dashboard cameras
+named custom areas, saved map history and an opt-in Wi-Fi signal map into Home
+Assistant. Dashboard cameras
 and entities let you build your own view. Settings include water flow,
 double-pass mopping, child lock, pet-waste avoidance, and the Cues voice
 assistant.
