@@ -1316,28 +1316,28 @@ async def test_endpoint_inspection_routes_properties_collections_and_health() ->
     client = MaticHermesClient("robot.invalid", 16320)
     client.async_get_property = AsyncMock(return_value=b"version")
     client.async_get_collection_entries = AsyncMock(
-        return_value=(SimpleNamespace(key=b"key", value=b"zone"),)
+        return_value=(SimpleNamespace(key=b"key", value=b"path"),)
     )
     client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(SimpleNamespace(key=b"history", value=b"session"),)
     )
 
     current = await client.async_inspect_endpoint("current_version")
-    zones = await client.async_inspect_endpoint("zones", limit=2)
+    paths = await client.async_inspect_endpoint("planned_path", limit=2)
     history = await client.async_inspect_endpoint("coverage_session_history", limit=3)
 
     assert current[0].key == b""
     assert current[0].value == b"version"
-    assert zones[0].value == b"zone"
+    assert paths[0].value == b"path"
     assert history[0].value == b"session"
     client.async_get_property.assert_awaited_once_with("current_version")
-    client.async_get_collection_entries.assert_awaited_once_with("zones", limit=2)
+    client.async_get_collection_entries.assert_awaited_once_with("planned_path", limit=2)
     client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=3
     )
     assert client.endpoint_health == {
         "current_version": "ok",
-        "zones": "ok",
+        "planned_path": "ok",
         "coverage_session_history": "ok",
     }
 
@@ -3067,3 +3067,35 @@ async def test_sink_posture_requires_a_location_for_the_current_floor() -> None:
         await client.async_get_sink_posture(
             FloorPlan(0x01020304, "partition", b"partition", ())
         )
+
+
+async def test_telemetry_reads_zones_through_the_tracked_stream() -> None:
+    # Snapshot reads missed a freshly drawn zone on v181.10; only the tracked
+    # stream returned it.
+    client = MaticHermesClient("robot.invalid", 16320)
+    mission = b"\x15" + struct.pack("<I", 42)
+    point = b"".join(
+        b"\x0a\x0a\x0d" + struct.pack("<f", x) + b"\x15" + struct.pack("<f", y)
+        for x, y in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0))
+    )
+    border = b"\x12" + bytes([len(point)]) + point
+    zone = HermesCollectionEntry(
+        b"\x0a" + bytes([len(mission)]) + mission + b"\x10\x01",
+        b"\x0a" + bytes([len(border)]) + border,
+    )
+
+    async def tracked(name, *, limit):
+        return (zone,) if name == "zones" else ()
+
+    client.async_get_property = AsyncMock(return_value=b"")
+    client.async_get_collection_count = AsyncMock(return_value=0)
+    client.async_get_collection_entries = AsyncMock(return_value=())
+    client.async_get_tracked_collection_entries = AsyncMock(side_effect=tracked)
+    telemetry = await client.async_get_telemetry()
+    assert [(item.mission_id, item.kind) for item in telemetry.zones] == [(42, "no_go")]
+
+    client.async_get_tracked_collection_entries = AsyncMock(
+        side_effect=CannotConnectError("synthetic")
+    )
+    assert (await client.async_get_telemetry()).zones == ()
+    assert client.endpoint_health["zones"] == "CannotConnectError"

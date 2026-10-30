@@ -1,6 +1,6 @@
 import { clamp } from "./numeric";
 import { liveCameraKey, cameraPreferences, mapCameraIdentity } from "./camera-preferences";
-import type { AreaCircle, SceneModel, SceneRoom } from "./backend-contracts";
+import type { AreaCircle, MapZoneOverlay, SceneModel, SceneRoom } from "./backend-contracts";
 import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
 import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
 import { canShowExactPose, hasCoordinateEditAdmission, forcesTop, topView } from "./state";
@@ -1640,6 +1640,7 @@ export class RendererController {
         for (const circle of circles) this.#drawCircle(context, circle);
       }
     }
+    this.#drawZones(context, state.resources.areas.value?.zones ?? [], palette);
     const outline = state.draw.outline;
     if (outline && (state.workflow === "draw" || state.workflow === "areaReview")
       && !(state.workflow === "draw" && state.draw.tool === "outline")) {
@@ -1679,6 +1680,30 @@ export class RendererController {
         context.lineWidth = 3;
         context.stroke();
       }
+    }
+  }
+
+  #drawZones(context: CanvasRenderingContext2D, zones: readonly MapZoneOverlay[], palette: CanvasPalette): void {
+    // Read-only: no-go zones are shaded and outlined; zones the robot made
+    // itself, whose meaning is not known, get only a dashed outline.
+    for (const zone of zones) {
+      context.beginPath();
+      for (const ring of [zone.outline, ...zone.holes]) {
+        ring.forEach(([x, y], index) => {
+          const p = this.#projectMeters(x, y, 0, false);
+          if (p) { if (index === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }
+        });
+        context.closePath();
+      }
+      if (zone.kind === "no_go") {
+        context.fillStyle = rgba(palette.text, .22);
+        context.fill("evenodd");
+      }
+      context.setLineDash(zone.kind === "no_go" ? [] : [5, 4]);
+      context.strokeStyle = rgba(palette.text, zone.kind === "no_go" ? .9 : .6);
+      context.lineWidth = 1.5;
+      context.stroke();
+      context.setLineDash([]);
     }
   }
 

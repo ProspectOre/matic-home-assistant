@@ -17,7 +17,8 @@ def test_endpoint_registry_is_unique_typed_and_excludes_credentials() -> None:
     assert HERMES_ENDPOINT_MAP["zones"].kind is HermesEndpointKind.COLLECTION
     assert HERMES_ENDPOINT_MAP["coverage_session_history"].tracked is True
     assert HERMES_ENDPOINT_MAP["displayed_mission"].tracked is True
-    assert HERMES_ENDPOINT_MAP["zones"].tracked is False
+    assert HERMES_ENDPOINT_MAP["zones"].tracked is True
+    assert HERMES_ENDPOINT_MAP["planned_path"].tracked is False
     assert (
         HERMES_ENDPOINT_MAP["current_version"].sensitivity
         is HermesEndpointSensitivity.DIAGNOSTIC

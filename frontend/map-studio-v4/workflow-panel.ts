@@ -313,6 +313,7 @@ line-height: var(--ms-lh-snug);
           // As the area's screen reads it (map-surfaces.md §4): changed, or unusable.
           const check = area.canRebind || area.status === "review";
           const redraw = !check && area.status !== "current";
+          const noGo = value?.zones.some((zone) => zone.kind === "no_go" && zone.areaIds.includes(area.id));
           return html`<div role="listitem"><button
             class="ms-row ms-row--card area-row"
             type="button"
@@ -328,6 +329,7 @@ line-height: var(--ms-lh-snug);
               ${check || redraw ? html`<span class="lines"><span class="line" data-tone="warning">${icon(iconNoticeWarning)}<span>${check
                 ? this.#t("v4_area_row_check", "Map changed · Check it before cleaning")
                 : this.#t("v4_area_row_redraw", "Redraw it before cleaning")}</span></span></span>` : nothing}
+              ${noGo ? html`<small data-zone-overlap>${this.#t("v4_zone_overlap", "Overlaps a no-go zone · Matic skips that part")}</small>` : nothing}
             </span>
             <span class="ms-row__trail">${icon(iconChevronRight)}</span>
           </button></div>`;

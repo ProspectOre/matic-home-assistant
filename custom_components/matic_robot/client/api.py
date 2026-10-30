@@ -120,6 +120,7 @@ from .wire import (
     decode_fields,
     uuid_string,
 )
+from .zones import MAX_ZONES, decode_zones
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1009,6 +1010,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             self._async_optional_collection("coverage_session_history", limit=64),
             self._async_optional_collection_count("dock_detections"),
             self._async_optional_collection_count("sink_summon_locations"),
+            self._async_optional_collection("zones", limit=MAX_ZONES),
         )
         property_count = len(_TELEMETRY_PROPERTIES)
         values = dict(zip(_TELEMETRY_PROPERTIES, results[:property_count], strict=True))
@@ -1016,6 +1018,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         session_entries = results[property_count + 1]
         dock_detections = results[property_count + 2]
         sink_summon_locations = results[property_count + 3]
+        zone_entries = results[property_count + 4]
 
         schedules = (
             tuple(
@@ -1088,6 +1091,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 else None
             ),
             coverage_time_seconds=_decode_coverage_time(values["coverage_time"]),
+            zones=(
+                decode_zones(zone_entries) if isinstance(zone_entries, tuple) else ()
+            ),
         )
 
     async def _async_optional_property(self, name: str) -> bytes | None:

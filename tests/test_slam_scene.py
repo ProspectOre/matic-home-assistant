@@ -30,6 +30,7 @@ from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
     MappedFloor,
+    MapZone,
     RobotPose,
     Room,
 )
@@ -162,7 +163,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 floor_plan=floor_plan,
                 pose=robot_pose,
                 operational=SimpleNamespace(current_area="Kitchen"),
-                telemetry=SimpleNamespace(active_cleaning_session=False),
+                telemetry=SimpleNamespace(active_cleaning_session=False, zones=()),
             ),
         ),
         slam_history=SimpleNamespace(
@@ -1446,6 +1447,12 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
         "legacy": {"name": "Legacy"},
     }
     runtime.cleaning_plans.selected_area.return_value = "review"
+    no_go = ((0.2, 0.2), (0.6, 0.2), (0.6, 0.6), (0.2, 0.6))
+    runtime.coordinator.data.telemetry.zones = (
+        MapZone(1, "no_go", 1, no_go),
+        # A zone from another mission never reaches this map.
+        MapZone(2, "unknown", 0, no_go),
+    )
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
@@ -1505,6 +1512,15 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
             },
         ],
         "selected_area": "review",
+        "zones": [
+            {
+                "kind": "no_go",
+                "outline": [[0.2, 0.2], [0.6, 0.2], [0.6, 0.6], [0.2, 0.6]],
+                "holes": [],
+                "room_ids": ["room-1"],
+                "area_ids": ["table"],
+            }
+        ],
     }
     assert areas_api_url("entry") == AREAS_API_URL.format(entry_id="entry")
     with pytest.raises(Unauthorized):

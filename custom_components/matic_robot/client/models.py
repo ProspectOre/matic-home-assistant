@@ -173,6 +173,17 @@ class RobotOperationalState:
 
 
 @dataclass(frozen=True, slots=True)
+class MapZone:
+    """One robot zone outline in floor-plan metres, bound to its SLAM mission."""
+
+    mission_id: int
+    kind: str
+    class_value: int
+    outline: tuple[tuple[float, float], ...]
+    holes: tuple[tuple[tuple[float, float], ...], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class RobotTelemetry:
     """Decoded local settings, software, schedules, history, and diagnostics."""
 
@@ -202,6 +213,7 @@ class RobotTelemetry:
     active_cleaning_session: bool | None = None
     dock_detections: int | None = None
     sink_summon_locations: int | None = None
+    zones: tuple[MapZone, ...] = ()
     coverage_time_seconds: int | None = None
 
 
