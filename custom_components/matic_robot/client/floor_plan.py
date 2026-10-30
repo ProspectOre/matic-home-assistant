@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import struct
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .models import FloorPlan, RobotPose, Room
 from .wire import (
+    WireField,
     WireFieldBudget,
     bytes_fields,
     decode_fields,
@@ -266,6 +268,7 @@ def decode_pose(
             translation = tuple(packed_floats(value, 1)[0] for value in components)
         else:
             raise DecodeError("pose translation is incomplete")
+        heading = _pose_heading(cast(bytes, pose_info))
     except DecodeError:
         root_fields = decode_fields(payload, max_fields=32)
         if any(field.number == 2 for field in root_fields):
@@ -303,13 +306,76 @@ def decode_pose(
                 "pose contains a timestamp instead of a legacy vector"
             ) from None
         translation = packed_floats(first_bytes(pose_info, 1), 3)
+        heading = None
     return RobotPose(
         x=translation[0],
         y=translation[1],
         z=translation[2],
         mission_id=mission_id,
         observed_at=observed_at,
+        heading=heading,
     )
+
+
+def _single_message(fields: Sequence[WireField], number: int) -> bytes | None:
+    """Return the only length-delimited field with ``number``, if unique."""
+    values = [
+        field.value
+        for field in fields
+        if field.number == number
+        and field.wire_type == 2
+        and isinstance(field.value, bytes)
+    ]
+    return values[0] if len(values) == 1 else None
+
+
+def _fixed_floats(fields: Sequence[WireField], number: int) -> tuple[float, ...]:
+    """Decode every fixed32 float carried under ``number``, in wire order."""
+    return tuple(
+        struct.unpack("<f", field.value)[0]
+        for field in fields
+        if field.number == number
+        and field.wire_type == 5
+        and isinstance(field.value, bytes)
+    )
+
+
+def _pose_heading(pose_info: bytes) -> float | None:
+    """Return the robot's yaw in map radians from the pose rotation quaternion.
+
+    Firmware v181 carries the rotation at pose field 3 -> 2 in two forms: four
+    repeated floats (x, y, z, w) and a vector message plus scalar. The named
+    form is preferred. Heading is optional: any ambiguity hides it rather than
+    failing an otherwise valid translation.
+    """
+    try:
+        rotation_message = _single_message(decode_fields(pose_info), 3)
+        if rotation_message is None:
+            return None
+        quaternion_message = _single_message(decode_fields(rotation_message), 2)
+        if quaternion_message is None:
+            return None
+        fields = decode_fields(quaternion_message, max_fields=16)
+        vector = _single_message(fields, 2)
+        scalar = _fixed_floats(fields, 3)
+        if vector is not None and len(scalar) == 1:
+            vector_fields = decode_fields(vector, max_fields=8)
+            parts = [_fixed_floats(vector_fields, number) for number in (1, 2, 3)]
+            if any(len(part) != 1 for part in parts):
+                return None
+            x, y, z, w = parts[0][0], parts[1][0], parts[2][0], scalar[0]
+        else:
+            repeated = _fixed_floats(fields, 1)
+            if len(repeated) != 4:
+                return None
+            x, y, z, w = repeated
+    except DecodeError:
+        return None
+    norm = math.sqrt(x * x + y * y + z * z + w * w)
+    if not math.isfinite(norm) or not 0.9 <= norm <= 1.1:
+        return None
+    x, y, z, w = (value / norm for value in (x, y, z, w))
+    return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
 
 
 def pose_observation_age_seconds(
