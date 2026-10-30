@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import traceback
 from pathlib import Path
 
 import bpy
@@ -391,8 +392,7 @@ def main():
             print(f"Preview layers: {work}")
             return
         subprocess.run([args.python, "-c", PACK, str(work)], check=True)
-        OUTPUT.mkdir(parents=True, exist_ok=True)
-        atlas = OUTPUT / "robot-atlas.webp"
+        atlas = work / "robot-atlas.webp"
         subprocess.run(
             [
                 encoder,
@@ -412,6 +412,8 @@ def main():
         )
         if atlas.stat().st_size >= 250_000:
             raise RuntimeError(f"Atlas exceeds 250 KB: {atlas.stat().st_size} bytes")
+        OUTPUT.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(atlas, OUTPUT / atlas.name)
         metadata = {
             "frameSize": FRAME,
             "headings": HEADINGS,
@@ -428,8 +430,13 @@ def main():
             ),
         }
         (OUTPUT / "robot-atlas.json").write_text(json.dumps(metadata, indent=2) + "\n")
-        print(f"Atlas: {atlas.stat().st_size} bytes; {atlas}")
+        print(f"Atlas: {atlas.stat().st_size} bytes; {OUTPUT / atlas.name}")
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:
+        traceback.print_exc()
+        # Blender otherwise prints Python exceptions and exits successfully.
+        sys.exit(1)
