@@ -241,8 +241,10 @@ export const drawRobot = (
     if (!loading) { loading = true; void loadAtlas(); }
   }
   if (!atlas) return drawVectorRobot(context, project, heading, palette);
-  const centre = project(0, 0, 0), ahead = project(0.3, 0, 0), left = project(0, 0.3, 0);
-  if (!centre || !ahead || !left) return false;
+  const step = 0.001;
+  const centre = project(0, 0, 0), ahead = project(step, 0, 0), left = project(0, step, 0);
+  const behind = project(-step, 0, 0), right = project(0, -step, 0);
+  if (!centre || !ahead || !left || !behind || !right) return false;
   const { image, metadata } = atlas;
   const { frameSize, headings, pitches, layers } = metadata;
   const angle = Math.atan2(ahead.y - centre.y, ahead.x - centre.x);
@@ -250,8 +252,15 @@ export const drawRobot = (
   const degrees = pitch * 180 / Math.PI;
   const row = pitches.reduce((nearest, value, index) =>
     Math.abs(value - degrees) < Math.abs((pitches[nearest] as number) - degrees) ? index : nearest, 0);
-  const pixelsPerMeter = Math.max(Math.hypot(ahead.x - centre.x, ahead.y - centre.y),
-    Math.hypot(left.x - centre.x, left.y - centre.y)) / 0.3;
+  // The largest singular value of the local floor projection is unchanged by
+  // heading. Short, symmetric samples avoid perspective bias; the atlas itself
+  // already contains the pitch foreshortening.
+  const fx = ahead.x - behind.x, fy = ahead.y - behind.y;
+  const lx = left.x - right.x, ly = left.y - right.y;
+  const forwardScale = fx * fx + fy * fy, leftScale = lx * lx + ly * ly;
+  const cross = fx * lx + fy * ly;
+  const pixelsPerMeter = Math.sqrt((forwardScale + leftScale
+    + Math.hypot(forwardScale - leftScale, 2 * cross)) / 2) / (2 * step);
   const size = metadata.frameMeters * Math.max(pixelsPerMeter, MIN_PIXELS / metadata.lengthMeters);
   const x = centre.x - size / 2, y = centre.y - size / 2;
   const draw = (source: CanvasImageSource, layer: number): void => context.drawImage(source,

@@ -8434,6 +8434,12 @@ test("renderer draws the robot model turned with its heading and the camera", as
   for (const [pitch, row] of [[55, 1], [25, 2]]) {
     await page.evaluate(pitch => window.__robotTest.view(pitch), pitch);
     expect((await draw(0)).sample.row).toBe(row);
+    const sizes = [];
+    for (let step = 0; step < 16; step++) {
+      sizes.push((await draw(step * Math.PI / 8)).sample.size);
+    }
+    // Pitch is baked into each frame; turning in place must not scale it again.
+    expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThan(sizes[0] * 0.001);
   }
   await page.evaluate(() => window.__robotTest.view(90, 0, 100));
   const small = (await draw(0)).sample;
