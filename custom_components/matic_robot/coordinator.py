@@ -57,6 +57,7 @@ from .session_tracking import (
     _parse_timestamp,
     _sessions_overlap,
 )
+from .time_zone import time_zones_differ
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -156,6 +157,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._bag_last_full_at: str | None = None
         self._bag_last_replaced_at: str | None = None
         self._identity_issue_active = False
+        self._time_zone_issue: tuple[str, str] | None = None
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
         self._latest_cues_state: RobotOperationalState | None = None
         self._cues_push_sequence = 0
@@ -408,6 +410,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             if version is not None:
                 self._async_update_device_software(version, info.serial_number)
             self._async_clear_identity_issue()
+            self._async_check_time_zone(telemetry.timezone)
             # Events require native evidence; local estimates are display-only.
             self._async_fire_session_finished(state, version)
             state = await self._async_track_cleaning_session(state)
@@ -986,6 +989,43 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             self.hass,
             DOMAIN,
             f"robot_identity_changed_{self.config_entry.entry_id}",
+        )
+
+    @callback
+    def _async_check_time_zone(self, robot_zone: str | None) -> None:
+        """Raise a Repair while the robot keeps a different clock than HA.
+
+        Native schedules start on the robot's clock. An unread time zone keeps
+        the last decision rather than clearing a real mismatch on a failed read.
+        """
+        if robot_zone is None:
+            return
+        home_zone = self.hass.config.time_zone
+        mismatch = (
+            (robot_zone, home_zone)
+            if time_zones_differ(robot_zone, home_zone, dt_util.utcnow())
+            else None
+        )
+        if mismatch == self._time_zone_issue:
+            return
+        self._time_zone_issue = mismatch
+        issue_id = f"time_zone_mismatch_{self.config_entry.entry_id}"
+        if mismatch is None:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            is_persistent=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="time_zone_mismatch",
+            translation_placeholders={
+                **repair_placeholders(self.hass, self.config_entry.entry_id),
+                "robot_time_zone": robot_zone,
+                "home_time_zone": home_zone,
+            },
         )
 
     def _device_id(self, serial_number: str) -> str | None:

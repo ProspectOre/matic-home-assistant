@@ -1936,6 +1936,45 @@ async def test_identity_mismatch_raises_repair_until_recovery(hass) -> None:
     assert registry.async_get_issue(DOMAIN, issue_id) is None
 
 
+async def test_time_zone_mismatch_raises_repair_until_clocks_match(hass) -> None:
+    from homeassistant.helpers import issue_registry as ir
+
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    registry = ir.async_get(hass)
+    issue_id = "time_zone_mismatch_entry"
+    await hass.config.async_update(time_zone="America/Los_Angeles")
+
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        protocol_version=25, timezone="America/New_York"
+    )
+    with patch.object(
+        ir, "async_create_issue", wraps=ir.async_create_issue
+    ) as create_issue:
+        await coordinator._async_update_data()
+        await coordinator._async_update_data()
+    create_issue.assert_called_once()
+    issue = registry.async_get_issue(DOMAIN, issue_id)
+    assert issue is not None
+    assert issue.translation_key == "time_zone_mismatch"
+    assert issue.translation_placeholders["robot_time_zone"] == "America/New_York"
+    assert issue.translation_placeholders["home_time_zone"] == "America/Los_Angeles"
+
+    # A failed optional read keeps the last decision.
+    coordinator._cached_telemetry = None
+    client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
+    await coordinator._async_update_data()
+    assert registry.async_get_issue(DOMAIN, issue_id) is not None
+
+    # An alias of the same clock clears it.
+    coordinator._cached_telemetry = None
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        protocol_version=25, timezone="US/Pacific"
+    )
+    await coordinator._async_update_data()
+    assert registry.async_get_issue(DOMAIN, issue_id) is None
+
+
 async def test_coordinator_updates_device_registry_firmware_once(hass) -> None:
     client = _client()
     client.async_get_telemetry.return_value = RobotTelemetry(
