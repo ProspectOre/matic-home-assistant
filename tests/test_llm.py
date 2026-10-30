@@ -3196,4 +3196,4 @@ async def test_zones_name_the_rooms_they_cover_on_the_current_map() -> None:
         await tool.async_call(_hass(entry), llm.ToolInput(tool.name, {}), _context())
     ).data
     assert len(many["zones"]) == 64
-    assert bare["zones_on_other_maps"] == 1
+    assert bare["zones_on_other_maps"] is None
