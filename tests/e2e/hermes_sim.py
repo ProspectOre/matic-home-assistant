@@ -537,15 +537,24 @@ class _Hermes(HermesBase):
         while True:
             seen = self._robot.version(name)
             for key, value in self._robot.entries(name) or ():
+                sequence = self._robot.next_sequence()
                 await stream.send_message(
                     CollectionResponse(
                         key_bytes=key,
                         value=Value(value_bytes=value),
-                        sequence_id=self._robot.next_sequence(),
+                        sequence_id=sequence,
                     )
                 )
-                if tracking and await stream.recv_message() is None:
+                if not tracking:
+                    continue
+                ack = await stream.recv_message()
+                if ack is None:
                     tracking = False
+                elif ack.sequence_id != sequence:
+                    raise GRPCError(
+                        Status.INVALID_ARGUMENT,
+                        f"acknowledged {ack.sequence_id} instead of {sequence}",
+                    )
             if not tracking:
                 return
             await self._robot.wait_for_change(name, seen)

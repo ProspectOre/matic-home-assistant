@@ -202,6 +202,7 @@ class CoverageSession:
     rooms: list[UUID]
     modes: dict[UUID, set[int]]
     started_at: int  # nanoseconds since the epoch
+    ordered: bool = False  # goals came in the ordered list (field 1)
     finished: dict[UUID, int] = field(default_factory=dict)
 
     @property
@@ -263,12 +264,12 @@ def parse_coverage_command(payload: bytes, started_at: int) -> CoverageSession |
     session_wire = message(coverage, 6)
     if mission_wire is None or session_wire is None:
         return None
-    goals = [
-        goal
-        for container in messages(coverage, 5)
-        for number in (1, 2)
-        for goal in messages(container, number)
-    ]
+    ordered: list[bytes] = []
+    unordered: list[bytes] = []
+    for container in messages(coverage, 5):
+        ordered.extend(messages(container, 1))
+        unordered.extend(messages(container, 2))
+    goals = ordered + unordered
     rooms: list[UUID] = []
     modes: dict[UUID, set[int]] = {}
     for goal in goals:
@@ -282,7 +283,15 @@ def parse_coverage_command(payload: bytes, started_at: int) -> CoverageSession |
             rooms.append(room_id)
             modes[room_id] = set()
         modes[room_id].add(int(mode))
-    return CoverageSession(session_wire, mission_wire, goals, rooms, modes, started_at)
+    return CoverageSession(
+        session_wire,
+        mission_wire,
+        goals,
+        rooms,
+        modes,
+        started_at,
+        ordered=bool(ordered) and not unordered,
+    )
 
 
 _TILE_SIDE = 32

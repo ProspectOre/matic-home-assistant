@@ -152,19 +152,24 @@ def _expect(
     outcome: str,
     reason_code: str,
     completed_rooms: int,
-    terminal_activity: str,
+    *terminal_activity: str,
 ) -> None:
     assert finished["outcome"] == outcome
     assert finished["reason_code"] == reason_code
     assert finished["completed_room_count"] == completed_rooms
     assert finished["room_count"] == 2
-    assert finished["terminal_activity"] == terminal_activity
+    assert finished["terminal_activity"] in terminal_activity
 
 
 async def test_all_rooms_verify_from_native_history(
     plan: PlanRun, robot: SimulatedRobot, hass: HomeAssistant
 ) -> None:
     await plan.start()
+    # The plan sends both rooms as ordered goals, Kitchen before Study.
+    assert robot.session is not None
+    assert robot.session.ordered
+    assert robot.floor is not None
+    assert robot.session.rooms == [room.id for room in robot.floor.rooms]
     robot.finish_room()
     await plan.poll()
     robot.finish_room()
@@ -218,7 +223,9 @@ async def test_return_home_stops_the_run_then_docks(
     robot.arrive_at_dock()
 
     finished = await plan.outcome()
-    _expect(finished, "cancelled", "managed_replaced", 0, "idle")
+    # The activity is the vacuum entity's state when the run closes, which can
+    # be read before or after the coordinator has seen the robot stop.
+    _expect(finished, "cancelled", "managed_replaced", 0, "cleaning", "idle")
     assert robot.received()[-2:] == [STOP_PAYLOAD, DOCK_PAYLOAD]
     async with asyncio.timeout(10):
         while not plan.docked:
