@@ -1465,9 +1465,10 @@ export class RendererController {
     }
     const wifi = state.wifiSignal;
     // Drawn above the room fills, which are nearly opaque in Room colors, and
-    // below the room names.
+    // below the room names. A retained scene stays read-only until the live
+    // one is admitted, so its geometry may belong to another floor or frame.
     let wifiPending = wifi?.status === "ready" && state.dataMode === "live"
-      && state.selection.floorId === "current";
+      && !state.floor.readOnly && state.selection.floorId === "current";
     const drawWifi = (): void => {
       if (wifiPending && wifi) this.#drawWifiSignal(context, wifi.cells, wifi.cellSize / 2);
       wifiPending = false;

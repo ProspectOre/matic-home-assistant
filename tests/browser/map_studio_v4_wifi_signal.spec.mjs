@@ -190,6 +190,9 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     renderer.setState({ ...initial, wifiSignal, dataMode: "history" });
     await frame();
     const history = fills.splice(0);
+    renderer.setState({ ...initial, wifiSignal, floor: { ...initial.floor, readOnly: true } });
+    await frame();
+    const retained = fills.splice(0);
     const painted = [];
     const fill = context.fill.bind(context);
     context.fill = (...args) => { painted.push(String(context.fillStyle)); return fill(...args); };
@@ -207,11 +210,13 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
       { enabled: true, cell_size: 0.5, cells: [null] },
       null,
     ].map((value) => { try { parseWifiSignal(value); return false; } catch { return true; } });
-    return { live, history, rejected, roomColours };
+    return { live, history, retained, rejected, roomColours };
   }, SURVEY);
   // -48 dBm is past the strong end of the scale and -88 past the weak end.
   expect(result.live).toEqual(["hsl(120 75% 45% / .45)", "hsl(0 75% 45% / .45)"]);
   expect(result.history).toEqual([]);
+  // A retained read-only scene waits for the live one before cells draw.
+  expect(result.retained).toEqual([]);
   // Room colors fill rooms at 94% opacity; the cells must paint over them.
   expect(result.roomColours).toEqual({ roomFills: true, cellsAbove: true });
   expect(result.rejected).toEqual([true, true, true, true, true]);
