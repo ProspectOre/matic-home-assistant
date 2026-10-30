@@ -504,6 +504,7 @@ class MaticStateSensor(MaticEntity, SensorEntity):
                         "timezone": schedule.timezone,
                         "ordered": schedule.ordered,
                         "enabled": schedule.enabled,
+                        "cleaning_mode": schedule.cleaning_mode,
                         "rooms": [
                             room_names[room_id]
                             for room_id in schedule.room_ids
