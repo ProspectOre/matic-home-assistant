@@ -76,7 +76,7 @@ def schedule_occurrences(
             end,
         )
     ]
-    return sorted(events, key=lambda event: event.start_datetime_local)
+    return sorted(events, key=lambda event: event.start_datetime_local.astimezone(UTC))
 
 
 def _occurrences(
@@ -91,19 +91,21 @@ def _occurrences(
     hour, minute = divmod(minute_of_day, 60)
     summary = schedule.name or "Scheduled cleaning"
     description = _description(schedule, room_names)
+    # Aware datetimes sharing a zone compare and subtract by wall clock, which
+    # is wrong in the repeated fall-back hour, so all arithmetic runs in UTC.
+    start = start.astimezone(UTC)
+    end = end.astimezone(UTC)
     day: date = (start - SCHEDULED_RUN_DURATION).astimezone(zone).date()
     last_day = end.astimezone(zone).date()
     while day <= last_day:
         if day.weekday() in weekdays:
-            # Work on the UTC timeline so a start in the spring-forward gap
-            # moves past it and every block lasts one elapsed hour.
-            begins_utc = datetime.combine(day, time(hour, minute), zone).astimezone(UTC)
-            begins = begins_utc.astimezone(zone)
-            ends = (begins_utc + SCHEDULED_RUN_DURATION).astimezone(zone)
+            # A start in the spring-forward gap moves past it.
+            begins = datetime.combine(day, time(hour, minute), zone).astimezone(UTC)
+            ends = begins + SCHEDULED_RUN_DURATION
             if begins < end and ends > start:
                 yield CalendarEvent(
-                    start=begins,
-                    end=ends,
+                    start=begins.astimezone(zone),
+                    end=ends.astimezone(zone),
                     summary=summary,
                     description=description,
                 )

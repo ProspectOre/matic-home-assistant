@@ -206,3 +206,19 @@ def test_runs_in_dst_transition_hours_last_one_elapsed_hour() -> None:
         ),
     ]
     assert spring_forward[0].start.hour == 3
+
+
+def test_a_run_in_the_repeated_hour_overlaps_a_window_starting_inside_it() -> None:
+    state = _with(_schedule(minute_of_day=90, weekdays=("sunday",)))
+    # 01:45 PDT, before the clocks fall back; the 01:30 PDT run ends at
+    # 01:30 PST, 45 minutes later.
+    window_start = datetime(2026, 11, 1, 1, 45, tzinfo=LOS_ANGELES)
+
+    events = schedule_occurrences(
+        state, window_start, datetime(2026, 11, 1, 3, tzinfo=LOS_ANGELES)
+    )
+
+    assert len(events) == 1
+    assert events[0].start.astimezone(ZoneInfo("UTC")) == datetime(
+        2026, 11, 1, 8, 30, tzinfo=ZoneInfo("UTC")
+    )
