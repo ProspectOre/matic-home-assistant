@@ -83,6 +83,7 @@
   },
   "services": {
     "clean": { "service": "mdi:robot-vacuum" },
+    "go_to_room": { "service": "mdi:map-marker-outline" },
     "clean_area": { "service": "mdi:vector-square" },
     "clean_room_sequence": { "service": "mdi:format-list-numbered" },
     "clean_entire_plan": { "service": "mdi:format-list-numbered" },
