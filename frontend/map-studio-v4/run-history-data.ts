@@ -194,11 +194,29 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
   const previous = trailRuns.get(store);
   trailRuns.set(store, run);
   let trail = state.trail;
-  if (!run || !pose.position || trail?.id !== "live" || trail.mapSessionKey !== pose.mapSessionKey) return;
-  if (previous !== undefined && previous !== run) trail = { ...trail, segments: [[]] };
+  if (!run || !pose.position || !pose.mapSessionKey || trail?.id !== "live") return;
+  // A new run, or a new verified map whose frame the old points do not share.
+  if ((previous !== undefined && previous !== run) || trail.mapSessionKey !== pose.mapSessionKey) {
+    trail = { id: "live", mapSessionKey: pose.mapSessionKey, segments: [[]] };
+  }
   const segment = trail.segments.at(-1) ?? [];
   const last = segment.at(-1);
   const [x, y] = pose.position;
   if (last && Math.hypot(x - last[0], y - last[1]) < 0.15) return;
   store.patch({ trail: { ...trail, segments: [...trail.segments.slice(0, -1), [...segment, [x, y] as const].slice(-MAX_POINTS)] } });
+};
+
+const watched = new WeakSet<WorkspaceStore>();
+
+/** Rereads an open Cleaning history when the run it reports starts, ends or is credited late. */
+export const watchRuns = (store: WorkspaceStore, reload: () => void): void => {
+  if (watched.has(store)) return;
+  watched.add(store);
+  let shown: string | undefined;
+  store.subscribe((state) => {
+    const run = state.lastRun;
+    const key = run ? `${run.runId}:${run.outcome}:${run.completedRoomCount}` : "";
+    if (shown !== undefined && key !== shown && state.workflow === "runs") reload();
+    shown = key;
+  });
 };

@@ -34,7 +34,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false, viewport 
 async function loadStoreHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { WorkspaceStore, selectPrimaryAction, canSelectRooms } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail } from "./frontend/map-studio-v4/run-history-data";',
+      contents: 'export { WorkspaceStore, selectPrimaryAction, canSelectRooms } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail, watchRuns } from "./frontend/map-studio-v4/run-history-data";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -1784,8 +1784,34 @@ test.describe("cleaning history", () => {
       store.patch({ activity: "recharging" });
       extendLiveTrail(store, pose(5));
       seen.push(points());
+      // A new verified map starts the trail over in its own frame.
+      extendLiveTrail(store, { ...pose(6), mapSessionKey: "next-map" });
+      seen.push([store.value.trail.mapSessionKey, ...points()]);
       return seen;
     }, HARNESS);
-    expect(steps).toEqual([[0, 1], [0, 1], [3], [4], [4, 5]]);
+    expect(steps).toEqual([[0, 1], [0, 1], [3], [4], [4, 5], ["next-map", 6]]);
+  });
+
+  test("an open history rereads when the run it reports changes", async ({ page }) => {
+    await loadStoreHarness(page);
+    const reloads = await page.evaluate(async (harness) => {
+      const { WorkspaceStore, createGalleryState, watchRuns } = await import(harness);
+      const store = new WorkspaceStore({ ...createGalleryState("ready"), workflow: "runs" });
+      let count = 0;
+      watchRuns(store, () => { count += 1; });
+      watchRuns(store, () => { count += 100; });
+      const run = { runId: "run-1", outcome: "running", completedRoomCount: 0, roomCount: 2 };
+      const seen = [];
+      store.patch({ lastRun: run });
+      seen.push(count);
+      store.patch({ activity: "cleaning" });
+      seen.push(count);
+      store.patch({ lastRun: { ...run, outcome: "partial", completedRoomCount: 1 } });
+      seen.push(count);
+      store.patch({ workflow: "none", lastRun: { ...run, outcome: "partial", completedRoomCount: 2 } });
+      seen.push(count);
+      return seen;
+    }, HARNESS);
+    expect(reloads).toEqual([1, 1, 2, 2]);
   });
 });
