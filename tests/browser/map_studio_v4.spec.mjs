@@ -1219,7 +1219,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const plans = catalog.plans.map((plan) => ({ ...plan, nextRunPreview: { ...plan.nextRunPreview, heldRooms } }));
       element.replaceWorkspaceState({ ...state, resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...catalog, plans } } } });
     });
-    await expect(gallery.getByText("Held while occupied: Nursery and Study. They stay first in line for the next run.", { exact: true })).toBeVisible();
+    await expect(gallery.getByText("Held while occupied: Nursery (binary_sensor.nursery) and Study (binary_sensor.study). They stay first in line for the next run.", { exact: true })).toBeVisible();
     await expect(gallery.getByText("3 rooms · about 33 min", { exact: true })).toBeVisible();
   });
 

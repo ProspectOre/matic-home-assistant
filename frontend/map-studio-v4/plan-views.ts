@@ -362,7 +362,7 @@ export class MaticPlanViewsV4 extends LitElement {
           ? this.#t("v4_next_run_after_active", "After this run")
           : this.#t("v4_next_run_preview", "Next run")}</h3>
       ${!paused && preview?.heldRooms?.length ? html`<p class="quiet" data-held-rooms>${this.#t("v4_plan_held_rooms", "Held while occupied: {rooms}. They stay first in line for the next run.", {
-        rooms: formatList(state.locale, preview.heldRooms.map((room) => room.name)),
+        rooms: formatList(state.locale, preview.heldRooms.map((room) => this.#t("v4_plan_held_room", "{room} ({sensor})", { room: room.name, sensor: room.sensor }))),
       })}</p>` : nothing}
       ${ready && !ordered ? html`<p class="quiet">${this.#t("v4_plan_rotation_settings", "Smart Order cleans the rooms and areas that have waited longest first, checking again each time.")}</p>` : nothing}
       ${boundaries.length ? html`<p class="quiet">${this.#t("v4_room_parts", "The robot cleans in {count} parts and may stop at the dock between parts.", {

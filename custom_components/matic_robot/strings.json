@@ -476,6 +476,7 @@
     "v4_preview_area_changed": "Can't run this plan until you review its custom areas on the current map.",
     "v4_preview_invalid": "Can't run this plan until you open Edit and save it again.",
     "v4_preview_rooms_held": "Can't run this plan while every room in it is occupied.",
+    "v4_plan_held_room": "{room} ({sensor})",
     "v4_plan_held_rooms": "Held while occupied: {rooms}. They stay first in line for the next run.",
     "v4_plan_hold_occupied": "Hold occupied rooms",
     "v4_plan_hold_occupied_hint": "Leave out a room while an occupancy or presence sensor in its Home Assistant area is on. It stays first in line for the next run.",
