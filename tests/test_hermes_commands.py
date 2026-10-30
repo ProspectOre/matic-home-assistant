@@ -8,6 +8,7 @@ from custom_components.matic_robot.client.commands import (
     HermesConnectionKind,
     UserCommand,
     encode_coverage_command,
+    encode_go_to_room_command,
     encode_sink_summon_command,
     encode_user_command,
     encode_user_data,
@@ -139,3 +140,31 @@ def test_sink_summon_rejects_missing_posture_and_out_of_range_mission() -> None:
         encode_sink_summon_command(mission_id=1, posture=b"")
     with pytest.raises(ValueError, match="mission_id"):
         encode_sink_summon_command(mission_id=1 << 32, posture=b"\x0d")
+
+
+def test_go_to_room_navigates_to_the_room_without_a_wait() -> None:
+    """NavigateTo's room goal (field 5) with the mission, and no wait task."""
+    payload = encode_go_to_room_command(
+        mission_id=0x01020304,
+        partition_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        region_id="11111111-1111-4111-8111-111111111111",
+    )
+
+    partition = "0a160a14121209aa4aaaaaaaaaaaaa11aaaaaaaaaaaaaa8a"
+    region = "2216121412120911411111111111111111111111111111" + "81"
+    assert payload == bytes.fromhex(
+        "123b22392a30" + partition + region + "12051504030201"
+    )
+
+
+def test_go_to_room_rejects_invalid_identifiers() -> None:
+    with pytest.raises(ValueError):
+        encode_go_to_room_command(
+            mission_id=1, partition_id="partition", region_id="room"
+        )
+    with pytest.raises(ValueError, match="mission_id"):
+        encode_go_to_room_command(
+            mission_id=-1,
+            partition_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            region_id="11111111-1111-4111-8111-111111111111",
+        )
