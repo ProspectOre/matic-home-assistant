@@ -177,3 +177,32 @@ async def test_entity_reports_the_next_run_and_window_events(hass) -> None:
     entry.runtime_data.coordinator.data = _with()
     with patch.object(dt_util, "now", return_value=now):
         assert entity.event is None
+
+
+def test_runs_in_dst_transition_hours_last_one_elapsed_hour() -> None:
+    utc = ZoneInfo("UTC")
+    fall_back = schedule_occurrences(
+        _with(_schedule(minute_of_day=90, weekdays=("sunday",))),
+        datetime(2026, 11, 1, tzinfo=LOS_ANGELES),
+        datetime(2026, 11, 2, tzinfo=LOS_ANGELES),
+    )
+    spring_forward = schedule_occurrences(
+        _with(_schedule(minute_of_day=150, weekdays=("sunday",))),
+        datetime(2026, 3, 8, tzinfo=LOS_ANGELES),
+        datetime(2026, 3, 9, tzinfo=LOS_ANGELES),
+    )
+
+    assert [
+        (event.start.astimezone(utc), event.end.astimezone(utc))
+        for event in fall_back + spring_forward
+    ] == [
+        (
+            datetime(2026, 11, 1, 8, 30, tzinfo=utc),
+            datetime(2026, 11, 1, 9, 30, tzinfo=utc),
+        ),
+        (
+            datetime(2026, 3, 8, 10, 30, tzinfo=utc),
+            datetime(2026, 3, 8, 11, 30, tzinfo=utc),
+        ),
+    ]
+    assert spring_forward[0].start.hour == 3

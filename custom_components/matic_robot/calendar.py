@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import date, datetime, time, timedelta, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
@@ -95,8 +95,11 @@ def _occurrences(
     last_day = end.astimezone(zone).date()
     while day <= last_day:
         if day.weekday() in weekdays:
-            begins = datetime.combine(day, time(hour, minute), zone)
-            ends = begins + SCHEDULED_RUN_DURATION
+            # Work on the UTC timeline so a start in the spring-forward gap
+            # moves past it and every block lasts one elapsed hour.
+            begins_utc = datetime.combine(day, time(hour, minute), zone).astimezone(UTC)
+            begins = begins_utc.astimezone(zone)
+            ends = (begins_utc + SCHEDULED_RUN_DURATION).astimezone(zone)
             if begins < end and ends > start:
                 yield CalendarEvent(
                     start=begins,
