@@ -70,6 +70,12 @@ _FLOOR_CATALOGS_OPTION = "matic_floor_catalogs"
 _UNSCOPED_CATALOG_OPTION = "matic_unscoped_catalog"
 _FLOOR_SCOPE_DOMAIN = b"matic-vacuum-floor-segments-v1\0"
 _MAX_FLOOR_CATALOGS = 12
+_EMOTES = {
+    "nod": UserCommand.EMOTE_NOD,
+    "shake": UserCommand.EMOTE_SHAKE,
+    "pirouette": UserCommand.EMOTE_PIROUETTE,
+    "snap": UserCommand.EMOTE_SNAP,
+}
 
 
 # Sends one resolved navigation command for the floor current at send time.
@@ -986,9 +992,20 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 )
             await self.async_go_to_room(room)
             return
+        if normalized == "emote":
+            kind = params.get("kind") if isinstance(params, dict) else None
+            emote = _EMOTES.get(kind.strip().lower()) if isinstance(kind, str) else None
+            if emote is None:
+                raise _validation_error(
+                    "emote requires params.kind as nod, shake, pirouette, or snap",
+                    "emote_kind_required",
+                )
+            await self._async_command(emote)
+            return
         simple_commands = {
             "pause": UserCommand.PAUSE,
             "resume": UserCommand.RESUME,
+            "stay_put": UserCommand.STAY_PUT,
         }
         if normalized in simple_commands:
             await self._async_command(simple_commands[normalized])
@@ -1071,8 +1088,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             return
         raise _validation_error(
             "Unsupported Matic command. Use start, clean_all, clean_rooms, "
-            "clean_segments, pause, resume, stop, dock, return_home, "
-            "sink_summon, or go_to_room",
+            "clean_segments, pause, resume, stop, stay_put, dock, return_home, "
+            "sink_summon, go_to_room, or emote",
             "unsupported_command",
         )
 

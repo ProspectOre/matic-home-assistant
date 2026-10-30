@@ -11,12 +11,21 @@ from uuid import UUID, uuid4
 
 
 class UserCommand(StrEnum):
-    """Commands whose protobuf payloads were verified against a real robot."""
+    """Fixed user commands with the official app's exact protobuf payloads.
+
+    STOP, PAUSE, RESUME and DOCK were verified against a real robot. STAY_PUT
+    and the emotes come from the app's own encoder and await a live check.
+    """
 
     STOP = "stop"
     PAUSE = "pause"
     RESUME = "resume"
     DOCK = "dock"
+    STAY_PUT = "stay_put"
+    EMOTE_NOD = "emote_nod"
+    EMOTE_SHAKE = "emote_shake"
+    EMOTE_PIROUETTE = "emote_pirouette"
+    EMOTE_SNAP = "emote_snap"
 
 
 class CleaningMode(StrEnum):
@@ -58,6 +67,11 @@ _COMMAND_PAYLOADS = {
     UserCommand.PAUSE: bytes.fromhex("4801880101"),
     UserCommand.RESUME: bytes.fromhex("4801880100"),
     UserCommand.DOCK: bytes.fromhex("12042a020800"),
+    UserCommand.STAY_PUT: bytes.fromhex("820100"),
+    UserCommand.EMOTE_NOD: bytes.fromhex("12043a020a00"),
+    UserCommand.EMOTE_SHAKE: bytes.fromhex("12043a021200"),
+    UserCommand.EMOTE_PIROUETTE: bytes.fromhex("12043a022a00"),
+    UserCommand.EMOTE_SNAP: bytes.fromhex("12043a024200"),
 }
 
 _SINK_REFILL_WAIT_SECONDS = 900
