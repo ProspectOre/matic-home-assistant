@@ -27,6 +27,7 @@ from custom_components.matic_robot.run_history import (
     history_entries,
     managed_entry,
     native_entry,
+    repair_run_history,
     run_areas,
     run_ending,
     run_rooms,
@@ -505,3 +506,25 @@ async def test_trails_reload_and_reject_damaged_storage(
 
     await trails.async_remove()
     assert trails._data() == {"trails": [], "live": None}
+
+
+def test_late_completion_repairs_only_the_matching_saved_run() -> None:
+    robot = {
+        "run_history": [
+            {"run_id": "run-0", "outcome": "failed", "rooms": []},
+            {
+                "run_id": "run-1",
+                "outcome": "failed",
+                "rooms": ["damaged", {"name": "Den", "result": "problem"}],
+            },
+        ]
+    }
+    repair_run_history(robot, {"run_id": "run-1", "outcome": "completed"}, "Den")
+    assert robot["run_history"] == [
+        {"run_id": "run-0", "outcome": "failed", "rooms": []},
+        {
+            "run_id": "run-1",
+            "outcome": "completed",
+            "rooms": ["damaged", {"name": "Den", "result": "completed"}],
+        },
+    ]

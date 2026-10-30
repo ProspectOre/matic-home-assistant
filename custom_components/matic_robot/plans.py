@@ -93,7 +93,12 @@ from .coverage_accounting import (
 )
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
-from .run_history import append_run_history, history_entries, update_run_history
+from .run_history import (
+    append_run_history,
+    history_entries,
+    repair_run_history,
+    update_run_history,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _MetadataResult = TypeVar("_MetadataResult")
@@ -7071,6 +7076,7 @@ def _repair_native_reconciled_run(
                 "cause": "verified_completion",
             }
         )
+    repair_run_history(robot, last_run, pending.get("room"))
 
 
 def _record_native_completion(

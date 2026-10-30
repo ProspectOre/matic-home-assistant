@@ -110,6 +110,25 @@ def update_run_history(
             record.update(changes)
 
 
+def repair_run_history(
+    robot: dict[str, Any], run: Mapping[str, Any], room_name: object
+) -> None:
+    """Carry a late verified room completion into the saved run."""
+    for record in run_history(robot):
+        if record["run_id"] != run.get("run_id"):
+            continue
+        record.update(
+            {
+                key: run[key]
+                for key in ("outcome", "reason_code", "cause", "completed_room_count")
+                if key in run
+            }
+        )
+        for room in record.get("rooms") or ():
+            if isinstance(room, dict) and room.get("name") == room_name:
+                room["result"] = "completed"
+
+
 def run_rooms(robot: Mapping[str, Any], run: Mapping[str, Any]) -> list[dict[str, str]]:
     """Return the run's planned rooms in order with each room's own result."""
     run_id = run.get("run_id")

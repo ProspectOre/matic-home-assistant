@@ -4000,6 +4000,9 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
     assert last_run["completed_room_count"] == 2
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
+    (saved,) = manager.run_history("serial")
+    assert (saved["outcome"], saved["ending"]) == ("finished", "finished")
+    assert manager._robot("serial")["run_history"][0]["completed_room_count"] == 2
     await manager.async_finish_run(
         "serial", "run-1", "failed", "partial_native_result", 1, cause="native_result"
     )
