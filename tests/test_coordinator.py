@@ -1975,6 +1975,29 @@ async def test_time_zone_mismatch_raises_repair_until_clocks_match(hass) -> None
     assert registry.async_get_issue(DOMAIN, issue_id) is None
 
 
+async def test_time_zone_repair_from_before_a_reload_clears_on_match(hass) -> None:
+    from homeassistant.helpers import issue_registry as ir
+
+    issue_id = "time_zone_mismatch_entry"
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        issue_id,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="time_zone_mismatch",
+    )
+    await hass.config.async_update(time_zone="America/Los_Angeles")
+    client = _client()
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        protocol_version=25, timezone="America/Los_Angeles"
+    )
+
+    await _coordinator(hass, client)._async_update_data()
+
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
 async def test_coordinator_updates_device_registry_firmware_once(hass) -> None:
     client = _client()
     client.async_get_telemetry.return_value = RobotTelemetry(

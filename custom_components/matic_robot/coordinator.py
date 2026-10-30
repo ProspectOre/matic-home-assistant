@@ -157,6 +157,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._bag_last_full_at: str | None = None
         self._bag_last_replaced_at: str | None = None
         self._identity_issue_active = False
+        self._time_zone_checked = False
         self._time_zone_issue: tuple[str, str] | None = None
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
         self._latest_cues_state: RobotOperationalState | None = None
@@ -1006,8 +1007,11 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             if time_zones_differ(robot_zone, home_zone, dt_util.utcnow())
             else None
         )
-        if mismatch == self._time_zone_issue:
+        # The first check always writes: a reloaded entry starts unset, and
+        # a Repair raised before the reload must still clear on a match.
+        if self._time_zone_checked and mismatch == self._time_zone_issue:
             return
+        self._time_zone_checked = True
         self._time_zone_issue = mismatch
         issue_id = f"time_zone_mismatch_{self.config_entry.entry_id}"
         if mismatch is None:
