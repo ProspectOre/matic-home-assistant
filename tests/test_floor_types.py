@@ -285,6 +285,53 @@ async def test_view_rechecks_the_floor_after_waiting_for_the_lock() -> None:
     runtime.client.async_get_tracked_collection_entries.assert_not_awaited()
 
 
+async def test_view_keeps_pages_a_later_read_did_not_replay() -> None:
+    first = _blank()
+    first[0:8, 0:8] = SemanticKind.CARPET
+    second = _blank()
+    second[0:8, 0:8] = SemanticKind.VENT
+    later = HermesCollectionEntry(
+        synthetic_semantic_entry(page_x=1, page_y=0).key,
+        _semantic_entry(second).value,
+    )
+    reads = iter(((_semantic_entry(first),), (), (), (), (later,), ()))
+    runtime = _runtime(read=AsyncMock(side_effect=lambda name, limit: next(reads)))
+    view = MaticFloorLayersView()
+
+    body = json.loads((await view.get(_request(runtime), "entry")).body)
+    assert body["page_count"] == 1
+    with patch(
+        "custom_components.matic_robot.floor_layers.monotonic", return_value=1e12
+    ):
+        body = json.loads((await view.get(_request(runtime), "entry")).body)
+    # The second read replayed nothing; the first page is kept.
+    assert body["page_count"] == 1
+    assert len(body["layers"]["carpet"]) == 1
+    with patch(
+        "custom_components.matic_robot.floor_layers.monotonic", return_value=2e12
+    ):
+        body = json.loads((await view.get(_request(runtime), "entry")).body)
+    assert body["page_count"] == 2
+    assert len(body["layers"]["vent"]) == 1
+
+
+async def test_view_retries_an_empty_floor_sooner() -> None:
+    runtime = _runtime(read=AsyncMock(return_value=()))
+    view = MaticFloorLayersView()
+    with patch(
+        "custom_components.matic_robot.floor_layers.monotonic", return_value=0.0
+    ):
+        await view.get(_request(runtime), "entry")
+    assert view._cache["entry"].expires_at == 30.0
+
+
+async def test_view_rejects_too_many_pages() -> None:
+    runtime = _runtime()
+    with patch("custom_components.matic_robot.floor_layers.MAX_SLAM_TILES", 0):
+        response = await MaticFloorLayersView().get(_request(runtime), "entry")
+    assert response.status == 503
+
+
 async def test_concurrent_requests_share_one_read() -> None:
     runtime = _runtime()
     view = MaticFloorLayersView()
