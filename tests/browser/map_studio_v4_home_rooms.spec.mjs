@@ -1815,9 +1815,17 @@ test.describe("cleaning history", () => {
       seen.push(count);
       store.patch({ workflow: "none", lastRun: { ...run, outcome: "partial", completedRoomCount: 2 } });
       seen.push(count);
+      // Once no managed run is running, the robot docking rereads, and so
+      // does a task started from the Matic app as it starts and as it ends.
+      store.patch({ workflow: "runs", activity: "docked" });
+      seen.push(count);
+      for (const activity of ["cleaning", "paused", "returning", "docked"]) {
+        store.patch({ activity });
+        seen.push(count);
+      }
       return seen;
     }, HARNESS);
-    expect(reloads).toEqual([1, 1, 2, 2]);
+    expect(reloads).toEqual([1, 1, 2, 2, 3, 4, 4, 4, 5]);
   });
 
   test("a saved map offers no Robot trail, which only draws on the live map @mobile", async ({ page }) => {

@@ -208,14 +208,19 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
 
 const watched = new WeakSet<WorkspaceStore>();
 
-/** Rereads an open Cleaning history when the run it reports starts, ends or is credited late. */
+/**
+ * Rereads an open Cleaning history when the run it reports starts, ends or is
+ * credited late, and outside a managed run when a robot-started task starts
+ * or ends, since those come from the robot's own history.
+ */
 export const watchRuns = (store: WorkspaceStore, reload: () => void): void => {
   if (watched.has(store)) return;
   watched.add(store);
   let shown: string | undefined;
   store.subscribe((state) => {
     const run = state.lastRun;
-    const key = run ? `${run.runId}:${run.outcome}:${run.completedRoomCount}` : "";
+    const managed = run ? `${run.runId}:${run.outcome}:${run.completedRoomCount}` : "";
+    const key = run?.outcome === "running" ? managed : `${managed}:${WORKING.includes(state.activity)}`;
     if (shown !== undefined && key !== shown && state.workflow === "runs") reload();
     shown = key;
   });
