@@ -7,10 +7,13 @@ import { join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 
-// RC41 adds run-bound Smart Stop status, progress and immediate-stop controls.
-// Allow up to 92 KiB compressed for the complete registered startup graph;
-// the lazy workflow and diagnostics chunks retain their separate limits.
-export const STARTUP_BUDGET_BYTES = 92 * 1024;
+// 0.6 raises the 0.5.0 limit of 92 KiB once, for every 0.6 feature together.
+// Before the 0.6 features, release/0.6 used 93,611 bytes; history and trail,
+// the heading marker and Go to room add about 840 more, and zones and alerts
+// still need a share. New views load as lazy chunks; the startup graph only
+// gains the controls that must render on first paint. The lazy workflow and
+// diagnostics chunks retain their separate limits.
+export const STARTUP_BUDGET_BYTES = 96 * 1024;
 
 const COMPONENT = fileURLToPath(new URL("../custom_components/matic_robot/", import.meta.url));
 const STATIC_IMPORT = /(?:^|[;}\n])\s*(?:import|export)\s*(?:[\w$\s,{}*]*?from\s*)?"(\.[^"]+)"/gu;

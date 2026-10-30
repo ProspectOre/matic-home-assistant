@@ -136,6 +136,9 @@ DURATION_PROFILE_KEYS = tuple(
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = 64
 MAX_SAVED_PLANS_PER_ROBOT = 256
 MANUAL_ROOM_SEQUENCE_PLAN_ID = "__matic_manual_room_sequence__"
+MANUAL_ROOM_SEQUENCE_PLAN_NAME = "One-time room clean"
+# Stores from 0.5 name one-time room runs after the old Map Studio panel name.
+_LEGACY_MANUAL_ROOM_SEQUENCE_PLAN_NAME = "Map Studio room clean"
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 # Matic's native STOP is graceful: it can keep the current task alive for
 # roughly ten minutes before returning to the dock.  Keep a small safety
@@ -731,7 +734,7 @@ class ManagedMotionReplacedError(HomeAssistantError):
 
 
 def _is_manual_room_sequence_plan_id(plan_id: object) -> bool:
-    """Identify the private namespace used by unsaved Map Studio runs."""
+    """Identify the private namespace used by unsaved one-time room runs."""
     return isinstance(plan_id, str) and (
         plan_id == MANUAL_ROOM_SEQUENCE_PLAN_ID
         or plan_id.startswith(f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_")
@@ -944,7 +947,7 @@ def _migrate_legacy_manual_room_run(robot: dict[str, Any]) -> bool:
     plan_id = _next_manual_room_sequence_plan_id(plans)
     _move_legacy_manual_rotation(robot, run_id, plan_id)
     run["plan_id"] = plan_id
-    run["plan_name"] = "Map Studio room clean"
+    run["plan_name"] = MANUAL_ROOM_SEQUENCE_PLAN_NAME
 
     checkpoint = run.get("recovery_checkpoint")
     if isinstance(checkpoint, dict):
@@ -972,7 +975,7 @@ def _migrate_legacy_manual_room_run(robot: dict[str, Any]) -> bool:
         and active.get("plan_id") == "quick_clean"
     ):
         active["plan_id"] = plan_id
-        active["plan_name"] = "Map Studio room clean"
+        active["plan_name"] = MANUAL_ROOM_SEQUENCE_PLAN_NAME
 
     raw_pending = robot.get("pending_native_reconciliation")
     pending = _validated_native_reconciliation(raw_pending)
@@ -6172,6 +6175,15 @@ class CleaningPlanManager:
                 last_run_value["trigger"] = safe_provenance
                 last_run_value["provenance"] = safe_provenance
                 changed = True
+        for key in ("last_run", "active_plan"):
+            record = robot.get(key)
+            if (
+                isinstance(record, dict)
+                and record.get("plan_name") == _LEGACY_MANUAL_ROOM_SEQUENCE_PLAN_NAME
+                and _is_manual_room_sequence_plan_id(record.get("plan_id"))
+            ):
+                record["plan_name"] = MANUAL_ROOM_SEQUENCE_PLAN_NAME
+                changed = True
         pending = robot.get("pending_native_reconciliation")
         if pending is not None and _validated_native_reconciliation(pending) is None:
             robot.pop("pending_native_reconciliation", None)
@@ -6184,7 +6196,7 @@ class CleaningPlanManager:
             return None
         plan = self._robot(serial_number)["plans"].get(plan_id)
         if plan is None and _is_manual_room_sequence_plan_id(plan_id):
-            return "Map Studio room clean"
+            return MANUAL_ROOM_SEQUENCE_PLAN_NAME
         return str(plan.get("name", plan_id)) if plan else plan_id
 
     def _area_name(self, serial_number: str, area_id: str | None) -> str | None:

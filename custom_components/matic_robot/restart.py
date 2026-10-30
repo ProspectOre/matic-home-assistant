@@ -264,14 +264,15 @@ async def async_recover_managed_run(
         }
         finished_areas = set(checkpoint.get("finished_area_legs", []))
         if (
-            rooms
-            and not area_legs
+            (rooms or area_legs)
+            and area_legs <= finished_areas
             and len(room_ids) == len(rooms) == run["room_count"]
             and room_ids == set(checkpoint.get("completed_room_ids", []))
             and run["completed_room_count"] == len(rooms)
         ):
-            # Credits and checkpoint were saved together. A crash before the
-            # normal finalizer cannot erase an already verified completion.
+            # Room credits and area finishes are saved before the checkpoint
+            # records them. A crash before the normal finalizer cannot erase
+            # an already verified completion.
             reason = "all_rooms_verified"
             return
         leg_index = checkpoint.get("leg_index")
