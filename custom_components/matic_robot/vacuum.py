@@ -19,7 +19,11 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import MaticConfigEntry
 from .area_binding import AreaBindingStatus, area_binding_status
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
-from .client.exceptions import CoverageGuardError, MaticError
+from .client.exceptions import (
+    CoverageGuardError,
+    MaticError,
+    SinkLocationUnavailableError,
+)
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .entity import MaticEntity
@@ -632,6 +636,57 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if stopped:
             self._schedule_dock_after_stop(serial_number, run_id=run_id)
 
+    async def async_sink_summon(self) -> None:
+        """Send the robot to its saved sink location to await a refill."""
+        serial_number = self.coordinator.data.info.serial_number
+        request_generation = self._plans.motion_generation(serial_number)
+        request_stop_generation = self._plans.stop_request_generation(serial_number)
+        request_admission_epoch = self._plans.command_admission_epoch(serial_number)
+        await self._async_ensure_stop_settled(serial_number)
+        self._require_motion_generation(serial_number, request_generation)
+        self._require_stop_request_generation(serial_number, request_stop_generation)
+        self._plans.require_command_admission(
+            serial_number, expected_epoch=request_admission_epoch
+        )
+        # The robot keeps a task it holds, and so the plan driving it, through
+        # the sink visit and resumes it on Resume. Only a summon without a task
+        # starts new motion, which takes ownership like any other direct clean.
+        operational = self.coordinator.data.operational
+        joins_task = operational.cleaning or operational.paused or operational.returning
+        lease = (
+            self._plans.external_command(serial_number)
+            if joins_task
+            else self._plans.external_motion(
+                serial_number,
+                expected_generation=request_generation,
+                expected_stop_generation=request_stop_generation,
+            )
+        )
+        async with lease as generation:
+            await self._async_ensure_stop_settled(serial_number)
+            self._require_motion_generation(
+                serial_number, request_generation if joins_task else generation
+            )
+            self._require_stop_request_generation(
+                serial_number, request_stop_generation
+            )
+            try:
+                await self.coordinator.client.async_sink_summon(
+                    self._current_floor_plan()
+                )
+            except SinkLocationUnavailableError as err:
+                raise _validation_error(
+                    "No sink location is saved for this floor",
+                    "sink_location_unavailable",
+                ) from err
+            except (MaticError, ValueError) as err:
+                raise HomeAssistantError(
+                    "The robot could not be sent to the sink",
+                    translation_domain=DOMAIN,
+                    translation_key="robot_command_failed",
+                ) from err
+            await self.coordinator.async_request_refresh()
+
     def _schedule_dock_after_stop(
         self, serial_number: str, *, run_id: str | None = None
     ) -> None:
@@ -869,6 +924,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if normalized in {"dock", "return_home"}:
             await self.async_return_to_base()
             return
+        if normalized == "sink_summon":
+            await self.async_sink_summon()
+            return
         simple_commands = {
             "pause": UserCommand.PAUSE,
             "resume": UserCommand.RESUME,
@@ -954,7 +1012,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             return
         raise _validation_error(
             "Unsupported Matic command. Use start, clean_all, clean_rooms, "
-            "clean_segments, pause, resume, stop, dock, or return_home",
+            "clean_segments, pause, resume, stop, dock, return_home, or "
+            "sink_summon",
             "unsupported_command",
         )
 

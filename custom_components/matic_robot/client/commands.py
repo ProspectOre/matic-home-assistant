@@ -60,10 +60,38 @@ _COMMAND_PAYLOADS = {
     UserCommand.DOCK: bytes.fromhex("12042a020800"),
 }
 
+_SINK_REFILL_WAIT_SECONDS = 900
+
 
 def encode_user_command(command: UserCommand) -> bytes:
     """Return the exact official-app protobuf payload for a user command."""
     return _COMMAND_PAYLOADS[command]
+
+
+def encode_mission_id(mission_id: int) -> bytes:
+    """Encode a floor's mission ID, also the key of per-floor collections."""
+    if not 0 <= mission_id <= 0xFFFFFFFF:
+        raise ValueError("mission_id must fit in an unsigned 32-bit integer")
+    return _fixed32(2, mission_id)
+
+
+def encode_sink_summon_command(*, mission_id: int, posture: bytes) -> bytes:
+    """Drive to this floor's sink posture and wait there for a water refill.
+
+    The posture is sent exactly as read from ``sink_summon_locations``. Like the
+    official app, the robot waits up to 15 minutes, docking once refilled.
+    """
+    if not posture:
+        raise ValueError("a sink posture is required")
+    wait_for_refill = _field(
+        1, _field(1, _varint_field(1, _SINK_REFILL_WAIT_SECONDS)) + _varint_field(2, 0)
+    )
+    navigate_to = (
+        _field(1, posture)
+        + _field(2, encode_mission_id(mission_id))
+        + _field(4, wait_for_refill)
+    )
+    return _field(2, _field(4, navigate_to))
 
 
 def encode_user_data(
@@ -112,8 +140,6 @@ def encode_coverage_command(
     new native task accepted this command. The active mission, partition, and
     region identifiers come from the robot.
     """
-    if not 0 <= mission_id <= 0xFFFFFFFF:
-        raise ValueError("mission_id must fit in an unsigned 32-bit integer")
     if not region_ids:
         raise ValueError("at least one region is required")
 
@@ -151,7 +177,7 @@ def encode_coverage_command(
     )
     coverage = (
         _field(2, _field(2, _field(1, b"")))
-        + _field(3, _fixed32(2, mission_id))
+        + _field(3, encode_mission_id(mission_id))
         + _field(5, goals)
         + _field(
             6,
@@ -262,8 +288,6 @@ def encode_custom_coverage_command(
     session identity, as it does for room coverage, so it can recognise its
     own mission; otherwise that identity is generated like the other IDs.
     """
-    if not 0 <= mission_id <= 0xFFFFFFFF:
-        raise ValueError("mission_id must fit in an unsigned 32-bit integer")
     if not circles:
         raise ValueError("at least one circle is required")
     if len(circles) > 512:
@@ -310,7 +334,7 @@ def encode_custom_coverage_command(
     )
     coverage = (
         _field(2, _field(2, _field(1, b"")))
-        + _field(3, _fixed32(2, mission_id))
+        + _field(3, encode_mission_id(mission_id))
         + _field(5, goals)
         + _field(
             6,
