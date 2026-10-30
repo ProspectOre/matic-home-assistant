@@ -1461,9 +1461,14 @@ export class RendererController {
       context.drawImage(this.#fallbackCanvas, 0, 0, bounds.width, bounds.height);
     }
     const wifi = state.wifiSignal;
-    if (wifi?.status === "ready" && state.dataMode === "live" && state.selection.floorId === "current") {
-      this.#drawWifiSignal(context, wifi.cells, wifi.cellSize / 2);
-    }
+    // Drawn above the room fills, which are nearly opaque in Room colors, and
+    // below the room names.
+    let wifiPending = wifi?.status === "ready" && state.dataMode === "live"
+      && state.selection.floorId === "current";
+    const drawWifi = (): void => {
+      if (wifiPending && wifi) this.#drawWifiSignal(context, wifi.cells, wifi.cellSize / 2);
+      wifiPending = false;
+    };
     const selectedNames = this.#selectedRoomNames(state);
     const selectedPositions = state.workflow === "plan" && state.planDraft.runBehavior === "ordered"
       ? (() => {
@@ -1517,6 +1522,7 @@ export class RendererController {
           context.stroke();
         }
       }
+      drawWifi();
       // Labels draw after all fills. Place selected/current rooms first so a
       // crowded viewport keeps the names that explain the user's current work.
       const currentName = state.currentArea?.toLocaleLowerCase();
@@ -1615,6 +1621,7 @@ export class RendererController {
       }
       for (const paint of labels) paint();
     }
+    drawWifi();
     this.#labelOffsets = labelOffsets;
     const preview = this.#circlePreview;
     const circles = preview && hasCoordinateEditAdmission(state, preview.capture)

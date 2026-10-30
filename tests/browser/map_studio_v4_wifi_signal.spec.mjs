@@ -190,7 +190,16 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     renderer.setState({ ...initial, wifiSignal, dataMode: "history" });
     await frame();
     const history = fills.splice(0);
+    const painted = [];
+    const fill = context.fill.bind(context);
+    context.fill = (...args) => { painted.push(String(context.fillStyle)); return fill(...args); };
+    renderer.setState({ ...initial, wifiSignal, appearance: "rooms" });
+    await frame();
     renderer.dispose();
+    const lastRoomFill = painted.findLastIndex((value) => / 0\.94\)$/u.test(value));
+    // The canvas reports the cells' hsl(... / .45) as rgba with alpha 0.45.
+    const firstCell = painted.findIndex((value) => / 0\.45\)$/u.test(value));
+    const roomColours = { roomFills: lastRoomFill >= 0, cellsAbove: firstCell > lastRoomFill };
     const rejected = [
       { enabled: "yes", cell_size: 0.5, cells: [] },
       { enabled: true, cell_size: 0.5, cells: [{ x: 0, y: 0, dbm: 3 }] },
@@ -198,10 +207,12 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
       { enabled: true, cell_size: 0.5, cells: [null] },
       null,
     ].map((value) => { try { parseWifiSignal(value); return false; } catch { return true; } });
-    return { live, history, rejected };
+    return { live, history, rejected, roomColours };
   }, SURVEY);
   // -48 dBm is past the strong end of the scale and -88 past the weak end.
   expect(result.live).toEqual(["hsl(120 75% 45% / .45)", "hsl(0 75% 45% / .45)"]);
   expect(result.history).toEqual([]);
+  // Room colors fill rooms at 94% opacity; the cells must paint over them.
+  expect(result.roomColours).toEqual({ roomFills: true, cellsAbove: true });
   expect(result.rejected).toEqual([true, true, true, true, true]);
 });
