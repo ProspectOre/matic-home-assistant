@@ -1497,8 +1497,8 @@ class MaticGetSchedulesTool(_MaticTool):
     title = "Get robot schedules"
     description = (
         "Returns the weekly cleaning schedules set in the Matic app, with their "
-        "rooms and cleaning mode, and the scheduled runs coming up. Read-only: "
-        "schedules are changed in the Matic app."
+        "rooms and cleaning mode, and the scheduled runs still to start. Reads up "
+        "to 64 schedules. Read-only: schedules are changed in the Matic app."
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(
@@ -1526,7 +1526,15 @@ class MaticGetSchedulesTool(_MaticTool):
             else {}
         )
         now = dt_util.now()
-        upcoming = schedule_occurrences(state, now, now + timedelta(days=args["days"]))
+        # A run's nominal block can overlap now after it started; list only
+        # starts still ahead.
+        upcoming = [
+            event
+            for event in schedule_occurrences(
+                state, now, now + timedelta(days=args["days"])
+            )
+            if event.start >= now
+        ]
         return llm.ToolResult(
             data={
                 "read_only": True,
@@ -1557,9 +1565,6 @@ class MaticGetSchedulesTool(_MaticTool):
                     )
                     for event in upcoming[:MAX_SCHEDULE_RESULTS]
                 ],
-                "schedules_truncated": (
-                    len(state.telemetry.schedules) > MAX_SCHEDULE_RESULTS
-                ),
                 "upcoming_truncated": len(upcoming) > MAX_SCHEDULE_RESULTS,
             }
         )
@@ -1572,8 +1577,8 @@ class MaticGetZonesTool(_MaticTool):
     title = "Get no-go zones"
     description = (
         "Returns the zones drawn in the Matic app on the current map, such as "
-        "no-go zones the robot never enters, and the rooms each one covers. "
-        "Read-only: zones are changed in the Matic app."
+        "no-go zones the robot never enters, and the rooms each one covers. Reads "
+        "up to 64 zones. Read-only: zones are changed in the Matic app."
     )
     annotations = _READ_ONLY
     parameters = llm.Tool.parameters.extend(_ROBOT_FIELD)
@@ -1613,7 +1618,6 @@ class MaticGetZonesTool(_MaticTool):
                     for zone in zones[:MAX_ZONE_RESULTS]
                     if floor_plan is not None
                 ],
-                "zones_truncated": len(zones) > MAX_ZONE_RESULTS,
                 "zones_on_other_maps": len(state.telemetry.zones) - len(zones),
             }
         )
