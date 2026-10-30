@@ -65,6 +65,14 @@ async def test_scan_returns_the_link_signal_once_the_scan_block_changes(
     assert client.async_get_property.await_args_list == [call("wifi_status")] * 3
 
 
+async def test_scan_accepts_an_identical_result_after_it_settles(monkeypatch) -> None:
+    monkeypatch.setattr(api_module, "_WIFI_SCAN_RESULT_INTERVAL_SECONDS", 0)
+    client = _client(_wifi(-60), _wifi(-60), _wifi(-60))
+
+    assert await client.async_scan_wifi_signal() == -60
+    assert client.async_get_property.await_count == 3
+
+
 async def test_scan_reports_nothing_when_no_new_scan_arrives(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "_WIFI_SCAN_RESULT_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(api_module, "_WIFI_SCAN_RESULT_TIMEOUT_SECONDS", 0.05)

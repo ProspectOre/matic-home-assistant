@@ -187,6 +187,9 @@ _WIFI_STATUS_MAX_BYTES = 256 * 1024
 _WIFI_NETWORK_MAX_COUNT = 256
 _WIFI_SCAN_RESULT_TIMEOUT_SECONDS = 8.0
 _WIFI_SCAN_RESULT_INTERVAL_SECONDS = 1.0
+# The scan reply arrives once the scan is done and wifi_status follows within
+# about a quarter second, so an unchanged block after two reads is a repeat.
+_WIFI_SCAN_SETTLE_READS = 2
 _SCHEDULE_MAX_BYTES = 64 * 1024
 _SCHEDULE_MAX_FIELDS = 1024
 _SCHEDULE_MAX_UUIDS = 256
@@ -2129,20 +2132,25 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     async def async_scan_wifi_signal(self) -> int | None:
         """Ask the robot for one Wi-Fi scan and return its link signal in dBm.
 
-        The scan reply is unread; the result is taken from ``wifi_status``
-        once its scan block differs from the one read before the request.
-        ``None`` means the robot reported no new scan in time (it refuses
-        overlapping scans itself) or the connected network was not listed.
+        The robot replies once the scan is done. The scan reply is unread;
+        the result is taken from ``wifi_status`` once its scan block differs
+        from the one read before the request, or after a short settle when an
+        identical scan left it unchanged. ``None`` means no scan block
+        appeared in time or the connected network was not listed.
         """
         baseline = _wifi_scan_block(await self.async_get_property("wifi_status"))
         await self._async_send_channel_payload("wifi_scan_command", b"")
+        reads = 0
         try:
             async with asyncio.timeout(_WIFI_SCAN_RESULT_TIMEOUT_SECONDS):
                 while True:
                     await asyncio.sleep(_WIFI_SCAN_RESULT_INTERVAL_SECONDS)
                     payload = await self.async_get_property("wifi_status")
                     scan = _wifi_scan_block(payload)
-                    if scan is not None and scan != baseline:
+                    reads += 1
+                    if scan is not None and (
+                        scan != baseline or reads >= _WIFI_SCAN_SETTLE_READS
+                    ):
                         return _decode_wifi_status(payload)[2]
         except TimeoutError:
             return None
