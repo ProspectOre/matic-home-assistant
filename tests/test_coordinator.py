@@ -2247,6 +2247,12 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
         translation_key="robot_alert_bag_missing",
     )
     reloaded = _coordinator(hass, _client())
+    # The first poll after a reload is still unconfirmed, so it leaves the
+    # previous Repair alone instead of clearing it for one poll.
+    reloaded._async_confirm_robot_errors(replace(base, error_codes=(206,)))
+    reloaded._async_track_alerts(replace(base, error_codes=()))
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry")
+    reloaded._async_confirm_robot_errors(replace(base, error_codes=(206,)))
     reloaded._async_track_alerts(replace(base, error_codes=(206,)))
     assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry") is None
     assert registry.async_get_issue(DOMAIN, issue) is not None

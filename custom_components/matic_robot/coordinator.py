@@ -565,8 +565,14 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         """Record unmapped codes and keep one Repair per actionable alert.
 
         Runs on confirmed codes only, so a one-poll firmware pulse neither
-        records a code nor raises a Repair.
+        records a code nor raises a Repair. While new codes wait for that
+        confirmation, existing Repairs stay as they are.
         """
+        if (
+            self._pending_error_codes
+            and self._pending_error_polls < ERROR_CONFIRMATION_POLLS
+        ):
+            return
         now = dt_util.utcnow().isoformat()
         for code in state.error_codes:
             if code in ROBOT_ALERTS:
