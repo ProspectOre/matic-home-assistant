@@ -405,6 +405,7 @@ inspect_hermes_endpoint:
             - map_integrated
             - map_semantics
             - map_semantics_override
+            - map_vents
             - matter_pairing_state
             - planned_path
             - petwaste_enabled_state
