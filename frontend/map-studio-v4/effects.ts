@@ -1143,6 +1143,7 @@ export class EffectController {
       coherence: state.host.administrator ? "unavailable" : "blocked",
       fullMap: false,
       precisionOpen: false,
+      trail: null,
       resources: {
         catalog: resource("error", null, problem),
         entry: null,

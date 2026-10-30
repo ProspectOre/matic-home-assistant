@@ -70,16 +70,16 @@ ${p("efficient",a("map_quality_efficient","Efficient"))}
 ${p("balanced",a("map_quality_balanced","Balanced"))}
 ${p("maximum",a("map_quality_maximum","Maximum"))}
 </div>
-<button
+${"live"===e.dataMode?u`<button
 class="ms-row ms-row--menu"
 type="button"
 role="menuitemcheckbox"
 aria-checked=${String("live"===e.trail?.id)}
 tabindex="-1"
 @click=${()=>s({type:"show-trail",trail:"live"===e.trail?.id?null:"live"})}
-><span>${a("v4_robot_trail","Robot trail")}</span><span class="ms-switch" aria-checked=${String("live"===e.trail?.id)} aria-hidden="true"></span></button>
+><span>${a("v4_robot_trail","Robot trail")}</span><span class="ms-switch" aria-checked=${String("live"===e.trail?.id)} aria-hidden="true"></span></button>`:h}
 ${this.#e.available()?u`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${()=>this.#e.show()}>${a("v4_map_zoom","Map zoom")}</button>`:h}
 <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${()=>{this.menu.close(!1),o()}}>${a("v4_map_diagnostics","Map diagnostics")}</button>
 </div>`}
 `}};export{$ as MapOptions};
-/*! Licenses: map-options-WYJNHDH6.js.LEGAL.txt */
+/*! Licenses: map-options-5ZBTXQXI.js.LEGAL.txt */

@@ -1814,4 +1814,11 @@ test.describe("cleaning history", () => {
     }, HARNESS);
     expect(reloads).toEqual([1, 1, 2, 2]);
   });
+
+  test("a saved map offers no Robot trail, which only draws on the live map @mobile", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "history", narrow: true });
+    await patchState(gallery, { workflow: "none" });
+    const menu = await openOptions(gallery);
+    await expect(menu.getByRole("menuitemcheckbox", { name: "Robot trail" })).toHaveCount(0);
+  });
 });
