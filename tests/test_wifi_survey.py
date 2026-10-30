@@ -26,9 +26,13 @@ from custom_components.matic_robot.wifi_survey import (
     MAX_FLOORS,
     MaticWifiHeatmapView,
     WifiSurveyStore,
+    survey_frame,
 )
 from tests.test_entities import _entry as _entities_entry
 from tests.wire_builders import _bfield, _vfield
+
+PARTITION = b"partition-1"
+FRAME = survey_frame(PARTITION)
 
 
 def _wifi(signal: int | None) -> bytes:
@@ -104,56 +108,68 @@ async def test_samples_fold_into_cells_and_survive_a_reload(hass) -> None:
     assert store.enabled is False
     store.set_enabled(True)
 
-    assert store.add_sample(7, 0.1, 0.2, -50, 10.0)
-    assert store.add_sample(7, 0.4, 0.4, -60, 20.0)
-    assert store.add_sample(7, -0.1, 0.2, -70, 30.0)
-    assert not store.add_sample(7, float("nan"), 0.0, -50, 40.0)
-    assert not store.add_sample(7, 0.0, 10_000.1, -50, 40.0)
-    assert not store.add_sample(7, 0.0, 0.0, 5, 40.0)
-    assert not store.add_sample(7, 0.0, 0.0, -121, 40.0)
+    assert store.add_sample(7, FRAME, 0.1, 0.2, -50, 10.0)
+    assert store.add_sample(7, FRAME, 0.4, 0.4, -60, 20.0)
+    assert store.add_sample(7, FRAME, -0.1, 0.2, -70, 30.0)
+    assert not store.add_sample(7, FRAME, float("nan"), 0.0, -50, 40.0)
+    assert not store.add_sample(7, FRAME, 0.0, 10_000.1, -50, 40.0)
+    assert not store.add_sample(7, FRAME, 0.0, 0.0, 5, 40.0)
+    assert not store.add_sample(7, FRAME, 0.0, 0.0, -121, 40.0)
 
     half = CELL_SIZE_METERS / 2
-    assert store.cells(7) == [
+    assert store.cells(7, FRAME) == [
         {"x": -half, "y": half, "dbm": -70.0, "samples": 1, "updated_at": 30},
         {"x": half, "y": half, "dbm": -55.0, "samples": 2, "updated_at": 20},
     ]
-    assert store.cells(8) == []
+    assert store.cells(8, FRAME) == []
 
     await store.async_shutdown()
     restored = WifiSurveyStore(hass, "entry")
     await restored.async_load()
     assert restored.enabled is True
-    assert restored.cells(7) == store.cells(7)
+    assert restored.cells(7, FRAME) == store.cells(7, FRAME)
 
     restored.clear()
-    assert restored.cells(7) == []
+    assert restored.cells(7, FRAME) == []
     await restored.async_remove()
     empty = WifiSurveyStore(hass, "entry")
     await empty.async_load()
     assert empty.enabled is False
 
 
+def test_a_new_map_frame_drops_the_old_frame_cells(hass) -> None:
+    store = WifiSurveyStore(hass, "entry")
+    other = survey_frame(b"partition-2")
+    assert store.add_sample(7, FRAME, 0.0, 0.0, -50, 1.0)
+    assert store.cells(7, other) == []
+    assert store.add_sample(7, other, 3.0, 0.0, -60, 2.0)
+    assert [cell["dbm"] for cell in store.cells(7, other)] == [-60.0]
+    assert store.cells(7, FRAME) == []
+
+
 def test_cells_follow_recent_scans_and_stay_bounded(hass) -> None:
     store = WifiSurveyStore(hass, "entry")
     for index in range(FADE_SAMPLES):
-        store.add_sample(3, 0.0, 0.0, -80, index)
-    store.add_sample(3, 0.0, 0.0, -40, FADE_SAMPLES)
-    assert store.cells(3)[0]["dbm"] == -78
+        store.add_sample(3, FRAME, 0.0, 0.0, -80, index)
+    store.add_sample(3, FRAME, 0.0, 0.0, -40, FADE_SAMPLES)
+    assert store.cells(3, FRAME)[0]["dbm"] == -78
 
     for index in range(FADE_SAMPLES * 3):
-        store.add_sample(1, 0.0, 0.0, -80 if index < FADE_SAMPLES else -40, index)
-    assert store.cells(1)[0]["dbm"] > -50
+        store.add_sample(
+            1, FRAME, 0.0, 0.0, -80 if index < FADE_SAMPLES else -40, index
+        )
+    assert store.cells(1, FRAME)[0]["dbm"] > -50
 
     for index in range(MAX_CELLS_PER_FLOOR + 1):
-        store.add_sample(2, index * CELL_SIZE_METERS, 0.0, -50, 1000.0 + index)
-    cells = store.cells(2)
+        store.add_sample(2, FRAME, index * CELL_SIZE_METERS, 0.0, -50, 1000.0 + index)
+    cells = store.cells(2, FRAME)
     assert len(cells) == MAX_CELLS_PER_FLOOR
     assert min(cell["x"] for cell in cells) == CELL_SIZE_METERS * 1.5
 
     for mission in range(3, 3 + MAX_FLOORS):
-        store.add_sample(mission, 0.0, 0.0, -50, 5000.0 + mission)
-    assert store.cells(1) == []
-    assert store.cells(2) != []
+        store.add_sample(mission, FRAME, 0.0, 0.0, -50, 5000.0 + mission)
+    assert store.cells(1, FRAME) == []
+    assert store.cells(2, FRAME) != []
 
 
 async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
@@ -178,28 +194,36 @@ async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
                 "²": [],
                 "9" * 5000: [],
                 "8": {},
+                "9": [[0, 0, -50, 1, 100]],
             },
+            "frames": {"7": FRAME, "8": FRAME, "9": "not-a-frame", "x": FRAME},
         },
     }
     store = WifiSurveyStore(hass, "entry")
     await store.async_load()
     assert store.enabled is False
-    assert [(cell["x"], cell["samples"]) for cell in store.cells(7)] == [
+    assert [(cell["x"], cell["samples"]) for cell in store.cells(7, FRAME)] == [
         (0.5, 2),
         (1.5, 1),
     ]
+    # Floor 9's cells have no valid frame, so they are dropped.
+    assert store.cells(9, FRAME) == []
 
     hass_storage[f"{DOMAIN}.wifi_survey.entry"]["data"]["floors"] = []
     await store.async_load()
-    assert store.cells(7) == []
+    assert store.cells(7, FRAME) == []
 
     hass_storage[f"{DOMAIN}.wifi_survey.entry"]["data"] = ["not", "a", "survey"]
     await store.async_load()
-    assert (store.enabled, store.cells(7)) == (False, [])
+    assert (store.enabled, store.cells(7, FRAME)) == (False, [])
 
 
 def _coordinator(*, charging: bool = False, mission: int | None = 7):
-    floor_plan = SimpleNamespace(mission_id=7) if mission is not None else None
+    floor_plan = (
+        SimpleNamespace(mission_id=7, partition_id_wire=PARTITION)
+        if mission is not None
+        else None
+    )
     return SimpleNamespace(
         data=SimpleNamespace(
             floor_plan=floor_plan,
@@ -221,7 +245,7 @@ async def test_sample_pairs_the_scan_with_the_pose_around_it(hass) -> None:
     client = _sampling_client(_pose(1.0, 1.0, 10.0), _pose(1.2, 1.0, 12.0))
     with patch.object(wifi_survey, "time", return_value=99.0):
         await store._async_sample(client, _coordinator())
-    assert store.cells(7) == [
+    assert store.cells(7, FRAME) == [
         {"x": 1.5, "y": 1.5, "dbm": -55.0, "samples": 1, "updated_at": 99}
     ]
     client.async_get_pose.assert_awaited_with(expected_mission_id=7)
@@ -237,7 +261,21 @@ async def test_sample_from_before_a_clear_is_dropped(hass) -> None:
 
     client.async_scan_wifi_signal.side_effect = _scan_then_clear
     await store._async_sample(client, _coordinator())
-    assert store.cells(7) == []
+    assert store.cells(7, FRAME) == []
+
+
+async def test_sample_taken_while_the_survey_is_turned_off_is_dropped(hass) -> None:
+    store = WifiSurveyStore(hass, "entry")
+    store.set_enabled(True)
+    client = _sampling_client(_pose(1.0, 1.0, 10.0), _pose(1.2, 1.0, 12.0))
+
+    async def _scan_then_opt_out() -> int | None:
+        store.set_enabled(False)
+        return -55
+
+    client.async_scan_wifi_signal.side_effect = _scan_then_opt_out
+    await store._async_sample(client, _coordinator())
+    assert store.cells(7, FRAME) == []
 
 
 @pytest.mark.parametrize(
@@ -276,7 +314,7 @@ async def test_sample_skips_without_a_trustworthy_pose_and_scan(
     store = WifiSurveyStore(hass, "entry")
     client = client or _sampling_client()
     await store._async_sample(client, coordinator)
-    assert store.cells(7) == []
+    assert store.cells(7, FRAME) == []
 
 
 async def test_collector_samples_only_while_enabled(hass, monkeypatch) -> None:
@@ -347,8 +385,8 @@ def _request(hass) -> object:
 
 async def test_heatmap_view_serves_the_current_floor_only(hass) -> None:
     survey = WifiSurveyStore(hass, "entry")
-    survey.add_sample(7, 0.0, 0.0, -50, 1.0)
-    survey.add_sample(8, 0.0, 0.0, -70, 1.0)
+    survey.add_sample(7, FRAME, 0.0, 0.0, -50, 1.0)
+    survey.add_sample(8, FRAME, 0.0, 0.0, -70, 1.0)
     runtime = SimpleNamespace(
         wifi_survey=survey,
         coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=None)),
@@ -361,7 +399,9 @@ async def test_heatmap_view_serves_the_current_floor_only(hass) -> None:
     no_floor = json.loads((await view.get(_request(_hass(runtime)), "entry")).body)
     assert no_floor == {"enabled": False, "cell_size": CELL_SIZE_METERS, "cells": []}
 
-    runtime.coordinator.data.floor_plan = SimpleNamespace(mission_id=7)
+    runtime.coordinator.data.floor_plan = SimpleNamespace(
+        mission_id=7, partition_id_wire=PARTITION
+    )
     response = await view.get(_request(_hass(runtime)), "entry")
     assert response.headers["Cache-Control"].startswith("private")
     body = json.loads(response.body)
@@ -370,7 +410,7 @@ async def test_heatmap_view_serves_the_current_floor_only(hass) -> None:
 
 async def test_survey_switch_and_clear_button_drive_the_store(hass) -> None:
     survey = WifiSurveyStore(hass, "entry")
-    survey.add_sample(7, 0.0, 0.0, -50, 1.0)
+    survey.add_sample(7, FRAME, 0.0, 0.0, -50, 1.0)
     entry = _entities_entry()
     entry.runtime_data.wifi_survey = survey
     survey_switch = switch.MaticWifiSurveySwitch(entry)
@@ -387,4 +427,4 @@ async def test_survey_switch_and_clear_button_drive_the_store(hass) -> None:
     assert survey_switch.async_write_ha_state.call_count == 2
 
     await clear.async_press()
-    assert survey.cells(7) == []
+    assert survey.cells(7, FRAME) == []

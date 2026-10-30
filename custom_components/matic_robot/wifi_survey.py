@@ -6,6 +6,7 @@ import asyncio
 import logging
 import math
 from dataclasses import dataclass
+from hashlib import sha256
 from http import HTTPStatus
 from time import time
 from typing import TYPE_CHECKING, Any
@@ -74,8 +75,11 @@ class WifiSurveyStore:
         self._enabled = False
         self._floors: dict[int, dict[_CellKey, SignalCell]] = {}
         self._closed = False
-        # Bumped by clear() so a scan that straddles it is discarded.
-        self._clears = 0
+        # Each floor's cells belong to one map frame (mission and partition).
+        self._frames: dict[int, str] = {}
+        # Bumped by clear() and by turning the survey off, so a scan that
+        # straddles either is discarded.
+        self._epoch = 0
 
     @property
     def enabled(self) -> bool:
@@ -88,22 +92,30 @@ class WifiSurveyStore:
         if not isinstance(stored, dict):
             stored = {}
         self._enabled = stored.get("enabled") is True
-        self._floors = _decode_floors(stored.get("floors"))
+        self._frames = _decode_frames(stored.get("frames"))
+        self._floors = {
+            mission: cells
+            for mission, cells in _decode_floors(stored.get("floors")).items()
+            if mission in self._frames
+        }
         self._closed = False
 
     def set_enabled(self, enabled: bool) -> None:
         """Turn sampling on or off."""
         self._enabled = enabled
+        if not enabled:
+            self._epoch += 1
         self._schedule_save()
 
     def clear(self) -> None:
         """Forget every sample on every floor."""
         self._floors.clear()
-        self._clears += 1
+        self._frames.clear()
+        self._epoch += 1
         self._schedule_save()
 
     def add_sample(
-        self, mission_id: int, x: float, y: float, dbm: int, at: float
+        self, mission_id: int, frame: str, x: float, y: float, dbm: int, at: float
     ) -> bool:
         """Fold one scan into its cell; refuse out-of-range input."""
         if not (
@@ -113,12 +125,17 @@ class WifiSurveyStore:
         ):
             return False
         key = (math.floor(x / CELL_SIZE_METERS), math.floor(y / CELL_SIZE_METERS))
+        if self._frames.get(mission_id) != frame:
+            # A new frame for this mission moves every coordinate.
+            self._floors.pop(mission_id, None)
         cells = self._floors.get(mission_id)
         if cells is None:
             if len(self._floors) >= MAX_FLOORS:
                 oldest = min(self._floors, key=lambda m: _latest(self._floors[m]))
                 del self._floors[oldest]
+                self._frames.pop(oldest, None)
             cells = self._floors[mission_id] = {}
+            self._frames[mission_id] = frame
         cell = cells.get(key)
         if cell is None:
             if len(cells) >= MAX_CELLS_PER_FLOOR:
@@ -131,8 +148,10 @@ class WifiSurveyStore:
         self._schedule_save()
         return True
 
-    def cells(self, mission_id: int) -> list[dict[str, float | int]]:
+    def cells(self, mission_id: int, frame: str) -> list[dict[str, float | int]]:
         """Return one floor's cells as cell-centre coordinates in metres."""
+        if self._frames.get(mission_id) != frame:
+            return []
         return [
             {
                 "x": round((ix + 0.5) * CELL_SIZE_METERS, 3),
@@ -170,7 +189,8 @@ class WifiSurveyStore:
         ):
             return
         mission_id = floor_plan.mission_id
-        clears = self._clears
+        frame = survey_frame(floor_plan.partition_id_wire)
+        epoch = self._epoch
         try:
             before = await client.async_get_pose(expected_mission_id=mission_id)
             dbm = await client.async_scan_wifi_signal()
@@ -178,10 +198,15 @@ class WifiSurveyStore:
         except MaticError as err:
             _LOGGER.debug("Wi-Fi survey sample skipped: %s", err)
             return
-        if dbm is None or clears != self._clears or not _poses_agree(before, after):
+        if dbm is None or epoch != self._epoch or not _poses_agree(before, after):
             return
         self.add_sample(
-            mission_id, (before.x + after.x) / 2, (before.y + after.y) / 2, dbm, time()
+            mission_id,
+            frame,
+            (before.x + after.x) / 2,
+            (before.y + after.y) / 2,
+            dbm,
+            time(),
         )
 
     async def async_shutdown(self) -> None:
@@ -208,7 +233,15 @@ class WifiSurveyStore:
                 ]
                 for mission_id, cells in self._floors.items()
             },
+            "frames": {
+                str(mission_id): frame for mission_id, frame in self._frames.items()
+            },
         }
+
+
+def survey_frame(partition_id_wire: bytes) -> str:
+    """Fingerprint the floor partition that, with the mission, fixes the frame."""
+    return sha256(partition_id_wire).hexdigest()[:16]
 
 
 def _poses_agree(before: RobotPose, after: RobotPose) -> bool:
@@ -241,6 +274,20 @@ def _decode_floors(raw: object) -> dict[int, dict[_CellKey, SignalCell]]:
                 cells[cell[0]] = cell[1]
         floors[int(mission)] = cells
     return floors
+
+
+def _decode_frames(raw: object) -> dict[int, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        int(mission): frame
+        for mission, frame in list(raw.items())[:MAX_FLOORS]
+        if isinstance(mission, str)
+        and _is_mission_key(mission)
+        and isinstance(frame, str)
+        and len(frame) == 16
+        and all(char in "0123456789abcdef" for char in frame)
+    }
 
 
 def _is_mission_key(key: str) -> bool:
@@ -292,7 +339,10 @@ class MaticWifiHeatmapView(HomeAssistantView):
                 "enabled": survey.enabled,
                 "cell_size": CELL_SIZE_METERS,
                 "cells": (
-                    survey.cells(floor_plan.mission_id)
+                    survey.cells(
+                        floor_plan.mission_id,
+                        survey_frame(floor_plan.partition_id_wire),
+                    )
                     if floor_plan is not None
                     else []
                 ),
