@@ -8370,28 +8370,37 @@ test("renderer hides a new pose until the read-only scene is replaced", async ({
   expect(results).toEqual([false, true, false]);
 });
 
-test("renderer draws the robot model turned with its heading and the camera", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+async function installRobotRenderer(page) {
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { readCanvasPalette } from "./frontend/map-studio-v4/theme-probe"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/pose-heading.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
-  const results = await page.evaluate(async () => {
-    const { RendererController, createGalleryState } = await import("/pose-heading.js");
+  await page.evaluate(async () => {
+    const { RendererController, createGalleryState, readCanvasPalette } = await import("/pose-heading.js");
+    const DEFAULT_PALETTE = readCanvasPalette(document.body);
     const scene = document.createElement("canvas"), overlay = document.createElement("canvas");
     for (const canvas of [scene, overlay]) {
       Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
       document.body.append(canvas);
     }
     const context = overlay.getContext("2d");
-    // Record each filled path so the lid and the front visor can be found by
-    // their colours: the visor is the last trim fill, the lid the last body fill.
-    let points = [], fills = [], dots = 0;
-    const { moveTo, lineTo, fill, arc } = context;
-    context.moveTo = function(x, y) { points = [[x, y]]; return moveTo.call(this, x, y); };
-    context.lineTo = function(x, y) { points.push([x, y]); return lineTo.call(this, x, y); };
-    context.fill = function(...rest) { fills.push({ style: this.fillStyle, points }); return fill.apply(this, rest); };
+    let samples = [], dots = 0, vectors = 0, points = 0;
+    const { drawImage, arc, moveTo, lineTo, fill } = context;
+    context.drawImage = function(image, sx, sy, sw, sh, dx, dy, dw, dh) {
+      // Body tiles occupy the first three rows. Shadow and tint are separate draws.
+      if (image instanceof HTMLImageElement && image.src.includes("robot-atlas.webp") && sy < 384) {
+        samples.push({ frame: sx / sw, row: sy / sh, size: dw, centre: [dx + dw / 2, dy + dh / 2] });
+      }
+      return drawImage.apply(this, arguments);
+    };
     context.arc = function(x, y, radius, ...rest) {
       if (radius === 7) dots++;
       return arc.call(this, x, y, radius, ...rest);
+    };
+    context.moveTo = function(...args) { points = 1; return moveTo.apply(this, args); };
+    context.lineTo = function(...args) { points++; return lineTo.apply(this, args); };
+    context.fill = function(...args) {
+      if (points >= 14 && ["#ecf0f2", "#0c2238"].includes(this.fillStyle)) vectors++;
+      return fill.apply(this, args);
     };
     const renderer = new RendererController(scene, overlay);
     const initial = createGalleryState("ready");
@@ -8399,42 +8408,97 @@ test("renderer draws the robot model turned with its heading and the camera", as
       resources: { ...initial.resources, pose: { status: "ready", problem: null,
         value: { ...initial.resources.pose.value, position: [1.3, 1.6], heading } } } });
     const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const centre = (path) => path.reduce(([x, y], [px, py]) => [x + px / path.length, y + py / path.length], [0, 0]);
-    const draw = async (heading) => {
-      fills = []; dots = 0;
-      renderer.setState(withHeading(heading));
-      await frame();
-      const lid = fills.findLast(({ style }) => style === "#ecf0f2");
-      const visor = fills.findLast(({ style }) => style === "#263238");
-      if (!lid || !visor) return { facing: null, dots };
-      const [lidX, lidY] = centre(lid.points), [visorX, visorY] = centre(visor.points);
-      return { facing: Math.atan2(visorY - lidY, visorX - lidX), dots };
-    };
-    // The model is a lazy chunk; the first frames may still show the flat marker.
-    await draw(0);
-    await frame();
-    const east = await draw(0), north = await draw(Math.PI / 2), none = await draw(null);
-    renderer.setCamera({ ...renderer.camera, yaw: Math.PI / 2 });
-    const turned = await draw(0);
-    // Aim the 3D camera at the robot; scene x is mirrored about the span centre.
     const { metersPerCell, origin, span } = initial.resources.scene.value.metadata;
-    renderer.setCamera({ ...renderer.camera, orthographic: false, pitch: 0.7, distance: 2,
+    const view = (pitch, yaw = 0, distance = 2) => renderer.setCamera({ ...renderer.camera,
+      orthographic: pitch === 90, pitch: pitch * Math.PI / 180, yaw, distance,
       targetX: -(1.3 / metersPerCell - origin[0] - (span[0] - 1) / 2) * metersPerCell,
       targetZ: (1.6 / metersPerCell - origin[1] - (span[1] - 1) / 2) * metersPerCell });
-    const tilted = await draw(0);
-    renderer.dispose();
-    return { east, north, none, turned, tilted };
+    renderer.setState(withHeading(null));
+    view(90);
+    window.__robotTest = {
+      view,
+      forced: (forced) => renderer.setPalette(forced
+        ? { ...DEFAULT_PALETTE, forced: true, accent: [12, 34, 56], onAccent: [250, 251, 252] }
+        : DEFAULT_PALETTE),
+      draw: async (heading) => {
+        samples = []; dots = 0; vectors = 0;
+        renderer.setState(withHeading(heading));
+        await frame();
+        return { sample: samples.at(-1) ?? null, dots, vectors };
+      },
+      dispose: () => renderer.dispose(),
+    };
   });
-  const turn = (a, b) => Math.abs(Math.atan2(Math.sin(a - b), Math.cos(a - b)));
-  for (const view of [results.east, results.north, results.turned, results.tilted]) {
-    expect(view.dots).toBe(0);
-    expect(view.facing).not.toBeNull();
+}
+
+test("renderer draws the robot model turned with its heading and the camera", async ({ page }) => {
+  let release;
+  const held = new Promise(resolve => { release = resolve; });
+  const requests = [];
+  await page.route("**/assets/robot-atlas.*", async route => {
+    const name = new URL(route.request().url()).pathname.split("/").at(-1);
+    requests.push(name);
+    if (name.endsWith(".webp")) await held;
+    await route.continue({ url: `http://127.0.0.1:4173/map_studio_v4/assets/${name}` });
+  });
+  await installRobotRenderer(page);
+  const draw = heading => page.evaluate(value => window.__robotTest.draw(value), heading);
+  const none = await draw(null);
+  expect(none.sample).toBeNull();
+  expect(none.dots).toBeGreaterThan(0);
+  expect(requests).toEqual([]);
+  await expect.poll(async () => (await draw(0)).vectors).toBeGreaterThan(0);
+  expect((await draw(0)).sample).toBeNull();
+  release();
+  await expect.poll(async () => (await draw(0)).sample?.frame).not.toBeUndefined();
+  const east = (await draw(0)).sample, north = (await draw(Math.PI / 2)).sample;
+  await page.evaluate(() => window.__robotTest.view(90, Math.PI / 2));
+  const turned = (await draw(0)).sample;
+  const turn = (a, b) => Math.min((a - b + 32) % 32, (b - a + 32) % 32);
+  expect(turn(east.frame, north.frame)).toBe(8);
+  expect(turn(east.frame, turned.frame)).toBe(8);
+  expect([east.row, north.row, turned.row]).toEqual([0, 0, 0]);
+  for (const [pitch, row] of [[55, 1], [25, 2]]) {
+    await page.evaluate(pitch => window.__robotTest.view(pitch), pitch);
+    expect((await draw(0)).sample.row).toBe(row);
+    const sizes = [];
+    for (let step = 0; step < 16; step++) {
+      sizes.push((await draw(step * Math.PI / 8)).sample.size);
+    }
+    // Pitch is baked into each frame; turning in place must not scale it again.
+    expect(Math.max(...sizes) - Math.min(...sizes)).toBeLessThan(sizes[0] * 0.001);
   }
-  // A quarter turn of the robot is a quarter turn on screen, and so is a
-  // quarter turn of the camera with the robot still.
-  expect(turn(results.east.facing, results.north.facing)).toBeCloseTo(Math.PI / 2, 1);
-  expect(turn(results.east.facing, results.turned.facing)).toBeCloseTo(Math.PI / 2, 1);
-  expect(results.none).toEqual({ facing: null, dots: 1 });
+  await page.evaluate(() => window.__robotTest.view(90, 0, 100));
+  const small = (await draw(0)).sample;
+  expect(small.size * 0.406 / 0.66).toBeGreaterThanOrEqual(30);
+  await page.evaluate(() => window.__robotTest.view(90, 0, 0.5));
+  expect((await draw(0)).sample.size).toBeGreaterThan(small.size);
+  expect(requests.sort()).toEqual(["robot-atlas.json", "robot-atlas.webp"]);
+  await page.evaluate(() => window.__robotTest.dispose());
+});
+
+test("renderer keeps the vector model when the atlas fails and in forced colours", async ({ page }) => {
+  const requests = [];
+  await page.route("**/assets/robot-atlas.*", route => {
+    requests.push(route.request().url());
+    return route.abort();
+  });
+  await installRobotRenderer(page);
+  await page.evaluate(() => window.__robotTest.forced(true));
+  const draw = () => page.evaluate(() => window.__robotTest.draw(0));
+  await expect.poll(async () => (await draw()).vectors).toBeGreaterThan(0);
+  expect((await draw()).sample).toBeNull();
+  expect(requests).toEqual([]);
+  await page.evaluate(() => window.__robotTest.forced(false));
+  await expect.poll(async () => (await draw()).vectors).toBeGreaterThan(0);
+  await expect.poll(() => requests.length).toBe(2);
+  const failed = await draw();
+  expect(failed.sample).toBeNull();
+  expect(failed.vectors).toBeGreaterThan(0);
+  expect(failed.dots).toBe(0);
+  await draw();
+  expect(requests).toHaveLength(2);
+  await page.evaluate(() => window.__robotTest.dispose());
 });
 
 test("rotated zone coordinates match rendered coverage and preserve zoom anchors", async ({ page }) => {

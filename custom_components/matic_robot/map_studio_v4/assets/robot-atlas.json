@@ -1,0 +1,24 @@
+{
+  "frameSize": 128,
+  "headings": 32,
+  "headingStep": 11.25,
+  "pitches": [
+    90,
+    55,
+    25
+  ],
+  "columns": 32,
+  "layers": {
+    "body": 0,
+    "shadow": 3,
+    "accent": 6
+  },
+  "frameMeters": 0.66,
+  "lengthMeters": 0.406,
+  "anchor": [
+    0.5,
+    0.5
+  ],
+  "headingDirection": "clockwise-screen",
+  "renderer": "Blender 4.5.9 LTS, Cycles, 48 samples"
+}
