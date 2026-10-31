@@ -701,14 +701,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 translation_domain=DOMAIN,
                 translation_key="robot_command_failed",
             ) from err
-        if not records:
+        # A record with no end time is a clean still open on the robot.
+        finished = [record for record in records if record.session.ended_at]
+        if not finished:
             raise _validation_error(
                 "The robot has no finished clean to repeat", "redo_no_previous_clean"
             )
-        latest = max(
-            records,
-            key=lambda item: item.session.ended_at or item.session.started_at or "",
-        )
+        latest = max(finished, key=lambda item: item.session.ended_at or "")
         # Like any direct clean, the new clean takes ownership from a plan.
         async with self._plans.external_motion(
             serial_number,

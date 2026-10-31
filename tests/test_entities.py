@@ -2820,9 +2820,11 @@ async def test_redo_last_clean_repeats_the_newest_finished_clean() -> None:
     entry = _entry(idle=True)
     client = entry.runtime_data.coordinator.client
     newest = _SESSION_KEY[:-1] + b"\x01"
+    open_session = _SESSION_KEY[:-1] + b"\x02"
     client.async_get_cleaning_session_records.return_value = (
         _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
-        _session_record(newest, "2026-10-30T10:00:00", None),
+        _session_record(newest, "2026-10-30T10:00:00", "2026-10-30T10:30:00"),
+        _session_record(open_session, "2026-10-31T10:00:00", None),
     )
 
     await vacuum.MaticVacuum(entry).async_send_command("redo last clean")
@@ -2836,6 +2838,17 @@ async def test_redo_last_clean_refuses_without_history_or_while_busy() -> None:
     with pytest.raises(ServiceValidationError) as missing:
         await vacuum.MaticVacuum(empty).async_redo_last_clean()
     assert missing.value.translation_key == "redo_no_previous_clean"
+
+    unfinished = _entry(idle=True)
+    open_records = (
+        unfinished.runtime_data.coordinator.client.async_get_cleaning_session_records
+    )
+    open_records.return_value = (
+        _session_record(_SESSION_KEY, "2026-10-31T10:00:00", None),
+    )
+    with pytest.raises(ServiceValidationError) as open_only:
+        await vacuum.MaticVacuum(unfinished).async_redo_last_clean()
+    assert open_only.value.translation_key == "redo_no_previous_clean"
 
     busy = _entry()
     with pytest.raises(ServiceValidationError) as cleaning:
@@ -2851,7 +2864,7 @@ async def test_redo_last_clean_refuses_without_history_or_while_busy() -> None:
     with pytest.raises(HomeAssistantError) as history:
         await vacuum.MaticVacuum(unreadable).async_redo_last_clean()
     assert history.value.translation_key == "robot_command_failed"
-    for entry in (empty, busy, unreadable):
+    for entry in (empty, unfinished, busy, unreadable):
         entry.runtime_data.coordinator.client.async_redo_clean.assert_not_awaited()
 
 
@@ -2859,7 +2872,7 @@ async def test_redo_last_clean_rechecks_the_robot_and_reports_failures() -> None
     raced = _entry(idle=True)
     client = raced.runtime_data.coordinator.client
     client.async_get_cleaning_session_records.return_value = (
-        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", None),
+        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
     )
     entity = vacuum.MaticVacuum(raced)
 
@@ -2876,7 +2889,7 @@ async def test_redo_last_clean_rechecks_the_robot_and_reports_failures() -> None
     failing = _entry(idle=True)
     failing_client = failing.runtime_data.coordinator.client
     failing_client.async_get_cleaning_session_records.return_value = (
-        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", None),
+        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
     )
     failing.runtime_data.coordinator.client.async_redo_clean.side_effect = (
         EndpointUnsupportedError("synthetic")
