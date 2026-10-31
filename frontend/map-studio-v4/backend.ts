@@ -1,5 +1,5 @@
 import type { AreaOutline } from "./area-outline";
-import { MAX_ROOM_SEQUENCE_SIZE, type HassLike, type WifiSignalLayer } from "./contracts";
+import { MAX_ROOM_SEQUENCE_SIZE, type FloorTypesLayer, type HassLike, type WifiSignalLayer } from "./contracts";
 import {
   areaCatalogHelpers,
   CATALOG_URL,
@@ -40,6 +40,8 @@ const REQUEST_TIMEOUTS = {
   history: 15_000,
   runs: 25_000,
   workflow: 15_000,
+  // A first read of the robot's semantic pages can take most of a minute.
+  floorTypes: 50_000,
   mutation: 20_000,
 } as const;
 
@@ -403,6 +405,14 @@ export class MaticBackend {
       this.#json("wifiSignal", path, REQUEST_TIMEOUTS.workflow, signal),
     ]);
     return parseWifiSignal(value);
+  }
+
+  async floorTypes(path: string, signal?: AbortSignal): Promise<FloorTypesLayer> {
+    const [{ parseFloorTypes }, value] = await Promise.all([
+      import("./floor-types"),
+      this.#json("carpetVents", path, REQUEST_TIMEOUTS.floorTypes, signal),
+    ]);
+    return parseFloorTypes(value);
   }
 
   async previewRoomSequence(
