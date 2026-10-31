@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.const import ATTR_ENTITY_ID, EntityCategory
+from homeassistant.components.vacuum.const import (
+    ATTR_PARAMS,
+    SERVICE_SEND_COMMAND,
+)
+from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
+from homeassistant.const import ATTR_COMMAND, ATTR_ENTITY_ID, EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -12,6 +17,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import MaticConfigEntry
 from .const import DOMAIN
 from .entity import MaticEntity
+from .occupancy import entry_vacuum_entity_id
 from .plans import plan_floor_token, room_cadence_identity
 
 PARALLEL_UPDATES = 0
@@ -31,6 +37,7 @@ async def async_setup_entry(
             MaticPlanButton(entry, "stop_intelligent_cleaning"),
             MaticAreaButton(entry),
             MaticWifiSurveyClearButton(entry),
+            MaticTakePhotoButton(entry),
         ]
     )
 
@@ -243,3 +250,41 @@ class MaticWifiSurveyClearButton(MaticEntity, ButtonEntity):
     async def async_press(self) -> None:
         """Delete every stored signal cell."""
         self._survey.clear()
+
+
+class MaticTakePhotoButton(MaticEntity, ButtonEntity):
+    """Ask the robot to take a photo with its camera."""
+
+    _attr_translation_key = "take_photo"
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._photos = entry.runtime_data.photos
+        self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_take_photo"
+
+    async def async_press(self) -> None:
+        """Send the snap emote, then read the photo once the robot saves it."""
+        vacuum_entity_id = entry_vacuum_entity_id(
+            self.hass, self._config_entry.entry_id
+        )
+        if vacuum_entity_id is None:
+            raise HomeAssistantError(
+                "The selected Matic robot is unavailable",
+                translation_domain=DOMAIN,
+                translation_key="robot_unavailable",
+            )
+        await self.hass.services.async_call(
+            VACUUM_DOMAIN,
+            SERVICE_SEND_COMMAND,
+            {
+                ATTR_ENTITY_ID: vacuum_entity_id,
+                ATTR_COMMAND: "emote",
+                ATTR_PARAMS: {"kind": "snap"},
+            },
+            blocking=True,
+        )
+        self._config_entry.async_create_background_task(
+            self.hass,
+            self._photos.async_refresh_after_snap(),
+            f"{DOMAIN} photo read after snap",
+        )

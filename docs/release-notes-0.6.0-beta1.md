@@ -65,6 +65,9 @@ to try new features before 0.6.0.
 - **Stay put and emotes.** The `stay_put` command keeps the robot where it is
   instead of returning to the dock, and `emote` plays a nod, shake, pirouette
   or snap.
+- **Robot camera photos.** **Take photo** asks the robot to take a picture,
+  and **Latest photo** shows the newest one, including photos taken in the
+  Matic app. Use it on a dashboard or attach it to a phone notification.
 
 ## Change a running clean
 
