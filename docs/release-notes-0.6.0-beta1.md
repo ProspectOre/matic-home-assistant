@@ -91,6 +91,9 @@ to try new features before 0.6.0.
   maintenance, with a Repair naming the month. The recap doesn't say which part
   yet, so check the brush roll, side brush, mop roll, caster and wedge.
 - **Bag pass ends.** Shows when an active bag pass runs out.
+- **Robot camera photos.** **Take photo** asks the robot to take a picture,
+  and **Latest photo** shows the newest one, including photos taken in the
+  Matic app. Use it on a dashboard or attach it to a phone notification.
 
 ## Working with the Matic app
 

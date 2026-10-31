@@ -1144,6 +1144,9 @@
       },
       "clear_wifi_survey": {
         "name": "Clear Wi-Fi survey"
+      },
+      "take_photo": {
+        "name": "Take photo"
       }
     },
     "calendar": {
@@ -1157,6 +1160,16 @@
       },
       "photorealistic_map": {
         "name": "3D photo map"
+      }
+    },
+    "image": {
+      "latest_photo": {
+        "name": "Latest photo",
+        "state_attributes": {
+          "photo_count": {
+            "name": "Photos seen"
+          }
+        }
       }
     },
     "number": {
