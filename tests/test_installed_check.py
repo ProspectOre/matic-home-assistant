@@ -1,0 +1,412 @@
+"""Installed-host check script tests, against a scripted Home Assistant."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+from aiohttp import WSMsgType, web
+
+from custom_components.matic_robot import frontend
+from scripts.installed_check import (
+    ASSISTANT_TOOLS,
+    INTEGRATION,
+    Candidate,
+    CheckFailed,
+    HomeAssistant,
+    InstalledCheck,
+    Options,
+    call_mcp_tools,
+    compare_files,
+    main,
+    parse_sha256sum,
+)
+
+ROOT = Path(__file__).resolve().parents[1]
+ROBOT = "vacuum.matic"
+
+
+def _blobs(version: str = "0.6.0b1") -> dict[str, bytes]:
+    return {
+        "manifest.json": json.dumps(
+            {"domain": "matic_robot", "version": version}
+        ).encode(),
+        "services.yaml": b"clean:\n  target: {}\ngo_to_room:\n  fields: {}\n",
+        "matic_icons.js": b"icons",
+        "map_studio_v4/index.js": b"studio",
+        "map_studio_v4/chunks/a.js": b"chunk",
+    }
+
+
+def _candidate(version: str = "0.6.0b1") -> Candidate:
+    return Candidate.from_blobs("v0.6.0b1", "c" * 40, _blobs(version))
+
+
+def test_served_paths_repeat_the_frontend_hashing() -> None:
+    integration = ROOT / INTEGRATION
+    blobs = {
+        path.relative_to(integration).as_posix(): path.read_bytes()
+        for path in integration.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    }
+    candidate = Candidate.from_blobs("tag", "commit", blobs)
+    assert set(candidate.served) == {
+        frontend.MATIC_ICONS_PATH,
+        frontend.MATIC_MAP_STUDIO_V4_PATH,
+    }
+    assert "clean" in candidate.services
+    assert "go_to_room" in candidate.services
+
+
+def test_candidate_reads_the_tag_from_git(tmp_path: Path) -> None:
+    def git(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(tmp_path), *args],
+            capture_output=True,
+            check=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-q")
+    for name, data in _blobs().items():
+        path = tmp_path / INTEGRATION / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    (tmp_path / "README.md").write_text("outside the integration")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@example.com", "commit", "-qm", "c")
+    git("tag", "v0.6.0b1")
+    candidate = Candidate.from_git(tmp_path, "v0.6.0b1")
+    assert candidate.commit == git("rev-parse", "HEAD")
+    assert candidate.version == "0.6.0b1"
+    assert set(candidate.files) == set(_blobs())
+    assert candidate.services == {"clean", "go_to_room"}
+
+
+def test_installed_files_must_match_exactly() -> None:
+    expected = {"a.py": "1", "b.py": "2"}
+    compare_files(expected, parse_sha256sum("1  ./a.py\n2  ./b.py\n"))
+    with pytest.raises(CheckFailed, match=r"missing \['b.py'\], extra \['c.py'\]"):
+        compare_files(expected, {"a.py": "1", "c.py": "3"})
+    with pytest.raises(CheckFailed, match=r"changed \['a.py'\]"):
+        compare_files(expected, {"a.py": "9", "b.py": "2"})
+
+
+class FakeHomeAssistant:
+    """Answers the commands the check sends, and records them."""
+
+    poll_interval = 0
+
+    def __init__(self, candidate: Candidate) -> None:
+        self.candidate = candidate
+        self.version = candidate.version
+        self.robot_states = ["docked"]
+        self.protected = True
+        self.backups: list[dict[str, Any]] = []
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.served = dict(candidate.served)
+
+    def services_called(self) -> list[str]:
+        return [
+            f"{data['domain']}.{data['service']}"
+            for kind, data in self.calls
+            if kind == "call_service"
+        ]
+
+    async def call(self, message_type: str, **data: Any) -> Any:
+        self.calls.append((message_type, data))
+        match message_type:
+            case "get_config":
+                return {"version": "2026.10.4", "state": "RUNNING"}
+            case "backup/info":
+                return {"backups": list(self.backups)}
+            case "backup/generate_with_automatic_settings":
+                self.backups.append(
+                    {
+                        "backup_id": "b1",
+                        "name": "Automatic backup",
+                        "agents": {"hassio.local": {"protected": self.protected}},
+                        "database_included": True,
+                    }
+                )
+                return None
+            case "hacs/repositories/list":
+                return [{"id": "42", "full_name": "prospectore/matic-home-assistant"}]
+            case "manifest/get":
+                return {"version": self.version}
+            case "config/entity_registry/list":
+                return [
+                    {
+                        "entity_id": ROBOT,
+                        "platform": "matic_robot",
+                        "disabled_by": None,
+                    },
+                    {
+                        "entity_id": "sensor.off",
+                        "platform": "matic_robot",
+                        "disabled_by": "user",
+                    },
+                    {"entity_id": "light.x", "platform": "hue", "disabled_by": None},
+                ]
+            case "get_states":
+                state = (
+                    self.robot_states.pop(0)
+                    if len(self.robot_states) > 1
+                    else (self.robot_states[0])
+                )
+                return [{"entity_id": ROBOT, "state": state}]
+            case "get_services":
+                return {"matic_robot": {name: {} for name in self.candidate.services}}
+        return None
+
+    async def send(self, message_type: str, **data: Any) -> int:
+        self.calls.append((message_type, data))
+        return 7
+
+    async def receive(self, message_id: int) -> dict[str, Any]:
+        return {
+            "id": message_id,
+            "event": {"manager_state": "create_backup", "state": "completed"},
+        }
+
+    async def get(self, path: str) -> tuple[int, bytes]:
+        body = self.served.get(path)
+        return (200, body) if body is not None else (404, b"")
+
+    async def wait_until_running(self) -> str:
+        return "2026.10.4"
+
+
+def _statuses(receipt: dict[str, Any]) -> dict[str, str]:
+    return {step["name"]: step["status"] for step in receipt["steps"]}
+
+
+async def test_full_run_installs_checks_and_runs_the_physical_steps(
+    tmp_path: Path,
+) -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+    ha.robot_states = ["docked", "docked", "cleaning", "docked", "returning", "docked"]
+    prompts: list[str] = []
+
+    def confirm(prompt: str) -> str:
+        prompts.append(prompt)
+        return "Kitchen"
+
+    check = InstalledCheck(ha, candidate, Options(room="Kitchen", confirm=confirm))  # type: ignore[arg-type]
+    receipt = await check.run()
+    written = json.loads(receipt.write(tmp_path).read_text())
+    assert written["result"] == "passed"
+    assert written["candidate"]["tag"] == "v0.6.0b1"
+    assert written["candidate"]["commit"] == "c" * 40
+    assert _statuses(written) == {
+        "backup": "passed",
+        "install": "passed",
+        "served_assets": "passed",
+        "installed_files": "skipped",
+        "entities": "passed",
+        "actions": "passed",
+        "assistant_tools": "skipped",
+        "physical": "passed",
+    }
+    assert (
+        "hacs/repository/download",
+        {"repository": "42", "version": "v0.6.0b1"},
+    ) in (ha.calls)
+    assert ha.services_called() == [
+        "homeassistant.restart",
+        "matic_robot.clean",
+        "vacuum.send_command",
+    ]
+    assert len(prompts) == 2
+
+
+async def test_a_failed_step_stops_the_run(tmp_path: Path) -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+    ha.version = "0.5.0"
+    receipt = (
+        await InstalledCheck(ha, candidate, Options(install=False)).run()  # type: ignore[arg-type]
+    ).as_json()
+    assert receipt["result"] == "failed"
+    assert _statuses(receipt) == {
+        "backup": "skipped",
+        "install": "skipped",
+        "served_assets": "failed",
+    }
+    assert "loaded manifest is 0.5.0" in receipt["steps"][-1]["error"]
+
+
+async def test_stale_served_assets_fail() -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+    ha.served.popitem()
+    receipt = (
+        await InstalledCheck(ha, candidate, Options(install=False)).run()
+    ).as_json()  # type: ignore[arg-type]
+    assert "answered 404" in receipt["steps"][-1]["error"]
+
+
+async def test_an_unencrypted_backup_stops_before_install() -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+    ha.protected = False
+    receipt = (await InstalledCheck(ha, candidate, Options()).run()).as_json()  # type: ignore[arg-type]
+    assert _statuses(receipt) == {"backup": "failed"}
+    assert not ha.services_called()
+
+
+async def test_physical_steps_need_the_owner_to_type_the_room() -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+    options = Options(install=False, room="Kitchen", confirm=lambda _: "yes")
+    receipt = (await InstalledCheck(ha, candidate, options).run()).as_json()  # type: ignore[arg-type]
+    assert (
+        receipt["steps"][-1]["error"] == "the owner did not confirm; nothing was sent"
+    )
+    assert not ha.services_called()
+
+
+async def test_physical_steps_need_a_docked_robot() -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+    ha.robot_states = ["docked", "cleaning"]
+    options = Options(install=False, room="Kitchen", confirm=lambda _: "Kitchen")
+    receipt = (await InstalledCheck(ha, candidate, options).run()).as_json()  # type: ignore[arg-type]
+    assert receipt["steps"][-1]["error"] == "the robot is not docked"
+    assert not ha.services_called()
+
+
+async def test_installed_files_are_hashed_over_ssh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _candidate()
+    listing = "".join(
+        f"{digest}  ./{path}\n" for path, digest in candidate.files.items()
+    )
+    commands: list[list[str]] = []
+
+    def run(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, listing, "")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    ha = FakeHomeAssistant(candidate)
+    receipt = (
+        await InstalledCheck(ha, candidate, Options(install=False, ssh="ha")).run()  # type: ignore[arg-type]
+    ).as_json()
+    assert _statuses(receipt)["installed_files"] == "passed"
+    assert commands[0][:2] == ["ssh", "ha"]
+
+
+FAKE_MCP = """
+import json, sys
+for line in sys.stdin:
+    message = json.loads(line)
+    if "id" not in message:
+        continue
+    method = message["method"]
+    if method == "initialize":
+        result = {"protocolVersion": "2025-06-18", "capabilities": {}}
+    elif method == "tools/list":
+        result = {"tools": [{"name": name} for name in sys.argv[1:]]}
+    else:
+        name = message["params"]["name"]
+        result = {"content": [], "isError": name == "matic_get_firmware"}
+    print(json.dumps({"jsonrpc": "2.0", "id": message["id"], "result": result}))
+    sys.stdout.flush()
+"""
+
+
+def test_assistant_tools_are_called_through_the_mcp_bridge(tmp_path: Path) -> None:
+    server = tmp_path / "server.py"
+    server.write_text(FAKE_MCP)
+    command = [sys.executable, str(server), *ASSISTANT_TOOLS]
+    results = call_mcp_tools(command, ASSISTANT_TOOLS)
+    assert results == {name: name != "matic_get_firmware" for name in ASSISTANT_TOOLS}
+    with pytest.raises(CheckFailed, match="does not list"):
+        call_mcp_tools([sys.executable, str(server), "other"], ASSISTANT_TOOLS)
+
+
+async def test_client_authenticates_and_matches_replies_by_id(
+    socket_enabled: None,
+) -> None:
+    async def websocket(request: web.Request) -> web.WebSocketResponse:
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        await socket.send_json({"type": "auth_required"})
+        auth = await socket.receive_json()
+        ok = auth["access_token"] == "token"
+        await socket.send_json({"type": "auth_ok" if ok else "auth_invalid"})
+        async for message in socket:
+            if message.type is not WSMsgType.TEXT:
+                break
+            command = json.loads(message.data)
+            if command["type"] == "subscribe":
+                await socket.send_json(
+                    {"id": command["id"], "type": "result", "success": True}
+                )
+                await socket.send_json(
+                    {"id": command["id"], "type": "event", "event": 1}
+                )
+            elif command["type"] == "fails":
+                await socket.send_json(
+                    {
+                        "id": command["id"],
+                        "type": "result",
+                        "success": False,
+                        "error": "no",
+                    }
+                )
+            else:
+                await socket.send_json(
+                    {
+                        "id": command["id"],
+                        "type": "result",
+                        "success": True,
+                        "result": {"state": "RUNNING", "version": "2026.10.4"},
+                    }
+                )
+        return socket
+
+    async def asset(_: web.Request) -> web.Response:
+        return web.Response(body=b"icons")
+
+    app = web.Application()
+    app.router.add_get("/api/websocket", websocket)
+    app.router.add_get("/asset.js", asset)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    url = f"http://127.0.0.1:{port}"
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            ha = HomeAssistant(session, url, "token")
+            await ha.connect()
+            events = await ha.send("subscribe")
+            assert (await ha.call("get_config"))["state"] == "RUNNING"
+            assert (await ha.receive(events))["type"] == "result"
+            assert (await ha.receive(events))["event"] == 1
+            with pytest.raises(CheckFailed, match="fails failed"):
+                await ha.call("fails")
+            assert await ha.get("/asset.js") == (200, b"icons")
+            ha.poll_interval = 0
+            assert await ha.wait_until_running() == "2026.10.4"
+            await ha.close()
+            with pytest.raises(CheckFailed, match="refused"):
+                await HomeAssistant(session, url, "wrong").connect()
+    finally:
+        await runner.cleanup()
+
+
+def test_physical_needs_a_room() -> None:
+    with pytest.raises(SystemExit):
+        main(["v0.6.0b1", "--url", "http://ha", "--receipts", "r", "--physical"])
