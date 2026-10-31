@@ -186,16 +186,39 @@ async def test_entity_reports_the_next_run_and_window_events(hass) -> None:
     events = await entity.async_get_events(hass, now, now + timedelta(days=14))
     assert len(events) == 2
 
-    with patch.object(dt_util, "now", return_value=now):
-        assert entity.extra_state_attributes == {
-            "matic_entry_id": "entry",
-            "matic_next_start": "2026-10-29T08:30:00-07:00",
-        }
-
     entry.runtime_data.coordinator.data = _with()
     with patch.object(dt_util, "now", return_value=now):
         assert entity.event is None
-        assert entity.extra_state_attributes["matic_next_start"] is None
+        assert entity.extra_state_attributes == {
+            "matic_entry_id": "entry",
+            "matic_next_run": None,
+        }
+
+
+def test_next_run_skips_the_run_under_way() -> None:
+    entry = _entry()
+    entry.runtime_data.coordinator.data = _with(
+        _schedule(name="Early", weekdays=("thursday",), room_ids=()),
+        _schedule(name="Late", weekdays=("thursday",), minute_of_day=555),
+    )
+    entity = MaticScheduleCalendar(entry)
+    # 08:45, during Early's nominal hour and before Late at 09:15.
+    now = datetime(2026, 10, 29, 8, 45, tzinfo=LOS_ANGELES)
+
+    with patch.object(dt_util, "now", return_value=now):
+        current = entity.event
+        attributes = entity.extra_state_attributes
+
+    assert current is not None and current.summary == "Early"
+    next_run = attributes["matic_next_run"]
+    assert isinstance(next_run, dict)
+    assert next_run["name"] == "Late"
+    assert datetime.fromisoformat(next_run["start"]) == datetime(
+        2026, 10, 29, 9, 15, tzinfo=LOS_ANGELES
+    )
+    assert next_run["description"] == (
+        "Vacuum and mop\nRooms in this order: Study, Kitchen"
+    )
 
 
 def test_runs_in_dst_transition_hours_last_one_elapsed_hour() -> None:

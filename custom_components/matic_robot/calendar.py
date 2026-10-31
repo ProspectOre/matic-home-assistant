@@ -41,7 +41,7 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
             "end_time",
             "location",
             "matic_entry_id",
-            "matic_next_start",
+            "matic_next_run",
         }
     )
 
@@ -62,15 +62,34 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Give Matic Map the entry and an unambiguous start time.
+        """Give Matic Map the entry and the next run that hasn't started.
 
-        The calendar's own start_time is a naive local string, which a browser
-        in another time zone would misread.
+        The calendar's own event stays on a run for its nominal hour, and its
+        start_time is a naive local string that a browser in another time zone
+        would misread, so neither suits a "next clean" line.
         """
-        event = self.event
+        now = dt_util.now()
+        upcoming = next(
+            (
+                event
+                for event in schedule_occurrences(
+                    self.coordinator.data, now, now + _UPCOMING_WINDOW
+                )
+                if event.start_datetime_local.timestamp() > now.timestamp()
+            ),
+            None,
+        )
         return {
             "matic_entry_id": self._config_entry.entry_id,
-            "matic_next_start": event.start.isoformat() if event else None,
+            "matic_next_run": (
+                {
+                    "name": upcoming.summary,
+                    "start": upcoming.start_datetime_local.isoformat(),
+                    "description": upcoming.description,
+                }
+                if upcoming
+                else None
+            ),
         }
 
     async def async_get_events(

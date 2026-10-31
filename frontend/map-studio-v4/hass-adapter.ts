@@ -37,12 +37,14 @@ const SCHEDULE_TEXT_MAX = 1024;
 const scheduleText = (value: unknown): string | null =>
   typeof value === "string" && value.trim() && value.length <= SCHEDULE_TEXT_MAX ? value.trim() : null;
 
-// The robot schedules calendar names its next run; Matic Map shows it as is.
-const scheduledRun = (attributes: Readonly<Record<string, unknown>> | undefined): ScheduledRun | null => {
-  const name = scheduleText(attributes?.message);
-  const startsAt = attributes?.matic_next_start;
+// The robot schedules calendar names its next run that hasn't started yet.
+const scheduledRun = (value: unknown): ScheduledRun | null => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const run = value as Record<string, unknown>;
+  const name = scheduleText(run.name);
+  const startsAt = run.start;
   if (!name || typeof startsAt !== "string" || !Number.isFinite(Date.parse(startsAt))) return null;
-  return { name, startsAt, detail: scheduleText(attributes?.description) };
+  return { name, startsAt, detail: scheduleText(run.description) };
 };
 
 const boundedBattery = (value: unknown): number | null => {
@@ -142,8 +144,8 @@ export class HassAdapter {
       if (entityId.startsWith("sensor.") && entity.attributes?.last_run !== undefined) {
         histories.set(entryKey, entity.attributes);
       }
-      if (entityId.startsWith("calendar.") && entity.attributes?.matic_next_start !== undefined) {
-        schedules.set(entryKey, scheduledRun(entity.attributes));
+      if (entityId.startsWith("calendar.") && entity.attributes?.matic_next_run !== undefined) {
+        schedules.set(entryKey, scheduledRun(entity.attributes.matic_next_run));
       }
       if (!entityId.startsWith("vacuum.")) continue;
       robots.set(entryKey, { entryId: entryKey, label: safeRobotLabel(entity.attributes?.friendly_name) });

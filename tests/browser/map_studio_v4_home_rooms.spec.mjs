@@ -1783,22 +1783,22 @@ test.describe("cleaning history", () => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
       const { HassAdapter } = await import("/schedule-projection.js");
-      const calendar = (entry, attributes) => ({ state: "off", attributes: { matic_entry_id: entry, ...attributes } });
+      const calendar = (entry, next) => ({ state: "on", attributes: { matic_entry_id: entry, message: "Run under way", matic_next_run: next } });
       const states = {
         "vacuum.one": { state: "docked", attributes: { matic_entry_id: "one" } },
         "vacuum.two": { state: "docked", attributes: { matic_entry_id: "two" } },
-        "calendar.one": calendar("one", { message: "Mornings", matic_next_start: "2026-11-02T10:30:00-08:00", description: "Vacuum" }),
-        "calendar.two": calendar("two", { message: "Evenings", matic_next_start: "2026-11-02T19:00:00-08:00" }),
+        "calendar.one": calendar("one", { name: "Mornings", start: "2026-11-02T10:30:00-08:00", description: "Vacuum" }),
+        "calendar.two": calendar("two", { name: "Evenings", start: "2026-11-02T19:00:00-08:00", description: null }),
       };
       const hass = { connected: true, user: { is_admin: true }, states };
       const read = (entry) => new HassAdapter().project(hass, undefined, entry).nextSchedule;
       const one = read("one");
       const two = read("two");
-      states["calendar.one"] = calendar("one", { message: "Mornings", matic_next_start: null });
+      states["calendar.one"] = calendar("one", null);
       const none = read("one");
-      states["calendar.one"] = calendar("one", { message: "Mornings", matic_next_start: "not a time" });
+      states["calendar.one"] = calendar("one", { name: "Mornings", start: "not a time" });
       const invalid = read("one");
-      states["calendar.one"] = calendar("one", { message: " ", matic_next_start: "2026-11-02T10:30:00-08:00" });
+      states["calendar.one"] = calendar("one", { name: " ", start: "2026-11-02T10:30:00-08:00" });
       const unnamed = read("one");
       delete states["calendar.one"];
       const missing = read("one");
