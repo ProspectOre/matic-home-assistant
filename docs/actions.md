@@ -124,7 +124,8 @@ links, in memory, so a link stops working after newer photos or a restart.
 Each photo also fires a `matic_robot_photo_taken` event with the same fields.
 
 The robot must be docked or idle with at least 20% battery, and only one patrol
-runs at a time. A room the robot doesn't reach within three minutes, or a
+runs at a time. If a clean starts during a patrol, the patrol stops before the
+next room and leaves the robot to the clean instead of docking it. A room the robot doesn't reach within three minutes, or a
 photo that isn't saved within 40 seconds, stops the patrol with an error. The
 camera faces the way the robot stopped, which the robot chooses. The
 [Matic: Photograph room on alert](automation.md#ready-to-import-blueprints)

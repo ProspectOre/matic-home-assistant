@@ -1711,7 +1711,7 @@
       "message": "A photo patrol is already running on this robot."
     },
     "photo_patrol_robot_busy": {
-      "message": "The robot is cleaning. Take photos once the clean has ended."
+      "message": "The robot is busy with a clean or on its way to the dock. Take photos once it has docked."
     },
     "photo_patrol_low_battery": {
       "message": "The battery is at {battery}%. A photo patrol needs at least 20%."

@@ -19,9 +19,16 @@ from custom_components.matic_robot.photos import MaticRobotPhotoView, RobotPhoto
 from tests.test_services import _registered_handler, _registered_services
 
 START = datetime(2026, 10, 31, 1, 0, tzinfo=UTC)
-DOCKED = SimpleNamespace(state_codes=(100,))
-MOVING = SimpleNamespace(state_codes=(103,))
-PARKED = SimpleNamespace(state_codes=(photo_patrol.PARKED_STATE_CODE,))
+
+
+def _state(*codes: int) -> SimpleNamespace:
+    return SimpleNamespace(state_codes=codes, cleaning=119 in codes, paused=False)
+
+
+DOCKED = _state(100)
+MOVING = _state(103)
+PARKED = _state(photo_patrol.PARKED_STATE_CODE)
+CLEANING = _state(119)
 
 
 def _photo(number: int) -> RobotPhoto:
@@ -49,10 +56,22 @@ class _Photos:
         return False
 
 
-def _entry(states, store, *, cleaning=False, paused=False, battery=80, entry_id="e"):
+def _entry(
+    states,
+    store,
+    *,
+    cleaning=False,
+    paused=False,
+    returning=False,
+    battery=80,
+    entry_id="e",
+):
     client = SimpleNamespace(async_get_state=AsyncMock(side_effect=states))
     operational = SimpleNamespace(
-        cleaning=cleaning, paused=paused, battery_percentage=battery
+        cleaning=cleaning,
+        paused=paused,
+        returning=returning,
+        battery_percentage=battery,
     )
     return SimpleNamespace(
         entry_id=entry_id,
@@ -98,7 +117,9 @@ async def test_patrol_photographs_each_room_and_docks() -> None:
     store = _Photos(None, _photo(1), _photo(2))
     # Kitchen: docked, then moving and parked. Dining: already parked, so the
     # robot has to leave before its arrival counts.
-    entry = _entry([DOCKED, MOVING, PARKED, PARKED, PARKED, MOVING, PARKED], store)
+    entry = _entry(
+        [DOCKED, MOVING, PARKED, PARKED, PARKED, MOVING, PARKED, PARKED], store
+    )
     context = Context()
 
     result = await photo_patrol.async_photo_patrol(
@@ -160,7 +181,7 @@ async def test_patrol_accepts_a_robot_that_never_seems_to_leave() -> None:
     ("states", "arrivals", "key", "placeholders"),
     [
         ([DOCKED] + [MOVING] * 200, (), "photo_patrol_no_arrival", {"room": "Den"}),
-        ([DOCKED, PARKED], (), "photo_patrol_no_photo", {"room": "Den"}),
+        ([DOCKED, PARKED, PARKED], (), "photo_patrol_no_photo", {"room": "Den"}),
         (CannotConnectError("offline"), (), "photo_patrol_unreachable", None),
     ],
 )
@@ -186,6 +207,7 @@ async def test_patrol_failures_still_dock(
     [
         ({"cleaning": True}, "photo_patrol_robot_busy", None),
         ({"paused": True}, "photo_patrol_robot_busy", None),
+        ({"returning": True}, "photo_patrol_robot_busy", None),
         ({"battery": 19}, "photo_patrol_low_battery", {"battery": "19"}),
     ],
 )
@@ -203,6 +225,21 @@ async def test_patrol_refuses_a_busy_or_flat_robot(
     assert raised.value.translation_key == key
     assert raised.value.translation_placeholders == placeholders
     hass.services.async_call.assert_not_awaited()
+
+
+async def test_a_clean_started_during_the_patrol_keeps_the_robot() -> None:
+    hass = _hass()
+    # Kitchen is photographed, then a clean takes the robot away from it.
+    entry = _entry([DOCKED, PARKED, CLEANING, CLEANING], _Photos(_photo(1)))
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await photo_patrol.async_photo_patrol(
+            hass, entry, "vacuum.matic", ["Kitchen", "Den"], return_to_dock=True
+        )
+
+    assert raised.value.translation_key == "photo_patrol_robot_busy"
+    assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote"]
+    assert len(hass.bus.async_fire.call_args_list) == 1
 
 
 async def test_patrol_runs_with_an_unknown_battery_level() -> None:

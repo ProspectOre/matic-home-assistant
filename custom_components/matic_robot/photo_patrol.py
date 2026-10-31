@@ -67,7 +67,7 @@ async def async_photo_patrol(
         raise _error("photo_patrol_running")
     async with lock:
         operational = entry.runtime_data.coordinator.data.operational
-        if operational.cleaning or operational.paused:
+        if operational.cleaning or operational.paused or operational.returning:
             raise _error("photo_patrol_robot_busy")
         battery = operational.battery_percentage
         if battery is not None and battery < MIN_BATTERY_PERCENT:
@@ -89,7 +89,7 @@ async def async_photo_patrol(
                     context=context,
                 )
         finally:
-            if return_to_dock:
+            if return_to_dock and not await _async_taken_over(entry):
                 await hass.services.async_call(
                     VACUUM_DOMAIN,
                     SERVICE_RETURN_TO_BASE,
@@ -109,7 +109,10 @@ async def _async_photograph(
 ) -> RobotPhoto:
     client = entry.runtime_data.client
     photos = entry.runtime_data.photos
-    was_parked = _parked(await _async_state(client))
+    state = await _async_state(client)
+    if _busy(state):
+        raise _error("photo_patrol_robot_busy")
+    was_parked = _parked(state)
     await _async_command(hass, entity_id, "go_to_room", {"room": room}, context)
     if was_parked:
         await _async_wait_for(client, lambda state: not _parked(state), None)
@@ -163,6 +166,24 @@ async def _async_state(client: Any) -> RobotOperationalState:
 
 def _parked(state: RobotOperationalState) -> bool:
     return PARKED_STATE_CODE in state.state_codes
+
+
+def _busy(state: RobotOperationalState) -> bool:
+    """Return whether something else gave the robot a task during the patrol.
+
+    The patrol leaves the robot parked at a room between photos, so a robot
+    that is cleaning or paused and not parked was taken over by a clean.
+    """
+    return not _parked(state) and (state.cleaning or state.paused)
+
+
+async def _async_taken_over(entry: MaticConfigEntry) -> bool:
+    """Return whether docking now would stop a task the patrol didn't start."""
+    try:
+        state: RobotOperationalState = await entry.runtime_data.client.async_get_state()
+    except MaticError:
+        return False
+    return _busy(state)
 
 
 async def _async_command(
