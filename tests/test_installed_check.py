@@ -177,7 +177,9 @@ class FakeHomeAssistant:
         self.sent.append(message_type)
         return len(self.sent)
 
-    async def receive(self, message_id: int) -> dict[str, Any]:
+    async def receive(
+        self, message_id: int, *, timeout_seconds: float | None = None
+    ) -> dict[str, Any]:
         if self.sent[message_id - 1] == "backup/subscribe_events":
             event = {"manager_state": "create_backup", "state": "completed"}
             return {"id": message_id, "event": event}
@@ -505,6 +507,79 @@ async def test_a_stalled_backup_event_fails_and_writes_a_partial_receipt(
         assert written["result"] == "failed"
         assert written["steps"][-1]["name"] == "backup"
         assert "backup did not complete in time" in written["steps"][-1]["error"]
+    finally:
+        await runner.cleanup()
+
+
+async def test_backup_event_wait_uses_backup_deadline_not_request_timeout(
+    socket_enabled: None,
+) -> None:
+    backup = {
+        "backup_id": "b1",
+        "name": "Automatic backup",
+        "agents": {"hassio.local": {"protected": True}},
+        "database_included": True,
+    }
+    backup_count = 0
+
+    async def websocket(request: web.Request) -> web.WebSocketResponse:
+        nonlocal backup_count
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        await socket.send_json({"type": "auth_required"})
+        await socket.receive_json()
+        await socket.send_json({"type": "auth_ok"})
+        async for message in socket:
+            command = json.loads(message.data)
+            kind = command["type"]
+            result: Any = None
+            if kind == "backup/info":
+                result = {"backups": [] if backup_count == 0 else [backup]}
+                backup_count += 1
+            await socket.send_json(
+                {
+                    "id": command["id"],
+                    "type": "result",
+                    "success": True,
+                    "result": result,
+                }
+            )
+            if kind == "backup/generate_with_automatic_settings":
+
+                async def finish_backup() -> None:
+                    await asyncio.sleep(0.08)
+                    await socket.send_json(
+                        {
+                            "id": 2,
+                            "type": "event",
+                            "event": {
+                                "manager_state": "create_backup",
+                                "state": "completed",
+                            },
+                        }
+                    )
+
+                await finish_backup()
+        return socket
+
+    app = web.Application()
+    app.router.add_get("/api/websocket", websocket)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            ha = HomeAssistant(session, f"http://127.0.0.1:{port}", "token")
+            ha.request_timeout = 0.02
+            await ha.connect()
+            check = InstalledCheck(ha, _candidate(), Options())
+            check.backup_timeout = 0.5
+            assert (await check.backup())["backup_id"] == "b1"
+            await ha.close()
     finally:
         await runner.cleanup()
 

@@ -231,10 +231,13 @@ class HomeAssistant:
             raise CheckFailed(f"Home Assistant refused the token: {reply['type']}")
 
     async def _receive_json(
-        self, socket: aiohttp.ClientWebSocketResponse
+        self,
+        socket: aiohttp.ClientWebSocketResponse,
+        timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
+        timeout = self.request_timeout if timeout_seconds is None else timeout_seconds
         try:
-            async with asyncio.timeout(self.request_timeout):
+            async with asyncio.timeout(timeout):
                 return cast(dict[str, Any], await socket.receive_json())
         except TimeoutError:
             raise CheckFailed("Home Assistant did not reply in time") from None
@@ -256,15 +259,22 @@ class HomeAssistant:
         )
         return self._next_id
 
-    async def receive(self, message_id: int) -> dict[str, Any]:
+    async def receive(
+        self, message_id: int, *, timeout_seconds: float | None = None
+    ) -> dict[str, Any]:
         """Return the next message for one command id."""
         assert self._socket is not None
         if queued := self._pending.get(message_id):
             return queued.pop(0)
+        timeout = self.request_timeout if timeout_seconds is None else timeout_seconds
+        deadline = asyncio.get_running_loop().time() + timeout
         try:
-            async with asyncio.timeout(self.request_timeout):
+            async with asyncio.timeout(timeout):
                 while True:
-                    message = await self._receive_json(self._socket)
+                    remaining = deadline - asyncio.get_running_loop().time()
+                    message = await self._receive_json(
+                        self._socket, timeout_seconds=remaining
+                    )
                     if message.get("id") == message_id:
                         return message
                     self._pending.setdefault(message["id"], []).append(message)
@@ -406,11 +416,18 @@ class InstalledCheck:
 
     async def _create_backup(self) -> dict[str, Any]:
         """Create and verify one automatic encrypted backup."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.backup_timeout
         before = {item["backup_id"] for item in await self._backups()}
         events = await self.ha.send("backup/subscribe_events")
         await self.ha.call("backup/generate_with_automatic_settings")
         while True:
-            event = (await self.ha.receive(events)).get("event", {})
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError
+            event = (await self.ha.receive(events, timeout_seconds=remaining)).get(
+                "event", {}
+            )
             if event.get("manager_state") == "create_backup":
                 if event.get("state") == "failed":
                     raise CheckFailed(f"backup failed: {event.get('reason')}")
