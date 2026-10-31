@@ -1743,6 +1743,9 @@ test.describe("cleaning history", () => {
     const earlier = gallery.getByRole("list", { name: "Earlier" }).getByRole("button");
     await expect(earlier).toHaveCount(2);
     await expect(earlier.nth(0)).toHaveAttribute("aria-expanded", "false");
+    await earlier.nth(0).click();
+    const finished = gallery.getByRole("list", { name: "Earlier" }).getByRole("listitem").nth(0);
+    await expect(finished.locator("dd")).toHaveText(["Done", "Done", "Skipped"]);
     await expect(earlier.nth(1)).toContainText("Result not reported");
     await earlier.nth(1).click();
     await expect(earlier.nth(1)).toHaveAttribute("aria-expanded", "true");
@@ -1835,5 +1838,40 @@ test.describe("cleaning history", () => {
     await patchState(gallery, { workflow: "none" });
     const menu = await openOptions(gallery);
     await expect(menu.getByRole("menuitemcheckbox", { name: "Robot trail" })).toHaveCount(0);
+  });
+});
+
+// ---- Changing a running clean (PRO-77, docs/queue-changes.md) -------------
+
+test.describe("change this clean", () => {
+  test("offers skip, clean next and clean again for the room the robot is in, or one picked", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "cleaning" });
+    await page.evaluate(() => {
+      window.__queueActions = [];
+      document.addEventListener("matic-workspace-action", (event) => window.__queueActions.push(event.detail));
+    });
+    const queue = gallery.getByRole("region", { name: "Change this clean" });
+    const room = queue.getByRole("combobox", { name: "Room" });
+    await expect(room.locator("option:checked")).toHaveText("Kitchen");
+    const actions = queue.getByRole("group", { name: "Change Kitchen" }).getByRole("button");
+    await expect(actions).toHaveText(["Skip", "Clean next", "Clean again"]);
+    await actions.nth(0).click();
+    await room.selectOption({ label: "Office" });
+    await queue.getByRole("group", { name: "Change Office" }).getByRole("button", { name: "Clean again" }).click();
+    expect(await page.evaluate(() => window.__queueActions.map(({ id, change, room }) => ({ id, change, room })))).toEqual([
+      { id: "change-queue", change: "skip_room", room: "Kitchen" },
+      { id: "change-queue", change: "clean_room_again", room: "Office" },
+    ]);
+
+    // While the robot confirms a change, the buttons hold and say so.
+    await patchState(gallery, { queuePending: true });
+    await expect(queue.getByRole("status")).toHaveText("Waiting for the robot to confirm…");
+    await expect(queue.getByRole("button", { name: "Skip" })).toHaveAttribute("aria-disabled", "true");
+    await queue.getByRole("button", { name: "Skip" }).click({ force: true });
+    expect(await page.evaluate(() => window.__queueActions.length)).toBe(2);
+
+    // Only a robot cleaning a room can take a change.
+    await patchState(gallery, { queuePending: false, activity: "paused" });
+    await expect(queue).toHaveCount(0);
   });
 });

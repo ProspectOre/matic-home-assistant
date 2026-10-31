@@ -12,6 +12,7 @@ import type {
   NoticeTone,
   NoButtonAction,
   PrimaryAction,
+  QueueChangeAction,
   ResetCadenceAction,
   ColorScheme,
   SaveSettled,
@@ -65,6 +66,7 @@ import "./map-canvas";
 import { translate } from "./localize";
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
+  canChangeQueue,
   canShowLiveMap,
   isReadOnlyWorkspace,
   deleteSubject,
@@ -472,6 +474,7 @@ export class MaticMapShellV4 extends LitElement {
     _polite: { state: true },
     _alert: { state: true },
     _toast: { state: true },
+    _queueRoom: { state: true },
   };
 
   static override styles = shellStyles;
@@ -517,6 +520,8 @@ export class MaticMapShellV4 extends LitElement {
   #statusRow: string | null = null;
   #announced = new Set<"_polite" | "_alert">();
   protected _toast: WorkspaceNotice | null = null;
+  // The room the Change this clean controls act on; "" follows the robot.
+  protected _queueRoom = "";
   // A chunk loads when the first view that needs it opens: the workflow views
   // with any workflow, the outline editor with Draw. The shell builds the
   // editor and hands it to the canvas, so the sheet is the one place a failure
@@ -1146,7 +1151,7 @@ export class MaticMapShellV4 extends LitElement {
     if (launcher) requestAnimationFrame(() => launcher.focus({ preventScroll: true }));
   }
 
-  #dispatchAction(action: string | ResetCadenceAction | DeleteSharedCadenceAction, settled?: SaveSettled): void {
+  #dispatchAction(action: string | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction, settled?: SaveSettled): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
       detail: typeof action === "string" ? { id: action, settled } : action,
       bubbles: true,
@@ -1618,6 +1623,41 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
+  // While the robot cleans a room, any room of the floor can be skipped, moved
+  // next or cleaned again (docs/queue-changes.md). The integration refuses a
+  // change the robot's queue can't take, and the notice says why.
+  #queueControls(state: WorkspaceState) {
+    const rooms = readyPlans(state)?.rooms ?? [];
+    if (state.activity !== "cleaning" || state.smartStop || rooms.length === 0) return nothing;
+    const t = this.#t;
+    const current = state.currentArea?.trim().toLocaleLowerCase();
+    const room = rooms.find((candidate) => candidate.roomId === this._queueRoom)
+      ?? rooms.find((candidate) => candidate.roomId === state.lastRun?.estimate?.roomId
+        || candidate.name.toLocaleLowerCase() === current)
+      ?? rooms[0]!;
+    const held = !canChangeQueue(state);
+    const button = (change: QueueChangeAction["change"], label: string) => html`
+      <button class="ms-btn ms-btn--secondary" type="button" aria-disabled=${held ? "true" : nothing}
+        @click=${() => { if (canChangeQueue(this.state)) this.#dispatchAction({ id: "change-queue", change, roomId: room.roomId, room: room.name }); }}
+      >${label}</button>`;
+    return html`
+      <section class="queue" aria-labelledby="queue-heading">
+        <h3 class="ms-section-heading" id="queue-heading">${t("v4_queue_heading", "Change this clean")}</h3>
+        <label class="ms-field">${t("v4_queue_room", "Room")}
+          <select name="queue-room" .value=${room.roomId}
+            @change=${(event: Event) => { this._queueRoom = (event.currentTarget as HTMLSelectElement).value; }}
+          >${rooms.map((candidate) => html`<option value=${candidate.roomId} ?selected=${candidate.roomId === room.roomId}>${candidate.name}</option>`)}</select>
+        </label>
+        <div class="queue-actions" role="group" aria-label=${t("v4_queue_actions", "Change {room}", { room: room.name })}>
+          ${button("skip_room", t("v4_queue_skip", "Skip"))}
+          ${button("clean_room_next", t("v4_queue_next", "Clean next"))}
+          ${button("clean_room_again", t("v4_queue_again", "Clean again"))}
+        </div>
+        ${state.queuePending ? html`<p class="queue-status" role="status">${t("v4_queue_pending", "Waiting for the robot to confirm…")}</p>` : nothing}
+      </section>
+    `;
+  }
+
   // Home (home-rooms.md §3): the heading and description come from homeCopy;
   // this is the body under them. Cards are demoted, never hidden, while the
   // robot is busy or the map is not ready, and they share the one reason the
@@ -1668,6 +1708,7 @@ export class MaticMapShellV4 extends LitElement {
         >${t("v4_retry", "Try again")}</button>
       </div>` : nothing;
     const priorityMaps = held ? maps(kind === "map-unavailable") : nothing;
+    const queue = kind === "busy" ? this.#queueControls(state) : nothing;
     const pins = state.homePins.pins;
     const waiting = (status: string) => status === "idle" || status === "loading";
     const pending = waiting(state.homePins.status) || state.homePins.status === "ready" && pins.some((pin) =>
@@ -1686,6 +1727,7 @@ export class MaticMapShellV4 extends LitElement {
     const shortcuts = pending ? nothing : this.#shortcuts(state, held);
     return html`
       ${retry}
+      ${queue}
       ${priorityMaps}
       ${pending ? html`
         <div class="home-actions" role="status"><p>${t("v4_shortcuts_loading_catalogs", "Loading your saved home choices…")}</p></div>
