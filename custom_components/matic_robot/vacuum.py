@@ -676,6 +676,64 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             resolve, destination="sink", task_changed=_sink_task_changed
         )
 
+    async def async_redo_last_clean(self) -> None:
+        """Clean the most recent finished clean again, as the Matic app does."""
+        serial_number = self.coordinator.data.info.serial_number
+        request_generation = self._plans.motion_generation(serial_number)
+        request_stop_generation = self._plans.stop_request_generation(serial_number)
+        request_admission_epoch = self._plans.command_admission_epoch(serial_number)
+        await self._async_ensure_stop_settled(serial_number)
+        self._require_motion_generation(serial_number, request_generation)
+        self._require_stop_request_generation(serial_number, request_stop_generation)
+        self._plans.require_command_admission(
+            serial_number, expected_epoch=request_admission_epoch
+        )
+        if self._holds_task():
+            raise _validation_error(
+                "The robot is busy; clean again starts only from the dock or idle",
+                "redo_robot_busy",
+            )
+        try:
+            records = await self.coordinator.client.async_get_cleaning_session_records()
+        except MaticError as err:
+            raise HomeAssistantError(
+                "The robot's cleaning history could not be read",
+                translation_domain=DOMAIN,
+                translation_key="robot_command_failed",
+            ) from err
+        # A record with no end time is a clean still open on the robot.
+        finished = [record for record in records if record.session.ended_at]
+        if not finished:
+            raise _validation_error(
+                "The robot has no finished clean to repeat", "redo_no_previous_clean"
+            )
+        latest = max(finished, key=lambda item: item.session.ended_at or "")
+        # Like any direct clean, the new clean takes ownership from a plan.
+        async with self._plans.external_motion(
+            serial_number,
+            expected_generation=request_generation,
+            expected_stop_generation=request_stop_generation,
+        ) as generation:
+            await self._async_ensure_stop_settled(serial_number)
+            self._require_motion_generation(serial_number, generation)
+            self._require_stop_request_generation(
+                serial_number, request_stop_generation
+            )
+            if self._holds_task():
+                raise _validation_error(
+                    "The robot started a task before clean again was sent",
+                    "redo_robot_busy",
+                )
+            try:
+                await self.coordinator.client.async_redo_clean(latest.key)
+            except (MaticError, ValueError) as err:
+                raise HomeAssistantError(
+                    "The robot could not clean again",
+                    translation_domain=DOMAIN,
+                    translation_key="robot_command_failed",
+                ) from err
+            await self.coordinator.async_request_refresh()
+
     async def async_go_to_room(self, room: str) -> None:
         """Send the robot to one named room on this floor without cleaning it."""
 
@@ -1037,6 +1095,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if normalized in {"dock", "return_home"}:
             await self.async_return_to_base()
             return
+        if normalized == "redo_last_clean":
+            await self.async_redo_last_clean()
+            return
         if normalized == "sink_summon":
             await self.async_sink_summon()
             return
@@ -1165,8 +1226,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         raise _validation_error(
             "Unsupported Matic command. Use start, clean_all, clean_rooms, "
             "clean_segments, pause, resume, stop, stay_put, dock, return_home, "
-            "sink_summon, go_to_room, skip_room, clean_room_next, "
-            "clean_room_again or emote",
+            "sink_summon, go_to_room, redo_last_clean, skip_room, "
+            "clean_room_next, clean_room_again or emote",
             "unsupported_command",
         )
 

@@ -77,9 +77,9 @@ room ID. The same `vacuum.send_command` command is `go_to_room` with
 
 Go to room follows the sink refill's rules: sent during a clean, the robot keeps
 its task and the plan driving it, and from the dock or while idle it ends a plan
-docked between rooms. It never marks a room as cleaned. The command uses the
-robot's room goal, which the Matic app does not send itself, so how long the
-robot stays before docking has not been measured yet.
+docked between rooms. It never marks a room as cleaned. Sent from the dock, the
+robot reaches the room and waits there for 10 minutes before heading back on
+its own; `stay_put` keeps it there.
 
 ```yaml
 actions:
@@ -94,7 +94,8 @@ actions:
 
 `vacuum.send_command` with `command: stay_put` tells the robot to stay where it
 is rather than return to the dock. The Matic app sends it when you cancel the
-robot's own countdown to dock after a task. Home Assistant's Stop always docks,
+robot's own countdown to dock after a task; on a real robot it cancelled that
+countdown and the robot stayed put. Home Assistant's Stop always docks,
 so stay put waits until that return has settled; use Pause to keep the robot
 where it is. `command: emote` with `params: {kind: snap}` takes
 a photo with the robot's camera, which then shows in the Matic app. The kinds
@@ -117,18 +118,19 @@ actions:
 **Photo patrol** (`matic_robot.photo_patrol`) sends the robot to each of up to
 12 `rooms` in turn, waits until it has stopped there, takes a photo and then
 moves on. With `return_to_dock` (default `true`) it docks afterwards, also when
-a room fails, as long as it is still parked where the patrol left it. The action returns each photo's room, capture time and a `url`
-that serves the image to a signed-in Home Assistant user, so a notification can
-attach it with `image:`. Home Assistant keeps the 16 newest photos for these
+a room fails, as long as it is still parked where the patrol left it. The action
+returns each photo's room, capture time and a `url` that serves the image to a
+signed-in Home Assistant user, so a notification can attach it with `image:`. Home Assistant keeps the 16 newest photos for these
 links, in memory, so a link stops working after newer photos or a restart.
 Each photo also fires a `matic_robot_photo_taken` event with the same fields.
 
 The robot must be docked or idle with at least 20% battery, and only one patrol
 runs at a time. If a clean starts during a patrol, the patrol stops before the
 next room and leaves the robot to it instead of docking it. The same goes for
-a robot moved by another Go to room. A room the robot doesn't reach within three minutes, or a
-photo that isn't saved within 40 seconds, stops the patrol with an error. The
-camera faces the way the robot stopped, which the robot chooses. The
+a robot moved by another Go to room. A room the robot doesn't reach within
+three minutes, or a photo that isn't saved within 40 seconds, stops the patrol
+with an error. The camera faces the way the robot stopped, which the robot
+chooses, and the bottom of each photo shows the robot itself. The
 [Matic: Photograph room on alert](automation.md#ready-to-import-blueprints)
 blueprint runs a patrol when a sensor turns on and sends the photo to a phone.
 
@@ -146,6 +148,14 @@ actions:
       data:
         image: "{{ patrol.robots[0].photos[0].url }}"
 ```
+
+## Repeat the last clean
+
+`vacuum.send_command` with `command: redo_last_clean` cleans the robot's most
+recent finished clean again, like **Clean again** in the Matic app's history.
+It starts only while the robot is docked or idle and, like any direct clean,
+ends a plan docked between rooms. Tried on a real robot, it started the same
+rooms as the previous clean within 10 seconds.
 
 ## Skip, clean next or clean again
 

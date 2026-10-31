@@ -1551,6 +1551,12 @@
     "emote_kind_required": {
       "message": "Choose an emote: nod, shake, pirouette, or snap."
     },
+    "redo_robot_busy": {
+      "message": "The robot is busy. Clean again starts only while the robot is docked or idle."
+    },
+    "redo_no_previous_clean": {
+      "message": "The robot has no finished clean to repeat yet."
+    },
     "queue_room_required": {
       "message": "Name one room for {command}, then try again."
     },
@@ -1612,7 +1618,7 @@
       "message": "No custom area matches {area}. Check the name, or choose from your custom areas."
     },
     "unsupported_command": {
-      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, stay_put, dock, return_home, sink_summon, go_to_room, skip_room, clean_room_next, clean_room_again or emote."
+      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, stay_put, dock, return_home, sink_summon, go_to_room, redo_last_clean, skip_room, clean_room_next, clean_room_again or emote."
     },
     "managed_run_changed": {
       "message": "The cleaning plan changed before Stop could be sent, so Stop was not sent. Check the robot and press Stop again if it is still cleaning."

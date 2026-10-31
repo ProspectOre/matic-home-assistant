@@ -9,6 +9,7 @@ from custom_components.matic_robot.client.commands import (
     UserCommand,
     encode_coverage_command,
     encode_go_to_room_command,
+    encode_redo_coverage_command,
     encode_sink_summon_command,
     encode_user_command,
     encode_user_data,
@@ -173,3 +174,23 @@ def test_go_to_room_rejects_invalid_identifiers() -> None:
             partition_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             region_id="11111111-1111-4111-8111-111111111111",
         )
+
+
+def test_redo_coverage_wraps_the_history_key() -> None:
+    key = bytes.fromhex("1214121209" + "aa" * 8 + "11" + "bb" * 8)
+
+    assert encode_redo_coverage_command(key) == bytes.fromhex("7a181a16") + key
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        b"",
+        bytes.fromhex("1214121209" + "aa" * 8 + "11" + "bb" * 7),
+        bytes.fromhex("1214121208" + "aa" * 8 + "11" + "bb" * 8),
+        bytes.fromhex("1214121209" + "aa" * 8 + "12" + "bb" * 8),
+    ],
+)
+def test_redo_coverage_rejects_other_keys(key: bytes) -> None:
+    with pytest.raises(ValueError):
+        encode_redo_coverage_command(key)
