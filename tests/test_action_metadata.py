@@ -164,6 +164,7 @@ def test_blueprints_are_named_and_every_input_is_described() -> None:
         "Matic: Clean after pets leave",
         "Matic: Clean on a schedule",
         "Matic: Send firmware alerts",
+        "Matic: Photograph room on alert",
     }
-    # The firmware blueprint derives the robot from its sensor, so 19 remain.
-    assert inputs == 19
+    # The firmware blueprint derives the robot from its sensor, so 24 remain.
+    assert inputs == 24

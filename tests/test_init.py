@@ -56,7 +56,7 @@ from custom_components.matic_robot.const import (
     DOMAIN,
     PLATFORMS,
 )
-from custom_components.matic_robot.photos import RobotPhotoStore
+from custom_components.matic_robot.photos import MaticRobotPhotoView, RobotPhotoStore
 from custom_components.matic_robot.plans import (
     STOP_FENCE_EXPIRES_AT,
     AreaBindingUpgradeResult,
@@ -946,8 +946,8 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 27
-    hass.http.register_view.assert_not_called()
+    assert hass.services.async_register.call_count == 28
+    hass.http.register_view.assert_called_once_with(MaticRobotPhotoView)
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
 
@@ -1007,7 +1007,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 12
+    assert hass.http.register_view.call_count == 13
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
@@ -1058,7 +1058,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
     assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
-    assert hass.services.async_register.call_count == 27
+    assert hass.services.async_register.call_count == 28
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
     assert "classic_module_url" not in panel.config

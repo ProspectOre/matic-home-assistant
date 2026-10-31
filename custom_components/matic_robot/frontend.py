@@ -15,6 +15,7 @@ from homeassistant.components.http import (  # type: ignore[attr-defined,unused-
 from homeassistant.core import HomeAssistant
 
 from .floor_layers import MaticFloorLayersView
+from .photos import MaticRobotPhotoView
 from .run_thumbnails import MaticRunThumbnailView
 from .slam_scene import (
     MaticAreasView,
@@ -89,6 +90,8 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     """Serve the local Map Studio frontend and its private data views."""
     if "workspace_socket" not in hass.data.get(__package__, {}):
         await async_register_workspace_socket(hass)
+    # Photo patrol links work in notifications without the frontend.
+    hass.http.register_view(MaticRobotPhotoView)
     if frontend.DATA_EXTRA_MODULE_URL not in hass.data:
         return
     await hass.http.async_register_static_paths(

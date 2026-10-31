@@ -436,6 +436,7 @@ def test_blueprint_scanner_reads_every_blueprint() -> None:
         "clean_when_away.yaml",
         "firmware_intelligence.yaml",
         "pet_aware.yaml",
+        "photo_on_alert.yaml",
         "quiet_hours.yaml",
         "room_rotation.yaml",
     }

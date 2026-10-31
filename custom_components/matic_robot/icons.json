@@ -98,6 +98,7 @@
   "services": {
     "clean": { "service": "mdi:robot-vacuum" },
     "go_to_room": { "service": "mdi:map-marker-outline" },
+    "photo_patrol": { "service": "mdi:camera-marker-outline" },
     "skip_room": { "service": "mdi:skip-next" },
     "clean_room_next": { "service": "mdi:arrow-collapse-up" },
     "clean_room_again": { "service": "mdi:repeat" },
