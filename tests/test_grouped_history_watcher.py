@@ -306,24 +306,53 @@ async def test_grouped_watcher_stops_when_marker_is_replaced(hass, monkeypatch) 
     manager.ledger.async_clear_native_reconciliation.assert_not_awaited()
 
 
-async def test_grouped_watcher_abandons_marker_when_robot_is_idle(
-    hass, monkeypatch
+@pytest.mark.parametrize("settles", [True, False])
+async def test_idle_grouped_watcher_polls_until_settlement_or_deadline(
+    hass, monkeypatch, settles
 ) -> None:
     marker = _marker()
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
-            pending_native_reconciliation=MagicMock(return_value=marker),
-            async_import_native_history=AsyncMock(),
+            pending_native_reconciliation=MagicMock(
+                side_effect=[marker, marker, None] if settles else [marker, marker]
+            ),
+            async_import_native_history=AsyncMock(return_value=False),
             async_clear_native_reconciliation=AsyncMock(),
         )
     )
     hass.states.async_set("vacuum.test", "idle")
-    monkeypatch.setattr(reconciliation_module, "monotonic", lambda: 0.0)
-
-    await _async_reconcile_grouped_history(
-        hass, manager, "serial", "vacuum.test", marker, AsyncMock(), None
+    monkeypatch.setattr(reconciliation_module, "OEM_STOP_RECONCILIATION_SECONDS", 1)
+    monkeypatch.setattr(
+        reconciliation_module, "OEM_STOP_RECONCILIATION_POLL_SECONDS", 0
+    )
+    clocks = iter([0.0, 0.0, 0.0, 0.5, 0.5, 0.75 if settles else 2.0])
+    monkeypatch.setattr(reconciliation_module, "monotonic", lambda: next(clocks))
+    floor = object()
+    monkeypatch.setattr(
+        reconciliation_module, "current_entity_floor_plan", lambda *_args: floor
     )
 
-    manager.ledger.async_import_native_history.assert_not_awaited()
-    manager.ledger.async_clear_native_reconciliation.assert_awaited_once()
+    async def read_history():
+        # Neither idle nor an empty history result settles or expires the marker.
+        manager.ledger.async_clear_native_reconciliation.assert_not_awaited()
+        return ()
+
+    reads = AsyncMock(side_effect=read_history)
+    await _async_reconcile_grouped_history(
+        hass, manager, "serial", "vacuum.test", marker, reads, None
+    )
+
+    assert reads.await_count == 2
+    assert manager.ledger.async_import_native_history.await_count == 2
+    for imported in manager.ledger.async_import_native_history.await_args_list:
+        assert imported.args == ("serial", floor, ())
+        assert imported.kwargs["current_floor_plan"]() is floor
+    if settles:
+        manager.ledger.async_clear_native_reconciliation.assert_not_awaited()
+    else:
+        manager.ledger.async_clear_native_reconciliation.assert_awaited_once_with(
+            "serial",
+            marker["plan_id"],
+            marker["room_id"],
+            dt_util.parse_datetime(marker["dispatched_at"]),
+        )

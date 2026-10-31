@@ -25,7 +25,7 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.wifi_survey import survey_frame
 
 from .hermes_sim import STOP_PAYLOAD, Phase, SimulatedRobot
-from .plan_run import PlanRun, expect_finished
+from .plan_run import VACUUM, PlanRun, expect_finished
 from .sim_mission import (
     CoverageSession,
     SimFloor,
@@ -470,6 +470,8 @@ async def _finish_grouped_run_with_history_held(
     plan: PlanRun,
     robot: SimulatedRobot,
     hass,
+    *,
+    dock: bool = True,
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     started: list[dict[str, object]] = []
     hass.bus.async_listen(
@@ -489,11 +491,35 @@ async def _finish_grouped_run_with_history_held(
     await plan.poll()
     robot.finish_session()
     await plan.poll()
-    robot.arrive_at_dock()
+    if dock:
+        robot.arrive_at_dock()
     return await plan.outcome(), started
 
 
+def _observe_idle_history_reads(monkeypatch: pytest.MonkeyPatch) -> asyncio.Event:
+    """Signal a real watcher history read that started after HA reported idle."""
+    observed = asyncio.Event()
+    original = managed_reconciliation._async_reconcile_grouped_history
+
+    async def watch(hass, manager, serial, entity, pending, history, verifier):
+        async def read_history():
+            was_idle = hass.states.is_state(entity, "idle")
+            records = await history()
+            if was_idle:
+                observed.set()
+            return records
+
+        await original(hass, manager, serial, entity, pending, read_history, verifier)
+
+    monkeypatch.setattr(
+        managed_reconciliation, "_async_reconcile_grouped_history", watch
+    )
+    return observed
+
+
+@pytest.mark.parametrize("idle_before_history", [False, True])
 async def test_late_native_history_reconciles_after_grouped_completion(
+    idle_before_history: bool,
     plan: PlanRun,
     robot: SimulatedRobot,
     monkeypatch: pytest.MonkeyPatch,
@@ -506,6 +532,7 @@ async def test_late_native_history_reconciles_after_grouped_completion(
     monkeypatch.setattr(
         managed_reconciliation, "OEM_STOP_RECONCILIATION_POLL_SECONDS", 0.05
     )
+    idle_read = _observe_idle_history_reads(monkeypatch)
     robot.hold_history_updates = True
     reconciled: list[dict[str, object]] = []
     room_reconciled = asyncio.Event()
@@ -516,7 +543,9 @@ async def test_late_native_history_reconciles_after_grouped_completion(
         room_reconciled.set()
 
     hass.bus.async_listen(f"{DOMAIN}_room_reconciled", on_reconciled)
-    finished, started = await _finish_grouped_run_with_history_held(plan, robot, hass)
+    finished, started = await _finish_grouped_run_with_history_held(
+        plan, robot, hass, dock=not idle_before_history
+    )
     manager = plan.entry.runtime_data.cleaning_plans
     serial = plan.entry.runtime_data.coordinator.data.info.serial_number
     pending = manager.ledger.pending_native_reconciliation(serial)
@@ -528,6 +557,16 @@ async def test_late_native_history_reconciles_after_grouped_completion(
     assert len(plan.coverage_commands()) == 1
     assert finished["outcome"] == "unverified"
     assert finished["completed_room_count"] == 0
+
+    if idle_before_history:
+        # An external stop after task completion changes current state, not proof.
+        robot.apply_command("user_command", STOP_PAYLOAD)
+        await plan.poll()
+        assert hass.states.is_state(VACUUM, "idle")
+        await asyncio.wait_for(idle_read.wait(), timeout=2)
+        assert manager.ledger.pending_native_reconciliation(serial) == pending
+        assert reconciled == []
+        assert manager.repository.robot(serial)["last_run"]["completed_room_count"] == 0
 
     robot.release_history()
     async with asyncio.timeout(10):

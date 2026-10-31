@@ -81,9 +81,6 @@ async def _async_reconcile_grouped_history(
             for key in ("plan_id", "run_id", "dispatched_at", "session_hash")
         ):
             return
-        state = hass.states.get(entity_id)
-        if state is not None and state.state == "idle":
-            break
         if session_history is not None:
             try:
                 records = await session_history()
