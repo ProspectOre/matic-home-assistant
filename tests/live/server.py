@@ -30,33 +30,41 @@ import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from aiohttp import web
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY))
 
+from custom_components.matic_robot import managed_observation  # noqa: E402
+from custom_components.matic_robot import wifi_survey as wifi_survey_module  # noqa: E402
 from custom_components.matic_robot.client import tls  # noqa: E402
+from custom_components.matic_robot.client.telemetry import (  # noqa: E402
+    decode_cleaning_session,
+)
 from tests.e2e.conftest import entry_data  # noqa: E402
 from tests.e2e.hermes_sim import (  # noqa: E402
     RunningSimulator,
     SimulatedRobot,
     start_simulator,
 )
-from tests.e2e.sim_mission import two_room_floor  # noqa: E402
+from tests.e2e.sim_mission import schedule_event, two_room_floor, wifi_status  # noqa: E402
 
 OWNER_ID = "0" * 31 + "1"
 STEPS = frozenset(
     {
         "start_cleaning",
+        "hold_history",
         "finish_room",
         "finish_session",
+        "release_history",
         "arrive_at_dock",
         "low_charge_recharge",
         "recharged",
         "fault",
         "app_takes_over",
+        "queue_wifi_sample",
     }
 )
 
@@ -67,7 +75,7 @@ def _storage(key: str, version: int, data: dict[str, Any], minor: int = 1) -> st
     )
 
 
-def write_config(directory: Path, simulator: RunningSimulator, port: int) -> None:
+def write_config(directory: Path, simulator: RunningSimulator, port: int) -> str:
     """Write a configuration that is onboarded and has the robot paired."""
     (directory / "configuration.yaml").write_text(
         "homeassistant:\n"
@@ -142,6 +150,8 @@ def write_config(directory: Path, simulator: RunningSimulator, port: int) -> Non
         )
     )
     credential = simulator.robot.add_credential(str(uuid4()))
+    entry_id = uuid4().hex
+    simulator.robot.entry_id = entry_id
     (storage / "core.config_entries").write_text(
         _storage(
             "core.config_entries",
@@ -149,7 +159,7 @@ def write_config(directory: Path, simulator: RunningSimulator, port: int) -> Non
             {
                 "entries": [
                     {
-                        "entry_id": uuid4().hex,
+                        "entry_id": entry_id,
                         "version": 1,
                         "minor_version": 3,
                         "domain": "matic_robot",
@@ -171,24 +181,60 @@ def write_config(directory: Path, simulator: RunningSimulator, port: int) -> Non
             minor=5,
         )
     )
+    return entry_id
 
 
 async def _control_app(robot: SimulatedRobot) -> web.Application:
+    last_finished_session: dict[str, Any] | None = None
+
     async def step(request: web.Request) -> web.Response:
+        nonlocal last_finished_session
         name = request.match_info["name"]
         if name not in STEPS:
             raise web.HTTPNotFound(text=f"unknown step {name}")
-        getattr(robot, name)()
+        if name == "queue_wifi_sample":
+            robot.queue_wifi_scan(wifi_status(-42))
+        elif name == "finish_session":
+            session = robot.session
+            robot.finish_session()
+            native = (
+                decode_cleaning_session(robot._history[-1][1])
+                if robot._history
+                else None
+            )
+            last_finished_session = {
+                "history_recorded": native is not None,
+                "completed": native.completed if native is not None else None,
+                "rooms": list(native.rooms) if native is not None else [],
+                "custom_area": bool(
+                    session
+                    and session.visits
+                    and all(visit.custom_area for visit in session.visits)
+                ),
+                "custom_area_circles": [
+                    list(circle)
+                    for visit in (session.visits if session else ())
+                    for circle in visit.circles
+                ],
+            }
+        else:
+            getattr(robot, name)()
         return web.json_response({"phase": robot.phase.value})
 
     async def state(_request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "phase": robot.phase.value,
+                "last_finished_session": last_finished_session,
+                "entry_id": getattr(robot, "entry_id", None),
                 "current_area": robot.current_area,
                 "plan": (
                     [
                         robot.floor.room(visit.room).name
+                        if visit.room is not None
+                        else "Custom area"
+                        if visit.custom_area
+                        else "Unknown area"
                         for visit in robot.session.visits
                     ]
                     if robot.floor is not None and robot.session is not None
@@ -226,6 +272,17 @@ def start_robot_thread(
         async def serve() -> None:
             robot = SimulatedRobot()
             robot.set_floor(two_room_floor())
+            robot.set_native_schedules(
+                [
+                    schedule_event(
+                        name="Live schedule sample",
+                        weekdays=(1, 2, 3, 4, 5, 6, 7),
+                        minute_of_day=23 * 60 + 59,
+                        room_ids=(UUID("11111111-1111-4111-8111-111111111111"),),
+                        cleaning_mode="vacuum",
+                    )
+                ]
+            )
             simulator = await start_simulator(robot, directory)
             runner = web.AppRunner(await _control_app(robot))
             await runner.setup()
@@ -253,6 +310,9 @@ def main() -> int:
 
 
 def run(workspace: Path, port: int, control_port: int) -> int:
+    # Keep survey evidence deterministic and the live observation bounded.
+    wifi_survey_module.SAMPLE_INTERVAL_SECONDS = 0.25
+    managed_observation.SESSION_HISTORY_TIMEOUT_SECONDS = 15
     robot, simulator = start_robot_thread(workspace, control_port)
     tls.MATIC_INTERMEDIATE_CA = simulator.ca_path
     resolve = socket.getaddrinfo

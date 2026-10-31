@@ -101,7 +101,11 @@ async def test_sends_the_photo_with_the_sensor_name(hass: HomeAssistant) -> None
     hass.states.async_set(MOTION, "on", {"friendly_name": "Hall motion"})
     await hass.async_block_till_done()
 
-    assert patrols[0].data == {"entity_id": [VACUUM], "rooms": ["Kitchen"]}
+    assert patrols[0].data == {
+        "entity_id": [VACUUM],
+        "rooms": ["Kitchen"],
+        "full_resolution": False,
+    }
     assert notifications[0].data["title"] == "Hall motion"
     assert notifications[0].data["data"]["image"] == "/api/photo"
 

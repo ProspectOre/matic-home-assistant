@@ -604,6 +604,7 @@ def test_options_flow_directs_editing_to_the_single_map_workspace() -> None:
             "reset_history",
             "confirm_reset_history",
             "confirm_reset_all_history",
+            "photo_patrol_settings",
         }
         assert "[Matic Map](/matic-map)" in steps["init"]["description"]
         assert "actions that do not name a plan" in steps["default_plan"]["description"]
@@ -791,21 +792,25 @@ def test_readme_states_the_actual_runtime_and_validation_scope() -> None:
 
 
 def test_documented_entity_surface_matches_release_contract() -> None:
-    """Keep the linked entity reference aligned with the release contract."""
-    readme = " ".join((ROOT / "README.md").read_text().split())
-    automation = " ".join((ROOT / "docs" / "automation.md").read_text().split())
+    """The linked guides expose the entity names users need for automations."""
+    readme = (ROOT / "README.md").read_text()
+    automation = (ROOT / "docs" / "automation.md").read_text()
     entities = " ".join((ROOT / "docs" / "entities.md").read_text().split())
-    surface = (
-        "58 fixed entities — 27 sensors, 11 binary sensors, 5 buttons, "
-        "4 switches, 4 selects, 1 number, 2 cameras, 1 calendar, 1 event, "
-        "1 update, and 1 vacuum"
-    )
+    reference = (ROOT / "docs" / "entity-reference.md").read_text()
 
     assert "docs/entities.md" in readme
     assert "entities.md" in automation
-    assert surface in entities
+    assert "entity-reference.md" in entities
     assert "two opt-in statistics sensors per mapped room" in entities
     assert "photographic SLAM camera is disabled by default" in entities
+    for entity_id in (
+        "vacuum.matic",
+        "camera.matic_map",
+        "button.matic_take_photo",
+        "image.matic_latest_photo",
+        "calendar.matic_native_schedules",
+    ):
+        assert entity_id in reference
 
 
 def test_away_blueprint_starts_and_stops_intelligent_cleaning() -> None:

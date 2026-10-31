@@ -22,24 +22,26 @@ from custom_components.matic_robot.client.exceptions import (
 )
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import (
+from custom_components.matic_robot.managed_area import _async_wait_for_area_end
+from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_observation import (
+    _async_wait_for_owned_start,
+)
+from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
     RoomRunOutcome,
     _async_completion_budget,
-    _async_execute_rooms,
-    _async_run_leg,
-    _async_wait_for_area_end,
-    _async_wait_for_owned_start,
     _PreparedRoomDispatch,
 )
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_model import (
     PLAN_SESSION_ID,
     AreaLeg,
-    CleaningPlanManager,
     CleaningRoom,
     leg_groups,
     plan_floor_token,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import (
     _matches_mixed_session_hash,
     async_recover_managed_run,
@@ -65,7 +67,7 @@ def _operational_state(**changes: object) -> SimpleNamespace:
 @pytest.fixture
 async def recovery_state(hass):
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")
     floor = FloorPlan(
         42,
@@ -80,10 +82,10 @@ async def recovery_state(hass):
     identity = b"synthetic-session"
     entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
     hass.states.async_set(entity.entity_id, "cleaning")
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "plan", "run", 1, trigger="automation", service="clean_entire_plan"
     )
-    await manager.async_mark_started("serial", "plan", room, run_id="run")
+    await manager.ledger.async_mark_started("serial", "plan", room, run_id="run")
     data = {
         "plan_id": "plan",
         "start_timeout": 120,
@@ -107,7 +109,7 @@ async def recovery_state(hass):
         "completed_room_ids": [],
         "started_room_ids": [room.room_id],
     }
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     journal_scope = {"run_id": None}
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=identity),
@@ -144,7 +146,7 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
         assert kwargs["recovered_dispatch"].native_identity == b"synthetic-session"
         assert kwargs["floor_is_current"]()
         assert kwargs["mapped_room_names"] == ("Kitchen", "Office", "Hall")
-        await manager.async_finish_run(
+        await manager.ledger.async_finish_run(
             "serial", "run", "completed", "all_rooms_verified", 1
         )
 
@@ -155,8 +157,8 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
         await async_recover_managed_run(hass, entry, "serial")
     runner.assert_awaited_once()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "completed"
-    assert manager.snapshot("serial")["active_plan"] is None
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "completed"
+    assert manager.ledger.snapshot("serial")["active_plan"] is None
 
 
 async def _set_interrupted_mixed_dispatch(manager, entry, checkpoint):
@@ -172,7 +174,7 @@ async def _set_interrupted_mixed_dispatch(manager, entry, checkpoint):
     )
     checkpoint.pop("dispatched_at", None)
     checkpoint.pop("completion_deadline", None)
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
         identity
     )
@@ -185,10 +187,10 @@ async def test_mixed_session_checkpoint_saves_only_fingerprint(recovery_state):
     session_id = "33333333-3333-4333-8333-333333333333"
     expected_hash = hashlib.sha256(session_id.encode("ascii")).hexdigest()
 
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    await manager.async_checkpoint_mixed_session("serial", "run", expected_hash)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_checkpoint_mixed_session("serial", "run", expected_hash)
 
-    stored = manager.recovery_run("serial")["recovery_checkpoint"]
+    stored = manager.control.recovery_run("serial")["recovery_checkpoint"]
     assert stored["mixed_initial_session_hash"] == expected_hash
     assert session_id not in str(stored)
 
@@ -196,14 +198,18 @@ async def test_mixed_session_checkpoint_saves_only_fingerprint(recovery_state):
 async def test_mixed_session_checkpoint_rejects_invalid_fingerprint(recovery_state):
     manager, _, _, _ = recovery_state
     with pytest.raises(ValueError, match="SHA-256"):
-        await manager.async_checkpoint_mixed_session("serial", "run", "not-a-hash")
+        await manager.ledger.async_checkpoint_mixed_session(
+            "serial", "run", "not-a-hash"
+        )
 
 
 async def test_mixed_session_checkpoint_rejects_wrong_phase(recovery_state):
     manager, _, _, _ = recovery_state
     expected_hash = hashlib.sha256(b"session").hexdigest()
     with pytest.raises(HomeAssistantError, match="not dispatchable"):
-        await manager.async_checkpoint_mixed_session("serial", "run", expected_hash)
+        await manager.ledger.async_checkpoint_mixed_session(
+            "serial", "run", expected_hash
+        )
 
 
 @pytest.mark.parametrize(("leg_index", "dispatchable"), [(0, False), (1, True)])
@@ -219,35 +225,45 @@ async def test_mixed_session_checkpoint_refuses_a_custom_area_leg(
             "entries": [_area_entry(), {"kind": "room", "room_id": room.room_id}],
         }
     )
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     expected_hash = hashlib.sha256(b"session").hexdigest()
 
     if dispatchable:
-        await manager.async_checkpoint_mixed_session("serial", "run", expected_hash)
-        stored = manager.recovery_run("serial")["recovery_checkpoint"]
+        await manager.ledger.async_checkpoint_mixed_session(
+            "serial", "run", expected_hash
+        )
+        stored = manager.control.recovery_run("serial")["recovery_checkpoint"]
         assert stored["mixed_initial_session_hash"] == expected_hash
     else:
         with pytest.raises(HomeAssistantError, match="not dispatchable"):
-            await manager.async_checkpoint_mixed_session("serial", "run", expected_hash)
+            await manager.ledger.async_checkpoint_mixed_session(
+                "serial", "run", expected_hash
+            )
 
 
 async def test_mixed_stop_checkpoint_rejects_stale_owner(recovery_state):
     manager, _, _, _ = recovery_state
     with pytest.raises(HomeAssistantError, match="no longer owns"):
-        await manager.async_prepare_mixed_dispatch_stop("serial", "run", "0" * 64)
+        await manager.ledger.async_prepare_mixed_dispatch_stop(
+            "serial", "run", "0" * 64
+        )
 
 
 async def test_mixed_stop_rollback_ignores_changed_fence_owner(recovery_state):
     manager, entry, checkpoint, _ = recovery_state
     _, expected_hash = await _set_interrupted_mixed_dispatch(manager, entry, checkpoint)
-    await manager.async_prepare_mixed_dispatch_stop("serial", "run", expected_hash)
-    manager._robot("serial")["stop_fence_run_id"] = "replacement-run"
-
-    await manager.async_rollback_mixed_dispatch_stop("serial", "run", expected_hash)
-
-    assert manager.recovery_run("serial")["recovery_checkpoint"]["stop_intent"] == (
-        "immediate"
+    await manager.ledger.async_prepare_mixed_dispatch_stop(
+        "serial", "run", expected_hash
     )
+    manager.repository.robot("serial")["stop_fence_run_id"] = "replacement-run"
+
+    await manager.ledger.async_rollback_mixed_dispatch_stop(
+        "serial", "run", expected_hash
+    )
+
+    assert manager.control.recovery_run("serial")["recovery_checkpoint"][
+        "stop_intent"
+    ] == ("immediate")
 
 
 def test_mixed_session_fingerprint_rejects_malformed_values():
@@ -263,7 +279,7 @@ async def test_interrupted_mixed_dispatch_does_not_steal_replaced_motion(
     identity, _ = await _set_interrupted_mixed_dispatch(manager, entry, checkpoint)
 
     async def replace_before_reconcile():
-        manager.replace_managed_motion("serial")
+        manager.control.replace_managed_motion("serial")
         return identity
 
     entry.runtime_data.client.async_get_cleaning_session_identity.side_effect = (
@@ -272,7 +288,7 @@ async def test_interrupted_mixed_dispatch_does_not_steal_replaced_motion(
     await async_recover_managed_run(hass, entry, "serial")
 
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
 
 
 async def test_interrupted_mixed_dispatch_rechecks_generation_after_identity_read(
@@ -286,7 +302,7 @@ async def test_interrupted_mixed_dispatch_rechecks_generation_after_identity_rea
         nonlocal reads
         reads += 1
         if reads == 2:
-            manager.replace_managed_motion("serial")
+            manager.control.replace_managed_motion("serial")
         return identity
 
     entry.runtime_data.client.async_get_cleaning_session_identity.side_effect = (
@@ -295,7 +311,7 @@ async def test_interrupted_mixed_dispatch_rechecks_generation_after_identity_rea
     await async_recover_managed_run(hass, entry, "serial")
 
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
 
 
 async def test_interrupted_mixed_dispatch_rechecks_after_stop_fence_persist(
@@ -303,13 +319,13 @@ async def test_interrupted_mixed_dispatch_rechecks_after_stop_fence_persist(
 ):
     manager, entry, checkpoint, _ = recovery_state
     await _set_interrupted_mixed_dispatch(manager, entry, checkpoint)
-    prepare_stop = manager.async_prepare_mixed_dispatch_stop
+    prepare_stop = manager.ledger.async_prepare_mixed_dispatch_stop
 
     async def replace_during_persist(*args):
         await prepare_stop(*args)
-        manager.replace_managed_motion("serial")
+        manager.control.replace_managed_motion("serial")
 
-    manager.async_prepare_mixed_dispatch_stop = replace_during_persist
+    manager.ledger.async_prepare_mixed_dispatch_stop = replace_during_persist
     with patch(
         "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
     ) as schedule:
@@ -317,7 +333,7 @@ async def test_interrupted_mixed_dispatch_rechecks_after_stop_fence_persist(
 
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
     schedule.assert_not_called()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
 
 
 async def test_interrupted_mixed_dispatch_rechecks_identity_after_fence_persist(
@@ -331,7 +347,7 @@ async def test_interrupted_mixed_dispatch_rechecks_identity_after_fence_persist(
         nonlocal reads
         reads += 1
         if reads == 3:
-            manager.replace_managed_motion("serial")
+            manager.control.replace_managed_motion("serial")
         return identity
 
     entry.runtime_data.client.async_get_cleaning_session_identity.side_effect = (
@@ -344,7 +360,7 @@ async def test_interrupted_mixed_dispatch_rechecks_identity_after_fence_persist(
 
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
     schedule.assert_not_called()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
 
 
 @pytest.mark.parametrize("stop_intent", [None, "after_room"])
@@ -358,7 +374,7 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
     )
     if stop_intent is not None:
         checkpoint["stop_intent"] = stop_intent
-        await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+        await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     if renamed:
         floor = entry.runtime_data.coordinator.data.floor_plan
         entry.runtime_data.coordinator.data.floor_plan = replace(
@@ -368,15 +384,15 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
 
     async def send_stop(command, *, on_transmitted=None):
         assert command is UserCommand.STOP
-        assert manager.pending_stop_run_id("serial") == "run"
+        assert manager.control.pending_stop_run_id("serial") == "run"
         assert (
-            manager.recovery_run("serial")["recovery_checkpoint"][
+            manager.control.recovery_run("serial")["recovery_checkpoint"][
                 "mixed_initial_session_hash"
             ]
             == expected_hash
         )
         assert (
-            manager.recovery_run("serial")["recovery_checkpoint"]["stop_intent"]
+            manager.control.recovery_run("serial")["recovery_checkpoint"]["stop_intent"]
             == "immediate"
         )
         assert entry.runtime_data.client.async_get_cleaning_session_identity.await_args
@@ -397,8 +413,8 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
         UserCommand.STOP,
     )
     schedule.assert_called_once()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
-    assert manager.pending_stop_run_id("serial") == "run"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.control.pending_stop_run_id("serial") == "run"
     assert identity
 
 
@@ -415,7 +431,7 @@ async def test_interrupted_mixed_dispatch_rolls_back_failed_stop_prepare(
             first_save = False
             raise OSError("save failed")
 
-    manager._store.async_save.side_effect = fail_first_save
+    manager.repository.store.async_save.side_effect = fail_first_save
 
     with (
         pytest.raises(OSError, match="save failed"),
@@ -427,11 +443,11 @@ async def test_interrupted_mixed_dispatch_rolls_back_failed_stop_prepare(
 
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
     schedule.assert_not_called()
-    assert not manager.stop_pending("serial")
-    assert "stop_fence_run_id" not in manager._robot("serial")
-    assert not manager._robot("serial")["last_run"].get("recovery_checkpoint")
-    assert "serial" not in manager._managed_motion
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
+    assert not manager.control.stop_pending("serial")
+    assert "stop_fence_run_id" not in manager.repository.robot("serial")
+    assert not manager.repository.robot("serial")["last_run"].get("recovery_checkpoint")
+    assert "serial" not in manager.control.managed_motion
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "unverified"
 
 
 async def test_restart_does_not_stop_replacement_for_interrupted_mixed_dispatch(
@@ -446,8 +462,8 @@ async def test_restart_does_not_stop_replacement_for_interrupted_mixed_dispatch(
     await async_recover_managed_run(hass, entry, "serial")
 
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    assert manager.pending_stop_run_id("serial") is None
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
+    assert manager.control.pending_stop_run_id("serial") is None
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "unverified"
 
 
 async def test_restart_rolls_back_locally_rejected_mixed_recovery_stop(
@@ -461,9 +477,9 @@ async def test_restart_rolls_back_locally_rejected_mixed_recovery_stop(
 
     await async_recover_managed_run(hass, entry, "serial")
 
-    assert manager.pending_stop_run_id("serial") is None
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
-    assert manager.recovery_run("serial") is None
+    assert manager.control.pending_stop_run_id("serial") is None
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "unverified"
+    assert manager.control.recovery_run("serial") is None
 
 
 async def test_restart_does_not_replay_ambiguous_mixed_recovery_stop(
@@ -488,13 +504,13 @@ async def test_restart_does_not_replay_ambiguous_mixed_recovery_stop(
 
     assert entry.runtime_data.client.async_send_user_command.await_count == 1
     schedule.assert_called_once()
-    assert manager.pending_stop_run_id("serial") == "run"
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.control.pending_stop_run_id("serial") == "run"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
 
     restored = CleaningPlanManager(hass)
-    restored._store = SimpleNamespace(
+    restored.repository.store = SimpleNamespace(
         async_save=AsyncMock(),
-        async_load=AsyncMock(return_value=deepcopy(manager._data)),
+        async_load=AsyncMock(return_value=deepcopy(manager.repository.data)),
     )
     await restored.async_load()
     entry.runtime_data.cleaning_plans = restored
@@ -528,10 +544,10 @@ async def test_restart_cancellation_respects_mixed_stop_transmission(
         await async_recover_managed_run(hass, entry, "serial")
 
     if transmitted:
-        assert manager.pending_stop_run_id("serial") == "run"
+        assert manager.control.pending_stop_run_id("serial") == "run"
         schedule.assert_called_once()
     else:
-        assert manager.pending_stop_run_id("serial") is None
+        assert manager.control.pending_stop_run_id("serial") is None
         schedule.assert_not_called()
 
 
@@ -558,10 +574,10 @@ async def test_restart_unexpected_stop_error_respects_transmission(
                 await async_recover_managed_run(hass, entry, "serial")
 
     if transmitted:
-        assert manager.pending_stop_run_id("serial") == "run"
+        assert manager.control.pending_stop_run_id("serial") == "run"
         schedule.assert_called_once()
     else:
-        assert manager.pending_stop_run_id("serial") is None
+        assert manager.control.pending_stop_run_id("serial") is None
         schedule.assert_not_called()
 
 
@@ -613,8 +629,8 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         entry.runtime_data.client.async_get_cleaning_session_records.side_effect = (
             CannotConnectError("unavailable")
         )
-    manager._robot("serial")["last_run"]["room_count"] = 2
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    manager.repository.robot("serial")["last_run"]["room_count"] = 2
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
         b"replacement" if case == "replacement" else b""
     )
@@ -627,11 +643,13 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         assert kwargs["mapped_room_names"] == ("Kitchen", "Office", "Hall")
 
     async def wait_for_handoff(*_args, **_kwargs):
-        assert _kwargs["finish_room_event"] is manager.finish_room_event("serial")
+        assert _kwargs["finish_room_event"] is manager.control.finish_room_event(
+            "serial"
+        )
         if case == "cancel":
-            manager.begin_managed_motion("serial")
+            manager.control.begin_managed_motion("serial")
         if case == "stop_during_wait":
-            manager.finish_room_event("serial").set()
+            manager.control.finish_room_event("serial").set()
         return case != "timeout"
 
     with (
@@ -655,7 +673,10 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     else:
         runner.assert_not_awaited()
     if case == "stop_during_wait":
-        assert manager.snapshot("serial")["last_run"]["reason_code"] == "managed_stop"
+        assert (
+            manager.ledger.snapshot("serial")["last_run"]["reason_code"]
+            == "managed_stop"
+        )
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
@@ -686,7 +707,7 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
             rooms=[asdict(previous), asdict(room)],
             completed_room_ids=[previous.room_id],
         )
-        manager._robot("serial")["last_run"].update(
+        manager.repository.robot("serial")["last_run"].update(
             room_count=2, completed_room_count=1
         )
     elif phase == "verifying":
@@ -699,8 +720,8 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
     if phase != "accepted":
         runtime.client.async_get_cleaning_session_identity.return_value = b""
         hass.states.async_set(checkpoint["entity_id"], "idle")
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    before_count = manager.snapshot("serial")["last_run"]["completed_room_count"]
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    before_count = manager.ledger.snapshot("serial")["last_run"]["completed_room_count"]
 
     async def history(**_kwargs):
         if rename_timing == "during_history":
@@ -731,7 +752,7 @@ async def test_recovery_rejects_native_name_alias_without_dispatch_or_credit(
     verify.assert_not_awaited()
     runtime.client.async_send_user_command.assert_not_awaited()
     runtime.coordinator.async_confirm_room_completed.assert_not_called()
-    run = manager.snapshot("serial")["last_run"]
+    run = manager.ledger.snapshot("serial")["last_run"]
     assert run["outcome"] == "unverified"
     assert run["completed_room_count"] == before_count
 
@@ -795,7 +816,7 @@ async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
         checkpoint["completion_deadline"] = "invalid"
     elif case == "naive_deadline":
         checkpoint["completion_deadline"] = "2026-01-01T00:00:00"
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
         patch(
@@ -806,12 +827,12 @@ async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
         await async_recover_managed_run(hass, entry, "serial")
     runner.assert_not_awaited()
     client.async_send_user_command.assert_not_awaited()
-    snapshot = manager.snapshot("serial")
+    snapshot = manager.ledger.snapshot("serial")
     assert snapshot["last_run"]["outcome"] == (
         "cancelled" if case == "stop_intent" else "unverified"
     )
     assert snapshot["active_plan"] is None
-    assert manager.recovery_run("serial") is None
+    assert manager.control.recovery_run("serial") is None
 
 
 async def test_repeated_shutdown_preserves_checkpoint(hass, recovery_state):
@@ -822,30 +843,36 @@ async def test_repeated_shutdown_preserves_checkpoint(hass, recovery_state):
     )
     with pytest.raises(asyncio.CancelledError):
         await async_recover_managed_run(hass, entry, "serial")
-    assert manager.recovery_run("serial") is not None
+    assert manager.control.recovery_run("serial") is not None
 
 
 async def test_checkpoint_load_preserves_active_room_and_hides_private_state(
     hass, recovery_state
 ):
     manager, _, _, room = recovery_state
-    await manager.async_checkpoint_stop_intent("serial", "after_room", run_id="run")
-    saved = deepcopy(manager._data)
-    assert manager.finish_room_event("serial").is_set()
-    manager.finish_room_event("serial").clear()
-    manager._store.async_load = AsyncMock(return_value=saved)
+    await manager.ledger.async_checkpoint_stop_intent(
+        "serial", "after_room", run_id="run"
+    )
+    saved = deepcopy(manager.repository.data)
+    assert manager.control.finish_room_event("serial").is_set()
+    manager.control.finish_room_event("serial").clear()
+    manager.repository.store.async_load = AsyncMock(return_value=saved)
     await manager.async_load()
-    snapshot = manager.snapshot("serial")
+    snapshot = manager.ledger.snapshot("serial")
     assert snapshot["active_plan"]["status"] == "recovering"
     assert snapshot["active_plan"]["smart_stop_pending"] is True
     assert snapshot["active_plan"]["smart_stop_phase"] == "finishing_room"
-    assert manager.finish_room_event("serial").is_set()
+    assert manager.control.finish_room_event("serial").is_set()
     assert "recovery_checkpoint" not in snapshot["last_run"]
     assert snapshot["interrupted_runs"] == 0
-    await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
-    await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
-    assert manager.snapshot("serial")["completed_runs"] == 1
-    assert manager.snapshot("serial")["active_plan"]["smart_stop_phase"] == (
+    await manager.ledger.async_mark_completed(
+        "serial", "plan", room, duration_seconds=30
+    )
+    await manager.ledger.async_mark_completed(
+        "serial", "plan", room, duration_seconds=30
+    )
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 1
+    assert manager.ledger.snapshot("serial")["active_plan"]["smart_stop_phase"] == (
         "returning_to_dock"
     )
 
@@ -855,12 +882,12 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
     hass, recovery_state, history_state
 ):
     manager, _, checkpoint, room = recovery_state
-    await manager.async_finish_run("serial", "run", "unverified", "test", 0)
+    await manager.ledger.async_finish_run("serial", "run", "unverified", "test", 0)
     room2 = CleaningRoom("office", "Office", "mop", "standard")
     seen = []
 
     async def leg(*args, **kwargs):
-        saved = manager.recovery_run("serial")
+        saved = manager.control.recovery_run("serial")
         assert saved["recovery_checkpoint"]["phase"] == "dispatching"
         assert kwargs["prefetch_next"] is None
         if args[5] == [room2]:
@@ -880,17 +907,18 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
         )
         await kwargs["checkpoint_dispatch"](dispatch)
         assert (
-            manager.recovery_run("serial")["recovery_checkpoint"]["phase"] == "starting"
+            manager.control.recovery_run("serial")["recovery_checkpoint"]["phase"]
+            == "starting"
         )
         await _async_completion_budget(dispatch, 100, kwargs["checkpoint_dispatch"])
-        seen.append(manager.recovery_run("serial")["recovery_checkpoint"])
+        seen.append(manager.control.recovery_run("serial")["recovery_checkpoint"])
         for target in args[5]:
             kwargs["record_room_completed"](target)
         return True
 
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._async_run_leg",
+            "custom_components.matic_robot.managed_leg._async_run_leg",
             side_effect=leg,
         ),
         patch(
@@ -921,7 +949,7 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
         )
     if history_state != "available":
         assert len(seen) == 1
-        assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
+        assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "unverified"
         return
     assert [value["leg_index"] for value in seen] == [0]
     assert seen[0]["mixed_settings"] is True
@@ -934,7 +962,7 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
     )
     assert seen[0]["native_identity_hash"] == hashlib.sha256(b"new").hexdigest()
     assert seen[0]["history_baseline"] == [hashlib.sha256(b"old").hexdigest()]
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "completed"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "completed"
 
 
 async def test_recovery_retries_then_honors_stop(hass, recovery_state):
@@ -945,14 +973,16 @@ async def test_recovery_retries_then_honors_stop(hass, recovery_state):
     )
 
     async def stop_after_retry(_):
-        assert manager.request_stop("serial").behavior == "immediate"
+        assert manager.control.request_stop("serial").behavior == "immediate"
 
     with patch(
         "custom_components.matic_robot.restart.asyncio.sleep",
         side_effect=stop_after_retry,
     ):
         await async_recover_managed_run(hass, entry, "serial")
-    assert manager.snapshot("serial")["last_run"]["reason_code"] == "managed_stop"
+    assert (
+        manager.ledger.snapshot("serial")["last_run"]["reason_code"] == "managed_stop"
+    )
     client.async_send_user_command.assert_not_awaited()
 
 
@@ -960,10 +990,12 @@ async def test_recovered_command_remains_owned_and_stop_fenced(hass, recovery_st
     manager, entry, _, _ = recovery_state
 
     async def execute(*args, **kwargs):
-        token = manager.begin_managed_motion("serial")
+        token = manager.control.begin_managed_motion("serial")
         await kwargs["managed_user_command"](token, UserCommand.STOP)
-        assert manager.stop_pending("serial")
-        await manager.async_finish_run("serial", "run", "cancelled", "managed_stop", 0)
+        assert manager.control.stop_pending("serial")
+        await manager.ledger.async_finish_run(
+            "serial", "run", "cancelled", "managed_stop", 0
+        )
 
     with patch(
         "custom_components.matic_robot.restart._async_execute_rooms",
@@ -979,18 +1011,24 @@ async def test_recovery_storage_ignores_retired_run_and_preserves_stop_intent(
     hass, recovery_state
 ):
     manager, entry, checkpoint, _ = recovery_state
-    await manager.async_set_recovery_checkpoint("serial", "different-run", {})
-    assert manager.recovery_run("serial")["recovery_checkpoint"] == checkpoint
-    await manager.async_checkpoint_stop_intent("serial", "after_room", run_id="run")
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "different-run", {})
+    assert manager.control.recovery_run("serial")["recovery_checkpoint"] == checkpoint
+    await manager.ledger.async_checkpoint_stop_intent(
+        "serial", "after_room", run_id="run"
+    )
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     assert (
-        manager.recovery_run("serial")["recovery_checkpoint"]["stop_intent"]
+        manager.control.recovery_run("serial")["recovery_checkpoint"]["stop_intent"]
         == "after_room"
     )
-    await manager.async_finish_run("serial", "run", "cancelled", "managed_stop", 0)
-    await manager.async_mark_recovery_status("serial", "running", reason="obsolete")
+    await manager.ledger.async_finish_run(
+        "serial", "run", "cancelled", "managed_stop", 0
+    )
+    await manager.ledger.async_mark_recovery_status(
+        "serial", "running", reason="obsolete"
+    )
     await async_recover_managed_run(hass, entry, "serial")
-    assert manager.recovery_run("serial") is None
+    assert manager.control.recovery_run("serial") is None
 
 
 async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
@@ -998,7 +1036,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
 ):
     manager, _, checkpoint, room = recovery_state
     first = CleaningRoom("office", "Office", "mop", "standard")
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "plan", "run", 2, trigger="automation", service="clean_entire_plan"
     )
     checkpoint.update(
@@ -1007,8 +1045,8 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
         completed_room_ids=[first.room_id],
         stop_intent="after_room",
     )
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    run = manager.recovery_run("serial")
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    run = manager.control.recovery_run("serial")
     prepared = _PreparedRoomDispatch(
         (room,), frozenset(), dt_util.utcnow(), native_identity=b"synthetic-session"
     )
@@ -1021,7 +1059,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_executor._async_run_leg", side_effect=leg
+        "custom_components.matic_robot.managed_leg._async_run_leg", side_effect=leg
     ) as runner:
         await _async_execute_rooms(
             hass,
@@ -1034,7 +1072,7 @@ async def test_recovery_executor_skips_verified_legs_and_honors_graceful_stop(
             recovered_dispatch=prepared,
         )
     runner.assert_awaited_once()
-    assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 2
+    assert manager.ledger.snapshot("serial")["last_run"]["completed_room_count"] == 2
 
 
 async def test_new_plan_cannot_replace_pending_recovery(hass, recovery_state):
@@ -1070,7 +1108,7 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
     )
     saver = AsyncMock()
     sender = AsyncMock()
-    manager._cancellation_reasons["serial"] = "home_assistant_shutdown"
+    manager.control.cancellation_reasons["serial"] = "home_assistant_shutdown"
 
     async def started(*args, **_kwargs):
         args[6](b"synthetic-session")
@@ -1078,15 +1116,15 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
 
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
             AsyncMock(side_effect=started),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_with_native_identity",
+            "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
             AsyncMock(side_effect=PlanCancelledError),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
             new_callable=AsyncMock,
         ) as dispatch,
         pytest.raises(PlanCancelledError),
@@ -1107,16 +1145,16 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
     assert saver.await_count == 3
     assert saver.await_args.args[0].completion_deadline is not None
     assert saver.await_args.args[0].native_identity == b"synthetic-session"
-    assert manager.snapshot("serial")["cancelled_runs"] == 0
-    assert manager.snapshot("serial")["interrupted_runs"] == 0
+    assert manager.ledger.snapshot("serial")["cancelled_runs"] == 0
+    assert manager.ledger.snapshot("serial")["interrupted_runs"] == 0
 
 
 async def test_cooperative_shutdown_does_not_finalize(hass, recovery_state):
     manager, _, checkpoint, room = recovery_state
-    await manager.async_finish_run("serial", "run", "unverified", "test", 0)
+    await manager.ledger.async_finish_run("serial", "run", "unverified", "test", 0)
     hass.set_state(CoreState.stopping)
     with patch(
-        "custom_components.matic_robot.managed_executor._async_run_leg",
+        "custom_components.matic_robot.managed_leg._async_run_leg",
         AsyncMock(side_effect=PlanCancelledError),
     ):
         await _async_execute_rooms(
@@ -1127,17 +1165,17 @@ async def test_cooperative_shutdown_does_not_finalize(hass, recovery_state):
             "serial",
             [room],
         )
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "running"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "running"
 
 
 async def test_stop_during_recovery_status_save_wins(hass, recovery_state):
     manager, entry, _, _ = recovery_state
 
     async def stop(*_args, **_kwargs):
-        manager.request_stop("serial")
+        manager.control.request_stop("serial")
 
     with (
-        patch.object(manager, "async_mark_recovery_status", side_effect=stop),
+        patch.object(manager.ledger, "async_mark_recovery_status", side_effect=stop),
         patch(
             "custom_components.matic_robot.restart._async_execute_rooms",
             new_callable=AsyncMock,
@@ -1145,19 +1183,26 @@ async def test_stop_during_recovery_status_save_wins(hass, recovery_state):
     ):
         await async_recover_managed_run(hass, entry, "serial")
     runner.assert_not_awaited()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
 
 
 async def test_verified_credit_retries_failed_persistence_without_duplication(
     hass, recovery_state
 ):
     manager, _, _, room = recovery_state
-    manager._store.async_save.side_effect = [OSError("disk unavailable"), None]
+    manager.repository.store.async_save.side_effect = [
+        OSError("disk unavailable"),
+        None,
+    ]
     with pytest.raises(OSError):
-        await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
-    await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
-    assert manager._store.async_save.await_count >= 2
-    assert manager.snapshot("serial")["completed_runs"] == 1
+        await manager.ledger.async_mark_completed(
+            "serial", "plan", room, duration_seconds=30
+        )
+    await manager.ledger.async_mark_completed(
+        "serial", "plan", room, duration_seconds=30
+    )
+    assert manager.repository.store.async_save.await_count >= 2
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 1
 
 
 async def test_restart_after_final_credit_preserves_verified_completion(
@@ -1166,7 +1211,9 @@ async def test_restart_after_final_credit_preserves_verified_completion(
     manager, entry, _, room = recovery_state
     events = []
     hass.bus.async_listen("matic_robot_plan_finished", events.append)
-    await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
+    await manager.ledger.async_mark_completed(
+        "serial", "plan", room, duration_seconds=30
+    )
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
     with patch(
         "custom_components.matic_robot.restart._async_execute_rooms",
@@ -1175,8 +1222,8 @@ async def test_restart_after_final_credit_preserves_verified_completion(
         await async_recover_managed_run(hass, entry, "serial")
     runner.assert_not_awaited()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "completed"
-    assert manager.snapshot("serial")["completed_runs"] == 1
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "completed"
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 1
     await hass.async_block_till_done()
     assert "room_outcomes" not in events[0].data
 
@@ -1186,7 +1233,7 @@ async def test_reloaded_room_retains_elapsed_and_original_timestamps(
     hass, recovery_state, paused
 ):
     manager, _, checkpoint, room = recovery_state
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     active = robot["active_plan"]
     earlier = (dt_util.utcnow() - timedelta(seconds=90)).isoformat()
     active.update(
@@ -1195,26 +1242,32 @@ async def test_reloaded_room_retains_elapsed_and_original_timestamps(
         active_elapsed_seconds=45,
         active_segment_started=None if paused else earlier,
     )
-    persisted = deepcopy(manager._data)
+    persisted = deepcopy(manager.repository.data)
     restored = CleaningPlanManager(hass)
-    restored._store = SimpleNamespace(
+    restored.repository.store = SimpleNamespace(
         async_load=AsyncMock(return_value=persisted), async_save=AsyncMock()
     )
     await restored.async_load()
-    await restored.async_mark_recovery_status("serial", "running", reason="test")
-    assert not await restored.async_mark_started("serial", "plan", room, run_id="run")
-    recovered = restored.snapshot("serial")["active_plan"]
+    await restored.ledger.async_mark_recovery_status("serial", "running", reason="test")
+    assert not await restored.ledger.async_mark_started(
+        "serial", "plan", room, run_id="run"
+    )
+    recovered = restored.ledger.snapshot("serial")["active_plan"]
     assert recovered["started"] == earlier
     assert recovered["cleaning_started"] == earlier
     assert recovered["active_elapsed_seconds"] >= (45 if paused else 135)
-    await restored.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await restored.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     another = CleaningRoom("office", "Office", "vacuum", "standard")
-    assert await restored.async_mark_started("serial", "plan", another, run_id="run")
-    await restored.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    assert restored.recovery_run("serial")["recovery_checkpoint"][
+    assert await restored.ledger.async_mark_started(
+        "serial", "plan", another, run_id="run"
+    )
+    await restored.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    assert restored.control.recovery_run("serial")["recovery_checkpoint"][
         "started_room_ids"
     ] == [room.room_id, another.room_id]
-    assert not await restored.async_mark_started("serial", "plan", room, run_id="run")
+    assert not await restored.ledger.async_mark_started(
+        "serial", "plan", room, run_id="run"
+    )
 
 
 @pytest.mark.parametrize("multi", [False, True])
@@ -1233,7 +1286,7 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
         else [room]
     )
     if multi:
-        await manager.async_begin_run(
+        await manager.ledger.async_begin_run(
             "serial",
             "plan",
             "run",
@@ -1242,20 +1295,22 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
             service="clean_entire_plan",
         )
         checkpoint["rooms"] = [asdict(value) for value in rooms]
-        await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
-        await manager.async_mark_started("serial", "plan", rooms[1], run_id="run")
-    manager._robot("serial")["last_run"]["provenance"] = provenance
+        await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+        await manager.ledger.async_mark_started(
+            "serial", "plan", rooms[1], run_id="run"
+        )
+    manager.repository.robot("serial")["last_run"]["provenance"] = provenance
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
             new_callable=AsyncMock,
         ) as dispatch,
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_with_native_identity",
+            "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
             AsyncMock(
                 return_value=(RoomRunOutcome.HANDOFF_CANDIDATE, None)
                 if multi
@@ -1263,15 +1318,15 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
             ),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_active_session_resolution",
+            "custom_components.matic_robot.managed_observation._async_wait_for_active_session_resolution",
             AsyncMock(return_value=False),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_verify_room_completion",
+            "custom_components.matic_robot.managed_observation._async_verify_room_completion",
             AsyncMock(return_value=True),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_verify_leg_completion",
+            "custom_components.matic_robot.managed_observation._async_verify_leg_completion",
             AsyncMock(
                 return_value={
                     value.room_id: (dt_util.utcnow().isoformat(), 30) for value in rooms
@@ -1282,11 +1337,11 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
         await async_recover_managed_run(hass, entry, "serial")
     dispatch.assert_not_awaited()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    run = manager.snapshot("serial")["last_run"]
+    run = manager.ledger.snapshot("serial")["last_run"]
     assert run["run_id"] == "run"
     assert run["outcome"] == "completed"
     assert run["completed_room_count"] == len(rooms)
-    assert manager.snapshot("serial")["active_plan"] is None
+    assert manager.ledger.snapshot("serial")["active_plan"] is None
     await hass.async_block_till_done()
     assert not starts
     assert len(completions) == len(rooms)
@@ -1317,7 +1372,7 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
         else [room]
     )
     if multi:
-        await manager.async_begin_run(
+        await manager.ledger.async_begin_run(
             "serial",
             "plan",
             "run",
@@ -1326,7 +1381,7 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             service="clean_entire_plan",
         )
         checkpoint["rooms"] = [asdict(r) for r in rooms]
-        await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+        await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     reads = 0
 
     async def native_identity():
@@ -1343,15 +1398,15 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_executor.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
+            "custom_components.matic_robot.managed_observation.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
             0,
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_verify_room_completion",
+            "custom_components.matic_robot.managed_observation._async_verify_room_completion",
             AsyncMock(return_value=verified),
         ) as room_history,
         patch(
-            "custom_components.matic_robot.managed_executor._async_verify_leg_completion",
+            "custom_components.matic_robot.managed_observation._async_verify_leg_completion",
             AsyncMock(
                 return_value={
                     r.room_id: (dt_util.utcnow().isoformat(), 30) for r in rooms
@@ -1361,12 +1416,12 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
             ),
         ) as leg_history,
         patch(
-            "custom_components.matic_robot.managed_executor._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_dispatch._async_dispatch_leg_command",
             new_callable=AsyncMock,
         ) as dispatch,
     ):
         await async_recover_managed_run(hass, entry, "serial")
-    run = manager.snapshot("serial")["last_run"]
+    run = manager.ledger.snapshot("serial")["last_run"]
     assert run["outcome"] == ("completed" if verified else "unverified")
     history = leg_history if multi else room_history
     if state in {"returning", "docked"} and identity == b"":
@@ -1383,7 +1438,7 @@ async def test_restart_does_not_confirm_native_history_after_ownership_changes(
     manager, entry, checkpoint, room = recovery_state
     second_room = CleaningRoom("office", "Office", "vacuum", "standard")
     rooms = [room, second_room]
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial",
         "plan",
         "run",
@@ -1401,8 +1456,8 @@ async def test_restart_does_not_confirm_native_history_after_ownership_changes(
             "completed_room_ids": [],
         }
     )
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    manager.async_mark_completed = AsyncMock(return_value=False)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    manager.ledger.async_mark_completed = AsyncMock(return_value=False)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
     completed_events = []
     hass.bus.async_listen("matic_robot_room_completed", completed_events.append)
@@ -1418,15 +1473,15 @@ async def test_restart_does_not_confirm_native_history_after_ownership_changes(
         await async_recover_managed_run(hass, entry, "serial")
 
     verify.assert_awaited_once()
-    assert manager.async_mark_completed.await_count == 1
+    assert manager.ledger.async_mark_completed.await_count == 1
     assert all(
         call.kwargs["run_id"] == "run"
-        for call in manager.async_mark_completed.await_args_list
+        for call in manager.ledger.async_mark_completed.await_args_list
     )
     entry.runtime_data.coordinator.async_confirm_room_completed.assert_not_called()
     await hass.async_block_till_done()
     assert completed_events == []
-    run = manager.snapshot("serial")["last_run"]
+    run = manager.ledger.snapshot("serial")["last_run"]
     assert run["outcome"] == "unverified"
     assert run["completed_room_count"] == 0
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
@@ -1475,8 +1530,8 @@ async def _area_leg_checkpoint(manager, checkpoint, room, **changes):
             **changes,
         }
     )
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
-    await manager.async_mark_area_started(
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_mark_area_started(
         "serial",
         "plan",
         AreaLeg("rug", "Rug", "vacuum", "quick", "f" * 64),
@@ -1487,7 +1542,7 @@ async def _area_leg_checkpoint(manager, checkpoint, room, **changes):
 @pytest.fixture
 def fast_area_polls(monkeypatch):
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor.ROOM_STATUS_REFRESH_SECONDS",
+        "custom_components.matic_robot.managed_observation.ROOM_STATUS_REFRESH_SECONDS",
         0.001,
     )
 
@@ -1505,14 +1560,14 @@ async def test_restart_rejoins_an_accepted_area_until_its_session_ends(
     hass.bus.async_listen(
         f"{DOMAIN}_area_finished", callback(lambda event: events.append(event))
     )
-    mark_started = manager.async_mark_area_started
+    mark_started = manager.ledger.async_mark_area_started
 
     async def rejoined(*args, **kwargs):
         await mark_started(*args, **kwargs)
         # The area's own session ends once the run has rejoined it.
         client.async_get_cleaning_session_identity.return_value = b""
 
-    manager.async_mark_area_started = rejoined
+    manager.ledger.async_mark_area_started = rejoined
     commands = AsyncMock()
     hass.services.async_register("vacuum", "send_command", commands)
 
@@ -1524,7 +1579,7 @@ async def test_restart_rejoins_an_accepted_area_until_its_session_ends(
     # A rejoined area keeps its start and announces only its finish.
     assert [event.event_type for event in events] == [f"{DOMAIN}_area_finished"]
     assert events[0].data["area_id"] == "rug"
-    snapshot = manager.snapshot("serial")
+    snapshot = manager.ledger.snapshot("serial")
     assert snapshot["last_run"]["outcome"] == "completed"
     assert snapshot["active_plan"] is None
 
@@ -1541,12 +1596,12 @@ async def test_restart_does_not_rejoin_an_area_whose_session_ended(
 
     execute.assert_not_called()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "unverified"
 
 
 async def test_restart_completes_a_run_whose_last_area_finished(hass, recovery_state):
     manager, entry, checkpoint, room = recovery_state
-    await manager.async_mark_completed(
+    await manager.ledger.async_mark_completed(
         "serial", "plan", room, run_id="run", duration_seconds=30
     )
     await _area_leg_checkpoint(manager, checkpoint, room, finished_area_legs=[1])
@@ -1557,7 +1612,7 @@ async def test_restart_completes_a_run_whose_last_area_finished(hass, recovery_s
 
     execute.assert_not_called()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    snapshot = manager.snapshot("serial")
+    snapshot = manager.ledger.snapshot("serial")
     assert snapshot["last_run"]["outcome"] == "completed"
     assert snapshot["last_run"]["completed_room_count"] == 1
 
@@ -1585,7 +1640,7 @@ async def test_restart_never_verifies_or_mixes_an_area_leg(hass, recovery_state,
     execute.assert_not_called()
     entry.runtime_data.client.async_get_cleaning_session_identity.assert_not_awaited()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "unverified"
 
 
 @pytest.mark.parametrize("area_finished", [False, True])
@@ -1602,7 +1657,7 @@ async def test_restart_handoff_after_an_area_requires_its_finish(
             "finished_area_legs": [0] if area_finished else [],
         }
     )
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
 
     with (
         patch(
@@ -1634,7 +1689,7 @@ async def test_restart_handoff_dispatches_the_next_custom_area(
             "handoff_history": [],
         }
     )
-    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     client = entry.runtime_data.client
     identity = client.async_get_cleaning_session_identity
     entity_id = checkpoint["entity_id"]
@@ -1662,11 +1717,11 @@ async def test_restart_handoff_dispatches_the_next_custom_area(
             AsyncMock(return_value=True),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_settled_leg_handoff",
+            "custom_components.matic_robot.managed_observation._async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_area_end",
+            "custom_components.matic_robot.managed_area._async_wait_for_area_end",
             side_effect=area_ends,
         ),
     ):
@@ -1675,5 +1730,5 @@ async def test_restart_handoff_dispatches_the_next_custom_area(
     assert [call["command"] for call in dispatched] == ["clean_plan_area"]
     assert dispatched[0]["params"]["area"] == "rug"
     assert dispatched[0]["params"]["fingerprint"] == "f" * 64
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "completed"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "completed"
     client.async_send_user_command.assert_not_awaited()

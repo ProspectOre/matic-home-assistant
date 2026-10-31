@@ -6,17 +6,21 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.util import dt as dt_util
 
-from custom_components.matic_robot.client.api import _decode_cleaning_session
 from custom_components.matic_robot.client.models import CleaningSessionRecord
-from custom_components.matic_robot.managed_executor import (
+from custom_components.matic_robot.client.telemetry import (
+    decode_cleaning_session,
+)
+from custom_components.matic_robot.managed_observation import (
     _async_verify_leg_completion,
     _async_verify_room_completion,
+)
+from custom_components.matic_robot.managed_reconciliation import (
     _native_completion_match,
 )
 from custom_components.matic_robot.native_completion import (
     match_single_room_completions,
 )
-from custom_components.matic_robot.plans import CleaningRoom
+from custom_components.matic_robot.plan_model import CleaningRoom
 from tests.wire_builders import _bfield, _vfield
 
 
@@ -47,7 +51,7 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
     def status(value):
         return None if value is None else _vfield(5, value) + _vfield(6, 1)
 
-    session = _decode_cleaning_session(
+    session = decode_cleaning_session(
         _session_payload(status(vacuum_status), mop_statuses=status(mop_status))
     )
     assert session is not None
@@ -88,7 +92,7 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
 
 
 def test_shared_single_room_matcher_bounds_ambiguity_and_honors_baseline():
-    session = _decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
+    session = decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
     assert session is not None
     first = CleaningSessionRecord(b"synthetic-first", session)
     second = CleaningSessionRecord(b"synthetic-second", session)
@@ -180,7 +184,7 @@ def test_shared_matcher_preserves_distinct_legacy_admission_rules():
 
 def test_shared_matcher_rejects_unsupported_legacy_policy():
     now = dt_util.utcnow()
-    session = _decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
+    session = decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
     assert session is not None
     record = CleaningSessionRecord(b"synthetic-policy", session)
 
@@ -210,7 +214,7 @@ def test_shared_matcher_rejects_unsupported_legacy_policy():
 def test_mode_proof_rejects_unknown_ambiguous_and_failed_results(
     statuses, global_status, group
 ):
-    session = _decode_cleaning_session(
+    session = decode_cleaning_session(
         _session_payload(
             statuses if group == 6 else None,
             global_status,
@@ -228,7 +232,7 @@ def test_mode_proof_rejects_unknown_ambiguous_and_failed_results(
     [b"", _vfield(6, 1), _vfield(6, 2), _vfield(6, 99), _bfield(6, b"unknown")],
 )
 def test_coverage_setting_is_not_cleaning_status(setting):
-    session = _decode_cleaning_session(_session_payload(_vfield(5, 2) + setting))
+    session = decode_cleaning_session(_session_payload(_vfield(5, 2) + setting))
     assert session.completed is True
     assert session.mode_results[0].status == "completed"
     assert session.vacuum_completed_rooms == ("Study",)
@@ -241,7 +245,7 @@ def test_unscoped_history_does_not_infer_requested_modes_from_native_summaries(
 ):
     from custom_components.matic_robot.llm import _bounded_native_room_evidence
 
-    session = _decode_cleaning_session(
+    session = decode_cleaning_session(
         _session_payload(
             _vfield(5, 2),
             mop_statuses=None if mop_status is None else _vfield(5, mop_status),
@@ -279,7 +283,7 @@ async def test_restart_reconciliation_preserves_mode_admission(
         FloorPlan,
         Room,
     )
-    from custom_components.matic_robot.managed_executor import (
+    from custom_components.matic_robot.managed_reconciliation import (
         _build_native_reconciliation,
         _native_reconciliation_data,
     )
@@ -297,16 +301,16 @@ async def test_restart_reconciliation_preserves_mode_admission(
     else:
         marker["cleaning_mode"] = mode
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    await manager.async_mark_started("synthetic-serial", "synthetic-plan", room)
-    await manager.async_mark_failed(
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    await manager.ledger.async_mark_started("synthetic-serial", "synthetic-plan", room)
+    await manager.ledger.async_mark_failed(
         "synthetic-serial",
         "synthetic-plan",
         room,
         "synthetic interruption",
         native_reconciliation=marker,
     )
-    stored = json.loads(json.dumps(manager._data))
+    stored = json.loads(json.dumps(manager.repository.data))
     if admission == "load":
         # Malformed data can also arrive from a persisted pre-fix marker.
         stored["robots"]["synthetic-serial"]["pending_native_reconciliation"] = {
@@ -314,7 +318,7 @@ async def test_restart_reconciliation_preserves_mode_admission(
             "expires_at": (dt_util.utcnow() + timedelta(seconds=60)).isoformat(),
         }
     restarted = CleaningPlanManager(hass)
-    restarted._store = SimpleNamespace(
+    restarted.repository.store = SimpleNamespace(
         async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
     )
     await restarted.async_load()
@@ -329,7 +333,7 @@ async def test_restart_reconciliation_preserves_mode_admission(
             completed=True,
         )
         if legacy
-        else _decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
+        else decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
     )
     record = CleaningSessionRecord(b"synthetic-new", session)
     floor = FloorPlan(
@@ -346,8 +350,10 @@ async def test_restart_reconciliation_preserves_mode_admission(
             ),
         ),
     )
-    await restarted.async_import_native_history("synthetic-serial", floor, [record])
-    state = restarted.snapshot("synthetic-serial")
+    await restarted.ledger.async_import_native_history(
+        "synthetic-serial", floor, [record]
+    )
+    state = restarted.ledger.snapshot("synthetic-serial")
     result = state["plan_history"]["synthetic-plan"]["rooms"]["study"]
     valid_marker = mode in ("vacuum", "mop", "vacuum_and_mop", "absent")
     completed = valid_marker and (legacy or mode == "vacuum")
@@ -356,10 +362,12 @@ async def test_restart_reconciliation_preserves_mode_admission(
         assert result["cleaning_mode"] == mode
         assert result["coverage_setting"] == "standard"
     assert state["native_reconciliation_pending"] is (valid_marker and not completed)
-    await restarted.async_import_native_history("synthetic-serial", floor, [record])
-    assert restarted.snapshot("synthetic-serial")["plan_history"]["synthetic-plan"][
-        "rooms"
-    ]["study"].get("completed_runs", 0) == (1 if completed else 0)
+    await restarted.ledger.async_import_native_history(
+        "synthetic-serial", floor, [record]
+    )
+    assert restarted.ledger.snapshot("synthetic-serial")["plan_history"][
+        "synthetic-plan"
+    ]["rooms"]["study"].get("completed_runs", 0) == (1 if completed else 0)
 
 
 async def test_seven_room_partial_session_credits_only_completed_requested_modes(hass):
@@ -390,7 +398,7 @@ async def test_seven_room_partial_session_credits_only_completed_requested_modes
                 + _vfield(6, 1)
             )
             summary += _bfield(group, _bfield(1, _bfield(2, detail)))
-    session = _decode_cleaning_session(_bfield(5, summary))
+    session = decode_cleaning_session(_bfield(5, summary))
     assert session.completed is False
     assert session.completed_rooms == ("Gallery", "Atrium", "Den")
     assert session.vacuum_completed_rooms == (
@@ -433,7 +441,7 @@ async def test_seven_room_partial_session_credits_only_completed_requested_modes
     from custom_components.matic_robot.plans import CleaningPlanManager
 
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     floor = FloorPlan(
         1,
         "synthetic",
@@ -444,15 +452,17 @@ async def test_seven_room_partial_session_credits_only_completed_requested_modes
         ),
     )
     records = (CleaningSessionRecord(b"synthetic-leg", session),)
-    assert await manager.async_import_native_history("synthetic", floor, records)
-    history = manager._robot("synthetic")["rooms"]
+    assert await manager.ledger.async_import_native_history("synthetic", floor, records)
+    history = manager.repository.robot("synthetic")["rooms"]
     for name in ("study", "gallery", "atrium", "den", "pantry"):
         assert history[name]["last_opportunity"] == session.ended_at
         assert not history[name].get("last_completed")
         assert history[name].get("completed_runs", 0) == 0
     for name in ("store", "utility"):
         assert not history.get(name, {}).get("last_opportunity")
-    assert not await manager.async_import_native_history("synthetic", floor, records)
+    assert not await manager.ledger.async_import_native_history(
+        "synthetic", floor, records
+    )
 
 
 @pytest.mark.parametrize("group", [6, 7])
@@ -462,7 +472,7 @@ def test_duplicate_room_results_cannot_credit_or_double_duration(group):
     payload = _session_payload(_vfield(5, 2))
     summary = first_bytes(payload, 5)
     duplicated = first_bytes(summary, 6)
-    session = _decode_cleaning_session(
+    session = decode_cleaning_session(
         _bfield(5, summary + _bfield(group, duplicated) + _bfield(group, duplicated))
     )
     assert session.completed is None
@@ -483,7 +493,7 @@ async def test_combined_completion_requires_usable_duration_for_both_modes(durat
     mop = _bfield(3, b"Study") + _vfield(5, 2)
     if duration is not None:
         mop += _bfield(4, duration)
-    session = _decode_cleaning_session(
+    session = decode_cleaning_session(
         _bfield(5, summary + _bfield(7, _bfield(1, _bfield(2, mop))))
     )
     reader = AsyncMock(

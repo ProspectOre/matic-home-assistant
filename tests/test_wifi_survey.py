@@ -15,6 +15,7 @@ from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot import button, switch, wifi_survey
 from custom_components.matic_robot.client import api as api_module
+from custom_components.matic_robot.client import telemetry as telemetry_module
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import RobotPose
@@ -94,8 +95,8 @@ async def test_scan_reports_nothing_when_no_new_scan_arrives(monkeypatch) -> Non
 
 
 def test_scan_block_ignores_malformed_status() -> None:
-    assert api_module._wifi_scan_block(b"\x0a") is None
-    assert api_module._wifi_scan_block(_wifi(None)) is None
+    assert telemetry_module.wifi_scan_block(b"\x0a") is None
+    assert telemetry_module.wifi_scan_block(_wifi(None)) is None
 
 
 def _pose(x: float, y: float, at: float | None) -> RobotPose:

@@ -17,8 +17,9 @@ git fetch origin tag v0.5.0
 | downgrade | older | Runs the plan on the stores the newer code wrote, with no restore. |
 | restore | older | Runs the plan on the pre-upgrade backup. |
 
-The drill fails if any phase fails, if the saved plan (rooms, settings and schedule) differs from the seed,
-or if a room has fewer completed runs than it had at the seed.
+The drill also saves and executes a separate custom-area plan. Every phase checks the area's ID,
+name, circle geometry and map binding, both saved plans, and plan-specific and global area history.
+It fails if any phase fails, a saved definition changes, or a room or area loses completed runs.
 
 ## 0.5.0 to 0.6 (October 31, 2026)
 
@@ -36,8 +37,8 @@ All four phases passed against release/0.6 at `d357cdc`.
 
 ## Not covered
 
-- Custom areas: the simulator has no drawn-area store, so the drill saves no areas. Areas live in the same
-  plan store, which carries over whole.
+- The stores are synthetic. This does not qualify the owner's existing areas or map history, or an
+  interleaved room-and-area plan; the latter is a separate managed-run scenario.
 - The binary tile store (PRO-71) is not in 0.6. If it lands, it brings the first real migration, and the
   drill needs an interrupted-migration phase.
 - This is an isolated run. A restore on the owner's host is a separate step and needs the owner's go.

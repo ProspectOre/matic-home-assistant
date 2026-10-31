@@ -32,10 +32,10 @@ head/base, review provenance, findings, CI links and actual merge result on the 
 
 ## Maintenance and release
 
-`main` is the 0.5 line; `release/0.4` includes the merged 0.4.8 firmware features.
-A build from that maintenance branch must not be described as a narrow 0.4.7
-diagnostic. Resolve release composition before publishing a candidate. A new
-protected release target requires explicit authority and verified protections.
+Check the intended release branch and its merged commits before describing or
+publishing a candidate. `release/0.4` includes the 0.4.8 firmware features; a
+build from it is not a narrow 0.4.7 diagnostic. A new protected release target
+requires explicit authority and verified protections.
 
 The gate migration does not close historical evidence gaps: the 19 original
 review-event runs retained in the #216 investigation lack required receipt proof,

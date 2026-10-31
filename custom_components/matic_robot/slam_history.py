@@ -90,6 +90,8 @@ class SlamHistoryStore:
             created_at or datetime.now(UTC),
             mission_token,
         )
+        if self._closed:
+            return False
         if (
             self._snapshots
             and self._snapshots[-1].snapshot_id == snapshot.snapshot_id

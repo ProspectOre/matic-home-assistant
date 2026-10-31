@@ -51,6 +51,94 @@ def fixed64(number: int, value: int) -> bytes:
     return varint((number << 3) | 1) + struct.pack("<Q", value)
 
 
+def schedule_event(
+    *,
+    name: str,
+    weekdays: tuple[int, ...],
+    minute_of_day: int,
+    room_ids: tuple[UUID, ...] = (),
+    enabled: bool = True,
+    timezone: str = "America/Los_Angeles",
+    ordered: bool = False,
+    cleaning_mode: str | None = None,
+    coverage_setting: int = 1,
+) -> tuple[bytes, bytes]:
+    """Build one synthetic Hermes schedule entry using the observed wire shape.
+
+    Weekdays use the observed protocol fields (1=Sunday through 7=Saturday).
+    Bytes are constructed independently of the production schedule decoder.
+    """
+    if not 0 <= minute_of_day < 24 * 60 or any(
+        day not in range(1, 8) for day in weekdays
+    ):
+        raise ValueError("invalid synthetic schedule time or weekday")
+    days = b"".join(varint_field(day, 1) for day in weekdays)
+    zone = bytes_field(2, timezone.encode())
+    schedule_time = varint_field(1, minute_of_day) + bytes_field(4, zone)
+    weekly = bytes_field(1, days) + bytes_field(3, schedule_time)
+    enabled_marker = bytes_field(9, bytes_field(1 if enabled else 2, b""))
+    payload = (
+        bytes_field(1, weekly)
+        + bytes_field(2, name.encode())
+        + varint_field(3, int(ordered))
+        + b"".join(
+            bytes_field(
+                7, fixed64(1, room.int >> 64) + fixed64(2, room.int & ((1 << 64) - 1))
+            )
+            for room in room_ids
+        )
+        + enabled_marker
+    )
+    mode_values = {
+        None: (),
+        "vacuum": (0,),
+        "mop": (1,),
+        "vacuum_and_mop": (0, 1),
+    }
+    if cleaning_mode not in mode_values:
+        raise ValueError("unsupported synthetic native schedule mode")
+    for mode in mode_values[cleaning_mode]:
+        spec = varint_field(1, coverage_setting) + varint_field(4, mode)
+        goal = bytes_field(6, bytes_field(3, spec))
+        payload += bytes_field(7, bytes_field(1, goal))
+    return name.encode(), payload
+
+
+def wifi_status(signal_dbm: int | None, *, ssid: str = "Test LAN") -> bytes:
+    """Encode the observed Wi-Fi status subset for a simulated scan result."""
+    payload = varint_field(1, 3) + bytes_field(4, ssid.encode())
+    if signal_dbm is None:
+        return payload
+    signal = (-signal_dbm << 1) - 1 if signal_dbm < 0 else signal_dbm << 1
+    network = (
+        bytes_field(1, ssid.encode())
+        + varint_field(3, 1)
+        + varint_field(6, signal)
+        + varint_field(8, 1)
+    )
+    return payload + bytes_field(7, bytes_field(1, network))
+
+
+def displayed_mission(floors: tuple[SimFloor, ...], active: SimFloor) -> bytes:
+    """Encode the verified mission-client snapshot for simulated mapped floors."""
+
+    def labeled(floor: SimFloor) -> bytes:
+        mission = b"\x15" + struct.pack("<I", floor.mission_id)
+        label_text = f"Floor {floor.mission_id}".encode()
+        label = bytes_field(2, label_text)
+        return bytes_field(1, mission) + bytes_field(2, label)
+
+    active_floor = labeled(active)
+    active_variant = bytes_field(4, active_floor)
+    canonical = b"".join(bytes_field(1, labeled(floor)) for floor in floors)
+    return (
+        varint_field(3, 1)
+        + bytes_field(4, bytes_field(1, b""))
+        + bytes_field(5, active_variant)
+        + bytes_field(6, canonical)
+    )
+
+
 def uuid_wire(value: UUID) -> bytes:
     """Matic's UUID message: two fixed64 halves wrapped in field 2."""
     halves = fixed64(1, value.int >> 64) + fixed64(2, value.int & ((1 << 64) - 1))
@@ -207,10 +295,12 @@ def _timestamp(nanoseconds: int) -> bytes:
 class Visit:
     """One room's consecutive goals in a task's plan, and when it finished."""
 
-    room: UUID
+    room: UUID | None
     goals: list[bytes]
     passes: list[tuple[int, int]]  # (mode, coverage setting) per goal
     finished_at: int | None = None  # nanoseconds since the epoch
+    custom_area: bool = False
+    circles: tuple[tuple[float, float, float], ...] = ()
 
     @property
     def modes(self) -> set[int]:
@@ -244,7 +334,9 @@ class CoverageSession:
     @property
     def rooms(self) -> list[UUID]:
         """Rooms in plan order, each once."""
-        return list(dict.fromkeys(visit.room for visit in self.visits))
+        return list(
+            dict.fromkeys(visit.room for visit in self.visits if visit.room is not None)
+        )
 
     @property
     def current_visit(self) -> Visit | None:
@@ -333,16 +425,38 @@ def parse_coverage_command(payload: bytes, started_at: int) -> CoverageSession |
     for goal in ordered + unordered:
         region = message(goal, 7, 3, 3, 2)
         spec = message(goal, 6, 3)
-        if region is None or spec is None:
+        target = message(goal, 7)
+        if target is None or spec is None:
             return None
-        room_id = read_uuid(region)
+        # Room targets carry the observed region UUID at target 3/3/2.
+        # Drawn-area targets instead carry circle geometry at target 2/3 and
+        # an empty target-3 marker. Keep those cases distinct in the fixture;
+        # do not import the production command decoder or encoder here.
+        custom = region is None
+        if custom:
+            circles_payload = message(target, 2, 3)
+            circles = _read_drawn_circles(circles_payload) if circles_payload else ()
+            if not circles:
+                return None
+            room_id = None
+        else:
+            circles = ()
+            room_id = read_uuid(region)
         values = {
             number: value
             for number, wire_type, value in read_fields(spec)
             if wire_type == 0 and isinstance(value, int)
         }
-        if not visits or visits[-1].room != room_id:
-            visits.append(Visit(room_id, [], []))
+        if not visits or (
+            visits[-1].room,
+            visits[-1].custom_area,
+            visits[-1].circles,
+        ) != (
+            room_id,
+            custom,
+            circles,
+        ):
+            visits.append(Visit(room_id, [], [], custom_area=custom, circles=circles))
         visits[-1].goals.append(goal)
         visits[-1].passes.append((values.get(4, 0), values.get(1, 0)))
     return CoverageSession(
@@ -352,6 +466,39 @@ def parse_coverage_command(payload: bytes, started_at: int) -> CoverageSession |
         started_at,
         ordered=bool(ordered) and not unordered,
     )
+
+
+def _read_drawn_circles(payload: bytes) -> tuple[tuple[float, float, float], ...]:
+    """Read the captured target's repeated x/y/radius float triples."""
+    if not payload:
+        return ()
+    circle_list = message(payload, 2)
+    if circle_list is None:
+        return ()
+    circles: list[tuple[float, float, float]] = []
+    for circle in messages(circle_list, 1):
+        point = message(circle, 1)
+        if point is None:
+            return ()
+        coordinates: dict[int, float] = {}
+        for number, wire_type, value in read_fields(point):
+            if wire_type == 5 and isinstance(value, bytes) and len(value) == 4:
+                coordinates[number] = struct.unpack("<f", value)[0]
+        radius_value = next(
+            (
+                value
+                for number, wire_type, value in read_fields(circle)
+                if number == 2 and wire_type == 5 and isinstance(value, bytes)
+            ),
+            None,
+        )
+        if radius_value is None:
+            return ()
+        x = coordinates.get(1, 0.0)
+        y = coordinates.get(2, 0.0)
+        radius = struct.unpack("<f", radius_value)[0]
+        circles.append((x, y, radius))
+    return tuple(circles)
 
 
 @dataclass(frozen=True, slots=True)

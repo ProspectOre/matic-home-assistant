@@ -9,12 +9,12 @@ from typing import Any
 import pytest
 from homeassistant.helpers.storage import Store
 
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_storage import (
     STORAGE_KEY,
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
-    CleaningPlanManager,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 
 SERIAL = "migration-test-robot"
 PLAN = "legacy-evening"
@@ -142,8 +142,8 @@ async def test_minor_11_file_migrates_and_survives_cold_manager_reload(
     manager = CleaningPlanManager(hass)
     await manager.async_load()
 
-    migrated = manager._robot(SERIAL)
-    assert manager._store.minor_version == STORAGE_MINOR_VERSION == 12
+    migrated = manager.repository.robot(SERIAL)
+    assert manager.repository.store.minor_version == STORAGE_MINOR_VERSION == 12
     assert migrated["selected_plan"] == PLAN
     assert migrated["selected_area"] == "reading-nook"
     assert migrated["plans"][PLAN]["rooms"][0]["room_id"] == ROOM
@@ -182,7 +182,7 @@ async def test_minor_11_file_migrates_and_survives_cold_manager_reload(
 
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    persisted = reloaded._robot(SERIAL)
+    persisted = reloaded.repository.robot(SERIAL)
     assert persisted["plans"] == migrated["plans"]
     assert persisted["areas"] == migrated["areas"]
     assert persisted["rooms"] == migrated["rooms"]

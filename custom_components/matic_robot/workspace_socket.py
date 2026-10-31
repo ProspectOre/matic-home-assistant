@@ -252,9 +252,9 @@ class WorkspaceSocket:
         serial_number = self._serial_number(coordinator)
         plans = getattr(runtime, "cleaning_plans", None)
         if plans is not None and isinstance(serial_number, str):
-            tracked.source_state["plans"] = plans.plans(serial_number)
-            tracked.source_state["areas"] = plans.areas(serial_number)
-            add_listener = getattr(plans, "async_add_listener", None)
+            tracked.source_state["plans"] = plans.catalog.plans(serial_number)
+            tracked.source_state["areas"] = plans.catalog.areas(serial_number)
+            add_listener = getattr(plans.repository, "async_add_listener", None)
             if callable(add_listener):
                 tracked.source_unsubscribers.append(
                     add_listener(
@@ -319,8 +319,8 @@ class WorkspaceSocket:
         plans = getattr(runtime, "cleaning_plans", None)
         if plans is None or not isinstance(serial_number, str):
             return
-        current_plans = plans.plans(serial_number)
-        current_areas = plans.areas(serial_number)
+        current_plans = plans.catalog.plans(serial_number)
+        current_areas = plans.catalog.areas(serial_number)
         resources = ["plan_state"]
         revisions = self._resource_revisions.setdefault(entry_id, {})
         if current_plans != tracked.source_state.get("plans"):

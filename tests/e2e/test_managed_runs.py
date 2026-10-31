@@ -16,7 +16,8 @@ from homeassistant.components.vacuum import SERVICE_RETURN_TO_BASE
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 
-from custom_components.matic_robot import managed_executor, stop_return
+import custom_components.matic_robot.managed_observation as managed_observation_module
+from custom_components.matic_robot import stop_return
 
 from .hermes_sim import DOCK_PAYLOAD, STOP_PAYLOAD, Phase, SimulatedRobot
 from .plan_run import PlanRun, expect_finished
@@ -98,7 +99,9 @@ async def test_native_session_ends_early_credits_only_finished_rooms(
 ) -> None:
     # History may publish per-room results late, so the run keeps reading the
     # same record for minutes; shorten that window, not the logic.
-    monkeypatch.setattr(managed_executor, "SESSION_HISTORY_TIMEOUT_SECONDS", 2)
+    monkeypatch.setattr(
+        managed_observation_module, "SESSION_HISTORY_TIMEOUT_SECONDS", 2
+    )
     await plan.start()
     robot.finish_room()
     await plan.poll()
@@ -191,7 +194,7 @@ async def test_restart_rejoins_the_same_native_mission(
     assert plan.finished == []
     plans = plan.entry.runtime_data.cleaning_plans
     async with asyncio.timeout(10):
-        while (plans.recovery_run(robot.serial_number) or {}).get(
+        while (plans.control.recovery_run(robot.serial_number) or {}).get(
             "recovery_reason"
         ) != "same_native_mission_verified":
             await plan.poll()

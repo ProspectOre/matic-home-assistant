@@ -72,6 +72,7 @@ test("@safety page suspension cancels gestures and rendering while retaining the
     };
     const gesture = new GestureController(gestureHost, mockRenderer, {
       state: () => state,
+      drawReady: () => true,
       onCirclePreview: () => {},
       onCircles: () => {},
       onRoom: () => {},

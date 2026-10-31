@@ -43,6 +43,7 @@ async function gesture(page, view, kind, delta = 60) {
     };
     const controller = new GestureController(host, renderer, {
       state: () => state,
+      drawReady: () => true,
       onCircles: () => { mutations += 1; },
       onCirclePreview: (circles) => { if (circles?.length) mutations += 1; },
       onRoom: () => { mutations += 1; },

@@ -28,12 +28,12 @@ from .client.slam_map import (
     SlamSemanticTile,
     decode_slam_semantic_tile,
 )
-from .slam_map_store import SlamMapIdentity
-from .slam_scene import (
+from .http import (
     FLOOR_LAYERS_API_URL,
     PRIVATE_NO_STORE_HEADERS,
-    _runtime_for_entry,
+    runtime_for_entry,
 )
+from .slam_map_store import SlamMapIdentity
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
@@ -75,7 +75,7 @@ class MaticFloorLayersView(HomeAssistantView):
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return outlines for the floor the map shows, or 404 without one."""
         hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
+        runtime = runtime_for_entry(hass, entry_id)
         identity = runtime.slam_map.mission_identity if runtime else None
         if runtime is None or identity is None or identity.mission_id is None:
             return web.Response(
@@ -132,7 +132,7 @@ def _still_current(
 ) -> bool:
     """Return whether the entry still shows the floor this request started on."""
     return (
-        _runtime_for_entry(hass, entry_id) is runtime
+        runtime_for_entry(hass, entry_id) is runtime
         and runtime.slam_map.mission_identity == identity
     )
 

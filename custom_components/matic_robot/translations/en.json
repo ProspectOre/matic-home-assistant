@@ -895,10 +895,12 @@
       "entry_not_loaded": "The robot is not connected, so settings can't open. Check that it is on and on the same network, then reload Matic (Unofficial) under Settings > Devices & services.",
       "default_plan_set": "Default plan: {plan_name}",
       "history_reset": "Room cleaning history reset for {plan_name}",
-      "all_history_reset": "Room cleaning history reset for all plans"
+      "all_history_reset": "Room cleaning history reset for all plans",
+      "photo_patrol_rooms_unavailable": "The current map no longer matches a saved no-photo room. Review the room list before saving."
     },
     "error": {
-      "plan_unavailable": "That plan no longer exists. Choose another plan."
+      "plan_unavailable": "That plan no longer exists. Choose another plan.",
+      "photo_patrol_rooms_unavailable": "The current map no longer matches a saved no-photo room. Review the room list before saving."
     },
     "step": {
       "init": {
@@ -908,6 +910,7 @@
           "default_plan": "Choose the default plan",
           "reset_history": "Reset room cleaning history for one plan",
           "confirm_reset_all_history": "Reset room cleaning history for all plans",
+          "photo_patrol_settings": "Photo patrol privacy and safety",
           "finish": "Done"
         }
       },
@@ -940,6 +943,20 @@
         "title": "Reset history for all plans?",
         "description": "Every plan starts again from its first room and each room's last-cleaned record is cleared, while plans and settings are kept. This can't be undone.",
         "submit": "Reset"
+      },
+      "photo_patrol_settings": {
+        "title": "Photo patrol privacy and safety",
+        "description": "Photo patrols move the robot on their own. Enable them only after reviewing these safeguards. The room list uses the current map.",
+        "data": {
+          "photo_patrol_allow_unattended": "Allow unattended photo patrols",
+          "photo_patrol_no_photo_rooms": "No-photo rooms",
+          "photo_patrol_cooldown_seconds": "Minimum time between patrols (seconds)"
+        },
+        "data_description": {
+          "photo_patrol_allow_unattended": "Required before any photo patrol can move or take photos. Manual Take photo remains available separately.",
+          "photo_patrol_no_photo_rooms": "Photos from Home Assistant snapshots and patrols are refused in these rooms. Names are saved as room IDs on the current map. An unavailable room stays selected and blocks photos until you review it.",
+          "photo_patrol_cooldown_seconds": "Minimum delay between patrols, including sensor-triggered patrols."
+        }
       }
     }
   },
@@ -1736,6 +1753,33 @@
     "photo_patrol_running": {
       "message": "A photo patrol is already running on this robot."
     },
+    "photo_patrol_not_opted_in": {
+      "message": "Unattended photo patrols are disabled. Review the robot's privacy settings before enabling them."
+    },
+    "photo_patrol_rooms_unavailable": {
+      "message": "The current map or room is unavailable, so the photo patrol was stopped without taking a photo."
+    },
+    "photo_patrol_room_unknown": {
+      "message": "Home Assistant can't match {room} to a room on the current map."
+    },
+    "photo_patrol_room_blocked": {
+      "message": "Photos are disabled in this room."
+    },
+    "photo_patrol_schedule_conflict": {
+      "message": "The photo patrol could overlap a robot schedule. Try again after the schedule window."
+    },
+    "photo_patrol_cooldown": {
+      "message": "Another photo patrol ran recently. Wait {seconds} seconds before trying again."
+    },
+    "photo_patrol_timeout": {
+      "message": "The photo patrol reached its time limit. The robot was returned to the dock when it was safe to do so."
+    },
+    "photo_patrol_dock_timeout": {
+      "message": "The photo patrol finished, but Home Assistant could not confirm the robot's safe return to the dock within the time limit."
+    },
+    "photo_patrol_battery_unknown": {
+      "message": "The robot's battery level is unavailable, so the photo patrol was not started."
+    },
     "photo_patrol_robot_busy": {
       "message": "The robot is busy with a clean or on its way to the dock. Take photos once it has docked."
     },
@@ -1812,9 +1856,9 @@
           "name": "Rooms",
           "description": "Room names or IDs, visited in this order. Up to 12."
         },
-        "return_to_dock": {
-          "name": "Return to the dock",
-          "description": "Dock after the last photo, or after a failure. Turn off to leave the robot in the last room; it docks on its own after about ten minutes."
+        "full_resolution": {
+          "name": "Send the full photo",
+          "description": "By default, the response and event use a pixelated preview. Set this only when full-resolution photos are appropriate for the recipients."
         }
       }
     },

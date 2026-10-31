@@ -73,7 +73,7 @@ def check_fresh_install(directory: Path) -> None:
     with tempfile.TemporaryDirectory(prefix="matic-fresh-install-") as temporary:
         temporary_path = Path(temporary)
         environment = temporary_path / "venv"
-        venv.EnvBuilder(with_pip=True).create(environment)
+        venv.EnvBuilder(with_pip=True, symlinks=os.name != "nt").create(environment)
         python = _environment_python(environment)
         clean_environment = os.environ.copy()
         clean_environment.pop("PYTHONPATH", None)

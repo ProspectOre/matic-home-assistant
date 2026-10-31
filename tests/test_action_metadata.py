@@ -167,4 +167,4 @@ def test_blueprints_are_named_and_every_input_is_described() -> None:
         "Matic: Photograph room on alert",
     }
     # The firmware blueprint derives the robot from its sensor, so 24 remain.
-    assert inputs == 24
+    assert inputs == 25

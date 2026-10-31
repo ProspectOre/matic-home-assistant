@@ -21,10 +21,10 @@ from .client.exceptions import MaticError
 from .client.floor_plan import MAX_MAP_COORDINATE
 from .client.models import RobotPose
 from .const import DOMAIN
-from .slam_scene import (
+from .http import (
     PRIVATE_NO_STORE_HEADERS,
     WIFI_HEATMAP_API_URL,
-    _runtime_for_entry,
+    runtime_for_entry,
 )
 
 if TYPE_CHECKING:
@@ -337,7 +337,7 @@ class MaticWifiHeatmapView(HomeAssistantView):
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return cell centres and mean signal; no network names."""
-        runtime = _runtime_for_entry(request.app[KEY_HASS], entry_id)
+        runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
         if runtime is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS

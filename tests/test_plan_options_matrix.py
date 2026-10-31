@@ -17,15 +17,10 @@ from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import (
-    RoomRunOutcome,
-    _async_execute_rooms,
-)
-from custom_components.matic_robot.plans import (
-    PLAN_SESSION_ID,
-    CleaningPlanManager,
-    CleaningRoom,
-)
+from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_run import RoomRunOutcome
+from custom_components.matic_robot.plan_model import PLAN_SESSION_ID, CleaningRoom
+from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.wire_builders import _session_identity
 
 LAYOUTS = (
@@ -47,12 +42,12 @@ async def test_executor_preserves_room_settings_and_verified_completion(
     hass, layout, return_to_base
 ):
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
         CleaningRoom(f"room-{i}", f"Room {i}", mode, setting)
         for i, (mode, setting) in enumerate(layout)
     ]
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "matrix",
         {
@@ -185,10 +180,10 @@ async def test_executor_preserves_room_settings_and_verified_completion(
     )
     assert len(commands) == 1
     assert confirmed == [r.name for r in expected]
-    result = manager.snapshot("serial")["last_run"]
+    result = manager.ledger.snapshot("serial")["last_run"]
     assert result["outcome"] == "completed"
     assert result["completed_room_count"] == len(rooms)
-    assert not manager.lock("serial").locked()
+    assert not manager.control.lock("serial").locked()
     if return_to_base:
         dock.assert_awaited_once()
         assert dock.await_args.args[1] is UserCommand.DOCK
@@ -209,9 +204,9 @@ async def test_stop_threshold_is_independent_of_cleaning_configuration(
     hass, finish_current_room, threshold, progress, expected
 ):
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("room", "Room", "vacuum", "quick")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "matrix",
         {
@@ -220,7 +215,7 @@ async def test_stop_threshold_is_independent_of_cleaning_configuration(
             "rooms": [],
         },
     )
-    manager._robot("serial")["rotations"]["matrix"] = {
+    manager.repository.robot("serial")["rotations"]["matrix"] = {
         "rooms": {
             room.room_id: {
                 "cleaning_mode": room.cleaning_mode,
@@ -229,23 +224,23 @@ async def test_stop_threshold_is_independent_of_cleaning_configuration(
             }
         }
     }
-    async with manager.lock("serial"):
-        manager.prepare_run("serial")
-        await manager.async_mark_started("serial", "matrix", room)
-        active = manager._data["robots"]["serial"]["active_plan"]
+    async with manager.control.lock("serial"):
+        manager.control.prepare_run("serial")
+        await manager.ledger.async_mark_started("serial", "matrix", room)
+        active = manager.repository.data["robots"]["serial"]["active_plan"]
         active["active_elapsed_seconds"] = progress
         active["active_segment_started"] = None
-        assert manager.request_stop("serial").behavior == expected
-        manager.cancel("serial")
+        assert manager.control.request_stop("serial").behavior == expected
+        manager.control.cancel("serial")
 
 
 async def test_stop_threshold_does_not_estimate_from_unscoped_duration_history(
     hass,
 ):
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("room", "Room", "vacuum", "quick")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "matrix",
         {
@@ -254,35 +249,35 @@ async def test_stop_threshold_does_not_estimate_from_unscoped_duration_history(
             "rooms": [],
         },
     )
-    manager._robot("serial")["rotations"]["matrix"] = {
+    manager.repository.robot("serial")["rotations"]["matrix"] = {
         "rooms": {room.room_id: {"duration_history_seconds": [100, 100, 100]}}
     }
-    async with manager.lock("serial"):
-        manager.prepare_run("serial")
-        await manager.async_mark_started("serial", "matrix", room)
-        active = manager._data["robots"]["serial"]["active_plan"]
+    async with manager.control.lock("serial"):
+        manager.control.prepare_run("serial")
+        await manager.ledger.async_mark_started("serial", "matrix", room)
+        active = manager.repository.data["robots"]["serial"]["active_plan"]
         active["active_elapsed_seconds"] = 49
         active["active_segment_started"] = None
-        decision = manager.request_stop("serial")
+        decision = manager.control.request_stop("serial")
         assert decision.behavior == "after_room"
         assert decision.estimated_progress is None
-        manager.cancel("serial")
+        manager.control.cancel("serial")
 
 
 async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     hass, monkeypatch
 ):
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_TIMEOUT_SECONDS",
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_TIMEOUT_SECONDS",
         0.01,
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
         CleaningRoom("room-a", "Room A", "vacuum", "quick"),
         CleaningRoom("room-b", "Room B", "vacuum", "quick"),
     ]
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "stop",
         {
@@ -326,7 +321,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
 
     async def observe_boundary(*_args, **_kwargs):
         nonlocal ended, identity
-        decisions.append(manager.request_stop("serial"))
+        decisions.append(manager.control.request_stop("serial"))
         ended = True
         identity = b""
         hass.states.async_set("vacuum.matic", "idle")
@@ -335,8 +330,8 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     async def history():
         if not ended:
             return ()
-        if manager.snapshot("serial")["active_plan"]["status"] == "verifying":
-            decisions.append(manager.request_stop("serial", stop_now=True))
+        if manager.ledger.snapshot("serial")["active_plan"]["status"] == "verifying":
+            decisions.append(manager.control.request_stop("serial", stop_now=True))
         return (
             CleaningSessionRecord(
                 b"synthetic-stop-record",
@@ -359,14 +354,16 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     async def managed_command(token: int, command: UserCommand) -> None:
         commands.append((token, command))
         if command is UserCommand.STOP:
-            manager.mark_stop_pending("serial", run_id=manager.active_run_id("serial"))
+            manager.control.mark_stop_pending(
+                "serial", run_id=manager.ledger.active_run_id("serial")
+            )
 
     def confirm(room_name: str) -> None:
         confirmed.append(room_name)
 
     hass.services.async_register("vacuum", "send_command", send)
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
+        "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
         observe_boundary,
     )
     await asyncio.wait_for(
@@ -395,10 +392,10 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     assert [command for _token, command in commands] == [UserCommand.DOCK]
     assert len({token for token, _command in commands}) == 1
     assert confirmed == [rooms[0].name]
-    result = manager.snapshot("serial")["last_run"]
+    result = manager.ledger.snapshot("serial")["last_run"]
     assert result["outcome"] == "cancelled"
     assert result["reason_code"] == "managed_stop"
     assert result["completed_room_count"] == 1
-    completed_by_room = manager.snapshot("serial")["last_completed_by_room"]
+    completed_by_room = manager.ledger.snapshot("serial")["last_completed_by_room"]
     assert completed_by_room["room-a"]["runs"] == 1
     assert "room-b" not in completed_by_room

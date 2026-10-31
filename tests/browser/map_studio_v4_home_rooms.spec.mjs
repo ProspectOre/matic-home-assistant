@@ -1646,7 +1646,7 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
         const renderer = new RendererController(canvas, overlay);
         renderer.setState(store.value);
         let taps = 0;
-        const gestures = new GestureController(canvas, renderer, { state: () => store.value, onRoom: (roomId) => { taps += 1; store.dispatch({ type: "toggle-room", roomId }); }, onCircles: () => {}, onCirclePreview: () => {} });
+        const gestures = new GestureController(canvas, renderer, { state: () => store.value, drawReady: () => true, onRoom: (roomId) => { taps += 1; store.dispatch({ type: "toggle-room", roomId }); }, onCircles: () => {}, onCirclePreview: () => {} });
         const bounds = canvas.getBoundingClientRect();
         const tap = (x, y) => {
           for (const type of ["pointerdown", "pointerup"]) canvas.dispatchEvent(new PointerEvent(type, { pointerId: 1, isPrimary: true, pointerType: "mouse", clientX: x, clientY: y, bubbles: true }));
@@ -1727,6 +1727,60 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
 // ---- Cleaning history (PRO-60) and the robot trail (PRO-83) ---------------
 
 test.describe("cleaning history", () => {
+  test("polls an open history only while it still contains a running clean", async ({ page }) => {
+    await loadStoreHarness(page);
+    const reads = await page.evaluate(async (harness) => {
+      const { WorkspaceStore, createGalleryState, watchRuns } = await import(harness);
+      const store = new WorkspaceStore(createGalleryState("ready"));
+      const running = { id: "run-1", outcome: "running" };
+      store.patch({
+        workflow: "runs",
+        resources: {
+          ...store.value.resources,
+          runs: { status: "ready", value: { runs: [running] }, problem: null },
+        },
+      });
+      let reads = 0;
+      const stop = watchRuns(store, () => { reads += 1; });
+      await new Promise((resolve) => window.setTimeout(resolve, 2_200));
+      const whileRunning = reads;
+      store.patch({
+        resources: {
+          ...store.value.resources,
+          runs: { ...store.value.resources.runs, value: { runs: [{ ...running, outcome: "finished" }] } },
+        },
+      });
+      await new Promise((resolve) => window.setTimeout(resolve, 2_200));
+      stop();
+      return [whileRunning, reads];
+    }, HARNESS);
+    expect(reads[0]).toBe(1);
+    expect(reads[1]).toBe(1);
+  });
+
+  test("does not overlap a slow history read or reschedule after unsubscribe", async ({ page }) => {
+    await loadStoreHarness(page);
+    const calls = await page.evaluate(async (harness) => {
+      const { WorkspaceStore, createGalleryState, watchRuns } = await import(harness);
+      const store = new WorkspaceStore(createGalleryState("ready"));
+      store.patch({ workflow: "runs", resources: { ...store.value.resources,
+        runs: { status: "ready", value: { runs: [{ id: "run-1", outcome: "running" }] }, problem: null } } });
+      let resolveRead;
+      let reads = 0;
+      const pending = new Promise((resolve) => { resolveRead = resolve; });
+      const stop = watchRuns(store, () => { reads += 1; return pending; });
+      await new Promise((resolve) => window.setTimeout(resolve, 2_200));
+      const duringRead = reads;
+      await new Promise((resolve) => window.setTimeout(resolve, 2_200));
+      const beforeStop = reads;
+      stop();
+      resolveRead();
+      await new Promise((resolve) => window.setTimeout(resolve, 2_200));
+      return [duringRead, beforeStop, reads];
+    }, HARNESS);
+    expect(calls).toEqual([1, 1, 1]);
+  });
+
   test("explains the last run first and keeps earlier runs one tap away", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "runs" });
     await expect(gallery.getByRole("heading", { level: 2, name: "Cleaning history" })).toBeVisible();
@@ -1873,6 +1927,10 @@ test.describe("cleaning history", () => {
       const { WorkspaceStore, createGalleryState, watchRuns } = await import(harness);
       const store = new WorkspaceStore({ ...createGalleryState("ready"), workflow: "runs" });
       let count = 0;
+      const settle = async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      };
       // A disposed controller's watcher stops; its replacement takes over.
       const stop = watchRuns(store, () => { count += 100; });
       stop();
@@ -1880,24 +1938,57 @@ test.describe("cleaning history", () => {
       const run = { runId: "run-1", outcome: "running", completedRoomCount: 0, roomCount: 2 };
       const seen = [];
       store.patch({ lastRun: run });
+      await settle();
       seen.push(count);
       store.patch({ activity: "cleaning" });
+      await settle();
       seen.push(count);
       store.patch({ lastRun: { ...run, outcome: "partial", completedRoomCount: 1 } });
+      await settle();
       seen.push(count);
       store.patch({ workflow: "none", lastRun: { ...run, outcome: "partial", completedRoomCount: 2 } });
+      await settle();
       seen.push(count);
       // Once no managed run is running, the robot docking rereads, and so
       // does a task started from the Matic app as it starts and as it ends.
       store.patch({ workflow: "runs", activity: "docked" });
+      await settle();
       seen.push(count);
       for (const activity of ["cleaning", "paused", "returning", "docked"]) {
         store.patch({ activity });
+        await settle();
         seen.push(count);
       }
       return seen;
     }, HARNESS);
     expect(reloads).toEqual([1, 1, 2, 2, 3, 4, 4, 4, 5]);
+  });
+
+  test("a run change during a history read triggers one follow-up read", async ({ page }) => {
+    await loadStoreHarness(page);
+    const reads = await page.evaluate(async (harness) => {
+      const { WorkspaceStore, createGalleryState, watchRuns } = await import(harness);
+      const store = new WorkspaceStore({ ...createGalleryState("ready"), workflow: "runs" });
+      let resolveFirst;
+      let calls = 0;
+      const firstRead = new Promise((resolve) => { resolveFirst = resolve; });
+      const stop = watchRuns(store, () => {
+        calls += 1;
+        return calls === 1 ? firstRead : Promise.resolve();
+      });
+      const run = { runId: "run-1", outcome: "running", completedRoomCount: 0, roomCount: 2 };
+      store.patch({ lastRun: run });
+      store.patch({ lastRun: { ...run, completedRoomCount: 1 } });
+      const duringFirstRead = calls;
+      resolveFirst();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      const afterFollowUp = calls;
+      stop();
+      return [duringFirstRead, afterFollowUp];
+    }, HARNESS);
+    expect(reads).toEqual([1, 2]);
   });
 
   test("a saved map offers no Robot trail, which only draws on the live map @mobile", async ({ page }) => {

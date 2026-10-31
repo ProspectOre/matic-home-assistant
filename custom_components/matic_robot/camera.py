@@ -13,7 +13,6 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import MaticConfigEntry
 from .client.floor_plan import (
     pose_observation_is_current,
-    render_floor_plan,
     resolve_robot_map_position,
     robot_location_source,
 )
@@ -21,11 +20,15 @@ from .client.models import HermesCollectionEntry, RobotState
 from .client.slam_map import (
     decode_slam_structure_tile,
     decode_slam_tile,
-    render_slam_map,
 )
 from .entity import MaticEntity
+from .floor_render import render_floor_plan
+from .http import (
+    pose_api_url,
+    scene_api_url,
+)
 from .slam_map_store import SlamMapStore
-from .slam_scene import pose_api_url, scene_api_url
+from .slam_render import render_slam_map
 
 PARALLEL_UPDATES = 0
 MAX_CAMERA_DIMENSION = 4096

@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DRILL = "tests/e2e/upgrade_drill.py"
 HARNESS = ("tests/__init__.py", "tests/conftest.py", "tests/e2e")
 PLAN = "evening"
+AREA_PLAN = "entry-area"
 
 
 class DrillFailed(RuntimeError):
@@ -41,15 +42,39 @@ def plan_state(config: Path) -> dict[str, Any]:
     """Return the drill robot's plan store as the phases left it."""
     store = json.loads((config / ".storage" / "matic_robot.plans").read_text())
     (robot,) = store["data"]["robots"].values()
+    rotation = robot.get("rotations", {}).get(AREA_PLAN, {})
+    area_records = rotation.get("areas", {})
     return {
         "minor_version": store["minor_version"],
         "plan": robot["plans"][PLAN],
+        "area_plan": robot["plans"][AREA_PLAN],
         "completed_runs": {
             room_id: record["completed_runs"]
             for room_id, record in robot["rotations"][PLAN]["rooms"].items()
         },
         "last_run": robot["last_run"]["outcome"],
         "run_history": len(robot.get("run_history", [])),
+        "areas": {
+            area_id: {
+                "name": area.get("name"),
+                "circles": area.get("circles"),
+                "outline": area.get("outline"),
+                "map": {
+                    key: area.get("map_binding", {}).get(key)
+                    for key in ("mission_id", "partition_id", "geometry_sha256")
+                },
+            }
+            for area_id, area in robot.get("areas", {}).items()
+        },
+        "area_completed_runs": {
+            area_id: {
+                "plan": area_records.get(area_id, {}).get("completed_runs", 0),
+                "global": robot.get("area_history", {})
+                .get(area_id, {})
+                .get("completed_runs", 0),
+            }
+            for area_id in robot.get("areas", {})
+        },
     }
 
 
@@ -59,9 +84,36 @@ def compare(states: dict[str, dict[str, Any]]) -> None:
     for phase, state in states.items():
         if state["plan"] != seed["plan"]:
             raise DrillFailed(f"{phase} changed the saved plan")
+        if state.get("area_plan") != seed.get("area_plan"):
+            raise DrillFailed(f"{phase} changed the saved custom-area plan")
         for room_id, runs in seed["completed_runs"].items():
             if state["completed_runs"].get(room_id, 0) < runs:
                 raise DrillFailed(f"{phase} lost completed runs for {room_id}")
+        if state.get("areas", {}) != seed.get("areas", {}):
+            raise DrillFailed(f"{phase} changed the saved areas or their geometry")
+        for area_id, runs in seed.get("area_completed_runs", {}).items():
+            current = state.get("area_completed_runs", {}).get(area_id, {})
+            for scope, count in runs.items():
+                if current.get(scope, 0) < count:
+                    raise DrillFailed(
+                        f"{phase} lost {scope} completed runs for area {area_id}"
+                    )
+
+
+def require_area_evidence(states: dict[str, dict[str, Any]]) -> None:
+    """Require the seed phase to exercise a saved and completed custom area."""
+    seed = states["seed"]
+    area = seed["areas"].get("entry_rug")
+    entries = seed["area_plan"].get("entries", [])
+    completed = seed["area_completed_runs"].get("entry_rug", {})
+    if area is None or not any(
+        entry.get("kind") == "area" and entry.get("area_id") == "entry_rug"
+        for entry in entries
+        if isinstance(entry, dict)
+    ):
+        raise DrillFailed("seed did not preserve the saved area in its plan")
+    if completed.get("plan", 0) < 1 or completed.get("global", 0) < 1:
+        raise DrillFailed("seed did not complete the saved area in the managed plan")
 
 
 def run_phase(checkout: Path, phase: str, config: Path) -> None:
@@ -127,6 +179,7 @@ def drill(tag: str, work: Path) -> dict[str, dict[str, Any]]:
             capture_output=True,
             check=False,
         )
+    require_area_evidence(states)
     compare(states)
     return states
 
@@ -143,11 +196,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     for phase, state in states.items():
         runs = sorted(state["completed_runs"].values())
+        areas = sorted(
+            record["plan"] for record in state["area_completed_runs"].values()
+        )
         print(
             f"{phase:10} last run {state['last_run']:10} room runs {runs} "
-            f"history {state['run_history']}"
+            f"area runs {areas} history {state['run_history']}"
         )
-    print("passed: the plan and room history survived upgrade and rollback")
+    print(
+        "passed: plans, areas, and room and area history survived upgrade and rollback"
+    )
     return 0
 
 

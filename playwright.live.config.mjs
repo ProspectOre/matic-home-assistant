@@ -1,5 +1,8 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const python = process.env.MATIC_E2E_PYTHON ?? process.env.PYTHON ?? "python";
+const shellQuote = (value) => `'${value.replaceAll("'", "'\\''")}'`;
+
 // Matic Map in a real Home Assistant, paired to the simulated robot
 // (tests/live/server.py). One server holds one robot, so tests run serially.
 export default defineConfig({
@@ -16,7 +19,7 @@ export default defineConfig({
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
   webServer: {
-    command: "python tests/live/server.py --port 8123 --control-port 8124",
+    command: `${shellQuote(python)} tests/live/server.py --port 8123 --control-port 8124`,
     // The panel route exists once the integration has registered it.
     url: "http://127.0.0.1:8123/matic-map",
     reuseExistingServer: false,

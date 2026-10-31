@@ -42,8 +42,8 @@ photo_patrol:
       selector:
         text:
           multiple: true
-    return_to_dock:
-      default: true
+    full_resolution:
+      default: false
       selector:
         boolean:
 

@@ -15,7 +15,7 @@ from homeassistant.core import ServiceCall
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-import custom_components.matic_robot.managed_executor as managed_executor
+import custom_components.matic_robot.managed_observation as managed_observation_module
 from custom_components.matic_robot.client.commands import CoverageSetting
 from custom_components.matic_robot.client.coverage_receipts import (
     CoverageReceipt,
@@ -31,19 +31,19 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import (
+from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_room import _async_run_room
+from custom_components.matic_robot.managed_run import (
     PlanCancelledError,
     RoomRunOutcome,
-    _async_run_leg,
-    _async_run_room,
     _PreparedRoomDispatch,
 )
-from custom_components.matic_robot.plans import (
-    CleaningPlanManager,
+from custom_components.matic_robot.plan_model import (
     CleaningRoom,
     plan_floor_token,
     room_cadence_identity,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.test_coverage_receipts import history_key
 
@@ -145,11 +145,11 @@ async def _real_manager(
     interval: int = 3,
 ) -> tuple[CleaningPlanManager, dict[str, dict[str, object]]]:
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     identities = {
         room.room_id: room_cadence_identity(floor, room.room_id) for room in rooms
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -171,13 +171,15 @@ async def _real_manager(
         floor_token=plan_floor_token(floor),
         room_identities=identities,
     )
-    private = manager._robot("serial")["plan_room_cadence"].setdefault("home", {})
+    private = manager.repository.robot("serial")["plan_room_cadence"].setdefault(
+        "home", {}
+    )
     for room in rooms:
         private[room.room_id] = {
             "identity": identities[room.room_id],
             "progress": {"mop": 0, "coverage": interval - 1},
         }
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         list(rooms),
@@ -188,10 +190,10 @@ async def _real_manager(
         room.room_id: {**snapshots[room.room_id], "identity": identities[room.room_id]}
         for room in rooms
     }
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", run_id, len(rooms), trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         run_id,
         {
@@ -217,7 +219,7 @@ async def _checkpoint_receipt(
     *,
     run_id: str,
 ) -> None:
-    assert await manager.async_checkpoint_coverage_receipt(
+    assert await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         run_id,
         receipt,
@@ -239,14 +241,14 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
     hass, monkeypatch, history_key_kind
 ):
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_ATTEMPTS", 1
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_ATTEMPTS", 1
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
     )
     room = ROOMS[0]
@@ -276,11 +278,11 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
 
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
@@ -304,10 +306,10 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
     assert completed
     expected_coverage = 0 if history_key_kind == "matching" else 2
     assert (
-        manager.cadence_progress("serial", "home", room.room_id)["coverage"]
+        manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
         == expected_coverage
     )
-    assert manager.snapshot("serial")["completed_runs"] == 1
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 1
     if history_key_kind == "matching":
         verifier.assert_awaited_once_with(receipt, receipt.session_hash)
     else:
@@ -330,10 +332,11 @@ async def test_single_room_partial_mode_history_never_credits_coverage(hass):
     # bounded because this fixture intentionally never upgrades its result.
     with (
         patch(
-            "custom_components.matic_robot.managed_executor.SESSION_HISTORY_ATTEMPTS", 1
+            "custom_components.matic_robot.managed_observation.SESSION_HISTORY_ATTEMPTS",
+            1,
         ),
         patch(
-            "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+            "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
             0,
         ),
     ):
@@ -345,11 +348,11 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
     verifier = AsyncMock(return_value=True)
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
             AsyncMock(return_value="cleaning"),
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
+            "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
@@ -374,8 +377,11 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
             coverage_verifier=verifier,
         )
     assert not completed
-    assert manager.cadence_progress("serial", "home", room.room_id)["coverage"] == 2
-    assert manager.snapshot("serial")["completed_runs"] == 0
+    assert (
+        manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
+        == 2
+    )
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
     verifier.assert_not_awaited()
 
 
@@ -383,10 +389,10 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
     hass, monkeypatch
 ):
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_ATTEMPTS", 1
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_ATTEMPTS", 1
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        "custom_components.matic_robot.managed_observation.SESSION_HISTORY_RETRY_SECONDS",
         0,
     )
     first, second = ROOMS
@@ -400,7 +406,7 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
     async def return_from_leg(*_args, **_kwargs):
         return (RoomRunOutcome.HANDOFF_CANDIDATE, None)
 
-    verify_history = managed_executor._async_verify_leg_completion
+    verify_history = managed_observation_module._async_verify_leg_completion
 
     async def verify_once(reader, baseline, rooms, dispatched_at, **kwargs):
         return await verify_history(
@@ -409,11 +415,13 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
 
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
             AsyncMock(return_value="cleaning"),
         ),
         patch.object(
-            managed_executor, "_async_verify_leg_completion", side_effect=verify_once
+            managed_observation_module,
+            "_async_verify_leg_completion",
+            side_effect=verify_once,
         ),
     ):
         completed = await _async_run_leg(
@@ -439,9 +447,15 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
         )
 
     assert not completed
-    assert manager.cadence_progress("serial", "home", first.room_id)["coverage"] == 0
-    assert manager.cadence_progress("serial", "home", second.room_id)["coverage"] == 2
-    assert manager.snapshot("serial")["completed_runs"] == 1
+    assert (
+        manager.cadence.cadence_progress("serial", "home", first.room_id)["coverage"]
+        == 0
+    )
+    assert (
+        manager.cadence.cadence_progress("serial", "home", second.room_id)["coverage"]
+        == 2
+    )
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 1
     verifier.assert_awaited_once_with(receipt, receipt.session_hash)
 
 
@@ -469,8 +483,8 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
     dispatched_at = dt_util.utcnow() - timedelta(seconds=60)
     verifier_calls = 0
     current_floor = True
-    cancel_event = manager.cancellation_event("serial")
-    motion_token = manager.begin_managed_motion("serial")
+    cancel_event = manager.control.cancellation_event("serial")
+    motion_token = manager.control.begin_managed_motion("serial")
 
     async def verifier(_receipt_value, _session_hash):
         nonlocal current_floor, verifier_calls
@@ -480,7 +494,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
         elif supersede == "cancel":
             cancel_event.set()
         else:
-            manager.replace_managed_motion("serial")
+            manager.control.replace_managed_motion("serial")
         return True
 
     async def current_leg_outcome(*_args, **_kwargs):
@@ -490,7 +504,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
         manager, floor, rooms, receipt, run_id
     )
     hass.states.async_set("vacuum.matic", "returning")
-    room_verifier = managed_executor._async_verify_leg_completion
+    room_verifier = managed_observation_module._async_verify_leg_completion
 
     async def verify_leg_once(reader, baseline, verify_rooms, when, **kwargs):
         return await room_verifier(
@@ -499,21 +513,21 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
 
     overrides = [
         patch(
-            "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
+            "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
             AsyncMock(return_value="cleaning"),
         )
     ]
     if path == "room":
         overrides.append(
             patch(
-                "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
+                "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
                 AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
             )
         )
     else:
         overrides.append(
             patch.object(
-                managed_executor,
+                managed_observation_module,
                 "_async_verify_leg_completion",
                 side_effect=verify_leg_once,
             )
@@ -568,10 +582,11 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
 
     assert verifier_calls == 1
     assert all(
-        manager.cadence_progress("serial", "home", room.room_id)["coverage"] == 2
+        manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
+        == 2
         for room in rooms
     )
-    assert manager.snapshot("serial")["completed_runs"] == 0
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
 
 
 async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(hass):
@@ -604,11 +619,11 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
     async def execute_room():
         with (
             patch(
-                "custom_components.matic_robot.managed_executor._async_wait_for_owned_start",
+                "custom_components.matic_robot.managed_observation._async_wait_for_owned_start",
                 AsyncMock(return_value="cleaning"),
             ),
             patch(
-                "custom_components.matic_robot.managed_executor._async_wait_for_room_outcome",
+                "custom_components.matic_robot.managed_observation._async_wait_for_room_outcome",
                 AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
             ),
         ):
@@ -633,25 +648,28 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
 
     run_task = asyncio.create_task(execute_room())
     await asyncio.wait_for(verifier_entered.wait(), timeout=5)
-    await manager._store_lock.acquire()
+    await manager.repository.store_lock.acquire()
     allow_verifier_to_return.set()
     try:
         for _ in range(100):
-            waiters = manager._store_lock._waiters
+            waiters = manager.repository.store_lock._waiters
             if waiters:
                 break
             await asyncio.sleep(0)
-        assert manager._store_lock._waiters
+        assert manager.repository.store_lock._waiters
         floor_is_current = False
     finally:
-        manager._store_lock.release()
+        manager.repository.store_lock.release()
     try:
         await asyncio.wait_for(run_task, timeout=5)
     except PlanCancelledError:
         pass
 
-    assert manager.cadence_progress("serial", "home", room.room_id)["coverage"] == 2
-    assert manager.snapshot("serial")["completed_runs"] == 0
+    assert (
+        manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
+        == 2
+    )
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
 
 
 async def _restart_fixture(hass, run_id: str = "restart-coverage"):
@@ -663,7 +681,7 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         (FLOOR.rooms[0],),
     )
     manager, _cadence = await _real_manager(hass, (room,), floor, run_id=run_id)
-    await manager.async_mark_started("serial", "home", room, run_id=run_id)
+    await manager.ledger.async_mark_started("serial", "home", room, run_id=run_id)
     receipt = _receipt(floor, (room,))
     await _checkpoint_receipt(manager, floor, (room,), receipt, run_id=run_id)
     started = dt_util.utcnow() - timedelta(seconds=45)
@@ -671,7 +689,7 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
     entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
     hass.states.async_set(entity.entity_id, "docked")
     checkpoint = {
-        **manager.recovery_run("serial")["recovery_checkpoint"],
+        **manager.control.recovery_run("serial")["recovery_checkpoint"],
         "version": 1,
         "phase": "accepted",
         "entity_id": entity.entity_id,
@@ -688,14 +706,14 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         "completed_room_ids": [],
         "started_room_ids": [room.room_id],
     }
-    await manager.async_set_recovery_checkpoint("serial", run_id, checkpoint)
-    await manager.async_mark_verifying(
+    await manager.ledger.async_set_recovery_checkpoint("serial", run_id, checkpoint)
+    await manager.ledger.async_mark_verifying(
         "serial",
         "home",
         room,
         verification_deadline=dt_util.utcnow() + timedelta(minutes=4),
     )
-    checkpoint = manager.recovery_run("serial")["recovery_checkpoint"]
+    checkpoint = manager.control.recovery_run("serial")["recovery_checkpoint"]
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=b""),
         async_get_cleaning_session_records=AsyncMock(return_value=(_record((room,)),)),
@@ -726,8 +744,11 @@ async def test_restart_verifying_uses_canonical_history_and_fresh_coverage_verif
     )
     manager, entry, _checkpoint, room, receipt = await _restart_fixture(hass)
     await async_recover_managed_run(hass, entry, "serial")
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "completed"
-    assert manager.cadence_progress("serial", "home", room.room_id)["coverage"] == 0
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "completed"
+    assert (
+        manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
+        == 0
+    )
     entry.runtime_data.client.async_confirm_coverage_receipt.assert_awaited_once_with(
         receipt, receipt.session_hash
     )
@@ -746,15 +767,18 @@ async def test_restart_verifier_result_is_discarded_if_run_or_map_changes(
 
     async def verify_then_supersede(*_args):
         if supersede == "cancel":
-            manager.request_stop("serial")
+            manager.control.request_stop("serial")
         else:
             runtime.slam_map.floor_plan_is_current.return_value = False
         return True
 
     runtime.client.async_confirm_coverage_receipt.side_effect = verify_then_supersede
     await async_recover_managed_run(hass, entry, "serial")
-    assert manager.cadence_progress("serial", "home", room.room_id)["coverage"] == 2
-    assert manager.snapshot("serial")["completed_runs"] == 0
+    assert (
+        manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
+        == 2
+    )
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
     runtime.client.async_send_user_command.assert_not_awaited()
 
 
@@ -778,23 +802,26 @@ async def test_restart_rechecks_verification_fence_after_store_lock_wait(
     runtime.client.async_confirm_coverage_receipt.side_effect = verifier
     recovery = asyncio.create_task(async_recover_managed_run(hass, entry, "serial"))
     await asyncio.wait_for(verifier_entered.wait(), timeout=5)
-    await manager._store_lock.acquire()
+    await manager.repository.store_lock.acquire()
     allow_verifier_to_return.set()
     try:
         for _ in range(100):
-            if manager._store_lock._waiters:
+            if manager.repository.store_lock._waiters:
                 break
             await asyncio.sleep(0)
-        assert manager._store_lock._waiters
+        assert manager.repository.store_lock._waiters
         if change == "cancel":
-            manager.cancellation_event("serial").set()
+            manager.control.cancellation_event("serial").set()
         else:
             runtime.slam_map.floor_plan_is_current.return_value = False
     finally:
-        manager._store_lock.release()
+        manager.repository.store_lock.release()
     await asyncio.wait_for(recovery, timeout=5)
 
-    assert manager.cadence_progress("serial", "home", room.room_id)["coverage"] == 2
-    assert manager.snapshot("serial")["completed_runs"] == 0
+    assert (
+        manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
+        == 2
+    )
+    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
     runtime.client.async_confirm_coverage_receipt.assert_awaited_once()
     runtime.client.async_send_user_command.assert_not_awaited()

@@ -16,21 +16,23 @@ from PIL import Image, ImageChops, ImageDraw
 
 from custom_components.matic_robot.client import floor_plan as floor_plan_module
 from custom_components.matic_robot.client.floor_plan import (
+    decode_floor_plan,
+    decode_floor_plans,
+    decode_pose,
+    pose_vector_paths,
+    resolve_robot_map_position,
+    robot_location_source,
+)
+from custom_components.matic_robot.client.models import FloorPlan, RobotPose, Room
+from custom_components.matic_robot.floor_render import (
     _box_inside_mask,
     _boxes_overlap,
     _erode_room_mask,
     _layout_room_labels,
     _nearest_mask_point,
     _polygon_center,
-    decode_floor_plan,
-    decode_floor_plans,
-    decode_pose,
-    pose_vector_paths,
     render_floor_plan,
-    resolve_robot_map_position,
-    robot_location_source,
 )
-from custom_components.matic_robot.client.models import FloorPlan, RobotPose, Room
 from tests.wire_builders import _field, _fixed32, _fixed64, _varint_field
 
 PARTITION_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -424,7 +426,7 @@ def test_decode_skips_rooms_with_degenerate_outlines() -> None:
 
 
 def test_render_blends_semi_transparent_room_fill() -> None:
-    from custom_components.matic_robot.client.floor_plan import (
+    from custom_components.matic_robot.floor_render import (
         _BACKGROUND,
         _COLORS,
         _ROOM_FILL_ALPHA,
@@ -461,7 +463,9 @@ def test_render_blends_semi_transparent_room_fill() -> None:
 
 
 def test_render_centers_a_narrow_floor_plan_in_a_wide_viewport() -> None:
-    from custom_components.matic_robot.client.floor_plan import _BACKGROUND
+    from custom_components.matic_robot.floor_render import (
+        _BACKGROUND,
+    )
 
     payload = _plan_payload(
         _region_wire(

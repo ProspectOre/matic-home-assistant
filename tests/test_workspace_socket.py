@@ -487,7 +487,7 @@ def test_plan_and_area_changes_publish_only_observed_resource_revisions() -> Non
     )
     entry.runtime_data.coordinator = coordinator
     plans = _PlanPublisher()
-    entry.runtime_data.cleaning_plans = plans
+    entry.runtime_data.cleaning_plans = SimpleNamespace(catalog=plans, repository=plans)
     manager = WorkspaceSocket(_Hass([entry]))
     connection = _connection()
     manager.track_entry(entry)
@@ -820,7 +820,7 @@ async def test_unavailable_sources_and_idempotent_cleanup_are_safe() -> None:
     )
     entry.runtime_data.coordinator = coordinator
     plans = _PlanPublisher()
-    entry.runtime_data.cleaning_plans = plans
+    entry.runtime_data.cleaning_plans = SimpleNamespace(catalog=plans, repository=plans)
     no_catalog = _Publisher()
     entry.runtime_data.slam_history = no_catalog
     manager.track_entry(entry)

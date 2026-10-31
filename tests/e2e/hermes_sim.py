@@ -22,7 +22,7 @@ import datetime
 import hashlib
 import ssl
 import time
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -71,12 +71,16 @@ from .sim_mission import (
     SimFloor,
     Visit,
     bytes_field,
+    displayed_mission,
     earlier_session,
+    fixed32_float,
     fixed32_int,
     map_pages,
     parse_coverage_command,
     parse_navigation,
     uuid_wire,
+    varint_field,
+    wifi_status,
 )
 
 ROLE_OID = ObjectIdentifier("2.5.4.72")
@@ -86,6 +90,7 @@ STOP_PAYLOAD = bytes.fromhex("7a040a022200")
 PAUSE_PAYLOAD = bytes.fromhex("4801880101")
 RESUME_PAYLOAD = bytes.fromhex("4801880100")
 DOCK_PAYLOAD = bytes.fromhex("12042a020800")
+EMOTE_SNAP_PAYLOAD = bytes.fromhex("12043a024200")
 
 
 class Phase(StrEnum):
@@ -99,6 +104,7 @@ class Phase(StrEnum):
     STOPPED = "stopped"
     RECHARGING = "recharging"
     FAULTED = "faulted"
+    PARKED = "parked"
 
 
 # ``kabuki_state`` codes per phase, copied from the live-verified transitions
@@ -115,6 +121,7 @@ _PHASE_STATES: dict[Phase, tuple[int, ...]] = {
     Phase.RECHARGING: (107, 119, 206),
     # A blocking fault: paused without the task flag, with an error code.
     Phase.FAULTED: (109, 200),
+    Phase.PARKED: (109,),
 }
 
 
@@ -154,6 +161,16 @@ class RobotCertificate:
     @property
     def fingerprint(self) -> str:
         return hashlib.sha256(self.leaf_der).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class SimPhoto:
+    """A synthetic photo queued for publication after a snap command."""
+
+    photo_id: UUID
+    captured_at: datetime.datetime
+    image: bytes
+    preview: bytes | None
 
 
 def make_robot_certificate(
@@ -263,6 +280,13 @@ class SimulatedRobot:
         self._start_ts = 1_700_000_000_000_000_000
         self._sequence = 0
         self._history: list[tuple[bytes, bytes]] = []
+        self._pending_history: list[tuple[bytes, bytes]] = []
+        self.hold_history_updates = False
+        self._wifi_scan_results: deque[bytes | None] = deque()
+        self._photos: deque[SimPhoto] = deque()
+        self._navigation_results: deque[str | None] = deque()
+        self.set_collection("instamatic_snaps", [])
+        self.set_property("wifi_status", wifi_status(-60))
         self.set_property("active_session_key", IDLE_SESSION_KEY)
         self._refresh_state()
 
@@ -271,6 +295,7 @@ class SimulatedRobot:
     def start_cleaning(self, area: str | None = None) -> None:
         """Begin a task as if the app, a schedule or a voice cue started it."""
         self.current_area = area
+        self._refresh_pose()
         self._set_phase(Phase.CLEANING)
 
     def set_floor(self, floor: SimFloor) -> None:
@@ -281,19 +306,29 @@ class SimulatedRobot:
         self.set_collection("map_integrated", structure)
         self._history = [earlier_session(floor, _now() - 86_400_000_000_000)]
         self.set_collection("coverage_session_history", self._history)
+        self.set_collection(
+            "displayed_mission",
+            [(b"current", displayed_mission((floor,), floor))],
+        )
         self._refresh_plan()
+        self._refresh_pose()
 
     def finish_room(self) -> None:
         """Complete the session's current room and move on to the next."""
         assert self.session is not None
         self.session.finish_current(_now())
-        upcoming = self.session.current_room
+        upcoming = self.session.current_visit
         self.current_area = (
-            self.floor.room(upcoming).name
-            if self.floor is not None and upcoming is not None
+            self.floor.room(upcoming.room).name
+            if self.floor is not None
+            and upcoming is not None
+            and upcoming.room is not None
+            else "Custom area"
+            if upcoming is not None and upcoming.custom_area
             else None
         )
         self._refresh_state()
+        self._refresh_pose()
 
     def finish_session(self) -> None:
         """End the task after its last room, write history, head home."""
@@ -309,7 +344,14 @@ class SimulatedRobot:
             session_wire=bytes_field(2, uuid_wire(uuid4())),
             mission_wire=session.mission_wire,
             visits=[
-                Visit(visit.room, [], list(visit.passes)) for visit in session.visits
+                Visit(
+                    visit.room,
+                    [],
+                    list(visit.passes),
+                    custom_area=visit.custom_area,
+                    circles=visit.circles,
+                )
+                for visit in session.visits
             ],
             started_at=_now(),
         )
@@ -323,6 +365,57 @@ class SimulatedRobot:
             "sink_summon_locations", [(fixed32_int(2, self.floor.mission_id), posture)]
         )
 
+    def set_native_schedules(self, entries: Iterable[tuple[bytes, bytes]]) -> None:
+        """Serve native weekly schedule collection rows."""
+        self.set_collection("schedule_events", entries)
+
+    def queue_wifi_scan(self, result: bytes | None) -> None:
+        """Queue a Wi-Fi status update after the next scan-channel request."""
+        self._wifi_scan_results.append(result)
+
+    def queue_navigation_result(self, area: str | None) -> None:
+        """Override the area next reported after a room navigation command.
+
+        This drives negative tests for ignored moves and unknown reported area.
+        An empty queue preserves the normal successful arrival behavior.
+        """
+        self._navigation_results.append(area)
+
+    def set_current_area(self, area: str | None) -> None:
+        """Change the reported area in the next state snapshot."""
+        self.current_area = area
+        self._refresh_state()
+        self._refresh_pose()
+
+    def release_history(self) -> None:
+        """Publish session-history records held back to model delayed arrival."""
+        self.hold_history_updates = False
+        if self._pending_history:
+            self._history.extend(self._pending_history)
+            self._pending_history.clear()
+            self.set_collection("coverage_session_history", self._history)
+
+    def hold_history(self) -> None:
+        """Hold future session-history updates until ``release_history``."""
+        self.hold_history_updates = True
+
+    def queue_photo(
+        self,
+        image: bytes,
+        *,
+        preview: bytes | None = None,
+        captured_at: datetime.datetime | None = None,
+        photo_id: UUID | None = None,
+    ) -> UUID:
+        """Queue a synthetic WebP that appears after the captured snap command."""
+        if captured_at is None:
+            captured_at = datetime.datetime.now(datetime.UTC)
+        if captured_at.tzinfo is None:
+            raise ValueError("photo capture time must be timezone-aware")
+        identifier = photo_id or uuid4()
+        self._photos.append(SimPhoto(identifier, captured_at, image, preview))
+        return identifier
+
     def refilled(self) -> None:
         """Finish a sink refill; the robot heads back to the dock."""
         assert self.waiting_at_sink
@@ -333,6 +426,7 @@ class SimulatedRobot:
         """Finish a return trip and start charging, or idle when full."""
         self.current_area = None
         self._set_phase(Phase.DOCKED if self.battery >= 1.0 else Phase.CHARGING)
+        self._refresh_pose()
 
     def low_charge_recharge(self, battery: float = 0.15) -> None:
         """Suspend the task on the dock until the battery recovers."""
@@ -343,6 +437,15 @@ class SimulatedRobot:
         """Resume a recharge-suspended task."""
         self.battery = 0.8
         self._set_phase(Phase.CLEANING)
+
+    def schedule_takes_over(self) -> None:
+        """Replace the active native task with an external schedule session.
+
+        The Hermes session key carries no source attribution. This control
+        models the new-session takeover seen by the integration; it does not
+        claim to prove which app or schedule created the native task.
+        """
+        self.app_takes_over()
 
     def fault(self, code: int = 326) -> None:
         """Stop on a blocking robot error, keeping the native task."""
@@ -418,7 +521,32 @@ class SimulatedRobot:
         return self._collections.get(name)
 
     def apply_command(self, channel: str, payload: bytes) -> None:
+        if channel == "wifi_scan_command":
+            # A completed scan includes a fresh pose observation even when
+            # the simulated robot stayed at the same coordinates.
+            self._refresh_pose()
+            if self._wifi_scan_results:
+                result = self._wifi_scan_results.popleft()
+                if result is not None:
+                    self.set_property("wifi_status", result)
+            return
         if channel != "user_command":
+            return
+        if payload == EMOTE_SNAP_PAYLOAD:
+            if self._photos:
+                photo = self._photos.popleft()
+                captured_at = photo.captured_at.astimezone(datetime.UTC)
+                timestamp = varint_field(1, int(captured_at.timestamp()))
+                timestamp += varint_field(2, captured_at.microsecond * 1000)
+                value = bytes_field(1, timestamp) + bytes_field(
+                    2, bytes_field(1, photo.image)
+                )
+                if photo.preview is not None:
+                    value += bytes_field(3, bytes_field(1, photo.preview))
+                existing = self._collections.get("instamatic_snaps", [])
+                self.set_collection(
+                    "instamatic_snaps", [*existing, (uuid_wire(photo.photo_id), value)]
+                )
             return
         coverage = parse_coverage_command(payload, _now())
         if coverage is not None:
@@ -442,7 +570,7 @@ class SimulatedRobot:
             self._set_phase(Phase.STOPPED)
         elif payload == STOP_PAYLOAD and self.phase is Phase.RECHARGING:
             self._set_phase(Phase.CHARGING)
-        elif payload == DOCK_PAYLOAD and self.phase is Phase.STOPPED:
+        elif payload == DOCK_PAYLOAD and self.phase in (Phase.STOPPED, Phase.PARKED):
             self._set_phase(Phase.RETURNING)
 
     def next_sequence(self) -> SequenceId:
@@ -475,8 +603,11 @@ class SimulatedRobot:
         self.current_area = (
             self.floor.room(current).name
             if self.floor is not None and current is not None
+            else "Custom area"
+            if coverage.current_visit is not None and coverage.current_visit.custom_area
             else None
         )
+        self._refresh_pose()
         self._set_phase(Phase.CLEANING)
 
     def _navigate(self, navigation: Navigation) -> None:
@@ -488,15 +619,20 @@ class SimulatedRobot:
             return
         if navigation.room is not None:
             self.destination = navigation.room
-            self.current_area = self.floor.room(navigation.room).name
+            self.current_area = (
+                self._navigation_results.popleft()
+                if self._navigation_results
+                else self.floor.room(navigation.room).name
+            )
         else:
             self.waiting_at_sink = navigation.waits
         if self.phase is Phase.CLEANING:
             self._set_phase(Phase.PAUSED)
         elif self.session is None:
-            self._set_phase(Phase.STOPPED)
+            self._set_phase(Phase.PARKED)
         else:
             self._refresh_state()
+        self._refresh_pose()
 
     def _end_session(self, *, completed: bool) -> None:
         session = self.session
@@ -504,13 +640,15 @@ class SimulatedRobot:
             return
         self.session = None
         if self.floor is not None:
-            self._history.append(
-                (
-                    session.session_wire,
-                    session.history_value(self.floor, _now(), completed=completed),
-                )
+            record = (
+                session.session_wire,
+                session.history_value(self.floor, _now(), completed=completed),
             )
-            self.set_collection("coverage_session_history", self._history)
+            if self.hold_history_updates:
+                self._pending_history.append(record)
+            else:
+                self._history.append(record)
+                self.set_collection("coverage_session_history", self._history)
         self.set_property("active_session_key", IDLE_SESSION_KEY)
         self._refresh_plan()
 
@@ -526,6 +664,28 @@ class SimulatedRobot:
 
     def _refresh_state(self) -> None:
         self.set_property("kabuki_state", self.kabuki_state())
+
+    def _refresh_pose(self) -> None:
+        """Serve a stable local pose tied to the current synthetic mission."""
+        if self.floor is None or not self.floor.rooms:
+            return
+        room = next(
+            (room for room in self.floor.rooms if room.name == self.current_area),
+            self.floor.rooms[0],
+        )
+        x = sum(point[0] for point in room.outline) / len(room.outline)
+        y = sum(point[1] for point in room.outline) / len(room.outline)
+        position = fixed32_float(1, x) + fixed32_float(1, y) + fixed32_float(1, 0.0)
+        now = datetime.datetime.now(datetime.UTC)
+        timestamp = varint_field(1, int(now.timestamp())) + varint_field(
+            2, now.microsecond * 1000
+        )
+        value = bytes_field(2, bytes_field(1, position)) + bytes_field(
+            5, bytes_field(1, timestamp)
+        )
+        self.set_collection(
+            "latest_pose", [(fixed32_int(2, self.floor.mission_id), value)]
+        )
 
     def _bump(self, name: str) -> None:
         self._versions[name] = self.version(name) + 1

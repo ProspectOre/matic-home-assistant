@@ -7,12 +7,13 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from custom_components.matic_robot.managed_executor import (
-    RoomRunOutcome,
+from custom_components.matic_robot.managed_observation import (
     _async_wait_for_owned_resume,
     _LegOutcomeObserver,
 )
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
+from custom_components.matic_robot.managed_run import RoomRunOutcome
+from custom_components.matic_robot.plan_model import CleaningRoom
+from custom_components.matic_robot.plans import CleaningPlanManager
 
 SERIAL = "synthetic-pause-episode-robot"
 ENTITY_ID = "vacuum.synthetic_pause_episode"
@@ -37,7 +38,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
     hass.states.async_set(ENTITY_ID, "cleaning", {"current_area": ROOM.name})
     manager = CleaningPlanManager(hass)
     await manager.async_load()
-    await manager.async_mark_started(SERIAL, "synthetic-plan", ROOM)
+    await manager.ledger.async_mark_started(SERIAL, "synthetic-plan", ROOM)
     observer = _LegOutcomeObserver(
         hass,
         ENTITY_ID,
@@ -48,7 +49,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
     write_started = asyncio.Event()
     allow_write = asyncio.Event()
     suspend_writes = 0
-    original_save = manager._store.async_save
+    original_save = manager.repository.store.async_save
 
     async def observe_save(data) -> None:
         nonlocal suspend_writes
@@ -59,7 +60,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
             await allow_write.wait()
         await original_save(data)
 
-    manager._store.async_save = observe_save
+    manager.repository.store.async_save = observe_save
     try:
         hass.states.async_set(ENTITY_ID, "paused", {"current_area": ROOM.name})
         await hass.async_block_till_done()
@@ -69,7 +70,9 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
         # Hold the first suspension commit while the observer sees the exact
         # pause -> low-charge return -> target-room resume sequence.
         suspend = asyncio.create_task(
-            manager.async_mark_suspended(SERIAL, "synthetic-plan", ROOM, "paused")
+            manager.ledger.async_mark_suspended(
+                SERIAL, "synthetic-plan", ROOM, "paused"
+            )
         )
         await asyncio.wait_for(write_started.wait(), timeout=1)
         hass.states.async_set(
@@ -95,7 +98,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
             SESSION_IDENTITY,
             resume_event=episode_resume,
         )
-        await manager.async_mark_resumed(SERIAL, "synthetic-plan", ROOM)
+        await manager.ledger.async_mark_resumed(SERIAL, "synthetic-plan", ROOM)
 
         # The executor consumes one observer outcome per suspension write. No
         # second outcome means this episode cannot increment suspended runs or
@@ -103,7 +106,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(observer.next(), timeout=0.02)
         assert suspend_writes == 1
-        assert manager.snapshot(SERIAL)["active_plan"]["status"] == "running"
+        assert manager.ledger.snapshot(SERIAL)["active_plan"]["status"] == "running"
     finally:
         allow_write.set()
         observer.close()

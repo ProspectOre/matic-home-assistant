@@ -20,6 +20,8 @@ from custom_components.matic_robot.client.slam_map import (
     decode_slam_tile,
     encode_slam_scene,
     parse_slam_scene_header,
+)
+from custom_components.matic_robot.slam_render import (
     render_slam_map,
 )
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
@@ -258,9 +260,9 @@ def test_large_floor_releases_intermediate_image_cores(monkeypatch):
             image = reference()
             if image is None:
                 continue
-            try:
-                _ = image.im
-            except ValueError:  # Explicit close destroyed the native core.
+            # Raising Pillow's stored closed-image error retains this frame
+            # and its new rasters through the exception's traceback.
+            if not isinstance(image._im, type(core)):
                 continue
             pixels += image.width * image.height
         peak_pixels = max(peak_pixels, pixels)

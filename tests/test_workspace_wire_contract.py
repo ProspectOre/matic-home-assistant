@@ -43,10 +43,14 @@ def _synthetic_workspace_hass() -> tuple[SimpleNamespace, str]:
         floor_plan_is_current=lambda plan: plan is floor_plan,
     )
     cleaning_plans = SimpleNamespace(
-        snapshot=lambda _serial: {},
-        lock=lambda _serial: SimpleNamespace(locked=lambda: False),
-        stop_pending=lambda _serial: False,
-        pending_native_reconciliation=lambda _serial: None,
+        ledger=SimpleNamespace(
+            snapshot=lambda _serial: {},
+            pending_native_reconciliation=lambda _serial: None,
+        ),
+        control=SimpleNamespace(
+            lock=lambda _serial: SimpleNamespace(locked=lambda: False),
+            stop_pending=lambda _serial: False,
+        ),
     )
     slam_history = SimpleNamespace(
         catalog_for_mission=lambda _mission: (),
