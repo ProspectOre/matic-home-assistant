@@ -86,6 +86,8 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     """Serve the local Map Studio frontend and its private data views."""
     if "workspace_socket" not in hass.data.get(__package__, {}):
         await async_register_workspace_socket(hass)
+    # Photo patrol links work in notifications without the frontend.
+    hass.http.register_view(MaticRobotPhotoView)
     if frontend.DATA_EXTRA_MODULE_URL not in hass.data:
         return
     await hass.http.async_register_static_paths(
@@ -118,7 +120,6 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticPlansView)
     hass.http.register_view(MaticRunHistoryView)
     hass.http.register_view(MaticWifiHeatmapView)
-    hass.http.register_view(MaticRobotPhotoView)
     hass.http.register_view(floor_layers_view)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)
     # Keep panel_custom optional for headless installations.
