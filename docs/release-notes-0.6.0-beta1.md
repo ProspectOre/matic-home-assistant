@@ -65,6 +65,8 @@ to try new features before 0.6.0.
 - **Stay put and emotes.** The `stay_put` command keeps the robot where it is
   instead of returning to the dock, and `emote` with `kind: snap` takes a photo
   with the robot's camera that shows in the Matic app.
+- **Clean again.** The `redo_last_clean` command repeats the robot's most
+  recent finished clean, like **Clean again** in the Matic app.
 
 ## Change a running clean
 
