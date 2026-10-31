@@ -66,7 +66,8 @@ to try new features before 0.6.0.
   instead of returning to the dock, and `emote` with `kind: snap` takes a photo
   with the robot's camera that shows in the Matic app.
 - **Clean again.** The `redo_last_clean` command repeats the robot's most
-  recent finished clean, like **Clean again** in the Matic app.
+  recent finished clean, like **Clean again** in the Matic app. Tried once on
+  a real robot, which started the same rooms as its last clean.
 
 ## Change a running clean
 
