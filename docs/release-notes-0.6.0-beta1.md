@@ -62,6 +62,9 @@ to try new features before 0.6.0.
 - **Go to room.** The **Go to room** action (`matic_robot.go_to_room`) and the
   `go_to_room` command send the robot to one room, by name or ID, without
   marking it cleaned. In Matic Map, pick one room and press **Go to room**.
+- **Stay put and emotes.** The `stay_put` command keeps the robot where it is
+  instead of returning to the dock, and `emote` with `kind: snap` takes a photo
+  with the robot's camera that shows in the Matic app.
 
 ## Change a running clean
 
@@ -93,6 +96,9 @@ to try new features before 0.6.0.
   command to win the robot back.
 - **Time zone Repair.** If the robot's time zone would run its schedules at a
   different local time than Home Assistant's, a Repair says so.
+- **Finished or stopped.** The Cleaning finished event and the Robot cleaning
+  runs sensor say whether a run finished on its own or was stopped. When
+  the robot reports an ending Matic doesn't recognise yet, they say `unknown`.
 - See [Working alongside the Matic app](coexistence.md) for the full rules.
 
 ## Assistant tools

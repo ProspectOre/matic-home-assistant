@@ -40,3 +40,51 @@ test("rooms chosen in Matic Map are cleaned and the run finishes", async ({ page
   await expect(page.getByText("Docked").first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Clean 2 rooms" })).toBeEnabled();
 });
+
+test("Go to room sends the docked robot to one room", async ({ page, request }) => {
+  await page.goto("/matic-map");
+  await expect(page.getByText("Docked").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Clean rooms" }).click();
+  await page.getByRole("checkbox", { name: "Study" }).check();
+  await page.getByRole("button", { name: "Go to room" }).click();
+
+  await expect.poll(async () => (await robotState(request)).destination).toBe("Study");
+  const state = await robotState(request);
+  expect(state.current_area).toBe("Study");
+  // A visit starts no task, so no coverage command follows the first test's.
+  expect(state.commands.filter(({ channel }) => channel === "user_command")).toHaveLength(2);
+
+  // Leave the shared robot docked for the next test.
+  await step(request, "arrive_at_dock");
+  await expect(page.getByText("Docked").first()).toBeVisible({ timeout: 30_000 });
+});
+
+test("Skip in Change this clean drops a room from a running clean", async ({ page, request }) => {
+  await page.goto("/matic-map");
+  await expect(page.getByText("Docked").first()).toBeVisible();
+  // Started as an automation would. A clean started from Matic Map keeps its
+  // queue buttons disabled until the run ends; that is reported separately.
+  await page.evaluate(() => {
+    const hass = document.querySelector("home-assistant").hass;
+    void hass.callService("matic_robot", "clean_room_sequence", {
+      entity_id: "vacuum.simulated_matic",
+      rooms: [{ room: "Kitchen" }, { room: "Study" }],
+    });
+  });
+  await expect.poll(async () => (await robotState(request)).phase).toBe("cleaning");
+  expect((await robotState(request)).plan).toEqual(["Kitchen", "Study"]);
+
+  const queue = page.getByRole("region", { name: "Change this clean" });
+  await queue.getByLabel("Room").selectOption({ label: "Study" });
+  await queue.getByRole("button", { name: "Skip" }).click();
+  await expect(page.getByLabel("Cleaning panel").getByText("Study skipped.")).toBeVisible({
+    timeout: 30_000,
+  });
+  expect((await robotState(request)).plan).toEqual(["Kitchen"]);
+
+  await step(request, "finish_room");
+  await step(request, "finish_session");
+  await step(request, "arrive_at_dock");
+  await expect(page.getByText("Docked").first()).toBeVisible({ timeout: 30_000 });
+});
