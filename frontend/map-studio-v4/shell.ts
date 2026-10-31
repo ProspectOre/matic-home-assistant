@@ -242,6 +242,7 @@ export class MaticMapShellV4 extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     this.#sheet.connect();
+    if (this.hasUpdated) this.#sheet.measure(this.getBoundingClientRect());
     document.addEventListener("fullscreenchange", this.#fullscreenChange);
     this.#resolveTheme();
     this.#unwatchTheme = watchTheme(() => this.#resolveTheme());
@@ -323,9 +324,10 @@ export class MaticMapShellV4 extends LitElement {
     // ResizeObserver can report frames later. Measure now so this render
     // never lays out from the old size and moves a control under a key press.
     const previous = changed.get("state") as WorkspaceState | undefined;
-    if (previous && previous.narrowHint !== this.state.narrowHint && this.isConnected) {
+    if (this.isConnected && (!previous || previous.narrowHint !== this.state.narrowHint)) {
       this.#sheet.measure(this.getBoundingClientRect());
     }
+    if (!previous) this.#sheet.resetForWorkflow(this.state, false);
     // The untranslated title names the status row, so only a new row is
     // announced, in the current language.
     const row = statusCopy(this.state).title;
@@ -512,9 +514,7 @@ export class MaticMapShellV4 extends LitElement {
           });
         });
       }
-      if (!previous) {
-        this.#sheet.resetForWorkflow(this.state, false);
-      } else if (!this.#pinRun && (previous.workflow !== this.state.workflow || previous.planView !== this.state.planView)) {
+      if (previous && !this.#pinRun && (previous.workflow !== this.state.workflow || previous.planView !== this.state.planView)) {
         this.#sheet.resetForWorkflow(this.state, true);
         const state = this.state;
         // Leaving a plan view, the control that led there takes focus once

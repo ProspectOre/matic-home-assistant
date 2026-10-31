@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 from homeassistant.const import ATTR_ENTITY_ID
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Context, Event, HomeAssistant, callback
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.const import (
@@ -39,6 +39,8 @@ class PlanRun:
         self.docked: list[dict[str, Any]] = []
         self.task: asyncio.Task[Any] | None = None
         self.error: BaseException | None = None
+        self.run_id: str | None = None
+        self.room_id: str | None = None
 
     async def start(self, *rooms: str | dict[str, str]) -> None:
         """Run ``clean_room_sequence``, Kitchen then Study unless rooms are given.
@@ -55,6 +57,17 @@ class PlanRun:
 
     async def start_service(self, service: str, **data: Any) -> None:
         """Start a blocking plan service and wait for the robot to clean."""
+        context = Context()
+        self.run_id = None
+        self.room_id = None
+
+        @callback
+        def room_started(event: Event[dict[str, Any]]) -> None:
+            if event.context.id == context.id:
+                self.run_id = event.data["run_id"]
+                self.room_id = event.data["room_id"]
+
+        self.hass.bus.async_listen(f"{DOMAIN}_room_started", room_started)
         self.hass.bus.async_listen(
             EVENT_PLAN_FINISHED, lambda event: self.finished.append(dict(event.data))
         )
@@ -63,12 +76,50 @@ class PlanRun:
         )
         self.task = self.hass.async_create_task(
             self.hass.services.async_call(
-                DOMAIN, service, {ATTR_ENTITY_ID: VACUUM, **data}, blocking=True
+                DOMAIN,
+                service,
+                {ATTR_ENTITY_ID: VACUUM, **data},
+                blocking=True,
+                context=context,
             )
         )
         async with asyncio.timeout(10):
             await self.robot.wait_for_phase(Phase.CLEANING)
         await self.poll()
+        visit = self.robot.session.current_visit if self.robot.session else None
+        assert visit is not None, "Managed task ended before start confirmation"
+        if not visit.custom_area:
+            assert visit.room is not None
+            await self.wait_for_room_start()
+
+    async def wait_for_room_start(self) -> None:
+        """Wait for this run to confirm ownership and begin active room timing."""
+        assert self.task is not None
+        async with asyncio.timeout(10):
+            while True:
+                if self.task.done():
+                    await self.task
+                    raise AssertionError(
+                        "Plan ended before its room start was confirmed"
+                    )
+                state = self.hass.states.get(
+                    "sensor.simulated_matic_current_room_active_time"
+                )
+                try:
+                    active_time = float(state.state) if state is not None else -1
+                except ValueError:
+                    active_time = -1
+                if (
+                    state is not None
+                    and active_time >= 0
+                    and self.run_id is not None
+                    and self.room_id is not None
+                    and state.attributes.get("run_id") == self.run_id
+                    and state.attributes.get("room_id") == self.room_id
+                    and state.attributes.get("status") == "running"
+                ):
+                    return
+                await self.poll()
 
     async def poll(self) -> None:
         """Run one coordinator poll and let listeners react."""

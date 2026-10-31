@@ -8,21 +8,15 @@ import {
   mdiArrowLeft,
   mdiArrowUp,
   mdiBatteryCharging50,
-  mdiBrush,
   mdiCalendarCheck,
   mdiCheck,
   mdiChevronDown,
   mdiChevronRight,
   mdiChevronUp,
-  mdiCircleOutline,
   mdiClose,
-  mdiContentCopy,
-  mdiCursorMove,
-  mdiDeleteSweepOutline,
   mdiDotsVertical,
   mdiFullscreen,
   mdiFullscreenExit,
-  mdiEraser,
   mdiFormatText,
   mdiHelpCircleOutline,
   mdiHistory,
@@ -34,11 +28,9 @@ import {
   mdiPlaylistCheck,
   mdiPlay,
   mdiPlus,
-  mdiRedo,
   mdiRotateLeft,
   mdiRotateRight,
   mdiShapePolygonPlus,
-  mdiUndo,
 } from "@mdi/js";
 
 // Re-exported one const at a time rather than as a lookup object: esbuild drops
@@ -63,19 +55,11 @@ export const iconRoomNames = mdiFormatText;
 export const iconHelp = mdiHelpCircleOutline;
 export const iconOrbitLeft = mdiRotateLeft;
 export const iconOrbitRight = mdiRotateRight;
-export const iconUndo = mdiUndo;
-export const iconRedo = mdiRedo;
-export const iconPaint = mdiBrush;
-export const iconBrush = mdiCircleOutline;
-export const iconErase = mdiEraser;
-export const iconClear = mdiDeleteSweepOutline;
-export const iconMoveMap = mdiCursorMove;
 export const iconDone = mdiCheck;
 export const iconPlus = mdiPlus;
 export const iconMinus = mdiMinus;
 export const iconMoveUp = mdiArrowUp;
 export const iconMoveDown = mdiArrowDown;
-export const iconCopy = mdiContentCopy;
 export const iconNewArea = mdiShapePolygonPlus;
 export const iconHistory = mdiHistory;
 export const iconPlan = mdiPlaylistCheck;

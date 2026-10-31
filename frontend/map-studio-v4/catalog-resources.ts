@@ -19,10 +19,8 @@ interface CatalogResourceCallbacks {
   readonly resumePins: () => void;
 }
 
-const NOTICES = {
-  planRemoved: notice("warning", "v4_notice_plan_removed", "This plan was removed elsewhere, so nothing was changed."),
-  areaRemoved: notice("warning", "v4_notice_area_removed", "This saved area was removed elsewhere. Your edits are kept as a new draft; saving will create a new area."),
-};
+const planRemovedNotice = notice("warning", "v4_notice_plan_removed", "This plan was removed elsewhere, so nothing was changed.");
+const areaRemovedNotice = notice("warning", "v4_notice_area_removed", "This saved area was removed elsewhere. Your edits are kept as a new draft; saving will create a new area.");
 
 /** Owns catalog request admission, coalescing and saved-resource refreshes. */
 export class CatalogResources {
@@ -234,7 +232,7 @@ export class CatalogResources {
           precisionOpen: false,
           selection: { ...this.#store.value.selection, planId: null },
           planDraft: initialWorkspaceState().planDraft,
-          notice: NOTICES.planRemoved,
+          notice: planRemovedNotice,
         });
         return plans;
       }
@@ -369,7 +367,7 @@ export class CatalogResources {
             canRebind: false,
             dirty: true,
           },
-          notice: NOTICES.areaRemoved,
+          notice: areaRemovedNotice,
         });
       } else if (reconcileDraft && !current.draw.dirty && !current.areaDraft.dirty) {
         this.#store.patch(areaSelection(this.#store.value, selectedExists ? selectedId : null));

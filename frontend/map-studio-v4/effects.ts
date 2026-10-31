@@ -64,19 +64,17 @@ const ROOM_PREVIEW_HELPERS: RoomPreviewHelpers = {
 };
 
 // Effects name every notice by its key; views translate it at render time.
-const NOTICES = {
-  actionUnconfirmed: notice("error", "v4_notice_action_unconfirmed", "Home Assistant can't confirm that command, so check the robot before trying again."),
-  statusRefreshed: notice("info", "v4_notice_status_refreshed", "Status refreshed, so check the robot before trying again."),
-  planSaveFailed: notice("error", "v4_notice_plan_save_failed", "Home Assistant can't confirm the plan was saved, so check your plans, then try again."),
-  planDeleteFailed: notice("error", "v4_notice_plan_delete_failed", "The plan wasn't deleted; try again."),
-  planPreviewMissing: notice("warning", "v4_notice_plan_preview_missing", "The next-run preview isn't ready; reload your plans, then try again."),
-  planPreviewRefreshFailed: notice("warning", "v4_notice_plan_preview_refresh_failed", "The next-run preview didn't refresh; check the plan, then try again."),
-  areaSaveFailed: notice("error", "v4_notice_area_save_failed", "Home Assistant can't confirm the area was saved, so try again."),
-  areaDeleteFailed: notice("error", "v4_notice_area_delete_failed", "Home Assistant can't confirm the area was deleted, so try again."),
-  resetMopFailed: notice("error", "v4_notice_reset_mop_failed", "Mopping progress wasn't reset; try again."),
-  resetVacuumFailed: notice("error", "v4_notice_reset_vacuum_failed", "Vacuum rotation progress wasn't reset; try again."),
-  deepMopFailed: notice("error", "v4_deep_mop_failed", "Couldn't confirm double-pass mopping. Try again."),
-} as const;
+const actionUnconfirmedNotice = notice("error", "v4_notice_action_unconfirmed", "Home Assistant can't confirm that command, so check the robot before trying again.");
+const statusRefreshedNotice = notice("info", "v4_notice_status_refreshed", "Status refreshed, so check the robot before trying again.");
+const planSaveFailedNotice = notice("error", "v4_notice_plan_save_failed", "Home Assistant can't confirm the plan was saved, so check your plans, then try again.");
+const planDeleteFailedNotice = notice("error", "v4_notice_plan_delete_failed", "The plan wasn't deleted; try again.");
+const planPreviewMissingNotice = notice("warning", "v4_notice_plan_preview_missing", "The next-run preview isn't ready; reload your plans, then try again.");
+const planPreviewRefreshFailedNotice = notice("warning", "v4_notice_plan_preview_refresh_failed", "The next-run preview didn't refresh; check the plan, then try again.");
+const areaSaveFailedNotice = notice("error", "v4_notice_area_save_failed", "Home Assistant can't confirm the area was saved, so try again.");
+const areaDeleteFailedNotice = notice("error", "v4_notice_area_delete_failed", "Home Assistant can't confirm the area was deleted, so try again.");
+const resetMopFailedNotice = notice("error", "v4_notice_reset_mop_failed", "Mopping progress wasn't reset; try again.");
+const resetVacuumFailedNotice = notice("error", "v4_notice_reset_vacuum_failed", "Vacuum rotation progress wasn't reset; try again.");
+const deepMopFailedNotice = notice("error", "v4_deep_mop_failed", "Couldn't confirm double-pass mopping. Try again.");
 
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "areas", "draw", "areaReview"];
 const MUTATION_RESOURCES = ["plan-mutation", "area-mutation", "setting-mutation"] as const;
@@ -204,7 +202,7 @@ export class EffectController {
       failureNotice: async (error) => {
         const writes = await this.#catalogWritesModule();
         return writes?.coverageGuardNotice(CATALOG_WRITE_HELPERS.notice, error)
-          ?? NOTICES.actionUnconfirmed;
+          ?? actionUnconfirmedNotice;
       },
     });
     this.#store.patch({ pageActive: this.#pageLifecycle.active });
@@ -559,7 +557,7 @@ export class EffectController {
   }
 
   setPlanEnabled(enabled: boolean): Promise<void> {
-    return this.#write("plan-mutation", NOTICES.planSaveFailed, (writes, context) => writes.setPlanEnabled(context, enabled));
+    return this.#write("plan-mutation", planSaveFailedNotice, (writes, context) => writes.setPlanEnabled(context, enabled));
   }
 
   selectArea(areaId: string | null): void {
@@ -567,19 +565,19 @@ export class EffectController {
   }
 
   saveArea(settled?: SaveSettled): Promise<void> {
-    return this.#write("area-mutation", NOTICES.areaSaveFailed, (writes, context) => writes.saveArea(context), settled);
+    return this.#write("area-mutation", areaSaveFailedNotice, (writes, context) => writes.saveArea(context), settled);
   }
 
   deleteArea(): Promise<void> {
-    return this.#write("area-mutation", NOTICES.areaDeleteFailed, (writes, context) => writes.deleteArea(context));
+    return this.#write("area-mutation", areaDeleteFailedNotice, (writes, context) => writes.deleteArea(context));
   }
 
   savePlan(settled?: SaveSettled): Promise<void> {
-    return this.#write("plan-mutation", NOTICES.planSaveFailed, (writes, context) => writes.savePlan(context), settled);
+    return this.#write("plan-mutation", planSaveFailedNotice, (writes, context) => writes.savePlan(context), settled);
   }
 
   deletePlan(): Promise<void> {
-    return this.#write("plan-mutation", NOTICES.planDeleteFailed, (writes, context) => writes.deletePlan(context));
+    return this.#write("plan-mutation", planDeleteFailedNotice, (writes, context) => writes.deletePlan(context));
   }
 
   // Opening a workflow that can write starts the load, so a write rarely waits
@@ -650,7 +648,7 @@ export class EffectController {
     const id = typeof idOrAction === "string" ? idOrAction : idOrAction.id;
     switch (id) {
       case "toggle-deep-mop":
-        await this.#write("setting-mutation", NOTICES.deepMopFailed, (writes, context) => writes.setDeepMop(context));
+        await this.#write("setting-mutation", deepMopFailedNotice, (writes, context) => writes.setDeepMop(context));
         return;
       case "recheck-status": {
         if (this.#store.value.rechecking) return;
@@ -666,7 +664,7 @@ export class EffectController {
           && state.resources.catalog.status === "ready"
           && state.host.connected && state.host.robotConnected
           && state.coherence === "current" && state.command === "failed") {
-          this.#store.patch({ command: "idle", notice: NOTICES.statusRefreshed });
+          this.#store.patch({ command: "idle", notice: statusRefreshedNotice });
         }
         return;
       }
@@ -695,7 +693,7 @@ export class EffectController {
         const displayedPreview = initial.resources.plans.value?.plans
           .find((candidate) => candidate.id === plan)?.nextRunPreview;
         if (!displayedPreview || !/^[0-9a-f]{64}$/u.test(displayedPreview.previewToken ?? "")) {
-          this.#store.patch({ notice: NOTICES.planPreviewMissing });
+          this.#store.patch({ notice: planPreviewMissingNotice });
           return;
         }
         this.#store.patch({ command: "pending", pendingAction: "run-plan", notice: null });
@@ -726,7 +724,7 @@ export class EffectController {
           const writes = await this.#catalogWritesModule();
           if (!writes) {
             if (current()) {
-              this.#store.patch({ notice: NOTICES.planPreviewRefreshFailed });
+              this.#store.patch({ notice: planPreviewRefreshFailedNotice });
             }
             return;
           }
@@ -734,7 +732,7 @@ export class EffectController {
             plan, displayedPreview, current, store: this.#store,
             loadPlans: () => this.loadPlans({ force: true, inPlace: true }),
             releaseRead: () => this.#requests.release("plan-preflight", preflight),
-            releasePending, failure: NOTICES.planPreviewRefreshFailed,
+            releasePending, failure: planPreviewRefreshFailedNotice,
             notice: CATALOG_WRITE_HELPERS.notice,
             start: (token) => this.#motion.dispatch("matic_robot", "run_selected_plan", { plan, preview_token: token }),
           });
@@ -809,7 +807,7 @@ export class EffectController {
         if (typeof idOrAction === "string" || idOrAction.id !== "reset-room-cadence") return;
         await this.#write(
           "plan-mutation",
-          idOrAction.mode === "mop" ? NOTICES.resetMopFailed : NOTICES.resetVacuumFailed,
+          idOrAction.mode === "mop" ? resetMopFailedNotice : resetVacuumFailedNotice,
           (writes, context) => writes.resetRoomCadence(context, idOrAction),
         );
         return;
@@ -845,7 +843,7 @@ export class EffectController {
     const writes = await this.#catalogWritesModule();
     if (this.#disposed || revision !== this.#queueRevision) return;
     const result = writes?.queueChangeNotice(CATALOG_WRITE_HELPERS.notice, action, failure)
-      ?? (failure === undefined ? null : NOTICES.actionUnconfirmed);
+      ?? (failure === undefined ? null : actionUnconfirmedNotice);
     this.#store.patch({ queuePending: false, notice: result });
   }
 

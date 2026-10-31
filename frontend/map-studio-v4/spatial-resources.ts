@@ -45,7 +45,7 @@ interface SpatialReadRecoveryOwner {
   attempt: SpatialReadRecoveryAttempt;
 }
 
-const NOTICES = { mapChanged: notice("info", "v4_notice_map_changed", "The map changed, so choose what to clean again.") };
+const mapChangedNotice = notice("info", "v4_notice_map_changed", "The map changed, so choose what to clean again.");
 
 /** Owns admitted spatial frames, their read lifecycles and recovery. */
 export class SpatialResources {
@@ -410,7 +410,7 @@ export class SpatialResources {
         draw: empty.draw,
         planDraft: empty.planDraft,
         areaDraft: empty.areaDraft,
-        notice: NOTICES.mapChanged,
+        notice: mapChangedNotice,
       } : {}),
       draftFloorOrdinal: verifiedFloor ?? previousDraftFloor,
       draftMapSessionKey: verifiedSession ?? previousDraftSession,

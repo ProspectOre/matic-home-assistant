@@ -3,7 +3,7 @@ import { build } from "esbuild";
 
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
 
-async function loadNarrowGallery(page, scenario = "ready") {
+async function loadNarrowGallery(page, scenario = "ready", { compact = false, delayResize = false, initiallyHidden = false } = {}) {
   const bundle = await build({
     stdin: {
       contents: 'export * from "./frontend/map-studio-v4/review";',
@@ -17,24 +17,48 @@ async function loadNarrowGallery(page, scenario = "ready") {
     contentType: "text/javascript",
     body: bundle.outputFiles[0].text,
   }));
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.addInitScript(() => {
+  await page.setViewportSize(compact ? { width: 844, height: 390 } : { width: 390, height: 844 });
+  await page.addInitScript(({ delayResize }) => {
+    if (delayResize) {
+      const NativeResizeObserver = window.ResizeObserver;
+      const pending = new Map();
+      let held = true;
+      window.releaseResizeObservers = () => {
+        held = false;
+        for (const [observer, entries] of pending) observer(entries);
+        pending.clear();
+      };
+      window.ResizeObserver = class extends NativeResizeObserver {
+        constructor(callback) {
+          super((entries, observer) => {
+            if (held) pending.set(() => callback(entries, observer), entries);
+            else callback(entries, observer);
+          });
+        }
+      };
+    }
     Element.prototype.setPointerCapture = () => {};
     Element.prototype.releasePointerCapture = () => {};
-  });
+  }, { delayResize });
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.evaluate(async () => {
     await import("/sheet-gesture-review.js");
   });
-  await page.evaluate(async ({ tag, scenario }) => {
+  await page.evaluate(async ({ tag, scenario, compact, initiallyHidden }) => {
     await customElements.whenDefined(tag);
     const gallery = document.createElement(tag);
     gallery.controls = false;
     gallery.scenario = scenario;
     gallery.narrow = true;
     document.body.style.margin = "0";
+    if (initiallyHidden) gallery.style.display = "none";
     document.body.append(gallery);
-  }, { tag: GALLERY_TAG, scenario });
+    if (compact) {
+      const fill = new CSSStyleSheet();
+      fill.replaceSync(".stage{block-size:100dvh!important;min-block-size:0!important;max-inline-size:none!important}");
+      gallery.shadowRoot.adoptedStyleSheets = [...gallery.shadowRoot.adoptedStyleSheets, fill];
+    }
+  }, { tag: GALLERY_TAG, scenario, compact, initiallyHidden });
   return page.locator(`${GALLERY_TAG} .mobile-sheet`);
 }
 
@@ -186,6 +210,34 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
     expect(gaps.rest).toBeGreaterThanOrEqual(8);
     expect(gaps.rest).toBeLessThan(9);
     expect(gaps.during.map((during) => Math.round(during - gaps.rest))).toEqual([0, 0, 0]);
+    await expect(sheet).toHaveAttribute("data-detent", "half");
+  });
+
+  test("the first compact action survives a delayed resize observation", async ({ page }) => {
+    const sheet = await loadNarrowGallery(page, "rooms", { compact: true, delayResize: true });
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+    const expand = sheet.getByRole("button", { name: "Expand panel", exact: true });
+    await expand.focus();
+    await page.keyboard.press("Enter");
+    await expect(sheet).toHaveAttribute("data-detent", "full");
+    await page.evaluate(() => window.releaseResizeObservers());
+    await expect(sheet).toHaveAttribute("data-detent", "full");
+    await expect(sheet.getByRole("button", { name: "Collapse panel", exact: true })).toBeFocused();
+  });
+
+  test("a hidden first measurement waits for the visible size", async ({ page }) => {
+    const sheet = await loadNarrowGallery(page, "rooms", { compact: true, delayResize: true, initiallyHidden: true });
+    await expect(sheet).toHaveAttribute("data-detent", "half");
+    await page.locator(GALLERY_TAG).evaluate(async (gallery) => {
+      gallery.style.display = "";
+      await new Promise(requestAnimationFrame);
+      await new Promise(requestAnimationFrame);
+      window.releaseResizeObservers();
+    });
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+    await sheet.getByRole("button", { name: "Expand panel", exact: true }).click();
+    await expect(sheet).toHaveAttribute("data-detent", "full");
+    await page.setViewportSize({ width: 390, height: 844 });
     await expect(sheet).toHaveAttribute("data-detent", "half");
   });
 
