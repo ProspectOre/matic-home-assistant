@@ -174,6 +174,9 @@ class FakeHomeAssistant:
         if self.sent[message_id - 1] == "backup/subscribe_events":
             event = {"manager_state": "create_backup", "state": "completed"}
             return {"id": message_id, "event": event}
+        return {"id": message_id, "success": True}
+
+    def reply_if_ready(self, message_id: int) -> dict[str, Any] | None:
         if self.clean_error is not None:
             return {"id": message_id, "success": False, "error": self.clean_error}
         return {"id": message_id, "success": True}
@@ -398,8 +401,19 @@ async def test_client_authenticates_and_matches_replies_by_id(
             await ha.connect()
             events = await ha.send("subscribe")
             assert (await ha.call("get_config"))["state"] == "RUNNING"
-            assert (await ha.receive(events))["type"] == "result"
-            assert (await ha.receive(events))["event"] == 1
+            assert ha.reply_if_ready(events) == {
+                "id": events,
+                "type": "result",
+                "success": True,
+            }
+            assert ha.reply_if_ready(events) == {
+                "id": events,
+                "type": "event",
+                "event": 1,
+            }
+            assert ha.reply_if_ready(events) is None
+            await ha.send("subscribe")
+            assert (await ha.receive(events + 2))["type"] == "result"
             with pytest.raises(CheckFailed, match="fails failed"):
                 await ha.call("fails")
             assert await ha.get("/asset.js") == (200, b"icons")
@@ -420,7 +434,6 @@ def test_physical_needs_a_room() -> None:
 async def test_a_failed_clean_action_fails_the_physical_step() -> None:
     candidate = _candidate()
     ha = FakeHomeAssistant(candidate)
-    ha.robot_states = ["docked", "docked", "cleaning", "docked"]
     ha.clean_error = "rooms held"
     options = Options(install=False, room="Kitchen", confirm=lambda _: "Kitchen")
     check = InstalledCheck(ha, candidate, options)  # type: ignore[arg-type]

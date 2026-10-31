@@ -236,6 +236,12 @@ class HomeAssistant:
                 return message
             self._pending.setdefault(message["id"], []).append(message)
 
+    def reply_if_ready(self, message_id: int) -> dict[str, Any] | None:
+        """Return a reply that already arrived for one command id, if any."""
+        if queued := self._pending.get(message_id):
+            return queued.pop(0)
+        return None
+
     async def call(self, message_type: str, **data: Any) -> Any:
         """Send one command and return its result."""
         reply = await self.receive(await self.send(message_type, **data))
@@ -474,23 +480,13 @@ class InstalledCheck:
         if answer.strip() != room:
             raise CheckFailed("the owner did not confirm; nothing was sent")
         started = _now()
-        # The clean action can block for the whole run, so watch the robot
-        # leave and return to the dock before reading the action's result.
-        clean = await self.ha.send(
-            "call_service",
-            domain=DOMAIN,
-            service="clean",
-            target={"entity_id": self.robot},
-            service_data={
+        await self._clean(
+            {
                 "rooms": [room],
                 "cleaning_mode": "vacuum",
                 "coverage_setting": "quick",
-            },
+            }
         )
-        await self._wait_for(lambda state: state != "docked", "leave the dock")
-        await self._wait_for(lambda state: state == "docked", "dock")
-        if not (reply := await self.ha.receive(clean)).get("success", True):
-            raise CheckFailed(f"the clean action failed: {reply.get('error')}")
         cleaned = _now()
         await self.ha.call(
             "call_service",
@@ -512,6 +508,39 @@ class InstalledCheck:
         return next(
             state["state"] for state in states if state["entity_id"] == self.robot
         )
+
+    async def _clean(self, service_data: dict[str, Any]) -> None:
+        """Clean, watching the robot leave and return to the dock.
+
+        The clean action can block for the whole run, so its reply is read
+        whenever it arrives; a rejection fails the step at once.
+        """
+        assert self.robot is not None
+        action = await self.ha.send(
+            "call_service",
+            domain=DOMAIN,
+            service="clean",
+            target={"entity_id": self.robot},
+            service_data=service_data,
+        )
+        reply: dict[str, Any] | None = None
+        left = False
+        try:
+            async with asyncio.timeout(self.dock_timeout):
+                while True:
+                    if reply is None and (reply := self.ha.reply_if_ready(action)):
+                        if not reply.get("success", True):
+                            raise CheckFailed(
+                                f"the clean action failed: {reply.get('error')}"
+                            )
+                    if await self._robot_state() != "docked":
+                        left = True
+                    elif left and reply is not None:
+                        return
+                    await asyncio.sleep(self.ha.poll_interval)
+        except TimeoutError:
+            what = "dock" if left else "leave the dock"
+            raise CheckFailed(f"the robot did not {what} in time") from None
 
     async def _wait_for(self, reached: Callable[[str], bool], what: str) -> None:
         try:
