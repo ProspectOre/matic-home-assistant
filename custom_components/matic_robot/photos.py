@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from typing import TYPE_CHECKING
 
 from google.protobuf.message import DecodeError
@@ -105,7 +105,7 @@ class RobotPhotoStore:
             retry_delay = min(retry_delay * 2, 60)
 
     @callback
-    def _async_add_photos(self, photos: list[RobotPhoto]) -> bool:
+    def _async_add_photos(self, photos: Iterable[RobotPhoto]) -> bool:
         changed = False
         for photo in photos:
             if photo.photo_id not in self._photo_ids:
@@ -122,11 +122,12 @@ class RobotPhotoStore:
             listener()
 
 
-def _decode_photos(entries: tuple[HermesCollectionEntry, ...]) -> list[RobotPhoto]:
-    photos: list[RobotPhoto] = []
+def _decode_photos(
+    entries: Iterable[HermesCollectionEntry],
+) -> Iterator[RobotPhoto]:
+    """Decode one entry at a time so only the photos kept stay in memory."""
     for entry in entries:
         try:
-            photos.append(decode_instamatic_snap(entry))
+            yield decode_instamatic_snap(entry)
         except DecodeError:
             continue
-    return photos

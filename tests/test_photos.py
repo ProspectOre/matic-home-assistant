@@ -176,6 +176,15 @@ async def test_refresh_keeps_only_the_newest_photo_and_counts_the_rest() -> None
     assert listener.call_count == 2
 
 
+def test_decodes_photos_one_at_a_time() -> None:
+    decoded = photos._decode_photos(iter((_snap(UUID(int=1)), _snap(UUID(int=2)))))
+    with patch.object(
+        photos, "decode_instamatic_snap", wraps=decode_instamatic_snap
+    ) as decode:
+        assert next(decoded).photo_id == str(UUID(int=1))
+        assert decode.call_count == 1
+
+
 async def test_refresh_keeps_the_last_photo_when_the_robot_is_unreachable() -> None:
     client = _client(entries=(_snap(),))
     store = RobotPhotoStore(client)
