@@ -8,7 +8,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
+from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.client import tls
@@ -24,11 +26,22 @@ from custom_components.matic_robot.const import (
 )
 
 from .hermes_sim import RunningSimulator, SimulatedRobot, start_simulator
+from .plan_run import PlanRun
+from .sim_mission import SimFloor
 
 
 @pytest.fixture
-def robot() -> SimulatedRobot:
-    return SimulatedRobot()
+def floor() -> SimFloor | None:
+    """The floor the robot has mapped; a module overrides this to map one."""
+    return None
+
+
+@pytest.fixture
+def robot(floor: SimFloor | None) -> SimulatedRobot:
+    robot = SimulatedRobot()
+    if floor is not None:
+        robot.set_floor(floor)
+    return robot
 
 
 @pytest.fixture
@@ -88,3 +101,24 @@ def config_entry(
         version=1,
         minor_version=3,
     )
+
+
+@pytest.fixture
+async def loaded_entry(
+    hass: HomeAssistant, config_entry: MockConfigEntry
+) -> AsyncIterator[MockConfigEntry]:
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+    assert config_entry.state is ConfigEntryState.LOADED
+    yield config_entry
+    if config_entry.state is ConfigEntryState.LOADED:
+        assert await hass.config_entries.async_unload(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+
+@pytest.fixture
+def plan(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry, robot: SimulatedRobot
+) -> PlanRun:
+    return PlanRun(hass, loaded_entry, robot)
