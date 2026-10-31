@@ -185,6 +185,15 @@ export interface WifiSignalLayer {
   readonly cells: readonly WifiSignalCell[];
 }
 
+/** A closed outline in map metres; outlines inside another of the same layer are holes. */
+export type FloorTypeOutline = readonly (readonly [x: number, y: number])[];
+
+export interface FloorTypesLayer {
+  readonly status: "loading" | "ready" | "failed";
+  readonly carpet: readonly FloorTypeOutline[];
+  readonly vent: readonly FloorTypeOutline[];
+}
+
 export type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";
 
 export interface PlanDraft {
@@ -359,6 +368,8 @@ export interface WorkspaceState {
   readonly labelsVisible: boolean;
   /** The Wi-Fi signal layer; null while hidden. */
   readonly wifiSignal: WifiSignalLayer | null;
+  /** The carpet and vent layer; null while hidden. */
+  readonly floorTypes: FloorTypesLayer | null;
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   /** Only preferences belonging to the verified live map can be restored. */
@@ -413,6 +424,7 @@ export type WorkspaceIntent =
     }
   | { readonly type: "toggle-labels" }
   | { readonly type: "toggle-wifi-signal" }
+  | { readonly type: "toggle-floor-types" }
   | { readonly type: "open-workflow"; readonly workflow: Workflow }
   | { readonly type: "enter-full-map" }
   | { readonly type: "exit-full-map" }
@@ -639,6 +651,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-camera": true,
   "toggle-labels": true,
   "toggle-wifi-signal": true,
+  "toggle-floor-types": true,
   "open-workflow": true,
   "enter-full-map": true,
   "exit-full-map": true,

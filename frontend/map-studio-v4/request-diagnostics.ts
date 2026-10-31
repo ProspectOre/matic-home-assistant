@@ -12,6 +12,7 @@ export const BACKEND_REQUEST_OPERATIONS = [
   "areaDelete",
   "runs",
   "wifiSignal",
+  "carpetVents",
 ] as const;
 
 export type BackendRequestOperation = typeof BACKEND_REQUEST_OPERATIONS[number];

@@ -40,6 +40,9 @@ to try new features before 0.6.0.
   30 seconds while it's away from the dock. Open **Map options** and turn on
   **Wi-Fi signal** to see weak spots, from green for strong to red for weak.
   **Clear Wi-Fi survey** starts over, for example after you move your router.
+- **Carpet and vents.** Open **Map options** and turn on **Carpet and vents** to
+  see the rugs and floor vents the robot has found, carpet in brown and vents in
+  blue. Floor type changes made in the Matic app show up here too.
 
 ## Plans
 

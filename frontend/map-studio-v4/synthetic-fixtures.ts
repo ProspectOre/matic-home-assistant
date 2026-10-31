@@ -108,6 +108,7 @@ export const syntheticEntry = (): MapEntry => ({
   plansUrl: "/api/matic_robot/plans/synthetic",
   // The gallery has no survey, so Map options leaves out the Wi-Fi row.
   wifiHeatmapUrl: null,
+  floorTypesUrl: null,
   mapRevision: 7,
   mapSceneEpoch: "synthetic-scene-epoch",
   mapFloorCoherent: true,
