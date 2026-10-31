@@ -201,6 +201,8 @@ export class EffectController {
   #poseExpiryTimer: number | null = null;
   #settleTimer: number | null = null;
   #motionRevision = 0;
+  // A robot or access change ends the pending queue change's claim on the UI.
+  #queueRevision = 0;
   #catalogLoading = false;
   #catalogForceInFlight = false;
   #catalogRefreshQueued = false;
@@ -1131,6 +1133,7 @@ export class EffectController {
   #clearPrivate(problem: string, selectedEntryId: string | null = null): void {
     this.#clearSpatialReadRecovery();
     this.#invalidateMotion();
+    this.#queueRevision += 1;
     this.#coherence.invalidate();
     this.#stopDeltaStream();
     this.#entryIdentity = "";
@@ -1140,6 +1143,7 @@ export class EffectController {
     const empty = initialWorkspaceState();
     this.#store.patch({
       command: "idle",
+      queuePending: false,
       ...(problem === "context-changed" ? { historyCameras: {} } : {}),
       dataMode: empty.dataMode,
       deepMop: null,
@@ -2818,6 +2822,7 @@ export class EffectController {
     const entryKey = this.#projection?.entryKey;
     const state = this.#store.value;
     if (!entityId || state.selection.entryId !== entryKey || !canChangeQueue(state)) return;
+    const revision = this.#queueRevision;
     this.#store.patch({ queuePending: true, notice: null });
     let failure: unknown;
     try {
@@ -2826,10 +2831,10 @@ export class EffectController {
       failure = error ?? new Error("queue-change-failed");
     }
     const writes = await this.#catalogWritesModule();
-    if (this.#disposed) return;
+    if (this.#disposed || revision !== this.#queueRevision) return;
     const result = writes?.queueChangeNotice(CATALOG_WRITE_HELPERS.notice, action, failure)
       ?? (failure === undefined ? null : NOTICES.actionUnconfirmed);
-    this.#store.patch(entryKey === this.#projection?.entryKey ? { queuePending: false, notice: result } : { queuePending: false });
+    this.#store.patch({ queuePending: false, notice: result });
   }
 
   async #motion(domain: string, service: string, data: Readonly<Record<string, unknown>>): Promise<void> {

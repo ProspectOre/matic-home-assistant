@@ -68,6 +68,7 @@ async function setupEffects(page, { initialPreview = null, previewProvider } = {
         const h = window.manualPreviewHarness;
         h.calls.push(args);
         h.previewCountAtService.push(h.previews.length);
+        if (h.holdService) await new Promise((resolve) => { h.releaseService = resolve; });
         if (h.serviceError) throw h.serviceError;
       },
       dispose() {},
@@ -666,6 +667,26 @@ test("a queue change is sent only while the robot cleans, and its notice says wh
       ["matic_robot", "clean_room_again", { room: "room-a" }, "vacuum.synthetic"],
     ],
   });
+});
+
+test("a robot change ends a pending queue change, and its late reply changes nothing", async ({ page }) => {
+  await setupEffects(page);
+  const result = await page.evaluate(async () => {
+    const h = window.manualPreviewHarness;
+    h.store.patch({ activity: "cleaning" });
+    h.holdService = true;
+    const sent = h.effects.executeAction({ id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen" });
+    for (let i = 0; i < 20 && !h.releaseService; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = h.store.value.queuePending;
+    h.effects.sync({ ...h.projection, entryKey: "other-entry", vacuumEntityId: "vacuum.other" });
+    const afterSwitch = h.store.value.queuePending;
+    h.releaseService();
+    await sent;
+    const output = { before, afterSwitch, afterReply: h.store.value.queuePending, notice: h.store.value.notice?.key ?? null };
+    h.effects.dispose();
+    return output;
+  });
+  expect(result).toEqual({ before: true, afterSwitch: false, afterReply: false, notice: null });
 });
 
 test("@safety preflight dispatches once with a fresh token when the effective preview is unchanged", async ({ page }) => {
