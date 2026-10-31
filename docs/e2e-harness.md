@@ -75,13 +75,12 @@ window) rather than wait minutes; the logic is unchanged.
 - In a browser: choosing Kitchen and Study in Matic Map sends one coverage
   command, the panel follows the robot from room to room, and returns to
   ready once the robot docks. Go to room sends the docked robot to the Study.
-  Skip in "Change this clean" drops the Study from a running clean.
+  Skip in "Change this clean" drops the Study from a clean started there.
 
 ## Not covered yet
 
 Custom areas, native schedules, the Wi-Fi survey and delayed history
-reconciliation in the simulator; history views and a queue change on a clean
-started from Matic Map itself in the live lane. The scripted check on an
+reconciliation in the simulator; history views in the live lane. The scripted check on an
 installed host is a separate milestone item.
 
 ## What this proves

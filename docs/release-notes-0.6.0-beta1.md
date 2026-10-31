@@ -77,6 +77,9 @@ to try new features before 0.6.0.
 - **Stay put and emotes.** The `stay_put` command keeps the robot where it is
   instead of returning to the dock, and `emote` with `kind: snap` takes a photo
   with the robot's camera that shows in the Matic app.
+- **Clean again.** The `redo_last_clean` command repeats the robot's most
+  recent finished clean, like **Clean again** in the Matic app. Tried once on
+  a real robot, which started the same rooms as its last clean.
 
 ## Change a running clean
 
@@ -100,6 +103,9 @@ to try new features before 0.6.0.
   maintenance, with a Repair naming the month. The recap doesn't say which part
   yet, so check the brush roll, side brush, mop roll, caster and wedge.
 - **Bag pass ends.** Shows when an active bag pass runs out.
+- **Robot camera photos.** **Take photo** asks the robot to take a picture,
+  and **Latest photo** shows the newest one, including photos taken in the
+  Matic app. Use it on a dashboard or attach it to a phone notification.
 
 ## Working with the Matic app
 

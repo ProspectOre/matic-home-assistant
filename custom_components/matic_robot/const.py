@@ -9,6 +9,7 @@ PLATFORMS: Final = [
     "calendar",
     "camera",
     "event",
+    "image",
     "number",
     "select",
     "sensor",
