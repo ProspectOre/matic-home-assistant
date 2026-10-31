@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import math
 import struct
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import UUID
 
 # ``active_session_key`` while no task is held: Hermes' 16-byte tombstone.
@@ -186,6 +186,17 @@ def two_room_floor() -> SimFloor:
     )
 
 
+def three_room_floor() -> SimFloor:
+    """The two-room floor with a hall added after the study."""
+    floor = two_room_floor()
+    hall = SimRoom(
+        UUID("33333333-3333-4333-8333-333333333333"),
+        "Hall",
+        ((4.0, 0.0), (6.0, 0.0), (6.0, 1.5), (4.0, 1.5)),
+    )
+    return SimFloor(floor.mission_id, floor.partition_id, (*floor.rooms, hall))
+
+
 def _timestamp(nanoseconds: int) -> bytes:
     """Matic's SystemTime wrapper around a seconds/nanos Timestamp."""
     seconds, nanos = divmod(nanoseconds, 1_000_000_000)
@@ -193,17 +204,33 @@ def _timestamp(nanoseconds: int) -> bytes:
 
 
 @dataclass(slots=True)
+class Visit:
+    """One room's consecutive goals in a task's plan, and when it finished."""
+
+    room: UUID
+    goals: list[bytes]
+    passes: list[tuple[int, int]]  # (mode, coverage setting) per goal
+    finished_at: int | None = None  # nanoseconds since the epoch
+
+    @property
+    def modes(self) -> set[int]:
+        """0 for a vacuum pass, 1 for a mop pass."""
+        return {mode for mode, _setting in self.passes}
+
+
+@dataclass(slots=True)
 class CoverageSession:
-    """One native task started by a coverage command."""
+    """One native task started by a coverage command.
+
+    The plan is a list of room visits. A room appears twice only when it was
+    cleaned again after it finished.
+    """
 
     session_wire: bytes
     mission_wire: bytes
-    goals: list[bytes]
-    rooms: list[UUID]
-    modes: dict[UUID, set[int]]
+    visits: list[Visit]
     started_at: int  # nanoseconds since the epoch
     ordered: bool = False  # goals came in the ordered list (field 1)
-    finished: dict[UUID, int] = field(default_factory=dict)
 
     @property
     def active_key(self) -> bytes:
@@ -211,8 +238,33 @@ class CoverageSession:
         return bytes_field(1, self.mission_wire) + bytes_field(2, self.session_wire)
 
     @property
+    def goals(self) -> list[bytes]:
+        return [goal for visit in self.visits for goal in visit.goals]
+
+    @property
+    def rooms(self) -> list[UUID]:
+        """Rooms in plan order, each once."""
+        return list(dict.fromkeys(visit.room for visit in self.visits))
+
+    @property
+    def current_visit(self) -> Visit | None:
+        return next((visit for visit in self.visits if visit.finished_at is None), None)
+
+    @property
     def current_room(self) -> UUID | None:
-        return next((room for room in self.rooms if room not in self.finished), None)
+        visit = self.current_visit
+        return visit.room if visit is not None else None
+
+    def finish_current(self, at: int) -> None:
+        visit = self.current_visit
+        assert visit is not None, "no room left in the task"
+        visit.finished_at = at
+
+    def update(self, change: CoverageSession) -> None:
+        """Apply an UPDATE: finished visits stay, the rest are replaced."""
+        self.visits = [
+            visit for visit in self.visits if visit.finished_at is not None
+        ] + change.visits
 
     def retained_goals(self) -> bytes:
         """Goals as the robot retains them in ``coverage_plan`` field 7."""
@@ -223,7 +275,10 @@ class CoverageSession:
     def history_value(
         self, floor: SimFloor, ended_at: int, *, completed: bool
     ) -> bytes:
-        """The ``coverage_session_history`` value written when the task ends."""
+        """The ``coverage_session_history`` value written when the task ends.
+
+        Each finished visit adds 300 s to the room's time in its modes.
+        """
         snapshot = bytes_field(1, b"".join(bytes_field(2, goal) for goal in self.goals))
         request = bytes_field(1, bytes_field(1, b"")) + bytes_field(2, snapshot)
         summary = (
@@ -234,14 +289,19 @@ class CoverageSession:
         for group, mode in ((6, 0), (7, 1)):
             entries = b""
             for room_id in self.rooms:
-                if mode not in self.modes[room_id]:
+                visits = [
+                    visit
+                    for visit in self.visits
+                    if visit.room == room_id and mode in visit.modes
+                ]
+                if not visits:
                     continue
-                done = room_id in self.finished
+                seconds = 300 * sum(visit.finished_at is not None for visit in visits)
                 details = (
                     bytes_field(3, floor.room(room_id).name.encode())
-                    + bytes_field(4, varint_field(1, 300 if done else 0))
+                    + bytes_field(4, varint_field(1, seconds))
                     + varint_field(
-                        5, ROOM_STATUS_COMPLETED if done else ROOM_STATUS_PARTIAL
+                        5, ROOM_STATUS_COMPLETED if seconds else ROOM_STATUS_PARTIAL
                     )
                 )
                 entries += bytes_field(
@@ -269,29 +329,60 @@ def parse_coverage_command(payload: bytes, started_at: int) -> CoverageSession |
     for container in messages(coverage, 5):
         ordered.extend(messages(container, 1))
         unordered.extend(messages(container, 2))
-    goals = ordered + unordered
-    rooms: list[UUID] = []
-    modes: dict[UUID, set[int]] = {}
-    for goal in goals:
+    visits: list[Visit] = []
+    for goal in ordered + unordered:
         region = message(goal, 7, 3, 3, 2)
         spec = message(goal, 6, 3)
         if region is None or spec is None:
             return None
         room_id = read_uuid(region)
-        mode = next((value for number, _, value in read_fields(spec) if number == 4), 0)
-        if room_id not in modes:
-            rooms.append(room_id)
-            modes[room_id] = set()
-        modes[room_id].add(int(mode))
+        values = {
+            number: value
+            for number, wire_type, value in read_fields(spec)
+            if wire_type == 0 and isinstance(value, int)
+        }
+        if not visits or visits[-1].room != room_id:
+            visits.append(Visit(room_id, [], []))
+        visits[-1].goals.append(goal)
+        visits[-1].passes.append((values.get(4, 0), values.get(1, 0)))
     return CoverageSession(
         session_wire,
         mission_wire,
-        goals,
-        rooms,
-        modes,
+        visits,
         started_at,
         ordered=bool(ordered) and not unordered,
     )
+
+
+@dataclass(frozen=True, slots=True)
+class Navigation:
+    """A NavigateTo command: a room goal, or a saved posture to wait at."""
+
+    mission_wire: bytes
+    room: UUID | None
+    posture: bytes | None
+    waits: bool  # a wait task, such as the sink refill
+
+
+def parse_navigation(payload: bytes) -> Navigation | None:
+    """Read a NavigateTo user command, or None for anything else."""
+    try:
+        navigate = message(payload, 2, 4)
+        if navigate is None:
+            return None
+        mission = message(navigate, 2)
+        region = message(navigate, 5, 4, 2)
+        posture = message(navigate, 1)
+        if mission is None or (region is None and posture is None):
+            return None
+        return Navigation(
+            mission,
+            read_uuid(region) if region is not None else None,
+            posture,
+            message(navigate, 4) is not None,
+        )
+    except IndexError, ValueError:
+        return None
 
 
 _TILE_SIDE = 32
@@ -364,10 +455,7 @@ def earlier_session(floor: SimFloor, ended_at: int) -> tuple[bytes, bytes]:
     session = CoverageSession(
         session_wire=bytes_field(2, uuid_wire(UUID(int=floor.mission_id))),
         mission_wire=fixed32_int(2, floor.mission_id),
-        goals=[],
-        rooms=[room.id for room in floor.rooms],
-        modes={room.id: {0} for room in floor.rooms},
+        visits=[Visit(room.id, [], [(0, 1)], ended_at) for room in floor.rooms],
         started_at=ended_at - 900_000_000_000,
-        finished={room.id: ended_at for room in floor.rooms},
     )
     return session.session_wire, session.history_value(floor, ended_at, completed=True)
