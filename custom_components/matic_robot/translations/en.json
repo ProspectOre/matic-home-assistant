@@ -687,6 +687,7 @@
     "v4_run_item_interrupted": "Interrupted",
     "v4_run_item_problem": "Problem",
     "v4_run_item_unconfirmed": "Not confirmed",
+    "v4_run_item_skipped": "Skipped",
     "v4_run_item_running": "In progress",
     "v4_run_item_not_started": "Not started",
     "v4_run_item_unknown": "Not reported",

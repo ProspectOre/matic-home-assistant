@@ -1743,6 +1743,9 @@ test.describe("cleaning history", () => {
     const earlier = gallery.getByRole("list", { name: "Earlier" }).getByRole("button");
     await expect(earlier).toHaveCount(2);
     await expect(earlier.nth(0)).toHaveAttribute("aria-expanded", "false");
+    await earlier.nth(0).click();
+    const finished = gallery.getByRole("list", { name: "Earlier" }).getByRole("listitem").nth(0);
+    await expect(finished.locator("dd")).toHaveText(["Done", "Done", "Skipped"]);
     await expect(earlier.nth(1)).toContainText("Result not reported");
     await earlier.nth(1).click();
     await expect(earlier.nth(1)).toHaveAttribute("aria-expanded", "true");
