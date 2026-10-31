@@ -62,6 +62,7 @@ export const normalizeBrush = (value: number): number =>
 
 export const initialWorkspaceState = (): WorkspaceState => ({
   lastRun: null,
+  nextSchedule: null,
   smartStop: null,
   trail: null,
   pageActive: true,

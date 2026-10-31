@@ -36,6 +36,7 @@ export class MaticRunHistoryV4 extends LitElement {
 .items [data-done] { color: inherit; }
 .list { display: grid; gap: var(--ms-space-2); }
 .list .run { padding: 0; border: 0; }
+.next p { white-space: pre-line; }
 `];
 
   state: WorkspaceState = initialWorkspaceState();
@@ -126,18 +127,34 @@ export class MaticRunHistoryV4 extends LitElement {
     `;
   }
 
+  // The next run of a schedule set in the Matic app; read only, edited there.
+  #next() {
+    const next = this.state.nextSchedule;
+    if (!next) return nothing;
+    return html`
+      <section class="run next" aria-labelledby="next-schedule">
+        <h3 id="next-schedule">${this.#t("v4_schedule_next", "Next scheduled clean")}</h3>
+        <p><strong>${next.name}</strong></p>
+        <p class="subtle">${formatDateTime(next.startsAt, this.dates)}</p>
+        ${next.detail ? html`<p>${next.detail}</p>` : nothing}
+        <p class="subtle">${this.#t("v4_schedule_from_app", "Set in the Matic app")}</p>
+      </section>
+    `;
+  }
+
   protected override render() {
     const resource = this.state.resources.runs;
     const history = resource.value?.entryId === this.state.resources.entry?.entryId ? resource.value : null;
     if (!history) {
-      return resource.status === "error"
-        ? html`<div class="stack"><p>${this.#t("v4_runs_unavailable", "Cleaning history isn't available right now.")}</p>
-          <div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.emit({ type: "open-workflow", workflow: "runs" })}>${this.#t("v4_retry", "Try again")}</button></div></div>`
-        : html`<p class="subtle" role="status">${this.#t("v4_runs_loading", "Loading cleaning history…")}</p>`;
+      return html`<div class="stack">${this.#next()}${resource.status === "error"
+        ? html`<p>${this.#t("v4_runs_unavailable", "Cleaning history isn't available right now.")}</p>
+          <div><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.emit({ type: "open-workflow", workflow: "runs" })}>${this.#t("v4_retry", "Try again")}</button></div>`
+        : html`<p class="subtle" role="status">${this.#t("v4_runs_loading", "Loading cleaning history…")}</p>`}</div>`;
     }
     const [last, ...earlier] = history.runs;
     return html`
       <div class="stack">
+        ${this.#next()}
         ${history.robotHistory ? nothing : html`<p class="subtle">${this.#t("v4_runs_robot_unavailable", "Cleans started from the Matic app can't be read right now.")}</p>`}
         ${last ? html`
           <section class="run" aria-labelledby="last-run">

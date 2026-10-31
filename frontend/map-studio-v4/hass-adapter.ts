@@ -4,6 +4,7 @@ import type {
   HassProjection,
   PanelLike,
   RobotActivity,
+  ScheduledRun,
 } from "./contracts";
 
 const activityForVacuum = (
@@ -29,6 +30,19 @@ const activityForVacuum = (
     default:
       return "unknown";
   }
+};
+
+const SCHEDULE_TEXT_MAX = 1024;
+
+const scheduleText = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() && value.length <= SCHEDULE_TEXT_MAX ? value.trim() : null;
+
+// The robot schedules calendar names its next run; Matic Map shows it as is.
+const scheduledRun = (attributes: Readonly<Record<string, unknown>> | undefined): ScheduledRun | null => {
+  const name = scheduleText(attributes?.message);
+  const startsAt = attributes?.matic_next_start;
+  if (!name || typeof startsAt !== "string" || !Number.isFinite(Date.parse(startsAt))) return null;
+  return { name, startsAt, detail: scheduleText(attributes?.description) };
 };
 
 const boundedBattery = (value: unknown): number | null => {
@@ -120,12 +134,16 @@ export class HassAdapter {
     let selectedEntryKey: string | null = requestedEntry;
     const robots = new Map<string, { readonly entryId: string; readonly label: string }>();
     const histories = new Map<string, Readonly<Record<string, unknown>>>();
+    const schedules = new Map<string, ScheduledRun | null>();
 
     for (const [entityId, entity] of entities) {
       const entryKey = maticEntryKey(entity);
       if (!entryKey) continue;
       if (entityId.startsWith("sensor.") && entity.attributes?.last_run !== undefined) {
         histories.set(entryKey, entity.attributes);
+      }
+      if (entityId.startsWith("calendar.") && entity.attributes?.matic_next_start !== undefined) {
+        schedules.set(entryKey, scheduledRun(entity.attributes));
       }
       if (!entityId.startsWith("vacuum.")) continue;
       robots.set(entryKey, { entryId: entryKey, label: safeRobotLabel(entity.attributes?.friendly_name) });
@@ -189,6 +207,7 @@ export class HassAdapter {
       robots: robotChoices,
       lastRun,
       smartStop: smartStopStatus(history?.last_run, history?.active_plan),
+      nextSchedule: schedules.get(selectedEntryKey ?? "") ?? null,
     };
     const signature = JSON.stringify(projection);
     if (signature === this.#signature && this.#projection) return this.#projection;

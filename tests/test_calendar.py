@@ -186,9 +186,16 @@ async def test_entity_reports_the_next_run_and_window_events(hass) -> None:
     events = await entity.async_get_events(hass, now, now + timedelta(days=14))
     assert len(events) == 2
 
+    with patch.object(dt_util, "now", return_value=now):
+        assert entity.extra_state_attributes == {
+            "matic_entry_id": "entry",
+            "matic_next_start": "2026-10-29T08:30:00-07:00",
+        }
+
     entry.runtime_data.coordinator.data = _with()
     with patch.object(dt_util, "now", return_value=now):
         assert entity.event is None
+        assert entity.extra_state_attributes["matic_next_start"] is None
 
 
 def test_runs_in_dst_transition_hours_last_one_elapsed_hour() -> None:

@@ -34,7 +34,15 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
     # Schedule definitions are live context, as on the scheduled cleanings
     # sensor, and stay out of Recorder.
     _unrecorded_attributes = frozenset(
-        {"message", "all_day", "start_time", "end_time", "location"}
+        {
+            "message",
+            "all_day",
+            "start_time",
+            "end_time",
+            "location",
+            "matic_entry_id",
+            "matic_next_start",
+        }
     )
 
     def __init__(self, entry: MaticConfigEntry) -> None:
@@ -51,6 +59,19 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
             self.coordinator.data, now, now + _UPCOMING_WINDOW
         )
         return events[0] if events else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Give Matic Map the entry and an unambiguous start time.
+
+        The calendar's own start_time is a naive local string, which a browser
+        in another time zone would misread.
+        """
+        event = self.event
+        return {
+            "matic_entry_id": self._config_entry.entry_id,
+            "matic_next_start": event.start.isoformat() if event else None,
+        }
 
     async def async_get_events(
         self, hass: HomeAssistant, start_date: datetime, end_date: datetime
