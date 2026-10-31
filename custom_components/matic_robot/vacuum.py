@@ -103,7 +103,15 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
     _attr_supported_features = SUPPORTED_FEATURES
     _unrecorded_attributes = frozenset(
-        {"matic_entry_id", "rooms", "current_area", "previous_area"}
+        {
+            "matic_entry_id",
+            "rooms",
+            "current_area",
+            "previous_area",
+            "cleaning_phase",
+            "run_progress",
+            "time_remaining",
+        }
     )
 
     def __init__(self, entry: MaticConfigEntry) -> None:
@@ -135,6 +143,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         """Expose compact verified status for automations and templates."""
         state = self.coordinator.data.operational
         floor_plan = self.coordinator.data.floor_plan
+        progress = self.coordinator.data.telemetry.run_progress
         return {
             "matic_entry_id": self._config_entry.entry_id,
             "low_charge": state.low_charge,
@@ -143,6 +152,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             "problem": bool(state.error_codes),
             "current_area": state.current_area,
             "previous_area": state.previous_area,
+            "cleaning_phase": state.cleaning_phase,
+            "run_progress": progress.percent if progress is not None else None,
+            "time_remaining": (
+                progress.remaining_seconds if progress is not None else None
+            ),
             "rooms": (
                 {room.id: room.name for room in floor_plan.rooms}
                 if floor_plan is not None

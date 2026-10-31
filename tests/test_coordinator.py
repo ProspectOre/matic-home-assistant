@@ -34,6 +34,7 @@ from custom_components.matic_robot.client.models import (
     RobotPose,
     RobotTelemetry,
     Room,
+    RunProgress,
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.coordinator import (
@@ -1033,6 +1034,27 @@ async def test_live_cues_push_wins_over_an_overlapping_poll(hass) -> None:
     assert state.operational.cues_voice_status is CuesVoiceStatus.CLASSIFIED
     assert state.operational.cues_voice_intent is CuesIntent.CLEAN_ALL
     assert state.operational.following_person is True
+
+
+async def test_run_progress_is_read_only_during_a_clean(hass) -> None:
+    client = _client()
+    client.async_get_run_progress.return_value = RunProgress(600, 1800)
+    coordinator = _coordinator(hass, client)
+
+    idle = await coordinator._async_update_data()
+    assert idle.telemetry.run_progress is None
+    client.async_get_run_progress.assert_not_awaited()
+
+    client.async_get_state.return_value = RobotOperationalState(
+        50, (119, 101, 132), (), False, False, False, False, True, False
+    )
+    cleaning = await coordinator._async_update_data()
+    assert cleaning.telemetry.run_progress == RunProgress(600, 1800)
+
+    client.async_get_run_progress.side_effect = MaticError("busy")
+    failed = await coordinator._async_update_data()
+    assert failed.telemetry.run_progress is None
+    assert failed.operational.cleaning
 
 
 async def test_optional_map_failures_do_not_hide_core_state(hass) -> None:

@@ -32,6 +32,9 @@ import {
   type BackendRequestOutcome,
 } from "./request-diagnostics";
 
+// The integration rejects robot pictures over 8 MB (client/history.py).
+const THUMBNAIL_MAX_BYTES = 8 * 1024 * 1024;
+
 const REQUEST_TIMEOUTS = {
   catalog: 10_000,
   scene: 60_000,
@@ -384,6 +387,16 @@ export class MaticBackend {
   async runs(entryId: string, trail: string | null, signal?: AbortSignal): Promise<unknown> {
     const query = trail ? `?trail=${encodeURIComponent(trail)}` : "";
     return this.#json("runs", `/api/matic_robot/runs/${encodeURIComponent(entryId)}${query}`, REQUEST_TIMEOUTS.runs, signal);
+  }
+
+  /** The robot's WebP map of one clean, named by its robot history id. */
+  async runThumbnail(entryId: string, id: string, signal?: AbortSignal): Promise<Blob> {
+    const path = `/api/matic_robot/run_thumbnail/${encodeURIComponent(entryId)}/${encodeURIComponent(id)}`;
+    return this.#request("runs", path, { headers: { Accept: "image/webp" } }, REQUEST_TIMEOUTS.runs, signal, async (response, operationSignal) => {
+      if (!response.ok) throw new BackendError("request-failed", response.status);
+      if (response.headers.get("Content-Type")?.split(";", 1)[0] !== "image/webp") throw new ContractError("invalid-thumbnail");
+      return new Blob([await this.#readBody(response, operationSignal, THUMBNAIL_MAX_BYTES, "invalid-thumbnail")], { type: "image/webp" });
+    });
   }
 
   async plans(path: string, signal?: AbortSignal): Promise<PlansCatalog> {

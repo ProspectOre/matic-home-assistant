@@ -4,6 +4,7 @@ import type {
   HassProjection,
   PanelLike,
   RobotActivity,
+  RobotRunStatus,
   ScheduledRun,
 } from "./contracts";
 
@@ -47,9 +48,18 @@ const scheduledRun = (value: unknown): ScheduledRun | null => {
   return { name, startsAt, detail: scheduleText(run.description) };
 };
 
-const boundedBattery = (value: unknown): number | null => {
+const boundedPercent = (value: unknown): number | null => {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   return Math.round(Math.max(0, Math.min(100, value)));
+};
+
+const robotRunStatus = (attributes: Readonly<Record<string, unknown>> | undefined): RobotRunStatus | null => {
+  const value = attributes?.cleaning_phase;
+  const phase = value === "interior" || value === "edges" || value === "toekicks" ? value : null;
+  const percent = boundedPercent(attributes?.run_progress);
+  const remaining = attributes?.time_remaining;
+  const remainingSeconds = typeof remaining === "number" && remaining >= 0 ? Math.round(remaining) : null;
+  return phase || percent !== null || remainingSeconds !== null ? { phase, percent, remainingSeconds } : null;
 };
 
 const maticEntryKey = (entity: HassEntityLike): string | null => {
@@ -175,9 +185,10 @@ export class HassAdapter {
     const activity = selectedVacuum
       ? activityForVacuum(selectedVacuum.state, selectedVacuum.attributes)
       : "unknown";
-    const batteryPercent = boundedBattery(selectedVacuum?.attributes?.battery_level);
+    const batteryPercent = boundedPercent(selectedVacuum?.attributes?.battery_level);
     const area = selectedVacuum?.attributes?.current_area;
     const currentArea = typeof area === "string" && area.trim() ? area : null;
+    const robotRun = robotRunStatus(selectedVacuum?.attributes);
     const language = hass?.selectedLanguage || hass?.language || "en";
     const dateLanguage = hass?.locale?.language || language;
     const timeZone = hass?.locale?.time_zone === "server" ? hass.config?.time_zone : undefined;
@@ -200,6 +211,7 @@ export class HassAdapter {
       activity,
       batteryPercent,
       currentArea,
+      robotRun,
       language,
       dates,
       userKey,

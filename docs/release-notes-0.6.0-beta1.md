@@ -29,6 +29,8 @@ to try new features before 0.6.0.
   first, with each room and custom area marked done, partly done, stopped or not
   started. Cleans started in the Matic app or by a robot schedule are listed
   too.
+- **Map of each clean.** A clean in Cleaning history shows the robot's own map
+  picture of it, for the recent cleans the robot still keeps.
 - **How a clean ended.** A run says whether it finished, was stopped, ended
   after the current room with Smart Stop, ran low on battery, hit a robot
   problem or was taken over by another task.
@@ -43,6 +45,13 @@ to try new features before 0.6.0.
 - **Carpet and vents.** Open **Map options** and turn on **Carpet and vents** to
   see the rugs and floor vents the robot has found, carpet in brown and vents in
   blue. Floor type changes made in the Matic app show up here too.
+- **Follow the robot.** Turn on **Follow the robot** in **Map options** to keep
+  the live robot centred. Moving the map yourself turns it off.
+- **Cleaning phase and time left.** While the robot cleans, the status says
+  whether it is cleaning the interior, edges or toekicks, and shows the robot's
+  own estimate of the time left for the whole clean. The same values are
+  available as the **Cleaning phase**, **Run progress** and **Time remaining**
+  sensors, for cleans started anywhere.
 
 ## Plans
 
