@@ -192,11 +192,15 @@ def _busy(state: RobotOperationalState) -> bool:
 
 
 async def _async_taken_over(entry: MaticConfigEntry) -> bool:
-    """Return whether docking now would stop a task the patrol didn't start."""
+    """Return whether docking now might stop a task the patrol didn't start.
+
+    An unreadable robot counts as taken over: a robot left parked docks on its
+    own after its ten-minute countdown, while docking could stop a clean.
+    """
     try:
         state: RobotOperationalState = await entry.runtime_data.client.async_get_state()
     except MaticError:
-        return False
+        return True
     return _busy(state)
 
 

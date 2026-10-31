@@ -212,15 +212,22 @@ async def test_patrol_accepts_a_robot_that_never_seems_to_leave() -> None:
 
 
 @pytest.mark.parametrize(
-    ("states", "arrivals", "key", "placeholders"),
+    ("states", "arrivals", "key", "placeholders", "docked"),
     [
-        ([DOCKED] + [MOVING] * 200, (), "photo_patrol_no_arrival", {"room": "Den"}),
-        ([DOCKED, PARKED, PARKED], (), "photo_patrol_no_photo", {"room": "Den"}),
-        (CannotConnectError("offline"), (), "photo_patrol_unreachable", None),
+        (
+            [DOCKED] + [MOVING] * 200,
+            (),
+            "photo_patrol_no_arrival",
+            {"room": "Den"},
+            True,
+        ),
+        ([DOCKED, PARKED, PARKED], (), "photo_patrol_no_photo", {"room": "Den"}, True),
+        # Docking an unreadable robot could stop a clean it has since started.
+        (CannotConnectError("offline"), (), "photo_patrol_unreachable", None, False),
     ],
 )
-async def test_patrol_failures_still_dock(
-    states, arrivals, key: str, placeholders
+async def test_patrol_failures_dock_a_robot_still_free(
+    states, arrivals, key: str, placeholders, docked: bool
 ) -> None:
     hass = _hass()
     entry = _entry(states, _Photos(*arrivals))
@@ -232,7 +239,7 @@ async def test_patrol_failures_still_dock(
 
     assert raised.value.translation_key == key
     assert raised.value.translation_placeholders == placeholders
-    assert _commands(hass)[-1] == ("return_to_base", "", None)
+    assert (("return_to_base", "", None) in _commands(hass)) is docked
     hass.bus.async_fire.assert_not_called()
 
 
