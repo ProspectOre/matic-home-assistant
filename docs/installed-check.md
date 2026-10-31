@@ -46,7 +46,7 @@ Add `--physical --room Kitchen` for the physical steps.
 - The physical step checks the robot is docked, then waits for the owner to type the room name. Any other
   answer stops the run before anything is sent. The sink trip waits for the owner to refill the robot and
   press Enter once it is docked again.
-- The script never restores a backup. A rollback is a separate step (PRO-75).
+- The script never restores a backup. The [upgrade drill](upgrade-drill.md) covers rollback on the simulator.
 - Receipts include entity counts and backup IDs, and the token is never written. Keep receipts in the
   private sources tree, not in this repository. Each receipt names its tag, commit and Home Assistant
   version.
