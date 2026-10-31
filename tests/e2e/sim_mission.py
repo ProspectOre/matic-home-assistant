@@ -354,15 +354,33 @@ def parse_coverage_command(payload: bytes, started_at: int) -> CoverageSession |
     )
 
 
-def parse_go_to_room(payload: bytes) -> tuple[bytes, UUID] | None:
-    """Read a NavigateTo with a room goal: (mission wire, room), or None."""
+@dataclass(frozen=True, slots=True)
+class Navigation:
+    """A NavigateTo command: a room goal, or a saved posture to wait at."""
+
+    mission_wire: bytes
+    room: UUID | None
+    posture: bytes | None
+    waits: bool  # a wait task, such as the sink refill
+
+
+def parse_navigation(payload: bytes) -> Navigation | None:
+    """Read a NavigateTo user command, or None for anything else."""
     try:
         navigate = message(payload, 2, 4)
-        region = message(navigate, 5, 4, 2) if navigate is not None else None
-        mission = message(navigate, 2) if navigate is not None else None
-        if region is None or mission is None:
+        if navigate is None:
             return None
-        return mission, read_uuid(region)
+        mission = message(navigate, 2)
+        region = message(navigate, 5, 4, 2)
+        posture = message(navigate, 1)
+        if mission is None or (region is None and posture is None):
+            return None
+        return Navigation(
+            mission,
+            read_uuid(region) if region is not None else None,
+            posture,
+            message(navigate, 4) is not None,
+        )
     except IndexError, ValueError:
         return None
 

@@ -1,4 +1,4 @@
-"""Go to room, occupancy holds and robot alerts against the simulated robot."""
+"""Go to room, the sink trip, occupancy holds and robot alerts."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import RESUME_PAYLOAD, Phase, SimulatedRobot
-from .plan_run import PlanRun, expect_finished
+from .plan_run import VACUUM, PlanRun, expect_finished
 from .sim_mission import SimFloor, two_room_floor
 
 STUDY_OCCUPANCY = "binary_sensor.study_occupancy"
@@ -66,6 +66,34 @@ async def test_go_to_an_unknown_room_is_refused(
     with pytest.raises(ServiceValidationError) as err:
         await plan.call(DOMAIN, "go_to_room", room="Garage")
     assert err.value.translation_key == "unknown_rooms"
+    assert robot.received() == []
+
+
+async def test_sink_trip_waits_for_the_refill_then_docks(
+    plan: PlanRun, robot: SimulatedRobot
+) -> None:
+    posture = b"\x0a\x04sink"
+    robot.save_sink(posture)
+    await plan.call("vacuum", "send_command", command="sink_summon")
+    assert robot.waiting_at_sink
+    (sent,) = robot.received()
+    assert posture in sent
+    robot.refilled()
+    robot.arrive_at_dock()
+    await plan.poll()
+    vacuum = plan.hass.states.get(VACUUM)
+    assert vacuum is not None and vacuum.state == "docked"
+
+
+async def test_sink_trip_without_a_saved_sink_is_refused(
+    plan: PlanRun, robot: SimulatedRobot
+) -> None:
+    # Served only here: an empty collection makes every read wait out its
+    # snapshot window, which would slow each setup.
+    robot.set_collection("sink_summon_locations", [])
+    with pytest.raises(ServiceValidationError) as err:
+        await plan.call("vacuum", "send_command", command="sink_summon")
+    assert err.value.translation_key == "sink_location_unavailable"
     assert robot.received() == []
 
 

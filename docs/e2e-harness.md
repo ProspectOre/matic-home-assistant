@@ -28,13 +28,15 @@ the same command after `npm ci` and `pip install -e '.[test]'`.
 | `HermesDiscoveryRPC` | `GetBotInfo` returns the simulated identity. |
 | `HermesAuth` | `AuthToken` issues a credential only while `pairing_open` is set. |
 | `Hermes` | `Handshake` and `FetchCollection` require a credential the robot issued. Properties answer snapshots; tracked subscriptions wait for each sequence acknowledgment and then push changes. Unserved names return `UNIMPLEMENTED`. |
-| `user_command` | STOP, PAUSE, RESUME and DOCK are matched against the captured official-app bytes, which the simulator holds separately from the integration's encoders, and move the robot between phases. A coverage START or UPDATE starts a native task for the commanded rooms. |
+| `user_command` | STOP, PAUSE, RESUME and DOCK are matched against the captured official-app bytes, which the simulator holds separately from the integration's encoders, and move the robot between phases. A coverage START starts a native task; an UPDATE with the task's session ID keeps finished rooms and replaces the rest. A NavigateTo with a room goal or a sink posture moves the robot (see below). |
 | Robot state | `kabuki_state` for docked, charging, cleaning, paused, returning, stopped, low-charge recharge and a blocking fault, using state-code sets seen on real robots, with battery, errors, software version and current area. |
-| Floor and task | `coverage_plan` serves the floor and retains the commanded goals; `active_session_key` carries the task's session; `coverage_session_history` gets a record with per-room results when the task ends. One live photographic and one structural map page confirm the floor. |
+| Floor and task | `coverage_plan` serves the floor and retains the commanded goals as room visits, so a room cleaned again appears twice; `active_session_key` carries the task's session; `coverage_session_history` gets a record with per-room, per-mode results when the task ends. One live photographic and one structural map page confirm the floor. `sink_summon_locations` holds a sink posture once a test saves one. |
+| Navigation | The robot's state codes while driving somewhere are not recorded, so it arrives at once: ready in the room without a task, paused with one. A sink trip waits until the `refilled` step, then returns. |
 
 Time does not pass on its own. A test moves the robot with scripted steps such
 as `start_cleaning`, `finish_room`, `finish_session`, `arrive_at_dock`,
-`low_charge_recharge`, `fault`, `app_takes_over` and `offline`, then runs a
+`low_charge_recharge`, `fault`, `app_takes_over`, `refilled` and `offline`,
+then runs a
 coordinator poll, so results do not depend on timing. History timestamps use
 the wall clock because the integration binds a record to the dispatch time.
 A few tests shorten a wait constant (the dock-after-stop poll, the history
@@ -54,7 +56,17 @@ window) rather than wait minutes; the logic is unchanged.
   during a run (cancelled, STOP then DOCK, then `stopped_docked`), the app
   taking over (no credit, no STOP), recharge and resume, a robot fault
   (failed), a restart that rejoins the same native task without dispatching
-  again, and a restart after the task ended (unverified).
+  again, and a restart after the task ended (unverified). Rooms with their
+  own mode and strength send only those goals and get per-mode history.
+- Changing a running plan: skip the next room, bring the last room forward,
+  clean a finished room again, and refusing to skip the only room left.
+- Go to room from the dock and during a plan (the run keeps its task and
+  finishes after Resume), and an unknown room refused before anything is sent.
+- A sink trip waits for the refill and docks; without a saved sink it is
+  refused.
+- An occupancy-aware saved plan holds a room whose sensor is on.
+- A full bag raises a Repair after the confirmation poll and clears it when
+  the error goes.
 - An unreachable robot makes entities unavailable and they recover.
 - A revoked credential starts reauthentication.
 - Client level: pairing window, unknown credentials, fingerprint and serial
@@ -62,13 +74,13 @@ window) rather than wait minutes; the logic is unchanged.
 
 - In a browser: choosing Kitchen and Study in Matic Map sends one coverage
   command, the panel follows the robot from room to room, and returns to
-  ready once the robot docks.
+  ready once the robot docks. Go to room sends the docked robot to the Study.
 
 ## Not covered yet
 
-Saved plans with mixed per-room settings, custom areas, sink trips and
-delayed history reconciliation in the simulator; more Matic Map flows in the
-live lane. The scripted check on an installed host is a separate milestone
+Custom areas, native schedules, the Wi-Fi survey and delayed history
+reconciliation in the simulator; queue changes and history views in the live
+lane. The scripted check on an installed host is a separate milestone
 item.
 
 ## What this proves

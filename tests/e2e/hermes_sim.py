@@ -67,6 +67,7 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
 from .sim_mission import (
     IDLE_SESSION_KEY,
     CoverageSession,
+    Navigation,
     SimFloor,
     Visit,
     bytes_field,
@@ -74,7 +75,7 @@ from .sim_mission import (
     fixed32_int,
     map_pages,
     parse_coverage_command,
-    parse_go_to_room,
+    parse_navigation,
     uuid_wire,
 )
 
@@ -253,6 +254,7 @@ class SimulatedRobot:
         self.floor: SimFloor | None = None
         self.session: CoverageSession | None = None
         self.destination: UUID | None = None
+        self.waiting_at_sink = False
         self.unsupported: set[str] = set()
         self._properties: dict[str, bytes] = {}
         self._collections: dict[str, list[tuple[bytes, bytes]]] = {}
@@ -313,6 +315,19 @@ class SimulatedRobot:
         )
         self.set_property("active_session_key", self.session.active_key)
         self._refresh_plan()
+
+    def save_sink(self, posture: bytes) -> None:
+        """Save a sink location for the mapped floor, as the app does."""
+        assert self.floor is not None
+        self.set_collection(
+            "sink_summon_locations", [(fixed32_int(2, self.floor.mission_id), posture)]
+        )
+
+    def refilled(self) -> None:
+        """Finish a sink refill; the robot heads back to the dock."""
+        assert self.waiting_at_sink
+        self.waiting_at_sink = False
+        self._set_phase(Phase.RETURNING)
 
     def arrive_at_dock(self) -> None:
         """Finish a return trip and start charging, or idle when full."""
@@ -409,9 +424,9 @@ class SimulatedRobot:
         if coverage is not None:
             self._start_coverage(coverage)
             return
-        destination = parse_go_to_room(payload)
-        if destination is not None:
-            self._go_to_room(*destination)
+        navigation = parse_navigation(payload)
+        if navigation is not None:
+            self._navigate(navigation)
             return
         if payload == PAUSE_PAYLOAD and self.phase is Phase.CLEANING:
             self._set_phase(Phase.PAUSED)
@@ -464,15 +479,18 @@ class SimulatedRobot:
         )
         self._set_phase(Phase.CLEANING)
 
-    def _go_to_room(self, mission_wire: bytes, room: UUID) -> None:
+    def _navigate(self, navigation: Navigation) -> None:
         # The robot's state codes while it drives somewhere are not recorded,
         # so it arrives at once. Without a task it stands ready there; a task
         # it holds stays held, paused until Resume.
         assert self.floor is not None
-        if mission_wire != fixed32_int(2, self.floor.mission_id):
+        if navigation.mission_wire != fixed32_int(2, self.floor.mission_id):
             return
-        self.destination = room
-        self.current_area = self.floor.room(room).name
+        if navigation.room is not None:
+            self.destination = navigation.room
+            self.current_area = self.floor.room(navigation.room).name
+        else:
+            self.waiting_at_sink = navigation.waits
         if self.phase is Phase.CLEANING:
             self._set_phase(Phase.PAUSED)
         elif self.session is None:

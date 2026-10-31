@@ -40,3 +40,18 @@ test("rooms chosen in Matic Map are cleaned and the run finishes", async ({ page
   await expect(page.getByText("Docked").first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: "Clean 2 rooms" })).toBeEnabled();
 });
+
+test("Go to room sends the docked robot to one room", async ({ page, request }) => {
+  await page.goto("/matic-map");
+  await expect(page.getByText("Docked").first()).toBeVisible();
+
+  await page.getByRole("button", { name: "Clean rooms" }).click();
+  await page.getByRole("checkbox", { name: "Study" }).check();
+  await page.getByRole("button", { name: "Go to room" }).click();
+
+  await expect.poll(async () => (await robotState(request)).destination).toBe("Study");
+  const state = await robotState(request);
+  expect(state.current_area).toBe("Study");
+  // A visit starts no task, so no coverage command follows the first test's.
+  expect(state.commands.filter(({ channel }) => channel === "user_command")).toHaveLength(2);
+});

@@ -11,7 +11,8 @@ anchor and ``.local`` name are substituted exactly as in the pytest harness.
 A small control server lets a browser test move the robot:
 ``POST /step/<name>`` runs a scripted step (``finish_room``, ``finish_session``,
 ``arrive_at_dock`` and others without arguments), and ``GET /state`` returns
-the robot's phase, current area and the commands it received.
+the robot's phase, current area, last go-to-room destination and the commands
+it received.
 
 Everything here is synthetic and bound to 127.0.0.1. Results are simulated
 evidence, not installed or physical qualification.
@@ -185,6 +186,11 @@ async def _control_app(robot: SimulatedRobot) -> web.Application:
             {
                 "phase": robot.phase.value,
                 "current_area": robot.current_area,
+                "destination": (
+                    robot.floor.room(robot.destination).name
+                    if robot.floor is not None and robot.destination is not None
+                    else None
+                ),
                 "commands": [
                     {"channel": command.channel, "payload": command.payload.hex()}
                     for command in robot.commands

@@ -79,7 +79,8 @@ class PlanRun:
         """Poll until the run ends and return its plan_finished event."""
         assert self.task is not None
         async with asyncio.timeout(30):
-            while not self.task.done():
+            # The service can return before the bus delivers plan_finished.
+            while not self.task.done() or not self.finished:
                 await self.poll()
         self.error = self.task.exception()
         (finished,) = self.finished
