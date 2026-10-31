@@ -90,6 +90,26 @@ actions:
       room: Kitchen
 ```
 
+## Stay put and emotes
+
+`vacuum.send_command` with `command: stay_put` tells the robot to stay where it
+is rather than return to the dock. The Matic app sends it when you cancel the
+offer to dock after a task. `command: emote` with `params: {kind: nod}` plays a
+gesture: `nod`, `shake`, `pirouette` or `snap`. Both match what the Matic
+app sends, as read from its code. The robot accepts all five; nobody has yet
+watched which gesture each name plays.
+
+```yaml
+actions:
+  - action: vacuum.send_command
+    target:
+      entity_id: vacuum.matic
+    data:
+      command: emote
+      params:
+        kind: pirouette
+```
+
 ## Skip, clean next or clean again
 
 **Skip room**, **Clean room next** and **Clean room again** change the clean

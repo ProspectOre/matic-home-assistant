@@ -62,6 +62,9 @@ to try new features before 0.6.0.
 - **Go to room.** The **Go to room** action (`matic_robot.go_to_room`) and the
   `go_to_room` command send the robot to one room, by name or ID, without
   marking it cleaned. In Matic Map, pick one room and press **Go to room**.
+- **Stay put and emotes.** The `stay_put` command keeps the robot where it is
+  instead of returning to the dock, and `emote` plays a nod, shake, pirouette
+  or snap.
 
 ## Change a running clean
 
