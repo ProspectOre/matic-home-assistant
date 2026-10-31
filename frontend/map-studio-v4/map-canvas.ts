@@ -361,9 +361,7 @@ export class MaticMapCanvasV4 extends LitElement {
       }),
       onCirclePreview: (circles, coordinateEdit) => this.#renderer?.setCirclePreview(circles, coordinateEdit),
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
-      onCameraGesture: () => {
-        if (this.state.followRobot) this.#intent({ type: "set-follow-robot", value: false });
-      },
+      onCameraGesture: () => this.#unfollow(),
     });
     this.#renderer.setState(this.state);
     this.#schedulePalette();
@@ -465,7 +463,13 @@ export class MaticMapCanvasV4 extends LitElement {
     (event.currentTarget as HTMLElement).dispatchEvent(new CustomEvent(MAP_HELP_EVENT, { bubbles: true, composed: true }));
   }
 
+  // Moving the map by hand, from a gesture or a map control, ends Follow the robot.
+  #unfollow(): void {
+    if (this.state.followRobot) this.#intent({ type: "set-follow-robot", value: false });
+  }
+
   #orbit(horizontal: number, vertical: number): void {
+    this.#unfollow();
     this.#renderer?.orbitBy(horizontal, vertical);
   }
 
@@ -488,6 +492,7 @@ export class MaticMapCanvasV4 extends LitElement {
   }
 
   zoomBy(factor: number): void {
+    this.#unfollow();
     this.#renderer?.zoomAt(factor);
   }
 
@@ -597,6 +602,7 @@ export class MaticMapCanvasV4 extends LitElement {
                 type="button"
                 aria-label=${this.#t("v4_fit_map_hint", "Fit the whole map on screen")}
                 @click=${() => {
+                  this.#unfollow();
                   this.#renderer?.fit();
                   this.#intent({ type: "fit-map" });
                 }}

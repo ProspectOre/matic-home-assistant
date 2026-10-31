@@ -58,6 +58,12 @@ test("the wheel and the arrow keys turn following off too", async ({ page }) => 
   await expect.poll(keys.following).toBe(false);
 });
 
+test("Fit map turns following off", async ({ page }) => {
+  const { following } = await openFollowing(page);
+  await page.locator("matic-map-canvas-v4").getByRole("button", { name: "Fit the whole map on screen" }).click();
+  await expect.poll(following).toBe(false);
+});
+
 test("renderer centres a map point without saving the camera", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/follow-renderer.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
