@@ -13,7 +13,7 @@ export type RunEnding =
   | "robot_problem" | "taken_over" | "home_assistant" | "interrupted" | "unknown";
 export type RunItemResult =
   | "completed" | "partial" | "stopped" | "interrupted" | "problem"
-  | "unconfirmed" | "running" | "not_started" | "unknown";
+  | "unconfirmed" | "skipped" | "running" | "not_started" | "unknown";
 
 export interface RunItem {
   readonly name: string;
@@ -58,7 +58,7 @@ const ENDINGS: readonly RunEnding[] = [
 ];
 const RESULTS: readonly RunItemResult[] = [
   "completed", "partial", "stopped", "interrupted", "problem",
-  "unconfirmed", "running", "not_started", "unknown",
+  "unconfirmed", "skipped", "running", "not_started", "unknown",
 ];
 const MAX_RUNS = 200;
 const MAX_ITEMS = 64;

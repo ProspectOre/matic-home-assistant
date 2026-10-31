@@ -218,6 +218,10 @@ export const shellStyles = [tokens, base, controls, css`
     .quick-actions .ms-row[aria-disabled="true"] .ms-row__lead { color: var(--ms-text-disabled); background: color-mix(in srgb, var(--ms-text) 6%, var(--ms-local)); }
     .quick-actions .ms-row[aria-disabled="true"] :is(strong, small) { color: var(--ms-text-disabled); }
     .home-actions { display: flex; margin: 0 0 var(--ms-space-4); }
+    .queue { display: grid; gap: var(--ms-space-2); margin: 0 0 var(--ms-space-4); }
+    .queue .ms-field { display: grid; gap: var(--ms-space-1); font-size: var(--ms-t-sm); }
+    .queue-actions { display: flex; flex-wrap: wrap; gap: var(--ms-space-2); }
+    .queue-status { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-sm); }
     .problem { display: grid; gap: var(--ms-space-2); padding: var(--ms-space-4); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); }
     .problem p, .loading { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
     .problem .ms-btn { justify-self: start; text-decoration: none; }

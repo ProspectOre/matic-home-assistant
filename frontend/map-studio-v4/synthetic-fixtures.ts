@@ -237,8 +237,8 @@ export const syntheticPose = (): PoseModel => ({
   freshness: "live",
 });
 
-// Cleaning history: the last run stopped early, an earlier one finished, and
-// one was started from the Matic app.
+// Cleaning history: the last run stopped early, an earlier one finished with a
+// room skipped, and one was started from the Matic app.
 export const syntheticRuns = (): RunHistory => ({
   entryId: "synthetic-entry",
   mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
@@ -253,7 +253,7 @@ export const syntheticRuns = (): RunHistory => ({
     {
       id: "run-2", source: "home_assistant", startedAt: "2026-10-28T16:00:00+00:00", endedAt: "2026-10-28T16:52:00+00:00",
       planName: "Daily clean", outcome: "finished", ending: "finished",
-      rooms: [{ name: "Kitchen", result: "completed" }, { name: "Living room", result: "completed" }, { name: "Office", result: "completed" }],
+      rooms: [{ name: "Kitchen", result: "completed" }, { name: "Living room", result: "completed" }, { name: "Office", result: "skipped" }],
       areas: [], trail: null,
     },
     {
