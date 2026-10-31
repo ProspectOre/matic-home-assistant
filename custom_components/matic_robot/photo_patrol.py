@@ -80,8 +80,10 @@ async def async_photo_patrol(
             raise _error("photo_patrol_low_battery", battery=str(battery))
         results: list[dict[str, str]] = []
         try:
-            for room in rooms:
-                photo = await _async_photograph(hass, entry, entity_id, room, context)
+            for index, room in enumerate(rooms):
+                photo = await _async_photograph(
+                    hass, entry, entity_id, room, context, first=index == 0
+                )
                 result = {
                     "room": room,
                     "photo_id": photo.photo_id,
@@ -95,7 +97,7 @@ async def async_photo_patrol(
                     context=context,
                 )
         finally:
-            if return_to_dock and not await _async_taken_over(entry):
+            if return_to_dock and await _async_still_parked(entry):
                 await hass.services.async_call(
                     VACUUM_DOMAIN,
                     SERVICE_RETURN_TO_BASE,
@@ -112,11 +114,15 @@ async def _async_photograph(
     entity_id: str,
     room: str,
     context: Context | None,
+    *,
+    first: bool,
 ) -> RobotPhoto:
     client = entry.runtime_data.client
     photos = entry.runtime_data.photos
     state = await _async_state(client)
-    if _busy(state):
+    # Between rooms the patrol leaves the robot parked where it took the last
+    # photo. A robot that has moved since was given something else to do.
+    if _busy(state) if first else not _parked(state):
         raise _error("photo_patrol_robot_busy")
     was_parked = _parked(state)
     await _async_command(hass, entity_id, "go_to_room", {"room": room}, context)
@@ -129,9 +135,11 @@ async def _async_photograph(
         within=ARRIVAL_TIMEOUT_SECONDS,
     )
     # Read the collection first so an older photo the store hasn't seen yet
-    # doesn't arrive during the wait below. The capture time check covers a
-    # read that fails.
-    await photos.async_refresh()
+    # can't pass for the new one.
+    try:
+        await photos.async_read()
+    except MaticError as err:
+        raise _error("photo_patrol_unreachable") from err
     previous = photos.latest
     earliest = dt_util.utcnow() - CLOCK_TOLERANCE
     await _async_command(hass, entity_id, "emote", {"kind": "snap"}, context)
@@ -182,26 +190,22 @@ def _parked(state: RobotOperationalState) -> bool:
 
 
 def _busy(state: RobotOperationalState) -> bool:
-    """Return whether something else gave the robot a task during the patrol.
-
-    The patrol leaves the robot parked at a room between photos, so a robot
-    that is cleaning, paused or returning and not parked was taken over by a
-    clean or sent back to the dock.
-    """
+    """Return whether the robot has a task that a patrol would interrupt."""
     return not _parked(state) and (state.cleaning or state.paused or state.returning)
 
 
-async def _async_taken_over(entry: MaticConfigEntry) -> bool:
-    """Return whether docking now might stop a task the patrol didn't start.
+async def _async_still_parked(entry: MaticConfigEntry) -> bool:
+    """Return whether the robot is still where the patrol left it.
 
-    An unreadable robot counts as taken over: a robot left parked docks on its
-    own after its ten-minute countdown, while docking could stop a clean.
+    Only then is docking safe: a robot that moved, or can't be read, may have
+    started something that docking would stop. A robot left parked docks on
+    its own after its ten-minute countdown.
     """
     try:
         state: RobotOperationalState = await entry.runtime_data.client.async_get_state()
     except MaticError:
-        return True
-    return _busy(state)
+        return False
+    return _parked(state)
 
 
 async def _async_command(

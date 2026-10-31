@@ -117,7 +117,7 @@ actions:
 **Photo patrol** (`matic_robot.photo_patrol`) sends the robot to each of up to
 12 `rooms` in turn, waits until it has stopped there, takes a photo and then
 moves on. With `return_to_dock` (default `true`) it docks afterwards, also when
-a room fails, unless the robot can't be reached or has started another task. The action returns each photo's room, capture time and a `url`
+a room fails, as long as it is still parked where the patrol left it. The action returns each photo's room, capture time and a `url`
 that serves the image to a signed-in Home Assistant user, so a notification can
 attach it with `image:`. Home Assistant keeps the 16 newest photos for these
 links, in memory, so a link stops working after newer photos or a restart.
@@ -125,7 +125,8 @@ Each photo also fires a `matic_robot_photo_taken` event with the same fields.
 
 The robot must be docked or idle with at least 20% battery, and only one patrol
 runs at a time. If a clean starts during a patrol, the patrol stops before the
-next room and leaves the robot to the clean instead of docking it. A room the robot doesn't reach within three minutes, or a
+next room and leaves the robot to it instead of docking it. The same goes for
+a robot moved by another Go to room. A room the robot doesn't reach within three minutes, or a
 photo that isn't saved within 40 seconds, stops the patrol with an error. The
 camera faces the way the robot stopped, which the robot chooses. The
 [Matic: Photograph room on alert](automation.md#ready-to-import-blueprints)

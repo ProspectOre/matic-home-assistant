@@ -79,12 +79,16 @@ class RobotPhotoStore:
     async def async_refresh(self) -> bool:
         """Read the robot's photos once; return whether a newer one arrived."""
         try:
-            entries = await self._client.async_get_tracked_collection_entries(
-                PHOTO_COLLECTION, limit=MAX_PHOTO_ENTRIES
-            )
+            return await self.async_read()
         except MaticError as err:
             _LOGGER.debug("Matic photos are unavailable: %s", err)
             return False
+
+    async def async_read(self) -> bool:
+        """Read the robot's photos once, raising when the robot can't be read."""
+        entries = await self._client.async_get_tracked_collection_entries(
+            PHOTO_COLLECTION, limit=MAX_PHOTO_ENTRIES
+        )
         previous = self._latest
         if self._async_add_photos(_decode_photos(entries)):
             self._async_notify()
