@@ -17,7 +17,7 @@ const clickInShadow = (panel, selector) => panel.evaluate((element, target) => {
   scan(element.shadowRoot).click();
 }, selector);
 
-test("Map options turns following on and a drag turns it off", async ({ page }) => {
+const openFollowing = async (page) => {
   const { panelTag } = await installPanelFixture(page);
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(panelTag);
@@ -32,12 +32,30 @@ test("Map options turns following on and a drag turns it off", async ({ page }) 
 
   const map = panel.locator("matic-map-shell-v4").locator(".map-root");
   const bounds = await map.boundingBox();
-  const x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+  return { following, x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+};
+
+test("Map options turns following on and a drag turns it off", async ({ page }) => {
+  const { following, x, y } = await openFollowing(page);
   await page.mouse.move(x, y);
   await page.mouse.down();
   await page.mouse.move(x + 60, y + 30, { steps: 4 });
   await page.mouse.up();
   await expect.poll(following).toBe(false);
+});
+
+test("the wheel and the arrow keys turn following off too", async ({ page }) => {
+  const wheel = await openFollowing(page);
+  await page.mouse.move(wheel.x, wheel.y);
+  await page.mouse.wheel(40, 30);
+  await expect.poll(wheel.following).toBe(false);
+
+  await page.reload();
+  const keys = await openFollowing(page);
+  await page.mouse.click(keys.x, keys.y);
+  expect(await keys.following()).toBe(true);
+  await page.keyboard.press("ArrowLeft");
+  await expect.poll(keys.following).toBe(false);
 });
 
 test("renderer centres a map point without saving the camera", async ({ page }) => {

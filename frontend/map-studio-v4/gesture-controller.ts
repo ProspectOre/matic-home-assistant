@@ -489,6 +489,7 @@ export class GestureController {
     event.preventDefault();
     this.#host.focus({ preventScroll: true, focusVisible: false });
     this.#cancelMotion();
+    this.#callbacks.onCameraGesture?.();
     const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
       ? 16
       : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
@@ -537,6 +538,7 @@ export class GestureController {
     if (!start || this.#pointers.size >= 2) return;
     const scale = Number.isFinite(event.scale) && event.scale > 0 ? Math.max(0.1, event.scale) : 1;
     const rotation = Number.isFinite(event.rotation) ? event.rotation : 0;
+    this.#callbacks.onCameraGesture?.();
     this.#renderer.setCamera({
       ...start,
       distance: start.distance / scale,
@@ -635,6 +637,10 @@ export class GestureController {
       this.#renderer.orbitBy(key === "q" ? -30 : 30, 0);
     }
     else return;
+    // Every handled key but the view and draw tool switches moves the camera.
+    if (key !== "3" && key !== "t" && !(state.workflow === "draw" && (key === "d" || key === "e"))) {
+      this.#callbacks.onCameraGesture?.();
+    }
     event.preventDefault();
   };
 
