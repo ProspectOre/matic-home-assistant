@@ -2,7 +2,7 @@
 
 The robot keeps a WebP map for each clean in its retained history, keyed like
 the history record. One read returns all of them, so the pictures are kept
-per robot and read again only when a requested one is missing.
+per robot within a byte budget. Evicted pictures are read again on demand.
 """
 
 from __future__ import annotations
@@ -24,12 +24,14 @@ RUN_THUMBNAIL_API_URL = "/api/matic_robot/run_thumbnail/{entry_id}/{run_id}"
 RUN_THUMBNAILS_READ_SECONDS = 20.0
 # A missing picture is looked for again at most this often.
 RUN_THUMBNAILS_REREAD_SECONDS = 60.0
+RUN_THUMBNAILS_CACHE_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
 class _CachedThumbnails:
     read_at: float
     images: dict[str, bytes]
+    known_ids: frozenset[str]
 
 
 class MaticRunThumbnailView(HomeAssistantView):
@@ -59,7 +61,10 @@ class MaticRunThumbnailView(HomeAssistantView):
             cached = self._cache.get(entry_id)
             if cached is None or (
                 run_id not in cached.images
-                and monotonic() >= cached.read_at + RUN_THUMBNAILS_REREAD_SECONDS
+                and (
+                    run_id in cached.known_ids
+                    or monotonic() >= cached.read_at + RUN_THUMBNAILS_REREAD_SECONDS
+                )
             ):
                 try:
                     async with asyncio.timeout(RUN_THUMBNAILS_READ_SECONDS):
@@ -73,9 +78,21 @@ class MaticRunThumbnailView(HomeAssistantView):
                     )
                 if _runtime_for_entry(request.app[KEY_HASS], entry_id) is not runtime:
                     return _not_found()
+                # Keep the requested image first, even when it is late in the
+                # collection. Remember evicted IDs so a later request can read
+                # them immediately instead of treating them as missing images.
+                retained: dict[str, bytes] = {}
+                remaining = RUN_THUMBNAILS_CACHE_BYTES
+                for thumbnail in sorted(
+                    images, key=lambda item: native_run_id(item.key) != run_id
+                ):
+                    if len(thumbnail.image) <= remaining:
+                        retained[native_run_id(thumbnail.key)] = thumbnail.image
+                        remaining -= len(thumbnail.image)
                 cached = _CachedThumbnails(
                     monotonic(),
-                    {native_run_id(image.key): image.image for image in images},
+                    retained,
+                    frozenset(native_run_id(image.key) for image in images),
                 )
                 self._cache[entry_id] = cached
         image = cached.images.get(run_id)

@@ -103,3 +103,42 @@ async def test_a_reload_during_the_read_is_not_cached() -> None:
     assert (await view.get(request, "entry", KITCHEN)).status == 404
     assert (await view.get(_request(runtime), "entry", KITCHEN)).status == 200
     assert runtime.client.async_get_cleaning_session_images.await_count == 2
+
+
+async def test_cache_bounds_bytes_and_reads_evicted_images_on_demand() -> None:
+    images = tuple(
+        CleaningSessionImage(key, body, 64, 48)
+        for key, body in (
+            (b"first", b"a" * 9),
+            (b"second", b"b" * 9),
+            (b"last", b"c" * 9),
+        )
+    )
+    read = AsyncMock(return_value=images)
+    runtime = _runtime(read)
+    view = MaticRunThumbnailView()
+    with (
+        patch(
+            "custom_components.matic_robot.run_thumbnails.RUN_THUMBNAILS_CACHE_BYTES",
+            20,
+        ),
+        patch(
+            "custom_components.matic_robot.run_thumbnails.monotonic", return_value=100.0
+        ),
+    ):
+        # The requested image fits even when earlier images exhaust the budget.
+        response = await view.get(_request(runtime), "entry", native_run_id(b"last"))
+        assert response.body == b"c" * 9
+        assert sum(map(len, view._cache["entry"].images.values())) <= 20
+        assert native_run_id(b"second") not in view._cache["entry"].images
+
+        # An evicted image remains available without waiting for the missing-ID
+        # cooldown, and replacing the cache does not accumulate retained bytes.
+        response = await view.get(_request(runtime), "entry", native_run_id(b"second"))
+        assert response.body == b"b" * 9
+        assert read.await_count == 2
+        assert sum(map(len, view._cache["entry"].images.values())) <= 20
+        assert (
+            await view.get(_request(runtime), "entry", native_run_id(b"absent"))
+        ).status == 404
+        assert read.await_count == 2
