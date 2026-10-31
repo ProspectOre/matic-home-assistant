@@ -43,10 +43,14 @@ def _photo(number: int) -> RobotPhoto:
 
 
 class _Photos:
-    """Reveal one queued photo per refresh, or nothing for ``None``."""
+    """Reveal one queued photo per refresh, or nothing for ``None``.
 
-    def __init__(self, *arrivals: RobotPhoto | None) -> None:
-        self.latest: RobotPhoto | None = _photo(0)
+    The patrol refreshes once before each snap, then polls after it.
+    """
+
+    def __init__(self, *arrivals: RobotPhoto | None, seen: bool = True) -> None:
+        self.latest: RobotPhoto | None = _photo(0) if seen else None
+        self._arrivals = list(arrivals)
         self._arrivals = list(arrivals)
 
     async def async_refresh(self) -> bool:
@@ -114,7 +118,7 @@ def _commands(hass) -> list[tuple[str, str, dict]]:
 
 async def test_patrol_photographs_each_room_and_docks() -> None:
     hass = _hass()
-    store = _Photos(None, _photo(1), _photo(2))
+    store = _Photos(None, None, _photo(1), None, _photo(2))
     # Kitchen: docked, then moving and parked. Dining: already parked, so the
     # robot has to leave before its arrival counts.
     entry = _entry(
@@ -162,12 +166,26 @@ async def test_patrol_photographs_each_room_and_docks() -> None:
     assert fired[1].kwargs == {"context": context}
 
 
+async def test_patrol_ignores_an_older_photo_the_store_had_not_seen() -> None:
+    hass = _hass()
+    # Before the collection has been read, the first read finds an old photo;
+    # only the photo after the snap counts.
+    store = _Photos(_photo(0), None, _photo(1), seen=False)
+    entry = _entry([PARKED] * 30, store)
+
+    result = await photo_patrol.async_photo_patrol(
+        hass, entry, "vacuum.matic", ["Kitchen"], return_to_dock=False
+    )
+
+    assert [photo["photo_id"] for photo in result] == ["photo-1"]
+
+
 async def test_patrol_accepts_a_robot_that_never_seems_to_leave() -> None:
     hass = _hass()
     # Sent to the room it is already parked in: the leave wait times out
     # quietly and the robot is photographed where it is.
     states = [PARKED] * 30
-    entry = _entry(states, _Photos(_photo(1)))
+    entry = _entry(states, _Photos(None, _photo(1)))
 
     result = await photo_patrol.async_photo_patrol(
         hass, entry, "vacuum.matic", ["Kitchen"], return_to_dock=False
@@ -230,7 +248,7 @@ async def test_patrol_refuses_a_busy_or_flat_robot(
 async def test_a_clean_started_during_the_patrol_keeps_the_robot() -> None:
     hass = _hass()
     # Kitchen is photographed, then a clean takes the robot away from it.
-    entry = _entry([DOCKED, PARKED, CLEANING, CLEANING], _Photos(_photo(1)))
+    entry = _entry([DOCKED, PARKED, CLEANING, CLEANING], _Photos(None, _photo(1)))
 
     with pytest.raises(HomeAssistantError) as raised:
         await photo_patrol.async_photo_patrol(
@@ -244,7 +262,7 @@ async def test_a_clean_started_during_the_patrol_keeps_the_robot() -> None:
 
 async def test_patrol_runs_with_an_unknown_battery_level() -> None:
     hass = _hass()
-    entry = _entry([PARKED] * 30, _Photos(_photo(1)), battery=None)
+    entry = _entry([PARKED] * 30, _Photos(None, _photo(1)), battery=None)
 
     result = await photo_patrol.async_photo_patrol(
         hass, entry, "vacuum.matic", ["Den"], return_to_dock=False

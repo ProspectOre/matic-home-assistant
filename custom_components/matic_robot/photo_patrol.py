@@ -122,6 +122,9 @@ async def _async_photograph(
         _error("photo_patrol_no_arrival", room=room),
         within=ARRIVAL_TIMEOUT_SECONDS,
     )
+    # Read the collection first so an older photo the store hasn't seen yet
+    # can't pass for the new one.
+    await photos.async_refresh()
     previous = photos.latest
     await _async_command(hass, entity_id, "emote", {"kind": "snap"}, context)
     deadline = monotonic() + PHOTO_TIMEOUT_SECONDS
