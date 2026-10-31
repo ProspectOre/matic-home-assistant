@@ -10,6 +10,12 @@ was actually installed and loaded.
 Steps run in order and the first failure stops the run. Every step is recorded as passed, failed or
 skipped.
 
+Home Assistant requests and SSH file reads time out after 60 seconds; each assistant-tool request
+times out after 30 seconds. A stalled operation or connection failure produces a failed receipt.
+Timed-out local MCP and SSH subprocesses are stopped. Receipt filenames are unique, so repeated
+runs against the same tag do not overwrite earlier evidence.
+The backup and restart each have a ten-minute deadline; physical waits allow up to an hour.
+
 | Step | What it checks |
 | --- | --- |
 | `backup` | Takes a backup with the host's automatic settings and checks every agent stored it encrypted. Fails if no new backup appears. |
