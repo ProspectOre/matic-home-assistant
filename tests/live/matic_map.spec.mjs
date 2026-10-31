@@ -54,6 +54,10 @@ test("Go to room sends the docked robot to one room", async ({ page, request }) 
   expect(state.current_area).toBe("Study");
   // A visit starts no task, so no coverage command follows the first test's.
   expect(state.commands.filter(({ channel }) => channel === "user_command")).toHaveLength(2);
+
+  // Leave the shared robot docked for the next test.
+  await step(request, "arrive_at_dock");
+  await expect(page.getByText("Docked").first()).toBeVisible({ timeout: 30_000 });
 });
 
 test("Skip in Change this clean drops a room from a running clean", async ({ page, request }) => {
