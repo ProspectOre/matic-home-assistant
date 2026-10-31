@@ -2614,6 +2614,13 @@ async def test_vacuum_named_commands_and_validation() -> None:
     await entity.async_send_command("return home")
     await entity.async_send_command("pause")
     await entity.async_send_command("resume")
+    await entity.async_send_command("stay put")
+    await entity.async_send_command("emote", {"kind": " Pirouette "})
+    sent = entry.runtime_data.coordinator.client.async_send_user_command.await_args_list
+    assert [call.args[0] for call in sent[-2:]] == [
+        UserCommand.STAY_PUT,
+        UserCommand.EMOTE_PIROUETTE,
+    ]
     await entity.async_send_command(
         "clean_rooms",
         {
@@ -2664,6 +2671,8 @@ async def test_vacuum_named_commands_and_validation() -> None:
             r"^Vacuum coverage must be one of: quick, standard, heavy_duty\.$",
             "invalid_cleaning_option",
         ),
+        ("emote", None, "emote requires", "emote_kind_required"),
+        ("emote", {"kind": "wave"}, "emote requires", "emote_kind_required"),
         ("unknown", None, "Unsupported Matic command", "unsupported_command"),
     ):
         with pytest.raises(ServiceValidationError, match=message) as raised:
