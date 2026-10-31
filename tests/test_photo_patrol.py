@@ -320,6 +320,23 @@ async def test_a_robot_moved_by_someone_else_ends_the_patrol() -> None:
     assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote"]
 
 
+async def test_a_paused_clean_near_a_room_ends_the_patrol() -> None:
+    hass = _hass()
+    paused = SimpleNamespace(
+        state_codes=(109, 200, 119), cleaning=True, paused=True, returning=False
+    )
+    entry = _entry([DOCKED, PARKED, paused, paused], _Photos(None, _photo(1)))
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await photo_patrol.async_photo_patrol(
+            hass, entry, "vacuum.matic", ["Kitchen", "Den"], return_to_dock=True
+        )
+
+    # The paused clean isn't docked either.
+    assert raised.value.translation_key == "photo_patrol_robot_busy"
+    assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote"]
+
+
 async def test_a_return_to_the_dock_ends_the_patrol() -> None:
     hass = _hass()
     returning = _state(104)

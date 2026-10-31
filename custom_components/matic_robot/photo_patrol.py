@@ -122,7 +122,7 @@ async def _async_photograph(
     state = await _async_state(client)
     # Between rooms the patrol leaves the robot parked where it took the last
     # photo. A robot that has moved since was given something else to do.
-    if _busy(state) if first else not _parked(state):
+    if _busy(state) if first else not _left_parked(state):
         raise _error("photo_patrol_robot_busy")
     was_parked = _parked(state)
     await _async_command(hass, entity_id, "go_to_room", {"room": room}, context)
@@ -190,8 +190,20 @@ def _parked(state: RobotOperationalState) -> bool:
 
 
 def _busy(state: RobotOperationalState) -> bool:
-    """Return whether the robot has a task that a patrol would interrupt."""
-    return not _parked(state) and (state.cleaning or state.paused or state.returning)
+    """Return whether the robot has a task that a patrol would interrupt.
+
+    The robot reports returning (104) during every Go to room trip, so that
+    flag only counts while it isn't parked.
+    """
+    return state.cleaning or state.paused or (state.returning and not _parked(state))
+
+
+def _left_parked(state: RobotOperationalState) -> bool:
+    """Return whether the robot waits at a room with no task.
+
+    A clean paused near a room can also report 109.
+    """
+    return _parked(state) and not (state.cleaning or state.paused)
 
 
 async def _async_still_parked(entry: MaticConfigEntry) -> bool:
@@ -205,7 +217,7 @@ async def _async_still_parked(entry: MaticConfigEntry) -> bool:
         state: RobotOperationalState = await entry.runtime_data.client.async_get_state()
     except MaticError:
         return False
-    return _parked(state)
+    return _left_parked(state)
 
 
 async def _async_command(
