@@ -60,21 +60,18 @@ test("Go to room sends the docked robot to one room", async ({ page, request }) 
   await expect(page.getByText("Docked").first()).toBeVisible({ timeout: 30_000 });
 });
 
-test("Skip in Change this clean drops a room from a running clean", async ({ page, request }) => {
+test("Skip in Change this clean drops a room from a clean started in Matic Map", async ({ page, request }) => {
   await page.goto("/matic-map");
   await expect(page.getByText("Docked").first()).toBeVisible();
-  // Started as an automation would. A clean started from Matic Map keeps its
-  // queue buttons disabled until the run ends; that is reported separately.
-  await page.evaluate(() => {
-    const hass = document.querySelector("home-assistant").hass;
-    void hass.callService("matic_robot", "clean_room_sequence", {
-      entity_id: "vacuum.simulated_matic",
-      rooms: [{ room: "Kitchen" }, { room: "Study" }],
-    });
-  });
+  await page.getByRole("button", { name: "Clean rooms" }).click();
+  await page.getByRole("checkbox", { name: "Kitchen" }).check();
+  await page.getByRole("checkbox", { name: "Study" }).check();
+  await page.getByRole("button", { name: "Clean 2 rooms" }).click();
   await expect.poll(async () => (await robotState(request)).phase).toBe("cleaning");
   expect((await robotState(request)).plan).toEqual(["Kitchen", "Study"]);
 
+  // Queue changes live on Home, the all-tasks view.
+  await page.getByRole("button", { name: "Back to all tasks" }).click();
   const queue = page.getByRole("region", { name: "Change this clean" });
   await queue.getByLabel("Room").selectOption({ label: "Study" });
   await queue.getByRole("button", { name: "Skip" }).click();
