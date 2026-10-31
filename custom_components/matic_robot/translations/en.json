@@ -94,6 +94,10 @@
     "v4_choose_rooms_detail": "Choose rooms on the map or in the list.",
     "v4_cleaning_choices": "Cleaning choices",
     "v4_cleaning": "Cleaning",
+    "v4_cleaning_interior": "Cleaning the interior",
+    "v4_cleaning_edges": "Cleaning edges",
+    "v4_cleaning_toekicks": "Cleaning toekicks",
+    "v4_run_time_left": "{percent}% done · about {minutes} min left",
     "v4_cleaning_room": "In {room}",
     "v4_cleaning_system": "Cleaning mode",
     "v4_close": "Close",
@@ -240,6 +244,7 @@
     "v4_room_names": "Room names",
     "v4_wifi_signal": "Wi-Fi signal",
     "v4_floor_types": "Carpet and vents",
+    "v4_follow_robot": "Follow the robot",
     "v4_floor_types_failed": "Couldn't load carpet and vents",
     "v4_floor_types_legend": "Brown is carpet, blue is a vent",
     "v4_floor_types_empty": "None mapped yet · the robot finds them while cleaning",
@@ -716,6 +721,7 @@
     "v4_run_from_robot": "Started from the Matic app or the robot",
     "v4_run_rooms_unknown": "Rooms not reported",
     "v4_run_show_trail": "Show trail on map",
+    "v4_run_map_picture": "The robot's map of this clean",
     "v4_runs_unavailable": "Cleaning history isn't available right now.",
     "v4_runs_loading": "Loading cleaning history…",
     "v4_runs_robot_unavailable": "Cleans started from the Matic app can't be read right now.",
@@ -1260,6 +1266,20 @@
       "coverage_time": {
         "name": "Coverage time"
       },
+      "cleaning_phase": {
+        "name": "Cleaning phase",
+        "state": {
+          "interior": "Interior",
+          "edges": "Edges",
+          "toekicks": "Toekicks"
+        }
+      },
+      "run_progress": {
+        "name": "Run progress"
+      },
+      "time_remaining": {
+        "name": "Time remaining"
+      },
       "dock_detections": {
         "name": "Dock detections"
       },
@@ -1712,6 +1732,24 @@
     },
     "smart_stop_not_pending": {
       "message": "Smart Stop is no longer finishing this room or area. Check the robot before trying again."
+    },
+    "photo_patrol_running": {
+      "message": "A photo patrol is already running on this robot."
+    },
+    "photo_patrol_robot_busy": {
+      "message": "The robot is busy with a clean or on its way to the dock. Take photos once it has docked."
+    },
+    "photo_patrol_low_battery": {
+      "message": "The battery is at {battery}%. A photo patrol needs at least 20%."
+    },
+    "photo_patrol_no_arrival": {
+      "message": "The robot did not reach {room} in time, so no photo was taken there."
+    },
+    "photo_patrol_no_photo": {
+      "message": "The robot reached {room} but no new photo arrived."
+    },
+    "photo_patrol_unreachable": {
+      "message": "The robot stopped answering during the photo patrol."
     }
   },
   "issues": {
@@ -1763,6 +1801,20 @@
         "room": {
           "name": "Room",
           "description": "Room name or room ID. A name shared by two rooms is refused; use the room ID instead."
+        }
+      }
+    },
+    "photo_patrol": {
+      "name": "Photo patrol",
+      "description": "Sends the robot to each room in turn, takes a photo in each one, then docks. Returns each photo's room, capture time and link, and fires a photo taken event for each one.",
+      "fields": {
+        "rooms": {
+          "name": "Rooms",
+          "description": "Room names or IDs, visited in this order. Up to 12."
+        },
+        "return_to_dock": {
+          "name": "Return to the dock",
+          "description": "Dock after the last photo, or after a failure. Turn off to leave the robot in the last room; it docks on its own after about ten minutes."
         }
       }
     },

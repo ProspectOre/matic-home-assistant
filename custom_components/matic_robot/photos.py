@@ -5,14 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Iterable, Iterator
+from http import HTTPStatus
 from typing import TYPE_CHECKING
 
+from aiohttp import web
 from google.protobuf.message import DecodeError
 from homeassistant.core import CALLBACK_TYPE, callback
+from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .client.exceptions import MaticError
 from .client.models import HermesCollectionEntry
 from .client.snaps import RobotPhoto, decode_instamatic_snap
+from .const import DOMAIN
+from .slam_scene import PRIVATE_NO_STORE_HEADERS, _runtime_for_entry
 
 if TYPE_CHECKING:
     from .client.api import MaticHermesClient
@@ -25,27 +30,35 @@ MAX_PHOTO_ENTRIES = 64
 # the command, so the first read waits past both and a second read covers a
 # slow save. Each delay follows the previous read: reads at +12 s and +20 s.
 SNAP_READ_DELAYS_SECONDS = (12.0, 8.0)
+# About 6 MiB of full-size photos.
+MAX_RECENT_PHOTOS = 16
 
 
 class RobotPhotoStore:
-    """Hold the newest robot photo in memory.
+    """Hold the newest robot photos in memory.
 
-    Only the newest photo's bytes are kept. Older photos stay on the robot and
-    are counted by id. Reads only add photos: a read that times out returns
-    what it has without an error, so it cannot prove a photo was deleted. A
-    photo deleted in the Matic app stays until the integration reloads.
+    Only the newest ``MAX_RECENT_PHOTOS`` photos' bytes are kept. Older photos
+    stay on the robot and are counted by id. Reads only add photos: a read
+    that times out returns what it has without an error, so it cannot prove a
+    photo was deleted. A photo deleted in the Matic app stays until the
+    integration reloads.
     """
 
     def __init__(self, client: MaticHermesClient) -> None:
         self._client = client
         self._latest: RobotPhoto | None = None
         self._photo_ids: set[str] = set()
+        self._recent: dict[str, RobotPhoto] = {}
         self._listeners: set[Callable[[], None]] = set()
 
     @property
     def latest(self) -> RobotPhoto | None:
         """Return the newest photo seen on the robot."""
         return self._latest
+
+    def photo(self, photo_id: str) -> RobotPhoto | None:
+        """Return one of the recent photos by id."""
+        return self._recent.get(photo_id)
 
     @property
     def photo_count(self) -> int:
@@ -66,12 +79,16 @@ class RobotPhotoStore:
     async def async_refresh(self) -> bool:
         """Read the robot's photos once; return whether a newer one arrived."""
         try:
-            entries = await self._client.async_get_tracked_collection_entries(
-                PHOTO_COLLECTION, limit=MAX_PHOTO_ENTRIES
-            )
+            return await self.async_read()
         except MaticError as err:
             _LOGGER.debug("Matic photos are unavailable: %s", err)
             return False
+
+    async def async_read(self) -> bool:
+        """Read the robot's photos once, raising when the robot can't be read."""
+        entries = await self._client.async_get_tracked_collection_entries(
+            PHOTO_COLLECTION, limit=MAX_PHOTO_ENTRIES
+        )
         previous = self._latest
         if self._async_add_photos(_decode_photos(entries)):
             self._async_notify()
@@ -110,10 +127,14 @@ class RobotPhotoStore:
         for photo in photos:
             if photo.photo_id not in self._photo_ids:
                 self._photo_ids.add(photo.photo_id)
+                self._recent[photo.photo_id] = photo
                 changed = True
             if self._latest is None or photo.captured_at > self._latest.captured_at:
                 self._latest = photo
                 changed = True
+        while len(self._recent) > MAX_RECENT_PHOTOS:
+            oldest = min(self._recent.values(), key=lambda photo: photo.captured_at)
+            del self._recent[oldest.photo_id]
         return changed
 
     @callback
@@ -131,3 +152,26 @@ def _decode_photos(
             yield decode_instamatic_snap(entry)
         except DecodeError:
             continue
+
+
+class MaticRobotPhotoView(HomeAssistantView):
+    """Serve one recent robot photo to a signed-in user."""
+
+    url = f"/api/{DOMAIN}/photo/{{entry_id}}/{{photo_id}}"
+    name = f"api:{DOMAIN}:photo"
+
+    async def get(
+        self, request: web.Request, entry_id: str, photo_id: str
+    ) -> web.Response:
+        """Return the WebP, or 404 once it has left the recent photos."""
+        runtime = _runtime_for_entry(request.app[KEY_HASS], entry_id)
+        photo = runtime.photos.photo(photo_id) if runtime is not None else None
+        if photo is None:
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        return web.Response(
+            body=photo.image,
+            content_type="image/webp",
+            headers=PRIVATE_NO_STORE_HEADERS,
+        )

@@ -113,6 +113,42 @@ actions:
         kind: snap
 ```
 
+## Photo patrol
+
+**Photo patrol** (`matic_robot.photo_patrol`) sends the robot to each of up to
+12 `rooms` in turn, waits until it has stopped there, takes a photo and then
+moves on. With `return_to_dock` (default `true`) it docks afterwards, also when
+a room fails, as long as it is still parked where the patrol left it. The action
+returns each photo's room, capture time and a `url` that serves the image to a
+signed-in Home Assistant user, so a notification can attach it with `image:`. Home Assistant keeps the 16 newest photos for these
+links, in memory, so a link stops working after newer photos or a restart.
+Each photo also fires a `matic_robot_photo_taken` event with the same fields.
+
+The robot must be docked or idle with at least 20% battery, and only one patrol
+runs at a time. If a clean starts during a patrol, the patrol stops before the
+next room and leaves the robot to it instead of docking it. The same goes for
+a robot moved by another Go to room. A room the robot doesn't reach within
+three minutes, or a photo that isn't saved within 40 seconds, stops the patrol
+with an error. The camera faces the way the robot stopped, which the robot
+chooses, and the bottom of each photo shows the robot itself. The
+[Matic: Photograph room on alert](automation.md#ready-to-import-blueprints)
+blueprint runs a patrol when a sensor turns on and sends the photo to a phone.
+
+```yaml
+actions:
+  - action: matic_robot.photo_patrol
+    target:
+      entity_id: vacuum.matic
+    data:
+      rooms: [Kitchen, Living room]
+    response_variable: patrol
+  - action: notify.mobile_app_my_phone
+    data:
+      message: Kitchen just now
+      data:
+        image: "{{ patrol.robots[0].photos[0].url }}"
+```
+
 ## Repeat the last clean
 
 `vacuum.send_command` with `command: redo_last_clean` cleans the robot's most

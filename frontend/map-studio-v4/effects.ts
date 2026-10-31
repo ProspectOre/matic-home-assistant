@@ -493,6 +493,7 @@ export class EffectController {
       activity: projection.activity,
       batteryPercent: projection.batteryPercent,
       currentArea: projection.currentArea,
+      robotRun: projection.robotRun,
       deepMop: projection.deepMop,
       lastRun: projection.lastRun ?? null,
       nextSchedule: projection.nextSchedule ?? null,
@@ -2229,6 +2230,16 @@ export class EffectController {
     await this.#runRead("runs", null);
   }
 
+  /** Fetch one clean's map picture for Cleaning history. */
+  async loadRunThumbnail(id: string): Promise<void> {
+    const entry = this.#store.value.resources.entry;
+    if (!entry) return;
+    this.#runs ??= await import("./run-history-data");
+    await this.#runs.readRunThumbnail(this.#store, this.#backend, entry.entryId, id, this.#thumbnails, () => this.#disposed);
+  }
+
+  #thumbnails = { reads: new Set<string>(), retry: new Map<string, number>() };
+
   async showTrail(trail: string | null): Promise<void> {
     await this.#runRead("trail", trail);
   }
@@ -2976,6 +2987,10 @@ export class EffectController {
     this.#stopPolling();
     this.#stopWifiSignal();
     this.#stopFloorTypes();
+    for (const url of Object.values(this.#store.value.runThumbnails)) {
+      URL.revokeObjectURL(url);
+    }
+    this.#store.patch({ runThumbnails: {} });
     this.#clearPoseExpiry();
     this.#abortResources();
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);

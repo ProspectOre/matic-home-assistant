@@ -877,7 +877,8 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     await expect(menu).toHaveId("map-options");
     await expect.poll(() => focusedText(page)).toBe("button Photo");
     expect(await rowNames(menu)).toEqual([
-      "Photo", "Room colors", "Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics",
+      "Photo", "Room colors", "Room names", "Follow the robot", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom",
+      "Map diagnostics",
     ]);
     await expect(menu.getByRole("group", { name: "Map display" })).toBeVisible();
     await expect(menu.getByRole("group", { name: "Map detail" })).toBeVisible();
@@ -894,11 +895,11 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await openOptions(gallery);
     const names = [];
-    for (let step = 0; step < 10; step += 1) {
+    for (let step = 0; step < 11; step += 1) {
       await page.keyboard.press("ArrowDown");
       names.push((await focusedText(page)).replace(/^button /, ""));
     }
-    expect(names).toEqual(["Room colors", "Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics", "Photo"]);
+    expect(names).toEqual(["Room colors", "Room names", "Follow the robot", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics", "Photo"]);
     await page.keyboard.press("ArrowUp");
     await expect.poll(() => focusedText(page)).toBe("button Map diagnostics");
     await page.keyboard.press("Home");
@@ -951,14 +952,16 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await patchState(gallery, { view: "three" });
     const menu = await openOptions(gallery);
-    expect(await rowNames(menu)).toEqual(["Room names", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics"]);
+    expect(await rowNames(menu)).toEqual(["Room names", "Follow the robot", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics"]);
     await page.keyboard.press("Escape");
 
     const wide = await loadGallery(page, { scenario: "ready", viewport: { width: 1180, height: 760 } });
     const wideMenu = await openOptions(wide);
-    expect(await rowNames(wideMenu)).toEqual(["Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics"]);
+    expect(await rowNames(wideMenu)).toEqual([
+      "Follow the robot", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics",
+    ]);
     await expect(wideMenu.getByRole("group", { name: "Map display" })).toHaveCount(0);
-    await expect.poll(() => focusedText(page)).toBe("button Auto detail");
+    await expect.poll(() => focusedText(page)).toBe("button Follow the robot");
     await page.keyboard.press("Escape");
     const style = wide.getByRole("group", { name: "Map style" });
     await expect(style.getByRole("button")).toHaveText(["Photo", "Room colors"]);
@@ -1753,6 +1756,22 @@ test.describe("cleaning history", () => {
     await expect(robot).toContainText("Started from the Matic app or the robot");
     await expect(robot.locator("dd")).toHaveText(["Partly done"]);
     await expect(robot.getByRole("button", { name: "Show trail on map" })).toHaveCount(0);
+  });
+
+  test("a robot-started run shows the robot's map of the clean once it arrives", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "runs" });
+    const earlier = gallery.getByRole("list", { name: "Earlier" });
+    await earlier.getByRole("button").nth(1).click();
+    const picture = earlier.getByRole("img", { name: "The robot's map of this clean" });
+    await expect(picture).toHaveCount(0);
+    // A 1×1 WebP stands in for the object URL effects.ts makes from the robot's picture.
+    const webp = "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==";
+    await patchState(gallery, { runThumbnails: { "robot-1": webp } });
+    await expect(picture).toHaveAttribute("src", webp);
+    await patchState(gallery, { runThumbnails: {} });
+    await expect(picture).toHaveCount(0);
+    // Runs without a robot picture never show one.
+    await expect(gallery.getByRole("region", { name: "Daily clean" }).getByRole("img")).toHaveCount(0);
   });
 
   test("an empty history, a failed read and a robot whose history can't be read each say so", async ({ page }) => {

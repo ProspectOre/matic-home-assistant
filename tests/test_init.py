@@ -56,7 +56,7 @@ from custom_components.matic_robot.const import (
     DOMAIN,
     PLATFORMS,
 )
-from custom_components.matic_robot.photos import RobotPhotoStore
+from custom_components.matic_robot.photos import MaticRobotPhotoView, RobotPhotoStore
 from custom_components.matic_robot.plans import (
     STOP_FENCE_EXPIRES_AT,
     AreaBindingUpgradeResult,
@@ -946,8 +946,8 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 27
-    hass.http.register_view.assert_not_called()
+    assert hass.services.async_register.call_count == 28
+    hass.http.register_view.assert_called_once_with(MaticRobotPhotoView)
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
 
@@ -1007,9 +1007,10 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 11
+    assert hass.http.register_view.call_count == 13
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
+        DATA_RUN_THUMBNAIL_VIEW,
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
         MATIC_ICONS_PATH,
@@ -1025,6 +1026,9 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     assert hass.data[DATA_FLOOR_LAYERS_VIEW] in {
+        call.args[0] for call in hass.http.register_view.call_args_list
+    }
+    assert hass.data[DATA_RUN_THUMBNAIL_VIEW] in {
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     registered_paths = {
@@ -1054,7 +1058,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
     assert panel.config["_panel_custom"]["handle_safe_area"] is not legacy_panel_api
-    assert hass.services.async_register.call_count == 27
+    assert hass.services.async_register.call_count == 28
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history.return_value
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
     assert "classic_module_url" not in panel.config
@@ -1815,8 +1819,10 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     scene_view = SimpleNamespace(clear_entry=MagicMock())
     pose_view = SimpleNamespace(clear_entry=MagicMock())
     floor_layers_view = SimpleNamespace(clear_entry=MagicMock())
+    run_thumbnail_view = SimpleNamespace(clear_entry=MagicMock())
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
+        DATA_RUN_THUMBNAIL_VIEW,
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
     )
@@ -1830,6 +1836,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
             DATA_FLOOR_LAYERS_VIEW: floor_layers_view,
+            DATA_RUN_THUMBNAIL_VIEW: run_thumbnail_view,
         },
     )
 
@@ -1855,6 +1862,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
     assert floor_layers_view.clear_entry.called is unload_ok
+    assert run_thumbnail_view.clear_entry.called is unload_ok
     assert slam_map.async_shutdown.await_count == int(unload_ok)
     assert slam_history.async_shutdown.await_count == int(unload_ok)
     assert run_trails.async_shutdown.await_count == int(unload_ok)

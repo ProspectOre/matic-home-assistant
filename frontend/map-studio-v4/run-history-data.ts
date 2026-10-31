@@ -33,6 +33,8 @@ export interface RunRecord {
   readonly areas: readonly RunItem[];
   /** A trail recorded on the map shown now; null when none matches it. */
   readonly trail: string | null;
+  /** The robot history id of this clean's map picture; the robot may have none. */
+  readonly thumbnail: string | null;
 }
 
 export interface RunHistory {
@@ -112,6 +114,7 @@ export const parseRunHistory = (value: unknown): RunHistory => {
         rooms: items(run.rooms),
         areas: items(run.areas),
         trail: optionalText(run.trail, 64, "invalid-run"),
+        thumbnail: optionalText(run.thumbnail, 64, "invalid-run"),
       } satisfies RunRecord;
     }),
   };
@@ -221,4 +224,44 @@ export const watchRuns = (store: WorkspaceStore, reload: () => void): (() => voi
     if (shown !== undefined && key !== shown && state.workflow === "runs") reload();
     shown = key;
   });
+};
+
+const RUN_THUMBNAILS_KEPT = 12;
+
+/**
+ * Read one clean's map picture into `runThumbnails`, keeping the newest few
+ * and revoking the object URLs it drops. A failed read, including a 404 for
+ * a clean whose picture the robot hasn't made yet, is asked again a minute
+ * later, which is also how often the server looks for new pictures.
+ */
+export const readRunThumbnail = async (
+  store: WorkspaceStore,
+  backend: MaticBackend,
+  entryId: string,
+  id: string,
+  pending: { reads: Set<string>; retry: Map<string, number> },
+  disposed: () => boolean,
+): Promise<void> => {
+  if (id in store.value.runThumbnails || pending.reads.has(id) || (pending.retry.get(id) ?? 0) > Date.now()) return;
+  pending.reads.add(id);
+  let url: string;
+  try {
+    url = URL.createObjectURL(await backend.runThumbnail(entryId, id));
+  } catch {
+    pending.retry.set(id, Date.now() + 60_000);
+    // Re-render then, so a Cleaning history still showing the run asks again.
+    window.setTimeout(() => {
+      if (!disposed()) store.patch({ runThumbnails: { ...store.value.runThumbnails } });
+    }, 60_000);
+    return;
+  } finally {
+    pending.reads.delete(id);
+  }
+  if (disposed()) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+  const kept = Object.entries(store.value.runThumbnails);
+  for (const [, old] of kept.slice(0, Math.max(0, kept.length - RUN_THUMBNAILS_KEPT + 1))) URL.revokeObjectURL(old);
+  store.patch({ runThumbnails: Object.fromEntries([...kept.slice(-RUN_THUMBNAILS_KEPT + 1), [id, url]]) });
 };

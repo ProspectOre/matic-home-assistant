@@ -65,6 +65,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   nextSchedule: null,
   smartStop: null,
   trail: null,
+  runThumbnails: {},
   pageActive: true,
   owner: null,
   draftFloorOrdinal: null,
@@ -89,6 +90,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   labelsVisible: true,
   wifiSignal: null,
   floorTypes: null,
+  followRobot: false,
   quality: "auto",
   cameras: {},
   cameraKey: null,
@@ -97,6 +99,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   batteryPercent: null,
   deepMop: null,
   currentArea: null,
+  robotRun: null,
   floor: {
     classifiedCount: 1,
     displayName: "Current floor",
@@ -379,6 +382,8 @@ export const reduceWorkspace = (
       return { ...state, labelsVisible: !state.labelsVisible };
     case "toggle-wifi-signal":
       return { ...state, wifiSignal: state.wifiSignal ? null : { status: "loading", surveying: false, cellSize: 0, cells: [] } };
+    case "set-follow-robot":
+      return state.followRobot === intent.value ? state : { ...state, followRobot: intent.value };
     case "toggle-floor-types":
       return { ...state, floorTypes: state.floorTypes ? null : { status: "loading", carpet: [], vent: [] } };
     case "open-workflow":

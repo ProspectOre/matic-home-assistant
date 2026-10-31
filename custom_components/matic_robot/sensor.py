@@ -29,6 +29,7 @@ from homeassistant.util import slugify
 from . import MaticConfigEntry
 from .client.models import (
     ROBOT_ALERT_OPTIONS,
+    CleaningPhase,
     CuesGestureStatus,
     CuesVoiceStatus,
     RobotActivity,
@@ -271,6 +272,35 @@ STATE_DESCRIPTIONS = (
         native_unit_of_measurement=UnitOfTime.SECONDS,
         suggested_unit_of_measurement=UnitOfTime.MINUTES,
         value_fn=lambda state: state.telemetry.coverage_time_seconds,
+    ),
+    MaticStateSensorDescription(
+        key="cleaning_phase",
+        translation_key="cleaning_phase",
+        device_class=SensorDeviceClass.ENUM,
+        options=[phase.value for phase in CleaningPhase],
+        value_fn=lambda state: state.operational.cleaning_phase,
+    ),
+    MaticStateSensorDescription(
+        key="run_progress",
+        translation_key="run_progress",
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda state: (
+            state.telemetry.run_progress.percent
+            if state.telemetry.run_progress is not None
+            else None
+        ),
+    ),
+    MaticStateSensorDescription(
+        key="time_remaining",
+        translation_key="time_remaining",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        suggested_unit_of_measurement=UnitOfTime.MINUTES,
+        value_fn=lambda state: (
+            state.telemetry.run_progress.remaining_seconds
+            if state.telemetry.run_progress is not None
+            else None
+        ),
     ),
     MaticStateSensorDescription(
         key="last_run_duration",

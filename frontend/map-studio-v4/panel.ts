@@ -304,6 +304,10 @@ export class MaticMapPanelV4 extends LitElement {
       this.#effects?.moveHomePin(intent.pin, intent.direction);
       return;
     }
+    if (intent.type === "load-run-thumbnail") {
+      void this.#effects?.loadRunThumbnail(intent.id);
+      return;
+    }
     if (intent.type === "show-trail") {
       void this.#effects?.showTrail(intent.trail);
       return;

@@ -253,7 +253,13 @@ def managed_entry(
         "ending": ending,
         "rooms": rooms,
         "areas": areas,
+        "thumbnail": None,
     }
+
+
+def native_run_id(key: bytes) -> str:
+    """Return the public id of a robot history record, which also names its map."""
+    return "robot-" + sha256(key).hexdigest()[:20]
 
 
 def native_entry(record: CleaningSessionRecord) -> dict[str, Any]:
@@ -264,7 +270,7 @@ def native_entry(record: CleaningSessionRecord) -> dict[str, Any]:
         for name in session.rooms[:MAX_HISTORY_ROOMS]
     ]
     return {
-        "id": "robot-" + sha256(record.key).hexdigest()[:20],
+        "id": native_run_id(record.key),
         "source": "robot",
         "started_at": _timestamp(session.started_at),
         "ended_at": _timestamp(session.ended_at),
@@ -279,6 +285,7 @@ def native_entry(record: CleaningSessionRecord) -> dict[str, Any]:
         "ending": "finished" if session.completed is True else "unknown",
         "rooms": rooms,
         "areas": [],
+        "thumbnail": native_run_id(record.key),
     }
 
 
@@ -317,6 +324,7 @@ def history_entries(
             entry["ended_at"]
             or (_OPEN_END if entry["outcome"] == "running" else start),
             entry["ending"] == "taken_over",
+            entry,
         )
         for entry in entries
         if (start := entry["started_at"]) is not None
@@ -327,14 +335,21 @@ def history_entries(
         if start is None:
             continue
         end = entry["ended_at"] or start
-        if any(
-            start <= until
-            and since <= end
-            and not (taken_over and (entry["ended_at"] or _OPEN_END) > until)
-            for since, until, taken_over in windows
-        ):
-            continue
-        entries.append(entry)
+        owner = next(
+            (
+                managed
+                for since, until, taken_over, managed in windows
+                if start <= until
+                and since <= end
+                and not (taken_over and (entry["ended_at"] or _OPEN_END) > until)
+            ),
+            None,
+        )
+        if owner is None:
+            entries.append(entry)
+        elif owner.get("thumbnail") is None:
+            # The run's own mission: its map is the robot's picture of the run.
+            owner["thumbnail"] = entry["thumbnail"]
     entries.sort(key=lambda entry: entry["started_at"] or "", reverse=True)
     return entries
 
