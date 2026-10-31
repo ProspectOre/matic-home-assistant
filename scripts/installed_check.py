@@ -21,10 +21,11 @@ import subprocess
 import sys
 import tarfile
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 import aiohttp
 
@@ -34,6 +35,11 @@ REPOSITORY = "ProspectOre/matic-home-assistant"
 RECEIPT_SCHEMA = 1
 RESTART_TIMEOUT = 600.0
 PHYSICAL_TIMEOUT = 3600.0
+BACKUP_TIMEOUT = 600.0
+HA_REQUEST_TIMEOUT = 60.0
+MCP_REQUEST_TIMEOUT = 30.0
+MCP_SHUTDOWN_TIMEOUT = 2.0
+SSH_TIMEOUT = 60.0
 ASSISTANT_TOOLS = (
     "matic_get_operations",
     "matic_get_plan",
@@ -198,6 +204,7 @@ class HomeAssistant:
 
     restart_timeout = RESTART_TIMEOUT
     poll_interval = 5.0
+    request_timeout = HA_REQUEST_TIMEOUT
 
     def __init__(self, session: aiohttp.ClientSession, url: str, token: str) -> None:
         self._session = session
@@ -209,13 +216,28 @@ class HomeAssistant:
 
     async def connect(self) -> None:
         """Open and authenticate the WebSocket."""
-        socket = await self._session.ws_connect(f"{self._url}/api/websocket")
-        if (await socket.receive_json())["type"] != "auth_required":
+        try:
+            async with asyncio.timeout(self.request_timeout):
+                socket = await self._session.ws_connect(f"{self._url}/api/websocket")
+        except TimeoutError:
+            raise CheckFailed(
+                "Home Assistant did not accept a connection in time"
+            ) from None
+        self._socket = socket
+        if (await self._receive_json(socket))["type"] != "auth_required":
             raise CheckFailed("Home Assistant did not ask for authentication")
         await socket.send_json({"type": "auth", "access_token": self._token})
-        if (reply := await socket.receive_json())["type"] != "auth_ok":
+        if (reply := await self._receive_json(socket))["type"] != "auth_ok":
             raise CheckFailed(f"Home Assistant refused the token: {reply['type']}")
-        self._socket = socket
+
+    async def _receive_json(
+        self, socket: aiohttp.ClientWebSocketResponse
+    ) -> dict[str, Any]:
+        try:
+            async with asyncio.timeout(self.request_timeout):
+                return cast(dict[str, Any], await socket.receive_json())
+        except TimeoutError:
+            raise CheckFailed("Home Assistant did not reply in time") from None
 
     async def close(self) -> None:
         """Close the WebSocket if it is open."""
@@ -239,11 +261,17 @@ class HomeAssistant:
         assert self._socket is not None
         if queued := self._pending.get(message_id):
             return queued.pop(0)
-        while True:
-            message: dict[str, Any] = await self._socket.receive_json()
-            if message.get("id") == message_id:
-                return message
-            self._pending.setdefault(message["id"], []).append(message)
+        try:
+            async with asyncio.timeout(self.request_timeout):
+                while True:
+                    message = await self._receive_json(self._socket)
+                    if message.get("id") == message_id:
+                        return message
+                    self._pending.setdefault(message["id"], []).append(message)
+        except TimeoutError:
+            raise CheckFailed(
+                f"Home Assistant did not reply to message {message_id} in time"
+            ) from None
 
     def reply_if_ready(self, message_id: int) -> dict[str, Any] | None:
         """Return a reply that already arrived for one command id, if any."""
@@ -253,15 +281,25 @@ class HomeAssistant:
 
     async def call(self, message_type: str, **data: Any) -> Any:
         """Send one command and return its result."""
-        reply = await self.receive(await self.send(message_type, **data))
+        try:
+            async with asyncio.timeout(self.request_timeout):
+                reply = await self.receive(await self.send(message_type, **data))
+        except TimeoutError:
+            raise CheckFailed(
+                f"Home Assistant timed out during {message_type}"
+            ) from None
         if not reply.get("success", True):
             raise CheckFailed(f"{message_type} failed: {reply.get('error')}")
         return reply.get("result")
 
     async def get(self, path: str) -> tuple[int, bytes]:
         """Fetch one served path."""
-        async with self._session.get(f"{self._url}{path}") as response:
-            return response.status, await response.read()
+        try:
+            async with asyncio.timeout(self.request_timeout):
+                async with self._session.get(f"{self._url}{path}") as response:
+                    return response.status, await response.read()
+        except TimeoutError:
+            raise CheckFailed(f"Home Assistant did not serve {path} in time") from None
 
     async def wait_until_running(self) -> str:
         """Reconnect after a restart and return the running version."""
@@ -298,6 +336,7 @@ class InstalledCheck:
     """Runs the steps in order and records each one."""
 
     dock_timeout = PHYSICAL_TIMEOUT
+    backup_timeout = BACKUP_TIMEOUT
 
     def __init__(
         self, ha: HomeAssistant, candidate: Candidate, options: Options
@@ -320,7 +359,20 @@ class InstalledCheck:
             ("assistant_tools", self.assistant_tools if self.options.aspenos else None),
             ("physical", self.physical if self.options.room else None),
         ]
-        self.receipt.home_assistant = (await self.ha.call("get_config"))["version"]
+        started = _now()
+        try:
+            self.receipt.home_assistant = (await self.ha.call("get_config"))["version"]
+        except asyncio.CancelledError:
+            self.receipt.steps.append(
+                Step("home_assistant", "failed", started, _now(), error="cancelled")
+            )
+            raise
+        except Exception as err:
+            error = str(err) if isinstance(err, CheckFailed) else repr(err)
+            self.receipt.steps.append(
+                Step("home_assistant", "failed", started, _now(), error=error)
+            )
+            return self.receipt
         for name, step in steps:
             started = _now()
             if step is None:
@@ -328,6 +380,11 @@ class InstalledCheck:
                 continue
             try:
                 evidence = await step()
+            except asyncio.CancelledError:
+                self.receipt.steps.append(
+                    Step(name, "failed", started, _now(), error="cancelled")
+                )
+                raise
             except Exception as err:
                 # Record any failure, so a receipt always shows where the run
                 # stopped, even after the host was changed.
@@ -341,6 +398,14 @@ class InstalledCheck:
 
     async def backup(self) -> dict[str, Any]:
         """Take a fresh backup with the host's automatic, encrypted settings."""
+        try:
+            async with asyncio.timeout(self.backup_timeout):
+                return await self._create_backup()
+        except TimeoutError:
+            raise CheckFailed("the backup did not complete in time") from None
+
+    async def _create_backup(self) -> dict[str, Any]:
+        """Create and verify one automatic encrypted backup."""
         before = {item["backup_id"] for item in await self._backups()}
         events = await self.ha.send("backup/subscribe_events")
         await self.ha.call("backup/generate_with_automatic_settings")
@@ -415,18 +480,32 @@ class InstalledCheck:
             f"cd /config/{INTEGRATION} && "
             "find . -type f ! -path '*/__pycache__/*' -exec sha256sum {} +"
         )
-        result = await asyncio.to_thread(
-            subprocess.run,
-            ["ssh", self.options.ssh, command],
-            capture_output=True,
-            text=True,
-            check=False,
+        process = await asyncio.create_subprocess_exec(
+            "ssh",
+            self.options.ssh,
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        if result.returncode:
+        completed = False
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), SSH_TIMEOUT)
+            completed = True
+        except TimeoutError:
+            raise CheckFailed("ssh did not finish in time") from None
+        finally:
+            if not completed:
+                cleanup = asyncio.create_task(_terminate_process(process))
+                try:
+                    await asyncio.shield(cleanup)
+                except asyncio.CancelledError:
+                    await cleanup
+                    raise
+        if process.returncode:
             raise CheckFailed(
-                f"ssh exited {result.returncode}: {result.stderr.strip()}"
+                f"ssh exited {process.returncode}: {stderr.decode().strip()}"
             )
-        compare_files(self.candidate.files, parse_sha256sum(result.stdout))
+        compare_files(self.candidate.files, parse_sha256sum(stdout.decode()))
         return {"files": len(self.candidate.files)}
 
     async def entities(self) -> dict[str, Any]:
@@ -468,9 +547,7 @@ class InstalledCheck:
     async def assistant_tools(self) -> dict[str, Any]:
         """Call each read-only Matic tool through the home MCP bridge."""
         assert self.options.aspenos is not None
-        results = await asyncio.to_thread(
-            call_mcp_tools, self.options.aspenos, ASSISTANT_TOOLS
-        )
+        results = await call_mcp_tools(self.options.aspenos, ASSISTANT_TOOLS)
         failed = sorted(name for name, ok in results.items() if not ok)
         if failed:
             raise CheckFailed(f"assistant tools failed: {failed}")
@@ -562,31 +639,40 @@ class InstalledCheck:
             raise CheckFailed(f"the robot did not {what} in time") from None
 
 
-def call_mcp_tools(command: list[str], names: tuple[str, ...]) -> dict[str, bool]:
-    """Call MCP tools that take no arguments over a stdio server."""
-    with subprocess.Popen(
-        command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True
-    ) as server:
-        assert server.stdin is not None and server.stdout is not None
+async def call_mcp_tools(command: list[str], names: tuple[str, ...]) -> dict[str, bool]:
+    """Call MCP tools that take no arguments over a bounded stdio server."""
+    server = await asyncio.create_subprocess_exec(
+        *command,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    stdin = server.stdin
+    stdout = server.stdout
+    assert stdin is not None and stdout is not None
 
-        def request(method: str, params: dict[str, Any], message_id: int) -> Any:
-            message = {
-                "jsonrpc": "2.0",
-                "id": message_id,
-                "method": method,
-                "params": params,
-            }
-            server.stdin.write(json.dumps(message) + "\n")
-            server.stdin.flush()
-            while line := server.stdout.readline():
-                reply = json.loads(line)
-                if reply.get("id") == message_id:
-                    if "error" in reply:
-                        raise CheckFailed(f"{method} failed: {reply['error']}")
-                    return reply["result"]
-            raise CheckFailed("the MCP server closed its output")
+    async def request(method: str, params: dict[str, Any], message_id: int) -> Any:
+        message = {
+            "jsonrpc": "2.0",
+            "id": message_id,
+            "method": method,
+            "params": params,
+        }
+        try:
+            async with asyncio.timeout(MCP_REQUEST_TIMEOUT):
+                stdin.write((json.dumps(message) + "\n").encode())
+                await stdin.drain()
+                while line := await stdout.readline():
+                    reply = json.loads(line)
+                    if reply.get("id") == message_id:
+                        if "error" in reply:
+                            raise CheckFailed(f"{method} failed: {reply['error']}")
+                        return reply["result"]
+        except TimeoutError:
+            raise CheckFailed(f"MCP server timed out during {method}") from None
+        raise CheckFailed("the MCP server closed its output")
 
-        request(
+    try:
+        await request(
             "initialize",
             {
                 "protocolVersion": "2025-06-18",
@@ -595,18 +681,55 @@ def call_mcp_tools(command: list[str], names: tuple[str, ...]) -> dict[str, bool
             },
             1,
         )
-        server.stdin.write(
-            json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n"
+        stdin.write(
+            (
+                json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"})
+                + "\n"
+            ).encode()
         )
-        listed = {tool["name"] for tool in request("tools/list", {}, 2)["tools"]}
+        await stdin.drain()
+        listed = {
+            tool["name"] for tool in (await request("tools/list", {}, 2))["tools"]
+        }
         if missing := sorted(set(names) - listed):
             raise CheckFailed(f"the MCP server does not list {missing}")
         results = {}
         for offset, name in enumerate(names, start=3):
-            result = request("tools/call", {"name": name, "arguments": {}}, offset)
+            result = await request(
+                "tools/call", {"name": name, "arguments": {}}, offset
+            )
             results[name] = not result.get("isError", False)
-        server.stdin.close()
         return results
+    finally:
+        cleanup = asyncio.create_task(_stop_mcp_server(server))
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
+
+
+async def _stop_mcp_server(server: asyncio.subprocess.Process) -> None:
+    """Close the MCP pipe, then terminate and reap a server that stays open."""
+    if server.stdin is not None and not server.stdin.is_closing():
+        server.stdin.close()
+        with suppress(BrokenPipeError, ConnectionResetError, TimeoutError):
+            await asyncio.wait_for(server.stdin.wait_closed(), MCP_SHUTDOWN_TIMEOUT)
+    await _terminate_process(server)
+
+
+async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+    """Terminate a timed-out child and reap it, escalating if necessary."""
+    if process.returncode is not None:
+        return
+    with suppress(ProcessLookupError):
+        process.terminate()
+    try:
+        await asyncio.wait_for(process.wait(), MCP_SHUTDOWN_TIMEOUT)
+    except TimeoutError:
+        with suppress(ProcessLookupError):
+            process.kill()
+        await process.wait()
 
 
 def _git(repo: Path, *args: str) -> bytes:
@@ -625,30 +748,60 @@ def _now() -> str:
 
 async def _main(args: argparse.Namespace) -> int:
     candidate = Candidate.from_git(args.repo, args.tag)
-    token = (
-        args.token_file.read_text().strip()
-        if args.token_file
-        else os.environ["HA_TOKEN"]
-    )
-    options = Options(
-        install=not args.skip_install,
-        ssh=args.ssh,
-        aspenos=args.aspenos.split() if args.aspenos else None,
-        room=args.room if args.physical else None,
-    )
-    async with aiohttp.ClientSession() as session:
-        ha = HomeAssistant(session, args.url, token)
-        await ha.connect()
-        try:
-            receipt = await InstalledCheck(ha, candidate, options).run()
-        finally:
-            await ha.close()
+    receipt = Receipt(candidate)
+    stage = "setup"
+    cancelled = False
+    try:
+        token = (
+            args.token_file.read_text().strip()
+            if args.token_file
+            else os.environ["HA_TOKEN"]
+        )
+        options = Options(
+            install=not args.skip_install,
+            ssh=args.ssh,
+            aspenos=args.aspenos.split() if args.aspenos else None,
+            room=args.room if args.physical else None,
+        )
+        async with aiohttp.ClientSession() as session:
+            ha = HomeAssistant(session, args.url, token)
+            try:
+                stage = "connect"
+                await ha.connect()
+                stage = "check"
+                check = InstalledCheck(ha, candidate, options)
+                check.receipt = receipt
+                receipt = await check.run()
+            finally:
+                try:
+                    await ha.close()
+                except Exception as err:
+                    _record_failure(receipt, "close", err)
+    except asyncio.CancelledError:
+        cancelled = True
+        if not receipt.steps or receipt.steps[-1].status != "failed":
+            _record_failure(receipt, stage, "cancelled")
+    except Exception as err:
+        _record_failure(receipt, stage, err)
     path = receipt.write(args.receipts)
     summary = receipt.as_json()
     for step in summary["steps"]:
         print(f"{step['name']:16} {step['status']:8} {step['error'] or ''}")
     print(f"{summary['result']}: {path}")
+    if cancelled:
+        raise asyncio.CancelledError
     return 0 if summary["result"] == "passed" else 1
+
+
+def _record_failure(receipt: Receipt, name: str, error: Exception | str) -> None:
+    """Append a failed step so the receipt survives failures outside a step."""
+    detail = (
+        str(error)
+        if isinstance(error, CheckFailed) or isinstance(error, str)
+        else repr(error)
+    )
+    now = _now()
+    receipt.steps.append(Step(name, "failed", now, now, error=detail))
 
 
 def main(argv: list[str] | None = None) -> int:

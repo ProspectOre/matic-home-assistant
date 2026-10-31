@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import json
+import os
 import subprocess
 import sys
 from datetime import UTC, datetime
@@ -23,6 +26,7 @@ from scripts.installed_check import (
     InstalledCheck,
     Options,
     Receipt,
+    _main,
     call_mcp_tools,
     compare_files,
     main,
@@ -301,11 +305,17 @@ async def test_installed_files_are_hashed_over_ssh(
     )
     commands: list[list[str]] = []
 
-    def run(command: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0, listing, "")
+    class Process:
+        returncode = 0
 
-    monkeypatch.setattr(subprocess, "run", run)
+        async def communicate(self) -> tuple[bytes, bytes]:
+            return listing.encode(), b""
+
+    async def run(*command: str, **_: Any) -> Process:
+        commands.append(list(command))
+        return Process()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", run)
     ha = FakeHomeAssistant(candidate)
     receipt = (
         await InstalledCheck(ha, candidate, Options(install=False, ssh="ha")).run()  # type: ignore[arg-type]
@@ -333,14 +343,31 @@ for line in sys.stdin:
 """
 
 
-def test_assistant_tools_are_called_through_the_mcp_bridge(tmp_path: Path) -> None:
+async def test_assistant_tools_are_called_through_the_mcp_bridge(
+    tmp_path: Path,
+) -> None:
     server = tmp_path / "server.py"
     server.write_text(FAKE_MCP)
     command = [sys.executable, str(server), *ASSISTANT_TOOLS]
-    results = call_mcp_tools(command, ASSISTANT_TOOLS)
+    results = await call_mcp_tools(command, ASSISTANT_TOOLS)
     assert results == {name: name != "matic_get_firmware" for name in ASSISTANT_TOOLS}
     with pytest.raises(CheckFailed, match="does not list"):
-        call_mcp_tools([sys.executable, str(server), "other"], ASSISTANT_TOOLS)
+        await call_mcp_tools([sys.executable, str(server), "other"], ASSISTANT_TOOLS)
+
+
+async def test_silent_mcp_server_times_out_and_is_reaped(tmp_path: Path) -> None:
+    server = tmp_path / "silent.py"
+    pid_file = tmp_path / "pid"
+    server.write_text(
+        "import os, pathlib, sys, time\n"
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+    )
+    with patch("scripts.installed_check.MCP_REQUEST_TIMEOUT", 0.05):
+        with pytest.raises(CheckFailed, match="timed out during initialize"):
+            await call_mcp_tools([sys.executable, str(server)], ASSISTANT_TOOLS)
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
 
 
 async def test_client_authenticates_and_matches_replies_by_id(
@@ -427,6 +454,108 @@ async def test_client_authenticates_and_matches_replies_by_id(
                 await HomeAssistant(session, url, "wrong").connect()
     finally:
         await runner.cleanup()
+
+
+async def test_a_stalled_backup_event_fails_and_writes_a_partial_receipt(
+    socket_enabled: None, tmp_path: Path
+) -> None:
+    async def websocket(request: web.Request) -> web.WebSocketResponse:
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        await socket.send_json({"type": "auth_required"})
+        await socket.receive_json()
+        await socket.send_json({"type": "auth_ok"})
+        async for message in socket:
+            command = json.loads(message.data)
+            kind = command["type"]
+            result: Any = {"version": "2026.10.4", "state": "RUNNING"}
+            if kind == "backup/info":
+                result = {"backups": []}
+            if kind == "backup/subscribe_events":
+                result = None
+            await socket.send_json(
+                {
+                    "id": command["id"],
+                    "type": "result",
+                    "success": True,
+                    "result": result,
+                }
+            )
+        return socket
+
+    app = web.Application()
+    app.router.add_get("/api/websocket", websocket)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+    import aiohttp
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            ha = HomeAssistant(session, f"http://127.0.0.1:{port}", "token")
+            ha.request_timeout = 0.05
+            await ha.connect()
+            check = InstalledCheck(ha, _candidate(), Options())
+            check.backup_timeout = 0.05
+            receipt = await check.run()
+            await ha.close()
+        written = json.loads(receipt.write(tmp_path).read_text())
+        assert written["result"] == "failed"
+        assert written["steps"][-1]["name"] == "backup"
+        assert "backup did not complete in time" in written["steps"][-1]["error"]
+    finally:
+        await runner.cleanup()
+
+
+async def test_connect_failure_is_written_as_a_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = _candidate()
+    monkeypatch.setattr(
+        Candidate,
+        "from_git",
+        classmethod(lambda cls, repo, tag: candidate),
+    )
+
+    async def fail_connect(self: HomeAssistant) -> None:
+        raise CheckFailed("bad credentials")
+
+    monkeypatch.setattr(HomeAssistant, "connect", fail_connect)
+    monkeypatch.setenv("HA_TOKEN", "test-token")
+    args = argparse.Namespace(
+        repo=ROOT,
+        tag=candidate.tag,
+        token_file=None,
+        skip_install=True,
+        ssh=None,
+        aspenos=None,
+        room=None,
+        physical=False,
+        url="http://127.0.0.1:1",
+        receipts=tmp_path,
+    )
+
+    assert await _main(args) == 1
+
+    def read_receipts() -> list[str]:
+        return [path.read_text() for path in tmp_path.glob("*.json")]
+
+    files = await asyncio.to_thread(read_receipts)
+    assert len(files) == 1
+    receipt = json.loads(files[0])
+    assert receipt["result"] == "failed"
+    assert receipt["steps"] == [
+        {
+            "name": "connect",
+            "status": "failed",
+            "started": receipt["steps"][0]["started"],
+            "finished": receipt["steps"][0]["finished"],
+            "evidence": {},
+            "error": "bad credentials",
+        }
+    ]
 
 
 def test_physical_needs_a_room() -> None:
