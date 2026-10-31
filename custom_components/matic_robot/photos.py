@@ -64,7 +64,7 @@ class RobotPhotoStore:
     async def async_refresh(self) -> bool:
         """Read every photo once; return whether a newer photo arrived."""
         try:
-            entries = await self._client.async_get_collection_entries(
+            entries = await self._client.async_get_tracked_collection_entries(
                 PHOTO_COLLECTION, limit=MAX_PHOTO_ENTRIES
             )
         except MaticError as err:
@@ -95,7 +95,9 @@ class RobotPhotoStore:
         retry_delay = 1
         while True:
             try:
-                self._photo_ids.clear()
+                # The stream only adds photos. A full read first drops any
+                # deleted in the app while the stream was down.
+                await self.async_refresh()
                 async for entry in self._client.async_subscribe_collection_entries(
                     PHOTO_COLLECTION
                 ):

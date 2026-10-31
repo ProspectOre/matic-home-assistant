@@ -128,7 +128,7 @@ def test_rejects_oversized_and_oversized_pixel_images() -> None:
 
 def _client(*, entries=(), stream=None, retired: bool = True) -> SimpleNamespace:
     return SimpleNamespace(
-        async_get_collection_entries=AsyncMock(return_value=tuple(entries)),
+        async_get_tracked_collection_entries=AsyncMock(return_value=tuple(entries)),
         async_subscribe_collection_entries=stream or MagicMock(),
         retired=retired,
     )
@@ -145,7 +145,7 @@ async def test_refresh_keeps_only_the_newest_photo_and_counts_the_rest() -> None
 
     assert store.latest is None and store.photo_count == 0
     assert await store.async_refresh() is True
-    client.async_get_collection_entries.assert_awaited_once_with(
+    client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "instamatic_snaps", limit=photos.MAX_PHOTO_ENTRIES
     )
     assert store.latest is not None
@@ -158,19 +158,19 @@ async def test_refresh_keeps_only_the_newest_photo_and_counts_the_rest() -> None
     listener.assert_called_once()
 
     # A photo deleted in the app drops out and the older one becomes newest.
-    client.async_get_collection_entries.return_value = (older,)
+    client.async_get_tracked_collection_entries.return_value = (older,)
     assert await store.async_refresh() is False
     assert store.latest.photo_id == str(UUID(int=1))
     assert store.photo_count == 1
     assert listener.call_count == 2
 
-    client.async_get_collection_entries.return_value = ()
+    client.async_get_tracked_collection_entries.return_value = ()
     assert await store.async_refresh() is False
     assert store.latest is None
     assert listener.call_count == 3
 
     remove()
-    client.async_get_collection_entries.return_value = (newer,)
+    client.async_get_tracked_collection_entries.return_value = (newer,)
     assert await store.async_refresh() is True
     assert listener.call_count == 3
 
@@ -179,7 +179,9 @@ async def test_refresh_keeps_the_last_photo_when_the_robot_is_unreachable() -> N
     client = _client(entries=(_snap(),))
     store = RobotPhotoStore(client)
     await store.async_refresh()
-    client.async_get_collection_entries.side_effect = CannotConnectError("offline")
+    client.async_get_tracked_collection_entries.side_effect = CannotConnectError(
+        "offline"
+    )
 
     assert await store.async_refresh() is False
     assert store.latest is not None
@@ -217,16 +219,26 @@ def _stream(*batches):
     return subscribe
 
 
-async def test_watch_follows_new_photos_and_retries_until_retired() -> None:
-    first = _snap(UUID(int=1), CAPTURED - 60)
-    second = _snap(UUID(int=2), CAPTURED)
+async def test_watch_reconciles_on_reconnect_and_follows_new_photos() -> None:
+    first = _snap(UUID(int=1), CAPTURED - 120)
+    deleted = _snap(UUID(int=2), CAPTURED - 60)
+    second = _snap(UUID(int=3), CAPTURED)
     client = _client(
-        stream=_stream((first, first), CannotConnectError("drop"), (second,)),
+        stream=_stream((first, deleted), (first, second), CannotConnectError("drop")),
         retired=False,
     )
+    client.async_get_tracked_collection_entries.side_effect = [
+        (first, deleted),
+        (first,),
+        (first, second),
+    ]
     store = RobotPhotoStore(client)
-    listener = MagicMock()
-    store.async_add_listener(listener)
+    seen: list[tuple[str | None, int]] = []
+    store.async_add_listener(
+        lambda: seen.append(
+            (store.latest.photo_id if store.latest else None, store.photo_count)
+        )
+    )
     sleeps: list[float] = []
 
     async def sleep(delay: float) -> None:
@@ -237,11 +249,14 @@ async def test_watch_follows_new_photos_and_retries_until_retired() -> None:
     with patch.object(photos.asyncio, "sleep", sleep):
         await store.async_watch()
 
-    assert store.latest.photo_id == str(UUID(int=2))
-    # Each subscription replays the collection, so the count restarts with it.
-    assert store.photo_count == 1
-    assert listener.call_count == 2
-    assert sleeps == [1, 2]
+    # The full read on reconnect drops the photo deleted in the app before
+    # the stream adds the new one; replayed photos change nothing.
+    assert seen == [
+        (str(UUID(int=2)), 2),
+        (str(UUID(int=1)), 1),
+        (str(UUID(int=3)), 2),
+    ]
+    assert sleeps == [1, 1]
 
 
 async def test_watch_stops_on_cancel() -> None:
