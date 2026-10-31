@@ -154,7 +154,9 @@ export const readRuns = async (
   entry: MapEntry,
   trail: string | null,
   signal: AbortSignal,
-  unavailable: WorkspaceNotice,
+  unavailable: WorkspaceNotice = {
+    tone: "info", key: "v4_notice_trail_unavailable", fallback: "That trail isn't available on this map.",
+  },
 ): Promise<void> => {
   const show = (runs: ReturnType<typeof resource<RunHistory>>): void => {
     store.patch({ resources: { ...store.value.resources, runs } });
@@ -289,25 +291,31 @@ export const readRunThumbnail = async (
   backend: MaticBackend,
   entryId: string,
   id: string,
-  pending: { reads: Set<string>; retry: Map<string, number> },
-  disposed: () => boolean,
+  pending: { reads: Set<string>; retry: Map<string, number>; timers?: Set<number> },
+  retired: () => boolean,
+  signal?: AbortSignal,
 ): Promise<void> => {
-  if (id in store.value.runThumbnails || pending.reads.has(id) || (pending.retry.get(id) ?? 0) > Date.now()) return;
+  if (retired() || id in store.value.runThumbnails || pending.reads.has(id) || (pending.retry.get(id) ?? 0) > Date.now()) return;
   pending.reads.add(id);
   let url: string;
   try {
-    url = URL.createObjectURL(await backend.runThumbnail(entryId, id));
+    const picture = await backend.runThumbnail(entryId, id, signal);
+    if (retired()) return;
+    url = URL.createObjectURL(picture);
   } catch {
+    if (retired()) return;
     pending.retry.set(id, Date.now() + 60_000);
     // Re-render then, so a Cleaning history still showing the run asks again.
-    window.setTimeout(() => {
-      if (!disposed()) store.patch({ runThumbnails: { ...store.value.runThumbnails } });
+    const timer = window.setTimeout(() => {
+      pending.timers?.delete(timer);
+      if (!retired()) store.patch({ runThumbnails: { ...store.value.runThumbnails } });
     }, 60_000);
+    pending.timers?.add(timer);
     return;
   } finally {
     pending.reads.delete(id);
   }
-  if (disposed()) {
+  if (retired()) {
     URL.revokeObjectURL(url);
     return;
   }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -40,8 +41,8 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.coordinator import (
     MaticCoordinator,
     MaticCuesEvent,
-    async_delete_robot_alert_issues,
 )
+from custom_components.matic_robot.robot_health import async_delete_robot_alert_issues
 
 
 def _client() -> AsyncMock:
@@ -137,41 +138,99 @@ async def test_bag_observation_tracks_confirmed_full_and_replacement_edges(
     coordinator.async_set_updated_data(initial)
 
     with patch(
-        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        "custom_components.matic_robot.robot_health.dt_util.utcnow",
         side_effect=(
             datetime(2026, 9, 2, 10, 0, tzinfo=UTC),
             datetime(2026, 9, 2, 10, 1, tzinfo=UTC),
         ),
     ):
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=True))
-        assert coordinator.bag_observation["full_events_observed"] == 1
-        assert coordinator.bag_observation["replacement_events_observed"] == 0
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=True)
+        )
+        assert (
+            coordinator.robot_health.bag_observation(coordinator.data.operational)[
+                "full_events_observed"
+            ]
+            == 1
+        )
+        assert (
+            coordinator.robot_health.bag_observation(coordinator.data.operational)[
+                "replacement_events_observed"
+            ]
+            == 0
+        )
 
         # One clear followed by a full report is ignored as a transient pulse.
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=True))
-        assert coordinator.bag_observation["replacement_events_observed"] == 0
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=False)
+        )
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=True)
+        )
+        assert (
+            coordinator.robot_health.bag_observation(coordinator.data.operational)[
+                "replacement_events_observed"
+            ]
+            == 0
+        )
 
         # A clear full flag while the bag is still missing is not a replacement.
-        coordinator._async_track_bag_state(
+        coordinator.robot_health.track_bag_state(
             replace(initial.operational, bag_full=False, bag_missing=True)
         )
-        assert coordinator.bag_observation["replacement_events_observed"] == 0
+        assert (
+            coordinator.robot_health.bag_observation(coordinator.data.operational)[
+                "replacement_events_observed"
+            ]
+            == 0
+        )
 
         # Two consecutive clear reports identify a replacement transition.
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=False)
+        )
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=False)
+        )
 
-    assert coordinator.bag_observation["full_events_observed"] == 1
-    assert coordinator.bag_observation["replacement_events_observed"] == 1
-    assert coordinator.bag_observation["last_full_at"] is not None
-    assert coordinator.bag_observation["last_replaced_at"] is not None
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "full_events_observed"
+        ]
+        == 1
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "replacement_events_observed"
+        ]
+        == 1
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "last_full_at"
+        ]
+        is not None
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "last_replaced_at"
+        ]
+        is not None
+    )
     coordinator.data = replace(
         initial,
         operational=replace(initial.operational, bag_full=False, bag_missing=False),
     )
-    assert coordinator.bag_observation["full"] is False
-    assert coordinator.bag_observation["missing"] is False
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)["full"]
+        is False
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "missing"
+        ]
+        is False
+    )
 
 
 async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> None:
@@ -204,7 +263,12 @@ async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> N
 
     await poll(206, 207)
     await poll(206, 207)
-    assert coordinator.bag_observation["full_events_observed"] == 1
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "full_events_observed"
+        ]
+        == 1
+    )
 
     # The bag is replaced and the unrelated fault has cleared too, so the robot
     # now reports an empty error list. Before the capability was tracked this
@@ -212,8 +276,18 @@ async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> N
     await poll()
     await poll()
     assert coordinator.data.operational.bag_full is False
-    assert coordinator.bag_observation["replacement_events_observed"] == 1
-    assert coordinator.bag_observation["last_replaced_at"] is not None
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "replacement_events_observed"
+        ]
+        == 1
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "last_replaced_at"
+        ]
+        is not None
+    )
 
 
 async def test_bag_flags_stay_unknown_until_an_error_is_ever_reported(hass) -> None:
@@ -1693,7 +1767,7 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
 ) -> None:
     from pytest_homeassistant_custom_component.common import async_capture_events
 
-    from custom_components.matic_robot.client.telemetry import (
+    from custom_components.matic_robot.client.cleaning_session import (
         decode_cleaning_session,
     )
     from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
@@ -2319,7 +2393,7 @@ async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     async def subscription(*_args):
         nonlocal subscriptions
         subscriptions += 1
-        async with client._map_stream_errors("synthetic subscription"):
+        async with client._connection._map_stream_errors("synthetic subscription"):
             with wrapper:
                 started.set()
                 await asyncio.Event().wait()
@@ -2331,7 +2405,7 @@ async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     channel.close.side_effect = lambda: wrapper.cancel(
         StreamTerminatedError("synthetic closed channel")
     )
-    client._channel = channel
+    client._connection._channel = channel
     coordinator.async_request_refresh = AsyncMock()
     task = asyncio.create_task(getattr(coordinator, watcher)())
     await started.wait()
@@ -2343,7 +2417,7 @@ async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     await asyncio.wait_for(task, 0.5)
     assert subscriptions == 1
     assert client.retired
-    assert client._channel is None
+    assert client._connection._channel is None
     coordinator.async_request_refresh.assert_not_awaited()
     assert coordinator.data is None
 
@@ -2371,21 +2445,22 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
 
     clock = [datetime(2026, 10, 30, 3, 0, tzinfo=UTC)]
     with patch(
-        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        "custom_components.matic_robot.robot_health.dt_util.utcnow",
         side_effect=lambda: clock[0],
     ):
-        coordinator._async_track_alerts(replace(base, error_codes=(206, 304)))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=(206, 304)))
         assert registry.async_get_issue(DOMAIN, issue) is not None
         clock[0] = datetime(2026, 10, 30, 3, 1, tzinfo=UTC)
-        coordinator._async_track_alerts(replace(base, error_codes=(304, 207)))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=(304, 207)))
         assert registry.async_get_issue(DOMAIN, issue) is None
         clock[0] = datetime(2026, 10, 30, 3, 2, tzinfo=UTC)
-        coordinator._async_track_alerts(replace(base, error_codes=()))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=()))
         clock[0] = datetime(2026, 10, 30, 3, 3, tzinfo=UTC)
-        coordinator._async_track_alerts(replace(base, error_codes=(207,)))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=(207,)))
 
     # 304 ran on from 03:00 without restarting; 207 cleared and came back.
-    assert coordinator.unknown_alert_codes == {
+    unknown_codes = coordinator.robot_health.unknown_alert_codes
+    assert json.loads(json.dumps(unknown_codes)) == {
         "207": {
             "first_seen": "2026-10-30T03:01:00+00:00",
             "last_seen": "2026-10-30T03:03:00+00:00",
@@ -2408,11 +2483,11 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
     reloaded = _coordinator(hass, _client())
     # The first poll after a reload is still unconfirmed, so it leaves the
     # previous Repair alone instead of clearing it for one poll.
-    reloaded._async_confirm_robot_errors(replace(base, error_codes=(206,)))
-    reloaded._async_track_alerts(replace(base, error_codes=()))
+    reloaded.robot_health.confirm_errors(replace(base, error_codes=(206,)))
+    reloaded.robot_health.track_alerts(replace(base, error_codes=()))
     assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry")
-    reloaded._async_confirm_robot_errors(replace(base, error_codes=(206,)))
-    reloaded._async_track_alerts(replace(base, error_codes=(206,)))
+    reloaded.robot_health.confirm_errors(replace(base, error_codes=(206,)))
+    reloaded.robot_health.track_alerts(replace(base, error_codes=(206,)))
     assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry") is None
     assert registry.async_get_issue(DOMAIN, issue) is not None
     # Removing the robot clears its Repairs, since no poll will reach them.

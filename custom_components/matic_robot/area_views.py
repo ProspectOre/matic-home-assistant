@@ -13,13 +13,13 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from homeassistant.util import slugify
 
 from .area_binding import (
-    AREA_SCHEMA_VERSION,
     AreaBindingStatus,
     area_binding_allows_review,
-    area_binding_needs_geometry_index,
     area_binding_status,
     binding_for_area,
 )
+from .area_binding_formats import AREA_SCHEMA_VERSION
+from .area_binding_records import area_binding_needs_geometry_index
 from .area_geometry import AreaGeometry, RoomGeometryIndex
 from .area_outline import validate_outline
 from .client.commands import CleaningMode, CoverageSetting

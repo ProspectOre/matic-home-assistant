@@ -128,7 +128,7 @@ class MaticPlanButton(_MaticFloorBoundButton):
             return False
         if self._service == "stop_intelligent_cleaning":
             return (
-                self._plans.ledger.snapshot(self._serial_number)["active_plan"]
+                self._plans.history.snapshot(self._serial_number)["active_plan"]
                 is not None
             )
 
@@ -137,7 +137,7 @@ class MaticPlanButton(_MaticFloorBoundButton):
             return False
         room_map = {room.id: room.name for room in floor_plan.rooms}
         try:
-            self._plans.catalog.preview(
+            self._plans.planning.preview(
                 self._serial_number,
                 room_map,
                 floor_token=plan_floor_token(floor_plan),

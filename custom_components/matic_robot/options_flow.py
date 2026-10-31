@@ -192,7 +192,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         plans = self._manager.catalog.plans(self._serial_number)
         if not plans:
             return await self.async_step_init()
-        selected = self._manager.ledger.snapshot(self._serial_number).get(
+        selected = self._manager.history.snapshot(self._serial_number).get(
             "selected_plan"
         )
         return self.async_show_form(
@@ -253,7 +253,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """Return to the reset chooser using fresh manager options."""
-        selected = self._manager.ledger.snapshot(self._serial_number).get(
+        selected = self._manager.history.snapshot(self._serial_number).get(
             "selected_plan"
         )
         return self.async_show_form(

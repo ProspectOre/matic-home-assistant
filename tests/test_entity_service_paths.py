@@ -164,13 +164,13 @@ async def test_select_service_updates_persistent_selection_and_display(
         await hass.async_block_till_done()
         assert hass.states.get(entity_id).state == option
         assert (
-            platforms.manager.ledger.snapshot(platforms.serial)[selected_key]
+            platforms.manager.history.snapshot(platforms.serial)[selected_key]
             == expected
         )
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    assert reloaded.ledger.snapshot(platforms.serial)["selected_plan"] == "one"
-    assert reloaded.ledger.snapshot(platforms.serial)["selected_area"] == "area-one"
+    assert reloaded.history.snapshot(platforms.serial)["selected_plan"] == "one"
+    assert reloaded.history.snapshot(platforms.serial)["selected_area"] == "area-one"
 
 
 async def test_config_select_service_updates_entry_and_native_preference(
@@ -205,10 +205,10 @@ async def test_button_press_reaches_owned_vacuum_service(
         calls.append(call)
 
     hass.services.async_register(DOMAIN, service, record)
-    snapshot = platforms.manager.ledger.snapshot(platforms.serial)
+    snapshot = platforms.manager.history.snapshot(platforms.serial)
     if button == "stop_intelligent_cleaning":
         snapshot["active_plan"] = {"plan_id": "two"}
-    with patch.object(platforms.manager.ledger, "snapshot", return_value=snapshot):
+    with patch.object(platforms.manager.history, "snapshot", return_value=snapshot):
         await hass.services.async_call(
             "button", "press", {"entity_id": platforms.entities[button]}, blocking=True
         )

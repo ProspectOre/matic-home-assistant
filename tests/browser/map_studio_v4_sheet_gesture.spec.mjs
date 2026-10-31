@@ -189,6 +189,39 @@ test.describe("Map Studio mobile sheet gesture ownership", () => {
     await expect(sheet).toHaveAttribute("data-detent", "half");
   });
 
+  test("detaching during a drag clears the gesture and restores sheet observation", async ({ page }) => {
+    const sheet = await loadNarrowGallery(page);
+    await expect(sheet).toHaveAttribute("data-detent", "half");
+    const result = await page.locator(GALLERY_TAG).locator(".sheet-grip").evaluate(async (grip) => {
+      const shell = grip.getRootNode().host;
+      const parent = shell.parentElement;
+      const sheet = grip.closest(".mobile-sheet");
+      const pointer = (type, clientY) => new PointerEvent(type, {
+        bubbles: true, composed: true, pointerId: 9, pointerType: "touch", clientY, button: 0,
+      });
+      grip.dispatchEvent(pointer("pointerdown", 100));
+      grip.dispatchEvent(pointer("pointermove", 150));
+      const dragged = sheet.style.transform;
+      shell.remove();
+      const cleared = sheet.style.transform;
+      shell.requestUpdate();
+      await shell.updateComplete;
+      parent.append(shell);
+      await shell.updateComplete;
+      grip.dispatchEvent(pointer("pointerdown", 100));
+      grip.dispatchEvent(pointer("pointerup", 100));
+      await shell.updateComplete;
+      return { dragged, cleared, detent: sheet.dataset.detent };
+    });
+    expect(result.dragged).not.toBe("");
+    expect(result.cleared).toBe("");
+    expect(result.detent).toBe("full");
+    await expect.poll(() => sheet.evaluate((element) => {
+      const canvas = element.getRootNode().querySelector("matic-map-canvas-v4");
+      return Number.parseInt(canvas.style.getPropertyValue("--map-sheet-offset"), 10) === Math.ceil(element.getBoundingClientRect().height);
+    })).toBe(true);
+  });
+
   test("a view change sets the sheet height without a transition; a detent step still animates", async ({ page }) => {
     const sheet = await loadNarrowGallery(page, "plan-saved-intelligent");
     await expect(sheet).toHaveAttribute("data-detent", "half");

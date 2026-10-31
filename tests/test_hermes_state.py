@@ -8,7 +8,12 @@ import pytest
 from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.message import DecodeError
 
-from custom_components.matic_robot.client import telemetry as telemetry_module
+from custom_components.matic_robot.client import (
+    operational_state as operational_state_module,
+)
+from custom_components.matic_robot.client import (
+    telemetry_fields as telemetry_fields_module,
+)
 from custom_components.matic_robot.client.models import (
     CleaningSchedule,
     CuesGestureStatus,
@@ -16,14 +21,14 @@ from custom_components.matic_robot.client.models import (
     CuesVoiceStatus,
     RobotActivity,
 )
+from custom_components.matic_robot.client.operational_state import (
+    decode_operational_state,
+)
 from custom_components.matic_robot.client.proto.hermes_pb2 import (
     CollectionRequest,
     InitialRequest,
     KabukiOutputWire,
     SubscriptionServiceConfig,
-)
-from custom_components.matic_robot.client.telemetry import (
-    decode_operational_state,
 )
 
 
@@ -165,18 +170,20 @@ def test_operational_state_enforces_payload_field_and_code_budgets(
     payload = KabukiOutputWire(states=[106, 119]).SerializeToString()
 
     monkeypatch.setattr(
-        telemetry_module, "_OPERATIONAL_STATE_MAX_BYTES", len(payload) - 1
+        operational_state_module, "_OPERATIONAL_STATE_MAX_BYTES", len(payload) - 1
     )
     with pytest.raises(DecodeError, match="byte limit"):
         decode_operational_state(payload)
 
-    monkeypatch.setattr(telemetry_module, "_OPERATIONAL_STATE_MAX_BYTES", len(payload))
-    monkeypatch.setattr(telemetry_module, "_OPERATIONAL_STATE_MAX_FIELDS", 0)
+    monkeypatch.setattr(
+        operational_state_module, "_OPERATIONAL_STATE_MAX_BYTES", len(payload)
+    )
+    monkeypatch.setattr(operational_state_module, "_OPERATIONAL_STATE_MAX_FIELDS", 0)
     with pytest.raises(DecodeError, match="too many fields"):
         decode_operational_state(payload)
 
-    monkeypatch.setattr(telemetry_module, "_OPERATIONAL_STATE_MAX_FIELDS", 1024)
-    monkeypatch.setattr(telemetry_module, "_OPERATIONAL_STATE_MAX_CODES", 1)
+    monkeypatch.setattr(operational_state_module, "_OPERATIONAL_STATE_MAX_FIELDS", 1024)
+    monkeypatch.setattr(operational_state_module, "_OPERATIONAL_STATE_MAX_CODES", 1)
     with pytest.raises(DecodeError, match="too many status codes"):
         decode_operational_state(payload)
 
@@ -185,13 +192,13 @@ def test_operational_state_bounds_text_and_nested_cues(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = KabukiOutputWire(states=[106]).SerializeToString() + b"\x22\x06v200.1"
-    monkeypatch.setattr(telemetry_module, "_TELEMETRY_TEXT_MAX_BYTES", 2)
+    monkeypatch.setattr(telemetry_fields_module, "_TELEMETRY_TEXT_MAX_BYTES", 2)
 
     assert decode_operational_state(payload).software_version is None
     invalid_utf8 = KabukiOutputWire(states=[106]).SerializeToString() + b"\x22\x01\xff"
     assert decode_operational_state(invalid_utf8).software_version is None
 
-    monkeypatch.setattr(telemetry_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
+    monkeypatch.setattr(operational_state_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
     with pytest.raises(DecodeError, match="too many fields"):
         decode_operational_state(_cues_output(_message_field(20)))
 

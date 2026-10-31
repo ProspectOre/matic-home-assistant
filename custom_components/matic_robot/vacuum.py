@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import asdict
-from hashlib import sha256
 from typing import Any
 from uuid import UUID
 
@@ -13,8 +11,6 @@ from homeassistant.components.vacuum.const import VacuumActivity, VacuumEntityFe
 from homeassistant.const import ATTR_ENTITY_ID
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
-from homeassistant.helpers import area_registry as ar
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
@@ -47,6 +43,7 @@ from .stop_return import (
     async_clear_ownerless_stop_if_settled,
     schedule_dock_after_stop,
 )
+from .vacuum_catalog import FloorSegmentCatalog
 
 PARALLEL_UPDATES = 1
 
@@ -71,13 +68,6 @@ ACTIVITY_MAP = {
     RobotActivity.READY: VacuumActivity.IDLE,
 }
 
-SegmentSignature = tuple[tuple[str, str, str | None], ...]
-
-_FLOOR_SCOPE_OPTION = "matic_floor_scope"
-_FLOOR_CATALOGS_OPTION = "matic_floor_catalogs"
-_UNSCOPED_CATALOG_OPTION = "matic_unscoped_catalog"
-_FLOOR_SCOPE_DOMAIN = b"matic-vacuum-floor-segments-v1\0"
-_MAX_FLOOR_CATALOGS = 12
 _EMOTES = {
     "nod": UserCommand.EMOTE_NOD,
     "shake": UserCommand.EMOTE_SHAKE,
@@ -118,20 +108,34 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
         self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_vacuum"
-        self._reported_segment_change: SegmentSignature | None = None
+        self._segment_catalog = FloorSegmentCatalog()
         self._plans = entry.runtime_data.cleaning_plans
 
     async def async_added_to_hass(self) -> None:
         """Auto-link unconfigured robot rooms to matching Home Assistant Areas."""
         await super().async_added_to_hass()
-        self._async_check_segment_changes()
-        self._async_auto_map_rooms()
+        self._segment_catalog.reconcile(
+            self.hass,
+            self.entity_id,
+            self.coordinator.data.floor_plan,
+            self.async_create_segments_issue,
+        )
+        self._segment_catalog.auto_map(
+            self.hass, self.entity_id, self.coordinator.data.floor_plan
+        )
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Detect room changes and retry safe exact-name auto-mapping."""
-        self._async_check_segment_changes()
-        self._async_auto_map_rooms()
+        self._segment_catalog.reconcile(
+            self.hass,
+            self.entity_id,
+            self.coordinator.data.floor_plan,
+            self.async_create_segments_issue,
+        )
+        self._segment_catalog.auto_map(
+            self.hass, self.entity_id, self.coordinator.data.floor_plan
+        )
         super()._handle_coordinator_update()
 
     @property
@@ -406,7 +410,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
                 async def checkpoint_initial_session(identity_hash: str) -> None:
                     if run_id is not None:
-                        await self._plans.ledger.async_checkpoint_mixed_session(
+                        await self._plans.recovery.async_checkpoint_mixed_session(
                             serial_number, run_id, identity_hash
                         )
 
@@ -470,7 +474,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 and managed_session_id is not None
             ):
                 require_current_dispatch()
-                await self._plans.ledger.async_checkpoint_coverage_receipt(
+                await self._plans.recovery.async_checkpoint_coverage_receipt(
                     serial_number,
                     receipt_run_id,
                     receipt,
@@ -590,7 +594,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             expected_stop_generation = self._plans.control.stop_request_generation(
                 serial_number
             )
-            await self._plans.ledger.async_checkpoint_stop_intent(
+            await self._plans.recovery.async_checkpoint_stop_intent(
                 serial_number, decision.behavior, run_id=run_id
             )
             if decision.behavior == "after_room" or (
@@ -956,166 +960,6 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         return [
             Segment(room.id, room.name, "Current floor") for room in floor_plan.rooms
         ]
-
-    @callback
-    def _async_auto_map_rooms(self) -> None:
-        """Map exact existing HA Area names once without overriding user choices."""
-        if self.entity_id is None or self.coordinator.data.floor_plan is None:
-            return
-        entity_registry = er.async_get(self.hass)
-        if (entity_entry := entity_registry.async_get(self.entity_id)) is None:
-            return
-        options = dict(entity_entry.options.get("vacuum", {}))
-        scope = _floor_scope(self.coordinator.data.floor_plan)
-        stored_scope = options.get(_FLOOR_SCOPE_OPTION)
-        if isinstance(stored_scope, str) and stored_scope != scope:
-            return
-        if "area_mapping" in options:
-            return
-        segments = self._current_segments()
-        mapping = _matching_area_mapping(
-            self.coordinator.data.floor_plan.rooms,
-            ar.async_get(self.hass),
-        )
-        if not mapping:
-            return
-        options.update(
-            {
-                "area_mapping": mapping,
-                "last_seen_segments": [asdict(segment) for segment in segments],
-            }
-        )
-        options[_FLOOR_SCOPE_OPTION] = scope
-        catalogs = _floor_catalogs(options)
-        catalogs[scope] = _catalog_from_options(options)
-        options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(catalogs, scope)
-        entity_registry.async_update_entity_options(self.entity_id, "vacuum", options)
-
-    @callback
-    def _async_check_segment_changes(self) -> None:
-        """Separate expected floor swaps from real same-floor room changes."""
-        floor_plan = self.coordinator.data.floor_plan
-        if self.entity_id is None or floor_plan is None:
-            return
-        entity_registry = er.async_get(self.hass)
-        if (entity_entry := entity_registry.async_get(self.entity_id)) is None:
-            return
-        options = dict(entity_entry.options.get("vacuum", {}))
-        current = self._current_segments()
-        signature = _segment_signature(current)
-        current_payload = [asdict(segment) for segment in current]
-        current_scope = _floor_scope(floor_plan)
-        stored_scope = options.get(_FLOOR_SCOPE_OPTION)
-        configured = _segments_from_payload(options.get("last_seen_segments"))
-        catalogs = _floor_catalogs(options)
-
-        if not isinstance(stored_scope, str):
-            if configured is not None and _segment_signature(configured) != signature:
-                options[_UNSCOPED_CATALOG_OPTION] = _catalog_from_options(options)
-                catalogs[current_scope] = {"last_seen_segments": current_payload}
-                options[_FLOOR_SCOPE_OPTION] = current_scope
-                options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
-                    catalogs, current_scope
-                )
-                if self._reported_segment_change != signature:
-                    self.async_create_segments_issue()
-                    self._reported_segment_change = signature
-                entity_registry.async_update_entity_options(
-                    self.entity_id, "vacuum", options
-                )
-                return
-            options["last_seen_segments"] = current_payload
-            options[_FLOOR_SCOPE_OPTION] = current_scope
-            catalogs[current_scope] = _catalog_from_options(options)
-            options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
-                catalogs, current_scope
-            )
-            entity_registry.async_update_entity_options(
-                self.entity_id, "vacuum", options
-            )
-            self._reported_segment_change = None
-            return
-
-        if stored_scope != current_scope:
-            unscoped = options.get(_UNSCOPED_CATALOG_OPTION)
-            stored_catalog = catalogs.get(stored_scope)
-            stored_segments = (
-                _segments_from_payload(stored_catalog.get("last_seen_segments"))
-                if isinstance(stored_catalog, dict)
-                else None
-            )
-            active_matches_stored_scope = (
-                configured is not None
-                and stored_segments is not None
-                and _segment_signature(configured)
-                == _segment_signature(stored_segments)
-            )
-            if configured is not None and (
-                not isinstance(unscoped, dict) or active_matches_stored_scope
-            ):
-                catalogs[stored_scope] = _catalog_from_options(options)
-            target = catalogs.get(current_scope)
-            if target is None and isinstance(unscoped, dict):
-                legacy_segments = _segments_from_payload(
-                    unscoped.get("last_seen_segments")
-                )
-                if (
-                    legacy_segments is not None
-                    and _segment_signature(legacy_segments) == signature
-                ):
-                    target = dict(unscoped)
-                    options.pop(_UNSCOPED_CATALOG_OPTION, None)
-            if target is None:
-                target = {"last_seen_segments": current_payload}
-            catalogs[current_scope] = target
-            _activate_floor_catalog(options, current_scope, target)
-            options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
-                catalogs, current_scope
-            )
-            entity_registry.async_update_entity_options(
-                self.entity_id, "vacuum", options
-            )
-            target_segments = _segments_from_payload(target.get("last_seen_segments"))
-            target_signature = (
-                _segment_signature(target_segments)
-                if target_segments is not None
-                else signature
-            )
-            if target_signature != signature:
-                if self._reported_segment_change != signature:
-                    self.async_create_segments_issue()
-                    self._reported_segment_change = signature
-            else:
-                self._reported_segment_change = None
-            return
-
-        if configured is None:
-            options["last_seen_segments"] = current_payload
-            catalogs[current_scope] = _catalog_from_options(options)
-            options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
-                catalogs, current_scope
-            )
-            entity_registry.async_update_entity_options(
-                self.entity_id, "vacuum", options
-            )
-            self._reported_segment_change = None
-            return
-
-        if _segment_signature(configured) == signature:
-            current_catalog = _catalog_from_options(options)
-            if catalogs.get(current_scope) != current_catalog:
-                catalogs[current_scope] = current_catalog
-                options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
-                    catalogs, current_scope
-                )
-                entity_registry.async_update_entity_options(
-                    self.entity_id, "vacuum", options
-                )
-            self._reported_segment_change = None
-            return
-        if self._reported_segment_change != signature:
-            self.async_create_segments_issue()
-            self._reported_segment_change = signature
 
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
         """Clean the selected native Home Assistant room segments."""
@@ -1547,99 +1391,3 @@ def _validation_error(
         translation_key=translation_key,
         translation_placeholders=placeholders,
     )
-
-
-def _floor_scope(floor_plan: FloorPlan) -> str:
-    """Return a private stable token for one robot partition."""
-    identity = floor_plan.partition_id_wire or floor_plan.partition_protocol_id.encode()
-    return sha256(_FLOOR_SCOPE_DOMAIN + identity).hexdigest()[:24]
-
-
-def _segments_from_payload(value: object) -> list[Segment] | None:
-    """Decode Home Assistant's stored segment payload defensively."""
-    if not isinstance(value, list):
-        return None
-    segments: list[Segment] = []
-    for item in value:
-        if not isinstance(item, dict):
-            return None
-        segment_id = item.get("id")
-        name = item.get("name")
-        group = item.get("group")
-        if (
-            not isinstance(segment_id, str)
-            or not isinstance(name, str)
-            or (group is not None and not isinstance(group, str))
-        ):
-            return None
-        segments.append(Segment(segment_id, name, group))
-    return segments
-
-
-def _catalog_from_options(options: dict[str, Any]) -> dict[str, Any]:
-    """Copy the active floor's HA-native mapping fields into its catalog."""
-    catalog: dict[str, Any] = {
-        "last_seen_segments": list(options.get("last_seen_segments", []))
-    }
-    if isinstance(options.get("area_mapping"), dict):
-        catalog["area_mapping"] = dict(options["area_mapping"])
-    return catalog
-
-
-def _floor_catalogs(options: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Return only structurally valid private floor catalogs."""
-    raw = options.get(_FLOOR_CATALOGS_OPTION)
-    if not isinstance(raw, dict):
-        return {}
-    return {
-        scope: dict(catalog)
-        for scope, catalog in raw.items()
-        if isinstance(scope, str) and isinstance(catalog, dict)
-    }
-
-
-def _bounded_floor_catalogs(
-    catalogs: dict[str, dict[str, Any]], current_scope: str
-) -> dict[str, dict[str, Any]]:
-    """Keep a bounded catalog while always retaining the active floor."""
-    ordered = {
-        scope: catalog for scope, catalog in catalogs.items() if scope != current_scope
-    }
-    ordered[current_scope] = catalogs[current_scope]
-    while len(ordered) > _MAX_FLOOR_CATALOGS:
-        ordered.pop(next(iter(ordered)))
-    return ordered
-
-
-def _activate_floor_catalog(
-    options: dict[str, Any], scope: str, catalog: dict[str, Any]
-) -> None:
-    """Swap HA's single active mapping view to one known floor catalog."""
-    segments = _segments_from_payload(catalog.get("last_seen_segments"))
-    options["last_seen_segments"] = [asdict(segment) for segment in (segments or [])]
-    mapping = catalog.get("area_mapping")
-    if isinstance(mapping, dict):
-        options["area_mapping"] = dict(mapping)
-    else:
-        options.pop("area_mapping", None)
-    options[_FLOOR_SCOPE_OPTION] = scope
-
-
-def _matching_area_mapping(
-    rooms: tuple[Room, ...], area_registry: ar.AreaRegistry
-) -> dict[str, list[str]]:
-    """Return deterministic exact-name and unique-alias room mappings."""
-    mapping: dict[str, list[str]] = {}
-    for room in rooms:
-        area = area_registry.async_get_area_by_name(room.name)
-        if area is None:
-            aliases = area_registry.async_get_areas_by_alias(room.name)
-            area = aliases[0] if len(aliases) == 1 else None
-        if area is not None:
-            mapping.setdefault(area.id, []).append(room.id)
-    return mapping
-
-
-def _segment_signature(segments: list[Segment]) -> SegmentSignature:
-    """Return an ordered, comparable room signature."""
-    return tuple((segment.id, segment.name, segment.group) for segment in segments)

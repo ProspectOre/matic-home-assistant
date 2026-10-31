@@ -1,0 +1,97 @@
+import type { PoseModel } from "./backend-contracts";
+import type { MaticBackend } from "./backend";
+import type { WorkspaceStore } from "./state";
+import type { ResourceRequests } from "./resource-requests";
+
+interface RunHistoryCallbacks {
+  readonly disposed: () => boolean;
+  readonly pageActive: () => boolean;
+}
+
+const thumbnailScope = () => ({
+  reads: new Set<string>(), retry: new Map<string, number>(),
+  timers: new Set<number>(), controller: new AbortController(),
+});
+
+/** Owns lazy cleaning-history reads, subscriptions and thumbnail URLs. */
+export class RunHistoryResources {
+  readonly #store: WorkspaceStore;
+  readonly #backend: MaticBackend;
+  readonly #requests: ResourceRequests;
+  readonly #callbacks: RunHistoryCallbacks;
+  #runs: typeof import("./run-history-data") | null = null;
+  #unwatchRuns: (() => void) | null = null;
+  #thumbnails = thumbnailScope();
+  #owner = "";
+  readonly #unwatchOwner: () => void;
+
+  constructor(store: WorkspaceStore, backend: MaticBackend, requests: ResourceRequests, callbacks: RunHistoryCallbacks) {
+    this.#store = store;
+    this.#backend = backend;
+    this.#requests = requests;
+    this.#callbacks = callbacks;
+    this.#unwatchOwner = store.subscribe((state) => {
+      const owner = JSON.stringify([state.owner?.userKey, state.owner?.entryKey,
+        state.selection.entryId, state.resources.entry?.entryId]);
+      if (owner === this.#owner) return;
+      this.#owner = owner;
+      this.#retireThumbnails();
+    });
+  }
+
+  #retireThumbnails(): void {
+    const retired = this.#thumbnails;
+    this.#thumbnails = thumbnailScope();
+    retired.controller.abort();
+    for (const timer of retired.timers) window.clearTimeout(timer);
+    const urls = Object.values(this.#store.value.runThumbnails);
+    for (const url of urls) URL.revokeObjectURL(url);
+    if (urls.length) this.#store.patch({ runThumbnails: {} });
+  }
+
+  extendLiveTrail(pose: PoseModel): void { this.#runs?.extendLiveTrail(this.#store, pose); }
+
+  dispose(): void {
+    this.#requests.cancel("runs");
+    this.#requests.cancel("trail");
+    this.#unwatchRuns?.();
+    this.#unwatchRuns = null;
+    this.#unwatchOwner();
+    this.#retireThumbnails();
+  }
+
+  async loadRuns(): Promise<void> {
+    await this.#runRead("runs", null);
+  }
+
+  async loadRunThumbnail(id: string): Promise<void> {
+    const entry = this.#store.value.resources.entry;
+    if (!entry || this.#callbacks.disposed()) return;
+    const scope = this.#thumbnails;
+    const retired = (): boolean => this.#callbacks.disposed() || this.#thumbnails !== scope;
+    this.#runs ??= await import("./run-history-data");
+    if (retired()) return;
+    await this.#runs.readRunThumbnail(this.#store, this.#backend, entry.entryId, id, scope, retired, scope.controller.signal);
+  }
+
+  async showTrail(trail: string | null): Promise<void> {
+    await this.#runRead("trail", trail);
+  }
+
+  async #runRead(name: "runs" | "trail", trail: string | null): Promise<void> {
+    if (this.#callbacks.disposed()) return;
+    const entry = this.#store.value.resources.entry;
+    const controller = this.#requests.begin(name);
+    try {
+      if (name === "trail" && !trail) this.#store.patch({ trail: null });
+      else if (entry && this.#callbacks.pageActive()) {
+        this.#runs = await import("./run-history-data");
+        if (controller.signal.aborted || this.#callbacks.disposed()) return;
+        if (!this.#unwatchRuns && !this.#callbacks.disposed()) this.#unwatchRuns = this.#runs.watchRuns(this.#store, () => this.loadRuns());
+        await this.#runs.readRuns(this.#store, this.#backend, entry, trail, controller.signal);
+      }
+    } finally {
+      this.#requests.release(name, controller);
+    }
+  }
+}

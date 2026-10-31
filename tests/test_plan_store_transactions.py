@@ -152,12 +152,12 @@ async def test_failed_plan_selection_is_not_persisted_by_later_peer_write(
         await manager.catalog.async_select_plan(TARGET, "second-plan")
 
     assert failed
-    assert manager.ledger.snapshot(TARGET)["selected_plan"] == "first-plan"
+    assert manager.history.snapshot(TARGET)["selected_plan"] == "first-plan"
     await manager.catalog.async_save_plan(PEER, "peer-plan", {"name": "Peer"})
 
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    assert reloaded.ledger.snapshot(TARGET)["selected_plan"] == "first-plan"
+    assert reloaded.history.snapshot(TARGET)["selected_plan"] == "first-plan"
     assert reloaded.catalog.plan(TARGET, "second-plan")["name"] == "Second"
     assert reloaded.catalog.plan(PEER, "peer-plan")["name"] == "Peer"
     assert target_selections[-1] == "first-plan"

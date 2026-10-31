@@ -462,7 +462,7 @@ class MaticRobotAlertSensor(MaticEntity, SensorEntity):
         return {
             "alerts": list(operational.alerts),
             "codes": list(operational.error_codes),
-            "unknown_codes_seen": self.coordinator.unknown_alert_codes,
+            "unknown_codes_seen": self.coordinator.robot_health.unknown_alert_codes,
         }
 
 
@@ -690,12 +690,14 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
     @property
     def native_value(self) -> int:
         """Return the total number of successfully completed managed rooms."""
-        return int(self._history.ledger.snapshot(self._serial_number)["completed_runs"])
+        return int(
+            self._history.history.snapshot(self._serial_number)["completed_runs"]
+        )
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Return per-room timestamps, rotation records, and active plan."""
-        snapshot = self._history.ledger.snapshot(self._serial_number)
+        snapshot = self._history.history.snapshot(self._serial_number)
         return {
             **snapshot,
             "matic_entry_id": self._config_entry.entry_id,
@@ -775,7 +777,7 @@ class _RoomTimingPublisher:
             state = coordinator.data.operational
             if state.activity in {RobotActivity.CLEANING, RobotActivity.PAUSED}:
                 candidate = (
-                    self._entry.runtime_data.cleaning_plans.ledger.current_room_timing(
+                    self._entry.runtime_data.cleaning_plans.history.current_room_timing(
                         coordinator.data.info.serial_number
                     )
                 )
@@ -860,13 +862,13 @@ class MaticActiveCleaningPlanSensor(_MaticPlanSensor):
     @property
     def native_value(self) -> str | None:
         """Return the active human-readable plan name."""
-        active = self._history.ledger.snapshot(self._serial_number)["active_plan"]
+        active = self._history.history.snapshot(self._serial_number)["active_plan"]
         return active.get("plan_name") if active else None
 
     @property
     def extra_state_attributes(self) -> dict[str, object] | None:
         """Return the active room and start time."""
-        active = self._history.ledger.snapshot(self._serial_number)["active_plan"]
+        active = self._history.history.snapshot(self._serial_number)["active_plan"]
         return {"active": dict(active)} if active else None
 
 
@@ -889,7 +891,7 @@ class MaticNextCleaningRoomSensor(_MaticPlanSensor):
         ):
             return None
         try:
-            return self._history.catalog.preview(
+            return self._history.planning.preview(
                 self._serial_number,
                 {room.id: room.name for room in floor_plan.rooms},
                 floor_token=plan_floor_token(floor_plan),
@@ -1137,7 +1139,7 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
     def _room_session_result(self) -> tuple[bool, tuple[str, int] | None]:
         """Return whether a managed run owns the session and its room result."""
         state = self.coordinator.data
-        snapshot = self._history.ledger.snapshot(self._serial_number)
+        snapshot = self._history.history.snapshot(self._serial_number)
         historical = _managed_room_history_value(snapshot, self._room_id)
         session = state.telemetry.latest_session
         if session is None or session.ended_at is None or state.floor_plan is None:

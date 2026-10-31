@@ -28,7 +28,7 @@ from custom_components.matic_robot.area_views import (
     MaticAreasView,
 )
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.llm import (
+from custom_components.matic_robot.llm_plan import (
     MaticGetPlanReadinessTool,
     MaticGetPlanTool,
 )
@@ -37,7 +37,7 @@ from custom_components.matic_robot.plan_model import (
     PlanAreaMapChangedError,
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
-from custom_components.matic_robot.services import (
+from custom_components.matic_robot.service_plans import (
     _saved_plan_preview,
     _validated_area_command,
 )
@@ -775,7 +775,7 @@ async def test_v5_area_survives_unrelated_room_addition_but_not_room_translation
 
     assert area_binding_status(area, current_map) is AreaBindingStatus.CURRENT
     assert (
-        manager.catalog.preview(
+        manager.planning.preview(
             "synthetic-serial", {}, "area-plan", floor_plan=current_map
         )["valid"]
         is True
@@ -790,6 +790,6 @@ async def test_v5_area_survives_unrelated_room_addition_but_not_room_translation
         area_binding_status(area, translated_map) is AreaBindingStatus.GEOMETRY_CHANGED
     )
     with pytest.raises(PlanAreaMapChangedError):
-        manager.catalog.preview(
+        manager.planning.preview(
             "synthetic-serial", {}, "area-plan", floor_plan=translated_map
         )

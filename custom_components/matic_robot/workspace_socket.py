@@ -563,7 +563,7 @@ class WorkspaceSocket:
             # Use the exact field owner and serializer shared with the REST
             # catalog; WebSocket projection cannot invent map or run state.
             from .frontend import DATA_SLAM_SCENE_VIEW
-            from .slam_scene import catalog_entry_projection
+            from .slam_view_data import catalog_entry_projection
 
             scene_view = self.hass.data.get(DATA_SLAM_SCENE_VIEW)
             entry_projection = catalog_entry_projection(

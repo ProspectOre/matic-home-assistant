@@ -50,7 +50,9 @@ async def test_shutdown_non_cancellation_errors_preserve_real_executor(
             asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
         )
         manager.repository.robot("serial")["last_run"]["room_count"] = 2
-        await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+        await manager.recovery.async_set_recovery_checkpoint(
+            "serial", "run", checkpoint
+        )
     terminal_events = []
     for kind in ("room_failed", "room_cancelled", "room_interrupted", "plan_finished"):
         hass.bus.async_listen("matic_robot_" + kind, terminal_events.append)
@@ -65,7 +67,7 @@ async def test_shutdown_non_cancellation_errors_preserve_real_executor(
     ):
         await async_recover_managed_run(hass, entry, "serial")
     await hass.async_block_till_done()
-    saved = manager.control.recovery_run("serial")
+    saved = manager.recovery.recovery_run("serial")
     assert saved is not None
     assert saved["run_id"] == "run"
     assert (
@@ -111,7 +113,7 @@ async def test_shutdown_checkpoint_is_retained(hass) -> None:
         trigger="automation",
         service="run_selected_plan",
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "run",
         {"plan_id": "plan", "rooms": [{"room_id": "room", "name": "Kitchen"}]},
@@ -122,9 +124,9 @@ async def test_shutdown_checkpoint_is_retained(hass) -> None:
     recovering = CleaningPlanManager(hass)
     recovering.repository.store = manager.repository.store
     await recovering.async_load()
-    last_run = recovering.ledger.snapshot("serial")["last_run"]
+    last_run = recovering.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "running"
-    recovered = recovering.control.recovery_run("serial")
+    recovered = recovering.recovery.recovery_run("serial")
     assert recovered is not None
     assert recovered["recovery_checkpoint"]["rooms"][0]["room_id"] == "room"
 
@@ -169,7 +171,7 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
                 "serial",
                 [room],
             )
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == expected
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == expected
 
 
 async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
@@ -219,4 +221,4 @@ async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
 
     assert not stop.await_args_list
     assert not events
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "running"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "running"

@@ -50,7 +50,7 @@ async def test_second_shutdown_during_recovery_preserves_checkpoint(
 
         client.async_get_cleaning_session_identity.side_effect = identity
     else:
-        manager.ledger.async_mark_recovery_status = AsyncMock(side_effect=shutdown)
+        manager.recovery.async_mark_recovery_status = AsyncMock(side_effect=shutdown)
     events = []
     hass.bus.async_listen("matic_robot_plan_finished", events.append)
     with (
@@ -62,7 +62,7 @@ async def test_second_shutdown_during_recovery_preserves_checkpoint(
     ):
         await async_recover_managed_run(hass, entry, "serial")
     execute.assert_not_awaited()
-    assert manager.control.recovery_run("serial")["run_id"] == "run"
+    assert manager.recovery.recovery_run("serial")["run_id"] == "run"
     await hass.async_block_till_done()
     assert not events
     client.async_send_user_command.assert_not_awaited()
@@ -85,7 +85,7 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
         with pytest.raises(asyncio.CancelledError):
             await async_recover_managed_run(hass, entry, "serial")
     persisted = deepcopy(manager.repository.data)
-    run = manager.control.recovery_run("serial")
+    run = manager.recovery.recovery_run("serial")
     assert run["run_id"] == "run"
     assert run["recovery_checkpoint"]["native_identity_hash"] == identity_hash
     restored = CleaningPlanManager(hass)
@@ -116,10 +116,10 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
         ) as dispatch,
     ):
         await async_recover_managed_run(hass, entry, "serial")
-    final = restored.ledger.snapshot("serial")["last_run"]
+    final = restored.history.snapshot("serial")["last_run"]
     assert final["run_id"] == "run" and final["outcome"] == "completed"
     assert final["completed_room_count"] == 1
-    assert restored.ledger.snapshot("serial")["completed_runs"] == 1
+    assert restored.history.snapshot("serial")["completed_runs"] == 1
     dispatch.assert_not_awaited()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
@@ -133,7 +133,7 @@ async def test_credited_intermediate_leg_does_not_authorize_offline_queue_replay
         "serial", "plan", "run", 2, trigger="automation", service="clean_entire_plan"
     )
     checkpoint["rooms"] = [asdict(room), asdict(next_room)]
-    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     await manager.ledger.async_mark_started("serial", "plan", room, run_id="run")
     await manager.ledger.async_mark_completed(
         "serial", "plan", room, duration_seconds=30
@@ -146,7 +146,7 @@ async def test_credited_intermediate_leg_does_not_authorize_offline_queue_replay
         await async_recover_managed_run(hass, entry, "serial")
     execute.assert_not_awaited()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
-    final = manager.ledger.snapshot("serial")["last_run"]
+    final = manager.history.snapshot("serial")["last_run"]
     assert final["completed_room_count"] == 1
     assert final["outcome"] == "unverified"
     assert final["reason_code"] == "restart_native_mission_changed_or_ended"

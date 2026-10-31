@@ -1,3 +1,5 @@
+import { FOCUSABLE } from "./shell-focus";
+import { SheetController } from "./sheet-controller";
 import { LitElement, adoptStyles, nothing } from "lit";
 import { shellStyles } from "./shell-styles";
 import { html, unsafeStatic } from "lit/static-html.js";
@@ -80,12 +82,6 @@ const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 const workflowTag = unsafeStatic(WORKFLOW_TAG);
 
-type SheetDetent = "peek" | "half" | "full";
-
-const DETENTS: readonly SheetDetent[] = ["peek", "half", "full"];
-// A compact sheet (height < 480) has no half (design-system.md §7).
-const COMPACT_DETENTS: readonly SheetDetent[] = ["peek", "full"];
-
 // shell.md §4 notice rule: glyph per tone, and how long each toast stays.
 const NOTICE_ICONS: Readonly<Record<NoticeTone, string>> = {
   info: iconDiagnostics,
@@ -94,89 +90,6 @@ const NOTICE_ICONS: Readonly<Record<NoticeTone, string>> = {
   error: iconNoticeError,
 };
 const TOAST_MS: Readonly<Record<NoticeTone, number>> = { info: 6000, success: 4000, warning: 6000, error: 10000 };
-
-// Where the sheet rests when a workflow or plan view opens (shell.md §5
-// Sheet). The map is the document, so a drawing starts at peek; room and
-// plan choices stay visible at half height, while the long forms (plan Edit,
-// diagnostics) start at full height.
-const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {
-  none: "half",
-  rooms: "half",
-  draw: "peek",
-  plan: "half",
-  plans: "half",
-  areas: "half",
-  areaReview: "half",
-  history: "half",
-  runs: "half",
-  support: "full",
-};
-const startingDetent = (state: WorkspaceState, compact: boolean): SheetDetent =>
-  compact ? /^(rooms|draw|areaReview|history)$/u.test(state.workflow) ? "peek" : "full"
-  : state.workflow === "plan" && state.planView === "edit" ? "full" : DEFAULT_DETENT[state.workflow];
-
-// Faster than this on release and the sheet goes to the next detent in the
-// direction of travel regardless of where the finger let go.
-const FLICK_VELOCITY = 0.5;
-// Velocity is read over the samples from this many ms before release, not
-// from the last pair of pointermoves alone: browsers deliver moves in bursts,
-// and one late frame at the end of a real flick would otherwise read as a
-// slow drag.
-const FLICK_WINDOW_MS = 100;
-const TAP_SLOP = 6;
-const BODY_SWIPE_DISTANCE = 48;
-// The panel's scrollers: the pinned top, capped on a sheet, and the body.
-const SCROLLERS = ".panel-top, .sheet-body, .workflow-body";
-const INTERACTIVE_SHEET_SELECTOR = [
-  "a[href]",
-  "button",
-  "input",
-  "label",
-  "select",
-  "textarea",
-  "summary",
-  '[contenteditable]:not([contenteditable="false"])',
-  '[role="button"]',
-  '[role="link"]',
-  '[role="slider"]',
-  '[role="checkbox"]',
-  '[role="radio"]',
-  '[role="switch"]',
-  '[role="tab"]',
-  '[role="menuitem"]',
-  // A scroller is a tab stop only so a keyboard can scroll it
-  // (#syncScrollers); a swipe that starts on it still steps the sheet.
-  `[tabindex]:not([tabindex="-1"]):not(${SCROLLERS})`,
-].join(",");
-
-interface SheetDrag {
-  readonly pointerId: number;
-  readonly startY: number;
-  readonly startHeight: number;
-  readonly heights: Readonly<Record<SheetDetent, number>>;
-  samples: { y: number; t: number }[];
-  moved: boolean;
-}
-
-interface BodySwipe {
-  readonly pointerId: number;
-  readonly startY: number;
-  readonly scroller: HTMLElement | null;
-  consumed: boolean;
-}
-
-const FOCUSABLE = [
-  "button:not(:disabled)",
-  "a[href]",
-  "input:not(:disabled)",
-  "select:not(:disabled)",
-  "textarea:not(:disabled)",
-  "[tabindex]:not([tabindex='-1'])",
-].join(", ");
-
-// Whether Tab reaches anything inside `root`, open shadow roots included.
-const hasFocusable = (root: ParentNode): boolean => Boolean(root.querySelector(FOCUSABLE))
-  || [...root.querySelectorAll("*")].some((element) => element.shadowRoot !== null && hasFocusable(element.shadowRoot));
 
 const deepActiveElement = (root: Document | ShadowRoot = document): HTMLElement | null => {
   let active = root.activeElement as HTMLElement | null;
@@ -195,11 +108,7 @@ export class MaticMapShellV4 extends LitElement {
     localize: { attribute: false },
     dates: { attribute: false },
     scheme: { attribute: false },
-    _measuredNarrow: { state: true },
-    _compact: { state: true },
-    _sheetOffset: { state: true },
     _helpOpen: { state: true },
-    _sheetDetent: { state: true },
     _polite: { state: true },
     _alert: { state: true },
     _toast: { state: true },
@@ -227,12 +136,18 @@ export class MaticMapShellV4 extends LitElement {
     });
   }
 
+  readonly #sheet = new SheetController(this, {
+    state: () => this.state,
+    helpOpen: () => this._helpOpen,
+    helpReturnsFull: () => this.#helpReturnsFull,
+    focusPanel: () => this.#focusPanel(),
+    announce: (detent) => this.#announce("_polite", detent === "peek" ? this.#t("v4_workspace_height_peek", "Cleaning panel, collapsed")
+      : detent === "half" ? this.#t("v4_workspace_height_half", "Cleaning panel, half height")
+      : this.#t("v4_workspace_height_full", "Cleaning panel, full height")),
+  });
+
   readonly #t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
     translate(this.localize, key, fallback, placeholders, this.dates);
-  // Unset until the host is measured; till then the host's narrow hint decides.
-  protected _measuredNarrow?: boolean;
-  protected _compact = false;
-  protected _sheetOffset = 0;
   // The help popover (map-help.ts, in the views chunk) is the shell's: it
   // opens from the rail "?" and closes from Close, Escape (after the menu,
   // shell.md §5) or a change of workflow or Full map. The canvas renders it
@@ -240,7 +155,6 @@ export class MaticMapShellV4 extends LitElement {
   protected _helpOpen = false;
   #helpLauncher: HTMLElement | null = null;
   #helpReturnsFull = false;
-  protected _sheetDetent: SheetDetent = "half";
   // The two live regions (shell.md §4 rule 6). Each holds only its newest
   // message: the polite one for detent, status title and non-error notices,
   // the alert one for error notices.
@@ -283,12 +197,7 @@ export class MaticMapShellV4 extends LitElement {
   #toastRemaining = 0;
   #toastHover = false;
   #toastFocus = false;
-  #focused: Element | null = null;
-  #resizeObserver: ResizeObserver | null = null;
-  #sheetResizeObserver: ResizeObserver | null = null;
-  #scrollerResizeObserver: ResizeObserver | null = null;
   #unwatchTheme: (() => void) | null = null;
-  #observedSheet: Element | null = null;
   #dialogLauncher: HTMLElement | null = null;
   #workspaceLauncher: HTMLElement | null = null;
   // What Discard goes on to: the intent that asked, or Try again's reload.
@@ -321,8 +230,6 @@ export class MaticMapShellV4 extends LitElement {
     }
     return views;
   }
-  #drag: SheetDrag | null = null;
-  #bodySwipe: BodySwipe | null = null;
 
   // D3 (map-surfaces.md §10): Full map asks the browser for full screen
   // and leaves it on exit; leaving the browser's full screen (its own
@@ -332,34 +239,10 @@ export class MaticMapShellV4 extends LitElement {
     if (!document.fullscreenElement && this.state.fullMap) this.#intent({ type: "exit-full-map" });
   };
 
-  // design-system.md §7: the inspector at 1024 and up, and from 768 in
-  // landscape (the compact inspector); a sheet otherwise, compact when short.
-  #measure({ width, height }: { width: number; height: number }): void {
-    // A hidden panel measures 0 × 0; keep the layout it will come back to.
-    if (!width || !height) return;
-    const compact = height < 480;
-    this._measuredNarrow = compact || width < 768 || (width < 1024 && width <= height);
-    if (compact !== this._compact) {
-      this._compact = compact;
-      this._sheetDetent = startingDetent(this.state, compact);
-    }
-  }
-
   override connectedCallback(): void {
     super.connectedCallback();
-    this.#resizeObserver = new ResizeObserver(([entry]) => {
-      if (entry) this.#measure(entry.contentRect);
-    });
-    this.#resizeObserver.observe(this);
+    this.#sheet.connect();
     document.addEventListener("fullscreenchange", this.#fullscreenChange);
-    // Reads the box height, which a translateY drag does not change, so a
-    // drag never relayouts the canvas. Only the committed detent does.
-    this.#sheetResizeObserver = new ResizeObserver(([entry]) => {
-      if (!entry) return;
-      const next = Math.ceil(entry.target.getBoundingClientRect().height);
-      if (next !== this._sheetOffset) this._sheetOffset = next;
-    });
-    this.#scrollerResizeObserver = new ResizeObserver(() => this.#syncScrollers());
     this.#resolveTheme();
     this.#unwatchTheme = watchTheme(() => this.#resolveTheme());
   }
@@ -400,15 +283,9 @@ export class MaticMapShellV4 extends LitElement {
   override disconnectedCallback(): void {
     // Nothing re-arms a toast on reconnect, so it must not outlive the detach.
     this.#hideToast();
-    this.#resizeObserver?.disconnect();
-    this.#resizeObserver = null;
-    this.#sheetResizeObserver?.disconnect();
-    this.#sheetResizeObserver = null;
-    this.#scrollerResizeObserver?.disconnect();
-    this.#scrollerResizeObserver = null;
+    this.#sheet.disconnect();
     this.#unwatchTheme?.();
     this.#unwatchTheme = null;
-    this.#observedSheet = null;
     document.removeEventListener("fullscreenchange", this.#fullscreenChange);
     super.disconnectedCallback();
   }
@@ -440,14 +317,14 @@ export class MaticMapShellV4 extends LitElement {
     // hides it (Stop on its "No button" row, a closed notice or toast),
     // updated() hands focus to the heading rather than let it fall to the
     // page (shell.md §5 Focus, MS-KEY-01).
-    this.#focused = this.shadowRoot?.activeElement ?? null;
+    this.#sheet.captureFocus();
     if (!changed.has("state")) return;
     // Home Assistant flips its narrow hint as the panel resizes, but the
     // ResizeObserver can report frames later. Measure now so this render
     // never lays out from the old size and moves a control under a key press.
     const previous = changed.get("state") as WorkspaceState | undefined;
     if (previous && previous.narrowHint !== this.state.narrowHint && this.isConnected) {
-      this.#measure(this.getBoundingClientRect());
+      this.#sheet.measure(this.getBoundingClientRect());
     }
     // The untranslated title names the status row, so only a new row is
     // announced, in the current language.
@@ -533,29 +410,7 @@ export class MaticMapShellV4 extends LitElement {
 
   protected override updated(changed: PropertyValues<this>): void {
     if (changed.has("scheme") && changed.get("scheme") !== undefined) this.#resolveTheme();
-    const instant = this.renderRoot.querySelector<HTMLElement>(".mobile-sheet.instant");
-    if (instant) {
-      // Resolve the new height while transitions are off, so turning them
-      // back on starts none; detent steps and drags ease as before.
-      void getComputedStyle(instant).blockSize;
-      instant.classList.remove("instant");
-    }
-    const focused = this.#focused;
-    this.#focused = null;
-    if (focused && (!focused.isConnected || focused.closest("[hidden]"))) this.#focusPanel();
-    const sheet = this.renderRoot.querySelector(".mobile-sheet");
-    if (sheet !== this.#observedSheet) {
-      this.#sheetResizeObserver?.disconnect();
-      this.#observedSheet = sheet;
-      if (sheet) this.#sheetResizeObserver?.observe(sheet);
-      else if (this._sheetOffset !== 0) this._sheetOffset = 0;
-    }
-    // Observing again reports each box once after this layout, and later
-    // whenever a scroller or its content (the workflow view too) resizes.
-    this.#scrollerResizeObserver?.disconnect();
-    for (const scroller of this.renderRoot.querySelectorAll(SCROLLERS)) {
-      for (const element of [scroller, ...scroller.children]) this.#scrollerResizeObserver?.observe(element);
-    }
+    this.#sheet.afterRender();
     if (this.#optionsPending && this.#options.status !== "loading") {
       this.#optionsPending = false;
       this.#options.value?.menu.toggle();
@@ -658,18 +513,9 @@ export class MaticMapShellV4 extends LitElement {
         });
       }
       if (!previous) {
-        this._sheetDetent = startingDetent(this.state, this._compact);
+        this.#sheet.resetForWorkflow(this.state, false);
       } else if (!this.#pinRun && (previous.workflow !== this.state.workflow || previous.planView !== this.state.planView)) {
-        // Only on a workflow or view CHANGE: a state tick inside a view must
-        // not yank the sheet back to its default while the user is reading.
-        const detent = startingDetent(this.state, this._compact);
-        if (detent !== this._sheetDetent) {
-          // The view, not the user, moved the sheet: it lands at the new
-          // height at once. An eased resize here would still be running
-          // under the next click and hold that click's frame back a vsync.
-          this.#sheet()?.classList.add("instant");
-          this._sheetDetent = detent;
-        }
+        this.#sheet.resetForWorkflow(this.state, true);
         const state = this.state;
         // Leaving a plan view, the control that led there takes focus once
         // the views have rendered it (plan.md §5); else, at once, the heading,
@@ -698,22 +544,6 @@ export class MaticMapShellV4 extends LitElement {
   // group named by the h2; the body below it is already the region of that
   // name, and landmark names must be unique. A focused scroller
   // keeps its stop until it loses focus, so focus never falls to the page.
-  #syncScrollers = (): void => {
-    for (const scroller of this.renderRoot.querySelectorAll<HTMLElement>(SCROLLERS)) {
-      const stop = scroller.scrollHeight > scroller.clientHeight && !hasFocusable(scroller);
-      if (!stop && scroller.matches(":focus")) {
-        scroller.addEventListener("blur", this.#syncScrollers, { once: true });
-        continue;
-      }
-      const set = (name: string, value: string) => (stop ? scroller.setAttribute(name, value) : scroller.removeAttribute(name));
-      set("tabindex", "0");
-      if (scroller.classList.contains("panel-top")) {
-        set("role", "group");
-        set("aria-labelledby", "workspace-title");
-      }
-    }
-  };
-
   // The heading, else the primary; in Full map neither shows, so the control
   // that leaves it, which Full map entry focuses too.
   #focusPanel(): void {
@@ -898,174 +728,6 @@ export class MaticMapShellV4 extends LitElement {
 
   // ---- Bottom sheet -------------------------------------------------------
 
-  #setDetent(detent: SheetDetent): void {
-    if (this._helpOpen && this.#helpReturnsFull) detent = "peek";
-    if (detent === this._sheetDetent) return;
-    this._sheetDetent = detent;
-    this.#announce("_polite", detent === "peek" ? this.#t("v4_workspace_height_peek", "Cleaning panel, collapsed")
-      : detent === "half" ? this.#t("v4_workspace_height_half", "Cleaning panel, half height")
-      : this.#t("v4_workspace_height_full", "Cleaning panel, full height"));
-  }
-
-  #detents(): readonly SheetDetent[] {
-    return this._compact ? COMPACT_DETENTS : DETENTS;
-  }
-
-  #sheetStep(delta: 1 | -1, wrap = false): void {
-    const detents = this.#detents();
-    let next = detents.indexOf(this._sheetDetent) + delta;
-    if (wrap && next >= detents.length) next = 0;
-    this.#setDetent(detents[Math.max(0, Math.min(detents.length - 1, next))] ?? this._sheetDetent);
-  }
-
-  #detentHeights(sheet: HTMLElement): Readonly<Record<SheetDetent, number>> {
-    const available = this.renderRoot.querySelector<HTMLElement>(".workspace")?.clientHeight
-      ?? sheet.parentElement?.clientHeight
-      ?? sheet.offsetHeight;
-    const rem = parseFloat(getComputedStyle(this).fontSize) || 16;
-    const chrome = [":scope>.sheet-grip", ":scope>.sheet-tools", ":scope>.action-bar"]
-      .map((selector) => sheet.querySelector<HTMLElement>(selector)?.offsetHeight ?? 0)
-      .reduce((sum, height) => sum + height, 0) + rem * 0.75;
-    const full = this._compact ? available * 0.72 : Math.min(available * 0.92, available - rem * 9);
-    const half = Math.min(available * 0.48, rem * 26, full);
-    return { peek: Math.min(chrome, half), half, full };
-  }
-
-  #sheet(): HTMLElement | null {
-    return this.renderRoot.querySelector<HTMLElement>(".mobile-sheet");
-  }
-
-  // A drag moves the sheet by transform only, so the toast, anchored to the
-  // sheet's resting top edge, takes the same transform and rides with it.
-  #translateSheet(sheet: HTMLElement, transform: string): void {
-    sheet.style.transform = transform;
-    const toast = this.renderRoot.querySelector<HTMLElement>("[data-notice-toast]");
-    if (toast) toast.style.transform = transform;
-  }
-
-  #startsOnInteractiveSheetDescendant(event: PointerEvent): boolean {
-    const currentTarget = event.currentTarget;
-    for (const target of event.composedPath()) {
-      if (target === currentTarget) return false;
-      if (target instanceof Element && target.matches(INTERACTIVE_SHEET_SELECTOR)) return true;
-    }
-    return false;
-  }
-
-  #gripDown(event: PointerEvent): void {
-    if (this.#helpReturnsFull) return;
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    if (this.#startsOnInteractiveSheetDescendant(event)) return;
-    const sheet = this.#sheet();
-    if (!sheet || this.#drag) return;
-    this.#drag = {
-      pointerId: event.pointerId,
-      startY: event.clientY,
-      startHeight: sheet.offsetHeight,
-      heights: this.#detentHeights(sheet),
-      samples: [{ y: event.clientY, t: event.timeStamp }],
-      moved: false,
-    };
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    sheet.classList.add("dragging");
-  }
-
-  #gripMove(event: PointerEvent): void {
-    const drag = this.#drag;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    const sheet = this.#sheet();
-    if (!sheet) return;
-    const dy = event.clientY - drag.startY;
-    if (!drag.moved && Math.abs(dy) > TAP_SLOP) drag.moved = true;
-    drag.samples.push({ y: event.clientY, t: event.timeStamp });
-    while (drag.samples.length > 2 && event.timeStamp - (drag.samples[1]?.t ?? 0) > FLICK_WINDOW_MS) drag.samples.shift();
-    if (!drag.moved) return;
-    // Positive = the sheet moves down. It may not rise above the full detent
-    // or sink below peek. Translate, never resize: a height change here would
-    // relayout the canvas on every frame.
-    const min = drag.startHeight - drag.heights.full;
-    const max = drag.startHeight - drag.heights.peek;
-    const offset = Math.max(min, Math.min(max, dy));
-    this.#translateSheet(sheet, `translateY(${offset}px)`);
-  }
-
-  #gripUp(event: PointerEvent): void {
-    const drag = this.#drag;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    this.#drag = null;
-    const sheet = this.#sheet();
-    if (sheet) {
-      this.#translateSheet(sheet, "");
-      sheet.classList.remove("dragging");
-    }
-    if (event.type === "pointercancel") return;
-    if (!drag.moved) {
-      this.#sheetStep(1, true);
-      return;
-    }
-    const dy = event.clientY - drag.startY;
-    const detents = this.#detents();
-    const index = detents.indexOf(this._sheetDetent);
-    const first = drag.samples[0];
-    const last = drag.samples[drag.samples.length - 1];
-    const velocity = first && last && last !== first ? (last.y - first.y) / Math.max(1, last.t - first.t) : 0;
-    if (Math.abs(velocity) > FLICK_VELOCITY) {
-      this.#setDetent(detents[Math.max(0, Math.min(detents.length - 1, index + (velocity < 0 ? 1 : -1)))] ?? this._sheetDetent);
-      return;
-    }
-    const target = drag.startHeight - dy;
-    let nearest: SheetDetent = this._sheetDetent;
-    let distance = Number.POSITIVE_INFINITY;
-    for (const detent of detents) {
-      const gap = Math.abs(drag.heights[detent] - target);
-      if (gap < distance) {
-        distance = gap;
-        nearest = detent;
-      }
-    }
-    this.#setDetent(nearest);
-  }
-
-  // A swipe follows what the finger scrolls: the nearest scrollable ancestor
-  // of where it starts inside the panel (the capped pinned top or the body).
-  // It steps the sheet only while that scroller is at its top, or with none.
-  #swipeScroller(event: PointerEvent): HTMLElement | null {
-    for (const node of event.composedPath()) {
-      if (node === event.currentTarget) break;
-      if (node instanceof HTMLElement && node.scrollHeight > node.clientHeight
-        && /auto|scroll/u.test(getComputedStyle(node).overflowY)) return node;
-    }
-    return null;
-  }
-
-  #bodyDown(event: PointerEvent): void {
-    if (event.pointerType === "mouse") return;
-    if (this.#startsOnInteractiveSheetDescendant(event)) return;
-    const scroller = this.#swipeScroller(event);
-    this.#bodySwipe = scroller?.scrollTop ? null : {
-      pointerId: event.pointerId,
-      startY: event.clientY,
-      scroller,
-      consumed: false,
-    };
-  }
-
-  #bodyMove(event: PointerEvent): void {
-    const swipe = this.#bodySwipe;
-    if (!swipe || swipe.consumed || event.pointerId !== swipe.pointerId) return;
-    if (swipe.scroller?.scrollTop) {
-      this.#bodySwipe = null;
-      return;
-    }
-    if (event.clientY - swipe.startY < BODY_SWIPE_DISTANCE) return;
-    swipe.consumed = true;
-    this.#sheetStep(-1);
-  }
-
-  #bodyUp(): void {
-    this.#bodySwipe = null;
-  }
-
   // ---- App bar ------------------------------------------------------------
 
   #toggleNavigation(): void {
@@ -1118,15 +780,15 @@ export class MaticMapShellV4 extends LitElement {
   // Help owns its small lazy chunk, so opening it never loads workflow views.
   #openHelp(launcher: HTMLElement | null): void {
     this.#helpLauncher = launcher;
-    this.#helpReturnsFull = !this.state.fullMap && this.#sheet()?.dataset.detent === "full";
-    if (this.#helpReturnsFull) this.#setDetent("peek");
+    this.#helpReturnsFull = !this.state.fullMap && this.#sheet.sheet()?.dataset.detent === "full";
+    if (this.#helpReturnsFull) this.#sheet.setDetent("peek");
     this.#mapHelpView.request();
     this._helpOpen = true;
   }
 
   #closeHelp(restoreFocus: boolean): void {
     this._helpOpen = false;
-    if (restoreFocus && this.#helpReturnsFull && this._sheetDetent === "peek") this.#setDetent("full");
+    if (restoreFocus && this.#helpReturnsFull && this.#sheet.detent === "peek") this.#sheet.setDetent("full");
     this.#helpReturnsFull = false;
     if (restoreFocus) this.#helpLauncher?.focus();
   }
@@ -1219,7 +881,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #skipToWorkspace(): void {
-    if (this._sheetDetent === "peek" && this.#sheet()) this.#setDetent(this._compact ? "full" : "half");
+    if (this.#sheet.detent === "peek" && this.#sheet.sheet()) this.#sheet.setDetent(this.#sheet.compact ? "full" : "half");
     void this.updateComplete.then(() => this.#focusPanel());
   }
 
@@ -1613,12 +1275,12 @@ export class MaticMapShellV4 extends LitElement {
     const line = (state.workflow === "rooms" ? this.#views.value?.roomsGripLine(this.#t, state) : null) ?? workflow.title;
     // With the body open the h2 already names the workflow, so the grip line
     // carries the robot instead of repeating the title directly above it.
-    if (this._sheetDetent !== "peek" && this.#homeSmartStopSummary(state)) {
+    if (this.#sheet.detent !== "peek" && this.#homeSmartStopSummary(state)) {
       const target = state.activity !== "paused" && (state.smartStop?.phase === "finishing_room" || state.smartStop?.phase === "finishing_area")
         ? state.smartStop.target : null;
       return target ? `${status.title} · ${target}` : status.title;
     }
-    if (this._sheetDetent !== "peek" || state.activity === "cleaning" || state.smartStop) {
+    if (this.#sheet.detent !== "peek" || state.activity === "cleaning" || state.smartStop) {
       return status.detail ? `${status.title} · ${status.detail}` : status.title;
     }
     return status.notable ? `${status.title} · ${line}` : line;
@@ -1630,8 +1292,8 @@ export class MaticMapShellV4 extends LitElement {
   protected override render() {
     // Home stands in for the Run view while a shortcut's run starts (#pinRun).
     const state: WorkspaceState = this.#pinRun ? { ...this.state, workflow: "none" } : this.state;
-    const narrow = this._measuredNarrow ?? state.narrowHint;
-    const compact = narrow && this._compact;
+    const narrow = this.#sheet.narrow ?? state.narrowHint;
+    const compact = narrow && this.#sheet.compact;
     const options = this.#options.value;
     const status = statusCopy(state, this.localize, this.dates);
     const shortSmartStop = this.#homeSmartStopSummary(state);
@@ -1690,7 +1352,7 @@ export class MaticMapShellV4 extends LitElement {
     // The HUD takes the sheet's band in Full map, so the rail, dock and
     // scale lift above it as they do above the sheet (nothing is covered).
     const sheetOffset = state.fullMap ? "--map-sheet-offset:calc(var(--ms-control-lg) + 3 * var(--ms-space-3))"
-      : narrow ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
+      : narrow ? `--map-sheet-offset:${this.#sheet.offset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";
     const help = !this._helpOpen ? null : this.#mapHelpView.value
       ? this.#mapHelpView.value.renderMapHelp({ state, coarse: window.matchMedia("(any-pointer: coarse)").matches, t: this.#t, close: () => this.#closeHelp(true) })
@@ -1701,7 +1363,7 @@ export class MaticMapShellV4 extends LitElement {
     // Success and error always toast; info and warning only while the slot is
     // off-screen (sheet at peek, or Full map).
     const toast = this._toast && (this._toast.tone === "success" || this._toast.tone === "error"
-      || state.fullMap || (narrow && this._sheetDetent === "peek")) ? this._toast : null;
+      || state.fullMap || (narrow && this.#sheet.detent === "peek")) ? this._toast : null;
     return html`
       <div class=${`root ${narrow ? "narrow" : "wide"}${compact ? " compact" : ""}`} ?data-dock=${!narrow && state.workflow === "draw"} @keydown=${this.#keyboard}>
         <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToMap}>${this.#t("v4_skip_to_map", "Skip to the map")}</button>
@@ -1779,18 +1441,18 @@ export class MaticMapShellV4 extends LitElement {
                 .renderDrawTools=${this.#drawTools.value?.renderDrawTools}
                 .drawReady=${drawReady}
                 .narrow=${narrow}
-                ?data-short=${compact && !state.fullMap && this._sheetDetent === "full"}
+                ?data-short=${compact && !state.fullMap && this.#sheet.detent === "full"}
                 .help=${help}
                 .recipes=${state.workflow === "draw" ? this.#views.value?.drawRecipes(this.#t) ?? null : null}
               >${this.#floorSwitcher(state)}
-                ${narrow && !state.fullMap && this._sheetDetent === "full" ? html`
+                ${narrow && !state.fullMap && this.#sheet.detent === "full" ? html`
                   <button
                     class="sheet-scrim"
                     slot="scrim"
                     data-map-control
                     type="button"
                     aria-label=${this.#t("v4_collapse_sheet", "Collapse panel")}
-                    @click=${() => this.#setDetent("peek")}
+                    @click=${() => this.#sheet.setDetent("peek")}
                   ></button>
                 ` : nothing}
               </${mapCanvasTag}>
@@ -1799,29 +1461,29 @@ export class MaticMapShellV4 extends LitElement {
             <aside
               id="map-workspace"
               class=${narrow ? "inspector mobile-sheet" : "inspector"}
-              data-detent=${narrow ? this._sheetDetent : nothing}
+              data-detent=${narrow ? this.#sheet.detent : nothing}
               data-workflow=${state.workflow}
               aria-label=${this.#t("v4_map_workspace", "Cleaning panel")}
             >
               ${narrow ? html`
                 <div
                   class="sheet-grip"
-                  @pointerdown=${this.#gripDown}
-                  @pointermove=${this.#gripMove}
-                  @pointerup=${this.#gripUp}
-                  @pointercancel=${this.#gripUp}
+                  @pointerdown=${this.#sheet.gripDown}
+                  @pointermove=${this.#sheet.gripMove}
+                  @pointerup=${this.#sheet.gripUp}
+                  @pointercancel=${this.#sheet.gripUp}
                 >
                   <span class="sheet-handle" role="presentation"></span>
-                  ${this._sheetDetent === "peek" ? this.#back(state, true) : nothing}
+                  ${this.#sheet.detent === "peek" ? this.#back(state, true) : nothing}
                   <span class="sheet-status">${this.#sheetStatus(state, status)}${roomEstimate}</span>
                   ${compact ? this.#actionBar(state, footerPrimary, footerSecondary) : nothing}
-                  ${/* step is always +1 or -1 */ (compact ? [this._sheetDetent === "full" ? -1 : 1] as const : [1, -1] as const).map((step) => html`<button
+                  ${/* step is always +1 or -1 */ (compact ? [this.#sheet.detent === "full" ? -1 : 1] as const : [1, -1] as const).map((step) => html`<button
                     class="ms-btn ms-btn--icon ms-btn--sm"
                     type="button"
                     aria-label=${step < 0 ? this.#t("v4_show_less", "Collapse panel") : this.#t("v4_show_more", "Expand panel")}
                     aria-controls="sheet-panel"
-                    ?disabled=${this.#helpReturnsFull || this._sheetDetent === (step < 0 ? "peek" : "full")}
-                    @click=${() => this.#sheetStep(step)}
+                    ?disabled=${this.#helpReturnsFull || this.#sheet.detent === (step < 0 ? "peek" : "full")}
+                    @click=${() => this.#sheet.step(step)}
                   >${icon(step < 0 ? iconChevronDown : iconChevronUp)}</button>`)}
                 </div>
                 ${showDrawTools ? html`
@@ -1835,10 +1497,10 @@ export class MaticMapShellV4 extends LitElement {
                 <div
                   class="sheet-panel"
                   id="sheet-panel"
-                  @pointerdown=${this.#bodyDown}
-                  @pointermove=${this.#bodyMove}
-                  @pointerup=${this.#bodyUp}
-                  @pointercancel=${this.#bodyUp}
+                  @pointerdown=${this.#sheet.bodyDown}
+                  @pointermove=${this.#sheet.bodyMove}
+                  @pointerup=${this.#sheet.bodyUp}
+                  @pointercancel=${this.#sheet.bodyUp}
                 >
                   ${this.#panelTop(state)}
                   <div class="sheet-body" role="region" aria-labelledby="workspace-title">${this.#panel(state, narrow)}</div>

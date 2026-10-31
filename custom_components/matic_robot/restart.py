@@ -102,12 +102,12 @@ async def _async_stop_interrupted_mixed_dispatch(
             return "restart_mixed_dispatch_superseded"
         token = manager.control.begin_managed_motion(serial_number)
         try:
-            await manager.ledger.async_prepare_mixed_dispatch_stop(
+            await manager.recovery.async_prepare_mixed_dispatch_stop(
                 serial_number, run_id, expected_hash
             )
         except BaseException:
             try:
-                await manager.ledger.async_rollback_mixed_dispatch_stop(
+                await manager.recovery.async_rollback_mixed_dispatch_stop(
                     serial_number, run_id, expected_hash
                 )
             finally:
@@ -118,7 +118,7 @@ async def _async_stop_interrupted_mixed_dispatch(
             or manager.control.motion_generation(serial_number) != token
             or not floor_is_current()
         ):
-            await manager.ledger.async_rollback_mixed_dispatch_stop(
+            await manager.recovery.async_rollback_mixed_dispatch_stop(
                 serial_number, run_id, expected_hash
             )
             manager.control.end_managed_motion(serial_number, token)
@@ -130,7 +130,7 @@ async def _async_stop_interrupted_mixed_dispatch(
             or not floor_is_current()
             or current_identity != expected_identity
         ):
-            await manager.ledger.async_rollback_mixed_dispatch_stop(
+            await manager.recovery.async_rollback_mixed_dispatch_stop(
                 serial_number, run_id, expected_hash
             )
             manager.control.end_managed_motion(serial_number, token)
@@ -152,21 +152,21 @@ async def _async_stop_interrupted_mixed_dispatch(
                     hass, entry, manager, serial_number, entity_id, run_id, None
                 )
             else:
-                await manager.ledger.async_rollback_mixed_dispatch_stop(
+                await manager.recovery.async_rollback_mixed_dispatch_stop(
                     serial_number, run_id, expected_hash
                 )
                 manager.control.end_managed_motion(serial_number, token)
             raise
         except MaticError:
             if not transmitted:
-                await manager.ledger.async_rollback_mixed_dispatch_stop(
+                await manager.recovery.async_rollback_mixed_dispatch_stop(
                     serial_number, run_id, expected_hash
                 )
                 manager.control.end_managed_motion(serial_number, token)
                 raise
         except Exception:
             if not transmitted:
-                await manager.ledger.async_rollback_mixed_dispatch_stop(
+                await manager.recovery.async_rollback_mixed_dispatch_stop(
                     serial_number, run_id, expected_hash
                 )
                 manager.control.end_managed_motion(serial_number, token)
@@ -214,7 +214,7 @@ async def async_recover_managed_run(
                 hass, entry, manager, serial_number, entity_id, owner, None
             )
 
-    run = manager.control.recovery_run(serial_number)
+    run = manager.recovery.recovery_run(serial_number)
     if run is None:
         restore_stop_settlement()
         return
@@ -433,7 +433,7 @@ async def async_recover_managed_run(
             ):
                 reason = "restart_handoff_history_changed"
                 return
-            await manager.ledger.async_mark_recovery_status(
+            await manager.recovery.async_mark_recovery_status(
                 serial_number, "running", reason="handoff_checkpoint_verified"
             )
             settled = await _async_wait_for_settled_leg_handoff(
@@ -519,7 +519,7 @@ async def async_recover_managed_run(
         # The same mission was verified above. An explicit end during the
         # history read is a terminal handoff, not a takeover; the executor still
         # requires normal return and native room evidence before crediting it.
-        await manager.ledger.async_mark_recovery_status(
+        await manager.recovery.async_mark_recovery_status(
             serial_number, "running", reason="same_native_mission_verified"
         )
         if (
@@ -538,7 +538,7 @@ async def async_recover_managed_run(
             if remaining <= 0:
                 reason = "restart_verification_expired"
                 return
-            await manager.ledger.async_mark_recovery_status(
+            await manager.recovery.async_mark_recovery_status(
                 serial_number, "verifying", reason="native_end_previously_observed"
             )
 
@@ -566,7 +566,7 @@ async def async_recover_managed_run(
                 on_verified_session=completion_sessions.append,
             )
             verified_coverage = await async_confirm_completed_coverage(
-                manager.ledger.coverage_receipt(serial_number, run["run_id"]),
+                manager.recovery.coverage_receipt(serial_number, run["run_id"]),
                 completion_sessions[-1] if completion_sessions else None,
                 getattr(runtime.client, "async_confirm_coverage_receipt", None),
             )
@@ -685,7 +685,7 @@ async def async_recover_managed_run(
         if (
             reason != "home_assistant_shutdown"
             and not _shutdown_suspends_run(hass, manager, serial_number)
-            and manager.control.recovery_run(serial_number) is not None
+            and manager.recovery.recovery_run(serial_number) is not None
         ):
             completed = reason == "all_rooms_verified"
             cancellation = manager.control.cancellation_reason(serial_number)
@@ -717,7 +717,7 @@ async def async_recover_managed_run(
                 else "managed_stop"
                 if stopped
                 else reason,
-                manager.ledger.snapshot(serial_number)["last_run"][
+                manager.history.snapshot(serial_number)["last_run"][
                     "completed_room_count"
                 ],
                 terminal_activity=terminal_activity,
@@ -730,7 +730,7 @@ async def async_recover_managed_run(
                 else "home_assistant",
             )
             if finished:
-                summary = manager.ledger.snapshot(serial_number)["last_run"]
+                summary = manager.history.snapshot(serial_number)["last_run"]
                 hass.bus.async_fire(
                     EVENT_PLAN_FINISHED,
                     {

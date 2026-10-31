@@ -23,7 +23,7 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from .client.exceptions import MaticError
 from .client.floor_types import FloorTypeLayer, floor_type_layer, mission_token
 from .client.models import HermesCollectionEntry
-from .client.slam_map import (
+from .client.slam_tiles import (
     MAX_SLAM_TILES,
     SlamSemanticTile,
     decode_slam_semantic_tile,

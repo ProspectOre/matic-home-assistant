@@ -1,0 +1,295 @@
+import type { MapEntry, HistoryFloor, HistorySnapshot } from "./backend-contracts";
+import { notice, type ResourceStamp, type WorkspaceState, type WorkspaceNotice } from "./contracts";
+import type { MaticBackend } from "./backend";
+import type { CoherenceMachine, WorkspaceStore } from "./state";
+import type { ResourceRequests } from "./resource-requests";
+import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./resource-state";
+
+const savedMapNotice = (createdAt: string): WorkspaceNotice =>
+  notice("warning", "v4_notice_saved_map", "Showing the saved map from {date} without the robot's position.", { date: { date: createdAt } });
+
+const safeFloorName = (floor: HistoryFloor, fallbackOrdinal: number): string => {
+  if (floor.label) return floor.label;
+  if (floor.active) return "Current floor";
+  return `Saved floor ${floor.ordinal ?? fallbackOrdinal}`;
+};
+
+interface SpatialHistoryCallbacks {
+  readonly disposed: () => boolean;
+  readonly pageActive: () => boolean;
+  readonly clearRecovery: () => void;
+  readonly resetIdentity: () => void;
+  readonly abortResources: (except: readonly string[]) => void;
+  readonly refreshCatalog: (force: boolean) => Promise<void>;
+}
+
+/** SpatialHistory owns its requests and lifetime; admission remains in CoherenceMachine. */
+export class SpatialHistory {
+  readonly #store: WorkspaceStore;
+  readonly #backend: Pick<MaticBackend, "scene" | "history">;
+  readonly #coherence: CoherenceMachine;
+  readonly #requests: ResourceRequests;
+  readonly #callbacks: SpatialHistoryCallbacks;
+
+  constructor(store: WorkspaceStore, backend: Pick<MaticBackend, "scene" | "history">, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: SpatialHistoryCallbacks) {
+    this.#store = store;
+    this.#backend = backend;
+    this.#coherence = coherence;
+    this.#requests = requests;
+    this.#callbacks = callbacks;
+  }
+
+  async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
+    if (!this.#callbacks.pageActive()) return;
+    const controller = this.#requests.begin("history");
+    try {
+      const history = await this.#backend.history(entry.historyUrl, controller.signal);
+      const current = this.#coherence.current();
+      if (controller.signal.aborted || !current
+        || !sameCoherenceGeneration(stamp, current)
+        || history.entryId !== entry.entryId) return;
+      const state = this.#store.value;
+      const selectedFloor = history.floors.find((floor) => floor.id === state.selection.floorId);
+      const selectedSnapshotExists = !state.selection.historyId
+        || selectedFloor?.snapshots.some((snapshot) => snapshot.id === state.selection.historyId);
+      const activeFloor = state.dataMode === "live"
+        ? history.floors.find((floor) => floor.active)
+        : selectedFloor;
+      this.#store.patch({
+        resources: {
+          ...this.#store.value.resources,
+          history: resource("ready", history),
+        },
+        floor: {
+          ...this.#store.value.floor,
+          classifiedCount: history.floors.length,
+          ...(activeFloor && !(state.dataMode === "live" && state.floor.readOnly) ? { displayName: safeFloorName(activeFloor, 1) } : {}),
+        },
+      });
+      if (state.dataMode === "live" && !state.resources.scene.value) {
+        const snapshots = history.floors.flatMap((floor) => floor.snapshots.map((snapshot) => ({ floor, snapshot })))
+          .sort((a, b) => Date.parse(b.snapshot.createdAt) - Date.parse(a.snapshot.createdAt));
+        for (const saved of snapshots) {
+          let response;
+          try {
+            response = await this.#backend.scene(saved.snapshot.sceneUrl, saved.snapshot.revision, true, "history", controller.signal);
+          } catch (error) {
+            if (isAbort(error) || controller.signal.aborted) return;
+            continue;
+          }
+          const latest = this.#coherence.current();
+          if (controller.signal.aborted || !latest || !sameCoherenceGeneration(stamp, latest)
+            || this.#store.value.resources.scene.value) return;
+          if (!response.scene) continue;
+          const currentState = this.#store.value;
+          this.#store.patch({
+            floor: { ...currentState.floor, readOnly: true, displayName: safeFloorName(saved.floor, 1) },
+            resources: { ...currentState.resources, scene: resource("ready", response.scene), pose: resource("idle", null) },
+            map: { ...currentState.map, available: true, exactPose: false },
+            notice: savedMapNotice(saved.snapshot.createdAt),
+          });
+          break;
+        }
+      }
+      if (state.dataMode === "history" && (!selectedFloor || !selectedSnapshotExists)) {
+        const fallback = selectedFloor || history.floors.find((floor) => floor.active) || history.floors[0];
+        const selection = this.selectFloor(fallback?.id || "current");
+        if (!this.#callbacks.disposed() && state.workflow === "history") {
+          this.#store.dispatch({ type: "open-workflow", workflow: "history" });
+        }
+        await selection;
+      }
+    } catch (error) {
+      const current = this.#coherence.current();
+      if (isAbort(error) || controller.signal.aborted || !current
+        || !sameCoherenceGeneration(stamp, current)) return;
+      this.#store.patch({
+        resources: {
+          ...this.#store.value.resources,
+          history: resource("error", null, problemCode(error, "history-unavailable")),
+        },
+      });
+    } finally {
+      this.#requests.release("history", controller);
+    }
+  }
+
+  async selectFloor(floorId: string): Promise<void> {
+    const history = this.#store.value.resources.history.value;
+    const entry = this.#store.value.resources.entry;
+    if (!history || !entry) return;
+    const floor = history.floors.find((candidate) => candidate.id === floorId);
+    if (!floor && floorId !== "current") return;
+    const currentState = this.#store.value;
+    if ((currentState.workflow === "draw" && (currentState.draw.dirty || currentState.areaDraft.dirty))
+      || (currentState.workflow === "areaReview"
+        && (currentState.draw.dirty || currentState.areaDraft.dirty))) return;
+    if (!floor || floor.active) {
+      this.#callbacks.clearRecovery();
+      this.#callbacks.resetIdentity();
+      const state = this.#store.value;
+      this.#store.patch({
+        resources: {
+          ...state.resources,
+          plans: resource("idle", null),
+          areas: resource("idle", null),
+          scene: resource("idle", state.resources.scene.value),
+          pose: resource("idle", null),
+        },
+        map: { ...state.map, available: state.resources.scene.value !== null, exactPose: false },
+        coherence: "verifying",
+        floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
+        workflow: "none",
+        precisionOpen: false,
+      });
+      this.#store.dispatch({ type: "set-floor", floorId: "current" });
+      await this.#callbacks.refreshCatalog(true);
+      return;
+    }
+    this.#callbacks.clearRecovery();
+    const snapshot = floor.snapshots.at(-1);
+    const stamp = this.#coherence.begin(
+      entry.entryId,
+      floor.id,
+      snapshot?.id || floor.id,
+      snapshot?.revision || 0,
+    );
+    this.#callbacks.abortResources(["catalog", "setting-mutation"]);
+    this.#store.patch({
+      generation: stamp.generation,
+      coherence: "current",
+      dataMode: "history",
+      ...(currentState.selection.floorId !== floor.id || currentState.selection.historyId !== snapshot?.id
+        ? { historyCameras: {} } : {}),
+      floor: {
+        classifiedCount: history.floors.length,
+        displayName: safeFloorName(floor, history.floors.indexOf(floor) + 1),
+        readOnly: true,
+      },
+      selection: {
+        ...this.#store.value.selection,
+        floorId: floor.id,
+        historyId: snapshot?.id || null,
+      },
+      resources: {
+        ...this.#store.value.resources,
+        scene: resource(snapshot ? "loading" : "empty", null),
+        pose: resource("idle", null),
+        plans: resource("idle", null),
+        areas: resource("idle", null),
+      },
+      workflow: "none",
+      precisionOpen: false,
+      map: {
+        available: false,
+        complete: true,
+        floorCoherent: true,
+        sessionVerified: true,
+        exactPose: false,
+      },
+    });
+    if (snapshot) await this.#loadHistoryScene(snapshot, stamp);
+  }
+
+  async selectHistory(snapshotId: string | null): Promise<void> {
+    const history = this.#store.value.resources.history.value;
+    const entry = this.#store.value.resources.entry;
+    if (!history || !entry) return;
+    if (!snapshotId) {
+      await this.selectFloor("current");
+      return;
+    }
+    const floor = history.floors.find((candidate) =>
+      candidate.snapshots.some((snapshot) => snapshot.id === snapshotId));
+    const snapshot = floor?.snapshots.find((candidate) => candidate.id === snapshotId);
+    if (!floor || !snapshot) return;
+    this.#callbacks.clearRecovery();
+    const stamp = this.#coherence.begin(entry.entryId, floor.id, snapshot.id, snapshot.revision);
+    this.#callbacks.abortResources(["catalog", "setting-mutation"]);
+    this.#store.patch({
+      generation: stamp.generation,
+      dataMode: "history",
+      ...(this.#store.value.selection.historyId !== snapshot.id ? { historyCameras: {} } : {}),
+      floor: {
+        classifiedCount: history.floors.length,
+        displayName: safeFloorName(floor, history.floors.indexOf(floor) + 1),
+        readOnly: true,
+      },
+      selection: {
+        ...this.#store.value.selection,
+        floorId: floor.id,
+        historyId: snapshot.id,
+      },
+      resources: {
+        ...this.#store.value.resources,
+        scene: resource("loading", null),
+        pose: resource("idle", null),
+      },
+      map: { ...this.#store.value.map, available: false, exactPose: false },
+    });
+    await this.#loadHistoryScene(snapshot, stamp);
+  }
+
+  async #loadHistoryScene(snapshot: HistorySnapshot, stamp: ResourceStamp): Promise<void> {
+    if (!this.#callbacks.pageActive()) return;
+    const controller = this.#requests.begin("history-scene");
+    try {
+      const response = await this.#backend.scene(
+        snapshot.sceneUrl,
+        snapshot.revision,
+        true,
+        "history",
+        controller.signal,
+      );
+      if (controller.signal.aborted || this.#callbacks.disposed() || !this.#coherence.accepts(stamp) || !response.scene) return;
+      this.#store.patch({
+        resources: {
+          ...this.#store.value.resources,
+          scene: resource("ready", response.scene),
+        },
+        map: { ...this.#store.value.map, available: true, exactPose: false },
+      });
+    } catch (error) {
+      if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed() || !this.#coherence.accepts(stamp)) return;
+      this.#store.patch({
+        resources: {
+          ...this.#store.value.resources,
+          scene: resource("error", null, problemCode(error, "history-scene-unavailable")),
+        },
+      });
+    } finally {
+      this.#requests.release("history-scene", controller);
+    }
+  }
+
+  async resume(suspended: WorkspaceState): Promise<void> {
+    const state = this.#store.value;
+    const entry = state.resources.entry;
+    if (this.#callbacks.disposed() || !this.#callbacks.pageActive() || suspended.dataMode !== "history"
+      || state.generation !== suspended.generation || state.dataMode !== "history"
+      || state.selection.entryId !== suspended.selection.entryId
+      || state.selection.floorId !== suspended.selection.floorId
+      || state.selection.historyId !== suspended.selection.historyId
+      || state.resources.catalog.status !== "ready" || !entry
+      || entry.entryId !== state.selection.entryId) return;
+    const floor = state.resources.history.value?.floors.find((candidate) => candidate.id === state.selection.floorId);
+    const snapshot = floor?.snapshots.find((candidate) => candidate.id === state.selection.historyId);
+    if (!floor) return;
+    let stamp = this.#coherence.begin(entry.entryId, floor.id, snapshot?.id ?? floor.id, snapshot?.revision ?? 0);
+    this.#store.patch({ generation: stamp.generation });
+    await this.loadHistory(entry, stamp);
+    if (!this.#coherence.accepts(stamp) || !this.#callbacks.pageActive()
+      || this.#store.value.resources.history.status !== "ready") return;
+    const refreshed = this.#store.value;
+    const refreshedFloor = refreshed.resources.history.value?.floors.find((candidate) => candidate.id === floor.id);
+    const refreshedSnapshot = refreshedFloor?.snapshots.find((candidate) => candidate.id === snapshot?.id);
+    if (!refreshedFloor || (snapshot && !refreshedSnapshot)) return;
+    if (refreshedSnapshot && refreshedSnapshot.revision !== stamp.revision) {
+      stamp = this.#coherence.begin(entry.entryId, floor.id, refreshedSnapshot.id, refreshedSnapshot.revision);
+    }
+    this.#store.patch({ generation: stamp.generation, coherence: "current" });
+    if (refreshedSnapshot && (!refreshed.resources.scene.value || refreshedSnapshot.revision !== snapshot?.revision)) {
+      await this.#loadHistoryScene(refreshedSnapshot, stamp);
+    }
+  }
+}

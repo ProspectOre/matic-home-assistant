@@ -6,10 +6,10 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.util import dt as dt_util
 
-from custom_components.matic_robot.client.models import CleaningSessionRecord
-from custom_components.matic_robot.client.telemetry import (
+from custom_components.matic_robot.client.cleaning_session import (
     decode_cleaning_session,
 )
+from custom_components.matic_robot.client.models import CleaningSessionRecord
 from custom_components.matic_robot.managed_observation import (
     _async_verify_leg_completion,
     _async_verify_room_completion,
@@ -243,7 +243,9 @@ def test_coverage_setting_is_not_cleaning_status(setting):
 def test_unscoped_history_does_not_infer_requested_modes_from_native_summaries(
     mop_status,
 ):
-    from custom_components.matic_robot.llm import _bounded_native_room_evidence
+    from custom_components.matic_robot.llm_history import (
+        _bounded_native_room_evidence,
+    )
 
     session = decode_cleaning_session(
         _session_payload(
@@ -353,7 +355,7 @@ async def test_restart_reconciliation_preserves_mode_admission(
     await restarted.ledger.async_import_native_history(
         "synthetic-serial", floor, [record]
     )
-    state = restarted.ledger.snapshot("synthetic-serial")
+    state = restarted.history.snapshot("synthetic-serial")
     result = state["plan_history"]["synthetic-plan"]["rooms"]["study"]
     valid_marker = mode in ("vacuum", "mop", "vacuum_and_mop", "absent")
     completed = valid_marker and (legacy or mode == "vacuum")
@@ -365,14 +367,16 @@ async def test_restart_reconciliation_preserves_mode_admission(
     await restarted.ledger.async_import_native_history(
         "synthetic-serial", floor, [record]
     )
-    assert restarted.ledger.snapshot("synthetic-serial")["plan_history"][
+    assert restarted.history.snapshot("synthetic-serial")["plan_history"][
         "synthetic-plan"
     ]["rooms"]["study"].get("completed_runs", 0) == (1 if completed else 0)
 
 
 async def test_seven_room_partial_session_credits_only_completed_requested_modes(hass):
     from custom_components.matic_robot.client.wire import first_bytes
-    from custom_components.matic_robot.llm import _bounded_native_room_evidence
+    from custom_components.matic_robot.llm_history import (
+        _bounded_native_room_evidence,
+    )
 
     # Synthetic names, intervals and durations; omitted status is native zero.
     rows = [

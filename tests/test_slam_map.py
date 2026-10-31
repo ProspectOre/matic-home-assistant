@@ -17,12 +17,16 @@ from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
     Room,
 )
-from custom_components.matic_robot.client.slam_map import (
-    FLOOR_RGBA_BYTES,
-    MAX_SLAM_TILES,
+from custom_components.matic_robot.client.slam_scene import (
     SCENE_MAGIC,
     SCENE_POINT_STRIDE,
     SCENE_VERSION,
+    encode_slam_scene,
+    parse_slam_scene_header,
+)
+from custom_components.matic_robot.client.slam_tiles import (
+    FLOOR_RGBA_BYTES,
+    MAX_SLAM_TILES,
     SEMANTIC_BYTES,
     SURFACE_BYTES,
     SlamTile,
@@ -30,8 +34,6 @@ from custom_components.matic_robot.client.slam_map import (
     decode_slam_semantic_tile,
     decode_slam_structure_tile,
     decode_slam_tile,
-    encode_slam_scene,
-    parse_slam_scene_header,
 )
 from custom_components.matic_robot.client.wire import first_bytes
 from custom_components.matic_robot.slam_render import (
@@ -250,19 +252,19 @@ def test_decode_slam_mission_id_requires_the_verified_exact_shape() -> None:
 
 
 def test_decode_slam_mission_id_bounds_input_before_protobuf_decode() -> None:
-    from custom_components.matic_robot.client import slam_map as slam_map_module
+    from custom_components.matic_robot.client import slam_tiles as slam_tiles_module
 
-    with patch.object(slam_map_module, "decode_fields") as decode_fields:
+    with patch.object(slam_tiles_module, "decode_fields") as decode_fields:
         assert decode_slam_mission_id(b"x" * 65) is None
     decode_fields.assert_not_called()
 
 
 def test_decode_slam_tile_rejects_oversized_raw_entry_before_parsing() -> None:
-    from custom_components.matic_robot.client import slam_map as slam_map_module
+    from custom_components.matic_robot.client import slam_tiles as slam_tiles_module
 
     entry = synthetic_slam_entry()
     oversized = HermesCollectionEntry(entry.key, entry.value + b"x" * (128 * 1024))
-    with patch.object(slam_map_module, "first_bytes") as first_bytes:
+    with patch.object(slam_tiles_module, "first_bytes") as first_bytes:
         with pytest.raises(DecodeError, match="byte limit"):
             decode_slam_tile(oversized)
         structure = synthetic_structure_entry()
@@ -528,7 +530,7 @@ def test_scene_header_parser_rejects_incomplete_and_inconsistent_payloads() -> N
 
 
 def test_encode_slam_scene_near_limit_preserves_all_room_identities() -> None:
-    from custom_components.matic_robot.client import slam_map as slam_map_module
+    from custom_components.matic_robot.client import slam_scene as slam_scene_module
 
     source = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
     # A 151-cell serpentine floor has a long, real clipped contour. Twenty-five
@@ -580,7 +582,7 @@ def test_encode_slam_scene_near_limit_preserves_all_room_identities() -> None:
     )
     scene = encode_slam_scene(tuple(tiles), floor_plan=floor_plan)
     header = parse_slam_scene_header(scene)
-    assert header.metadata_bytes < slam_map_module.MAX_SCENE_METADATA_BYTES
+    assert header.metadata_bytes < slam_scene_module.MAX_SCENE_METADATA_BYTES
     metadata_start = struct.calcsize("<8sHHIII")
     metadata = json.loads(
         scene[metadata_start : metadata_start + header.metadata_bytes]
@@ -610,7 +612,7 @@ def test_encode_slam_scene_near_limit_preserves_all_room_identities() -> None:
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
-    assert len(legacy_metadata) < slam_map_module.MAX_SCENE_METADATA_BYTES
+    assert len(legacy_metadata) < slam_scene_module.MAX_SCENE_METADATA_BYTES
     uncompacted_metadata = json.dumps(
         {key: value for key, value in metadata.items() if key != "rooms"}
         | {
@@ -622,20 +624,22 @@ def test_encode_slam_scene_near_limit_preserves_all_room_identities() -> None:
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
-    assert len(uncompacted_metadata) > slam_map_module.MAX_SCENE_METADATA_BYTES
+    assert len(uncompacted_metadata) > slam_scene_module.MAX_SCENE_METADATA_BYTES
 
 
 def test_scene_encoder_and_header_parser_share_the_metadata_limit(monkeypatch) -> None:
-    from custom_components.matic_robot.client import slam_map as slam_map_module
+    from custom_components.matic_robot.client import slam_scene as slam_scene_module
 
     tile = decode_slam_tile(synthetic_slam_entry())
     scene = encode_slam_scene((tile,))
     metadata_bytes = parse_slam_scene_header(scene).metadata_bytes
-    monkeypatch.setattr(slam_map_module, "MAX_SCENE_METADATA_BYTES", metadata_bytes)
+    monkeypatch.setattr(slam_scene_module, "MAX_SCENE_METADATA_BYTES", metadata_bytes)
     assert parse_slam_scene_header(encode_slam_scene((tile,))).metadata_bytes == (
         metadata_bytes
     )
-    monkeypatch.setattr(slam_map_module, "MAX_SCENE_METADATA_BYTES", metadata_bytes - 1)
+    monkeypatch.setattr(
+        slam_scene_module, "MAX_SCENE_METADATA_BYTES", metadata_bytes - 1
+    )
     with pytest.raises(DecodeError, match="metadata exceeds its byte limit"):
         encode_slam_scene((tile,))
     with pytest.raises(DecodeError, match="invalid SLAM scene payload"):

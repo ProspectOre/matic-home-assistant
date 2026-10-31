@@ -207,7 +207,7 @@ async def test_a_skipped_room_keeps_its_rotation_turn(hass) -> None:
     global_room = _global_room(manager.repository.robot(SERIAL), ROOM)
     assert "last_opportunity" not in global_room
     assert "opportunity_before_run" not in global_room
-    assert manager.ledger.snapshot(SERIAL)["skipped_runs"] == 1
+    assert manager.history.snapshot(SERIAL)["skipped_runs"] == 1
     assert manager.repository.robot(SERIAL)["active_plan"] is None
     assert _ROOM_RESULTS["skipped"] == "skipped"
 
@@ -292,7 +292,7 @@ async def test_plan_run_settles_a_skipped_room_as_skipped(hass) -> None:
         )
     await hass.async_block_till_done()
 
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     records = snapshot["plan_history"]["away"]["rooms"]
     assert records["room-kitchen"]["last_result"] == "skipped"
     assert snapshot["skipped_runs"] == 1

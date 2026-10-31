@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.matic_robot.client.telemetry import (
+from custom_components.matic_robot.client.cleaning_session import (
     decode_cleaning_session,
 )
 from tests.wire_builders import _bfield, _vfield

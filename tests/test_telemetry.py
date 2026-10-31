@@ -8,10 +8,24 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-from custom_components.matic_robot.client import telemetry as telemetry_module
+from custom_components.matic_robot.client import (
+    cleaning_schedule as cleaning_schedule_module,
+)
+from custom_components.matic_robot.client import (
+    cleaning_session as cleaning_session_module,
+)
+from custom_components.matic_robot.client import (
+    telemetry_fields as telemetry_fields_module,
+)
+from custom_components.matic_robot.client import wifi_status as wifi_status_module
 from custom_components.matic_robot.client import wire as wire_module
 from custom_components.matic_robot.client.api import (
     MaticHermesClient,
+)
+from custom_components.matic_robot.client.cleaning_schedule import decode_schedule
+from custom_components.matic_robot.client.cleaning_session import (
+    decode_cleaning_session,
+    decode_nested_timestamp,
 )
 from custom_components.matic_robot.client.commands import CleaningMode, _coverage_specs
 from custom_components.matic_robot.client.exceptions import MaticError
@@ -23,21 +37,18 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.client.telemetry import (
     decode_binary_state,
-    decode_cleaning_session,
     decode_coverage_time,
     decode_current_version,
     decode_deep_mop_state,
-    decode_nested_timestamp,
     decode_presence_state,
     decode_run_progress,
-    decode_schedule,
-    decode_text_field,
     decode_timezone,
     decode_update_state,
     decode_uploader_state,
     decode_water_flow_factor,
-    decode_wifi_status,
 )
+from custom_components.matic_robot.client.telemetry_fields import decode_text_field
+from custom_components.matic_robot.client.wifi_status import decode_wifi_status
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -65,7 +76,7 @@ def test_scalar_telemetry_rejects_field_amplification_before_allocation(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(wire_module, "WireField", capture)
-    limit = telemetry_module._TELEMETRY_NESTED_MAX_FIELDS
+    limit = telemetry_fields_module._TELEMETRY_NESTED_MAX_FIELDS
     payload = _vfield(1, 0) * (limit + 50)
     result = decoder(payload)
     assert result in {None, (None, None, None, None)}
@@ -89,14 +100,14 @@ def test_scalar_telemetry_rejects_oversized_bytes_before_parsing(
     monkeypatch: pytest.MonkeyPatch, decoder
 ) -> None:
     parser = Mock()
-    monkeypatch.setattr(telemetry_module, "decode_fields", parser)
-    result = decoder(b"x" * (telemetry_module.TELEMETRY_NESTED_MAX_BYTES + 1))
+    monkeypatch.setattr(telemetry_fields_module, "decode_fields", parser)
+    result = decoder(b"x" * (telemetry_fields_module.TELEMETRY_NESTED_MAX_BYTES + 1))
     assert result in {None, (None, None, None, None)}
     parser.assert_not_called()
 
 
 def test_nested_water_flow_property_rejects_field_amplification() -> None:
-    dense = _vfield(1, 0) * (telemetry_module._TELEMETRY_NESTED_MAX_FIELDS + 1)
+    dense = _vfield(1, 0) * (telemetry_fields_module._TELEMETRY_NESTED_MAX_FIELDS + 1)
     assert decode_water_flow_factor(_bfield(1, dense)) is None
 
 
@@ -115,8 +126,10 @@ def test_schedule_nested_field_budget_prevents_aggregate_allocation(
     monkeypatch.setattr(wire_module, "WireField", capture)
     nested = _vfield(1, 0) * 600
     with pytest.raises(DecodeError):
-        telemetry_module._uuid_candidates(_bfield(1, nested) + _bfield(2, nested))
-    assert len(allocated) == telemetry_module._SCHEDULE_MAX_FIELDS
+        cleaning_schedule_module._uuid_candidates(
+            _bfield(1, nested) + _bfield(2, nested)
+        )
+    assert len(allocated) == cleaning_schedule_module._SCHEDULE_MAX_FIELDS
 
 
 def test_decode_safe_telemetry_fixtures() -> None:
@@ -194,7 +207,7 @@ def test_double_pass_rejects_ambiguous_or_unobserved_state(payload) -> None:
 async def test_active_session_identity_distinguishes_tasks_end_and_unknown() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
     first, second = b"\x0a\x05first", b"\x0a\x06second"
-    client.async_get_property = AsyncMock(
+    client._collections.async_get_property = AsyncMock(
         side_effect=(first, first, second, b"tombstone-value!", b"", b"\x0a\xff")
     )
     assert await client.async_get_cleaning_session_identity() == first
@@ -221,7 +234,7 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
         + _bfield(6, _bfield(1, _bfield(2, details)))
     )
     client = MaticHermesClient("192.0.2.1", 16320)
-    client.async_get_tracked_collection_entries = AsyncMock(
+    client._collections.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(b"opaque-synthetic-key", _bfield(5, summary)),
             HermesCollectionEntry(b"", _bfield(5, summary)),
@@ -235,13 +248,13 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     assert records[0].key == b"opaque-synthetic-key"
     assert records[0].session.completed is True
     assert records[0].session.completed_rooms == ("Kitchen",)
-    client.async_get_tracked_collection_entries.assert_awaited_once_with(
+    client._collections.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=64
     )
     with pytest.raises(MaticError, match="incomplete or undecodable"):
         await client.async_get_cleaning_session_records(strict=True)
-    client.async_get_tracked_collection_entries.return_value = (
-        client.async_get_tracked_collection_entries.return_value[0],
+    client._collections.async_get_tracked_collection_entries.return_value = (
+        client._collections.async_get_tracked_collection_entries.return_value[0],
     )
     assert await client.async_get_cleaning_session_records(strict=True) == records
 
@@ -265,10 +278,14 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
         "active_session_key": b"disabled-setting",
         "coverage_time": b"disabled-setting",
     }
-    client.async_get_property = AsyncMock(side_effect=lambda name: values[name])
-    client.async_get_collection_entries = AsyncMock(return_value=())
-    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
-    client.async_get_collection_count = AsyncMock(side_effect=(4, 1))
+    client._collections.async_get_property = AsyncMock(
+        side_effect=lambda name: values[name]
+    )
+    client._collections.async_get_collection_entries = AsyncMock(return_value=())
+    client._collections.async_get_tracked_collection_entries = AsyncMock(
+        return_value=()
+    )
+    client._collections.async_get_collection_count = AsyncMock(side_effect=(4, 1))
 
     telemetry = await client.async_get_telemetry()
 
@@ -288,10 +305,10 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
 
 async def test_verified_setting_payloads_and_bounds() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._channel = object()
-    client.async_connect = AsyncMock()
-    client._async_send_channel_payload = AsyncMock()
-    client.async_get_property = AsyncMock(
+    client._connection._channel = object()
+    client._connection.async_connect = AsyncMock()
+    client._connection._async_send_channel_payload = AsyncMock()
+    client._collections.async_get_property = AsyncMock(
         side_effect=(
             b"\x08\x01",
             b"\x08\x00",
@@ -307,14 +324,14 @@ async def test_verified_setting_payloads_and_bounds() -> None:
     await client.async_set_deep_mop(False)
     await client.async_set_water_flow(1.4)
 
-    assert client._async_send_channel_payload.await_args_list == [
+    assert client._connection._async_send_channel_payload.await_args_list == [
         call("child_lock_enabled_command", b"\x08\x01"),
         call("petwaste_enabled_command", b"\x08\x00"),
         call("deep_mop_override_setting_command", b"\x12\x00"),
         call("deep_mop_override_setting_command", b"\x0a\x00"),
         call("water_flow_override_command", b"\x0a\x05\x0d" + struct.pack("<f", 1.4)),
     ]
-    assert client.async_get_property.await_args_list == [
+    assert client._collections.async_get_property.await_args_list == [
         call("child_lock_enabled_state"),
         call("petwaste_enabled_state"),
         call("deep_mop_override_setting_state"),
@@ -418,15 +435,15 @@ def test_wifi_decoder_enforces_payload_network_and_nested_budgets(
     network = _bfield(1, b"Test LAN") + _vfield(3, 1)
     wifi = _vfield(1, 3) + _bfield(7, _bfield(1, network) + _bfield(1, network))
 
-    monkeypatch.setattr(telemetry_module, "WIFI_STATUS_MAX_BYTES", len(wifi) - 1)
+    monkeypatch.setattr(wifi_status_module, "WIFI_STATUS_MAX_BYTES", len(wifi) - 1)
     assert decode_wifi_status(wifi) == (None, None, None, ())
 
-    monkeypatch.setattr(telemetry_module, "WIFI_STATUS_MAX_BYTES", len(wifi))
-    monkeypatch.setattr(telemetry_module, "_WIFI_NETWORK_MAX_COUNT", 1)
+    monkeypatch.setattr(wifi_status_module, "WIFI_STATUS_MAX_BYTES", len(wifi))
+    monkeypatch.setattr(wifi_status_module, "_WIFI_NETWORK_MAX_COUNT", 1)
     assert decode_wifi_status(wifi)[3] == ()
 
     one_network = _vfield(1, 3) + _bfield(7, _bfield(1, network))
-    monkeypatch.setattr(telemetry_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
+    monkeypatch.setattr(wifi_status_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
     assert decode_wifi_status(one_network)[3] == ()
 
 
@@ -437,15 +454,17 @@ def test_schedule_decoder_enforces_payload_field_and_uuid_budgets(
     weekly = _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 510))
     payload = _bfield(1, weekly) + _bfield(7, room_id)
 
-    monkeypatch.setattr(telemetry_module, "_SCHEDULE_MAX_BYTES", len(payload) - 1)
+    monkeypatch.setattr(
+        cleaning_schedule_module, "_SCHEDULE_MAX_BYTES", len(payload) - 1
+    )
     assert decode_schedule(payload) is None
 
-    monkeypatch.setattr(telemetry_module, "_SCHEDULE_MAX_BYTES", len(payload))
-    monkeypatch.setattr(telemetry_module, "_SCHEDULE_MAX_FIELDS", 1)
+    monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_BYTES", len(payload))
+    monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_FIELDS", 1)
     assert decode_schedule(payload) is None
 
-    monkeypatch.setattr(telemetry_module, "_SCHEDULE_MAX_FIELDS", 1024)
-    monkeypatch.setattr(telemetry_module, "_SCHEDULE_MAX_UUIDS", 0)
+    monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_FIELDS", 1024)
+    monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_UUIDS", 0)
     assert decode_schedule(payload) is None
 
 
@@ -459,16 +478,18 @@ def test_cleaning_session_decoder_enforces_payload_field_and_room_budgets(
     payload = _bfield(5, room(b"Kitchen") + room(b"Office"))
 
     monkeypatch.setattr(
-        telemetry_module, "_CLEANING_SESSION_MAX_BYTES", len(payload) - 1
+        cleaning_session_module, "_CLEANING_SESSION_MAX_BYTES", len(payload) - 1
     )
     assert decode_cleaning_session(payload) is None
 
-    monkeypatch.setattr(telemetry_module, "_CLEANING_SESSION_MAX_BYTES", len(payload))
-    monkeypatch.setattr(telemetry_module, "_CLEANING_SESSION_MAX_FIELDS", 1)
+    monkeypatch.setattr(
+        cleaning_session_module, "_CLEANING_SESSION_MAX_BYTES", len(payload)
+    )
+    monkeypatch.setattr(cleaning_session_module, "_CLEANING_SESSION_MAX_FIELDS", 1)
     assert decode_cleaning_session(payload) is None
 
-    monkeypatch.setattr(telemetry_module, "_CLEANING_SESSION_MAX_FIELDS", 1024)
-    monkeypatch.setattr(telemetry_module, "_CLEANING_SESSION_MAX_ROOMS", 1)
+    monkeypatch.setattr(cleaning_session_module, "_CLEANING_SESSION_MAX_FIELDS", 1024)
+    monkeypatch.setattr(cleaning_session_module, "_CLEANING_SESSION_MAX_ROOMS", 1)
     assert decode_cleaning_session(payload) is None
 
 
@@ -567,9 +588,9 @@ def test_decode_run_progress_from_a_running_clean() -> None:
 
 async def test_client_reads_run_progress_from_coverage_time() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
-    client.async_get_property = AsyncMock(return_value=b"tombstone-value!")
+    client._collections.async_get_property = AsyncMock(return_value=b"tombstone-value!")
     assert await client.async_get_run_progress() is None
-    client.async_get_property.assert_awaited_once_with("coverage_time")
+    client._collections.async_get_property.assert_awaited_once_with("coverage_time")
 
 
 @pytest.mark.parametrize(

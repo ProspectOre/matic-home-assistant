@@ -79,10 +79,10 @@ async def test_completed_setting_late_refresh_cannot_reconnect_retired_runtime(
     from custom_components.matic_robot.client.api import MaticHermesClient
 
     client = MaticHermesClient("robot.invalid", 16320)
-    client._channel = MagicMock()
-    client._async_send_channel_payload = AsyncMock()
-    client._async_confirm_setting_readback = AsyncMock()
-    client._async_connect_locked = AsyncMock()
+    client._connection._channel = MagicMock()
+    client._connection._async_send_channel_payload = AsyncMock()
+    client._commands._async_confirm_setting_readback = AsyncMock()
+    client._connection._async_connect_locked = AsyncMock()
     coordinator = _coordinator(hass, client)  # type: ignore[arg-type]
     try:
         await client.async_set_binary_setting("child_lock", True)
@@ -91,8 +91,8 @@ async def test_completed_setting_late_refresh_cannot_reconnect_retired_runtime(
         # shutdown to short-circuit it: the retired transport must fail closed.
         await coordinator.async_request_full_refresh()
         assert coordinator.last_update_success is False
-        assert client._channel is None
-        client._async_connect_locked.assert_not_awaited()
-        client._async_send_channel_payload.assert_awaited_once()
+        assert client._connection._channel is None
+        client._connection._async_connect_locked.assert_not_awaited()
+        client._connection._async_send_channel_payload.assert_awaited_once()
     finally:
         await coordinator.async_shutdown()

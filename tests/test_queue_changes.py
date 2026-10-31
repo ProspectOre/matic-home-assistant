@@ -11,7 +11,7 @@ from uuid import UUID
 import pytest
 from google.protobuf.message import DecodeError
 
-from custom_components.matic_robot.client import api as api_module
+from custom_components.matic_robot.client import hermes_commands as api_module
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
@@ -331,11 +331,11 @@ def _readback(goals) -> bytes:
 def _client(monkeypatch, *plans, area="the current", identity=None):
     client = MaticHermesClient("robot.invalid", 16320)
     identity = _session_identity(UUID(SESSION)) if identity is None else identity
-    client.async_get_cleaning_session_identity = AsyncMock(return_value=identity)
-    client.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
-    client.async_get_state = AsyncMock(return_value=Mock(current_area=area))
-    client.async_get_property = AsyncMock(side_effect=list(plans))
-    client._async_send_user_payload = AsyncMock()
+    client._reads.async_get_cleaning_session_identity = AsyncMock(return_value=identity)
+    client._reads.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
+    client._reads.async_get_state = AsyncMock(return_value=Mock(current_area=area))
+    client._collections.async_get_property = AsyncMock(side_effect=list(plans))
+    client._connection._async_send_user_payload = AsyncMock()
 
     async def no_wait(_seconds):
         return None
@@ -345,8 +345,8 @@ def _client(monkeypatch, *plans, area="the current", identity=None):
 
 
 def _sent(client) -> tuple[CoveragePlanGoal, ...]:
-    payload = client._async_send_user_payload.await_args.args[0]
-    assert client._async_send_user_payload.await_args.kwargs == {
+    payload = client._connection._async_send_user_payload.await_args.args[0]
+    assert client._connection._async_send_user_payload.await_args.kwargs == {
         "command_name": "UPDATE_QUEUE"
     }
     assert _command_id(payload)
@@ -368,7 +368,7 @@ async def test_skip_waits_until_the_room_leaves_the_plan(monkeypatch):
     assert [goal.round_id for goal in _sent(client)] == [
         goal.round_id for goal in LIVE[2:4] + LIVE[6:]
     ]
-    assert client.async_get_property.await_count == 4
+    assert client._collections.async_get_property.await_count == 4
 
 
 async def test_clean_next_waits_for_the_new_room_order(monkeypatch):
@@ -400,7 +400,7 @@ async def test_clean_again_waits_for_fresh_goals(monkeypatch):
 
     async def capture(payload, **_kwargs):
         sent.extend(coverage_plan_goals(_plan(payload)))
-        client.async_get_property.side_effect = [
+        client._collections.async_get_property.side_effect = [
             _readback(
                 LIVE[:4]
                 + [
@@ -410,7 +410,7 @@ async def test_clean_again_waits_for_fresh_goals(monkeypatch):
             )
         ]
 
-    client._async_send_user_payload.side_effect = capture
+    client._connection._async_send_user_payload.side_effect = capture
 
     await client.async_change_queue(
         FLOOR,
@@ -436,13 +436,13 @@ async def test_clean_again_waits_for_fresh_goals(monkeypatch):
 )
 async def test_queue_change_refusals(monkeypatch, identity, active, area, plan, reason):
     client = _client(monkeypatch, plan or _readback(LIVE), area=area, identity=identity)
-    client.async_get_active_cleaning_session_state.return_value = active
+    client._reads.async_get_active_cleaning_session_state.return_value = active
 
     with pytest.raises(QueueChangeError) as error:
         await client.async_change_queue(FLOOR, QueueAction.SKIP, ROOMS[2])
 
     assert error.value.reason == reason
-    client._async_send_user_payload.assert_not_awaited()
+    client._connection._async_send_user_payload.assert_not_awaited()
 
 
 async def test_unreadable_task_identity_is_an_error(monkeypatch):
@@ -454,19 +454,19 @@ async def test_unreadable_task_identity_is_an_error(monkeypatch):
 
 async def test_task_change_before_sending_stops_the_change(monkeypatch):
     client = _client(monkeypatch, _readback(LIVE))
-    identity = client.async_get_cleaning_session_identity.return_value
-    client.async_get_cleaning_session_identity.side_effect = [identity, b"other"]
+    identity = client._reads.async_get_cleaning_session_identity.return_value
+    client._reads.async_get_cleaning_session_identity.side_effect = [identity, b"other"]
 
     with pytest.raises(MaticError, match="changed before"):
         await client.async_change_queue(FLOOR, QueueAction.SKIP, ROOMS[2])
 
-    client._async_send_user_payload.assert_not_awaited()
+    client._connection._async_send_user_payload.assert_not_awaited()
 
 
 async def test_task_change_during_readback_is_an_error(monkeypatch):
     client = _client(monkeypatch, _readback(LIVE))
-    identity = client.async_get_cleaning_session_identity.return_value
-    client.async_get_cleaning_session_identity.side_effect = [
+    identity = client._reads.async_get_cleaning_session_identity.return_value
+    client._reads.async_get_cleaning_session_identity.side_effect = [
         identity,
         identity,
         b"other",
@@ -478,7 +478,7 @@ async def test_task_change_during_readback_is_an_error(monkeypatch):
 
 async def test_unconfirmed_queue_change_times_out(monkeypatch):
     client = _client(monkeypatch)
-    client.async_get_property = AsyncMock(return_value=_readback(LIVE))
+    client._collections.async_get_property = AsyncMock(return_value=_readback(LIVE))
     monkeypatch.setattr(api_module, "_QUEUE_READBACK_TIMEOUT", 0.05)
 
     async def tick(_seconds):

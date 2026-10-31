@@ -52,20 +52,10 @@ from custom_components.matic_robot.client.observations import (
 from custom_components.matic_robot.const import DATA_LLM_API, DOMAIN
 from custom_components.matic_robot.llm import (
     LLM_API_ID,
-    MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
-    MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES,
     MAX_RECENT_EVENTS,
     ROBOT_STATUS_PROMPT,
     MaticFirmwareResearchAPI,
-    MaticGetActivityTool,
-    MaticGetNativeHistoryTool,
-    MaticGetOperationsTool,
-    MaticGetPlanReadinessTool,
-    MaticGetPlanTool,
     MaticGetRecentEventsTool,
-    MaticGetRunHistoryTool,
-    MaticGetSchedulesTool,
-    MaticGetZonesTool,
     MaticRobotStatusAPI,
     async_get_tools,
     async_register_matic_llm_api,
@@ -88,6 +78,22 @@ from custom_components.matic_robot.llm_control import (
 )
 from custom_components.matic_robot.llm_firmware import (
     MaticGetFirmwareTool,
+)
+from custom_components.matic_robot.llm_history import (
+    MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
+    MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES,
+    MaticGetActivityTool,
+    MaticGetNativeHistoryTool,
+    MaticGetRunHistoryTool,
+)
+from custom_components.matic_robot.llm_plan import (
+    MaticGetPlanReadinessTool,
+    MaticGetPlanTool,
+)
+from custom_components.matic_robot.llm_status import (
+    MaticGetOperationsTool,
+    MaticGetSchedulesTool,
+    MaticGetZonesTool,
 )
 from custom_components.matic_robot.plan_model import (
     plan_floor_token,
@@ -146,7 +152,7 @@ def _entry(
     floor_plan: FloorPlan | None = None,
 ):
     manager = MagicMock()
-    manager.ledger.snapshot.return_value = {
+    manager.history.snapshot.return_value = {
         "active_plan": {
             "plan_id": "whole-home",
             "room_id": "study",
@@ -665,14 +671,18 @@ async def test_operations_and_robot_resolution() -> None:
 
 async def test_operations_includes_read_only_bag_observation_when_available() -> None:
     entry = _entry()
-    entry.runtime_data.coordinator.bag_observation = {
-        "full": False,
-        "missing": False,
-        "full_events_observed": 1,
-        "replacement_events_observed": 1,
-        "last_full_at": "2026-09-02T10:00:00+00:00",
-        "last_replaced_at": "2026-09-02T10:02:00+00:00",
-    }
+    entry.runtime_data.coordinator.robot_health = SimpleNamespace(
+        bag_observation=MagicMock(
+            return_value={
+                "full": False,
+                "missing": False,
+                "full_events_observed": 1,
+                "replacement_events_observed": 1,
+                "last_full_at": "2026-09-02T10:00:00+00:00",
+                "last_replaced_at": "2026-09-02T10:02:00+00:00",
+            }
+        )
+    )
     hass = _hass(entry)
 
     result = (
@@ -705,8 +715,8 @@ def _timing_hass():
         "matic_entry_id": entry.entry_id,
         "matic_metric": "current_room_active_time",
     }
-    manager.ledger.snapshot.return_value = {
-        **manager.ledger.snapshot.return_value,
+    manager.history.snapshot.return_value = {
+        **manager.history.snapshot.return_value,
         "active_plan": {
             "run_id": sample["run_id"],
             "room_id": sample["room_id"],
@@ -739,7 +749,7 @@ async def test_operations_reads_shared_timing_without_sampling_or_motion() -> No
         "sensor", DOMAIN, "synthetic-serial_current_room_active_time"
     )
     hass.states.get.assert_called_once_with("sensor.renamed_clock")
-    entry.runtime_data.cleaning_plans.ledger.current_room_timing.assert_not_called()
+    entry.runtime_data.cleaning_plans.history.current_room_timing.assert_not_called()
     assert (
         result["robots"][0]["managed_runner"]["last_run"]["completed_room_count"] == 0
     )
@@ -771,7 +781,7 @@ async def test_operations_reads_shared_timing_without_sampling_or_motion() -> No
         ]
         == 35
     )
-    entry.runtime_data.cleaning_plans.ledger.current_room_timing.assert_not_called()
+    entry.runtime_data.cleaning_plans.history.current_room_timing.assert_not_called()
 
 
 @pytest.mark.parametrize("paused", [False, True])
@@ -786,7 +796,7 @@ async def test_operations_preserves_unknown_estimates_and_paused_samples(
         "baseline_samples": 2,
         "status": "suspended" if paused else "running",
     }
-    entry.runtime_data.cleaning_plans.ledger.snapshot.return_value["active_plan"][
+    entry.runtime_data.cleaning_plans.history.snapshot.return_value["active_plan"][
         "status"
     ] = sample["status"]
     hass.states.get.return_value = State("sensor.renamed_clock", "35", sample)
@@ -850,7 +860,7 @@ async def test_operations_withholds_invalid_or_other_room_timing(fields) -> None
 )
 async def test_operations_withholds_unavailable_or_stale_timing(condition) -> None:
     hass, entry, sample = _timing_hass()
-    snapshot = entry.runtime_data.cleaning_plans.ledger.snapshot.return_value
+    snapshot = entry.runtime_data.cleaning_plans.history.snapshot.return_value
     if condition == "unregistered":
         hass.data[er.DATA_REGISTRY].async_get_entity_id.return_value = None
     elif condition == "absent":
@@ -951,7 +961,7 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
     result = (
         await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
     ).data
-    expected = manager.catalog.preview(
+    expected = manager.planning.preview(
         "synthetic-serial",
         room_map,
         "whole-home",
@@ -1004,7 +1014,7 @@ async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_
             hass, llm.ToolInput(tool.name, {"plan": "saved order"}), _context()
         )
     ).data
-    expected_ordered = manager.catalog.preview(
+    expected_ordered = manager.planning.preview(
         "synthetic-serial",
         room_map,
         "saved",
@@ -1150,7 +1160,7 @@ async def test_plan_tool_projects_real_manager_cadence_preview(hass) -> None:
         )
     ).data
 
-    expected = manager.catalog.preview(
+    expected = manager.planning.preview(
         "synthetic-serial",
         {"kitchen": "Kitchen"},
         "home",
@@ -1251,15 +1261,15 @@ async def test_plan_readiness_reports_safe_area_state_without_private_binding_da
             "map_binding": {"geometry_sha256": "SECRET_HASH"},
         }
     }
-    manager.catalog.preview.return_value = {"valid": True}
+    manager.planning.preview.return_value = {"valid": True}
     robot_hass = _hass(entry)
     with (
         patch(
-            "custom_components.matic_robot.llm.area_binding_status",
+            "custom_components.matic_robot.llm_plan.area_binding_status",
             return_value=binding_status,
         ),
         patch(
-            "custom_components.matic_robot.llm.area_binding_allows_review",
+            "custom_components.matic_robot.llm_plan.area_binding_allows_review",
             return_value=reviewable,
         ),
     ):
@@ -1278,7 +1288,7 @@ async def test_plan_readiness_reports_safe_area_state_without_private_binding_da
     assert "SECRET_HASH" not in json.dumps(data)
     assert "0.123" not in json.dumps(data)
     if expected != "ready":
-        manager.catalog.preview.assert_not_called()
+        manager.planning.preview.assert_not_called()
 
 
 async def test_plan_readiness_reuses_one_geometry_index_for_reviewable_areas() -> None:
@@ -1304,19 +1314,19 @@ async def test_plan_readiness_reuses_one_geometry_index_for_reviewable_areas() -
     geometry = MagicMock()
     with (
         patch(
-            "custom_components.matic_robot.llm.area_binding_needs_geometry_index",
+            "custom_components.matic_robot.llm_plan.area_binding_needs_geometry_index",
             return_value=True,
         ),
         patch(
-            "custom_components.matic_robot.llm._room_geometry_index",
+            "custom_components.matic_robot.llm_plan._room_geometry_index",
             return_value=geometry,
         ) as build_index,
         patch(
-            "custom_components.matic_robot.llm.area_binding_status",
+            "custom_components.matic_robot.llm_plan.area_binding_status",
             return_value=AreaBindingStatus.GEOMETRY_CHANGED,
         ) as status,
         patch(
-            "custom_components.matic_robot.llm.area_binding_allows_review",
+            "custom_components.matic_robot.llm_plan.area_binding_allows_review",
             return_value=True,
         ) as allows_review,
     ):
@@ -1352,7 +1362,7 @@ async def test_plan_readiness_fails_closed_when_no_saved_plan_is_selected() -> N
         )
     )
     manager = entry.runtime_data.cleaning_plans
-    manager.ledger.snapshot.return_value = {"selected_plan": "missing"}
+    manager.history.snapshot.return_value = {"selected_plan": "missing"}
     manager.catalog.plans.return_value = {}
 
     result = await MaticGetPlanReadinessTool().async_call(
@@ -1382,7 +1392,7 @@ async def test_plan_readiness_fails_closed_for_invalid_plan_entries() -> None:
     manager = entry.runtime_data.cleaning_plans
     manager.catalog.plans.return_value = {"saved": {"name": "Saved"}}
     with patch(
-        "custom_components.matic_robot.llm.plan_entries", side_effect=ValueError
+        "custom_components.matic_robot.llm_plan.plan_entries", side_effect=ValueError
     ):
         result = await MaticGetPlanReadinessTool().async_call(
             _hass(entry),
@@ -1392,7 +1402,7 @@ async def test_plan_readiness_fails_closed_for_invalid_plan_entries() -> None:
 
     assert result.data["status"] == "unavailable"
     assert result.data["message"] == "The saved plan could not be checked."
-    manager.catalog.preview.assert_not_called()
+    manager.planning.preview.assert_not_called()
 
 
 async def test_plan_readiness_requires_missing_areas_to_be_redrawn() -> None:
@@ -1408,7 +1418,7 @@ async def test_plan_readiness_requires_missing_areas_to_be_redrawn() -> None:
     manager.catalog.plans.return_value = {"saved": {"name": "Saved"}}
     manager.catalog.areas.return_value = {}
     with patch(
-        "custom_components.matic_robot.llm.plan_entries",
+        "custom_components.matic_robot.llm_plan.plan_entries",
         return_value=[
             {"kind": "room", "room_id": "kitchen"},
             {"kind": "area", "area_id": "missing"},
@@ -1424,7 +1434,7 @@ async def test_plan_readiness_requires_missing_areas_to_be_redrawn() -> None:
     assert result.data["areas"] == [
         {"name": "Custom area", "status": "redraw_required"}
     ]
-    manager.catalog.preview.assert_not_called()
+    manager.planning.preview.assert_not_called()
 
 
 async def test_plan_readiness_reports_preview_rejection_without_commanding_robot() -> (
@@ -1439,7 +1449,7 @@ async def test_plan_readiness_reports_preview_rejection_without_commanding_robot
     entry = _entry(floor_plan=floor_plan)
     manager = entry.runtime_data.cleaning_plans
     manager.catalog.plans.return_value = {"saved": {"name": "Saved", "rooms": []}}
-    manager.catalog.preview.side_effect = ValueError("stale plan")
+    manager.planning.preview.side_effect = ValueError("stale plan")
 
     result = await MaticGetPlanReadinessTool().async_call(
         _hass(entry),
@@ -1516,7 +1526,7 @@ async def test_plan_readiness_recognizes_reviewable_stale_v4_area(hass) -> None:
     )
     circles = [{"x": 5.0, "y": 4.4, "radius": 0.1}]
     with patch(
-        "custom_components.matic_robot.area_binding._translation_room_anchors",
+        "custom_components.matic_robot.area_binding_geometry._translation_room_anchors",
         return_value=None,
     ):
         saved_area = {
@@ -1549,7 +1559,7 @@ async def test_plan_readiness_recognizes_reviewable_stale_v4_area(hass) -> None:
     assert result.data["areas"] == [{"name": "Rug", "status": "needs_confirmation"}]
     assert result.data["can_preview"] is False
     assert "can_run" not in result.data
-    manager.catalog.preview.assert_not_called()
+    manager.planning.preview.assert_not_called()
 
 
 async def test_plan_readiness_requires_current_administrator() -> None:
@@ -1932,7 +1942,9 @@ async def test_native_history_scopes_completion_to_the_requested_mode() -> None:
 
 
 def test_native_history_room_evidence_keeps_last_mode_result_and_limits() -> None:
-    from custom_components.matic_robot.llm import _bounded_native_room_evidence
+    from custom_components.matic_robot.llm_history import (
+        _bounded_native_room_evidence,
+    )
 
     session = CleaningSession(
         None,
@@ -3026,7 +3038,7 @@ async def test_run_history_explains_endings_and_survives_robot_history_failures(
             "areas": [],
         },
     ]
-    entry.runtime_data.cleaning_plans.ledger.run_history.return_value = runs
+    entry.runtime_data.cleaning_plans.history.run_history.return_value = runs
     records = (MagicMock(),)
     entry.runtime_data.client.async_get_cleaning_session_records.return_value = records
     hass = _hass(entry)
@@ -3034,7 +3046,7 @@ async def test_run_history_explains_endings_and_survives_robot_history_failures(
     result = (
         await tool.async_call(hass, llm.ToolInput(tool.name, {"limit": 1}), _context())
     ).data
-    entry.runtime_data.cleaning_plans.ledger.run_history.assert_called_with(
+    entry.runtime_data.cleaning_plans.history.run_history.assert_called_with(
         "synthetic-serial", records
     )
     assert result["robot_history"] is True
@@ -3058,7 +3070,7 @@ async def test_run_history_explains_endings_and_survives_robot_history_failures(
     failed = (
         await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
     ).data
-    entry.runtime_data.cleaning_plans.ledger.run_history.assert_called_with(
+    entry.runtime_data.cleaning_plans.history.run_history.assert_called_with(
         "synthetic-serial", ()
     )
     assert failed["robot_history"] is False

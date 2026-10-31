@@ -7,14 +7,29 @@ from homeassistant.components.vacuum import Segment
 
 from custom_components.matic_robot.client.models import FloorPlan, RobotInfo, Room
 from custom_components.matic_robot.entity import MaticEntity
-from custom_components.matic_robot.vacuum import (
-    MaticVacuum,
+from custom_components.matic_robot.vacuum import MaticVacuum
+from custom_components.matic_robot.vacuum_catalog import (
     _bounded_floor_catalogs,
     _floor_scope,
     _matching_area_mapping,
     _segment_signature,
     _segments_from_payload,
 )
+
+
+def _auto_map(entity: MaticVacuum) -> None:
+    entity._segment_catalog.auto_map(
+        entity.hass, entity.entity_id, entity.coordinator.data.floor_plan
+    )
+
+
+def _reconcile(entity: MaticVacuum) -> None:
+    entity._segment_catalog.reconcile(
+        entity.hass,
+        entity.entity_id,
+        entity.coordinator.data.floor_plan,
+        entity.async_create_segments_issue,
+    )
 
 
 def _room(room_id: str, name: str) -> Room:
@@ -115,15 +130,15 @@ def test_auto_mapping_writes_only_unconfigured_exact_matches() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.vacuum.er.async_get",
+            "custom_components.matic_robot.vacuum_catalog.er.async_get",
             return_value=entity_registry,
         ),
         patch(
-            "custom_components.matic_robot.vacuum.ar.async_get",
+            "custom_components.matic_robot.vacuum_catalog.ar.async_get",
             return_value=area_registry,
         ),
     ):
-        entity._async_auto_map_rooms()
+        _auto_map(entity)
 
     options = entity_registry.async_update_entity_options.call_args.args[2]
     assert options["area_mapping"] == {"kitchen": ["room-1"]}
@@ -146,10 +161,10 @@ def test_auto_mapping_writes_only_unconfigured_exact_matches() -> None:
     )
     entity_registry.async_update_entity_options.reset_mock()
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_auto_map_rooms()
+        _auto_map(entity)
     entity_registry.async_update_entity_options.assert_not_called()
 
 
@@ -157,18 +172,20 @@ def test_auto_mapping_skips_unregistered_and_unmatched_states() -> None:
     """Never write options before registration or without an exact match."""
     unregistered = _vacuum()
     unregistered.entity_id = None
-    with patch("custom_components.matic_robot.vacuum.er.async_get") as registry_getter:
-        unregistered._async_auto_map_rooms()
+    with patch(
+        "custom_components.matic_robot.vacuum_catalog.er.async_get"
+    ) as registry_getter:
+        _auto_map(unregistered)
     registry_getter.assert_not_called()
 
     entity = _vacuum()
     entity_registry = MagicMock()
     entity_registry.async_get.return_value = None
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_auto_map_rooms()
+        _auto_map(entity)
     entity_registry.async_update_entity_options.assert_not_called()
 
     entity_registry.async_get.return_value = SimpleNamespace(options={})
@@ -177,15 +194,15 @@ def test_auto_mapping_skips_unregistered_and_unmatched_states() -> None:
     area_registry.async_get_areas_by_alias.return_value = []
     with (
         patch(
-            "custom_components.matic_robot.vacuum.er.async_get",
+            "custom_components.matic_robot.vacuum_catalog.er.async_get",
             return_value=entity_registry,
         ),
         patch(
-            "custom_components.matic_robot.vacuum.ar.async_get",
+            "custom_components.matic_robot.vacuum_catalog.ar.async_get",
             return_value=area_registry,
         ),
     ):
-        entity._async_auto_map_rooms()
+        _auto_map(entity)
     entity_registry.async_update_entity_options.assert_not_called()
 
 
@@ -201,15 +218,15 @@ def test_auto_mapping_waits_for_the_floor_catalog_swap() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.vacuum.er.async_get",
+            "custom_components.matic_robot.vacuum_catalog.er.async_get",
             return_value=entity_registry,
         ),
         patch(
-            "custom_components.matic_robot.vacuum.ar.async_get",
+            "custom_components.matic_robot.vacuum_catalog.ar.async_get",
             return_value=area_registry,
         ),
     ):
-        entity._async_auto_map_rooms()
+        _auto_map(entity)
 
     entity_registry.async_update_entity_options.assert_not_called()
     area_registry.async_get_area_by_name.assert_not_called()
@@ -220,19 +237,19 @@ def test_segment_change_check_requires_a_local_floor_plan() -> None:
     entity = _vacuum(with_floor_plan=False)
     entity.async_create_segments_issue = MagicMock()
 
-    entity._async_check_segment_changes()
+    _reconcile(entity)
 
     entity.async_create_segments_issue.assert_not_called()
-    assert entity._reported_segment_change is None
+    assert entity._segment_catalog._reported_segment_change is None
 
     registered = _vacuum()
     entity_registry = MagicMock()
     entity_registry.async_get.return_value = None
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        registered._async_check_segment_changes()
+        _reconcile(registered)
     entity_registry.async_update_entity_options.assert_not_called()
 
 
@@ -244,10 +261,10 @@ def test_segment_check_initializes_a_missing_catalog_for_a_known_floor() -> None
     entity_registry.async_get.return_value = entity_entry
 
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_check_segment_changes()
+        _reconcile(entity)
 
     updated = entity_registry.async_update_entity_options.call_args.args[2]
     assert updated["last_seen_segments"] == [
@@ -274,10 +291,10 @@ def test_matching_legacy_catalog_is_bound_to_the_current_floor() -> None:
     entity_registry.async_get.return_value = entity_entry
 
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_check_segment_changes()
+        _reconcile(entity)
 
     updated = entity_registry.async_update_entity_options.call_args.args[2]
     scope = _floor_scope(entity.coordinator.data.floor_plan)
@@ -320,18 +337,18 @@ def test_segment_change_repair_is_deduplicated_and_resets() -> None:
     entity_registry.async_get.return_value = entity_entry
 
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_check_segment_changes()
-        entity._async_check_segment_changes()
+        _reconcile(entity)
+        _reconcile(entity)
         entity.async_create_segments_issue.assert_called_once()
 
         entity_entry.options["vacuum"]["last_seen_segments"] = [
             {"id": "room-1", "name": "Kitchen", "group": "Current floor"}
         ]
-        entity._async_check_segment_changes()
-        assert entity._reported_segment_change is None
+        _reconcile(entity)
+        assert entity._segment_catalog._reported_segment_change is None
         updated = entity_registry.async_update_entity_options.call_args.args[2]
         assert (
             updated["matic_floor_catalogs"][scope]["last_seen_segments"]
@@ -373,10 +390,10 @@ def test_floor_swap_stores_and_restores_floor_specific_area_mapping() -> None:
     entity_registry.async_get.return_value = entity_entry
 
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_check_segment_changes()
+        _reconcile(entity)
 
         current_options = entity_registry.async_update_entity_options.call_args.args[2]
         assert current_options["matic_floor_scope"] == current_scope
@@ -391,7 +408,7 @@ def test_floor_swap_stores_and_restores_floor_specific_area_mapping() -> None:
         entity_entry.options = {"vacuum": current_options}
         entity.coordinator.data.floor_plan = previous_plan
         entity_registry.async_update_entity_options.reset_mock()
-        entity._async_check_segment_changes()
+        _reconcile(entity)
 
     restored = entity_registry.async_update_entity_options.call_args.args[2]
     assert restored["matic_floor_scope"] == previous_scope
@@ -443,11 +460,11 @@ def test_returning_to_changed_cataloged_floor_raises_repair() -> None:
     )
 
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_check_segment_changes()
-        entity._async_check_segment_changes()
+        _reconcile(entity)
+        _reconcile(entity)
 
     restored = entity_entry.options["vacuum"]
     assert restored["matic_floor_scope"] == current_scope
@@ -487,11 +504,11 @@ def test_new_floor_is_auto_mapped_in_the_same_idle_update() -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.vacuum.er.async_get",
+            "custom_components.matic_robot.vacuum_catalog.er.async_get",
             return_value=entity_registry,
         ),
         patch(
-            "custom_components.matic_robot.vacuum.ar.async_get",
+            "custom_components.matic_robot.vacuum_catalog.ar.async_get",
             return_value=area_registry,
         ),
         patch.object(MaticEntity, "_handle_coordinator_update"),
@@ -531,10 +548,10 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
     entity_registry.async_get.return_value = entity_entry
 
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_check_segment_changes()
+        _reconcile(entity)
         shed_options = entity_registry.async_update_entity_options.call_args.args[2]
         assert shed_options["matic_unscoped_catalog"] == {
             "area_mapping": home_mapping,
@@ -553,7 +570,7 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
         entity_entry.options = {"vacuum": shed_options}
         entity.coordinator.data.floor_plan = home_plan
         entity_registry.async_update_entity_options.reset_mock()
-        entity._async_check_segment_changes()
+        _reconcile(entity)
 
     restored_home = entity_registry.async_update_entity_options.call_args.args[2]
     assert restored_home["matic_floor_scope"] == _floor_scope(home_plan)
@@ -564,10 +581,10 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
     entity.coordinator.data.floor_plan = shed_plan
     entity_registry.async_update_entity_options.reset_mock()
     with patch(
-        "custom_components.matic_robot.vacuum.er.async_get",
+        "custom_components.matic_robot.vacuum_catalog.er.async_get",
         return_value=entity_registry,
     ):
-        entity._async_check_segment_changes()
+        _reconcile(entity)
 
     restored_shed = entity_registry.async_update_entity_options.call_args.args[2]
     assert restored_shed["matic_floor_scope"] == shed_scope
@@ -581,25 +598,27 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
 async def test_lifecycle_runs_area_mapping_and_change_checks() -> None:
     entity = _vacuum()
     calls: list[str] = []
-    entity._async_auto_map_rooms = MagicMock(side_effect=lambda: calls.append("map"))
-    entity._async_check_segment_changes = MagicMock(
-        side_effect=lambda: calls.append("segments")
+    entity._segment_catalog.auto_map = MagicMock(
+        side_effect=lambda *_args: calls.append("map")
+    )
+    entity._segment_catalog.reconcile = MagicMock(
+        side_effect=lambda *_args: calls.append("segments")
     )
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         await entity.async_added_to_hass()
 
     assert calls == ["segments", "map"]
-    entity._async_auto_map_rooms.assert_called_once()
-    entity._async_check_segment_changes.assert_called_once()
+    entity._segment_catalog.auto_map.assert_called_once()
+    entity._segment_catalog.reconcile.assert_called_once()
 
     calls.clear()
-    entity._async_auto_map_rooms.reset_mock()
-    entity._async_check_segment_changes.reset_mock()
+    entity._segment_catalog.auto_map.reset_mock()
+    entity._segment_catalog.reconcile.reset_mock()
     with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
         entity._handle_coordinator_update()
     assert calls == ["segments", "map"]
-    entity._async_auto_map_rooms.assert_called_once()
-    entity._async_check_segment_changes.assert_called_once()
+    entity._segment_catalog.auto_map.assert_called_once()
+    entity._segment_catalog.reconcile.assert_called_once()
     parent_update.assert_called_once()
 
 

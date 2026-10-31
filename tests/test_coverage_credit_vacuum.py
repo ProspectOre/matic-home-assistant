@@ -58,7 +58,7 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
     await manager.ledger.async_begin_run(
         "synthetic-serial", "plan", "run", len(rooms), trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "synthetic-serial",
         "run",
         {
@@ -100,6 +100,6 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
     await MaticVacuum(entry).async_send_command("clean_rooms", params)
 
     sender.assert_awaited_once()
-    assert manager.ledger.coverage_receipt("synthetic-serial", "run") == (
+    assert manager.recovery.coverage_receipt("synthetic-serial", "run") == (
         None if ownership_changed else receipt
     )

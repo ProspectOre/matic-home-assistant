@@ -3,10 +3,17 @@
 // Runtime imports are deliberately absent: an import edge into the startup
 // modules makes esbuild split them into more chunks, which costs the startup
 // graph more than this module saves. Startup helpers arrive in the context.
-import type { DeleteSharedCadenceAction, HassProjection, PlanDraft, QueueChangeAction, ResetCadenceAction, WorkspaceNotice, WorkspaceState } from "./contracts";
+import type { DeleteSharedCadenceAction, HassProjection, PlanDraft, PlanOrigin, QueueChangeAction, ResetCadenceAction, WorkspaceNotice, WorkspaceState } from "./contracts";
+import type { AreasCatalog, PlansCatalog, NextRunPreview } from "./backend-contracts";
 import type { MaticBackend } from "./backend";
 import type { WorkspaceStore } from "./state";
-import type { EffectController } from "./effects";
+
+export interface CatalogWorkflowActions {
+  loadPlans(options?: { force?: boolean; inPlace?: boolean; onError?: () => void }): Promise<PlansCatalog | null>;
+  loadAreas(options?: { reconcileDraft?: boolean }): Promise<AreasCatalog | null>;
+  selectPlan(planId: string | null, preserveNotice?: boolean, origin?: PlanOrigin): void;
+  selectArea(areaId: string | null): void;
+}
 
 /** The startup functions the writes use; effects.ts passes the same ones it imports. */
 export interface CatalogWriteHelpers {
@@ -85,7 +92,7 @@ export interface CatalogWriteContext {
   readonly signal: AbortSignal;
   readonly store: WorkspaceStore;
   readonly backend: MaticBackend;
-  readonly effects: Pick<EffectController, "loadPlans" | "loadAreas" | "selectPlan" | "selectArea">;
+  readonly effects: CatalogWorkflowActions;
   readonly helpers: CatalogWriteHelpers;
   /** The write's failure notice; effects.ts shows the same one if this module fails to load. */
   readonly failure: WorkspaceNotice;
@@ -637,4 +644,48 @@ const planWriter = (context: CatalogWriteContext) => {
     }
   };
   return { current, send };
+};
+
+
+interface PlanPreflightContext {
+  readonly plan: string;
+  readonly displayedPreview: NextRunPreview;
+  readonly store: WorkspaceStore;
+  readonly current: () => boolean;
+  readonly loadPlans: () => Promise<PlansCatalog | null>;
+  readonly releaseRead: () => void;
+  readonly releasePending: () => void;
+  readonly failure: WorkspaceNotice;
+  readonly notice: CatalogWriteHelpers["notice"];
+  readonly start: (previewToken: string) => Promise<void>;
+}
+
+/** Recheck the captured plan before crossing the robot command boundary. */
+export const runPlanPreflight = async (context: PlanPreflightContext): Promise<void> => {
+  const { plan, store, displayedPreview, notice, current } = context;
+  // The module itself can finish loading after a floor, plan or owner change.
+  if (!current()) return;
+  let catalog: PlansCatalog | null;
+  try {
+    catalog = await context.loadPlans();
+  } finally {
+    context.releaseRead();
+  }
+  if (!current()) return;
+  context.releasePending();
+  if (!catalog) {
+    store.patch({ notice: context.failure });
+    return;
+  }
+  const preview = catalog.plans.find((candidate) => candidate.id === plan)?.nextRunPreview;
+  const token = preview?.previewToken ?? "";
+  if (!preview || preview.blocker || !/^[0-9a-f]{64}$/u.test(token)) {
+    store.patch({ notice: notice("warning", "v4_notice_plan_preview_none", "This plan has no next-run preview; review its rooms and schedules.") });
+    return;
+  }
+  if (JSON.stringify(displayedPreview) !== JSON.stringify(preview)) {
+    store.patch({ notice: notice("info", "v4_notice_plan_preview_changed", "The next run changed; check it before you run the plan.") });
+    return;
+  }
+  await context.start(token);
 };

@@ -423,7 +423,7 @@ def _suspended_run_reason(
     manager: CleaningPlanManager, serial_number: str
 ) -> str | None:
     """Capture a low-charge suspension before room cleanup clears its marker."""
-    snapshot = manager.ledger.snapshot
+    snapshot = manager.history.snapshot
     active = snapshot(serial_number).get("active_plan")
     if isinstance(active, dict) and (
         active.get("status") == "suspended"
@@ -454,7 +454,7 @@ async def _async_mark_run_docked(
     """Bridge the stop watcher to durable run closure for service calls."""
     if run_id is None:
         return False
-    snapshot_reader = manager.ledger.snapshot
+    snapshot_reader = manager.history.snapshot
     snapshot = snapshot_reader(serial_number)
     last_run = snapshot.get("last_run") if isinstance(snapshot, dict) else None
     if isinstance(last_run, dict) and (

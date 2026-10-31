@@ -193,7 +193,7 @@ async def _real_manager(
     await manager.ledger.async_begin_run(
         "serial", "home", run_id, len(rooms), trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         run_id,
         {
@@ -219,7 +219,7 @@ async def _checkpoint_receipt(
     *,
     run_id: str,
 ) -> None:
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         run_id,
         receipt,
@@ -309,7 +309,7 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
         manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
         == expected_coverage
     )
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 1
+    assert manager.history.snapshot("serial")["completed_runs"] == 1
     if history_key_kind == "matching":
         verifier.assert_awaited_once_with(receipt, receipt.session_hash)
     else:
@@ -381,7 +381,7 @@ async def _run_partial_room(hass, room, floor, manager, receipt, partial):
         manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
         == 2
     )
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
+    assert manager.history.snapshot("serial")["completed_runs"] == 0
     verifier.assert_not_awaited()
 
 
@@ -455,7 +455,7 @@ async def test_multiroom_leg_credits_only_room_completed_in_partial_native_recor
         manager.cadence.cadence_progress("serial", "home", second.room_id)["coverage"]
         == 2
     )
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 1
+    assert manager.history.snapshot("serial")["completed_runs"] == 1
     verifier.assert_awaited_once_with(receipt, receipt.session_hash)
 
 
@@ -586,7 +586,7 @@ async def test_executor_discards_coverage_verification_after_ownership_changes(
         == 2
         for room in rooms
     )
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
+    assert manager.history.snapshot("serial")["completed_runs"] == 0
 
 
 async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(hass):
@@ -669,7 +669,7 @@ async def test_executor_rechecks_floor_after_waiting_for_completion_store_lock(h
         manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
         == 2
     )
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
+    assert manager.history.snapshot("serial")["completed_runs"] == 0
 
 
 async def _restart_fixture(hass, run_id: str = "restart-coverage"):
@@ -689,7 +689,7 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
     entity = er.async_get(hass).async_get_or_create("vacuum", DOMAIN, "serial_vacuum")
     hass.states.async_set(entity.entity_id, "docked")
     checkpoint = {
-        **manager.control.recovery_run("serial")["recovery_checkpoint"],
+        **manager.recovery.recovery_run("serial")["recovery_checkpoint"],
         "version": 1,
         "phase": "accepted",
         "entity_id": entity.entity_id,
@@ -706,14 +706,14 @@ async def _restart_fixture(hass, run_id: str = "restart-coverage"):
         "completed_room_ids": [],
         "started_room_ids": [room.room_id],
     }
-    await manager.ledger.async_set_recovery_checkpoint("serial", run_id, checkpoint)
+    await manager.recovery.async_set_recovery_checkpoint("serial", run_id, checkpoint)
     await manager.ledger.async_mark_verifying(
         "serial",
         "home",
         room,
         verification_deadline=dt_util.utcnow() + timedelta(minutes=4),
     )
-    checkpoint = manager.control.recovery_run("serial")["recovery_checkpoint"]
+    checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
     client = SimpleNamespace(
         async_get_cleaning_session_identity=AsyncMock(return_value=b""),
         async_get_cleaning_session_records=AsyncMock(return_value=(_record((room,)),)),
@@ -744,7 +744,7 @@ async def test_restart_verifying_uses_canonical_history_and_fresh_coverage_verif
     )
     manager, entry, _checkpoint, room, receipt = await _restart_fixture(hass)
     await async_recover_managed_run(hass, entry, "serial")
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "completed"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "completed"
     assert (
         manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
         == 0
@@ -778,7 +778,7 @@ async def test_restart_verifier_result_is_discarded_if_run_or_map_changes(
         manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
         == 2
     )
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
+    assert manager.history.snapshot("serial")["completed_runs"] == 0
     runtime.client.async_send_user_command.assert_not_awaited()
 
 
@@ -822,6 +822,6 @@ async def test_restart_rechecks_verification_fence_after_store_lock_wait(
         manager.cadence.cadence_progress("serial", "home", room.room_id)["coverage"]
         == 2
     )
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
+    assert manager.history.snapshot("serial")["completed_runs"] == 0
     runtime.client.async_confirm_coverage_receipt.assert_awaited_once()
     runtime.client.async_send_user_command.assert_not_awaited()

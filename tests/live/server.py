@@ -40,7 +40,7 @@ sys.path.insert(0, str(REPOSITORY))
 from custom_components.matic_robot import managed_observation  # noqa: E402
 from custom_components.matic_robot import wifi_survey as wifi_survey_module  # noqa: E402
 from custom_components.matic_robot.client import tls  # noqa: E402
-from custom_components.matic_robot.client.telemetry import (  # noqa: E402
+from custom_components.matic_robot.client.cleaning_session import (  # noqa: E402
     decode_cleaning_session,
 )
 from tests.e2e.conftest import entry_data  # noqa: E402

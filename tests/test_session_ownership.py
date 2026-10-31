@@ -151,7 +151,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
         )
     )
     await asyncio.wait_for(started.wait(), 1)
-    credit_before = manager.ledger.snapshot("serial")["last_completed_by_room"]
+    credit_before = manager.history.snapshot("serial")["last_completed_by_room"]
     hass.states.async_set(
         "vacuum.matic",
         "paused"
@@ -184,7 +184,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     presence.assert_not_awaited()
     history.assert_awaited_once()  # Baseline only; no new mission history credited.
     manager.ledger.async_mark_resumed.assert_awaited_once()
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert snapshot["last_completed_by_room"] == credit_before
     assert snapshot["native_reconciliation_pending"] is False
@@ -352,7 +352,7 @@ async def test_started_task_with_unknown_identity_retires_without_stopping(
             managed_user_command=sender,
         )
     sender.assert_not_awaited()
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 async def test_owned_start_binds_new_identity_before_activity_projection(hass):
@@ -472,7 +472,7 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
         )
     )
     await asyncio.wait_for(started.wait(), 1)
-    credit_before = manager.ledger.snapshot("serial")["last_completed_by_room"]
+    credit_before = manager.history.snapshot("serial")["last_completed_by_room"]
     hass.states.async_set(
         "vacuum.matic",
         "paused" if suspension == "paused" else "returning",
@@ -496,11 +496,11 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
     else:
         sender.assert_not_awaited()
         assert (
-            manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+            manager.history.snapshot("serial")["native_reconciliation_pending"] is False
         )
     assert len(dispatched) == 1
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
-    assert manager.ledger.snapshot("serial")["last_completed_by_room"] == credit_before
+    assert manager.history.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["last_completed_by_room"] == credit_before
     assert not manager.control.lock("serial").locked()
 
 
@@ -608,7 +608,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         sender.assert_not_awaited()
     assert len(dispatched) == 1
     history.assert_awaited_once()
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert not snapshot["last_completed_by_room"]
     assert snapshot["native_reconciliation_pending"] is False
@@ -705,11 +705,11 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
     history.assert_awaited_once()
     assert all(
         value["runs"] == 0 and value["at"] is None
-        for value in manager.ledger.snapshot("serial")[
+        for value in manager.history.snapshot("serial")[
             "last_completed_by_room"
         ].values()
     )
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
     assert not manager.control.lock("serial").locked()
 
 
@@ -812,8 +812,8 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
         )
     sender.assert_not_awaited()
     assert len(commands) == 1
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+    assert manager.history.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
     assert not manager.control.lock("serial").locked()
 
 
@@ -1441,7 +1441,7 @@ async def test_leg_preserves_two_pause_resume_episodes_during_first_store_wait(
     )
     assert not completed
     assert store_saves.count("suspended") == 2
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 async def test_return_does_not_accept_an_ended_read_from_before_new_cleaning(hass):
@@ -2122,13 +2122,13 @@ async def _run_area_plan(
             f"matic_robot_{name}", callback(lambda event: events.append(event))
         )
     checkpoints: list[dict] = []
-    save_checkpoint = manager.ledger.async_set_recovery_checkpoint
+    save_checkpoint = manager.recovery.async_set_recovery_checkpoint
 
     async def keep_checkpoint(serial, run_id, checkpoint):
         checkpoints.append(deepcopy(checkpoint))
         await save_checkpoint(serial, run_id, checkpoint)
 
-    manager.ledger.async_set_recovery_checkpoint = keep_checkpoint
+    manager.recovery.async_set_recovery_checkpoint = keep_checkpoint
 
     async def verify_rooms(*args, **kwargs) -> bool:
         for room in args[5]:
@@ -2287,7 +2287,7 @@ async def test_mixed_plan_runs_each_area_as_its_own_owned_mission(
     # No handoff follows the last area, so its finish is saved on its own.
     assert checkpoints[-1]["leg_index"] == 2
     assert checkpoints[-1]["finished_area_legs"] == [0, 2]
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["last_run"]["outcome"] == "completed"
     assert snapshot["last_run"]["completed_room_count"] == 2
     assert snapshot["active_plan"] is None
@@ -2316,7 +2316,7 @@ async def test_plan_of_areas_alone_completes_without_rooms(hass, fast_area_polls
     assert [call["params"]["area"] for call in robot.dispatched] == ["rug", "mat"]
     # Dispatch baselines plus the bounded wait for the first area's record.
     assert robot.history_reads >= 3
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "completed"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "completed"
     sender.assert_not_awaited()
 
 
@@ -2362,11 +2362,11 @@ async def test_replaced_area_session_is_unverified_without_stop(hass, fast_area_
     assert [event["reason_code"] for event in failed] == ["native_task_taken_over"]
     sender.assert_not_awaited()
     assert len(robot.dispatched) == 1
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "unverified"
     assert last_run["reason_code"] == "native_task_taken_over"
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
-    assert REPLACEMENT.decode() not in str(manager.ledger.snapshot("serial"))
+    assert manager.history.snapshot("serial")["active_plan"] is None
+    assert REPLACEMENT.decode() not in str(manager.history.snapshot("serial"))
     history = manager.repository.robot("serial")["area_history"]["rug"]
     assert history["started_runs"] == 1
     assert history["last_result"] == "interrupted"
@@ -2392,7 +2392,7 @@ async def test_area_takeover_during_shutdown_leaves_the_run_suspended(
         )
 
     # Shutdown is not a robot outcome: the area stays active for recovery.
-    assert manager.ledger.snapshot("serial")["active_plan"]["area_id"] == "rug"
+    assert manager.history.snapshot("serial")["active_plan"]["area_id"] == "rug"
 
 
 @pytest.mark.parametrize(
@@ -2443,7 +2443,7 @@ async def test_failed_area_stops_its_own_mission_and_fails_the_run(
     assert _event_names(events) == expected
     assert events[-2].data["reason_code"] == reason_code
     assert events[-2].data["area"] == "Rug"
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert snapshot["last_run"]["outcome"] == "failed"
     assert snapshot["last_run"]["reason_code"] == reason_code
@@ -2488,7 +2488,7 @@ async def test_area_refused_before_start_sends_no_stop(
     assert raised.value.translation_key == translation_key
     sender.assert_not_awaited()
     assert [event.data["reason_code"] for event in failed] == ["managed_failure"]
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 async def test_unrecognised_area_refusal_still_stops_its_task(hass, fast_area_polls):
@@ -2525,7 +2525,7 @@ async def test_unexpected_area_failure_stops_and_propagates(hass, fast_area_poll
 
     sender.assert_awaited_once()
     assert [event.data["reason_code"] for event in failed] == ["managed_failure"]
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert (last_run["outcome"], last_run["reason_code"]) == (
         "failed",
         "managed_failure",
@@ -2558,7 +2558,7 @@ async def test_immediate_stop_during_an_area_cancels_without_area_stop(
     # The Stop request owns its own STOP; the area leg sends none.
     sender.assert_not_awaited()
     assert len(robot.dispatched) == 1
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 @pytest.mark.parametrize("phase", ["accepted", "finished"])
@@ -2590,7 +2590,7 @@ async def test_stop_before_area_history_commit_cancels_without_completion(
     assert history.get("started_runs", 0) == (1 if phase == "finished" else 0)
     sender.assert_not_awaited()
     assert len(robot.dispatched) == 1
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 @pytest.mark.parametrize("last_leg", [False, True])

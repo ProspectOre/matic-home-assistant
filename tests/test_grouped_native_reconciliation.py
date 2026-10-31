@@ -526,7 +526,7 @@ async def test_mop_first_group_reconciles_later_vacuum_coverage(hass, proof_case
     await manager.ledger.async_begin_run(
         "serial", "weekly-plan", "mixed-run", 2, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "mixed-run",
         {
@@ -552,7 +552,7 @@ async def test_mop_first_group_reconciles_later_vacuum_coverage(hass, proof_case
             ),
         ),
     )
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "mixed-run",
         receipt,

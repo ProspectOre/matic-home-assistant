@@ -17,7 +17,7 @@ from .client.floor_plan import (
     robot_location_source,
 )
 from .client.models import HermesCollectionEntry, RobotState
-from .client.slam_map import (
+from .client.slam_tiles import (
     decode_slam_structure_tile,
     decode_slam_tile,
 )

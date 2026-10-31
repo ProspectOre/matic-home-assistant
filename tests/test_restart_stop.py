@@ -65,11 +65,12 @@ async def test_restored_stop_fence_keeps_run_and_native_guards(
     if native_active is False:
         client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
         assert (
-            manager.ledger.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+            manager.history.snapshot("serial")["last_run"]["outcome"]
+            == "stopped_docked"
         )
     else:
         client.async_send_user_command.assert_not_awaited()
-    assert manager.ledger.snapshot("serial")["last_run"]["run_id"] == "run"
+    assert manager.history.snapshot("serial")["last_run"]["run_id"] == "run"
 
 
 @pytest.mark.parametrize(
@@ -140,4 +141,4 @@ async def test_second_shutdown_retains_settlement_owner(hass, recovery_state):
     entry.runtime_data.client.async_send_user_command.assert_awaited_once_with(
         UserCommand.DOCK
     )
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"

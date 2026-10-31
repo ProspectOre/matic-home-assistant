@@ -65,7 +65,7 @@ async def test_reconcile_finish_and_next_start_preserve_exactly_once_credit(
     await manager.ledger.async_begin_run(
         "synthetic-robot", "home", "run-old", 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "synthetic-robot",
         "run-old",
         {

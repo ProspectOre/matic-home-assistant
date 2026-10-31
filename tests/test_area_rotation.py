@@ -74,7 +74,7 @@ async def test_dispatch_is_not_an_opportunity_and_completion_requires_acceptance
         assert record["completion_basis"] == "owned_session_ended"
     assert manager.repository.robot(SERIAL)["rooms"] == {}
     assert manager.repository.robot(SERIAL)["plan_room_cadence"] == {"mixed": {}}
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=_floor())
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=_floor())
     rug = next(row for row in preview["rotation"] if row.get("area_id") == "rug")
     assert rug["last_result"] == "completed"
     assert rug["last_completion_basis"] == "owned_session_ended"
@@ -191,7 +191,7 @@ async def test_area_history_survives_restart_without_inventing_completion(
     await _accept(manager, area)
     opportunity = _history(manager)[0]["last_opportunity"]
     if recoverable:
-        await manager.ledger.async_set_recovery_checkpoint(
+        await manager.recovery.async_set_recovery_checkpoint(
             SERIAL, "run", {"version": 1, "rooms": [], "phase": "accepted"}
         )
     restored = CleaningPlanManager(hass)
@@ -226,19 +226,19 @@ async def test_geometry_change_reset_and_deletion_do_not_reuse_old_area_history(
     await manager.ledger.async_finish_run(
         SERIAL, "run", "completed", "all_rooms_verified", 3
     )
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     assert preview["entries"][-1]["area_id"] == "rug"
     # A rename keeps identity; a changed drawing gets no old opportunity/credit.
     renamed = {**manager.catalog.areas(SERIAL)["rug"], "name": "New name"}
     await manager.catalog.async_save_area(SERIAL, "rug", renamed)
     assert (
-        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)["entries"][
-            -1
-        ]["area_id"]
+        manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)[
+            "entries"
+        ][-1]["area_id"]
         == "rug"
     )
     await manager.catalog.async_save_area(SERIAL, "rug", _area(floor, x=1.5))
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     rug = next(row for row in preview["rotation"] if row.get("area_id") == "rug")
     assert rug["last_opportunity"] is rug["last_completion"] is None
     area = _leg(manager)
@@ -253,9 +253,9 @@ async def test_geometry_change_reset_and_deletion_do_not_reuse_old_area_history(
     await manager.ledger.async_reset_history(SERIAL, "mixed")
     rug = next(
         row
-        for row in manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)[
-            "rotation"
-        ]
+        for row in manager.planning.preview(
+            SERIAL, ROOM_MAP, "mixed", floor_plan=floor
+        )["rotation"]
         if row.get("area_id") == "rug"
     )
     assert rug["last_opportunity"] is rug["last_completion"] is None
@@ -290,12 +290,12 @@ async def test_shared_area_history_and_plan_reset_use_the_same_room_rotation_rul
         "last_opportunity": "2026-01-02T00:00:00+00:00",
         "last_result": "interrupted",
     }
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     rug = next(row for row in preview["rotation"] if row.get("area_id") == "rug")
     assert rug["last_opportunity_source"] == "global"
     assert rug["last_result"] == "interrupted"
     assert rug["last_completion"] == "2026-01-01T00:00:00+00:00"
     robot["area_history"]["rug"]["last_opportunity"] = "2999-01-01T00:00:00+00:00"
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     rug = next(row for row in preview["rotation"] if row.get("area_id") == "rug")
     assert rug["last_opportunity_source"] == "plan"

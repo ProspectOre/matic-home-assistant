@@ -147,7 +147,7 @@ async def _async_execute_rooms_reserved(
                     else None,
                 }
             )
-            await manager.ledger.async_set_recovery_checkpoint(
+            await manager.recovery.async_set_recovery_checkpoint(
                 serial_number, run_id, checkpoint
             )
 
@@ -194,7 +194,7 @@ async def _async_execute_rooms_reserved(
                         "finish_current_room_threshold": finish_current_room_threshold,
                     }
                 )
-                await manager.ledger.async_set_recovery_checkpoint(
+                await manager.recovery.async_set_recovery_checkpoint(
                     serial_number, run_id, checkpoint
                 )
             finish_room_event = manager.control.finish_room_event(serial_number)
@@ -312,7 +312,7 @@ async def _async_execute_rooms_reserved(
                     checkpoint["cadence_by_room"] = deepcopy(
                         {key: dict(value) for key, value in cadence_by_room.items()}
                     )
-                await manager.ledger.async_set_recovery_checkpoint(
+                await manager.recovery.async_set_recovery_checkpoint(
                     serial_number, run_id, checkpoint
                 )
             if recovery is None and validate_prepared_run is not None:
@@ -350,7 +350,7 @@ async def _async_execute_rooms_reserved(
                             "completed_room_ids": sorted(completed_room_ids),
                         }
                     )
-                    await manager.ledger.async_set_recovery_checkpoint(
+                    await manager.recovery.async_set_recovery_checkpoint(
                         serial_number, run_id, checkpoint
                     )
                     if finish_room_event.is_set():
@@ -395,7 +395,7 @@ async def _async_execute_rooms_reserved(
                             "completed_room_ids": sorted(completed_room_ids),
                         }
                     )
-                    await manager.ledger.async_set_recovery_checkpoint(
+                    await manager.recovery.async_set_recovery_checkpoint(
                         serial_number, run_id, checkpoint
                     )
                 following = legs[index + 1] if index + 1 < len(legs) else None
@@ -472,7 +472,7 @@ async def _async_execute_rooms_reserved(
                         # No handoff save follows the last leg. Persist the
                         # finish so a restart before finalization still
                         # completes the run instead of leaving it unverified.
-                        await manager.ledger.async_set_recovery_checkpoint(
+                        await manager.recovery.async_set_recovery_checkpoint(
                             serial_number, run_id, checkpoint
                         )
                 else:
@@ -507,7 +507,7 @@ async def _async_execute_rooms_reserved(
                         provenance=run_provenance,
                         recovered_suspend_reason=(
                             (
-                                manager.ledger.snapshot(serial_number).get(
+                                manager.history.snapshot(serial_number).get(
                                     "active_plan"
                                 )
                                 or {}
@@ -517,7 +517,7 @@ async def _async_execute_rooms_reserved(
                         ),
                         recovered_room_id=(
                             (
-                                manager.ledger.snapshot(serial_number).get(
+                                manager.history.snapshot(serial_number).get(
                                     "active_plan"
                                 )
                                 or {}
@@ -571,7 +571,7 @@ async def _async_execute_rooms_reserved(
                         }
                     )
                     checkpoint.pop("verification_deadline", None)
-                    await manager.ledger.async_set_recovery_checkpoint(
+                    await manager.recovery.async_set_recovery_checkpoint(
                         serial_number, run_id, checkpoint
                     )
             completed_room_count = len(completed_room_ids)
@@ -648,7 +648,7 @@ async def _async_execute_rooms_reserved(
                 return
             cancellation_reason_reader = manager.control.cancellation_reason
             cancellation_reason = cancellation_reason_reader(serial_number)
-            snapshot_reader = manager.ledger.snapshot
+            snapshot_reader = manager.history.snapshot
             active_snapshot = snapshot_reader(serial_number).get("active_plan")
             recharge_suspended = getattr(
                 err, "suspend_reason", None
@@ -728,7 +728,7 @@ async def _async_execute_rooms_reserved(
             finish_event_reader(serial_number).clear()
             # Leaf handlers retire expected failures. Unexpected failures must
             # also leave a terminal record before ownership is released.
-            active = manager.ledger.snapshot(serial_number)["active_plan"]
+            active = manager.history.snapshot(serial_number)["active_plan"]
             if (
                 manager.control.managed_motion_is_current(serial_number, motion_token)
                 and isinstance(active, dict)
@@ -834,7 +834,7 @@ async def _async_execute_rooms_reserved(
                             entity_id=entity_id,
                             context=call.context,
                         )
-                        snapshot_reader = manager.ledger.snapshot
+                        snapshot_reader = manager.history.snapshot
                         final_snapshot = snapshot_reader(serial_number)
                         final_last_run = (
                             final_snapshot.get("last_run")
@@ -943,7 +943,7 @@ async def _async_execute_rooms(
     """Reserve queued cadence synchronously, then execute the prepared run."""
     manager.control.require_command_admission(serial_number)
     lock = manager.control.lock(serial_number)
-    if recovery is None and manager.control.recovery_run(serial_number) is not None:
+    if recovery is None and manager.recovery.recovery_run(serial_number) is not None:
         raise managed_run._validation_error(
             "A managed Matic plan is reconnecting", "plan_already_running"
         )

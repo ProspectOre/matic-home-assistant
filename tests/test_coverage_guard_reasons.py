@@ -50,9 +50,13 @@ async def test_coverage_preflight_guard_is_safe_and_sends_no_command(
     expected: CoverageGuardReason,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client.async_get_cleaning_session_identity = AsyncMock(side_effect=identity_values)
-    client.async_get_active_cleaning_session_state = AsyncMock(return_value=active)
-    client._async_send_user_payload = AsyncMock()
+    client._reads.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=identity_values
+    )
+    client._reads.async_get_active_cleaning_session_state = AsyncMock(
+        return_value=active
+    )
+    client._connection._async_send_user_payload = AsyncMock()
 
     with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
@@ -74,7 +78,7 @@ async def test_coverage_preflight_guard_is_safe_and_sends_no_command(
     assert error.safe_message == str(error)
     assert "opaque-native-identity" not in error.safe_message
     assert _failure_reason_code(error) == expected.value
-    client._async_send_user_payload.assert_not_awaited()
+    client._connection._async_send_user_payload.assert_not_awaited()
 
 
 @pytest.mark.parametrize("reason", list(CoverageGuardReason))
@@ -302,7 +306,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
 
     await hass.async_block_till_done()
     assert caught.value.translation_key == reason.value
-    last_run = manager.ledger.snapshot("synthetic-serial")["last_run"]
+    last_run = manager.history.snapshot("synthetic-serial")["last_run"]
     assert last_run["outcome"] == "failed"
     assert last_run["reason_code"] == reason.value
     assert last_run["completed_room_count"] == 0

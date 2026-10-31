@@ -15,16 +15,13 @@ import pytest
 from google.protobuf.message import DecodeError
 
 from custom_components.matic_robot import slam_map_store as slam_map_store_module
+from custom_components.matic_robot import slam_snapshot as snapshot_codec
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, HermesCollectionEntry
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     MAX_HEALTH_COUNTER,
     SlamMapStore,
-    _bounded_count,
-    _bucket,
-    _decode_stored_snapshot,
-    _stored_mission_token,
 )
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
@@ -1365,8 +1362,8 @@ async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> N
     }
     await store._store.async_save({"tiles": [item] * 5, "structure_tiles": [item] * 5})
     original_executor = hass.async_add_executor_job
-    original_photo_decoder = slam_map_store_module.decode_slam_tile
-    original_structure_decoder = slam_map_store_module.decode_slam_structure_tile
+    original_photo_decoder = snapshot_codec.decode_slam_tile
+    original_structure_decoder = snapshot_codec.decode_slam_structure_tile
     event_loop_thread = get_ident()
 
     async def run_executor(target, *args):
@@ -1391,12 +1388,12 @@ async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> N
             new=AsyncMock(side_effect=run_executor),
         ) as executor,
         patch.object(
-            slam_map_store_module,
+            snapshot_codec,
             "decode_slam_tile",
             side_effect=decode_photo_off_loop,
         ),
         patch.object(
-            slam_map_store_module,
+            snapshot_codec,
             "decode_slam_structure_tile",
             side_effect=decode_structure_off_loop,
         ),
@@ -1404,7 +1401,7 @@ async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> N
         await store.async_load()
 
     assert executor.await_count == 1
-    assert executor.await_args.args[0].__name__ == "_decode_stored_snapshot"
+    assert executor.await_args.args[0].__name__ == "decode_snapshot"
     assert store.tile_count == 1
     assert store.health.truncated is True
     assert store.health.dropped_photo_tiles == 3
@@ -1586,16 +1583,24 @@ async def test_slam_map_store_drops_paired_pages_together_at_layer_limit(hass) -
 
 
 def test_slam_map_store_bounds_health_metadata_and_spatial_helpers() -> None:
-    assert _decode_stored_snapshot([]).invalid_tiles == 1
-    assert _bounded_count(True) == 0
-    assert _bounded_count("1") == 0
-    assert _bounded_count(-1) == 0
-    assert _bounded_count(MAX_HEALTH_COUNTER + 1) == MAX_HEALTH_COUNTER
-    assert _stored_mission_token(None) is None
-    assert _stored_mission_token("x" * 64) is None
-    assert _stored_mission_token("00" * 32) == "00" * 32
-    assert _bucket(1, 1, 1) == 0
-    assert _bucket(100, 0, 1) == 7
+    assert (
+        snapshot_codec.decode_snapshot(
+            [], slam_map_store_module._snapshot_limits()
+        ).invalid_tiles
+        == 1
+    )
+    assert snapshot_codec._bounded_count(True, MAX_HEALTH_COUNTER) == 0
+    assert snapshot_codec._bounded_count("1", MAX_HEALTH_COUNTER) == 0
+    assert snapshot_codec._bounded_count(-1, MAX_HEALTH_COUNTER) == 0
+    assert (
+        snapshot_codec._bounded_count(MAX_HEALTH_COUNTER + 1, MAX_HEALTH_COUNTER)
+        == MAX_HEALTH_COUNTER
+    )
+    assert snapshot_codec._stored_mission_token(None) is None
+    assert snapshot_codec._stored_mission_token("x" * 64) is None
+    assert snapshot_codec._stored_mission_token("00" * 32) == "00" * 32
+    assert snapshot_codec._bucket(1, 1, 1) == 0
+    assert snapshot_codec._bucket(100, 0, 1) == 7
 
 
 @pytest.mark.parametrize("field", ["key", "value"])
@@ -1603,8 +1608,10 @@ def test_slam_map_store_bounds_health_metadata_and_spatial_helpers() -> None:
 def test_stored_tile_admission_precedes_base64_allocation(monkeypatch, field, value):
     monkeypatch.setattr(slam_map_store_module, "MAX_TILE_ENTRY_BYTES", 3)
     item = {"key": "AAAA", "value": "AAAA", field: value}
-    with patch.object(slam_map_store_module.base64, "b64decode") as decode:
-        loaded = _decode_stored_snapshot({"tiles": [item]})
+    with patch.object(snapshot_codec.base64, "b64decode") as decode:
+        loaded = snapshot_codec.decode_snapshot(
+            {"tiles": [item]}, slam_map_store_module._snapshot_limits()
+        )
     decode.assert_not_called()
     assert loaded.invalid_tiles == 1
     assert not loaded.entries
@@ -1612,8 +1619,11 @@ def test_stored_tile_admission_precedes_base64_allocation(monkeypatch, field, va
 
 def test_stored_tile_combined_budget_precedes_base64_allocation(monkeypatch):
     monkeypatch.setattr(slam_map_store_module, "MAX_TILE_ENTRY_BYTES", 3)
-    with patch.object(slam_map_store_module.base64, "b64decode") as decode:
-        loaded = _decode_stored_snapshot({"tiles": [{"key": "AAAA", "value": "AAAA"}]})
+    with patch.object(snapshot_codec.base64, "b64decode") as decode:
+        loaded = snapshot_codec.decode_snapshot(
+            {"tiles": [{"key": "AAAA", "value": "AAAA"}]},
+            slam_map_store_module._snapshot_limits(),
+        )
     decode.assert_not_called()
     assert loaded.invalid_tiles == 1
 

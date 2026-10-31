@@ -13,10 +13,8 @@ import pytest
 from google.protobuf.message import DecodeError
 
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.client.slam_map import (
-    decode_slam_tile,
-    encode_slam_scene,
-)
+from custom_components.matic_robot.client.slam_scene import encode_slam_scene
+from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
 from custom_components.matic_robot.slam_history import (
     MIN_HISTORY_INTERVAL_SECONDS,
     SlamHistoryStore,

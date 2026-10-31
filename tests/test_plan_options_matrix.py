@@ -180,7 +180,7 @@ async def test_executor_preserves_room_settings_and_verified_completion(
     )
     assert len(commands) == 1
     assert confirmed == [r.name for r in expected]
-    result = manager.ledger.snapshot("serial")["last_run"]
+    result = manager.history.snapshot("serial")["last_run"]
     assert result["outcome"] == "completed"
     assert result["completed_room_count"] == len(rooms)
     assert not manager.control.lock("serial").locked()
@@ -330,7 +330,7 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     async def history():
         if not ended:
             return ()
-        if manager.ledger.snapshot("serial")["active_plan"]["status"] == "verifying":
+        if manager.history.snapshot("serial")["active_plan"]["status"] == "verifying":
             decisions.append(manager.control.request_stop("serial", stop_now=True))
         return (
             CleaningSessionRecord(
@@ -392,10 +392,10 @@ async def test_after_room_stop_docks_after_one_room_and_leaves_next_uncredited(
     assert [command for _token, command in commands] == [UserCommand.DOCK]
     assert len({token for token, _command in commands}) == 1
     assert confirmed == [rooms[0].name]
-    result = manager.ledger.snapshot("serial")["last_run"]
+    result = manager.history.snapshot("serial")["last_run"]
     assert result["outcome"] == "cancelled"
     assert result["reason_code"] == "managed_stop"
     assert result["completed_room_count"] == 1
-    completed_by_room = manager.ledger.snapshot("serial")["last_completed_by_room"]
+    completed_by_room = manager.history.snapshot("serial")["last_completed_by_room"]
     assert completed_by_room["room-a"]["runs"] == 1
     assert "room-b" not in completed_by_room

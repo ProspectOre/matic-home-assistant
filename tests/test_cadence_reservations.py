@@ -103,7 +103,7 @@ async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
         )
         await entered.wait()
         try:
-            assert manager.ledger.snapshot("serial")["active_plan"] is None
+            assert manager.history.snapshot("serial")["active_plan"] is None
             assert manager.cadence.prepared_runs["serial"].rooms.keys() == {
                 "room-a",
                 "room-b",
@@ -382,11 +382,11 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
         await room_started.wait()
         try:
             assert (
-                manager.ledger.snapshot("serial")["active_plan"]["finish_current_room"]
+                manager.history.snapshot("serial")["active_plan"]["finish_current_room"]
                 is True
             )
             assert (
-                manager.ledger.snapshot("serial")["active_plan"][
+                manager.history.snapshot("serial")["active_plan"][
                     "finish_current_room_threshold"
                 ]
                 == 50
@@ -434,7 +434,7 @@ async def test_restart_restores_frozen_stop_policy_after_saved_plan_edit(hass) -
         "finish_current_room": stop_enabled,
         "finish_current_room_threshold": stop_threshold,
     }
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial", "run-frozen", checkpoint
     )
     await manager.ledger.async_mark_started("serial", "home", room, run_id="run-frozen")
@@ -617,7 +617,7 @@ async def test_checkpoint_roundtrip_preserves_shared_schedule_reservation(hass) 
     await manager.ledger.async_begin_run(
         "serial", "home", "roundtrip-run", 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "roundtrip-run",
         {
@@ -662,7 +662,7 @@ async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> 
         await async_recover_managed_run(hass, entry, "serial")
 
     executor.assert_not_awaited()
-    assert manager.control.recovery_run("serial") is None
+    assert manager.recovery.recovery_run("serial") is None
     assert "serial" not in manager.cadence.prepared_runs
     await manager.cadence.async_reset_cadence("serial", "plan", [room.room_id])
 

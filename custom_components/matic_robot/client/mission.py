@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from google.protobuf.message import DecodeError
 
 from .models import MappedFloor
-from .slam_map import decode_slam_mission_id
+from .slam_tiles import decode_slam_mission_id
 from .wire import WireField, decode_fields
 
 MAX_MAPPED_FLOORS = 64

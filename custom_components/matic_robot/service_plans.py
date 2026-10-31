@@ -120,7 +120,7 @@ def _saved_plan_preview(
         preview_kwargs["intelligent"] = intelligent
     if held_rooms:
         preview_kwargs["held_rooms"] = held_rooms
-    preview = manager.catalog.preview(
+    preview = manager.planning.preview(
         serial_number, room_map, plan_reference, **preview_kwargs
     )
     token = saved_plan_preview_token(

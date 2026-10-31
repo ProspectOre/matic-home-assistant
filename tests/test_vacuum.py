@@ -686,14 +686,14 @@ async def test_unload_drains_accepted_stop_before_closing_metadata(hass) -> None
     entered_send = asyncio.Event()
     release_send = asyncio.Event()
     client = entry.runtime_data.coordinator.client
-    checkpoint = manager.ledger.async_checkpoint_stop_intent
+    checkpoint = manager.recovery.async_checkpoint_stop_intent
 
     async def delayed_checkpoint(serial_number: str, behavior: str, **kwargs) -> None:
         checkpoint_started.set()
         await release_checkpoint.wait()
         await checkpoint(serial_number, behavior, **kwargs)
 
-    manager.ledger.async_checkpoint_stop_intent = delayed_checkpoint
+    manager.recovery.async_checkpoint_stop_intent = delayed_checkpoint
 
     async def delayed_send(command: UserCommand) -> None:
         assert command is UserCommand.STOP
@@ -757,7 +757,7 @@ async def test_stop_retains_run_id_when_run_finishes_during_checkpoint(hass) -> 
     entity = vacuum.MaticVacuum(entry)
     entity.entity_id = "vacuum.test"
     entity.hass = hass
-    checkpoint = manager.ledger.async_checkpoint_stop_intent
+    checkpoint = manager.recovery.async_checkpoint_stop_intent
     checkpoint_started = asyncio.Event()
     release_checkpoint = asyncio.Event()
 
@@ -766,7 +766,7 @@ async def test_stop_retains_run_id_when_run_finishes_during_checkpoint(hass) -> 
         await release_checkpoint.wait()
         await checkpoint(serial, behavior, **kwargs)
 
-    manager.ledger.async_checkpoint_stop_intent = delayed_checkpoint
+    manager.recovery.async_checkpoint_stop_intent = delayed_checkpoint
     with patch.object(vacuum, "schedule_dock_after_stop") as schedule_dock:
         stop = asyncio.create_task(entity.async_stop())
         try:
@@ -810,7 +810,7 @@ async def test_late_stop_after_teardown_does_not_mutate_managed_run(hass) -> Non
     assert not cancellation.is_set()
     manager.control.begin_command_teardown(serial_number)
     checkpoint = AsyncMock()
-    manager.ledger.async_checkpoint_stop_intent = checkpoint
+    manager.recovery.async_checkpoint_stop_intent = checkpoint
 
     with patch.object(
         manager.control, "request_stop", wraps=manager.control.request_stop
@@ -842,7 +842,7 @@ async def test_after_room_stop_keeps_managed_owner(hass) -> None:
             manager.control, "request_stop", return_value=decision
         ) as request_stop,
         patch.object(
-            manager.ledger, "async_checkpoint_stop_intent", new_callable=AsyncMock
+            manager.recovery, "async_checkpoint_stop_intent", new_callable=AsyncMock
         ) as checkpoint,
     ):
         await entity.async_stop()
@@ -1240,7 +1240,7 @@ async def test_sink_summon_without_a_task_cancels_a_recovering_plan(hass) -> Non
     await manager.ledger.async_begin_run(
         serial_number, "plan", "run", 2, trigger="user", service="clean_entire_plan"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         serial_number, "run", {"version": 1, "phase": "handoff", "leg_index": 1}
     )
     generation = manager.control.motion_generation(serial_number)

@@ -19,15 +19,11 @@ from .floor_layers import MaticFloorLayersView
 from .photos import MaticRobotPhotoPreviewView, MaticRobotPhotoView
 from .plan_views import MaticPlansView
 from .run_thumbnails import MaticRunThumbnailView
-from .slam_scene import (
-    MaticRunHistoryView,
-    MaticSlamCatalogView,
-    MaticSlamDeltaView,
-    MaticSlamHistorySceneView,
-    MaticSlamHistoryView,
-    MaticSlamPoseView,
-    MaticSlamSceneView,
-)
+from .slam_catalog_view import MaticSlamCatalogView
+from .slam_history_view import MaticSlamHistorySceneView, MaticSlamHistoryView
+from .slam_pose_view import MaticSlamPoseView
+from .slam_run_history_view import MaticRunHistoryView
+from .slam_scene import MaticSlamDeltaView, MaticSlamSceneView
 from .wifi_survey import MaticWifiHeatmapView
 from .workspace_socket import async_register as async_register_workspace_socket
 

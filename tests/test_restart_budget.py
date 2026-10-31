@@ -81,11 +81,11 @@ async def test_accepted_checkpoint_without_budget_is_not_recoverable(
         checkpoint.pop("completion_deadline")
     else:
         checkpoint["completion_deadline"] = None
-    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:
         await async_recover_managed_run(hass, entry, "serial")
     execute.assert_not_called()
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "unverified"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "unverified"
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
@@ -134,7 +134,7 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
     assert [
         call.args[0] for call in client.async_send_user_command.await_args_list
     ] == expected
-    final = manager.ledger.snapshot("serial")["last_run"]
+    final = manager.history.snapshot("serial")["last_run"]
     assert final["outcome"] == (
         "stopped_docked" if native_active is False else "unverified"
     )
@@ -166,9 +166,9 @@ async def test_expired_recovery_budget_stops_only_owned_mission(
     checkpoint["completion_deadline"] = (
         dt_util.utcnow() - timedelta(seconds=1)
     ).isoformat()
-    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     await async_recover_managed_run(hass, entry, "serial")
-    final = manager.ledger.snapshot("serial")["last_run"]
+    final = manager.history.snapshot("serial")["last_run"]
     assert final["outcome"] == "failed"
     assert final["reason_code"] == "completion_timeout"
     entry.runtime_data.client.async_send_user_command.assert_awaited_once_with(
@@ -198,14 +198,14 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
         await manager.ledger.async_mark_started("serial", "plan", room, run_id="run")
     deadline = (dt_util.utcnow() + timedelta(seconds=100)).isoformat()
     checkpoint["completion_deadline"] = deadline
-    await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run", checkpoint)
     await manager.ledger.async_mark_suspended("serial", "plan", room, reason)
     hass.states.async_set(
         checkpoint["entity_id"], "docked" if reason == "low_charge" else "paused"
     )
 
     async def wait_resume(*args, **kwargs):
-        active = manager.ledger.snapshot("serial")["active_plan"]
+        active = manager.history.snapshot("serial")["active_plan"]
         assert active["status"] == "suspended" and active["suspend_reason"] == reason
         assert 0 < args[2] <= 100
         if multi:
@@ -223,7 +223,7 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
             await async_recover_managed_run(hass, entry, "serial")
     resume.assert_awaited_once()
     assert (
-        manager.control.recovery_run("serial")["recovery_checkpoint"][
+        manager.recovery.recovery_run("serial")["recovery_checkpoint"][
             "completion_deadline"
         ]
         == deadline

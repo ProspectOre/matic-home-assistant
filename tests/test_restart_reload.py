@@ -71,10 +71,10 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
 
     executor.assert_awaited()
     await hass.async_block_till_done()
-    saved = manager.control.recovery_run("serial")
+    saved = manager.recovery.recovery_run("serial")
     if explicit_reason:
         assert saved is None
-        assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+        assert manager.history.snapshot("serial")["last_run"]["outcome"] == "cancelled"
         return
     runtime.client.async_send_user_command.assert_not_awaited()
     assert not terminal
@@ -84,7 +84,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
         saved["recovery_checkpoint"]["completion_deadline"]
         == checkpoint["completion_deadline"]
     )
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "running"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "running"
     assert (
         saved["recovery_checkpoint"]["native_identity_hash"]
         == checkpoint["native_identity_hash"]
@@ -97,15 +97,15 @@ async def test_retire_recovery_is_idempotent_and_drops_checkpoint(
 ) -> None:
     manager, _, _, _ = recovery_state
 
-    await manager.ledger.async_retire_recovery("serial", "config_entry_removed")
-    assert manager.control.recovery_run("serial") is None
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    await manager.recovery.async_retire_recovery("serial", "config_entry_removed")
+    assert manager.recovery.recovery_run("serial") is None
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "unverified"
     assert "recovery_checkpoint" not in last_run
 
     # A second unload/remove callback cannot create another terminal result.
-    await manager.ledger.async_retire_recovery("serial", "config_entry_removed")
-    assert manager.ledger.snapshot("serial")["last_run"] == last_run
+    await manager.recovery.async_retire_recovery("serial", "config_entry_removed")
+    assert manager.history.snapshot("serial")["last_run"] == last_run
 
 
 async def test_retire_missing_run_is_noop(hass) -> None:
@@ -113,8 +113,8 @@ async def test_retire_missing_run_is_noop(hass) -> None:
 
     manager = CleaningPlanManager(hass)
     manager.repository.store = SimpleNamespace(async_save=AsyncMock())
-    await manager.ledger.async_retire_recovery("missing", "config_entry_removed")
-    assert manager.control.recovery_run("missing") is None
+    await manager.recovery.async_retire_recovery("missing", "config_entry_removed")
+    assert manager.recovery.recovery_run("missing") is None
 
 
 async def test_queued_recovery_during_unload_keeps_checkpoint_and_does_not_replay(
@@ -131,7 +131,7 @@ async def test_queued_recovery_during_unload_keeps_checkpoint_and_does_not_repla
         await async_recover_managed_run(hass, entry, "serial")
 
     executor.assert_not_awaited()
-    saved = manager.control.recovery_run("serial")
+    saved = manager.recovery.recovery_run("serial")
     assert saved is not None
     assert saved["run_id"] == "run"
     assert manager.control.pending_stop_run_id("serial") is None

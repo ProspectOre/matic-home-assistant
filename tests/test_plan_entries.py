@@ -346,7 +346,7 @@ async def test_deleting_an_area_removes_it_from_every_plan_atomically(hass) -> N
     ]
     assert manager.catalog.plan(SERIAL, "spots")["entries"] == [_area_entry("mat")]
     assert manager.catalog.plans_using_area(SERIAL, "rug") == []
-    assert manager.ledger.snapshot(SERIAL)["selected_area"] == "mat"
+    assert manager.history.snapshot(SERIAL)["selected_area"] == "mat"
     listener.assert_called()
 
 
@@ -458,7 +458,7 @@ async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact
         "last_opportunity": "2026-01-03T00:00:00+00:00",
     }
     # Mat and Hall are unattempted, so their saved relative order breaks the tie.
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     entries = preview["entries"]
     assert [e.get("room_id", e.get("area_id")) for e in entries] == [
         "mat",
@@ -509,7 +509,7 @@ async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact
         "rug",
         ["room-kitchen"],
     ]
-    ordered = manager.catalog.preview(
+    ordered = manager.planning.preview(
         SERIAL, ROOM_MAP, "mixed", intelligent=False, floor_plan=floor
     )
     assert [e.get("room_id", e.get("area_id")) for e in ordered["entries"]] == [
@@ -531,7 +531,7 @@ async def test_preview_supports_area_only_plans(hass) -> None:
         {"name": "Spots", "rooms": [], "entries": [_area_entry("rug")]},
     )
 
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "spots", floor_plan=floor)
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "spots", floor_plan=floor)
 
     assert preview["rooms"] == []
     assert [entry["area_id"] for entry in preview["entries"]] == ["rug"]
@@ -548,14 +548,14 @@ async def test_room_only_preview_lists_room_entries_without_area_counts(
         SERIAL, "home", {"name": "Home", "rooms": [_room("room-kitchen")]}
     )
 
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "home")
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "home")
 
     assert preview["entries"] == [{"kind": "room", **preview["rooms"][0]}]
     assert "area_count" not in preview
     manager.repository.robot(SERIAL)["plans"]["home"]["rooms"] = []
     manager.repository.robot(SERIAL)["plans"]["home"]["entries"] = []
     with pytest.raises(EmptyPlanError):
-        manager.catalog.preview(SERIAL, ROOM_MAP, "home")
+        manager.planning.preview(SERIAL, ROOM_MAP, "home")
 
 
 async def test_preview_blocks_missing_and_stale_areas(hass) -> None:
@@ -563,28 +563,28 @@ async def test_preview_blocks_missing_and_stale_areas(hass) -> None:
     manager = await _mixed_manager(hass, floor)
 
     with pytest.raises(PlanAreaMapChangedError):
-        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed")
+        manager.planning.preview(SERIAL, ROOM_MAP, "mixed")
     with pytest.raises(PlanAreaMapChangedError):
-        manager.catalog.preview(
+        manager.planning.preview(
             SERIAL, ROOM_MAP, "mixed", floor_plan=_floor(mission_id=43)
         )
     manager.repository.robot(SERIAL)["areas"].pop("mat")
     with pytest.raises(PlanAreaMissingError):
-        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+        manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     manager.repository.robot(SERIAL)["areas"]["mat"] = "corrupt"
     with pytest.raises(PlanAreaMissingError):
-        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+        manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     manager.repository.robot(SERIAL)["plans"]["mixed"]["enabled"] = False
     with pytest.raises(PlanDisabledError):
-        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+        manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     manager.repository.robot(SERIAL)["plans"]["mixed"]["enabled"] = True
     manager.repository.robot(SERIAL)["plans"]["mixed"]["rooms"].append("corrupt")
     with pytest.raises(ValueError, match="invalid room"):
-        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+        manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     manager.repository.robot(SERIAL)["plans"]["mixed"]["rooms"] = "corrupt"
     manager.repository.robot(SERIAL)["plans"]["mixed"]["entries"] = [_area_entry("rug")]
     with pytest.raises(ValueError, match="invalid room"):
-        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+        manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
 
 
 async def test_preview_token_covers_area_binding_but_not_room_only_plans(
@@ -597,7 +597,7 @@ async def test_preview_token_covers_area_binding_but_not_room_only_plans(
         "floor_token": plan_floor_token(floor),
         "room_identities": {},
     }
-    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    preview = manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     token = saved_plan_preview_token(preview, **token_inputs)
 
     # Room-only previews hash exactly what they hashed before entries existed.
@@ -619,7 +619,7 @@ async def test_preview_token_covers_area_binding_but_not_room_only_plans(
     assert saved_plan_preview_token(restated, **token_inputs) != token
 
     await manager.catalog.async_save_area(SERIAL, "rug", _area(floor, "Rug", 3.0))
-    moved = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    moved = manager.planning.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     assert saved_plan_preview_token(moved, **token_inputs) != token
 
 
@@ -671,7 +671,7 @@ async def _handler(hass, manager, service: str, schema, data: dict, floor=None):
     services = await _registered_services(hass, manager)
     floor = floor or _floor()
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=_context(floor),
     ):
         return await _registered_handler(services, service)(
@@ -1099,11 +1099,11 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, SERIAL, dict(ROOM_MAP)),
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(),
         ) as execute,
     ):
@@ -1134,7 +1134,7 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
     assert kwargs["floor_token"] == plan_floor_token(floor)
     assert kwargs["floor_is_current"]() is True
     kwargs["validate_prepared_run"]()
-    assert manager.ledger.snapshot(SERIAL)["active_plan"] is None
+    assert manager.history.snapshot(SERIAL)["active_plan"] is None
 
 
 async def test_running_a_room_only_plan_keeps_its_legacy_executor_call(hass) -> None:
@@ -1156,11 +1156,11 @@ async def test_running_a_room_only_plan_keeps_its_legacy_executor_call(hass) -> 
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, SERIAL, dict(ROOM_MAP)),
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(),
         ) as execute,
     ):
@@ -1178,7 +1178,7 @@ async def test_preview_plan_service_returns_typed_entries(hass) -> None:
     services = await _registered_services(hass, manager)
 
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=_context(floor),
     ):
         preview = await _registered_handler(services, "preview_plan")(

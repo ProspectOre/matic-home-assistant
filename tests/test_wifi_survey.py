@@ -14,8 +14,8 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot import button, switch, wifi_survey
-from custom_components.matic_robot.client import api as api_module
-from custom_components.matic_robot.client import telemetry as telemetry_module
+from custom_components.matic_robot.client import hermes_commands as api_module
+from custom_components.matic_robot.client import wifi_status as telemetry_module
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import RobotPose
@@ -51,9 +51,9 @@ def _wifi(signal: int | None) -> bytes:
 
 def _client(*properties: bytes) -> MaticHermesClient:
     client = MaticHermesClient("robot.invalid", 16320)
-    client._channel = object()
-    client._async_send_channel_payload = AsyncMock()
-    client.async_get_property = AsyncMock(side_effect=list(properties))
+    client._connection._channel = object()
+    client._connection._async_send_channel_payload = AsyncMock()
+    client._collections.async_get_property = AsyncMock(side_effect=list(properties))
     return client
 
 
@@ -64,10 +64,13 @@ async def test_scan_returns_the_link_signal_once_the_scan_block_changes(
     client = _client(_wifi(-60), _wifi(-60), _wifi(-52))
 
     assert await client.async_scan_wifi_signal() == -52
-    client._async_send_channel_payload.assert_awaited_once_with(
+    client._connection._async_send_channel_payload.assert_awaited_once_with(
         "wifi_scan_command", b""
     )
-    assert client.async_get_property.await_args_list == [call("wifi_status")] * 3
+    assert (
+        client._collections.async_get_property.await_args_list
+        == [call("wifi_status")] * 3
+    )
 
 
 async def test_scan_accepts_an_identical_result_after_it_settles(monkeypatch) -> None:
@@ -75,23 +78,23 @@ async def test_scan_accepts_an_identical_result_after_it_settles(monkeypatch) ->
     client = _client(_wifi(-60), _wifi(-60), _wifi(-60))
 
     assert await client.async_scan_wifi_signal() == -60
-    assert client.async_get_property.await_count == 3
+    assert client._collections.async_get_property.await_count == 3
 
 
 async def test_scan_reports_nothing_when_no_new_scan_arrives(monkeypatch) -> None:
     monkeypatch.setattr(api_module, "_WIFI_SCAN_RESULT_INTERVAL_SECONDS", 0)
     monkeypatch.setattr(api_module, "_WIFI_SCAN_RESULT_TIMEOUT_SECONDS", 0.05)
     client = MaticHermesClient("robot.invalid", 16320)
-    client._async_send_channel_payload = AsyncMock()
+    client._connection._async_send_channel_payload = AsyncMock()
 
     async def _no_scan(_name: str) -> bytes:
         await asyncio.sleep(0.001)
         return _wifi(None)
 
-    client.async_get_property = AsyncMock(side_effect=_no_scan)
+    client._collections.async_get_property = AsyncMock(side_effect=_no_scan)
 
     assert await client.async_scan_wifi_signal() is None
-    client._async_send_channel_payload.assert_awaited_once()
+    client._connection._async_send_channel_payload.assert_awaited_once()
 
 
 def test_scan_block_ignores_malformed_status() -> None:

@@ -68,7 +68,6 @@ async def _run_interrupted_leg(hass, monkeypatch, *, owns_motion: bool):
     run_id = "run-1"
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(return_value=True),
             async_mark_resumed=AsyncMock(),
             async_mark_interrupted=AsyncMock(),
@@ -82,6 +81,7 @@ async def _run_interrupted_leg(hass, monkeypatch, *, owns_motion: bool):
             register_reconciliation_task=MagicMock(),
             managed_motion_is_current=MagicMock(return_value=owns_motion),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     if not owns_motion:
 
@@ -169,13 +169,11 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
     )
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(return_value=True),
             async_mark_resumed=AsyncMock(),
             async_mark_verifying=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             skipped_room_ids=MagicMock(return_value=frozenset()),
-            coverage_receipt=MagicMock(return_value=None),
         ),
         control=SimpleNamespace(
             cancellation_reason=MagicMock(return_value=None),
@@ -183,6 +181,8 @@ async def test_unverified_group_does_not_save_marker_after_floor_changes(
             register_reconciliation_task=MagicMock(),
             managed_motion_is_current=MagicMock(return_value=True),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
+        recovery=SimpleNamespace(coverage_receipt=MagicMock(return_value=None)),
     )
     monkeypatch.setattr(
         managed_observation_module,
@@ -242,11 +242,11 @@ async def test_grouped_watcher_tolerates_history_and_map_failures(
     marker = _marker()
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             pending_native_reconciliation=MagicMock(return_value=marker),
             async_import_native_history=AsyncMock(),
             async_clear_native_reconciliation=AsyncMock(),
-        )
+        ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     hass.states.async_set("vacuum.test", "cleaning")
     reads = AsyncMock(side_effect=MaticError("temporarily unavailable"))
@@ -289,11 +289,11 @@ async def test_grouped_watcher_stops_when_marker_is_replaced(hass, monkeypatch) 
     replacement = {**marker, "run_id": "new-run"}
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             pending_native_reconciliation=MagicMock(side_effect=[marker, replacement]),
             async_import_native_history=AsyncMock(),
             async_clear_native_reconciliation=AsyncMock(),
-        )
+        ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     hass.states.async_set("vacuum.test", "cleaning")
     monkeypatch.setattr(reconciliation_module, "monotonic", lambda: 0.0)

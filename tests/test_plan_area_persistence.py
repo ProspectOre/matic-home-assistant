@@ -128,10 +128,10 @@ async def test_cancelled_area_waiter_keeps_durable_commit_and_notifies(
         expected_selected = "other"
 
     assert manager.catalog.areas(SERIAL) == expected_areas
-    assert manager.ledger.snapshot(SERIAL)["selected_area"] == expected_selected
+    assert manager.history.snapshot(SERIAL)["selected_area"] == expected_selected
     assert manager.catalog.selected_area(SERIAL) == expected_selected
     assert reloaded.catalog.areas(SERIAL) == expected_areas
-    assert reloaded.ledger.snapshot(SERIAL)["selected_area"] == expected_selected
+    assert reloaded.history.snapshot(SERIAL)["selected_area"] == expected_selected
     assert notifications == 1
 
 
@@ -139,7 +139,7 @@ async def test_cancel_before_state_lock_does_not_accept_area_mutation(hass):
     """Cancellation before mutation admission leaves memory and disk unchanged."""
     manager = await _manager_with_areas(hass)
     before = manager.catalog.areas(SERIAL)
-    before_selected = manager.ledger.snapshot(SERIAL)["selected_area"]
+    before_selected = manager.history.snapshot(SERIAL)["selected_area"]
     notifications = 0
 
     def notified() -> None:
@@ -161,7 +161,7 @@ async def test_cancel_before_state_lock_does_not_accept_area_mutation(hass):
         lock.release()
 
     assert manager.catalog.areas(SERIAL) == before
-    assert manager.ledger.snapshot(SERIAL)["selected_area"] == before_selected
+    assert manager.history.snapshot(SERIAL)["selected_area"] == before_selected
     assert not manager.repository.metadata_persistence_tasks.get(SERIAL)
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
@@ -175,7 +175,7 @@ async def test_failed_store_commit_rolls_back_area_and_suppresses_notification(
     """A real Store write rejection restores memory and leaves disk unchanged."""
     manager = await _manager_with_areas(hass)
     before = manager.catalog.areas(SERIAL)
-    before_selected = manager.ledger.snapshot(SERIAL)["selected_area"]
+    before_selected = manager.history.snapshot(SERIAL)["selected_area"]
     notifications = 0
 
     def notified() -> None:
@@ -216,7 +216,7 @@ async def test_failed_store_commit_rolls_back_area_and_suppresses_notification(
 
     assert str(err.value) == "Cleaning plan state could not be saved"
     assert manager.catalog.areas(SERIAL) == before
-    assert manager.ledger.snapshot(SERIAL)["selected_area"] == before_selected
+    assert manager.history.snapshot(SERIAL)["selected_area"] == before_selected
     assert manager.repository.data["robots"][SERIAL]["plans"]["concurrent-write"] == {
         "name": "Concurrent"
     }
@@ -230,7 +230,7 @@ async def test_failed_store_commit_rolls_back_area_and_suppresses_notification(
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
     assert reloaded.catalog.areas(SERIAL) == before
-    assert reloaded.ledger.snapshot(SERIAL)["selected_area"] == before_selected
+    assert reloaded.history.snapshot(SERIAL)["selected_area"] == before_selected
 
 
 @pytest.mark.parametrize("lifecycle", ("unload", "remove"))
@@ -240,7 +240,7 @@ async def test_failed_accepted_area_write_does_not_abort_lifecycle_drain(
     """A failed owned write rolls back, but does not strand lifecycle cleanup."""
     manager = await _manager_with_areas(hass)
     before = manager.catalog.areas(SERIAL)
-    before_selected = manager.ledger.snapshot(SERIAL)["selected_area"]
+    before_selected = manager.history.snapshot(SERIAL)["selected_area"]
     loop = asyncio.get_running_loop()
     write_started = asyncio.Event()
     release_write = threading.Event()
@@ -292,7 +292,7 @@ async def test_failed_accepted_area_write_does_not_abort_lifecycle_drain(
         assert write_count == 2  # failed area write, then successful removal write
     else:
         assert reloaded.catalog.areas(SERIAL) == before
-        assert reloaded.ledger.snapshot(SERIAL)["selected_area"] == before_selected
+        assert reloaded.history.snapshot(SERIAL)["selected_area"] == before_selected
 
 
 @pytest.mark.parametrize("concurrent_update", (False, True))
@@ -361,7 +361,7 @@ async def test_removed_robot_rejects_area_mutation(hass):
     """A robot already being removed does not accept new Area mutations."""
     manager = await _manager_with_areas(hass)
     before = manager.catalog.areas(SERIAL)
-    selected = manager.ledger.snapshot(SERIAL)["selected_area"]
+    selected = manager.history.snapshot(SERIAL)["selected_area"]
     manager.repository.removed_robots.add(SERIAL)
     notifications = 0
 
@@ -374,7 +374,7 @@ async def test_removed_robot_rejects_area_mutation(hass):
         await manager.catalog.async_save_area(SERIAL, "created", CREATED_AREA)
 
     assert manager.catalog.areas(SERIAL) == before
-    assert manager.ledger.snapshot(SERIAL)["selected_area"] == selected
+    assert manager.history.snapshot(SERIAL)["selected_area"] == selected
     assert not manager.repository.metadata_persistence_tasks.get(SERIAL)
     assert not manager.repository.state_lock(SERIAL).locked()
     assert notifications == 0
@@ -403,7 +403,7 @@ async def test_area_task_creation_failure_closes_worker_and_restores_state(
     """Failure before task ownership leaves Area state unchanged."""
     manager = await _manager_with_areas(hass)
     before = manager.catalog.areas(SERIAL)
-    selected = manager.ledger.snapshot(SERIAL)["selected_area"]
+    selected = manager.history.snapshot(SERIAL)["selected_area"]
     original_create_task = asyncio.create_task
 
     def reject_area_worker(coroutine, *args, **kwargs):
@@ -416,13 +416,13 @@ async def test_area_task_creation_failure_closes_worker_and_restores_state(
         await manager.catalog.async_save_area(SERIAL, "existing", UPDATED_AREA)
 
     assert manager.catalog.areas(SERIAL) == before
-    assert manager.ledger.snapshot(SERIAL)["selected_area"] == selected
+    assert manager.history.snapshot(SERIAL)["selected_area"] == selected
     assert not manager.repository.metadata_persistence_tasks.get(SERIAL)
     assert not manager.repository.state_lock(SERIAL).locked()
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
     assert reloaded.catalog.areas(SERIAL) == before
-    assert reloaded.ledger.snapshot(SERIAL)["selected_area"] == selected
+    assert reloaded.history.snapshot(SERIAL)["selected_area"] == selected
 
 
 async def test_area_worker_cancelled_before_start_releases_state_lock(
@@ -431,7 +431,7 @@ async def test_area_worker_cancelled_before_start_releases_state_lock(
     """Pre-start owner cancellation changes no Area data and releases its fence."""
     manager = await _manager_with_areas(hass)
     before = manager.catalog.areas(SERIAL)
-    selected = manager.ledger.snapshot(SERIAL)["selected_area"]
+    selected = manager.history.snapshot(SERIAL)["selected_area"]
     original_create_task = asyncio.create_task
 
     def cancel_area_worker(coroutine, *args, **kwargs):
@@ -447,13 +447,13 @@ async def test_area_worker_cancelled_before_start_releases_state_lock(
     await asyncio.sleep(0)
 
     assert manager.catalog.areas(SERIAL) == before
-    assert manager.ledger.snapshot(SERIAL)["selected_area"] == selected
+    assert manager.history.snapshot(SERIAL)["selected_area"] == selected
     assert not manager.repository.state_lock(SERIAL).locked()
     assert not manager.repository.metadata_persistence_tasks.get(SERIAL)
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
     assert reloaded.catalog.areas(SERIAL) == before
-    assert reloaded.ledger.snapshot(SERIAL)["selected_area"] == selected
+    assert reloaded.history.snapshot(SERIAL)["selected_area"] == selected
 
 
 async def test_area_commit_serializes_concurrent_mutation(hass, monkeypatch):
@@ -883,7 +883,7 @@ async def test_removal_before_area_worker_mutation_rejects_accepted_task(
     """A queued owned worker observes removal before applying its mutation."""
     manager = await _manager_with_areas(hass)
     before = manager.catalog.areas(SERIAL)
-    selected = manager.ledger.snapshot(SERIAL)["selected_area"]
+    selected = manager.history.snapshot(SERIAL)["selected_area"]
     notifications = 0
 
     def notified() -> None:
@@ -906,7 +906,7 @@ async def test_removal_before_area_worker_mutation_rejects_accepted_task(
     )
     await asyncio.wait_for(worker_started.wait(), timeout=3)
     assert manager.catalog.areas(SERIAL) == before
-    assert manager.ledger.snapshot(SERIAL)["selected_area"] == selected
+    assert manager.history.snapshot(SERIAL)["selected_area"] == selected
 
     removal = asyncio.create_task(manager.async_remove_robot(SERIAL))
     try:

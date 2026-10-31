@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
-from collections import OrderedDict, defaultdict, deque
-from collections.abc import Callable, Mapping, Sequence
+from collections import OrderedDict, deque
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from time import monotonic
-from typing import Any, Literal
+from typing import Literal
 
 from google.protobuf.message import DecodeError
 from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, callback
@@ -21,7 +20,7 @@ from homeassistant.helpers.storage import Store
 
 from .client.api import MaticHermesClient
 from .client.models import FloorPlan, HermesCollectionEntry
-from .client.slam_map import (
+from .client.slam_tiles import (
     MAX_SLAM_TILES,
     MAX_TILE_ENTRY_BYTES,
     SlamStructureTile,
@@ -30,6 +29,18 @@ from .client.slam_map import (
     decode_slam_tile,
 )
 from .const import DOMAIN
+from .slam_snapshot import (
+    RecoveryBaseline,
+    SnapshotLimits,
+    SnapshotMetadata,
+    StoredSnapshot,
+    decode_snapshot,
+    encode_snapshot,
+    enforce_collection_bounds,
+    parse_tile_key,
+    stored_bytes,
+    tile_key,
+)
 
 STORAGE_VERSION = 1
 MAX_TILES = MAX_SLAM_TILES
@@ -37,8 +48,6 @@ MAX_TILES = MAX_SLAM_TILES
 # Base64 adds roughly one third on disk. Candidates use the same ceiling;
 # at most two candidates plus the active floor can be retained concurrently.
 MAX_STORED_BYTES = 64 * 1024 * 1024
-# Bounds applied by releases before snapshots recorded their provenance.
-LEGACY_BOUNDS = (1024, 16 * 1024 * 1024)
 STREAM_RETRY_SECONDS = 5
 SAVE_DELAY_SECONDS = 1
 MAP_SETTLE_SECONDS = 3
@@ -47,7 +56,6 @@ MAP_SETTLE_SECONDS = 3
 # a bounded settle period; floor area is not a correctness signal.
 MIN_COMPLETE_TILES = 1
 MIN_LAYER_OVERLAP = 0.95
-SPATIAL_BUCKETS_PER_AXIS = 8
 MAX_HEALTH_COUNTER = 2**31 - 1
 MAX_LOAD_ITEMS_PER_LAYER = MAX_TILES * 2
 MAX_CANDIDATE_MISSIONS = 2
@@ -73,8 +81,6 @@ MAX_RETIRED_MISSIONS = 8
 CANDIDATE_CLASSIFICATION_SECONDS = STREAM_RETRY_SECONDS * 3
 CANDIDATE_REFRESH_RETRY_SECONDS = STREAM_RETRY_SECONDS
 
-_Baseline = tuple[frozenset[str], frozenset[str]]
-_SnapshotHealth = tuple[str | None, bool, int, int, tuple[int, int], _Baseline | None]
 
 MapHealthState = Literal[
     "empty", "collecting", "incomplete", "ready", "truncated", "degraded"
@@ -140,8 +146,8 @@ class _MissionCandidate:
 class _LegacyRecovery:
     """Evidence a live replay must produce before a restored latch clears.
 
-    Legacy eviction removed interior pages only: ``_spatial_victim`` never
-    evicts a page on the retained bounding-box edge. The missing pages are
+    Legacy spatial eviction removed interior pages only, retaining the
+    bounding-box edge. The missing pages are
     therefore inside that box, and a replayed page inside the box that the
     old cache lacked is one of them (or a later refinement of that gap).
     """
@@ -152,7 +158,7 @@ class _LegacyRecovery:
     gap_filled: list[bool]
 
     @classmethod
-    def from_baseline(cls, layers: _Baseline) -> _LegacyRecovery:
+    def from_baseline(cls, layers: RecoveryBaseline) -> _LegacyRecovery:
         """Start, or after a restart resume, recovery from the retained set.
 
         The baseline is persisted while recovery is armed: a snapshot saved
@@ -172,7 +178,7 @@ class _LegacyRecovery:
         layer = int(structural)
         self.pending[layer].discard(key)
         if key not in self.retained[layer] and _inside(
-            _parse_tile_key(key), self.boxes[layer]
+            parse_tile_key(key), self.boxes[layer]
         ):
             self.gap_filled[layer] = True
 
@@ -182,40 +188,12 @@ class _LegacyRecovery:
         return not (self.pending[0] or self.pending[1]) and all(self.gap_filled)
 
 
-@dataclass(frozen=True, slots=True)
-class _LoadedMap:
-    """One fully decoded private storage snapshot built off the event loop."""
-
-    mission_token: str | None
-    mission_id: int | None
-    entries: dict[str, HermesCollectionEntry]
-    structure_entries: dict[str, HermesCollectionEntry]
-    truncated: bool
-    dropped_photo_tiles: int
-    dropped_structure_tiles: int
-    invalid_tiles: int
-    dirty: bool
-    # The (tiles, bytes) bounds the truncation latch was recorded under. A
-    # latch from bounds smaller than this build applies may be cleared by a
-    # complete live replay; one from the current bounds cannot.
-    bounds: tuple[int, int]
-    # The retained set recovery was armed with, when a snapshot persisted one.
-    baseline: _Baseline | None = None
-
-    @property
-    def recoverable(self) -> bool:
-        """Return whether a complete live replay may clear the latch."""
-        return self.truncated and (
-            self.bounds[0] < MAX_TILES or self.bounds[1] < MAX_STORED_BYTES
-        )
-
-
 class SlamMapStore:
     """Accumulate current robot SLAM tiles without exposing them to Recorder."""
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self._hass = hass
-        self._store = Store[dict[str, Any]](
+        self._store = Store[StoredSnapshot](
             hass,
             STORAGE_VERSION,
             f"{DOMAIN}.slam_map.{entry_id}",
@@ -272,9 +250,9 @@ class SlamMapStore:
         """Load and validate the robot-local tile cache."""
         self._cancel_candidate_expiry()
         self._cancel_candidate_refresh_retry()
-        stored = await self._store.async_load() or {}
+        stored: object = await self._store.async_load() or {}
         loaded = await self._hass.async_add_executor_job(
-            _decode_stored_snapshot, stored
+            decode_snapshot, stored, _snapshot_limits()
         )
         self._mission_token = loaded.mission_token
         self._mission_id = loaded.mission_id
@@ -299,7 +277,9 @@ class SlamMapStore:
                 loaded.baseline
                 or (frozenset(self._entries), frozenset(self._structure_entries))
             )
-            if loaded.recoverable and self._entries and self._structure_entries
+            if loaded.can_recover_under(_current_bounds())
+            and self._entries
+            and self._structure_entries
             else None
         )
         self._candidates.clear()
@@ -395,7 +375,7 @@ class SlamMapStore:
             if structural
             else self._entry_content_digests
         )
-        key = _tile_key(tile)
+        key = tile_key(tile)
         if self._legacy_recovery is not None:
             # Live delivery of a page the truncated cache retained is evidence
             # that this session's replay reaches at least that far; a page
@@ -474,7 +454,7 @@ class SlamMapStore:
             if candidate.mission_id is None:
                 candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
-        key = _tile_key(tile)
+        key = tile_key(tile)
         previous = target.get(key)
         fresh_page = previous is None
         if previous is not None:
@@ -765,7 +745,7 @@ class SlamMapStore:
     def resident_bytes(self) -> int:
         """Return raw page bytes held by the active map and all candidates."""
         return (
-            _stored_bytes(self._entries, self._structure_entries)
+            stored_bytes(self._entries, self._structure_entries)
             + self._candidate_bytes()
         )
 
@@ -773,7 +753,7 @@ class SlamMapStore:
     def _bound_candidate(
         candidate: _MissionCandidate, *, max_tiles: int, max_bytes: int
     ) -> None:
-        dropped_photo, dropped_structure = _enforce_collection_bounds(
+        dropped_photo, dropped_structure = enforce_collection_bounds(
             candidate.entries,
             candidate.structure_entries,
             max_tiles=max_tiles,
@@ -1227,7 +1207,7 @@ class SlamMapStore:
         await self._async_cancel_candidate_refresh()
         self._collection_client = None
         data = await self._hass.async_add_executor_job(
-            _serialize_snapshot,
+            encode_snapshot,
             tuple(self._entries.values()),
             tuple(self._structure_entries.values()),
             self._snapshot_health(),
@@ -1237,7 +1217,7 @@ class SlamMapStore:
         await self._store.async_save(data)
 
     def _enforce_bounds(self) -> bool:
-        dropped_photo, dropped_structure = _enforce_collection_bounds(
+        dropped_photo, dropped_structure = enforce_collection_bounds(
             self._entries,
             self._structure_entries,
             max_tiles=MAX_TILES,
@@ -1282,7 +1262,7 @@ class SlamMapStore:
             return
         self._store.async_delay_save(
             partial(
-                _serialize_snapshot,
+                encode_snapshot,
                 tuple(self._entries.values()),
                 tuple(self._structure_entries.values()),
                 self._snapshot_health(),
@@ -1290,8 +1270,8 @@ class SlamMapStore:
             SAVE_DELAY_SECONDS,
         )
 
-    def _snapshot_health(self) -> _SnapshotHealth:
-        return (
+    def _snapshot_health(self) -> SnapshotMetadata:
+        return SnapshotMetadata(
             self._mission_token,
             self._truncated,
             self._dropped_photo_tiles,
@@ -1300,220 +1280,13 @@ class SlamMapStore:
             None if self._legacy_recovery is None else self._legacy_recovery.retained,
         )
 
-    def _serialized_data(self) -> dict[str, Any]:
+    def _serialized_data(self) -> StoredSnapshot:
         """Build a private payload synchronously for diagnostics and migration."""
-        return _serialize_snapshot(
+        return encode_snapshot(
             tuple(self._entries.values()),
             tuple(self._structure_entries.values()),
             self._snapshot_health(),
         )
-
-
-def _serialize_snapshot(
-    photo_entries: tuple[HermesCollectionEntry, ...],
-    structure_entries: tuple[HermesCollectionEntry, ...],
-    health: _SnapshotHealth,
-) -> dict[str, Any]:
-    """Encode an immutable private snapshot for Home Assistant storage."""
-    mission_token, truncated, dropped_photo, dropped_structure, bounds, baseline = (
-        health
-    )
-    snapshot: dict[str, Any] = {
-        "mission_token": mission_token,
-        "truncated": truncated,
-        "dropped_photo_tiles": dropped_photo,
-        "dropped_structure_tiles": dropped_structure,
-        # Provenance of any truncation latch. A build with larger bounds may
-        # recover the latch from a complete live replay; the same bounds
-        # cannot, because the evicted pages would be evicted again.
-        "bounds": {"tiles": bounds[0], "bytes": bounds[1]},
-        "tiles": [_serialize_entry(item) for item in photo_entries],
-        "structure_tiles": [_serialize_entry(item) for item in structure_entries],
-    }
-    if baseline is not None:
-        # Content-free page coordinates only; retained while recovery is armed.
-        snapshot["legacy_retained"] = {
-            "tiles": sorted(baseline[0]),
-            "structure_tiles": sorted(baseline[1]),
-        }
-    return snapshot
-
-
-def _serialize_entry(item: HermesCollectionEntry) -> dict[str, str]:
-    return {
-        "key": base64.b64encode(item.key).decode("ascii"),
-        "value": base64.b64encode(item.value).decode("ascii"),
-    }
-
-
-def _decode_stored_snapshot(stored: object) -> _LoadedMap:
-    """Decode and bound one private cache snapshot away from the event loop."""
-    if not isinstance(stored, Mapping):
-        return _LoadedMap(None, None, {}, {}, False, 0, 0, 1, True, _current_bounds())
-    stored_mission = _stored_mission_token(stored.get("mission_token"))
-    mission_token = stored_mission
-    truncated = stored.get("truncated") is True
-    dropped_photo = _bounded_count(stored.get("dropped_photo_tiles", 0))
-    dropped_structure = _bounded_count(stored.get("dropped_structure_tiles", 0))
-    invalid = 0
-    # Snapshots written before provenance was recorded come from the smaller
-    # pre-0.5 limits. A malformed record is not evidence of smaller bounds.
-    stored_bounds = (
-        _stored_bounds(stored["bounds"]) if "bounds" in stored else LEGACY_BOUNDS
-    )
-    bounds = _current_bounds() if stored_bounds is None else stored_bounds
-    baseline = (
-        _stored_baseline(stored["legacy_retained"])
-        if "legacy_retained" in stored
-        else None
-    )
-    dirty = (
-        (stored.get("mission_token") is not None and stored_mission is None)
-        or ("truncated" in stored and not isinstance(stored["truncated"], bool))
-        or stored_bounds is None
-        or ("legacy_retained" in stored and baseline is None)
-        or dropped_photo != stored.get("dropped_photo_tiles", 0)
-        or dropped_structure != stored.get("dropped_structure_tiles", 0)
-    )
-    entries: dict[str, HermesCollectionEntry] = {}
-    structure_entries: dict[str, HermesCollectionEntry] = {}
-    mission_ids: set[int] = set()
-
-    for structural, name in ((False, "tiles"), (True, "structure_tiles")):
-        items = stored.get(name, ())
-        if not isinstance(items, Sequence) or isinstance(items, str | bytes):
-            invalid = _increment(invalid)
-            dirty = True
-            continue
-        item_limit = min(len(items), MAX_LOAD_ITEMS_PER_LAYER)
-        if len(items) > item_limit:
-            overflow = len(items) - item_limit
-            truncated = True
-            bounds = _current_bounds()
-            if structural:
-                dropped_structure = _increment_by(dropped_structure, overflow)
-            else:
-                dropped_photo = _increment_by(dropped_photo, overflow)
-            dirty = True
-        for index in range(item_limit):
-            item = items[index]
-            if not isinstance(item, Mapping):
-                invalid = _increment(invalid)
-                dirty = True
-                continue
-            try:
-                encoded_key = item["key"]
-                encoded_value = item["value"]
-                encoded_limit = ((MAX_TILE_ENTRY_BYTES + 2) // 3) * 4
-                if any(
-                    not isinstance(value, str) or len(value) > encoded_limit
-                    for value in (encoded_key, encoded_value)
-                ):
-                    raise ValueError("stored tile exceeds the encoded byte limit")
-                decoded_bytes = sum(
-                    ((len(value) + 3) // 4) * 3
-                    - (2 if value.endswith("==") else int(value.endswith("=")))
-                    for value in (encoded_key, encoded_value)
-                )
-                if decoded_bytes > MAX_TILE_ENTRY_BYTES:
-                    raise ValueError("stored tile exceeds the combined byte limit")
-                entry = HermesCollectionEntry(
-                    base64.b64decode(encoded_key, validate=True),
-                    base64.b64decode(encoded_value, validate=True),
-                )
-                tile = (
-                    decode_slam_structure_tile(entry)
-                    if structural
-                    else decode_slam_tile(entry)
-                )
-            except DecodeError, KeyError, TypeError, ValueError:
-                invalid = _increment(invalid)
-                dirty = True
-                continue
-            if mission_token not in (None, tile.mission_token):
-                if structural and entries:
-                    # A delayed structural page from an older/newer mission
-                    # must never erase a usable photographic scene during
-                    # legacy-cache repair. Keep the photo mission and discard
-                    # only the mismatched supporting page; a later matching
-                    # page can still complete the pair.
-                    dirty = True
-                    continue
-                entries.clear()
-                structure_entries.clear()
-                mission_ids.clear()
-                truncated = False
-                bounds = _current_bounds()
-                baseline = None
-                dropped_photo = 0
-                dropped_structure = 0
-                invalid = 0
-                dirty = True
-            if tile.mission_id is not None:
-                mission_ids.add(tile.mission_id)
-            mission_token = tile.mission_token
-            target = structure_entries if structural else entries
-            key = _tile_key(tile)
-            if key in target:
-                dirty = True
-            target[key] = entry
-            evicted_photo, evicted_structure = _enforce_collection_bounds(
-                entries,
-                structure_entries,
-                max_tiles=MAX_TILES,
-                max_bytes=MAX_STORED_BYTES,
-            )
-            if evicted_photo or evicted_structure:
-                # Evicted under the current bounds: not recoverable by replay.
-                truncated = True
-                bounds = _current_bounds()
-                dropped_photo = _increment_by(dropped_photo, evicted_photo)
-                dropped_structure = _increment_by(dropped_structure, evicted_structure)
-                dirty = True
-
-    if stored_mission is None and mission_token is not None:
-        dirty = True
-    return _LoadedMap(
-        mission_token,
-        next(iter(mission_ids), None) if len(mission_ids) == 1 else None,
-        entries,
-        structure_entries,
-        truncated,
-        dropped_photo,
-        dropped_structure,
-        invalid,
-        dirty,
-        bounds,
-        baseline,
-    )
-
-
-def _stored_baseline(value: object) -> _Baseline | None:
-    """Return the persisted recovery baseline, or ``None`` when malformed."""
-    if not isinstance(value, Mapping):
-        return None
-    layers: list[frozenset[str]] = []
-    for name in ("tiles", "structure_tiles"):
-        items = value.get(name)
-        if (
-            not isinstance(items, Sequence)
-            or isinstance(items, str | bytes)
-            or not 0 < len(items) <= MAX_TILES
-        ):
-            return None
-        keys: set[str] = set()
-        for item in items:
-            if not isinstance(item, str) or len(item) > 32:
-                return None
-            try:
-                x, y = _parse_tile_key(item)
-            except ValueError:
-                return None
-            if item != f"{x}:{y}":
-                return None
-            keys.add(item)
-        layers.append(frozenset(keys))
-    return layers[0], layers[1]
 
 
 def _current_bounds() -> tuple[int, int]:
@@ -1521,159 +1294,13 @@ def _current_bounds() -> tuple[int, int]:
     return MAX_TILES, MAX_STORED_BYTES
 
 
-def _stored_bounds(value: object) -> tuple[int, int] | None:
-    """Return the (tiles, bytes) bounds a snapshot was written under."""
-    if not isinstance(value, Mapping):
-        return None
-    tiles = value.get("tiles")
-    stored_bytes = value.get("bytes")
-    if any(
-        not isinstance(item, int) or isinstance(item, bool) or item < 0
-        for item in (tiles, stored_bytes)
-    ):
-        return None
-    assert isinstance(tiles, int) and isinstance(stored_bytes, int)
-    return tiles, stored_bytes
-
-
-def _enforce_collection_bounds(
-    entries: dict[str, HermesCollectionEntry],
-    structure_entries: dict[str, HermesCollectionEntry],
-    *,
-    max_tiles: int,
-    max_bytes: int,
-) -> tuple[int, int]:
-    """Mutate two layers to bounded, spatially useful paired coverage."""
-    dropped_photo = 0
-    dropped_structure = 0
-
-    def drop_layer(
-        collection: dict[str, HermesCollectionEntry], *, structural: bool
-    ) -> None:
-        nonlocal dropped_photo, dropped_structure
-        counterpart = entries if structural else structure_entries
-        key = _spatial_victim(collection)
-        collection.pop(key)
-        if structural:
-            dropped_structure += 1
-        else:
-            dropped_photo += 1
-        if key in counterpart:
-            counterpart.pop(key)
-            if structural:
-                dropped_photo += 1
-            else:
-                dropped_structure += 1
-
-    while len(entries) > max_tiles:
-        drop_layer(entries, structural=False)
-    while len(structure_entries) > max_tiles:
-        drop_layer(structure_entries, structural=True)
-    while _stored_bytes(entries, structure_entries) > max_bytes:
-        photo_only = entries.keys() - structure_entries.keys()
-        structure_only = structure_entries.keys() - entries.keys()
-        if photo_only or structure_only:
-            if photo_only and (
-                not structure_only or len(photo_only) >= len(structure_only)
-            ):
-                drop_layer(entries, structural=False)
-            else:
-                drop_layer(structure_entries, structural=True)
-            continue
-        if entries:
-            drop_layer(entries, structural=False)
-    return dropped_photo, dropped_structure
-
-
 def _candidate_stored_bytes(candidate: _MissionCandidate) -> int:
-    return _stored_bytes(candidate.entries, candidate.structure_entries)
+    return stored_bytes(candidate.entries, candidate.structure_entries)
 
 
 def _candidate_age(candidate: _MissionCandidate) -> int:
     """Sort key placing the oldest observed candidate first."""
     return candidate.generation
-
-
-def _stored_bytes(
-    entries: Mapping[str, HermesCollectionEntry],
-    structure_entries: Mapping[str, HermesCollectionEntry],
-) -> int:
-    return sum(
-        len(item.key) + len(item.value)
-        for collection in (entries, structure_entries)
-        for item in collection.values()
-    )
-
-
-def _spatial_victim(
-    collection: Mapping[str, HermesCollectionEntry],
-) -> str:
-    """Choose a redundant page while retaining broad, deterministic coverage."""
-    available = sorted(collection)
-    if len(available) == 1:
-        return available[0]
-    coordinates = {key: _parse_tile_key(key) for key in available}
-    min_x = min(point[0] for point in coordinates.values())
-    max_x = max(point[0] for point in coordinates.values())
-    min_y = min(point[1] for point in coordinates.values())
-    max_y = max(point[1] for point in coordinates.values())
-    extrema = {
-        key
-        for key, (x, y) in coordinates.items()
-        if x in (min_x, max_x) or y in (min_y, max_y)
-    }
-    removable = [key for key in available if key not in extrema] or available
-    buckets: dict[tuple[int, int], list[str]] = defaultdict(list)
-    for key in removable:
-        x, y = coordinates[key]
-        bucket_x = _bucket(x, min_x, max_x)
-        bucket_y = _bucket(y, min_y, max_y)
-        buckets[(bucket_x, bucket_y)].append(key)
-    bucket_center = (SPATIAL_BUCKETS_PER_AXIS - 1) / 2
-    fullest = min(
-        buckets,
-        key=lambda item: (
-            -len(buckets[item]),
-            (item[0] - bucket_center) ** 2 + (item[1] - bucket_center) ** 2,
-            item,
-        ),
-    )
-    bucket_keys = buckets[fullest]
-    center_x = (min_x + max_x) / 2
-    center_y = (min_y + max_y) / 2
-    return min(
-        bucket_keys,
-        key=lambda key: (
-            (coordinates[key][0] - center_x) ** 2
-            + (coordinates[key][1] - center_y) ** 2,
-            key,
-        ),
-    )
-
-
-def _bucket(value: int, minimum: int, maximum: int) -> int:
-    if minimum == maximum:
-        return 0
-    return min(
-        SPATIAL_BUCKETS_PER_AXIS - 1,
-        (value - minimum) * SPATIAL_BUCKETS_PER_AXIS // (maximum - minimum + 1),
-    )
-
-
-def _bounded_count(value: object) -> int:
-    if not isinstance(value, int) or isinstance(value, bool):
-        return 0
-    return min(MAX_HEALTH_COUNTER, max(0, value))
-
-
-def _stored_mission_token(value: object) -> str | None:
-    if not isinstance(value, str) or len(value) != 64:
-        return None
-    try:
-        bytes.fromhex(value)
-    except ValueError:
-        return None
-    return value
 
 
 def _increment(value: int) -> int:
@@ -1701,7 +1328,7 @@ def _tile_content_digest(tile: SlamTile | SlamStructureTile) -> bytes:
 
 def _bounding_box(keys: frozenset[str]) -> tuple[int, int, int, int]:
     """Return (min_x, max_x, min_y, max_y) of a non-empty page set."""
-    points = [_parse_tile_key(key) for key in keys]
+    points = [parse_tile_key(key) for key in keys]
     xs = [x for x, _ in points]
     ys = [y for _, y in points]
     return min(xs), max(xs), min(ys), max(ys)
@@ -1711,10 +1338,12 @@ def _inside(point: tuple[int, int], box: tuple[int, int, int, int]) -> bool:
     return box[0] <= point[0] <= box[1] and box[2] <= point[1] <= box[3]
 
 
-def _tile_key(tile: SlamTile | SlamStructureTile) -> str:
-    return f"{tile.page_x}:{tile.page_y}"
-
-
-def _parse_tile_key(key: str) -> tuple[int, int]:
-    x, y = key.split(":", 1)
-    return int(x), int(y)
+def _snapshot_limits() -> SnapshotLimits:
+    """Capture current store admission limits for an off-loop decode."""
+    return SnapshotLimits(
+        max_tiles=MAX_TILES,
+        max_bytes=MAX_STORED_BYTES,
+        max_load_items_per_layer=MAX_LOAD_ITEMS_PER_LAYER,
+        max_tile_entry_bytes=MAX_TILE_ENTRY_BYTES,
+        max_health_counter=MAX_HEALTH_COUNTER,
+    )

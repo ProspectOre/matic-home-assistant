@@ -16,6 +16,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from zeroconf import ServiceStateChange
 
 from custom_components.matic_robot import config_flow as flow_module
+from custom_components.matic_robot import config_flow_discovery as discovery_module
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
@@ -24,6 +25,8 @@ from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
 from custom_components.matic_robot.config_flow import (
     MaticRobotConfigFlow,
     MaticRobotOptionsFlow,
+)
+from custom_components.matic_robot.config_flow_discovery import (
     _async_discover_robots,
     _async_select_discovery_host,
     _preferred_discovery_host,
@@ -218,12 +221,12 @@ async def test_manual_setup_uses_home_assistant_shared_zeroconf(
             return ["192.0.2.1"]
 
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
-    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
     monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
 
     discoveries = await _async_discover_robots(hass)
@@ -268,12 +271,12 @@ async def test_manual_discovery_discards_incomplete_records(
             return addresses
 
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
-    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
     monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
 
     assert await _async_discover_robots(hass) == []
@@ -290,11 +293,11 @@ async def test_manual_discovery_returns_empty_when_no_services_are_seen(
             return None
 
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
 
     assert await _async_discover_robots(hass, discovery_seconds=0) == []
 
@@ -339,16 +342,16 @@ async def test_manual_discovery_caps_names_addresses_and_resolution_concurrency(
         def parsed_scoped_addresses(self, _ip_version):
             return [f"192.0.2.{index}" for index in range(1, 10)]
 
-    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_SERVICES", 3)
-    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_ADDRESSES", 2)
-    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_CONCURRENCY", 2)
+    monkeypatch.setattr(discovery_module, "MAX_DISCOVERY_SERVICES", 3)
+    monkeypatch.setattr(discovery_module, "MAX_DISCOVERY_ADDRESSES", 2)
+    monkeypatch.setattr(discovery_module, "DISCOVERY_RESOLVE_CONCURRENCY", 2)
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
-    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
 
     discoveries = await _async_discover_robots(hass, discovery_seconds=0)
 
@@ -389,15 +392,15 @@ async def test_manual_discovery_has_one_global_resolution_deadline(
             finally:
                 cancelled_names.append(self.name)
 
-    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_CONCURRENCY", 1)
-    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(discovery_module, "DISCOVERY_RESOLVE_CONCURRENCY", 1)
+    monkeypatch.setattr(discovery_module, "DISCOVERY_RESOLVE_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
-    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
 
     assert await _async_discover_robots(hass, discovery_seconds=0) == []
     assert started_names == ["stale-0.service"]
@@ -496,11 +499,11 @@ async def test_discovery_probes_advertised_addresses_for_live_robot(
         return b"certificate"
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.validate_certificate",
+        "custom_components.matic_robot.config_flow_discovery.validate_certificate",
         lambda _certificate, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.async_fetch_peer_certificate",
+        "custom_components.matic_robot.config_flow_discovery.async_fetch_peer_certificate",
         fetch_certificate,
     )
     monkeypatch.setattr(
@@ -527,11 +530,11 @@ async def test_discovery_probes_fresh_hostname_resolution(monkeypatch) -> None:
         return b"certificate"
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.validate_certificate",
+        "custom_components.matic_robot.config_flow_discovery.validate_certificate",
         lambda _certificate, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.async_fetch_peer_certificate",
+        "custom_components.matic_robot.config_flow_discovery.async_fetch_peer_certificate",
         fetch_certificate,
     )
     monkeypatch.setattr(
@@ -571,7 +574,7 @@ async def test_discovery_falls_back_when_resolution_and_probes_fail(
         AsyncMock(side_effect=OSError("resolution failed")),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.async_fetch_peer_certificate",
+        "custom_components.matic_robot.config_flow_discovery.async_fetch_peer_certificate",
         AsyncMock(side_effect=CannotConnectError("offline")),
     )
 
@@ -588,8 +591,10 @@ async def test_discovery_probe_timeout_falls_back_to_advertised_address(
         await never.wait()
         return b"certificate"
 
-    monkeypatch.setattr(flow_module, "DISCOVERY_PROBE_TIMEOUT_SECONDS", 0)
-    monkeypatch.setattr(flow_module, "async_fetch_peer_certificate", fetch_certificate)
+    monkeypatch.setattr(discovery_module, "DISCOVERY_PROBE_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(
+        discovery_module, "async_fetch_peer_certificate", fetch_certificate
+    )
     monkeypatch.setattr(
         asyncio.get_running_loop(), "getaddrinfo", AsyncMock(return_value=[])
     )
@@ -613,8 +618,10 @@ async def test_discovery_caps_candidate_address_probe_fanout(monkeypatch) -> Non
         probed.append(host)
         raise CannotConnectError("offline")
 
-    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_ADDRESSES", 3)
-    monkeypatch.setattr(flow_module, "async_fetch_peer_certificate", fetch_certificate)
+    monkeypatch.setattr(discovery_module, "MAX_DISCOVERY_ADDRESSES", 3)
+    monkeypatch.setattr(
+        discovery_module, "async_fetch_peer_certificate", fetch_certificate
+    )
     monkeypatch.setattr(
         asyncio.get_running_loop(),
         "getaddrinfo",
@@ -1308,7 +1315,9 @@ async def test_options_flow_sets_existing_plan_as_default(hass) -> None:
     assert result["reason"] == "default_plan_set"
     assert result["description_placeholders"] == {"plan_name": "Second plan"}
     assert dict(entry.options) == {"keep": "value"}
-    assert manager.ledger.snapshot("synthetic-serial")["selected_plan"] == "second_plan"
+    assert (
+        manager.history.snapshot("synthetic-serial")["selected_plan"] == "second_plan"
+    )
 
 
 async def test_options_flow_rejects_default_plan_removed_during_selection(hass) -> None:
@@ -1399,7 +1408,7 @@ async def test_options_flow_resets_one_named_plan_after_confirmation(hass) -> No
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "history_reset"
     assert result["description_placeholders"] == {"plan_name": "Whole home"}
-    assert set(manager.ledger.snapshot("synthetic-serial")["plan_history"]) == {
+    assert set(manager.history.snapshot("synthetic-serial")["plan_history"]) == {
         "second_plan"
     }
     assert dict(entry.options) == {"keep": "value"}
@@ -1420,7 +1429,7 @@ async def test_options_flow_resets_all_plans_after_confirmation(hass) -> None:
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "all_history_reset"
     assert result["description_placeholders"] is None
-    assert manager.ledger.snapshot("synthetic-serial")["plan_history"] == {}
+    assert manager.history.snapshot("synthetic-serial")["plan_history"] == {}
     assert dict(entry.options) == {"keep": "value"}
 
 

@@ -194,7 +194,7 @@ async def test_restart_rejoins_the_same_native_mission(
     assert plan.finished == []
     plans = plan.entry.runtime_data.cleaning_plans
     async with asyncio.timeout(10):
-        while (plans.control.recovery_run(robot.serial_number) or {}).get(
+        while (plans.recovery.recovery_run(robot.serial_number) or {}).get(
             "recovery_reason"
         ) != "same_native_mission_verified":
             await plan.poll()

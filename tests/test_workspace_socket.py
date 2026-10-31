@@ -277,7 +277,7 @@ def test_snapshot_omits_invalid_projected_scene_revision() -> None:
     }
 
     with patch(
-        "custom_components.matic_robot.slam_scene.catalog_entry_projection",
+        "custom_components.matic_robot.slam_view_data.catalog_entry_projection",
         return_value=projection,
     ):
         snapshot = WorkspaceSocket(_Hass([entry])).snapshot("entry-a")
@@ -304,7 +304,7 @@ def test_snapshot_scene_fence_uses_current_revision_while_payload_is_cached() ->
     manager = WorkspaceSocket(hass)
 
     with patch(
-        "custom_components.matic_robot.slam_scene.catalog_entry_projection",
+        "custom_components.matic_robot.slam_view_data.catalog_entry_projection",
         return_value=projection,
     ):
         first = manager.snapshot("entry-a")

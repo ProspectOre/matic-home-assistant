@@ -239,7 +239,7 @@ async def test_preview_leaves_held_rooms_out_and_keeps_their_rotation(hass) -> N
     rotation_before = manager.repository.robot("serial")["rotations"]["home"]
 
     held = {"room-kitchen": {"reason": "occupied", "sensor": "binary_sensor.k"}}
-    preview = manager.catalog.preview("serial", ROOM_MAP, "home", held_rooms=held)
+    preview = manager.planning.preview("serial", ROOM_MAP, "home", held_rooms=held)
 
     assert [room["room_id"] for room in preview["rooms"]] == ["room-study"]
     assert [entry["room_id"] for entry in preview["entries"]] == ["room-study"]
@@ -255,12 +255,12 @@ async def test_preview_leaves_held_rooms_out_and_keeps_their_rotation(hass) -> N
     # Once the room clears, it is first in line again under Smart Order.
     assert [
         room["room_id"]
-        for room in manager.catalog.preview("serial", ROOM_MAP, "home")["rooms"]
+        for room in manager.planning.preview("serial", ROOM_MAP, "home")["rooms"]
     ] == ["room-kitchen", "room-study"]
-    assert "held_rooms" not in manager.catalog.preview("serial", ROOM_MAP, "home")
+    assert "held_rooms" not in manager.planning.preview("serial", ROOM_MAP, "home")
 
     with pytest.raises(PlanRoomsHeldError):
-        manager.catalog.preview(
+        manager.planning.preview(
             "serial",
             ROOM_MAP,
             "home",
@@ -337,7 +337,7 @@ async def test_save_plan_stores_occupancy_settings_for_its_rooms(hass) -> None:
     )
     context = ("vacuum.test", SimpleNamespace(), "serial", {"room-kitchen": "Kitchen"})
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         result = await _registered_handler(services, "save_plan")(call)
@@ -409,14 +409,14 @@ async def test_preview_and_run_hold_occupied_rooms(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
             "custom_components.matic_robot.service_plans.occupancy_holds", read_holds
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(side_effect=execute),
         ) as run,
     ):
@@ -447,7 +447,7 @@ async def test_run_refuses_when_every_room_is_held(hass) -> None:
     }
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
@@ -455,7 +455,7 @@ async def test_run_refuses_when_every_room_is_held(hass) -> None:
             return_value=holds,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(),
         ) as run,
         pytest.raises(ServiceValidationError) as raised,
@@ -478,7 +478,7 @@ async def test_preview_of_unknown_plan_reads_no_occupancy(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch("custom_components.matic_robot.service_plans.occupancy_holds") as read,
@@ -593,8 +593,8 @@ async def test_plan_workspace_projects_occupancy_settings_and_held_rooms() -> No
             "occupancy_sensors": {"room-2": "binary_sensor.study", "room-3": "x"},
         }
     )
-    runtime.cleaning_plans.catalog.preview.side_effect = None
-    runtime.cleaning_plans.catalog.preview.return_value = {
+    runtime.cleaning_plans.planning.preview.side_effect = None
+    runtime.cleaning_plans.planning.preview.return_value = {
         "rooms": [
             {
                 "room_id": "room-1",
@@ -629,13 +629,15 @@ async def test_plan_workspace_projects_occupancy_settings_and_held_rooms() -> No
         }
     ]
     assert holds.call_args.args[1] == "vacuum.matic"
-    assert runtime.cleaning_plans.catalog.preview.call_args.kwargs["held_rooms"] == held
+    assert (
+        runtime.cleaning_plans.planning.preview.call_args.kwargs["held_rooms"] == held
+    )
 
 
 async def test_plan_workspace_reports_every_room_held() -> None:
     held = {"room-1": {"reason": "occupied", "sensor": "binary_sensor.kitchen"}}
     runtime = _workspace_runtime({"occupancy_aware": True})
-    runtime.cleaning_plans.catalog.preview.side_effect = PlanRoomsHeldError("all held")
+    runtime.cleaning_plans.planning.preview.side_effect = PlanRoomsHeldError("all held")
     with (
         patch(
             "custom_components.matic_robot.plan_views.entry_vacuum_entity_id",
@@ -665,8 +667,8 @@ async def test_plan_workspace_reports_every_room_held() -> None:
 
 async def test_plan_workspace_reads_no_occupancy_without_a_vacuum() -> None:
     runtime = _workspace_runtime({"occupancy_aware": True})
-    runtime.cleaning_plans.catalog.preview.side_effect = None
-    runtime.cleaning_plans.catalog.preview.return_value = {
+    runtime.cleaning_plans.planning.preview.side_effect = None
+    runtime.cleaning_plans.planning.preview.return_value = {
         "rooms": [
             {
                 "room_id": "room-1",
@@ -688,4 +690,4 @@ async def test_plan_workspace_reads_no_occupancy_without_a_vacuum() -> None:
 
     holds.assert_not_called()
     assert "held_rooms" not in plan["next_run_preview"]
-    assert "held_rooms" not in runtime.cleaning_plans.catalog.preview.call_args.kwargs
+    assert "held_rooms" not in runtime.cleaning_plans.planning.preview.call_args.kwargs

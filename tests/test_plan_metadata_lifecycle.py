@@ -207,7 +207,7 @@ async def test_stale_dock_is_noop_and_matching_dock_commits(hass, monkeypatch) -
     manager.control.mark_stop_pending(SERIAL, run_id="current-run")
     token = manager.control.stop_fence_token(SERIAL)
     assert token is not None
-    before = manager.ledger.snapshot(SERIAL)
+    before = manager.history.snapshot(SERIAL)
     saves = 0
     original_save = manager.repository.store.async_save
     events: list[object] = []
@@ -228,7 +228,7 @@ async def test_stale_dock_is_noop_and_matching_dock_commits(hass, monkeypatch) -
     )
     assert saves == 0
     assert events == []
-    assert manager.ledger.snapshot(SERIAL) == before
+    assert manager.history.snapshot(SERIAL) == before
 
     assert await manager.ledger.async_mark_run_docked(
         SERIAL, "current-run", stop_fence_token=token
@@ -237,12 +237,12 @@ async def test_stale_dock_is_noop_and_matching_dock_commits(hass, monkeypatch) -
     assert len(events) == 2
     assert events[0] == "listener"
     assert events[1].data["run_id"] == "current-run"
-    assert manager.ledger.snapshot(SERIAL)["last_run"]["outcome"] == "stopped_docked"
+    assert manager.history.snapshot(SERIAL)["last_run"]["outcome"] == "stopped_docked"
     assert not manager.control.stop_pending(SERIAL)
 
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    assert reloaded.ledger.snapshot(SERIAL)["last_run"]["outcome"] == "stopped_docked"
+    assert reloaded.history.snapshot(SERIAL)["last_run"]["outcome"] == "stopped_docked"
 
 
 async def test_matching_dock_after_metadata_shutdown_cannot_commit(hass, monkeypatch):
@@ -279,7 +279,7 @@ async def test_matching_dock_after_metadata_shutdown_cannot_commit(hass, monkeyp
 
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    assert reloaded.ledger.snapshot(SERIAL)["last_run"]["outcome"] == "cancelled"
+    assert reloaded.history.snapshot(SERIAL)["last_run"]["outcome"] == "cancelled"
 
 
 async def test_after_commit_callback_failure_preserves_durable_owner_result(
@@ -491,10 +491,10 @@ async def test_closed_mixed_stop_calls_preserve_checkpoint_and_fence(hass) -> No
     await manager.repository.async_close_metadata_admission_and_wait(prepare_serial)
     await manager.repository.async_close_metadata_admission_and_wait(rollback_serial)
 
-    await manager.ledger.async_prepare_mixed_dispatch_stop(
+    await manager.recovery.async_prepare_mixed_dispatch_stop(
         prepare_serial, "prepare-run", session_hash
     )
-    await manager.ledger.async_rollback_mixed_dispatch_stop(
+    await manager.recovery.async_rollback_mixed_dispatch_stop(
         rollback_serial, "rollback-run", session_hash
     )
 

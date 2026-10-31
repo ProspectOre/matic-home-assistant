@@ -37,7 +37,7 @@ from custom_components.matic_robot.client.models import (
     RobotPose,
     Room,
 )
-from custom_components.matic_robot.client.slam_map import decode_slam_tile
+from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
 from custom_components.matic_robot.const import (
     CONF_LIVE_WORKSPACE_TRANSPORT,
     DOMAIN,
@@ -74,15 +74,19 @@ from custom_components.matic_robot.plan_views import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
+from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
-from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from custom_components.matic_robot.slam_scene import (
-    MaticSlamCatalogView,
-    MaticSlamDeltaView,
+from custom_components.matic_robot.slam_history_view import (
     MaticSlamHistorySceneView,
     MaticSlamHistoryView,
-    MaticSlamPoseView,
+)
+from custom_components.matic_robot.slam_map_store import SlamMapIdentity
+from custom_components.matic_robot.slam_pose_view import MaticSlamPoseView
+from custom_components.matic_robot.slam_scene import (
+    MaticSlamDeltaView,
     MaticSlamSceneView,
+)
+from custom_components.matic_robot.slam_view_data import (
     _map_session_key,
     catalog_entry_projection,
 )
@@ -182,15 +186,17 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
             catalog=SimpleNamespace(
                 areas=MagicMock(return_value={}),
                 plans=MagicMock(return_value={}),
-                preview=MagicMock(return_value={"rooms": []}),
                 selected_area=MagicMock(return_value=None),
                 async_save_area=AsyncMock(),
                 async_delete_area=AsyncMock(),
             ),
-            ledger=SimpleNamespace(
+            planning=SimpleNamespace(preview=MagicMock(return_value={"rooms": []})),
+            history=SimpleNamespace(
                 snapshot=MagicMock(
                     return_value={"selected_plan": None, "active_plan": None}
                 ),
+            ),
+            ledger=SimpleNamespace(
                 pending_native_reconciliation=MagicMock(return_value=None),
             ),
             control=SimpleNamespace(
@@ -901,11 +907,11 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
 
     with (
         patch(
-            "custom_components.matic_robot.slam_scene.monotonic",
+            "custom_components.matic_robot.slam_pose_view.monotonic",
             side_effect=(10.0, 10.0, 10.0, 10.0, 10.25, 10.25),
         ),
         patch(
-            "custom_components.matic_robot.slam_scene.time",
+            "custom_components.matic_robot.slam_pose_view.time",
             return_value=runtime.coordinator.data.pose.observed_at,
         ),
     ):
@@ -936,7 +942,9 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
     fallback_runtime = _runtime(pose=False)
     fallback_runtime.client.async_get_pose.side_effect = CannotConnectError("offline")
     fallback_hass = _hass(_entry(fallback_runtime))
-    with patch("custom_components.matic_robot.slam_scene.monotonic", return_value=20.0):
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.monotonic", return_value=20.0
+    ):
         fallback = await MaticSlamPoseView().get(_request(fallback_hass), "entry")
     fallback_payload = json.loads(fallback.body)
     assert fallback_payload["position"] is None
@@ -948,7 +956,9 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
     unavailable_runtime = _runtime(pose=False)
     unavailable_runtime.coordinator.data.floor_plan = None
     unavailable_hass = _hass(_entry(unavailable_runtime))
-    with patch("custom_components.matic_robot.slam_scene.monotonic", return_value=30.0):
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.monotonic", return_value=30.0
+    ):
         unavailable = await MaticSlamPoseView().get(_request(unavailable_hass), "entry")
     assert json.loads(unavailable.body) == {
         "position": None,
@@ -987,8 +997,10 @@ async def test_pose_successful_fetch_does_not_certify_native_observation(
         0.1, 0.2, 0.0, mission_id=mission_id, observed_at=observed_at
     )
     with (
-        patch("custom_components.matic_robot.slam_scene.time", return_value=1000.0),
-        patch("custom_components.matic_robot.slam_scene.monotonic", return_value=10.0),
+        patch("custom_components.matic_robot.slam_pose_view.time", return_value=1000.0),
+        patch(
+            "custom_components.matic_robot.slam_pose_view.monotonic", return_value=10.0
+        ),
     ):
         response = await MaticSlamPoseView().get(
             _request(_hass(_entry(runtime))), "entry"
@@ -1011,10 +1023,12 @@ async def test_pose_native_age_expires_inside_transport_cache() -> None:
     view = MaticSlamPoseView()
     with (
         patch(
-            "custom_components.matic_robot.slam_scene.time",
+            "custom_components.matic_robot.slam_pose_view.time",
             side_effect=(1004.99, 1005.01),
         ),
-        patch("custom_components.matic_robot.slam_scene.monotonic", return_value=10.0),
+        patch(
+            "custom_components.matic_robot.slam_pose_view.monotonic", return_value=10.0
+        ),
     ):
         current = json.loads((await view.get(_request(hass), "entry")).body)
         expired = json.loads((await view.get(_request(hass), "entry")).body)
@@ -1337,7 +1351,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
 
     runtime.cleaning_plans.control.lock.return_value.locked.return_value = True
     runtime.cleaning_plans.control.stop_pending.return_value = True
-    runtime.cleaning_plans.ledger.snapshot.return_value = {
+    runtime.cleaning_plans.history.snapshot.return_value = {
         "active_plan": {"plan_id": "private-plan", "room_id": "private-room"}
     }
     runtime.cleaning_plans.ledger.pending_native_reconciliation.return_value = {
@@ -1486,7 +1500,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     runtime.cleaning_plans.catalog.selected_area.assert_called_once_with(
         "synthetic-serial"
     )
-    runtime.cleaning_plans.ledger.snapshot.assert_not_called()
+    runtime.cleaning_plans.history.snapshot.assert_not_called()
     room_geometry = classify.call_args_list[0].kwargs["room_geometry"]
     assert all(
         call.kwargs["room_geometry"] is room_geometry
@@ -1618,8 +1632,8 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
             "finish_current_room_threshold": 60,
         }
     }
-    runtime.cleaning_plans.ledger.snapshot.return_value = {"selected_plan": "weekday"}
-    runtime.cleaning_plans.catalog.preview.return_value = {
+    runtime.cleaning_plans.history.snapshot.return_value = {"selected_plan": "weekday"}
+    runtime.cleaning_plans.planning.preview.return_value = {
         "rooms": [
             {
                 "room_id": "room-1",
@@ -1630,11 +1644,11 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
             }
         ]
     }
-    runtime.cleaning_plans.catalog.preview.side_effect = None
+    runtime.cleaning_plans.planning.preview.side_effect = None
     hass = _hass(_entry(runtime))
     view = MaticPlansView()
     preview_token = saved_plan_preview_token(
-        runtime.cleaning_plans.catalog.preview.return_value,
+        runtime.cleaning_plans.planning.preview.return_value,
         entry_id="entry",
         floor_token=plan_floor_token(runtime.coordinator.data.floor_plan),
         room_identities={
@@ -1722,10 +1736,10 @@ async def test_plan_workspace_explains_legacy_room_limit() -> None:
             "room_order": ["room-1"],
         }
     }
-    runtime.cleaning_plans.catalog.preview.side_effect = RoomSequenceLimitError(
+    runtime.cleaning_plans.planning.preview.side_effect = RoomSequenceLimitError(
         "A plan can include at most 100 rooms"
     )
-    runtime.cleaning_plans.ledger.next_run_estimate_seconds = MagicMock(
+    runtime.cleaning_plans.history.next_run_estimate_seconds = MagicMock(
         return_value=1980
     )
     hass = _hass(_entry(runtime))
@@ -1739,7 +1753,7 @@ async def test_plan_workspace_explains_legacy_room_limit() -> None:
         "blocker": "plan_room_limit",
     }
     assert plan["next_run_estimate_seconds"] is None
-    runtime.cleaning_plans.ledger.next_run_estimate_seconds.assert_not_called()
+    runtime.cleaning_plans.history.next_run_estimate_seconds.assert_not_called()
 
 
 async def test_plan_workspace_projects_saved_and_shared_cadence_state() -> None:
@@ -1959,9 +1973,9 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
             },
         ]
     }
-    runtime.cleaning_plans.catalog.preview.return_value = preview_result
-    runtime.cleaning_plans.catalog.preview.side_effect = None
-    runtime.cleaning_plans.ledger.next_run_estimate_seconds = MagicMock(
+    runtime.cleaning_plans.planning.preview.return_value = preview_result
+    runtime.cleaning_plans.planning.preview.side_effect = None
+    runtime.cleaning_plans.history.next_run_estimate_seconds = MagicMock(
         return_value=1980
     )
     request_hass = _hass(_entry(runtime))
@@ -2005,14 +2019,14 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
         "blocker": None,
     }
     assert json.loads(first.body)["plans"][0]["next_run_estimate_seconds"] == 1980
-    runtime.cleaning_plans.ledger.next_run_estimate_seconds.assert_called_with(
+    runtime.cleaning_plans.history.next_run_estimate_seconds.assert_called_with(
         "synthetic-serial",
         [
             ("room-2", "vacuum_and_mop", "heavy_duty"),
             ("room-1", "vacuum", "standard"),
         ],
     )
-    runtime.cleaning_plans.catalog.preview.assert_any_call(
+    runtime.cleaning_plans.planning.preview.assert_any_call(
         "synthetic-serial",
         {"room-1": "Kitchen", "room-2": "Study"},
         "weekday",
@@ -2042,7 +2056,7 @@ async def test_plan_workspace_reports_preview_unavailable() -> None:
         }
     }
     runtime.slam_map.floor_plan_is_current.return_value = True
-    runtime.cleaning_plans.catalog.preview = None
+    runtime.cleaning_plans.planning.preview = None
     request_hass = _hass(_entry(runtime))
 
     response = await MaticPlansView().get(_request(request_hass), "entry")
@@ -2072,7 +2086,7 @@ async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
             "room_order": ["room-1"],
         }
     }
-    runtime.cleaning_plans.catalog.preview.side_effect = ValueError(
+    runtime.cleaning_plans.planning.preview.side_effect = ValueError(
         "room cadence progress is unverified; reset mop before use"
     )
     runtime.slam_map.floor_plan_is_current.return_value = True
@@ -3192,7 +3206,9 @@ async def test_pose_cache_does_not_relabel_previous_floor_position() -> None:
     ]
     hass = _hass(_entry(runtime))
     view = MaticSlamPoseView()
-    with patch("custom_components.matic_robot.slam_scene.monotonic", return_value=10.0):
+    with patch(
+        "custom_components.matic_robot.slam_pose_view.monotonic", return_value=10.0
+    ):
         first = await view.get(_request(hass), "entry")
         runtime.coordinator.data.floor_plan = replace(
             runtime.coordinator.data.floor_plan,
@@ -3455,7 +3471,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         ],
         "mission_boundaries": [1, 2],
         "preview_token": saved_plan_preview_token(
-            manager.catalog.preview(
+            manager.planning.preview(
                 serial,
                 {"room-1": "Kitchen"},
                 "mixed",
@@ -3471,7 +3487,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     smart_stop = plans["smart-stop"]["next_run_preview"]
     assert smart_stop["mission_boundaries"] == [1]
     assert smart_stop["preview_token"] == saved_plan_preview_token(
-        manager.catalog.preview(
+        manager.planning.preview(
             serial,
             {"room-1": "Kitchen", "room-2": "Office"},
             "smart-stop",

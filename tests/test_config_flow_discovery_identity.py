@@ -20,6 +20,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from custom_components.matic_robot import config_flow as flow_module
+from custom_components.matic_robot import config_flow_discovery as discovery_module
 from custom_components.matic_robot.client.exceptions import (
     CertificateMismatchError,
     InvalidRobotCertificateError,
@@ -30,6 +31,9 @@ from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
 )
 from custom_components.matic_robot.client.tls import ROLE_OID, validate_certificate
 from custom_components.matic_robot.config_flow import MaticRobotConfigFlow
+from custom_components.matic_robot.config_flow_discovery import (
+    _async_select_discovery_host,
+)
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HOSTNAME,
@@ -112,7 +116,14 @@ def _endpoint(monkeypatch, certificate: bytes, info: RobotInfo) -> MagicMock:
         asyncio.get_running_loop(), "getaddrinfo", AsyncMock(return_value=[])
     )
     monkeypatch.setattr(
-        flow_module, "async_fetch_peer_certificate", AsyncMock(return_value=certificate)
+        discovery_module,
+        "async_fetch_peer_certificate",
+        AsyncMock(return_value=certificate),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "async_fetch_peer_certificate",
+        AsyncMock(return_value=certificate),
     )
     client = MagicMock()
     client.return_value.__aenter__ = AsyncMock(
@@ -261,9 +272,9 @@ async def test_probe_resolves_alias_but_selects_only_the_advertised_identity(
     async def fetch(host, port):
         return certificates[host]
 
-    monkeypatch.setattr(flow_module, "async_fetch_peer_certificate", fetch)
+    monkeypatch.setattr(discovery_module, "async_fetch_peer_certificate", fetch)
 
-    assert await flow_module._async_select_discovery_host(discovery) == "192.0.2.2"
+    assert await _async_select_discovery_host(discovery) == "192.0.2.2"
     assert resolve.call_args.args[:2] == ("matic-example-2.local", 16320)
 
 

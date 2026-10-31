@@ -22,7 +22,7 @@ from .client.commands import CleaningMode
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .llm_common import _ROBOT_FIELD, _error, _MaticTool, _resolve_plan_id
 from .plan_model import resolve_room_reference
-from .slam_scene import catalog_entry_projection
+from .slam_view_data import catalog_entry_projection
 
 _LOGGER = logging.getLogger(__name__)
 

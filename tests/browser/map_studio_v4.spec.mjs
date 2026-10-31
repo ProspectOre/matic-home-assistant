@@ -9587,11 +9587,14 @@ test.describe("plan effects", () => {
       const run = await window.planEffects("plan-saved-intelligent");
       const { m, store, effects } = run;
       const catalog = structuredClone(store.value.resources.plans.value);
-      run.plans = () => run.hold().then(() => catalog);
+      let announceRead;
+      const readStarted = new Promise((resolve) => { announceRead = resolve; });
+      run.plans = () => { announceRead(); return run.hold().then(() => catalog); };
       const running = effects.executeAction("run-plan");
       const action = m.selectPrimaryAction(store.value);
       const during = { status: store.value.resources.plans.status, command: store.value.command,
         pendingAction: store.value.pendingAction, id: action.id, enabled: action.enabled, reasonKey: action.reasonKey };
+      await readStarted;
       run.finish(); await running;
       const sent = { calls: run.calls.map(([service]) => service), pendingAction: store.value.pendingAction };
       store.patch({ notice: null });

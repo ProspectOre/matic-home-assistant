@@ -89,6 +89,18 @@ from custom_components.matic_robot.room_sequence import (
 from custom_components.matic_robot.room_sequence import (
     resolve_room_sequence,
 )
+from custom_components.matic_robot.service_context import (
+    _entry_for_entity,
+    _require_matic_control,
+    _resolve_loaded_matic_vacuums,
+    _saved_plan_context,
+)
+from custom_components.matic_robot.service_controls import (
+    _ensure_stop_settled,
+)
+from custom_components.matic_robot.service_execution import (
+    _async_execute_rooms,
+)
 from custom_components.matic_robot.service_plans import (
     _plan_cadence_bindings,
     _plan_request_error,
@@ -110,12 +122,6 @@ from custom_components.matic_robot.service_schemas import (
     SAVED_PLAN_SERVICE_SCHEMA,
 )
 from custom_components.matic_robot.services import (
-    _async_execute_rooms,
-    _ensure_stop_settled,
-    _entry_for_entity,
-    _require_matic_control,
-    _resolve_loaded_matic_vacuums,
-    _saved_plan_context,
     async_register_services,
 )
 
@@ -216,9 +222,8 @@ async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
     assert _run_provenance(unknown) == "external_unknown"
 
     manager = SimpleNamespace(
-        ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}), async_mark_run_docked=AsyncMock()
-        )
+        ledger=SimpleNamespace(async_mark_run_docked=AsyncMock()),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     stop_fence_token = 19
     await _async_mark_run_docked(
@@ -251,15 +256,15 @@ async def test_dock_upgrade_does_not_mask_unmanaged_running_failure(
     if finish_requested:
         finish_event.set()
     manager = SimpleNamespace(
-        ledger=SimpleNamespace(
-            snapshot=MagicMock(
-                return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
-            ),
-            async_mark_run_docked=AsyncMock(),
-        ),
+        ledger=SimpleNamespace(async_mark_run_docked=AsyncMock()),
         control=SimpleNamespace(
             cancellation_reason=MagicMock(return_value=None),
             finish_room_event=MagicMock(return_value=finish_event),
+        ),
+        history=SimpleNamespace(
+            snapshot=MagicMock(
+                return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
+            )
         ),
     )
 
@@ -271,15 +276,15 @@ async def test_dock_upgrade_does_not_mask_unmanaged_running_failure(
 async def test_dock_upgrade_allows_managed_stop_running_failure(hass) -> None:
     """The managed STOP reason authorizes the early dock upgrade."""
     manager = SimpleNamespace(
-        ledger=SimpleNamespace(
-            snapshot=MagicMock(
-                return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
-            ),
-            async_mark_run_docked=AsyncMock(),
-        ),
+        ledger=SimpleNamespace(async_mark_run_docked=AsyncMock()),
         control=SimpleNamespace(
             cancellation_reason=MagicMock(return_value="managed_stop"),
             finish_room_event=MagicMock(return_value=asyncio.Event()),
+        ),
+        history=SimpleNamespace(
+            snapshot=MagicMock(
+                return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
+            )
         ),
     )
 
@@ -411,7 +416,7 @@ async def test_clean_action_routes_every_verified_preference() -> None:
         },
     )
     with patch(
-        "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
         return_value=["vacuum.test"],
     ):
         await _registered_handler(services, "clean")(call)
@@ -441,7 +446,7 @@ async def test_go_to_room_action_routes_the_room_to_send_command() -> None:
         hass, DOMAIN, "go_to_room", {"entity_id": ["vacuum.test"], "room": "Study"}
     )
     with patch(
-        "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
         return_value=["vacuum.test"],
     ):
         await _registered_handler(services, "go_to_room")(call)
@@ -482,7 +487,7 @@ async def test_queue_actions_route_to_send_command(service, data, params) -> Non
         {"entity_id": ["vacuum.test"], "room": "Study", **data},
     )
     with patch(
-        "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
         return_value=["vacuum.test"],
     ):
         await _registered_handler(services, service)(call)
@@ -503,7 +508,7 @@ async def test_clean_action_without_rooms_targets_entire_floor() -> None:
         hass, DOMAIN, "clean", {"entity_id": ["vacuum.test"], "ordered": False}
     )
     with patch(
-        "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
         return_value=["vacuum.test"],
     ):
         await _registered_handler(services, "clean")(call)
@@ -531,11 +536,11 @@ async def test_clean_action_checks_oem_stop_fence() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=entry,
         ),
     ):
@@ -593,7 +598,7 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
         ),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         result = await _registered_handler(services, "clean_area")(call)
@@ -688,13 +693,13 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
     )
     context = ("vacuum.test", entry, "serial", {room.id: room.name})
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         await _registered_handler(services, "clean_area")(call)
 
     client.async_start_custom_coverage.assert_awaited_once()
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
 
     # A synthetic native session can report the mapped room as completed. The
     # importer records the opportunity, but without a managed dispatch marker
@@ -789,7 +794,7 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
         await _registered_handler(services, "clean_area")(call)
 
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         with pytest.raises(ServiceValidationError) as unknown:
@@ -890,7 +895,7 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
         ),
         pytest.raises(ServiceValidationError) as stale,
@@ -948,7 +953,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     lock = manager.control.command_lock("serial")
     await lock.acquire()
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
     ):
         task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
@@ -966,7 +971,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     lock = manager.control.command_lock("serial")
     await lock.acquire()
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
     ):
         task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
@@ -992,7 +997,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
         ),
         patch.object(
@@ -1017,7 +1022,7 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     lock = manager.control.command_lock("serial")
     await lock.acquire()
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
     ):
         task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
@@ -1076,7 +1081,7 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
     lock = manager.control.command_lock("serial")
     await lock.acquire()
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
     ):
         task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
@@ -1153,7 +1158,7 @@ async def test_after_room_stop_supersedes_custom_area_queued_for_command_lock(
         CLEAN_AREA_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "area": "Litter box"}),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
     ):
         task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
@@ -1257,7 +1262,7 @@ async def test_stop_service_immediately_stops_after_owner_replacement(hass) -> N
         ) as request,
         patch.object(entity, "_schedule_dock_after_stop"),
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, serial_number, {}),
         ),
     ):
@@ -1368,7 +1373,7 @@ async def test_stop_service_preserves_managed_stop_reason_for_return_to_base(
         with (
             patch.object(entity, "_schedule_dock_after_stop"),
             patch(
-                "custom_components.matic_robot.services._saved_plan_context",
+                "custom_components.matic_robot.service_context._saved_plan_context",
                 return_value=("vacuum.test", entry, serial_number, {}),
             ),
         ):
@@ -1443,7 +1448,7 @@ async def test_stop_service_return_to_base_does_not_stop_replacement_motion(
     with (
         patch.object(entity, "_schedule_dock_after_stop"),
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, serial_number, {}),
         ),
     ):
@@ -1527,7 +1532,7 @@ async def test_stop_service_blocks_resume_until_stop_dispatch(hass) -> None:
         with (
             patch.object(entity, "_schedule_dock_after_stop"),
             patch(
-                "custom_components.matic_robot.services._saved_plan_context",
+                "custom_components.matic_robot.service_context._saved_plan_context",
                 return_value=("vacuum.test", entry, serial_number, {}),
             ),
         ):
@@ -1627,7 +1632,7 @@ async def test_stale_stop_does_not_discard_replacement_room_tracking(hass) -> No
             manager.control, "external_command", release_stop_lock_for_replacement
         ),
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, serial_number, {}),
         ),
     ):
@@ -1709,7 +1714,7 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
         ),
         pytest.raises(ServiceValidationError) as failure,
@@ -1802,7 +1807,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
     dock_after_stop = MagicMock()
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=(
                 "vacuum.test",
                 entry,
@@ -1811,7 +1816,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             ),
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             execute,
         ),
         patch(
@@ -1942,7 +1947,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         {room.id: room.name, second_room.id: second_room.name},
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         preview = await _registered_handler(services, "preview_room_sequence")(
@@ -1974,10 +1979,13 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
-        patch("custom_components.matic_robot.services._async_execute_rooms", execute),
+        patch(
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            execute,
+        ),
     ):
         await _registered_handler(services, "clean_room_sequence")(dispatch_call)
     assert (
@@ -2021,7 +2029,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         )
         with (
             patch(
-                "custom_components.matic_robot.services._saved_plan_context",
+                "custom_components.matic_robot.service_context._saved_plan_context",
                 return_value=context,
             ),
             pytest.raises(ServiceValidationError, match="more than once"),
@@ -2039,11 +2047,11 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         execute.reset_mock()
         with (
             patch(
-                "custom_components.matic_robot.services._saved_plan_context",
+                "custom_components.matic_robot.service_context._saved_plan_context",
                 return_value=context,
             ),
             patch(
-                "custom_components.matic_robot.services._async_execute_rooms",
+                "custom_components.matic_robot.service_execution._async_execute_rooms",
                 execute,
             ),
             pytest.raises(ServiceValidationError, match="more than once"),
@@ -2061,11 +2069,11 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     execute_with_mutation = AsyncMock(side_effect=mutate_before_dispatch)
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             execute_with_mutation,
         ),
         pytest.raises(ServiceValidationError, match="resolution changed") as raised,
@@ -2085,11 +2093,11 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     execute_with_invalid_map = AsyncMock(side_effect=invalidate_identity)
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             execute_with_invalid_map,
         ),
         pytest.raises(ServiceValidationError) as invalid_map,
@@ -2101,7 +2109,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(ServiceValidationError) as invalid_preview,
@@ -2121,7 +2129,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     execute.reset_mock()
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(ServiceValidationError, match="preview is stale") as raised,
@@ -2156,7 +2164,7 @@ async def test_preview_room_sequence_requires_administrator(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         pytest.raises(Unauthorized),
@@ -2176,7 +2184,7 @@ async def test_preview_room_sequence_requires_administrator(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         pytest.raises(Unauthorized),
@@ -2333,7 +2341,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
             "serial", plan_id, run_rooms[0], run_id=run_id
         )
         cadence_by_room = kwargs["cadence_by_room"]
-        await run_manager.ledger.async_set_recovery_checkpoint(
+        await run_manager.recovery.async_set_recovery_checkpoint(
             "serial",
             run_id,
             {"cadence_by_room": cadence_by_room},
@@ -2346,10 +2354,13 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     execute = AsyncMock(side_effect=execute_sequence)
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {room.id: room.name}),
         ),
-        patch("custom_components.matic_robot.services._async_execute_rooms", execute),
+        patch(
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            execute,
+        ),
     ):
         await _registered_handler(services, "clean_room_sequence")(call)
 
@@ -2526,7 +2537,7 @@ async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(
         },
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         result = await _registered_handler(services, "reset_room_cadence")(reset)
@@ -2552,7 +2563,7 @@ async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(
         },
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         all_result = await _registered_handler(services, "reset_room_cadence")(
@@ -2572,7 +2583,7 @@ async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(ServiceValidationError) as outside,
@@ -2590,7 +2601,7 @@ async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(
     }
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(ServiceValidationError) as blocked,
@@ -2629,7 +2640,7 @@ async def test_reset_room_cadence_service_returns_no_receipt_on_save_failure(
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", SimpleNamespace(), "serial", {}),
         ),
         pytest.raises(OSError, match="disk unavailable"),
@@ -2704,7 +2715,7 @@ async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None
     save.side_effect = OSError("disk unavailable")
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(OSError, match="disk unavailable"),
@@ -2801,8 +2812,8 @@ async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
     cancel = asyncio.Event()
     cancel.set()
     manager.control.prepare_run = MagicMock(return_value=cancel)
-    checkpoint_write = AsyncMock(wraps=manager.ledger.async_set_recovery_checkpoint)
-    manager.ledger.async_set_recovery_checkpoint = checkpoint_write
+    checkpoint_write = AsyncMock(wraps=manager.recovery.async_set_recovery_checkpoint)
+    manager.recovery.async_set_recovery_checkpoint = checkpoint_write
     room = CleaningRoom("room-office", "Office", "vacuum", "quick")
     cadence_snapshot = {
         room.room_id: {
@@ -2919,7 +2930,7 @@ async def test_cleaning_service_rejects_invalid_cadence_resolution(
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -2953,7 +2964,7 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
             ],
         },
     )
-    manager.catalog.preview = MagicMock(
+    manager.planning.preview = MagicMock(
         return_value={"plan_id": "home", "rooms": rooms}
     )
     floor_plan = _area_floor_plan()
@@ -2975,11 +2986,11 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(),
         ) as execute,
         pytest.raises(ServiceValidationError) as raised,
@@ -3023,7 +3034,7 @@ async def test_legacy_oversized_plan_cannot_be_previewed_or_dispatched(hass) -> 
         "room_order": [room.id for room in floor_rooms],
     }
     with pytest.raises(RoomSequenceLimitError, match="at most 100 rooms"):
-        manager.catalog.preview("serial", room_map, "legacy")
+        manager.planning.preview("serial", room_map, "legacy")
 
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
@@ -3042,11 +3053,11 @@ async def test_legacy_oversized_plan_cannot_be_previewed_or_dispatched(hass) -> 
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", room_map),
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(),
         ) as execute,
         pytest.raises(ServiceValidationError) as raised,
@@ -3107,12 +3118,12 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
         SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Home"}),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         preview = await _registered_handler(services, "preview_plan")(preview_call)
 
-    original_preview = manager.catalog.preview
+    original_preview = manager.planning.preview
     preview_calls = 0
 
     def fail_after_initial_preview(*args, **kwargs):
@@ -3122,7 +3133,7 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
             raise ValueError("authoritative preview unavailable")
         return original_preview(*args, **kwargs)
 
-    manager.catalog.preview = MagicMock(side_effect=fail_after_initial_preview)
+    manager.planning.preview = MagicMock(side_effect=fail_after_initial_preview)
     token_call = ServiceCall(
         hass,
         DOMAIN,
@@ -3141,11 +3152,11 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(side_effect=invoke_validation),
         ) as execute,
         pytest.raises(ServiceValidationError) as raised,
@@ -3239,10 +3250,13 @@ async def test_legacy_saved_run_revalidates_after_stop_settlement(
     execute = AsyncMock(side_effect=settle_then_dispatch)
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
-        patch("custom_components.matic_robot.services._async_execute_rooms", execute),
+        patch(
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            execute,
+        ),
     ):
         pending = asyncio.create_task(_registered_handler(services, service)(call))
         await settlement_started.wait()
@@ -3350,11 +3364,11 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(side_effect=exercise_managed_command),
         ) as execute,
     ):
@@ -3460,11 +3474,11 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(side_effect=validate_tokenized_run),
         ) as token_execute,
     ):
@@ -3479,11 +3493,11 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(side_effect=mutate_saved_plan_before_dispatch),
         ) as changed_execute,
         pytest.raises(ServiceValidationError, match="resolution changed") as raised,
@@ -3496,11 +3510,11 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     manager.repository.robot("serial")["plans"]["upstairs"]["return_to_base"] = False
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
             AsyncMock(),
         ) as stale_execute,
         pytest.raises(ServiceValidationError, match="preview is stale") as raised,
@@ -3517,7 +3531,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         hass, DOMAIN, "stop_intelligent_cleaning", {"entity_id": ["vacuum.test"]}
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         await _registered_handler(services, "stop_intelligent_cleaning")(stop)
@@ -3553,7 +3567,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     )
     try:
         with patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ):
             await _registered_handler(services, "stop_intelligent_cleaning")(stop)
@@ -3569,7 +3583,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         {"entity_id": ["vacuum.test"], "plan": "Upstairs", "all_plans": False},
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         await _registered_handler(services, "reset_plan_history")(reset)
@@ -3605,7 +3619,7 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
         service="test",
         finish_current_room=True,
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         run_id,
         {"rooms": [], "leg_index": 0, "phase": "ready"},
@@ -3616,7 +3630,7 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
     active["active_elapsed_seconds"] = 60
     active["active_segment_started"] = None
     manager.control.finish_room_event("serial").set()
-    await manager.ledger.async_checkpoint_stop_intent(
+    await manager.recovery.async_checkpoint_stop_intent(
         "serial", "after_room", run_id=run_id
     )
     lock = manager.control.lock("serial")
@@ -3635,10 +3649,10 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
         await manager.ledger.async_mark_verifying(
             "serial", "upstairs", room, verification_deadline=dt_util.utcnow()
         )
-        verifying = manager.ledger.snapshot("serial")["active_plan"]
+        verifying = manager.history.snapshot("serial")["active_plan"]
         assert verifying["smart_stop_phase"] == "verifying_completion"
         with patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ):
             with pytest.raises(ServiceValidationError) as raised:
@@ -3652,7 +3666,7 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
     finally:
         lock.release()
     assert (
-        manager.ledger.snapshot("serial")["active_plan"]["smart_stop_pending"] is False
+        manager.history.snapshot("serial")["active_plan"]["smart_stop_pending"] is False
     )
     assert manager.control.finish_room_event("serial").is_set() is False
     coordinator.async_discard_current_room.assert_called_once_with()
@@ -3675,7 +3689,7 @@ async def test_stop_now_only_overrides_the_matching_pending_smart_stop(hass) -> 
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -3726,7 +3740,7 @@ async def test_managed_actions_ignore_inactive_stop(hass) -> None:
         SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Disabled"}),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         with pytest.raises(ServiceValidationError, match="Unknown"):
@@ -3757,7 +3771,7 @@ async def test_stop_resolves_unmanaged_cleaning_without_a_room_map(
         {"entity_id": ["vacuum.test"], "include_unmanaged": include_unmanaged},
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=("vacuum.test", entry, "serial", {}),
     ) as resolve:
         await _registered_handler(services, "stop_intelligent_cleaning")(stop)
@@ -3834,11 +3848,11 @@ async def test_save_plan_service_rejects_one_shot_without_interval(
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._plan_cadence_bindings",
+            "custom_components.matic_robot.service_editing._plan_cadence_bindings",
             return_value=(None, {}),
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -3899,7 +3913,7 @@ async def test_delete_room_schedule_service_uses_current_binding_and_exact_token
     )
     context = ("vacuum.test", entry, "serial", {room.id: room.name})
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         result = await _registered_handler(services, "delete_room_schedule")(call)
@@ -3956,7 +3970,7 @@ async def test_delete_room_schedule_service_translates_manager_errors(
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {room.id: room.name}),
         ),
         patch.object(
@@ -4001,7 +4015,7 @@ async def test_delete_room_schedule_service_rejects_room_missing_from_current_ma
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {}),
         ),
         patch.object(
@@ -4089,7 +4103,7 @@ async def test_save_services_return_manager_normalized_shared_cadence(hass) -> N
         ),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         saved = await _registered_handler(services, "save_plan")(save)
@@ -4136,7 +4150,7 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
         ),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         saved = await _registered_handler(services, "save_plan")(save)
@@ -4160,7 +4174,7 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
         ),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         added = await _registered_handler(services, "save_plan_room")(add)
@@ -4181,7 +4195,7 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
     )
     listing = ServiceCall(hass, DOMAIN, "list_plans", {"entity_id": ["vacuum.test"]})
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         moved = await _registered_handler(services, "move_plan_room")(move)
@@ -4218,7 +4232,7 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
         PLAN_REFERENCE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Away cleaning"}),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         removed = await _registered_handler(services, "delete_plan_room")(remove)
@@ -4269,7 +4283,7 @@ async def test_incremental_plan_save_rejects_the_101st_room_atomically(hass) -> 
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", SimpleNamespace(), "serial", room_map),
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -4305,7 +4319,7 @@ async def test_legacy_plan_can_be_pruned_one_room_at_a_time(hass) -> None:
     services = await _registered_services(hass, manager)
 
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=("vacuum.test", SimpleNamespace(), "serial", room_map),
     ):
         for index in (1, 2):
@@ -4326,7 +4340,7 @@ async def test_legacy_plan_can_be_pruned_one_room_at_a_time(hass) -> None:
     reduced = manager.catalog.plan("serial", "legacy")
     assert len(reduced["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
     assert (
-        len(manager.catalog.preview("serial", room_map, "legacy")["rooms"])
+        len(manager.planning.preview("serial", room_map, "legacy")["rooms"])
         == MAX_ROOM_SEQUENCE_SIZE
     )
     assert manager.repository.store.async_save.await_count == 2
@@ -4378,11 +4392,11 @@ async def test_save_plan_allows_only_strict_legacy_room_reductions(hass) -> None
     context = ("vacuum.test", SimpleNamespace(), "serial", room_map)
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._plan_cadence_bindings",
+            "custom_components.matic_robot.service_editing._plan_cadence_bindings",
             return_value=(None, {}),
         ),
     ):
@@ -4448,11 +4462,11 @@ async def test_save_plan_recovers_malformed_persisted_room_container(
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", SimpleNamespace(), "serial", room_map),
         ),
         patch(
-            "custom_components.matic_robot.services._plan_cadence_bindings",
+            "custom_components.matic_robot.service_editing._plan_cadence_bindings",
             return_value=(None, {}),
         ),
     ):
@@ -4499,7 +4513,7 @@ async def test_save_plan_reports_the_per_robot_plan_limit(hass) -> None:
 
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -4565,7 +4579,7 @@ async def test_save_plan_translates_cadence_edit_blocked_during_run(hass) -> Non
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {room.id: room.name}),
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -4595,7 +4609,7 @@ async def test_delete_plan_translates_running_plan_lock(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", SimpleNamespace(), "serial", {}),
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -4669,7 +4683,7 @@ async def test_room_crud_rejects_unknown_rooms_membership_and_positions(hass) ->
         ),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         with pytest.raises(ServiceValidationError, match="Unknown Matic room"):
@@ -4739,11 +4753,11 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=entry,
         ),
     ):
@@ -4765,7 +4779,7 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
         assert _saved_plan_context(hass, call, require_rooms=False)[3] == {}
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.one", "vacuum.two"],
         ),
         pytest.raises(ServiceValidationError, match="exactly one"),
@@ -4789,11 +4803,11 @@ async def test_saved_plan_context_reads_rooms_the_vacuum_actually_exposes() -> N
 
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=entry,
         ),
     ):
@@ -4827,11 +4841,11 @@ def test_action_target_resolution_accepts_loaded_matic_vacuum() -> None:
     hass, call, registry, referenced = _resolution_hass()
     with (
         patch(
-            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            "custom_components.matic_robot.service_context.target.async_extract_referenced_entity_ids",
             return_value=referenced,
         ),
         patch(
-            "custom_components.matic_robot.services.er.async_get",
+            "custom_components.matic_robot.service_context.er.async_get",
             return_value=registry,
         ),
     ):
@@ -4877,11 +4891,12 @@ async def test_firmware_metadata_services_accept_offline_loaded_robot() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            "custom_components.matic_robot.service_context.target.async_extract_referenced_entity_ids",
             return_value=referenced,
         ),
         patch(
-            "custom_components.matic_robot.services.er.async_get", return_value=registry
+            "custom_components.matic_robot.service_context.er.async_get",
+            return_value=registry,
         ),
     ):
         await _registered_handler(services, "firmware_investigator")(investigator)
@@ -4915,11 +4930,12 @@ async def test_physical_domain_service_still_rejects_offline_loaded_robot() -> N
     )
     with (
         patch(
-            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            "custom_components.matic_robot.service_context.target.async_extract_referenced_entity_ids",
             return_value=referenced,
         ),
         patch(
-            "custom_components.matic_robot.services.er.async_get", return_value=registry
+            "custom_components.matic_robot.service_context.er.async_get",
+            return_value=registry,
         ),
         pytest.raises(ServiceValidationError, match="unavailable"),
     ):
@@ -4951,7 +4967,7 @@ async def test_domain_service_rejects_unauthorized_direct_and_indirect_targets()
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.allowed", "vacuum.denied"],
         ),
         pytest.raises(Unauthorized) as raised,
@@ -4979,7 +4995,7 @@ async def test_domain_service_allows_control_admin_and_system_contexts() -> None
     )
     guarded = _require_matic_control(hass, handler)
     with patch(
-        "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+        "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
         return_value=["vacuum.test"],
     ):
         assert await guarded(
@@ -5025,11 +5041,11 @@ def test_action_target_resolution_rejects_unavailable_robot(loaded, available) -
     )
     with (
         patch(
-            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            "custom_components.matic_robot.service_context.target.async_extract_referenced_entity_ids",
             return_value=referenced,
         ),
         patch(
-            "custom_components.matic_robot.services.er.async_get",
+            "custom_components.matic_robot.service_context.er.async_get",
             return_value=registry,
         ),
         pytest.raises(ServiceValidationError, match="unavailable"),
@@ -5044,11 +5060,11 @@ def test_action_target_resolution_rejects_non_matic_target() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services.target.async_extract_referenced_entity_ids",
+            "custom_components.matic_robot.service_context.target.async_extract_referenced_entity_ids",
             return_value=referenced,
         ),
         patch(
-            "custom_components.matic_robot.services.er.async_get",
+            "custom_components.matic_robot.service_context.er.async_get",
             return_value=registry,
         ),
         pytest.raises(ServiceValidationError, match="Select at least one"),
@@ -5077,11 +5093,11 @@ async def test_inspect_hermes_endpoint_returns_bounded_safe_snapshot() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=entry,
         ),
     ):
@@ -5108,7 +5124,7 @@ async def test_inspect_hermes_endpoint_requires_exactly_one_robot() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.one", "vacuum.two"],
         ),
         pytest.raises(ServiceValidationError, match="exactly one"),
@@ -5137,11 +5153,11 @@ async def test_inspect_hermes_endpoint_fingerprints_payloads() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=entry,
         ),
     ):
@@ -5175,15 +5191,15 @@ async def test_inspect_pose_endpoint_returns_only_safe_vector_paths() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=entry,
         ),
         patch(
-            "custom_components.matic_robot.services.pose_vector_paths",
+            "custom_components.matic_robot.service_firmware.pose_vector_paths",
             return_value=((2, 1, 1),),
         ),
     ):
@@ -5225,11 +5241,11 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.test"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=entry,
         ),
         patch(
@@ -5288,11 +5304,11 @@ async def test_firmware_admin_services_resolve_one_robot_and_wrap_tracker_errors
     hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             side_effect=[["vacuum.one"], ["vacuum.two"]],
         ) as resolve,
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             side_effect=[first_entry, second_entry],
         ) as entry_for_entity,
     ):
@@ -5323,7 +5339,7 @@ async def test_firmware_services_require_admin_and_one_robot() -> None:
     hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=False)
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.one"],
         ),
         pytest.raises(Unauthorized),
@@ -5335,7 +5351,7 @@ async def test_firmware_services_require_admin_and_one_robot() -> None:
     hass.auth.async_get_user.return_value = SimpleNamespace(is_admin=True)
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.one", "vacuum.two"],
         ),
         pytest.raises(ServiceValidationError, match="exactly one"),
@@ -5354,7 +5370,7 @@ async def test_firmware_services_require_admin_and_one_robot() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.one", "vacuum.two"],
         ),
         pytest.raises(ServiceValidationError, match="exactly one"),
@@ -5395,11 +5411,11 @@ async def test_firmware_services_translate_tracker_value_errors(
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.one"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=SimpleNamespace(entry_id="entry-one"),
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -5428,11 +5444,11 @@ async def test_firmware_investigator_rejects_unusable_names() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.one"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=SimpleNamespace(entry_id="entry-one"),
         ),
         pytest.raises(ServiceValidationError) as raised,
@@ -5481,7 +5497,7 @@ async def test_firmware_snapshot_requires_exactly_one_robot() -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.one", "vacuum.two"],
         ),
         pytest.raises(ServiceValidationError, match="exactly one"),
@@ -5519,7 +5535,7 @@ async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> No
         SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Missing"}),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         with pytest.raises(ServiceValidationError, match="turned off"):
@@ -5547,7 +5563,7 @@ async def test_save_plan_rejects_names_that_produce_no_plan_id(hass) -> None:
     )
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(ServiceValidationError) as excinfo,
@@ -5589,7 +5605,7 @@ async def test_deleting_the_last_room_disables_the_plan(hass) -> None:
         ),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         removed = await _registered_handler(services, "delete_plan_room")(call)
@@ -5646,7 +5662,7 @@ async def test_room_edits_reject_rooms_outside_the_plan_or_map(hass) -> None:
         ),
     )
     with patch(
-        "custom_components.matic_robot.services._saved_plan_context",
+        "custom_components.matic_robot.service_context._saved_plan_context",
         return_value=context,
     ):
         with pytest.raises(ServiceValidationError, match="not part of this plan"):
@@ -5664,7 +5680,6 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -5672,6 +5687,7 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
             async_mark_cancelled=AsyncMock(),
         ),
         control=SimpleNamespace(cancellation_reason=MagicMock(return_value=None)),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     with (
@@ -5701,6 +5717,9 @@ async def test_room_cancellation_preserves_low_charge_reason() -> None:
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
             async_mark_cancelled=AsyncMock(),
+        ),
+        control=SimpleNamespace(cancellation_reason=MagicMock(return_value=None)),
+        history=SimpleNamespace(
             snapshot=MagicMock(
                 return_value={
                     "active_plan": {
@@ -5708,9 +5727,8 @@ async def test_room_cancellation_preserves_low_charge_reason() -> None:
                         "suspend_reason": "low_charge",
                     }
                 }
-            ),
+            )
         ),
-        control=SimpleNamespace(cancellation_reason=MagicMock(return_value=None)),
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     with (
@@ -5997,12 +6015,12 @@ async def test_oem_stop_reconciliation_credits_late_native_session(
             None,
         )
 
-    record = manager.ledger.snapshot("serial")["plan_history"]["away"]["rooms"][
+    record = manager.history.snapshot("serial")["plan_history"]["away"]["rooms"][
         room.room_id
     ]
     assert record["last_result"] == "completed"
     assert record["last_duration_seconds"] == 9
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
     confirmed.assert_called_once_with(room.name)
     await hass.async_block_till_done()
     assert events[0].data.get("run_id") == run_id
@@ -6063,7 +6081,7 @@ async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None
         )
 
     assert confirmed == []
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["last_completed_by_room"].get(room.room_id) is None
 
 
@@ -6120,7 +6138,7 @@ async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) ->
             None,
         )
     history.assert_awaited_once()
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
     save.assert_awaited_once()
 
 
@@ -6172,7 +6190,7 @@ async def test_native_stop_reconciliation_expires_without_history_baseline(
 
     sleep.assert_awaited_once_with(1)
     history.assert_not_awaited()
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
     save.assert_awaited_once()
 
 
@@ -6203,7 +6221,7 @@ async def test_clear_native_reconciliation_requires_the_exact_marker(hass) -> No
         )
         is False
     )
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is True
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is True
     save.assert_not_awaited()
 
     save.side_effect = OSError("disk unavailable")
@@ -6211,7 +6229,7 @@ async def test_clear_native_reconciliation_requires_the_exact_marker(hass) -> No
         await manager.ledger.async_clear_native_reconciliation(
             "serial", "away", room.room_id, dispatched_at
         )
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is True
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is True
     save.side_effect = None
 
     assert (
@@ -6220,7 +6238,7 @@ async def test_clear_native_reconciliation_requires_the_exact_marker(hass) -> No
         )
         is True
     )
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
     assert save.await_count == 2  # failed clear plus successful retry
 
 
@@ -6608,11 +6626,11 @@ async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> No
     call = ServiceCall(hass, DOMAIN, "clean_area", {"area": "test_area"})
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, "serial", {"room-office": "Office"}),
         ),
         patch(
-            "custom_components.matic_robot.services._ensure_stop_settled",
+            "custom_components.matic_robot.service_controls._ensure_stop_settled",
             side_effect=preflight,
         ),
         patch.object(
@@ -6639,7 +6657,8 @@ def test_entry_lookup_returns_loaded_entry_and_rejects_stale_references() -> Non
         config_entries=SimpleNamespace(async_get_entry=MagicMock(return_value=entry))
     )
     with patch(
-        "custom_components.matic_robot.services.er.async_get", return_value=registry
+        "custom_components.matic_robot.service_context.er.async_get",
+        return_value=registry,
     ):
         assert _entry_for_entity(hass, "vacuum.test") is entry
         hass.config_entries.async_get_entry.return_value = None
@@ -6703,11 +6722,11 @@ async def test_plan_save_service_rejects_write_queued_when_unload_closes_admissi
     await plan_write_lock.acquire()
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         patch(
-            "custom_components.matic_robot.services._plan_cadence_bindings",
+            "custom_components.matic_robot.service_editing._plan_cadence_bindings",
             return_value=(None, {}),
         ),
     ):
@@ -6777,7 +6796,7 @@ async def test_plan_reference_services_report_unavailable_metadata(service_name,
     await manager.repository.async_close_metadata_admission_and_wait("serial")
     with (
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=context,
         ),
         pytest.raises(MetadataAdmissionClosedError),
@@ -6850,7 +6869,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
         service="run_selected_plan",
         finish_current_room=False,
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         serial, "old-run", {"phase": "accepted"}
     )
     await manager.ledger.async_mark_started(
@@ -6862,7 +6881,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
     lock = manager.control.lock(serial)
     await lock.acquire()
     manager.control.begin_managed_motion(serial)
-    checkpoint = manager.ledger.async_checkpoint_stop_intent
+    checkpoint = manager.recovery.async_checkpoint_stop_intent
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -6888,7 +6907,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
         await asyncio.create_task(entity.async_return_to_base())
 
     services.async_call.side_effect = return_to_base
-    manager.ledger.async_checkpoint_stop_intent = delayed_checkpoint
+    manager.recovery.async_checkpoint_stop_intent = delayed_checkpoint
     stop = ServiceCall(
         hass,
         DOMAIN,
@@ -6898,7 +6917,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
     with (
         patch.object(entity, "_schedule_dock_after_stop") as schedule_dock,
         patch(
-            "custom_components.matic_robot.services._saved_plan_context",
+            "custom_components.matic_robot.service_context._saved_plan_context",
             return_value=("vacuum.test", entry, serial, {}),
         ),
     ):
@@ -6929,7 +6948,7 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
                 service="run_selected_plan",
                 finish_current_room=False,
             )
-            await manager.ledger.async_set_recovery_checkpoint(
+            await manager.recovery.async_set_recovery_checkpoint(
                 serial, "new-run", {"phase": "accepted"}
             )
             await manager.ledger.async_mark_started(
@@ -6956,7 +6975,8 @@ async def test_stop_checkpoint_does_not_target_replacement_run(
     assert manager.control.managed_motion_is_current(serial, replacement_generation)
     assert not manager.control.cancellation_event(serial).is_set()
     assert (
-        "stop_intent" not in manager.control.recovery_run(serial)["recovery_checkpoint"]
+        "stop_intent"
+        not in manager.recovery.recovery_run(serial)["recovery_checkpoint"]
     )
     entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
     schedule_dock.assert_not_called()
@@ -7002,14 +7022,14 @@ async def test_stop_expected_run_mismatch_has_no_effect(hass, active_run) -> Non
         generation = manager.control.motion_generation("serial")
         with (
             patch(
-                "custom_components.matic_robot.services._saved_plan_context",
+                "custom_components.matic_robot.service_context._saved_plan_context",
                 return_value=("vacuum.test", entry, "serial", {}),
             ),
             patch.object(
                 manager.control, "request_stop", wraps=manager.control.request_stop
             ) as request_stop,
             patch.object(
-                manager.ledger, "async_checkpoint_stop_intent", new_callable=AsyncMock
+                manager.recovery, "async_checkpoint_stop_intent", new_callable=AsyncMock
             ) as checkpoint,
             pytest.raises(ServiceValidationError, match="run has changed"),
         ):

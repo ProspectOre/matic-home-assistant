@@ -148,6 +148,26 @@ def wire_shape(
     )
 
 
+def field_bytes(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ...]:
+    """Select length-delimited values from an already bounded message."""
+    return tuple(
+        field.value
+        for field in fields
+        if field.number == number
+        and field.wire_type == 2
+        and isinstance(field.value, bytes)
+    )
+
+
+def field_varint(fields: tuple[WireField, ...], number: int) -> int:
+    """Select a required varint from an already bounded message."""
+    for field in fields:
+        if field.number == number and field.wire_type == 0:
+            assert isinstance(field.value, int)
+            return field.value
+    raise DecodeError(f"missing protobuf varint field {number}")
+
+
 def bytes_fields(
     payload: bytes,
     number: int,
@@ -156,14 +176,8 @@ def bytes_fields(
     field_budget: WireFieldBudget | None = None,
 ) -> tuple[bytes, ...]:
     """Return all length-delimited values for a field."""
-    return tuple(
-        field.value
-        for field in decode_fields(
-            payload, max_fields=max_fields, field_budget=field_budget
-        )
-        if field.number == number
-        and field.wire_type == 2
-        and isinstance(field.value, bytes)
+    return field_bytes(
+        decode_fields(payload, max_fields=max_fields, field_budget=field_budget), number
     )
 
 
@@ -191,13 +205,9 @@ def first_varint(
     field_budget: WireFieldBudget | None = None,
 ) -> int:
     """Return the first varint value for a field."""
-    for field in decode_fields(
-        payload, max_fields=max_fields, field_budget=field_budget
-    ):
-        if field.number == number and field.wire_type == 0:
-            assert isinstance(field.value, int)
-            return field.value
-    raise DecodeError(f"missing protobuf varint field {number}")
+    return field_varint(
+        decode_fields(payload, max_fields=max_fields, field_budget=field_budget), number
+    )
 
 
 def packed_floats(payload: bytes, count: int) -> tuple[float, ...]:

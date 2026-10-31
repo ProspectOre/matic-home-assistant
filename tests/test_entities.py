@@ -204,6 +204,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
     floor_plan = _floor_plan() if with_floor_plan else None
     coordinator = SimpleNamespace(
         data=_state(paused=paused, idle=idle, floor_plan=floor_plan),
+        robot_health=SimpleNamespace(unknown_alert_codes={}),
         client=SimpleNamespace(
             async_get_slam_tile_entry=AsyncMock(
                 side_effect=CannotConnectError("synthetic unavailable")
@@ -229,7 +230,46 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         last_update_success=True,
     )
     history = SimpleNamespace(
-        ledger=SimpleNamespace(
+        repository=SimpleNamespace(
+            async_add_listener=MagicMock(return_value=MagicMock())
+        ),
+        ledger=SimpleNamespace(active_run_id=MagicMock(return_value=None)),
+        catalog=SimpleNamespace(
+            plans=MagicMock(
+                return_value={
+                    "whole_home": {
+                        "name": "Whole home",
+                        "enabled": True,
+                    }
+                }
+            ),
+            plan=MagicMock(return_value={"id": "whole_home", "name": "Whole home"}),
+            areas=MagicMock(return_value={"litter_box": {"name": "Litter box"}}),
+            area=MagicMock(return_value={"id": "litter_box", "name": "Litter box"}),
+            async_select_plan=AsyncMock(),
+            async_select_area=AsyncMock(),
+        ),
+        control=SimpleNamespace(
+            cancel=MagicMock(return_value=True),
+            request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
+            async_replace_managed_motion=AsyncMock(return_value=0),
+            has_managed_task=MagicMock(return_value=False),
+            motion_generation=MagicMock(return_value=0),
+            stop_request_generation=MagicMock(return_value=0),
+            stop_pending=MagicMock(return_value=False),
+            async_mark_stop_pending=AsyncMock(),
+            async_clear_stop_pending=AsyncMock(),
+            command_admission_open=MagicMock(return_value=True),
+            command_admission_epoch=MagicMock(return_value=0),
+            require_command_admission=MagicMock(),
+            cancellation_event=MagicMock(return_value=asyncio.Event()),
+            command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
+            external_command=MagicMock(side_effect=_motion_context),
+            external_motion=MagicMock(side_effect=_motion_context),
+            managed_stop_dispatch=MagicMock(side_effect=_managed_stop_dispatch_context),
+            managed_command=MagicMock(side_effect=_managed_motion_context),
+        ),
+        history=SimpleNamespace(
             snapshot=MagicMock(
                 return_value={
                     "completed_runs": 0,
@@ -253,54 +293,19 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
                 }
             ),
             current_room_timing=MagicMock(return_value=None),
-            async_checkpoint_stop_intent=AsyncMock(),
-            active_run_id=MagicMock(return_value=None),
         ),
-        catalog=SimpleNamespace(
-            plans=MagicMock(
-                return_value={
-                    "whole_home": {
-                        "name": "Whole home",
-                        "enabled": True,
-                    }
-                }
-            ),
-            plan=MagicMock(return_value={"id": "whole_home", "name": "Whole home"}),
-            areas=MagicMock(return_value={"litter_box": {"name": "Litter box"}}),
-            area=MagicMock(return_value={"id": "litter_box", "name": "Litter box"}),
+        recovery=SimpleNamespace(
+            async_checkpoint_stop_intent=AsyncMock(),
+            recovery_run=MagicMock(return_value=None),
+        ),
+        planning=SimpleNamespace(
             preview=MagicMock(
                 return_value={
                     "valid": True,
                     "plan_name": "Whole home",
                     "rooms": [{"name": "Kitchen", "room_id": "room-1"}],
                 }
-            ),
-            async_select_plan=AsyncMock(),
-            async_select_area=AsyncMock(),
-        ),
-        repository=SimpleNamespace(
-            async_add_listener=MagicMock(return_value=MagicMock())
-        ),
-        control=SimpleNamespace(
-            cancel=MagicMock(return_value=True),
-            request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
-            async_replace_managed_motion=AsyncMock(return_value=0),
-            has_managed_task=MagicMock(return_value=False),
-            recovery_run=MagicMock(return_value=None),
-            motion_generation=MagicMock(return_value=0),
-            stop_request_generation=MagicMock(return_value=0),
-            stop_pending=MagicMock(return_value=False),
-            async_mark_stop_pending=AsyncMock(),
-            async_clear_stop_pending=AsyncMock(),
-            command_admission_open=MagicMock(return_value=True),
-            command_admission_epoch=MagicMock(return_value=0),
-            require_command_admission=MagicMock(),
-            cancellation_event=MagicMock(return_value=asyncio.Event()),
-            command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
-            external_command=MagicMock(side_effect=_motion_context),
-            external_motion=MagicMock(side_effect=_motion_context),
-            managed_stop_dispatch=MagicMock(side_effect=_managed_stop_dispatch_context),
-            managed_command=MagicMock(side_effect=_managed_motion_context),
+            )
         ),
     )
     firmware = SimpleNamespace(
@@ -884,7 +889,7 @@ def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
     entry = _entry()
     coordinator = entry.runtime_data.coordinator
     history = entry.runtime_data.cleaning_plans
-    history.ledger.snapshot.return_value["plan_history"] = {
+    history.history.snapshot.return_value["plan_history"] = {
         "handoff": {
             "rooms": {
                 "retired": {"room_id": "retired"},
@@ -978,7 +983,7 @@ def test_managed_room_statistics_validate_session_and_unmatched_room() -> None:
 def test_room_statistics_apply_newer_verified_plan_history() -> None:
     entry = _entry()
     history = entry.runtime_data.cleaning_plans
-    snapshot = history.ledger.snapshot.return_value
+    snapshot = history.history.snapshot.return_value
     snapshot["last_completed_by_room"] = {
         "room-1": {
             "name": "Kitchen",
@@ -1427,7 +1432,9 @@ def test_session_attributes_require_a_recorded_session() -> None:
 def test_next_room_preview_hides_stale_plan_errors() -> None:
     for error in (KeyError("room-1"), ValueError("plan references retired rooms")):
         entry = _entry()
-        entry.runtime_data.cleaning_plans.catalog.preview = MagicMock(side_effect=error)
+        entry.runtime_data.cleaning_plans.planning.preview = MagicMock(
+            side_effect=error
+        )
         next_room = sensor.MaticNextCleaningRoomSensor(entry)
 
         assert next_room.native_value is None
@@ -1435,16 +1442,16 @@ def test_next_room_preview_hides_stale_plan_errors() -> None:
 
     entry = _entry()
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
-    entry.runtime_data.cleaning_plans.catalog.preview = MagicMock()
+    entry.runtime_data.cleaning_plans.planning.preview = MagicMock()
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
     assert next_room.native_value is None
-    entry.runtime_data.cleaning_plans.catalog.preview.assert_not_called()
+    entry.runtime_data.cleaning_plans.planning.preview.assert_not_called()
 
 
 def test_plan_entities_preview_custom_areas_on_the_current_map() -> None:
     entry = _entry()
     floor = entry.runtime_data.coordinator.data.floor_plan
-    preview = entry.runtime_data.cleaning_plans.catalog.preview
+    preview = entry.runtime_data.cleaning_plans.planning.preview
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
     plan_button = button.MaticPlanButton(entry, "run_selected_plan")
 
@@ -1651,7 +1658,7 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
     close()
     cancel_timer.assert_called_once()
     coordinator.async_add_listener.return_value.assert_called_once()
-    with patch.object(manager.ledger, "current_room_timing") as read:
+    with patch.object(manager.history, "current_room_timing") as read:
         publisher.refresh()
         read.assert_not_called()
 
@@ -1882,16 +1889,16 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     entry.runtime_data.coordinator.last_update_success = True
 
     assert stop_button.available is False
-    snapshot = history.ledger.snapshot.return_value
-    history.ledger.snapshot.return_value = {
+    snapshot = history.history.snapshot.return_value
+    history.history.snapshot.return_value = {
         **snapshot,
         "active_plan": {"room_id": "room-1"},
     }
     assert stop_button.available is True
 
-    history.catalog.preview.side_effect = KeyError("missing")
+    history.planning.preview.side_effect = KeyError("missing")
     assert start_button.available is False
-    history.catalog.preview.side_effect = None
+    history.planning.preview.side_effect = None
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
     assert start_button.available is False
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
@@ -2964,8 +2971,8 @@ async def test_room_statistics_sensors_use_verified_managed_runs() -> None:
     """A verified managed run still populates room statistics."""
     entry = _entry()
     kitchen = entry.runtime_data.coordinator.data.floor_plan.rooms[0]
-    entry.runtime_data.cleaning_plans.ledger.snapshot.return_value = {
-        **entry.runtime_data.cleaning_plans.ledger.snapshot.return_value,
+    entry.runtime_data.cleaning_plans.history.snapshot.return_value = {
+        **entry.runtime_data.cleaning_plans.history.snapshot.return_value,
         "plan_history": {
             "whole_home": {
                 "rooms": {
@@ -3204,7 +3211,7 @@ def test_robot_alert_sensor_names_known_codes_and_keeps_unknown_ones() -> None:
         coordinator.data,
         operational=replace(coordinator.data.operational, error_codes=(304, 206)),
     )
-    coordinator.unknown_alert_codes = {
+    coordinator.robot_health.unknown_alert_codes = {
         "304": {"first_seen": "2026-10-30T03:00:00+00:00", "last_seen": "now"}
     }
     alert = sensor.MaticRobotAlertSensor(entry)

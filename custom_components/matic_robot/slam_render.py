@@ -11,9 +11,11 @@ from google.protobuf.message import DecodeError
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .client.models import FloorPlan
-from .client.slam_map import (
+from .client.slam_scene import (
     MAX_SCENE_RASTER_CELLS,
     MAX_SCENE_SPAN,
+)
+from .client.slam_tiles import (
     MAX_SLAM_TILES,
     TILE_HEIGHT,
     TILE_SIDE,

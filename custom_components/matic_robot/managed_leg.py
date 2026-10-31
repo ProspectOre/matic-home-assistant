@@ -674,7 +674,7 @@ async def _async_run_leg(
 
     credited = evidence or {}
     verified_coverage = await async_confirm_completed_coverage(
-        manager.ledger.coverage_receipt(serial_number, run_id),
+        manager.recovery.coverage_receipt(serial_number, run_id),
         completion_sessions[-1] if completion_sessions else None,
         coverage_verifier,
     )

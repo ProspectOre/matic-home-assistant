@@ -377,7 +377,7 @@ async def test_verified_managed_completion_advances_private_cadence_once(hass) -
         "serial", "home", "run-1", 1, trigger="user", service="test"
     )
     await manager.ledger.async_mark_started("serial", "home", room, run_id="run-1")
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "run-1",
         {"cadence_by_room": {room.room_id: snapshot}, "completed_room_ids": []},
@@ -416,7 +416,7 @@ async def test_checkpoint_save_failure_does_not_leak_frozen_policy(hass):
     manager.repository.store.async_save.side_effect = OSError("disk unavailable")
 
     with pytest.raises(OSError, match="disk unavailable"):
-        await manager.ledger.async_set_recovery_checkpoint(
+        await manager.recovery.async_set_recovery_checkpoint(
             "serial",
             "run-checkpoint",
             checkpoint,
@@ -424,7 +424,7 @@ async def test_checkpoint_save_failure_does_not_leak_frozen_policy(hass):
 
     assert "recovery_checkpoint" not in manager.repository.robot("serial")["last_run"]
     manager.repository.store.async_save.side_effect = None
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "run-checkpoint",
         checkpoint,
@@ -468,7 +468,7 @@ async def test_failed_completion_persistence_rolls_back_and_can_retry(hass) -> N
     await manager.ledger.async_begin_run(
         "serial", "home", "run-fail-save", 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "run-fail-save",
         {"cadence_by_room": {room.room_id: snapshot}, "completed_room_ids": []},
@@ -763,7 +763,7 @@ async def test_tracked_manual_override_counts_only_verified_compatible_work(hass
         trigger="user",
         service="clean_room_sequence",
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "manual-compatible",
         {"cadence_by_room": {"room-a": {**snapshots["room-a"], "identity": identity}}},
@@ -789,7 +789,7 @@ async def test_tracked_manual_override_counts_only_verified_compatible_work(hass
         trigger="user",
         service="clean_room_sequence",
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "manual-omitted",
         {"cadence_by_room": {"room-a": {**snapshots["room-a"], "identity": identity}}},
@@ -1040,7 +1040,7 @@ async def test_unverified_private_cadence_blocks_until_each_mode_is_reset(hass) 
         "coverage_progress_unverified",
     ]
     with pytest.raises(ValueError, match="progress is unverified"):
-        manager.catalog.preview(
+        manager.planning.preview(
             "serial",
             room_map,
             "quick_clean",
@@ -1069,7 +1069,7 @@ async def test_unverified_private_cadence_blocks_until_each_mode_is_reset(hass) 
     )
     assert record["progress"] == {"mop": 0, "coverage": 0}
     assert "unverified_modes" not in record
-    preview = manager.catalog.preview(
+    preview = manager.planning.preview(
         "serial",
         room_map,
         "quick_clean",
@@ -1386,7 +1386,7 @@ async def test_late_native_completion_advances_shared_schedule_exactly_once(
     await manager.ledger.async_begin_run(
         "serial", "home", "run-late", 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "run-late",
         {"cadence_by_room": {normal.room_id: snapshot}, "completed_room_ids": []},
@@ -2832,7 +2832,7 @@ async def test_manager_native_reconciliation_requires_checkpoint_identity(
     await manager.ledger.async_begin_run(
         "serial", "home", run_id, 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         run_id,
         {

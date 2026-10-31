@@ -881,15 +881,15 @@ async def test_photo_patrol_action_returns_each_robots_photos() -> None:
     taken = [{"room": "Kitchen", "url": "/api/matic_robot/photo/e/p"}]
     with (
         patch(
-            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            "custom_components.matic_robot.service_context._resolve_loaded_matic_vacuums",
             return_value=["vacuum.a"],
         ),
         patch(
-            "custom_components.matic_robot.services._entry_for_entity",
+            "custom_components.matic_robot.service_context._entry_for_entity",
             return_value=entry,
         ),
         patch(
-            "custom_components.matic_robot.services.async_photo_patrol",
+            "custom_components.matic_robot.service_controls.async_photo_patrol",
             AsyncMock(return_value=taken),
         ) as patrol,
     ):

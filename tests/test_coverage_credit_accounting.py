@@ -117,7 +117,7 @@ async def _begin_dispatch(
     await manager.ledger.async_begin_run(
         "serial", "home", run_id, 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial", run_id, checkpoint or _dispatch_checkpoint()
     )
 
@@ -228,7 +228,7 @@ async def test_manager_admits_receipt_only_for_owned_dispatch_leg(
     checkpoint = robot["last_run"]["recovery_checkpoint"]
     checkpoint.update(checkpoint_change)
 
-    admitted = await manager.ledger.async_checkpoint_coverage_receipt(
+    admitted = await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -244,7 +244,7 @@ async def test_manager_admits_receipt_only_for_owned_dispatch_leg(
 async def test_manager_rejects_receipt_from_a_different_native_session(hass):
     manager = _manager(hass)
     await _begin_dispatch(manager)
-    assert not await manager.ledger.async_checkpoint_coverage_receipt(
+    assert not await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -272,7 +272,7 @@ async def test_receipt_checkpoint_rejects_incomplete_dispatch_evidence(hass, inv
             receipt, rooms=(replace(receipt.rooms[0], goals_hash="incomplete"),)
         )
     await _begin_dispatch(manager, checkpoint=checkpoint)
-    assert not await manager.ledger.async_checkpoint_coverage_receipt(
+    assert not await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         receipt,
@@ -280,7 +280,7 @@ async def test_receipt_checkpoint_rejects_incomplete_dispatch_evidence(hass, inv
         room_ids=room_ids,
         session_id=SESSION,
     )
-    assert manager.ledger.coverage_receipt("serial", "run-1") is None
+    assert manager.recovery.coverage_receipt("serial", "run-1") is None
 
 
 _AREA_ENTRY = {
@@ -313,7 +313,7 @@ async def test_receipt_checkpoint_binds_only_room_legs_of_a_plan_with_areas(
     await _begin_dispatch(manager, checkpoint=checkpoint)
 
     assert (
-        await manager.ledger.async_checkpoint_coverage_receipt(
+        await manager.recovery.async_checkpoint_coverage_receipt(
             "serial",
             "run-1",
             _receipt(),
@@ -323,7 +323,9 @@ async def test_receipt_checkpoint_binds_only_room_legs_of_a_plan_with_areas(
         )
         is admitted
     )
-    assert (manager.ledger.coverage_receipt("serial", "run-1") is not None) is admitted
+    assert (
+        manager.recovery.coverage_receipt("serial", "run-1") is not None
+    ) is admitted
 
 
 async def test_mixed_dispatch_receipt_binds_only_its_vacuum_rooms(hass):
@@ -345,7 +347,7 @@ async def test_mixed_dispatch_receipt_binds_only_its_vacuum_rooms(hass):
     )
     await _begin_dispatch(manager, checkpoint=checkpoint)
     receipt = replace(_receipt(), floor_hash=coverage_floor_hash(floor))
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         receipt,
@@ -353,11 +355,11 @@ async def test_mixed_dispatch_receipt_binds_only_its_vacuum_rooms(hass):
         room_ids=[ROOM_ID, "room-b"],
         session_id=SESSION,
     )
-    stored = manager.control.recovery_run("serial")["recovery_checkpoint"][
+    stored = manager.recovery.recovery_run("serial")["recovery_checkpoint"][
         "coverage_evidence"
     ]
     assert stored["room_regions"] == {ROOM_ID: REGION_HASH}
-    assert manager.ledger.coverage_receipt("serial", "run-1") == receipt
+    assert manager.recovery.coverage_receipt("serial", "run-1") == receipt
 
 
 async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_evidence(
@@ -368,7 +370,7 @@ async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_e
     robot = manager.repository.robot("serial")
     run = robot["last_run"]
     run["recovery_checkpoint"].pop("phase")
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "run-1",
         {**_dispatch_checkpoint(), "coverage_evidence": _evidence().as_storage()},
@@ -376,10 +378,10 @@ async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_e
     assert "coverage_evidence" not in run["recovery_checkpoint"]
 
     # Restore the eligible dispatch and use the dedicated receipt writer.
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial", "run-1", _dispatch_checkpoint()
     )
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -395,7 +397,7 @@ async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_e
     ):
         checkpoint = _dispatch_checkpoint()
         checkpoint.update(update)
-        await manager.ledger.async_set_recovery_checkpoint(
+        await manager.recovery.async_set_recovery_checkpoint(
             "serial", "run-1", checkpoint
         )
         assert run["recovery_checkpoint"]["coverage_evidence"] == evidence
@@ -407,7 +409,7 @@ async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_e
     ):
         checkpoint = _dispatch_checkpoint()
         checkpoint.update(update)
-        await manager.ledger.async_set_recovery_checkpoint(
+        await manager.recovery.async_set_recovery_checkpoint(
             "serial", "run-1", checkpoint
         )
         assert "coverage_evidence" not in run["recovery_checkpoint"]
@@ -482,7 +484,7 @@ async def test_matching_confirmed_receipt_clears_due_periodic_coverage(
     checkpoint = _dispatch_checkpoint(cadence_state)
     checkpoint["rooms"][0]["coverage_setting"] = setting.value
     await _begin_dispatch(manager, checkpoint=checkpoint)
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(setting),
@@ -568,7 +570,7 @@ async def test_unproven_coverage_stays_due_but_ordinary_completion_counts(
             "mop"
         )
     await _begin_dispatch(manager, checkpoint=checkpoint_for_run)
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -624,7 +626,7 @@ async def test_duplicate_completed_room_does_not_credit_coverage_twice(hass):
         room_identities={ROOM_ID: identity},
     )
     await _begin_dispatch(manager)
-    await manager.ledger.async_checkpoint_coverage_receipt(
+    await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -647,7 +649,7 @@ async def test_receipt_checkpoint_save_failure_rolls_back_and_can_retry(hass):
     await _begin_dispatch(manager)
     manager.repository.store.async_save.side_effect = OSError("disk unavailable")
     with pytest.raises(OSError, match="disk unavailable"):
-        await manager.ledger.async_checkpoint_coverage_receipt(
+        await manager.recovery.async_checkpoint_coverage_receipt(
             "serial",
             "run-1",
             _receipt(),
@@ -660,7 +662,7 @@ async def test_receipt_checkpoint_save_failure_rolls_back_and_can_retry(hass):
         not in manager.repository.robot("serial")["last_run"]["recovery_checkpoint"]
     )
     manager.repository.store.async_save.side_effect = None
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -762,12 +764,12 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
     await manager.ledger.async_begin_run(
         "serial", "home", "late-run", 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "late-run",
         {**_dispatch_checkpoint(cadence_state), "completed_room_ids": []},
     )
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "late-run",
         _receipt(),
@@ -882,12 +884,12 @@ async def test_late_native_verifier_cannot_credit_after_pending_marker_changes(h
     await manager.ledger.async_begin_run(
         "serial", "home", "late-run", 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "late-run",
         _dispatch_checkpoint({**snapshots[ROOM_ID], "identity": identity}),
     )
-    await manager.ledger.async_checkpoint_coverage_receipt(
+    await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "late-run",
         _receipt(),
@@ -949,7 +951,7 @@ async def test_receipt_is_retired_when_accepted_dispatch_evidence_changes(
 ):
     manager = _manager(hass)
     await _begin_dispatch(manager)
-    assert await manager.ledger.async_checkpoint_coverage_receipt(
+    assert await manager.recovery.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -964,9 +966,9 @@ async def test_receipt_is_retired_when_accepted_dispatch_evidence_changes(
         "native_identity_hash": "a" * 64,
         "history_baseline": ["b" * 64],
     }
-    await manager.ledger.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
-    assert manager.ledger.coverage_receipt("serial", "run-1") == _receipt()
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
+    assert manager.recovery.coverage_receipt("serial", "run-1") == _receipt()
     checkpoint["phase"] = "accepted"
     checkpoint[changed] = [] if changed == "history_baseline" else "replacement"
-    await manager.ledger.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
-    assert manager.ledger.coverage_receipt("serial", "run-1") is None
+    await manager.recovery.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
+    assert manager.recovery.coverage_receipt("serial", "run-1") is None

@@ -65,7 +65,7 @@ from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
 from custom_components.matic_robot.plan_storage import STOP_FENCE_EXPIRES_AT
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from custom_components.matic_robot.slam_scene import observe_coordinator_trail
+from custom_components.matic_robot.slam_view_data import observe_coordinator_trail
 
 
 def _wifi_survey() -> SimpleNamespace:
@@ -722,7 +722,7 @@ async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
         "expires_at": "2026-08-13T12:12:00+00:00",
     }
     plans = MagicMock()
-    plans.control.recovery_run.return_value = None
+    plans.recovery.recovery_run.return_value = None
     plans.ledger.pending_native_reconciliation.return_value = None
     entry = SimpleNamespace(async_create_background_task=MagicMock())
     hass = MagicMock()
@@ -811,7 +811,7 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
     sleep.assert_awaited_once_with(5)
     client.async_get_cleaning_session_records.assert_awaited_once()
     assert manager.ledger.pending_native_reconciliation("synthetic-serial") is None
-    room_history = manager.ledger.snapshot("synthetic-serial")["plan_history"]["away"][
+    room_history = manager.history.snapshot("synthetic-serial")["plan_history"]["away"][
         "rooms"
     ][room.id]
     assert room_history["last_result"] == "completed"
@@ -1083,7 +1083,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     coordinator_unsubscribe = MagicMock()
     plan_unsubscribe = MagicMock()
     plans = MagicMock()
-    plans.control.recovery_run.return_value = {} if recovering_run else None
+    plans.recovery.recovery_run.return_value = {} if recovering_run else None
     plans.control.pending_stop_run_id.return_value = "run" if recovering_stop else None
     plans.catalog.areas.return_value = {}
     plans.repository.async_add_listener.return_value = plan_unsubscribe
@@ -1604,7 +1604,7 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
             return_value=MagicMock(),
         ),
         patch(
-            "custom_components.matic_robot.area_binding.ir.async_create_issue"
+            "custom_components.matic_robot.area_binding_repairs.ir.async_create_issue"
         ) as create_issue,
     ):
         assert await async_setup_entry(hass, entry) is True
@@ -1649,7 +1649,7 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     assert area_binding_status(current_area, later_refresh) is AreaBindingStatus.CURRENT
     create_issue.assert_not_called()
     assert manager.repository.store.async_save.await_count == 0
-    preview = manager.catalog.preview(
+    preview = manager.planning.preview(
         serial,
         {room.id: room.name for room in later_refresh.rooms},
         "area-plan",
@@ -1808,14 +1808,15 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
     run_trails = SimpleNamespace(async_shutdown=AsyncMock())
     plans = SimpleNamespace(
+        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
         control=SimpleNamespace(
             async_cancel_and_wait=AsyncMock(),
             async_close_command_admission_and_wait=AsyncMock(),
             begin_command_teardown=MagicMock(),
             reopen_metadata_admission=MagicMock(),
         ),
-        ledger=SimpleNamespace(async_retire_recovery=AsyncMock()),
-        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
+        ledger=SimpleNamespace(),
+        recovery=SimpleNamespace(async_retire_recovery=AsyncMock()),
     )
     entry = SimpleNamespace(
         entry_id="entry",
@@ -1867,11 +1868,11 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     )
     assert plans.control.reopen_metadata_admission.called is not unload_ok
     if disabled:
-        plans.ledger.async_retire_recovery.assert_awaited_once_with(
+        plans.recovery.async_retire_recovery.assert_awaited_once_with(
             "synthetic-serial", "config_entry_unload"
         )
     else:
-        plans.ledger.async_retire_recovery.assert_not_awaited()
+        plans.recovery.async_retire_recovery.assert_not_awaited()
     assert client.async_shutdown.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
@@ -2012,15 +2013,18 @@ async def test_teardown_allows_only_existing_managed_token_cleanup(
 async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
     """A failed platform unload must not strand a preserved managed run."""
     plans = SimpleNamespace(
+        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
         control=SimpleNamespace(
             async_cancel_and_wait=AsyncMock(),
             async_close_command_admission_and_wait=AsyncMock(),
             begin_command_teardown=MagicMock(),
             reopen_metadata_admission=MagicMock(),
-            recovery_run=MagicMock(return_value={"run_id": "run"}),
         ),
-        ledger=SimpleNamespace(async_retire_recovery=AsyncMock()),
-        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
+        ledger=SimpleNamespace(),
+        recovery=SimpleNamespace(
+            recovery_run=MagicMock(return_value={"run_id": "run"}),
+            async_retire_recovery=AsyncMock(),
+        ),
     )
     target_tasks = []
 
@@ -2044,16 +2048,18 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
 
 async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
     plans = SimpleNamespace(
+        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
         control=SimpleNamespace(
             async_cancel_and_wait=AsyncMock(),
             async_close_command_admission_and_wait=AsyncMock(),
             begin_command_teardown=MagicMock(),
             reopen_metadata_admission=MagicMock(),
-            recovery_run=MagicMock(return_value=None),
             pending_stop_run_id=MagicMock(return_value="run"),
         ),
-        ledger=SimpleNamespace(async_retire_recovery=AsyncMock()),
-        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
+        ledger=SimpleNamespace(),
+        recovery=SimpleNamespace(
+            recovery_run=MagicMock(return_value=None), async_retire_recovery=AsyncMock()
+        ),
     )
     target_tasks = []
 
@@ -2077,16 +2083,19 @@ async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
 
 async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
     plans = SimpleNamespace(
+        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
         control=SimpleNamespace(
             async_cancel_and_wait=AsyncMock(),
             async_close_command_admission_and_wait=AsyncMock(),
             begin_command_teardown=MagicMock(),
             reopen_metadata_admission=MagicMock(),
-            recovery_run=MagicMock(return_value={"run_id": "run"}),
             pending_stop_run_id=MagicMock(return_value="run"),
         ),
-        ledger=SimpleNamespace(async_retire_recovery=AsyncMock()),
-        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
+        ledger=SimpleNamespace(),
+        recovery=SimpleNamespace(
+            recovery_run=MagicMock(return_value={"run_id": "run"}),
+            async_retire_recovery=AsyncMock(),
+        ),
     )
     entry = SimpleNamespace(
         disabled_by=None,

@@ -17,11 +17,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .client.models import FloorPlan, HermesCollectionEntry
-from .client.slam_map import (
-    decode_slam_tile,
-    encode_slam_scene,
-    parse_slam_scene_header,
-)
+from .client.slam_scene import encode_slam_scene, parse_slam_scene_header
+from .client.slam_tiles import decode_slam_tile
 from .const import DOMAIN
 from .slam_delta import MAX_SCENE_BYTES
 from .slam_map_store import MAP_SETTLE_SECONDS, SlamMapIdentity, SlamMapStore

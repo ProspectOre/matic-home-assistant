@@ -17,10 +17,10 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
-from .area_binding import (
+from .area_binding import binding_for_floor_plan
+from .area_binding_repairs import (
     async_delete_custom_area_issue,
     async_sync_custom_area_issue,
-    binding_for_floor_plan,
 )
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
@@ -42,7 +42,7 @@ from .const import (
     EVENT_CLEANING_FINISHED,
     PLATFORMS,
 )
-from .coordinator import MaticCoordinator, async_delete_robot_alert_issues
+from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
 from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
@@ -52,6 +52,7 @@ from .migrations import async_migrate_entry
 from .photos import RobotPhotoStore
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
+from .robot_health import async_delete_robot_alert_issues
 from .run_history import RunTrails
 from .services import async_register_services
 from .slam_history import (
@@ -59,7 +60,7 @@ from .slam_history import (
     async_collect_slam_history,
 )
 from .slam_map_store import SlamMapIdentity, SlamMapStore
-from .slam_scene import observe_coordinator_trail
+from .slam_view_data import observe_coordinator_trail
 from .wifi_survey import WifiSurveyStore
 
 __all__ = ["async_migrate_entry"]
@@ -274,7 +275,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             track_workspace_entry(entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         if (
-            plans.control.recovery_run(serial_number) is not None
+            plans.recovery.recovery_run(serial_number) is not None
             or plans.control.pending_stop_run_id(serial_number) is not None
         ):
             entry.async_create_background_task(
@@ -709,7 +710,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         preserve_run=preserve_run,
     )
     if not preserve_run:
-        await entry.runtime_data.cleaning_plans.ledger.async_retire_recovery(
+        await entry.runtime_data.cleaning_plans.recovery.async_retire_recovery(
             str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
         )
     await plan_manager.control.async_close_command_admission_and_wait(
@@ -725,7 +726,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         )
     if not unload_ok and preserve_run and not getattr(hass, "is_stopping", False):
         recovery_reader = getattr(
-            entry.runtime_data.cleaning_plans.control, "recovery_run", None
+            entry.runtime_data.cleaning_plans.recovery, "recovery_run", None
         )
         recovery = (
             recovery_reader(str(entry.data[CONF_SERIAL_NUMBER]))

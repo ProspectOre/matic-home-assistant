@@ -23,15 +23,19 @@ import custom_components.matic_robot.plan_storage as plan_storage_module
 import custom_components.matic_robot.plan_timing as plan_timing_module
 import custom_components.matic_robot.plans as plans_module
 from custom_components.matic_robot.area_binding import (
+    area_binding_status,
+    binding_for_area,
+    binding_for_floor_plan,
+)
+from custom_components.matic_robot.area_binding_formats import (
     AREA_SCHEMA_VERSION,
     BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
     SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+)
+from custom_components.matic_robot.area_binding_geometry import (
     _hash_only_area_geometry_fingerprint,
-    area_binding_status,
-    binding_for_area,
-    binding_for_floor_plan,
 )
 from custom_components.matic_robot.cadence_accounting import (
     validated_cadence_snapshot as _validated_cadence_snapshot,
@@ -108,7 +112,9 @@ from custom_components.matic_robot.plan_timing import (
 )
 from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_control import ManagedMotionReplacedError
-from custom_components.matic_robot.services import _entry_for_entity
+from custom_components.matic_robot.service_context import (
+    _entry_for_entity,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -384,7 +390,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
         )
 
     await hass.async_block_till_done()
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
     assert last_run["room_count"] == 1
@@ -558,7 +564,7 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
             [_room("Kitchen", "room-kitchen")],
         )
 
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "unverified"
     assert last_run["reason_code"] == "stopped_in_place"
     assert last_run["completed_room_count"] == 0
@@ -592,14 +598,14 @@ async def test_docked_stop_upgrades_only_after_correlated_final_command(hass) ->
         0,
         terminal_activity="cleaning",
     )
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "cancelled"
     assert not await manager.ledger.async_mark_run_docked("serial", "wrong-run")
 
     assert await manager.ledger.async_mark_run_docked(
         "serial", "run-1", entity_id="vacuum.matic"
     )
     await hass.async_block_till_done()
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "stopped_docked"
     assert last_run["terminal_activity"] == "docked"
     assert events[0].data["run_id"] == "run-1"
@@ -625,7 +631,7 @@ async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
     assert await manager.ledger.async_finish_run(
         "serial", "run-1", "cancelled", "managed_stop", 0, terminal_activity="idle"
     )
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "stopped_docked"
     assert last_run["reason_code"] == "stopped_docked"
     assert last_run["terminal_activity"] == "docked"
@@ -660,7 +666,7 @@ async def test_correlated_dock_clears_its_owned_stop_fence(hass) -> None:
         "serial", "run-1", stop_fence_token=stop_fence_token
     )
 
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
     assert not manager.control.stop_pending("serial")
     assert "stop_fence_expires_at" not in manager.repository.robot("serial")
 
@@ -702,7 +708,7 @@ async def test_stale_dock_confirmation_preserves_newer_stop_fence(hass) -> None:
         "serial", "run-1", stop_fence_token=stale_token
     )
 
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "cancelled"
     assert manager.control.stop_fence_token("serial") == current_token
     assert manager.repository.robot("serial")["stop_fence_run_id"] == "run-1"
 
@@ -805,7 +811,9 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
             "status": "suspended",
             "suspend_reason": "low_charge",
         }
-        assert manager.ledger.snapshot("serial")["active_plan"]["status"] == "suspended"
+        assert (
+            manager.history.snapshot("serial")["active_plan"]["status"] == "suspended"
+        )
         raise PlanCancelledError
 
     with patch(
@@ -821,7 +829,7 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
             [room],
         )
 
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "recharge_suspended"
     assert last_run["reason_code"] == "low_charge"
 
@@ -858,7 +866,7 @@ async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
             [room],
         )
 
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "cancelled"
     assert last_run["reason_code"] == "managed_stop"
 
@@ -886,7 +894,7 @@ async def test_finish_current_room_uses_normalized_cancelled_outcome(hass) -> No
             [room],
         )
 
-    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.history.snapshot("serial")["last_run"]["outcome"] == "cancelled"
 
 
 @pytest.mark.parametrize(
@@ -925,7 +933,7 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
             [_room("Study", "room-study")],
         )
     await hass.async_block_till_done()
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "failed"
     assert last_run["reason_code"] == reason
     assert last_run["cause"] == "unknown"
@@ -968,7 +976,7 @@ async def test_restart_retires_persisted_running_outcome(
         async_save=AsyncMock(),
     )
     await recovering.async_load()
-    last_run = recovering.ledger.snapshot("serial")["last_run"]
+    last_run = recovering.history.snapshot("serial")["last_run"]
     assert last_run["run_id"] == "synthetic-run"
     assert last_run["outcome"] == "unverified"
     assert last_run["reason_code"] == "home_assistant_restart"
@@ -976,12 +984,12 @@ async def test_restart_retires_persisted_running_outcome(
     assert last_run["ended_at"] is None
     assert dt_util.parse_datetime(last_run["recovered_at"]) is not None
     assert last_run["completed_room_count"] == int(verified_room)
-    assert recovering.ledger.snapshot("serial")["active_plan"] is None
+    assert recovering.history.snapshot("serial")["active_plan"] is None
     recovering.repository.store.async_load.return_value = deepcopy(
         recovering.repository.data
     )
     await recovering.async_load()
-    assert recovering.ledger.snapshot("serial")["last_run"] == last_run
+    assert recovering.history.snapshot("serial")["last_run"] == last_run
 
 
 async def test_load_normalizes_legacy_run_outcome_and_provenance(hass) -> None:
@@ -1006,7 +1014,7 @@ async def test_load_normalizes_legacy_run_outcome_and_provenance(hass) -> None:
         async_load=AsyncMock(return_value=legacy), async_save=AsyncMock()
     )
     await recovering.async_load()
-    last_run = recovering.ledger.snapshot("serial")["last_run"]
+    last_run = recovering.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "unverified"
     assert last_run["trigger"] == "external_unknown"
     assert last_run["provenance"] == "external_unknown"
@@ -1086,7 +1094,7 @@ async def test_initial_save_failure_still_retires_the_run(
             set_activity_run_id=set_run_id,
         )
     await hass.async_block_till_done()
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "failed"
     assert last_run["completed_room_count"] == 0
     assert events[0].data["outcome"] == "failed"
@@ -1211,7 +1219,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         )
     await manager.control.async_cancel_and_wait("serial")
     await hass.async_block_till_done()
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     last_run = snapshot["last_run"]
     assert last_run["outcome"] == outcome
     assert last_run["reason_code"] == reason
@@ -1322,7 +1330,7 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
                 execution.cancel()
                 await asyncio.wait({execution}, timeout=1)
     await hass.async_block_till_done()
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     records = snapshot["plan_history"]["away"]["rooms"]
     assert records[rooms[0].room_id]["last_result"] == "ended_unverified"
     assert records[rooms[0].room_id]["unverified_runs"] == 1
@@ -1383,7 +1391,7 @@ async def test_restart_closes_orphaned_room_status_without_new_credit(
     )
 
     await recovered.async_load()
-    record = recovered.ledger.snapshot("serial")["plan_history"]["away"]["rooms"][
+    record = recovered.history.snapshot("serial")["plan_history"]["away"]["rooms"][
         room.room_id
     ]
     assert record["last_result"] == "ended_unverified"
@@ -1539,7 +1547,7 @@ async def test_mark_completed_accepts_native_evidence(hass) -> None:
         duration_seconds=57,
     )
 
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     record = snapshot["plan_history"]["plan"]["rooms"]["room-kitchen"]
     assert record["last_completed"] == "2026-08-20T04:16:13+00:00"
     assert record["last_duration_seconds"] == 57
@@ -1694,8 +1702,8 @@ async def test_custom_areas_round_trip_by_id_and_name_without_snapshot(hass) -> 
     assert manager.catalog.area("serial", "LITTER BOX") == {"id": "litter_box", **saved}
     assert manager.catalog.area("serial") == {"id": "litter_box", **saved}
     assert manager.catalog.areas("serial") == {"litter_box": saved}
-    assert "areas" not in manager.ledger.snapshot("serial")
-    assert manager.ledger.snapshot("serial")["selected_area_name"] == "Litter box"
+    assert "areas" not in manager.history.snapshot("serial")
+    assert manager.history.snapshot("serial")["selected_area_name"] == "Litter box"
     await manager.catalog.async_select_area("serial", "litter_box")
     with pytest.raises(KeyError):
         await manager.catalog.async_select_area("serial", "missing")
@@ -1876,7 +1884,7 @@ async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
             },
         }
 
-    original_index_factory = plan_catalog_module._room_geometry_index
+    original_index_factory = plan_catalog_module.binding_geometry._room_geometry_index
     statuses = []
 
     def check_status(*args, **kwargs):
@@ -1886,7 +1894,7 @@ async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
 
     with (
         patch.object(
-            plan_catalog_module,
+            plan_catalog_module.binding_geometry,
             "_room_geometry_index",
             side_effect=original_index_factory,
         ) as index_factory,
@@ -1967,7 +1975,7 @@ async def test_area_binding_upgrade_skips_index_for_changed_whole_map(hass) -> N
     }
 
     with patch.object(
-        plan_catalog_module,
+        plan_catalog_module.binding_geometry,
         "_room_geometry_index",
         side_effect=AssertionError("unneeded room index built"),
     ):
@@ -2257,7 +2265,7 @@ async def test_native_history_import_records_activity_not_completion(
         await manager.ledger.async_import_native_history("serial", floor_plan, records)
         is True
     )
-    history = manager.ledger.snapshot("serial")["last_completed_by_room"]
+    history = manager.history.snapshot("serial")["last_completed_by_room"]
     # The robot's record cannot prove a room was finished, so importing it
     # never claims a completion: it only keeps rotation fairness current.
     assert history["living"]["at"] is None
@@ -2925,7 +2933,7 @@ async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> N
     study = _room("Study", "room-study")
     bedroom = _room("Bedroom", "room-bedroom")
 
-    assert manager.catalog.choose("serial", "away", [kitchen, study, bedroom]) == [
+    assert manager.planning.choose("serial", "away", [kitchen, study, bedroom]) == [
         kitchen,
         study,
         bedroom,
@@ -2933,12 +2941,12 @@ async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> N
     await manager.ledger.async_mark_started("serial", "away", kitchen)
     await manager.ledger.async_mark_completed("serial", "away", kitchen)
 
-    assert manager.catalog.choose("serial", "away", [kitchen, study, bedroom]) == [
+    assert manager.planning.choose("serial", "away", [kitchen, study, bedroom]) == [
         study,
         bedroom,
         kitchen,
     ]
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["completed_runs"] == 1
     assert snapshot["last_completed_by_room"]["room-kitchen"]["runs"] == 1
     assert snapshot["active_plan"] is None
@@ -2954,7 +2962,7 @@ async def test_intelligent_order_includes_external_room_cleaning(hass) -> None:
         "last_opportunity": "2026-08-31T12:00:00+00:00",
     }
 
-    assert manager.catalog.choose("serial", "away", [kitchen, study]) == [
+    assert manager.planning.choose("serial", "away", [kitchen, study]) == [
         study,
         kitchen,
     ]
@@ -2975,7 +2983,7 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
     await manager.ledger.async_mark_failed(
         "serial", "away", kitchen, "dispatch rejected"
     )
-    assert manager.catalog.choose("serial", "away", [kitchen, study]) == [
+    assert manager.planning.choose("serial", "away", [kitchen, study]) == [
         kitchen,
         study,
     ]
@@ -2997,7 +3005,7 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
         == confirmed_at
     )
     await manager.ledger.async_mark_failed("serial", "away", kitchen, "robot error")
-    assert manager.catalog.choose("serial", "away", [kitchen, study]) == [
+    assert manager.planning.choose("serial", "away", [kitchen, study]) == [
         study,
         kitchen,
     ]
@@ -3005,10 +3013,10 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
     await manager.ledger.async_mark_started("serial", "away", study)
     await manager.ledger.async_mark_resumed("serial", "away", study)
     await manager.ledger.async_mark_cancelled("serial", "away", study)
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["failed_runs"] == 2
     assert snapshot["cancelled_runs"] == 1
-    assert manager.catalog.choose("serial", "away", [kitchen, study]) == [
+    assert manager.planning.choose("serial", "away", [kitchen, study]) == [
         kitchen,
         study,
     ]
@@ -3114,18 +3122,18 @@ async def test_three_room_short_runs_cycle_after_terminal_outcomes(hass) -> None
     await manager.ledger.async_mark_started("serial", "away", kitchen)
     await manager.ledger.async_mark_resumed("serial", "away", kitchen)
     await manager.ledger.async_mark_failed("serial", "away", kitchen, "blocked")
-    assert manager.catalog.choose("serial", "away", rooms)[0] == study
+    assert manager.planning.choose("serial", "away", rooms)[0] == study
 
     await manager.ledger.async_mark_started("serial", "away", study)
     await manager.ledger.async_mark_resumed("serial", "away", study)
     await manager.ledger.async_mark_cancelled("serial", "away", study)
-    assert manager.catalog.choose("serial", "away", rooms)[0] == bedroom
+    assert manager.planning.choose("serial", "away", rooms)[0] == bedroom
 
     await manager.ledger.async_mark_started("serial", "away", bedroom)
     await manager.ledger.async_mark_resumed("serial", "away", bedroom)
     await manager.ledger.async_mark_interrupted("serial", "away", bedroom, "offline")
-    assert manager.catalog.choose("serial", "away", rooms)[0] == kitchen
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
+    assert manager.planning.choose("serial", "away", rooms)[0] == kitchen
+    assert manager.history.snapshot("serial")["completed_runs"] == 0
 
 
 async def test_fair_rotation_cycles_every_mapped_room_during_short_runs(hass) -> None:
@@ -3135,7 +3143,7 @@ async def test_fair_rotation_cycles_every_mapped_room_during_short_runs(hass) ->
     base = dt_util.utcnow() - timedelta(hours=1)
 
     for index, expected in enumerate(rooms * 2):
-        assert manager.catalog.choose("serial", "away", rooms)[0] == expected
+        assert manager.planning.choose("serial", "away", rooms)[0] == expected
         with patch(
             "custom_components.matic_robot.plans.dt_util.utcnow",
             return_value=base + timedelta(seconds=index),
@@ -3146,8 +3154,8 @@ async def test_fair_rotation_cycles_every_mapped_room_during_short_runs(hass) ->
                 "serial", "away", expected, "blocked"
             )
 
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
-    assert manager.ledger.snapshot("serial")["failed_runs"] == 24
+    assert manager.history.snapshot("serial")["completed_runs"] == 0
+    assert manager.history.snapshot("serial")["failed_runs"] == 24
 
 
 async def test_new_plan_uses_global_room_completion_as_rotation_fallback(hass) -> None:
@@ -3159,7 +3167,7 @@ async def test_new_plan_uses_global_room_completion_as_rotation_fallback(hass) -
     await manager.ledger.async_mark_started("serial", "weekday", kitchen)
     await manager.ledger.async_mark_completed("serial", "weekday", kitchen)
 
-    assert manager.catalog.choose("serial", "weekend", [kitchen, study]) == [
+    assert manager.planning.choose("serial", "weekend", [kitchen, study]) == [
         study,
         kitchen,
     ]
@@ -3171,7 +3179,7 @@ async def test_new_plan_uses_global_room_completion_as_rotation_fallback(hass) -
     await second_manager.ledger.async_mark_failed(
         "serial", "weekday", kitchen, "synthetic blockage"
     )
-    assert second_manager.catalog.choose("serial", "weekend", [kitchen, study]) == [
+    assert second_manager.planning.choose("serial", "weekend", [kitchen, study]) == [
         study,
         kitchen,
     ]
@@ -3192,14 +3200,14 @@ async def test_plan_reset_ignores_old_shared_history_but_accepts_new_activity(
     with patch("custom_components.matic_robot.plans.dt_util.utcnow", return_value=base):
         await manager.ledger.async_mark_started("serial", "weekday", kitchen)
         await manager.ledger.async_mark_completed("serial", "weekday", kitchen)
-    assert manager.catalog.choose("serial", "weekend", rooms) == [study, kitchen]
+    assert manager.planning.choose("serial", "weekend", rooms) == [study, kitchen]
 
     with patch(
         "custom_components.matic_robot.plans.dt_util.utcnow",
         return_value=base + timedelta(minutes=1),
     ):
         await manager.ledger.async_reset_history("serial", "weekend")
-    assert manager.catalog.choose("serial", "weekend", rooms) == rooms
+    assert manager.planning.choose("serial", "weekend", rooms) == rooms
 
     with patch(
         "custom_components.matic_robot.plans.dt_util.utcnow",
@@ -3208,7 +3216,7 @@ async def test_plan_reset_ignores_old_shared_history_but_accepts_new_activity(
         await manager.ledger.async_mark_started("serial", "weekday", kitchen)
         await manager.ledger.async_mark_resumed("serial", "weekday", kitchen)
         await manager.ledger.async_mark_failed("serial", "weekday", kitchen, "blocked")
-    assert manager.catalog.choose("serial", "weekend", rooms) == [study, kitchen]
+    assert manager.planning.choose("serial", "weekend", rooms) == [study, kitchen]
 
 
 async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
@@ -3279,7 +3287,7 @@ def test_rotation_recovers_from_corrupt_or_future_history(hass) -> None:
     }
     robot["rooms"] = "corrupt-global-history"
 
-    assert manager.catalog.choose("serial", "away", [kitchen, study, bedroom]) == [
+    assert manager.planning.choose("serial", "away", [kitchen, study, bedroom]) == [
         kitchen,
         study,
         bedroom,
@@ -3335,7 +3343,7 @@ async def test_restart_recovers_interrupted_room(hass) -> None:
         async_save=AsyncMock(),
     )
     await recovering.async_load()
-    snapshot = recovering.ledger.snapshot("serial")
+    snapshot = recovering.history.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert snapshot["last_interrupted_plan"]["room"] == "Kitchen"
     assert (
@@ -3476,7 +3484,7 @@ async def test_load_backfills_verified_room_duration_from_plan_history(hass) -> 
 
     await manager.async_load()
 
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["last_completed_by_room"]["room-living"] == {
         "name": "Living Room",
         "at": "2026-07-28T18:00:00+00:00",
@@ -3746,7 +3754,7 @@ async def test_replacement_waits_for_reconciliation_persistence(
     await recovered.async_load()
     assert recovered.ledger.pending_native_reconciliation("serial") is None
     await recovered.ledger.async_import_native_history("serial", floor_plan, records)
-    assert recovered.ledger.snapshot("serial")["completed_runs"] == int(not save_fails)
+    assert recovered.history.snapshot("serial")["completed_runs"] == int(not save_fails)
 
 
 @pytest.mark.parametrize(
@@ -3809,7 +3817,7 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
     assert sent == [UserCommand.STOP]
     assert "pending_native_reconciliation" not in manager.repository.robot("serial")
     assert "serial" not in manager.control.reconciliation_tasks
-    record = manager.ledger.snapshot("serial")["plan_history"]["away"]["rooms"][
+    record = manager.history.snapshot("serial")["plan_history"]["away"]["rooms"][
         room.room_id
     ]
     assert record["last_result"] == last_result
@@ -3822,7 +3830,7 @@ async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> No
     await manager.ledger.async_mark_started("serial", "away", room)
 
     await manager.ledger.async_mark_suspended("serial", "away", room, "low_charge")
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     record = snapshot["plan_history"]["away"]["rooms"]["room-kitchen"]
     assert record["last_result"] == "suspended"
     assert record["suspended_runs"] == 1
@@ -3831,9 +3839,9 @@ async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> No
     assert snapshot["suspended_runs"] == 1
 
     await manager.ledger.async_mark_resumed("serial", "away", room)
-    assert manager.ledger.snapshot("serial")["active_plan"]["status"] == "running"
+    assert manager.history.snapshot("serial")["active_plan"]["status"] == "running"
     await manager.ledger.async_mark_interrupted("serial", "away", room, "unknown stop")
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     record = snapshot["plan_history"]["away"]["rooms"]["room-kitchen"]
     assert record["last_result"] == "interrupted"
     assert record["interrupted_runs"] == 1
@@ -3947,13 +3955,13 @@ async def test_pending_native_stop_completion_is_reconciled_on_history_import(
     if save_failure == "replacement":
         await manager.ledger.async_import_native_history("serial", floor_plan, [record])
         await hass.async_block_till_done()
-        assert manager.ledger.snapshot("serial")["completed_runs"] == 0
+        assert manager.history.snapshot("serial")["completed_runs"] == 0
         assert events == []
         return
     assert await manager.ledger.async_import_native_history(
         "serial", floor_plan, [record]
     )
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     room_record = snapshot["plan_history"]["away"]["rooms"][room.room_id]
     assert room_record["last_result"] == "completed"
     assert room_record["completed_runs"] == 1
@@ -4022,7 +4030,7 @@ async def test_expired_native_reconciliation_is_cleared_without_plan_credit(
     assert await manager.ledger.async_import_native_history(
         "serial", floor_plan, [unrelated]
     )
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     plan_record = snapshot["plan_history"]["away"]["rooms"][room.room_id]
     assert plan_record["last_result"] == "failed"
     assert plan_record.get("completed_runs", 0) == 0
@@ -4077,7 +4085,7 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
         completed_at=now.isoformat(),
         duration_seconds=12,
     )
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     last_run = snapshot["last_run"]
     reconciled_room = snapshot["plan_history"]["away"]["rooms"][second.room_id]
     assert reconciled_room["cleaning_mode"] == second.cleaning_mode
@@ -4085,7 +4093,7 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
     assert last_run["completed_room_count"] == 2
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
-    (saved,) = manager.ledger.run_history("serial")
+    (saved,) = manager.history.run_history("serial")
     assert (saved["outcome"], saved["ending"]) == ("finished", "finished")
     assert (
         manager.repository.robot("serial")["run_history"][0]["completed_room_count"]
@@ -4094,7 +4102,7 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
     await manager.ledger.async_finish_run(
         "serial", "run-1", "failed", "partial_native_result", 1, cause="native_result"
     )
-    last_run = manager.ledger.snapshot("serial")["last_run"]
+    last_run = manager.history.snapshot("serial")["last_run"]
     assert last_run["completed_room_count"] == 2
     assert last_run["outcome"] == "completed"
 
@@ -4127,7 +4135,7 @@ async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
         )
         is False
     )
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is True
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is True
     manager.repository.robot("serial")["rotations"]["away"]["rooms"][room.room_id][
         "last_result"
     ] = "completed"
@@ -4145,7 +4153,7 @@ async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
     await manager.ledger.async_mark_interrupted(
         "serial", "away", room, "interrupted", native_reconciliation=marker
     )
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is True
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is True
     manager.repository.robot("serial")["pending_native_reconciliation"][
         "expires_at"
     ] = (now - timedelta(seconds=1)).isoformat()
@@ -4155,7 +4163,7 @@ async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
         )
         is False
     )
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
 
 
 async def test_stale_native_watcher_cannot_credit_new_same_room_marker(hass) -> None:
@@ -4194,13 +4202,13 @@ async def test_stale_native_watcher_cannot_credit_new_same_room_marker(hass) -> 
         )
         is False
     )
-    record = manager.ledger.snapshot("serial")["plan_history"]["away"]["rooms"][
+    record = manager.history.snapshot("serial")["plan_history"]["away"]["rooms"][
         current_room.room_id
     ]
     assert record["last_result"] == "failed"
     assert record["cleaning_mode"] == current_room.cleaning_mode
     assert record.get("completed_runs", 0) == 0
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is True
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is True
     save.assert_not_awaited()
 
 
@@ -4807,7 +4815,7 @@ async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> N
             active["active_elapsed_seconds"] = duration
             active["active_segment_started"] = None
             await manager.ledger.async_mark_completed("serial", "away", room)
-        record = manager.ledger.snapshot("serial")["plan_history"]["away"]["rooms"][
+        record = manager.history.snapshot("serial")["plan_history"]["away"]["rooms"][
             "room-kitchen"
         ]
         assert record["average_duration_seconds"] == 105
@@ -4845,7 +4853,7 @@ async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> N
 
         changed = CleaningRoom("room-kitchen", "Kitchen", "mop", "standard")
         await manager.ledger.async_mark_started("serial", "away", changed)
-        changed_record = manager.ledger.snapshot("serial")["plan_history"]["away"][
+        changed_record = manager.history.snapshot("serial")["plan_history"]["away"][
             "rooms"
         ]["room-kitchen"]
         assert "average_duration_seconds" not in changed_record
@@ -4871,7 +4879,7 @@ async def test_snapshot_reports_running_active_elapsed(hass) -> None:
         "custom_components.matic_robot.plans.dt_util.utcnow",
         return_value=base + timedelta(seconds=45),
     ):
-        active = manager.ledger.snapshot("serial")["active_plan"]
+        active = manager.history.snapshot("serial")["active_plan"]
 
     assert active["status"] == "running"
     assert active["active_elapsed_seconds"] == 45
@@ -4925,7 +4933,7 @@ async def test_current_room_timing_shares_stop_clock_and_confidence(
             await manager.ledger.async_mark_started(
                 "serial", "away", room, run_id="timed-run"
             )
-            assert manager.ledger.current_room_timing("serial") is None
+            assert manager.history.current_room_timing("serial") is None
             await manager.ledger.async_mark_resumed("serial", "away", room)
         active_before = deepcopy(manager.repository.robot("serial")["active_plan"])
         saves = manager.repository.store.async_save.await_count
@@ -4933,7 +4941,7 @@ async def test_current_room_timing_shares_stop_clock_and_confidence(
             "custom_components.matic_robot.plans.dt_util.utcnow",
             return_value=base + timedelta(seconds=49.9),
         ):
-            timing = manager.ledger.current_room_timing("serial")
+            timing = manager.history.current_room_timing("serial")
             expected = 49 if samples == 3 else None
             assert timing["estimated_percent"] == expected
             assert timing["active_elapsed_seconds"] == 49
@@ -4958,7 +4966,7 @@ async def test_current_room_timing_shares_stop_clock_and_confidence(
             "custom_components.matic_robot.plans.dt_util.utcnow",
             return_value=base + timedelta(hours=1),
         ):
-            paused = manager.ledger.current_room_timing("serial")
+            paused = manager.history.current_room_timing("serial")
             assert paused["active_elapsed_seconds"] == 50
             assert paused["estimated_percent"] == (50 if samples == 3 else None)
             await manager.ledger.async_mark_resumed("serial", "away", room)
@@ -4966,16 +4974,18 @@ async def test_current_room_timing_shares_stop_clock_and_confidence(
             "custom_components.matic_robot.plans.dt_util.utcnow",
             return_value=base + timedelta(hours=1, seconds=50),
         ):
-            assert manager.ledger.current_room_timing("serial")[
+            assert manager.history.current_room_timing("serial")[
                 "estimated_percent"
             ] == (100 if samples == 3 else None)
-            assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "running"
             assert (
-                manager.ledger.snapshot("serial")["last_run"]["completed_room_count"]
+                manager.history.snapshot("serial")["last_run"]["outcome"] == "running"
+            )
+            assert (
+                manager.history.snapshot("serial")["last_run"]["completed_room_count"]
                 == 0
             )
             await manager.ledger.async_mark_verifying("serial", "away", room)
-            assert manager.ledger.current_room_timing("serial") is None
+            assert manager.history.current_room_timing("serial") is None
 
 
 async def test_current_room_timing_rejects_other_owners_and_settings(hass) -> None:
@@ -4997,7 +5007,7 @@ async def test_current_room_timing_rejects_other_owners_and_settings(hass) -> No
     changed = CleaningRoom(room.room_id, room.name, "mop", "standard")
     await manager.ledger.async_mark_started("serial", "away", changed, run_id="new-run")
     await manager.ledger.async_mark_resumed("serial", "away", changed)
-    assert manager.ledger.current_room_timing("serial")["expected_seconds"] is None
+    assert manager.history.current_room_timing("serial")["expected_seconds"] is None
     robot = manager.repository.robot("serial")
     active = deepcopy(robot["active_plan"])
     for fields in (
@@ -5009,12 +5019,12 @@ async def test_current_room_timing_rejects_other_owners_and_settings(hass) -> No
         {"cleaning_started": None},
     ):
         robot["active_plan"] = {**active, **fields}
-        assert manager.ledger.current_room_timing("serial") is None
+        assert manager.history.current_room_timing("serial") is None
     robot["active_plan"] = active
     robot["last_run"]["outcome"] = "unverified"
-    assert manager.ledger.current_room_timing("serial") is None
+    assert manager.history.current_room_timing("serial") is None
     robot["last_run"] = None
-    assert manager.ledger.current_room_timing("serial") is None
+    assert manager.history.current_room_timing("serial") is None
 
 
 async def test_current_room_timing_rejects_replaced_motion_before_cleanup(hass) -> None:
@@ -5041,11 +5051,11 @@ async def test_current_room_timing_rejects_replaced_motion_before_cleanup(hass) 
         robot["active_plan"]["active_elapsed_seconds"] = 50
         robot["active_plan"]["active_segment_started"] = None
         manager.control.mark_managed_stop("serial")
-        assert manager.ledger.current_room_timing("serial")["estimated_percent"] == 50
+        assert manager.history.current_room_timing("serial")["estimated_percent"] == 50
         await manager.control.async_replace_managed_motion("serial")
         assert robot["active_plan"]["run_id"] == robot["last_run"]["run_id"]
         assert manager.control.cancellation_reason("serial") == "motion_replaced"
-        assert manager.ledger.current_room_timing("serial") is None
+        assert manager.history.current_room_timing("serial") is None
 
 
 async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
@@ -5068,7 +5078,7 @@ async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
         return_value=base + timedelta(seconds=30),
     ):
         await manager.ledger.async_mark_suspended("serial", "away", room, "low_charge")
-    active = manager.ledger.snapshot("serial")["active_plan"]
+    active = manager.history.snapshot("serial")["active_plan"]
     assert active["active_elapsed_seconds"] == 30
     assert active["active_segment_started"] is None
     with patch(
@@ -5082,12 +5092,12 @@ async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
     ):
         await manager.ledger.async_mark_completed("serial", "away", room)
 
-    record = manager.ledger.snapshot("serial")["plan_history"]["away"]["rooms"][
+    record = manager.history.snapshot("serial")["plan_history"]["away"]["rooms"][
         room.room_id
     ]
     assert record["last_duration_seconds"] == 60
     assert record["duration_history_seconds"] == [60]
-    assert manager.ledger.snapshot("serial")["last_completed_by_room"][
+    assert manager.history.snapshot("serial")["last_completed_by_room"][
         room.room_id
     ] == {
         "name": "Kitchen",
@@ -5104,7 +5114,7 @@ async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
         return_value=base + timedelta(seconds=15),
     ):
         await manager.ledger.async_mark_cancelled("serial", "away", room)
-    cancelled = manager.ledger.snapshot("serial")["plan_history"]["away"]["rooms"][
+    cancelled = manager.history.snapshot("serial")["plan_history"]["away"]["rooms"][
         room.room_id
     ]
     assert cancelled["last_duration_seconds"] == 60
@@ -5119,7 +5129,7 @@ async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
         return_value=base + timedelta(seconds=45),
     ):
         await manager.ledger.async_mark_ended_unverified("serial", "away", room)
-    unverified = manager.ledger.snapshot("serial")
+    unverified = manager.history.snapshot("serial")
     unverified_record = unverified["plan_history"]["away"]["rooms"][room.room_id]
     assert unverified["completed_runs"] == 1
     assert unverified["unverified_runs"] == 1
@@ -5192,7 +5202,7 @@ async def test_duration_tiers_survive_periodic_settings_and_restart(
         )
 
     def expected(current: CleaningPlanManager, room: CleaningRoom) -> int | None:
-        return current.ledger.next_run_estimate_seconds(
+        return current.history.next_run_estimate_seconds(
             "serial", [(room.room_id, room.cleaning_mode, room.coverage_setting)]
         )
 
@@ -5208,7 +5218,7 @@ async def test_duration_tiers_survive_periodic_settings_and_restart(
     assert expected(reloaded, regular) == 105
     assert expected(reloaded, due) == 300
     assert (
-        reloaded.ledger.snapshot("serial")["last_completed_by_room"][regular.room_id][
+        reloaded.history.snapshot("serial")["last_completed_by_room"][regular.room_id][
             "duration_seconds"
         ]
         == 300
@@ -5241,7 +5251,7 @@ async def test_duration_tiers_keep_learned_stop_threshold_after_failed_override(
         )
     else:
         await manager.ledger.async_mark_ended_unverified("serial", "daily", override)
-    record = manager.ledger.snapshot("serial")["plan_history"]["daily"]["rooms"][
+    record = manager.history.snapshot("serial")["plan_history"]["daily"]["rooms"][
         regular.room_id
     ]
     assert set(record["duration_profiles"]) == {"vacuum:quick"}
@@ -5265,8 +5275,8 @@ async def test_duration_tiers_keep_learned_stop_threshold_after_failed_override(
         active = manager.repository.robot("serial")["active_plan"]
         active["active_elapsed_seconds"] = 25
         active["active_segment_started"] = None
-        assert manager.ledger.current_room_timing("serial")["expected_seconds"] == 100
-        assert manager.ledger.current_room_timing("serial")["estimated_percent"] == 25
+        assert manager.history.current_room_timing("serial")["expected_seconds"] == 100
+        assert manager.history.current_room_timing("serial")["estimated_percent"] == 25
         assert manager.control.request_stop("serial") == PlanStopDecision(
             "immediate", 25, 50
         )
@@ -5479,22 +5489,22 @@ async def test_duration_profile_history_reset_respects_plan_scope(hass) -> None:
                     "serial", plan, room, duration_seconds=duration
                 )
     await manager.ledger.async_reset_history("serial", "one")
-    history = manager.ledger.snapshot("serial")["plan_history"]
+    history = manager.history.snapshot("serial")["plan_history"]
     assert "one" not in history
     assert set(history["two"]["rooms"]["room"]["duration_profiles"]) == {
         "vacuum:quick",
         "vacuum:heavy_duty",
     }
     assert (
-        manager.ledger.next_run_estimate_seconds(
+        manager.history.next_run_estimate_seconds(
             "serial", [("room", "vacuum", "quick")]
         )
         == 100
     )
     await manager.ledger.async_reset_history("serial")
-    assert manager.ledger.snapshot("serial")["plan_history"] == {}
+    assert manager.history.snapshot("serial")["plan_history"] == {}
     assert (
-        manager.ledger.next_run_estimate_seconds(
+        manager.history.next_run_estimate_seconds(
             "serial", [("room", "vacuum", "quick")]
         )
         is None
@@ -5594,7 +5604,7 @@ def test_next_run_estimate_sums_room_medians_at_their_settings(hass) -> None:
     listener = MagicMock()
     manager.repository.async_add_listener("serial", listener)
 
-    assert manager.ledger.next_run_estimate_seconds("serial", rooms) == 660 + 900 + 120
+    assert manager.history.next_run_estimate_seconds("serial", rooms) == 660 + 900 + 120
     manager.repository.store.async_save.assert_not_called()
     listener.assert_not_called()
 
@@ -5609,7 +5619,7 @@ def test_next_run_estimate_counts_samples_from_every_plan(hass) -> None:
     )
 
     assert (
-        manager.ledger.next_run_estimate_seconds(
+        manager.history.next_run_estimate_seconds(
             "serial", [("room-hall", "vacuum", "quick")]
         )
         == 620
@@ -5631,20 +5641,20 @@ def test_next_run_estimate_is_unknown_when_any_room_lacks_confidence(hass) -> No
     )
     hall = ("room-hall", "vacuum", "quick")
 
-    assert manager.ledger.next_run_estimate_seconds("serial", [hall]) == 660
+    assert manager.history.next_run_estimate_seconds("serial", [hall]) == 660
     assert (
-        manager.ledger.next_run_estimate_seconds(
+        manager.history.next_run_estimate_seconds(
             "serial", [hall, ("room-kitchen", "vacuum", "quick")]
         )
         is None
     )
     assert (
-        manager.ledger.next_run_estimate_seconds(
+        manager.history.next_run_estimate_seconds(
             "serial", [hall, ("room-den", "vacuum", "quick")]
         )
         is None
     )
-    assert manager.ledger.next_run_estimate_seconds("serial", []) is None
+    assert manager.history.next_run_estimate_seconds("serial", []) is None
 
 
 async def test_stop_policy_reuses_compatible_history_across_plans(hass) -> None:
@@ -5709,7 +5719,7 @@ async def test_verifying_state_closes_time_without_counting_suspension(hass) -> 
     ):
         await manager.ledger.async_mark_verifying("serial", "away", room)
 
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"]["status"] == "verifying"
     assert snapshot["active_plan"]["active_elapsed_seconds"] == 20
     assert snapshot["suspended_runs"] == 0
@@ -5740,7 +5750,7 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
     )
     assert list(manager.catalog.plans("serial")) == ["whole_home"]
     assert manager.catalog.plan("serial")["name"] == "Whole home"
-    preview = manager.catalog.preview("serial", room_map)
+    preview = manager.planning.preview("serial", room_map)
     assert [room["name"] for room in preview["rooms"]] == ["Kitchen", "Study"]
     assert preview["rotation_basis"] == "least_recent_opportunity"
     assert [item["room"] for item in preview["rotation"]] == [
@@ -5769,12 +5779,12 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
         },
     )
     await manager.catalog.async_select_plan("serial", "whole_home")
-    assert manager.ledger.snapshot("serial")["selected_plan_name"] == "Whole home"
+    assert manager.history.snapshot("serial")["selected_plan_name"] == "Whole home"
     await manager.ledger.async_mark_completed(
         "serial", "whole_home", _room("Kitchen", "room-kitchen")
     )
-    assert manager.catalog.preview("serial", room_map)["rooms"][0]["name"] == "Study"
-    rotation = manager.catalog.preview("serial", room_map)["rotation"]
+    assert manager.planning.preview("serial", room_map)["rooms"][0]["name"] == "Study"
+    rotation = manager.planning.preview("serial", room_map)["rotation"]
     assert rotation[0]["room"] == "Study"
     assert rotation[0]["selection_reason"] == "no_prior_opportunity"
     assert rotation[1]["room"] == "Kitchen"
@@ -5803,7 +5813,7 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
         "name": "Study",
         "last_opportunity": same_opportunity,
     }
-    tied_rotation = manager.catalog.rotation_details(
+    tied_rotation = manager.planning.rotation_details(
         "serial",
         "whole_home",
         [
@@ -5815,7 +5825,7 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
     manager.repository.robot("serial")["plans"]["whole_home"]["run_behavior"] = (
         "ordered"
     )
-    ordered_preview = manager.catalog.preview("serial", room_map)
+    ordered_preview = manager.planning.preview("serial", room_map)
     assert ordered_preview["rotation_basis"] == "saved_order"
     assert ordered_preview["rooms"][0]["name"] == "Kitchen"
     assert ordered_preview["rotation"][0]["last_completion"] is not None
@@ -5823,12 +5833,12 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
         "intelligent"
     )
     await manager.ledger.async_reset_history("serial", "whole_home")
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 0
-    reset_preview = manager.catalog.preview("serial", room_map)
+    assert manager.history.snapshot("serial")["completed_runs"] == 0
+    reset_preview = manager.planning.preview("serial", room_map)
     assert reset_preview["rooms"][0]["name"] == "Kitchen"
     assert all(item["last_completion"] is None for item in reset_preview["rotation"])
     await manager.catalog.async_delete_plan("serial", "whole_home")
-    assert manager.ledger.snapshot("serial")["selected_plan"] == "upstairs"
+    assert manager.history.snapshot("serial")["selected_plan"] == "upstairs"
     await manager.ledger.async_reset_history("serial")
 
 
@@ -5839,7 +5849,7 @@ async def test_plan_validation_rejects_disabled_empty_unknown_and_missing(hass) 
         "serial", "disabled", {"name": "Disabled", "enabled": False, "rooms": []}
     )
     with pytest.raises(ValueError, match="disabled"):
-        manager.catalog.rooms_for_plan("serial", {}, "disabled")
+        manager.planning.rooms_for_plan("serial", {}, "disabled")
     with pytest.raises(KeyError):
         manager.catalog.plan("serial", "missing")
     with pytest.raises(KeyError):
@@ -5849,7 +5859,7 @@ async def test_plan_validation_rejects_disabled_empty_unknown_and_missing(hass) 
         "serial", "empty", {"name": "Empty", "enabled": True, "rooms": []}
     )
     with pytest.raises(ValueError, match="no rooms"):
-        manager.catalog.rooms_for_plan("serial", {}, "empty")
+        manager.planning.rooms_for_plan("serial", {}, "empty")
 
     for rooms in ("room-kitchen", ["room-kitchen"]):
         with pytest.raises(ValueError, match="plan contains an invalid room"):
@@ -5943,7 +5953,9 @@ def test_plan_preview_rejects_corrupt_room_records(hass) -> None:
     }
 
     with pytest.raises(ValueError, match="plan contains an invalid room"):
-        manager.catalog.rooms_for_plan("serial", {"room-kitchen": "Kitchen"}, "corrupt")
+        manager.planning.rooms_for_plan(
+            "serial", {"room-kitchen": "Kitchen"}, "corrupt"
+        )
 
 
 async def test_shared_schedule_cannot_change_while_a_different_plan_owns_room(
@@ -6205,7 +6217,7 @@ async def test_failed_reordered_plan_save_serializes_completion_cadence_credit(
     await manager.ledger.async_begin_run(
         "serial", "home", "run-one-shot", 2, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "run-one-shot",
         {
@@ -7115,7 +7127,7 @@ async def test_recovery_checkpoint_write_discards_unsupported_coverage_proof(
         "coverage_setting_verified": True,
         "unrecognized": "discard this",
     }
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "serial",
         "run-one",
         {"cadence_by_room": {"room-a": snapshot, "room-b": {"scope": "invalid"}}},
@@ -7190,7 +7202,6 @@ async def test_room_execution_uses_its_individual_settings() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -7198,6 +7209,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
             async_mark_failed=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
 
@@ -7262,7 +7274,6 @@ async def test_room_timeout_is_failure_safe() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -7270,6 +7281,7 @@ async def test_room_timeout_is_failure_safe() -> None:
             async_mark_failed=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     sender = AsyncMock(side_effect=MaticError("synthetic cleanup failure"))
     with (
@@ -7316,7 +7328,6 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -7324,6 +7335,7 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
             async_mark_failed=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = _room("Kitchen", "room-kitchen")
 
@@ -7369,7 +7381,6 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -7378,6 +7389,7 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
             async_mark_interrupted=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = _room("Kitchen", "room-kitchen")
 
@@ -7423,7 +7435,6 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -7432,6 +7443,7 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     with (
         patch(
@@ -7491,7 +7503,6 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -7500,6 +7511,7 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = _room("Kitchen", "room-kitchen")
     reader = AsyncMock(side_effect=[True, False])
@@ -7560,9 +7572,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
-            coverage_receipt=MagicMock(return_value=None),
             async_mark_completed=AsyncMock(
                 side_effect=lambda *_args, **_kwargs: (
                     order.append("manager_commit") or ownership_current
@@ -7574,6 +7584,8 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
+        recovery=SimpleNamespace(coverage_receipt=MagicMock(return_value=None)),
     )
     now = dt_util.utcnow()
     old = CleaningSessionRecord(
@@ -7714,7 +7726,7 @@ async def test_managed_plan_rejects_native_name_aliases_before_any_dispatch(
     assert failure.value.translation_key == "ambiguous_room_name"
     dispatch.assert_not_awaited()
     commands.assert_not_awaited()
-    assert manager.ledger.snapshot("serial")["last_run"]["completed_room_count"] == 0
+    assert manager.history.snapshot("serial")["last_run"]["completed_room_count"] == 0
 
 
 async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity() -> (
@@ -7879,7 +7891,6 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -7888,6 +7899,7 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = _room("Kitchen", "room-kitchen")
     with (
@@ -7938,9 +7950,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
-            coverage_receipt=MagicMock(return_value=None),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -7949,6 +7959,8 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
+        recovery=SimpleNamespace(coverage_receipt=MagicMock(return_value=None)),
     )
 
     async def send_command(_call) -> None:
@@ -8039,9 +8051,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
 def _leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
-            coverage_receipt=MagicMock(return_value=None),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -8058,6 +8068,8 @@ def _leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
             cancellation_reason=MagicMock(return_value=cancellation_reason),
             pending_stop_run_id=MagicMock(return_value=None),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
+        recovery=SimpleNamespace(coverage_receipt=MagicMock(return_value=None)),
     )
 
 
@@ -9185,9 +9197,7 @@ async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
-            coverage_receipt=MagicMock(return_value=None),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9196,6 +9206,8 @@ async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
+        recovery=SimpleNamespace(coverage_receipt=MagicMock(return_value=None)),
     )
 
     async def send_command(_call) -> None:
@@ -9276,7 +9288,6 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -9286,6 +9297,7 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
 
     async def send_command(_call) -> None:
@@ -9341,7 +9353,6 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -9351,6 +9362,7 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     hass = SimpleNamespace(
         services=SimpleNamespace(async_call=AsyncMock()),
@@ -9414,7 +9426,6 @@ async def test_unknown_active_session_interrupts_without_room_credit(
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -9424,6 +9435,7 @@ async def test_unknown_active_session_interrupts_without_room_credit(
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     reader = (
         AsyncMock(return_value=None)
@@ -9482,7 +9494,6 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -9491,6 +9502,7 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     wait = AsyncMock(side_effect=["paused", "cleaning"])
     with (
@@ -9543,7 +9555,6 @@ async def test_room_pause_and_resume_outcome() -> None:
             pending_stop_run_id=MagicMock(return_value=None),
         ),
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -9553,6 +9564,7 @@ async def test_room_pause_and_resume_outcome() -> None:
             async_mark_suspended=AsyncMock(),
             async_mark_resumed=AsyncMock(),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = _room("Kitchen", "room-kitchen")
     wait = AsyncMock(return_value="cleaning")
@@ -9604,7 +9616,6 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
         hass = SimpleNamespace(services=services, bus=bus)
         manager = SimpleNamespace(
             ledger=SimpleNamespace(
-                snapshot=MagicMock(return_value={}),
                 async_mark_started=AsyncMock(),
                 async_mark_completed=AsyncMock(),
                 async_mark_ended_unverified=AsyncMock(),
@@ -9620,6 +9631,7 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
                 register_reconciliation_task=MagicMock(),
                 cancellation_reason=MagicMock(return_value=None),
             ),
+            history=SimpleNamespace(snapshot=MagicMock(return_value={})),
         )
         if interrupted:
             outcome = AsyncMock(return_value=RoomRunOutcome.INTERRUPTED)
@@ -9672,7 +9684,6 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
-            snapshot=MagicMock(return_value={}),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
@@ -9688,6 +9699,7 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
             register_reconciliation_task=MagicMock(),
             cancellation_reason=MagicMock(return_value="config_entry_unload"),
         ),
+        history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     sender = AsyncMock()
     with (
@@ -10225,21 +10237,21 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     rooms = [_room("Kitchen", "room-kitchen"), _heavy_room("Study", "room-study")]
     sender = AsyncMock()
     if settled == "pre_stop":
-        save_checkpoint = manager.ledger.async_set_recovery_checkpoint
+        save_checkpoint = manager.recovery.async_set_recovery_checkpoint
 
         async def save_then_stop(*args, **kwargs):
             await save_checkpoint(*args, **kwargs)
             if args[2].get("phase") == "handoff":
                 manager.control.finish_room_event("serial").set()
 
-        manager.ledger.async_set_recovery_checkpoint = save_then_stop
+        manager.recovery.async_set_recovery_checkpoint = save_then_stop
 
     async def complete_first_leg(*args, **kwargs) -> bool:
         kwargs["record_room_completed"](args[5][0])
         return True
 
     async def block_handoff(*_args, **_kwargs) -> bool:
-        recovery = manager.control.recovery_run("serial")
+        recovery = manager.recovery.recovery_run("serial")
         assert recovery is not None
         assert recovery["recovery_checkpoint"]["phase"] == "handoff"
         assert recovery["recovery_checkpoint"]["leg_index"] == 1
@@ -10288,7 +10300,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
 
     assert run.await_count == 1
     sender.assert_not_awaited()
-    assert manager.ledger.snapshot("serial")["last_run"]["completed_room_count"] == 1
+    assert manager.history.snapshot("serial")["last_run"]["completed_room_count"] == 1
 
 
 @pytest.mark.parametrize(
@@ -10954,7 +10966,7 @@ def test_entry_lookup_rejects_missing_registry_entry() -> None:
     registry = SimpleNamespace(async_get=MagicMock(return_value=None))
     with (
         patch(
-            "custom_components.matic_robot.services.er.async_get",
+            "custom_components.matic_robot.service_context.er.async_get",
             return_value=registry,
         ),
         pytest.raises(ServiceValidationError, match="unavailable"),
@@ -11030,7 +11042,7 @@ async def test_new_smart_stop_run_uses_one_room_per_native_mission(hass) -> None
     observed: list[list[CleaningRoom]] = []
 
     async def complete_leg(*args, **kwargs) -> bool:
-        checkpoint = manager.control.recovery_run("serial")["recovery_checkpoint"]
+        checkpoint = manager.recovery.recovery_run("serial")["recovery_checkpoint"]
         assert checkpoint["single_room_missions"] is True
         observed.append(args[5])
         kwargs["record_room_completed"](args[5][0])
@@ -11082,11 +11094,11 @@ async def test_smart_stop_pending_is_public_only_for_owned_run(hass) -> None:
     }
     manager.control.finish_room_event("serial").set()
 
-    active = manager.ledger.snapshot("serial")["active_plan"]
+    active = manager.history.snapshot("serial")["active_plan"]
     assert active["smart_stop_pending"] is True
     assert active["smart_stop_phase"] == "finishing_room"
     robot["active_plan"]["status"] = "verifying"
-    active = manager.ledger.snapshot("serial")["active_plan"]
+    active = manager.history.snapshot("serial")["active_plan"]
     assert active["smart_stop_pending"] is True
     assert active["smart_stop_phase"] == "verifying_completion"
     assert (
@@ -11112,11 +11124,11 @@ async def test_smart_stop_pending_is_public_only_for_owned_run(hass) -> None:
         "area_id": "area-rug",
         "status": "running",
     }
-    assert manager.ledger.snapshot("serial")["active_plan"]["smart_stop_phase"] == (
+    assert manager.history.snapshot("serial")["active_plan"]["smart_stop_phase"] == (
         "finishing_area"
     )
     robot["active_plan"] = None
-    active = manager.ledger.snapshot("serial")["active_plan"]
+    active = manager.history.snapshot("serial")["active_plan"]
     assert active["run_id"] == "run-1"
     assert active["smart_stop_pending"] is True
     assert active["smart_stop_phase"] == "returning_to_dock"
@@ -11128,7 +11140,7 @@ async def test_smart_stop_pending_is_public_only_for_owned_run(hass) -> None:
         "status": "running",
     }
     assert (
-        manager.ledger.snapshot("serial")["active_plan"]["smart_stop_pending"] is False
+        manager.history.snapshot("serial")["active_plan"]["smart_stop_pending"] is False
     )
 
 
@@ -11168,7 +11180,9 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
         reads += 1
         if reads == 1:
             return ()
-        assert manager.ledger.snapshot("serial")["active_plan"]["status"] == "verifying"
+        assert (
+            manager.history.snapshot("serial")["active_plan"]["status"] == "verifying"
+        )
         hass.states.async_set(
             "vacuum.matic",
             activity,
@@ -11205,13 +11219,13 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
             managed_user_command=sender,
         )
     assert not manager.control.lock("serial").locked()
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert snapshot["completed_runs"] == 0
     assert snapshot["interrupted_runs"] == 1
     restored = CleaningPlanManager(hass)
     await restored.async_load()
-    assert restored.ledger.snapshot("serial")["active_plan"] is None
+    assert restored.history.snapshot("serial")["active_plan"] is None
     if expect_stop:
         assert sender.await_count == 1
         assert sender.await_args.args[1] is UserCommand.STOP
@@ -11268,8 +11282,8 @@ async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch
         session_history=history,
     )
     assert result is True
-    assert manager.ledger.snapshot("serial")["completed_runs"] == 2
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["completed_runs"] == 2
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 async def test_leg_retries_matching_history_until_room_evidence_arrives(monkeypatch):
@@ -11378,15 +11392,15 @@ async def test_leg_handles_unknown_and_resumed_native_session(
     if resumes:
         assert await run is True
         assert resolutions == 2
-        assert manager.ledger.snapshot("serial")["completed_runs"] == 2
+        assert manager.history.snapshot("serial")["completed_runs"] == 2
         sender.assert_not_awaited()
     else:
         with pytest.raises(ServiceValidationError, match="Native session completion"):
             await run
-        assert manager.ledger.snapshot("serial")["completed_runs"] == 0
-        assert manager.ledger.snapshot("serial")["interrupted_runs"] == 1
+        assert manager.history.snapshot("serial")["completed_runs"] == 0
+        assert manager.history.snapshot("serial")["interrupted_runs"] == 1
         sender.assert_awaited_once_with(motion_token, UserCommand.STOP)
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 async def test_multi_room_leg_persists_completion_before_next_dispatch(
@@ -11430,8 +11444,8 @@ async def test_multi_room_leg_persists_completion_before_next_dispatch(
     async def prefetch():
         nonlocal prefetched
         assert reads == 3
-        assert manager.ledger.snapshot("serial")["completed_runs"] == 2
-        assert manager.ledger.snapshot("serial")["active_plan"] is None
+        assert manager.history.snapshot("serial")["completed_runs"] == 2
+        assert manager.history.snapshot("serial")["active_plan"] is None
         prefetched = True
         return _PreparedRoomDispatch(
             (_heavy_room("Den", "room-den"),), frozenset(), dt_util.utcnow()
@@ -11745,7 +11759,7 @@ async def test_area_history_baseline_failure_never_stops_or_credits(hass) -> Non
     native_identity.assert_not_called()
     assert manager.control.managed_motion_is_current("serial", motion_token)
     assert manager.repository.robot("serial")["rotations"] == {}
-    assert manager.ledger.snapshot("serial")["native_reconciliation_pending"] is False
+    assert manager.history.snapshot("serial")["native_reconciliation_pending"] is False
 
 
 async def test_area_start_publishes_the_area_without_touching_room_records(
@@ -11759,7 +11773,7 @@ async def test_area_start_publishes_the_area_without_touching_room_records(
 
     # Nothing is published without the run that owns the area.
     await manager.ledger.async_mark_area_started("serial", "away", _AREA, run_id="run")
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
     await manager.ledger.async_begin_run(
         "serial",
         "away",
@@ -11773,7 +11787,7 @@ async def test_area_start_publishes_the_area_without_touching_room_records(
     await manager.ledger.async_mark_area_started(
         "serial", "away", _AREA, run_id="other"
     )
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
     await manager.ledger.async_mark_area_started("serial", "away", _AREA, run_id="run")
     active = manager.repository.robot("serial")["active_plan"]
@@ -11796,23 +11810,23 @@ async def test_area_start_publishes_the_area_without_touching_room_records(
         "2026-01-01T00:00:00+00:00"
     )
     await manager.ledger.async_mark_area_started("serial", "away", _AREA, run_id="run")
-    assert manager.ledger.snapshot("serial")["active_plan"]["started"] == (
+    assert manager.history.snapshot("serial")["active_plan"]["started"] == (
         "2026-01-01T00:00:00+00:00"
     )
     mat = AreaLeg("mat", "Mat", "vacuum", "quick", "f" * 64)
     await manager.ledger.async_mark_area_started("serial", "away", mat, run_id="run")
-    assert manager.ledger.snapshot("serial")["active_plan"]["started"] != (
+    assert manager.history.snapshot("serial")["active_plan"]["started"] != (
         "2026-01-01T00:00:00+00:00"
     )
 
     # Only the same run's same area can clear it.
     await manager.ledger.async_mark_area_finished("serial", _AREA, run_id="run")
     await manager.ledger.async_mark_area_finished("serial", mat, run_id="other")
-    assert manager.ledger.snapshot("serial")["active_plan"]["area_id"] == "mat"
+    assert manager.history.snapshot("serial")["active_plan"]["area_id"] == "mat"
     await manager.ledger.async_mark_area_finished("serial", mat, run_id="run")
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
     await manager.ledger.async_mark_area_finished("serial", mat, run_id="run")
-    assert manager.ledger.snapshot("serial")["active_plan"] is None
+    assert manager.history.snapshot("serial")["active_plan"] is None
 
 
 async def test_area_start_without_frozen_stop_policy_omits_it(hass) -> None:
@@ -11823,7 +11837,9 @@ async def test_area_start_without_frozen_stop_policy_omits_it(hass) -> None:
     )
     manager.repository.robot("serial")["last_run"].pop("finish_current_room")
     await manager.ledger.async_mark_area_started("serial", "away", _AREA, run_id="run")
-    assert "finish_current_room" not in manager.ledger.snapshot("serial")["active_plan"]
+    assert (
+        "finish_current_room" not in manager.history.snapshot("serial")["active_plan"]
+    )
 
 
 @pytest.mark.parametrize("recoverable", [False, True])
@@ -11837,7 +11853,7 @@ async def test_restart_keeps_an_active_area_without_inventing_a_room(
     )
     await manager.ledger.async_mark_area_started("serial", "away", _AREA, run_id="run")
     if recoverable:
-        await manager.ledger.async_set_recovery_checkpoint(
+        await manager.recovery.async_set_recovery_checkpoint(
             "serial", "run", {"version": 1, "rooms": [], "phase": "accepted"}
         )
     recovering = CleaningPlanManager(hass)

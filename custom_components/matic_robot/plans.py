@@ -19,15 +19,18 @@ from .const import (
     DATA_PLAN_MANAGER,
     DOMAIN,
 )
+from .execution_planning import ExecutionPlanner
 from .plan_cadence import (
     PlanCadence,
 )
 from .plan_catalog import PlanCatalog
+from .plan_history import PlanHistory
 from .plan_ledger import (
     PlanLedger,
     _close_unfinished_area_records,
     _close_unfinished_room_records,
 )
+from .plan_recovery import PlanRecovery
 from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
@@ -40,7 +43,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class CleaningPlanManager:
-    """Compose plan storage, policy, run control and durable accounting."""
+    """Compose shared storage, planning, recovery, accounting and read projections."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.repository = PlanRepository(hass)
@@ -50,6 +53,9 @@ class CleaningPlanManager:
         self.ledger = PlanLedger(
             self.cadence, self.catalog, self.control, self.repository
         )
+        self.history = PlanHistory(self.repository, self.catalog, self.control)
+        self.recovery = PlanRecovery(self.repository, self.control, self.ledger)
+        self.planning = ExecutionPlanner(self.catalog, self.cadence, self.repository)
 
     async def async_load(self) -> None:
         """Load current room-native state and recover interrupted work."""

@@ -106,7 +106,7 @@ async def test_paused_then_low_charge_return_commits_once_per_episode(hass):
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(observer.next(), timeout=0.02)
         assert suspend_writes == 1
-        assert manager.ledger.snapshot(SERIAL)["active_plan"]["status"] == "running"
+        assert manager.history.snapshot(SERIAL)["active_plan"]["status"] == "running"
     finally:
         allow_write.set()
         observer.close()

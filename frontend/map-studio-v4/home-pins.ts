@@ -1,7 +1,12 @@
 import type { HomePin, WorkspaceNotice, WorkspaceState } from "./contracts";
-import type { EffectController } from "./effects";
 import type { WorkspaceStore } from "./state";
 import type { WorkspaceConnection } from "./workspace-transport";
+
+export interface HomePinActions {
+  homePinExclusions(): readonly HomePin[];
+  saveHomePin(pin: HomePin, pinned: boolean, previous: readonly HomePin[]): void;
+  saveHomePinState(excluded: readonly HomePin[], pins?: readonly HomePin[]): void;
+}
 
 /**
  * Home shortcuts live in one Home Assistant user's frontend data, per robot.
@@ -71,7 +76,7 @@ const catalogPins = (state: WorkspaceState, kind: HomePin["kind"]): HomePin[] =>
 
 export const followPins = (
   store: WorkspaceStore,
-  host: Pick<EffectController, "saveHomePin" | "saveHomePinState" | "homePinExclusions">,
+  host: HomePinActions,
   entryId: string,
   live: () => boolean,
   initialMode: StoredPins["mode"],

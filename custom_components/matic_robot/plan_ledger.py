@@ -1,9 +1,8 @@
-"""Durable run checkpoints, room accounting and native-history commits."""
+"""Observed run accounting and native-history completion commits."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import logging
 from collections.abc import (
     Callable,
@@ -15,33 +14,25 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, cast
-from uuid import UUID
 
 from homeassistant.core import Context, callback
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from . import native_history, plan_storage, plan_timing
 from .cadence_accounting import apply_verified_cadence as _apply_verified_cadence
-from .cadence_accounting import (
-    validated_cadence_snapshots as _validated_cadence_snapshots,
-)
 from .client.coverage_receipts import (
     CoverageReceipt,
     CoverageVerifier,
     coverage_floor_hash,
-    coverage_region_hash,
     native_session_hash,
 )
 from .client.models import CleaningSessionRecord, FloorPlan
 from .const import (
     DOMAIN,
     EVENT_PLAN_DOCKED,
-    MAX_ROOM_SEQUENCE_SIZE,
 )
 from .coverage_accounting import (
-    CoverageEvidence,
     async_confirm_completed_coverage,
     coverage_evidence_from_storage,
     verified_room_coverage,
@@ -54,11 +45,8 @@ from .plan_model import (
     AreaLeg,
     CleaningRoom,
     _bounded_stop_threshold,
-    _dispatching_room_leg,
     _has_frozen_stop_policy,
-    _is_manual_room_sequence_plan_id,
     _managed_stop_policy,
-    checkpoint_legs,
     normalize_run_outcome,
     normalize_run_provenance,
     plan_floor_token,
@@ -70,7 +58,7 @@ from .plan_repository import (
 from .run_control import (
     RunControl,
 )
-from .run_history import append_run_history, history_entries, update_run_history
+from .run_history import append_run_history, update_run_history
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -462,348 +450,6 @@ class PlanLedger:
 
         await self.repository.async_run_owned_metadata(
             serial_number, commit, notify=True
-        )
-
-    async def async_set_recovery_checkpoint(
-        self,
-        serial_number: str,
-        run_id: str,
-        checkpoint: dict[str, Any],
-    ) -> None:
-        """Persist the resolved queue required for safe restart recovery."""
-        changed = False
-
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            nonlocal changed
-            async with self.repository.store_lock:
-                robot = self.repository.robot(serial_number)
-                before = deepcopy(robot)
-                last_run = robot.get("last_run")
-                if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
-                    return False
-                existing = last_run.get("recovery_checkpoint", {})
-                normalized_checkpoint = deepcopy(checkpoint)
-                # Only the receipt writer may introduce evidence. Executor
-                # snapshots can preserve it for the same accepted leg, but
-                # cannot carry it into a new dispatch or a different floor.
-                normalized_checkpoint.pop("coverage_evidence", None)
-                evidence = coverage_evidence_from_storage(
-                    existing.get("coverage_evidence")
-                )
-                if (
-                    evidence is not None
-                    and normalized_checkpoint.get("phase")
-                    in {"starting", "accepted", "verifying"}
-                    and all(
-                        normalized_checkpoint.get(key) == existing.get(key)
-                        for key in ("floor_token", "leg_index", "rooms")
-                    )
-                    and (
-                        existing.get("phase") == "dispatching"
-                        or all(
-                            existing.get(key) is None
-                            or normalized_checkpoint.get(key) == existing.get(key)
-                            for key in (
-                                "dispatched_at",
-                                "native_identity_hash",
-                                "history_baseline",
-                            )
-                        )
-                    )
-                ):
-                    normalized_checkpoint["coverage_evidence"] = evidence.as_storage()
-                cadence_by_room = _validated_cadence_snapshots(
-                    normalized_checkpoint.get("cadence_by_room")
-                )
-                if cadence_by_room is None:
-                    normalized_checkpoint.pop("cadence_by_room", None)
-                else:
-                    normalized_checkpoint["cadence_by_room"] = cadence_by_room
-                last_run["recovery_checkpoint"] = {
-                    **normalized_checkpoint,
-                    **(
-                        {"started_room_ids": existing["started_room_ids"]}
-                        if "started_room_ids" in existing
-                        else {}
-                    ),
-                    **(
-                        {"stop_intent": existing["stop_intent"]}
-                        if "stop_intent" in existing
-                        else {}
-                    ),
-                }
-                changed = True
-                await self.repository.async_save_with_rollback(serial_number, before)
-                return True
-
-        def notify_if_changed(committed: bool) -> None:
-            if committed and changed:
-                self.repository.notify_listeners(serial_number)
-
-        await self.repository.async_run_owned_metadata(
-            serial_number,
-            commit,
-            after_commit=notify_if_changed,
-        )
-
-    async def async_checkpoint_coverage_receipt(
-        self,
-        serial_number: str,
-        run_id: str,
-        receipt: CoverageReceipt,
-        *,
-        floor_plan: FloorPlan,
-        room_ids: Sequence[str],
-        session_id: UUID,
-    ) -> bool:
-        """Persist a verified dispatch only within its exact owned queue leg."""
-
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
-                robot = self.repository.robot(serial_number)
-                run = robot.get("last_run")
-                checkpoint = (
-                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
-                )
-                if (
-                    not isinstance(run, dict)
-                    or run.get("run_id") != run_id
-                    or run.get("outcome") != "running"
-                    or not isinstance(checkpoint, dict)
-                    or checkpoint.get("phase") != "dispatching"
-                    or checkpoint.get("floor_token") != plan_floor_token(floor_plan)
-                    or receipt.floor_hash != coverage_floor_hash(floor_plan)
-                    or receipt.session_hash
-                    != hashlib.sha256(str(session_id).encode("ascii")).hexdigest()
-                ):
-                    return False
-                raw_rooms = checkpoint.get("rooms")
-                index = checkpoint.get("leg_index")
-                if (
-                    not isinstance(raw_rooms, list)
-                    or not raw_rooms
-                    or len(raw_rooms) > MAX_ROOM_SEQUENCE_SIZE
-                    or type(index) is not int
-                    or index < 0
-                ):
-                    return False
-                try:
-                    legs = checkpoint_legs(checkpoint)
-                except TypeError, ValueError:
-                    return False
-                leg = legs[index] if index < len(legs) else None
-                if not isinstance(leg, list) or list(room_ids) != [
-                    room.room_id for room in leg
-                ]:
-                    return False
-                native_rooms = {room.id: room for room in floor_plan.rooms}
-                bindings = []
-                settings = {}
-                for room in leg:
-                    if room.cleaning_mode not in {"vacuum", "vacuum_and_mop"}:
-                        continue
-                    if room.room_id not in native_rooms:
-                        return False
-                    region = coverage_region_hash(
-                        native_rooms[room.room_id].protocol_id
-                    )
-                    bindings.append((room.room_id, region))
-                    settings[region] = room.coverage_setting
-                if settings != {
-                    room.region_hash: room.coverage_setting.value
-                    for room in receipt.rooms
-                }:
-                    return False
-                evidence = CoverageEvidence(receipt, tuple(sorted(bindings)))
-                if coverage_evidence_from_storage(evidence.as_storage()) is None:
-                    return False
-                before = deepcopy(robot)
-                checkpoint["coverage_evidence"] = evidence.as_storage()
-                await self.repository.async_save_with_rollback(serial_number, before)
-                return True
-
-        return bool(
-            await self.repository.async_run_owned_metadata(
-                serial_number, commit, reject_on_admission_close=True
-            )
-        )
-
-    def coverage_receipt(
-        self, serial_number: str, run_id: str | None
-    ) -> CoverageReceipt | None:
-        """Read the current run's bounded receipt without exposing native IDs."""
-        run = self.repository.robot(serial_number).get("last_run")
-        if (
-            run_id is None
-            or not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or run.get("outcome") != "running"
-        ):
-            return None
-        checkpoint = run.get("recovery_checkpoint")
-        evidence = coverage_evidence_from_storage(
-            checkpoint.get("coverage_evidence")
-            if isinstance(checkpoint, dict)
-            else None
-        )
-        return evidence.receipt if evidence is not None else None
-
-    async def async_checkpoint_mixed_session(
-        self, serial_number: str, run_id: str, session_identity_hash: str
-    ) -> None:
-        """Persist the generated native identity before mixed START is sent."""
-
-        async def commit(_lease: _MetadataLockLease) -> None:
-            async with self.repository.store_lock:
-                if len(session_identity_hash) != 64 or any(
-                    char not in "0123456789abcdef" for char in session_identity_hash
-                ):
-                    raise ValueError(
-                        "mixed session identity must be a SHA-256 fingerprint"
-                    )
-                run = self.repository.robot(serial_number).get("last_run")
-                checkpoint = (
-                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
-                )
-                if (
-                    not isinstance(run, dict)
-                    or run.get("run_id") != run_id
-                    or run.get("outcome") != "running"
-                    or not isinstance(checkpoint, dict)
-                    or checkpoint.get("phase") != "dispatching"
-                    or checkpoint.get("mixed_settings") is not True
-                    or not _dispatching_room_leg(checkpoint)
-                ):
-                    raise HomeAssistantError(
-                        "Mixed mission checkpoint is not dispatchable"
-                    )
-                checkpoint["mixed_initial_session_hash"] = session_identity_hash
-                await self.repository.store.async_save(self.repository.data)
-
-        await self.repository.async_run_owned_metadata(
-            serial_number, commit, notify=True
-        )
-
-    async def async_prepare_mixed_dispatch_stop(
-        self, serial_number: str, run_id: str, session_identity_hash: str
-    ) -> None:
-        """Persist an at-most-once STOP intent for an exact partial mission."""
-        if serial_number in self.repository.metadata_admission_closed:
-            return
-        run = self.repository.robot(serial_number).get("last_run")
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
-        if (
-            not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or run.get("outcome") != "running"
-            or not isinstance(checkpoint, dict)
-            or checkpoint.get("phase") != "dispatching"
-            or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
-            or checkpoint.get("stop_intent") not in {None, "after_room"}
-        ):
-            raise HomeAssistantError("Mixed mission STOP no longer owns its checkpoint")
-        checkpoint["stop_intent"] = "immediate"
-        self.control.mark_stop_pending(serial_number, run_id=run_id)
-        await self.repository.async_save_and_notify(serial_number)
-
-    async def async_rollback_mixed_dispatch_stop(
-        self, serial_number: str, run_id: str, session_identity_hash: str
-    ) -> None:
-        """Roll back a STOP fence only when transport proves no bytes were sent."""
-        if serial_number in self.repository.metadata_admission_closed:
-            return
-        run = self.repository.robot(serial_number).get("last_run")
-        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
-        if (
-            not isinstance(run, dict)
-            or run.get("run_id") != run_id
-            or not isinstance(checkpoint, dict)
-            or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
-            or checkpoint.get("stop_intent") != "immediate"
-            or self.repository.robot(serial_number).get(plan_storage.STOP_FENCE_RUN_ID)
-            != run_id
-        ):
-            return
-        checkpoint.pop("stop_intent", None)
-        self.control.clear_stop_pending(serial_number)
-        await self.repository.async_save_and_notify(serial_number)
-
-    async def async_checkpoint_stop_intent(
-        self, serial_number: str, behavior: str, *, run_id: str | None
-    ) -> None:
-        """Do not lose a user's stop request if HA restarts before completion."""
-
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.user_metadata_store_transaction(serial_number):
-                run = self.repository.robot(serial_number).get("last_run")
-                checkpoint = (
-                    run.get("recovery_checkpoint") if isinstance(run, dict) else None
-                )
-                if (
-                    run_id is None
-                    or not isinstance(run, dict)
-                    or run.get("run_id") != run_id
-                    or not isinstance(checkpoint, dict)
-                ):
-                    return False
-                checkpoint["stop_intent"] = behavior
-                if behavior == "after_room":
-                    self.control.finish_room_event(serial_number).set()
-                elif behavior == "immediate":
-                    self.control.finish_room_event(serial_number).clear()
-                await self.repository.store.async_save(self.repository.data)
-                return True
-
-        def notify_if_changed(committed: bool) -> None:
-            if committed:
-                self.repository.notify_listeners(serial_number)
-
-        await self.repository.async_run_owned_metadata(
-            serial_number,
-            commit,
-            after_commit=notify_if_changed,
-            reject_on_admission_close=True,
-        )
-
-    async def async_retire_recovery(self, serial_number: str, reason: str) -> None:
-        """Withdraw queue ownership when an entry is disabled or removed."""
-        if (run := self.control.recovery_run(serial_number)) is not None:
-            await self.async_finish_run(
-                serial_number,
-                run["run_id"],
-                "unverified",
-                reason,
-                run.get("completed_room_count", 0),
-                cause="home_assistant",
-            )
-
-    async def async_mark_recovery_status(
-        self, serial_number: str, status: str, *, reason: str
-    ) -> None:
-        """Publish reconnection state without inventing a robot outcome."""
-
-        async def commit(_lease: _MetadataLockLease) -> bool:
-            async with self.repository.store_lock:
-                last_run = self.repository.robot(serial_number).get("last_run")
-                if (
-                    not isinstance(last_run, dict)
-                    or last_run.get("outcome") != "running"
-                ):
-                    return False
-                last_run["recovery_status"] = status[:32]
-                last_run["recovery_reason"] = reason[:64]
-                active = self.repository.robot(serial_number).get("active_plan")
-                if isinstance(active, dict):
-                    active["status"] = status
-                await self.repository.store.async_save(self.repository.data)
-                return True
-
-        def notify_if_changed(committed: bool) -> None:
-            if committed:
-                self.repository.notify_listeners(serial_number)
-
-        await self.repository.async_run_owned_metadata(
-            serial_number, commit, after_commit=notify_if_changed
         )
 
     async def async_finish_run(
@@ -1945,205 +1591,6 @@ class PlanLedger:
             return True
 
         await self.repository.async_mutate_and_save(serial_number, mutate)
-
-    def current_room_timing(self, serial_number: str) -> dict[str, Any] | None:
-        """Read the canonical active-time estimate for a confirmed managed room.
-
-        This read never learns history, advances completion or writes storage.
-        Stop uses the same calculation, including its unknown-baseline fallback.
-        """
-        robot = self.repository.robot(serial_number)
-        active = robot.get("active_plan")
-        run = robot.get("last_run")
-        if (
-            not isinstance(active, Mapping)
-            or not isinstance(run, Mapping)
-            or not isinstance(active.get("room_id"), str)
-            or not active["room_id"]
-            or not isinstance(active.get("run_id"), str)
-            or not active["run_id"]
-            or run.get("run_id") != active["run_id"]
-            or run.get("plan_id") != active.get("plan_id")
-            or run.get("outcome") != "running"
-            or self.control.cancellation_reason(serial_number) == "motion_replaced"
-            or active.get("status") not in {"running", "suspended"}
-            or not isinstance(active.get("cleaning_started"), str)
-        ):
-            return None
-        return {
-            "run_id": active["run_id"],
-            "room_id": active["room_id"],
-            "room": active.get("room"),
-            "status": active["status"],
-            **plan_timing._room_timing(robot, active, dt_util.utcnow()),
-        }
-
-    def run_history(
-        self,
-        serial_number: str,
-        native: Sequence[CleaningSessionRecord] = (),
-    ) -> list[dict[str, Any]]:
-        """Return recent runs, newest first, with robot-started sessions merged in."""
-        return history_entries(
-            self.repository.robot(serial_number),
-            native,
-            manual=_is_manual_room_sequence_plan_id,
-        )
-
-    def snapshot(self, serial_number: str) -> dict[str, Any]:
-        """Return compact, automation-friendly plan and room history state."""
-        robot = self.repository.robot(serial_number)
-        records = [
-            record
-            for rotation in robot["rotations"].values()
-            for record in rotation["rooms"].values()
-        ]
-        completed_runs = sum(
-            plan_timing._stored_count(item, "completed_runs") for item in records
-        )
-        failed_runs = sum(
-            plan_timing._stored_count(item, "failed_runs") for item in records
-        )
-        cancelled_runs = sum(
-            plan_timing._stored_count(item, "cancelled_runs") for item in records
-        )
-        interrupted_runs = sum(
-            plan_timing._stored_count(item, "interrupted_runs") for item in records
-        )
-        suspended_runs = sum(
-            plan_timing._stored_count(item, "suspended_runs") for item in records
-        )
-        unverified_runs = sum(
-            plan_timing._stored_count(item, "unverified_runs") for item in records
-        )
-        skipped_runs = sum(
-            plan_timing._stored_count(item, "skipped_runs") for item in records
-        )
-        last_completed = max(
-            (
-                str(item["last_completed"])
-                for item in records
-                if item.get("last_completed")
-            ),
-            default=None,
-        )
-        plans = {
-            plan_id: {
-                "name": plan.get("name", plan_id),
-                "enabled": plan.get("enabled", True),
-                "room_count": len(plan.get("rooms", [])),
-            }
-            for plan_id, plan in robot["plans"].items()
-        }
-        last_run = robot.get("last_run")
-        checkpoint = (
-            last_run.get("recovery_checkpoint")
-            if isinstance(last_run, Mapping) and last_run.get("outcome") == "running"
-            else None
-        )
-        pending_smart_stop = bool(
-            isinstance(last_run, Mapping)
-            and isinstance(last_run.get("run_id"), str)
-            and isinstance(checkpoint, Mapping)
-            and checkpoint.get("stop_intent") == "after_room"
-            and self.control.finish_room_event(serial_number).is_set()
-            and self.control.cancellation_reason(serial_number) != "motion_replaced"
-        )
-        active_plan = deepcopy(robot.get("active_plan"))
-        if (
-            pending_smart_stop
-            and isinstance(last_run, Mapping)
-            and isinstance(last_run.get("run_id"), str)
-            and not isinstance(active_plan, dict)
-        ):
-            active_plan = {
-                "run_id": last_run["run_id"],
-                "plan_id": last_run.get("plan_id"),
-                "plan_name": last_run.get("plan_name"),
-                "status": "returning_to_dock",
-            }
-        if isinstance(active_plan, dict):
-            active_plan["active_elapsed_seconds"] = plan_timing._active_elapsed_seconds(
-                active_plan, dt_util.utcnow()
-            )
-            active_plan["smart_stop_pending"] = bool(
-                pending_smart_stop
-                and isinstance(last_run, Mapping)
-                and active_plan.get("run_id") == last_run.get("run_id")
-            )
-            if active_plan["smart_stop_pending"]:
-                active_plan["smart_stop_phase"] = (
-                    "verifying_completion"
-                    if active_plan.get("status") == "verifying"
-                    else "finishing_room"
-                    if isinstance(active_plan.get("room_id"), str)
-                    else "finishing_area"
-                    if isinstance(active_plan.get("area_id"), str)
-                    else "returning_to_dock"
-                )
-        public_last_run = deepcopy(robot.get("last_run"))
-        if isinstance(public_last_run, dict):
-            public_last_run.pop("recovery_checkpoint", None)
-        return {
-            "completed_runs": completed_runs,
-            "failed_runs": failed_runs,
-            "cancelled_runs": cancelled_runs,
-            "interrupted_runs": interrupted_runs,
-            "suspended_runs": suspended_runs,
-            "unverified_runs": unverified_runs,
-            "skipped_runs": skipped_runs,
-            "last_completed": last_completed,
-            "last_completed_by_room": {
-                room_id: {
-                    "name": room.get("name"),
-                    "at": room.get("last_completed"),
-                    "duration_seconds": room.get("last_duration_seconds"),
-                    "runs": plan_timing._stored_count(room, "completed_runs"),
-                }
-                for room_id, room in robot["rooms"].items()
-            },
-            "native_reconciliation_pending": isinstance(
-                robot.get("pending_native_reconciliation"), dict
-            ),
-            "plans": plans,
-            "plan_history": deepcopy(robot["rotations"]),
-            "selected_plan": robot.get("selected_plan"),
-            "selected_plan_name": self.catalog.plan_name(
-                serial_number, robot.get("selected_plan")
-            ),
-            "selected_area": robot.get("selected_area"),
-            "selected_area_name": self.catalog.area_name(
-                serial_number, robot.get("selected_area")
-            ),
-            "active_plan": active_plan,
-            "last_interrupted_plan": deepcopy(robot.get("last_interrupted_plan")),
-            "last_run": public_last_run,
-        }
-
-    def next_run_estimate_seconds(
-        self, serial_number: str, rooms: Sequence[tuple[str, str, str]]
-    ) -> int | None:
-        """Sum confident per-room medians at the settings the next run uses."""
-        if not rooms:
-            return None
-        robot = self.repository.robot(serial_number)
-        total = 0
-        for room_id, cleaning_mode, coverage_setting in rooms:
-            history = plan_timing._compatible_duration_history(
-                robot,
-                room_id,
-                {
-                    "cleaning_mode": cleaning_mode,
-                    "coverage_setting": coverage_setting,
-                },
-            )
-            expected = plan_timing._expected_duration(
-                {"duration_history_seconds": history}
-            )
-            if expected is None:
-                return None
-            total += expected
-        return total
 
     def rotation(self, serial_number: str, plan_id: str) -> dict[str, Any]:
         rotations = self.repository.robot(serial_number)["rotations"]

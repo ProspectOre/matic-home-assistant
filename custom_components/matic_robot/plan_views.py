@@ -86,7 +86,7 @@ class MaticPlansView(HomeAssistantView):
                     "mission_boundaries": [],
                     "blocker": "cadence_identity_unavailable",
                 }
-            previewer = getattr(runtime.cleaning_plans.catalog, "preview", None)
+            previewer = getattr(runtime.cleaning_plans.planning, "preview", None)
             if not callable(previewer):
                 return {
                     "rooms": [],
@@ -233,7 +233,7 @@ class MaticPlansView(HomeAssistantView):
         def next_run_estimate(preview: dict[str, object]) -> int | None:
             """Estimate the previewed run from the stored per-room durations."""
             estimator = getattr(
-                runtime.cleaning_plans.ledger, "next_run_estimate_seconds", None
+                runtime.cleaning_plans.history, "next_run_estimate_seconds", None
             )
             if preview["blocker"] is not None or not callable(estimator):
                 return None
@@ -371,7 +371,7 @@ class MaticPlansView(HomeAssistantView):
                     "next_run_estimate_seconds": next_run_estimate(preview),
                 }
             )
-        selected_plan = runtime.cleaning_plans.ledger.snapshot(serial_number).get(
+        selected_plan = runtime.cleaning_plans.history.snapshot(serial_number).get(
             "selected_plan"
         )
         room_projections: list[dict[str, object]] = []

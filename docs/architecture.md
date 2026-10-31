@@ -8,16 +8,22 @@ and its linked receipts retain the decisions and evidence for that release.
 
 Home Assistant owns setup, entity and service lifecycles. The integration keeps
 robot traffic local, validates and pins the robot's identity, and cleans up its
-resources on unload. The [Hermes transport](../custom_components/matic_robot/client/transport.py)
-owns the pinned connection and bounded message decoding;
-[telemetry](../custom_components/matic_robot/client/telemetry.py) decodes robot
-state and native cleaning summaries. The coordinator and map store admit current
-floor and mission state; cached geometry alone cannot establish the current floor.
+resources on unload. The [Hermes client](../custom_components/matic_robot/client/api.py)
+composes the pinned [connection](../custom_components/matic_robot/client/hermes_connection.py),
+collection transport, decoded reads and validated commands. Bounded telemetry
+decoders handle robot state and native cleaning summaries.
+[Discovery](../custom_components/matic_robot/config_flow_discovery.py) selects
+a certificate-bound address; [vacuum catalogs](../custom_components/matic_robot/vacuum_catalog.py)
+map Home Assistant areas to floor-scoped rooms. The
+[coordinator](../custom_components/matic_robot/coordinator.py) publishes robot,
+floor and session snapshots; [robot health](../custom_components/matic_robot/robot_health.py)
+derives confirmed errors and alerts. Cached geometry alone cannot establish
+the current floor.
 
 ## Plans and completion
 
-[CleaningPlanManager](../custom_components/matic_robot/plans.py) composes five
-owners sharing one repository:
+[CleaningPlanManager](../custom_components/matic_robot/plans.py) composes
+these owners around one repository:
 
 | Owner | Responsibility |
 | --- | --- |
@@ -26,6 +32,9 @@ owners sharing one repository:
 | [Catalog](../custom_components/matic_robot/plan_catalog.py) | Saved plans and areas, rotation and previews. |
 | [Run control](../custom_components/matic_robot/run_control.py) | Runtime ownership, cancellation and stop fences. |
 | [Ledger](../custom_components/matic_robot/plan_ledger.py) | Run checkpoints, room accounting and native-history commits. |
+| [History](../custom_components/matic_robot/plan_history.py) | Managed history projections and duration estimates. |
+| [Recovery](../custom_components/matic_robot/plan_recovery.py) | Recovery checkpoints and dispatch evidence. |
+| [Execution planning](../custom_components/matic_robot/execution_planning.py) | Execution previews and rotation target selection. |
 
 [Plan model](../custom_components/matic_robot/plan_model.py),
 [storage migrations](../custom_components/matic_robot/plan_storage.py) and
@@ -41,17 +50,18 @@ See the [plan run contract](e2e-contract.md) and
 
 ## Home Assistant interfaces
 
-[Services](../custom_components/matic_robot/services.py) register actions;
-[schemas](../custom_components/matic_robot/service_schemas.py) validate inputs
+[Services](../custom_components/matic_robot/services.py) compose action
+registrations for execution, editing, controls and firmware. Their shared
+[context](../custom_components/matic_robot/service_context.py) resolves targets
+and authorization; [schemas](../custom_components/matic_robot/service_schemas.py)
 and [plan preparation](../custom_components/matic_robot/service_plans.py)
-resolves saved-plan requests. Local HTTP views use the shared
+validate and prepare requests. Local HTTP views use the shared
 [entry lookup](../custom_components/matic_robot/http.py) and expose bounded,
 authorized projections for [plans](../custom_components/matic_robot/plan_views.py)
-and [areas](../custom_components/matic_robot/area_views.py). Assistant tools use
-[shared authorization and robot resolution](../custom_components/matic_robot/llm_common.py),
-with separate [control](../custom_components/matic_robot/llm_control.py) and
-[firmware](../custom_components/matic_robot/llm_firmware.py) tools. Interface
-adapters do not establish independent cleaning or map truth.
+and [areas](../custom_components/matic_robot/area_views.py). Assistant API
+registration uses [shared authorization](../custom_components/matic_robot/llm_common.py)
+and separate modules for control, firmware, plan, history and status tools.
+Interface adapters do not establish independent cleaning or map truth.
 
 [Photo patrol](../custom_components/matic_robot/photo_patrol.py) checks privacy,
 room, schedule and robot ownership before capture. The
@@ -64,14 +74,31 @@ describes the user controls and limits.
 The frontend's [HA adapter](../frontend/map-studio-v4/hass-adapter.ts) projects
 Home Assistant state; the [workspace store and coherence machine](../frontend/map-studio-v4/state.ts)
 manage state, identity and admission. The [effect controller](../frontend/map-studio-v4/effects.ts)
-owns reads, subscriptions and commands. The
-[renderer](../frontend/map-studio-v4/renderer-controller.ts) owns the canvas and
-GPU resources; the [gesture controller](../frontend/map-studio-v4/gesture-controller.ts)
-owns map interaction. Presentation and rendering math live in separate pure
-helpers. Workflow, history and drawing assets load on demand. The server-side
-[floor](../custom_components/matic_robot/floor_render.py) and
-[SLAM](../custom_components/matic_robot/slam_render.py) renderers produce local
-PNG projections; they do not authorize commands.
+routes Home Assistant admission and actions around that shared state. Separate
+controllers own [workspace synchronization](../frontend/map-studio-v4/workspace-synchronizer.ts),
+[catalog resources](../frontend/map-studio-v4/catalog-resources.ts),
+[spatial reads and recovery](../frontend/map-studio-v4/spatial-resources.ts),
+[motion](../frontend/map-studio-v4/robot-motion-controller.ts), room previews,
+home shortcuts and run history. The [sheet controller](../frontend/map-studio-v4/sheet-controller.ts)
+owns sheet interaction. The [renderer](../frontend/map-studio-v4/renderer-controller.ts)
+owns the canvas and GPU resources; the [gesture controller](../frontend/map-studio-v4/gesture-controller.ts)
+owns map interaction. Workflow, history and drawing assets load on demand.
+
+The [map store](../custom_components/matic_robot/slam_map_store.py) owns live
+admission and recovery. The [snapshot codec](../custom_components/matic_robot/slam_snapshot.py)
+validates persisted maps without proving a live session. Client modules decode
+[SLAM tiles](../custom_components/matic_robot/client/slam_tiles.py), encode
+[scenes](../custom_components/matic_robot/client/slam_scene.py), and trace
+[geometry](../custom_components/matic_robot/client/slam_geometry.py); HTTP views
+serve authorized projections. Server-side [floor](../custom_components/matic_robot/floor_render.py)
+and [SLAM](../custom_components/matic_robot/slam_render.py) renderers produce
+local PNG projections; they do not authorize commands.
+
+[Area binding](../custom_components/matic_robot/area_binding.py) relates saved
+areas to a verified floor. Separate modules handle bounded
+[geometry](../custom_components/matic_robot/area_binding_geometry.py), persisted
+[record validation](../custom_components/matic_robot/area_binding_records.py)
+and floor-scoped [Repairs](../custom_components/matic_robot/area_binding_repairs.py).
 
 ## Evidence and delivery
 

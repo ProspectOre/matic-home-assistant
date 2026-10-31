@@ -159,7 +159,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     assert sender_calls == [UserCommand.STOP]
     assert len(events) == 1
     assert events[0].data["reason_code"] == "completion_timeout"
-    snapshot = manager.ledger.snapshot("serial")
+    snapshot = manager.history.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert snapshot["completed_runs"] == 0
     assert snapshot["failed_runs"] == 1

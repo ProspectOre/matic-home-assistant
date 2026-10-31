@@ -74,7 +74,7 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
     await manager.ledger.async_begin_run(
         SERIAL, "home", "run-old", 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         SERIAL,
         "run-old",
         {"cadence_by_room": {room.room_id: cadence_state}},

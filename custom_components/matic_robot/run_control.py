@@ -12,11 +12,10 @@ from collections.abc import (
 )
 from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
-from copy import deepcopy
 from dataclasses import dataclass
 from datetime import timedelta
 from time import monotonic
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
@@ -28,6 +27,7 @@ from .plan_model import (
     _has_frozen_stop_policy,
     _managed_stop_policy,
 )
+from .plan_recovery import recovery_run_state
 from .plan_repository import (
     PlanRepository,
 )
@@ -277,7 +277,10 @@ class RunControl:
     def replace_managed_motion(self, serial_number: str) -> bool:
         """Transfer motion ownership to an admitted independent command."""
         replaced = False
-        if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
+        if (
+            self.cancel(serial_number)
+            or recovery_run_state(self.repository.robot(serial_number)) is not None
+        ):
             self.cancellation_event(serial_number).set()
             dispatch = self.managed_stop_dispatch_transaction.get()
             if dispatch is None or dispatch[0] != serial_number:
@@ -769,7 +772,7 @@ class RunControl:
                 self.cancellation_event(serial_number).set()
                 self.cancellation_reasons[serial_number] = "managed_stop"
                 return PlanStopDecision("immediate")
-            if self.recovery_run(serial_number) is not None:
+            if recovery_run_state(self.repository.robot(serial_number)) is not None:
                 self.cancellation_event(serial_number).set()
                 self.cancellation_reasons[serial_number] = "managed_stop"
                 return PlanStopDecision("immediate")
@@ -834,14 +837,6 @@ class RunControl:
         self.cancellation_event(serial_number).clear()
         self.finish_room_event(serial_number).set()
         return PlanStopDecision("after_room", progress, threshold)
-
-    def recovery_run(self, serial_number: str) -> dict[str, Any] | None:
-        """Return private local recovery state, never exposed by entity snapshots."""
-        run = self.repository.robot(serial_number).get("last_run")
-        if isinstance(run, dict) and run.get("outcome") == "running":
-            if isinstance(run.get("recovery_checkpoint"), dict):
-                return deepcopy(run)
-        return None
 
     async def async_persist_reconciliation_removal(
         self, serial_number: str, removed: bool

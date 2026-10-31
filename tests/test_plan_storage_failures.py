@@ -91,7 +91,7 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
     await manager.ledger.async_begin_run(
         "synthetic-robot", "home", "run-one", 1, trigger="user", service="test"
     )
-    await manager.ledger.async_set_recovery_checkpoint(
+    await manager.recovery.async_set_recovery_checkpoint(
         "synthetic-robot",
         "run-one",
         {

@@ -13,13 +13,16 @@ import pytest
 from PIL import Image
 
 from custom_components.matic_robot import slam_map_store as storage
-from custom_components.matic_robot.client.slam_map import (
+from custom_components.matic_robot import slam_snapshot as snapshot_codec
+from custom_components.matic_robot.client.slam_scene import (
     MAX_SCENE_POINTS,
+    encode_slam_scene,
+    parse_slam_scene_header,
+)
+from custom_components.matic_robot.client.slam_tiles import (
     MAX_SLAM_TILES,
     decode_slam_structure_tile,
     decode_slam_tile,
-    encode_slam_scene,
-    parse_slam_scene_header,
 )
 from custom_components.matic_robot.slam_render import (
     render_slam_map,
@@ -55,7 +58,8 @@ async def test_large_floor_survives_layer_order_and_reload(hass, structure_first
     assert not store.health.truncated
     assert store.health.dropped_photo_tiles == store.health.dropped_structure_tiles == 0
     assert (
-        storage._stored_bytes(store._entries, store._structure_entries) > 16 * 1024**2
+        snapshot_codec.stored_bytes(store._entries, store._structure_entries)
+        > 16 * 1024**2
     )
     await store.async_shutdown()
     restored = storage.SlamMapStore(hass, "large-floor")
@@ -151,13 +155,13 @@ def test_large_floor_hard_count_and_shared_byte_boundaries():
     pairs = floor_entries(MAX_SLAM_TILES)
     photo = {f"{i % 64}:{i // 64}": p for i, (p, _) in enumerate(pairs)}
     structure = {f"{i % 64}:{i // 64}": s for i, (_, s) in enumerate(pairs)}
-    raw_bytes = storage._stored_bytes(photo, structure)
+    raw_bytes = snapshot_codec.stored_bytes(photo, structure)
     assert raw_bytes < storage.MAX_STORED_BYTES
-    assert storage._enforce_collection_bounds(
+    assert snapshot_codec.enforce_collection_bounds(
         photo, structure, max_tiles=MAX_SLAM_TILES, max_bytes=raw_bytes
     ) == (0, 0)
     # One byte below the exact combined allowance evicts a pair, not one layer.
-    assert storage._enforce_collection_bounds(
+    assert snapshot_codec.enforce_collection_bounds(
         photo, structure, max_tiles=MAX_SLAM_TILES, max_bytes=raw_bytes - 1
     ) == (1, 1)
     assert photo.keys() == structure.keys()
@@ -165,7 +169,7 @@ def test_large_floor_hard_count_and_shared_byte_boundaries():
     tiny = replace(pairs[0][0], value=b"x")
     photo = {f"{i}:0": tiny for i in range(MAX_SLAM_TILES + 1)}
     structure = dict(photo)
-    assert storage._enforce_collection_bounds(
+    assert snapshot_codec.enforce_collection_bounds(
         photo, structure, max_tiles=MAX_SLAM_TILES, max_bytes=storage.MAX_STORED_BYTES
     ) == (1, 1)
     assert len(photo) == len(structure) == MAX_SLAM_TILES
@@ -194,13 +198,15 @@ def test_large_floor_renderers_accept_capacity_and_keep_output_bounds():
     with Image.open(BytesIO(png)) as image:
         assert image.size == (512, 512)
     # Disk overhead is bounded separately from raw-byte capacity.
-    snapshot = storage._serialize_snapshot(
+    snapshot = snapshot_codec.encode_snapshot(
         tuple(photo for photo, _ in entries),
         tuple(structure for _, structure in entries),
-        (photos[0].mission_token, False, 0, 0, storage._current_bounds(), None),
+        snapshot_codec.SnapshotMetadata(
+            photos[0].mission_token, False, 0, 0, storage._current_bounds(), None
+        ),
     )
     assert len(json.dumps(snapshot)) < 90 * 1024**2
-    loaded = storage._decode_stored_snapshot(snapshot)
+    loaded = snapshot_codec.decode_snapshot(snapshot, storage._snapshot_limits())
     assert len(loaded.entries) == len(loaded.structure_entries) == MAX_SLAM_TILES
     assert not loaded.truncated and not loaded.invalid_tiles
 
@@ -384,7 +390,7 @@ async def test_legacy_truncation_persists_until_every_retained_page_replays(hass
     held_back = {
         index
         for index, (photo, _) in enumerate(entries)
-        if storage._tile_key(decode_slam_tile(photo)) == retained[-1]
+        if snapshot_codec.tile_key(decode_slam_tile(photo)) == retained[-1]
     }
     assert len(held_back) == 1
     await replay(store, entries, skip=held_back)
@@ -411,10 +417,11 @@ async def test_legacy_truncation_recovery_requires_balanced_layers(hass):
     gap = next(
         structure
         for _, structure in entries
-        if storage._tile_key(decode_slam_structure_tile(structure)) not in retained
+        if snapshot_codec.tile_key(decode_slam_structure_tile(structure))
+        not in retained
     )
     for key in sorted(retained):
-        page_x, page_y = storage._parse_tile_key(key)
+        page_x, page_y = snapshot_codec.parse_tile_key(key)
         await store.async_add_structure(
             synthetic_structure_entry(page_x=page_x, page_y=page_y, mission_id=1)
         )
@@ -504,8 +511,8 @@ async def test_candidates_share_one_floor_byte_budget(hass):
     store.set_expected_mission_id(1)
     active = floor_entries(16, mission_id=1)
     await replay(store, active)
-    active_bytes = storage._stored_bytes(store._entries, store._structure_entries)
-    pair_bytes = storage._stored_bytes({"a": active[0][0]}, {"a": active[0][1]})
+    active_bytes = snapshot_codec.stored_bytes(store._entries, store._structure_entries)
+    pair_bytes = snapshot_codec.stored_bytes({"a": active[0][0]}, {"a": active[0][1]})
     budget = pair_bytes * 10
     with (
         patch.object(storage, "MAX_CANDIDATE_BYTES", budget),
@@ -554,7 +561,7 @@ async def test_truncation_under_current_bounds_survives_restart_unrecovered(hass
         retained = {
             index
             for index, (photo, _) in enumerate(entries)
-            if storage._tile_key(decode_slam_tile(photo)) in store._entries
+            if snapshot_codec.tile_key(decode_slam_tile(photo)) in store._entries
         }
         await store.async_shutdown()
         serialized = store._serialized_data()
@@ -598,15 +605,15 @@ async def test_truncation_under_current_bounds_survives_restart_unrecovered(hass
     ],
 )
 def test_snapshot_bounds_provenance_gates_recovery(bounds, recoverable, dirty):
-    snapshot = storage._serialize_snapshot(
+    snapshot = snapshot_codec.encode_snapshot(
         (synthetic_slam_entry(),),
         (synthetic_structure_entry(),),
-        (
+        snapshot_codec.SnapshotMetadata(
             decode_slam_tile(synthetic_slam_entry()).mission_token,
             True,
             1,
             1,
-            storage.LEGACY_BOUNDS,
+            snapshot_codec.LEGACY_BOUNDS,
             None,
         ),
     )
@@ -614,48 +621,52 @@ def test_snapshot_bounds_provenance_gates_recovery(bounds, recoverable, dirty):
         del snapshot["bounds"]
     else:
         snapshot["bounds"] = bounds
-    loaded = storage._decode_stored_snapshot(snapshot)
+    loaded = snapshot_codec.decode_snapshot(snapshot, storage._snapshot_limits())
     assert loaded.truncated
-    assert loaded.recoverable is recoverable
+    assert loaded.can_recover_under(storage._current_bounds()) is recoverable
     assert loaded.dirty is dirty
     assert loaded.bounds == (
-        storage.LEGACY_BOUNDS
+        snapshot_codec.LEGACY_BOUNDS
         if bounds is None
         else (bounds["tiles"], bounds["bytes"])
         if not dirty
         else storage._current_bounds()
     )
-    assert not storage._decode_stored_snapshot({"tiles": []}).recoverable
-    assert not storage._decode_stored_snapshot(None).recoverable
+    assert not snapshot_codec.decode_snapshot(
+        {"tiles": []}, storage._snapshot_limits()
+    ).can_recover_under(storage._current_bounds())
+    assert not snapshot_codec.decode_snapshot(
+        None, storage._snapshot_limits()
+    ).can_recover_under(storage._current_bounds())
 
 
 def test_load_time_eviction_is_not_recoverable():
     pairs = floor_entries(3)
-    snapshot = storage._serialize_snapshot(
+    snapshot = snapshot_codec.encode_snapshot(
         tuple(p for p, _ in pairs),
         tuple(s for _, s in pairs),
-        (
+        snapshot_codec.SnapshotMetadata(
             decode_slam_tile(pairs[0][0]).mission_token,
             True,
             0,
             0,
-            storage.LEGACY_BOUNDS,
+            snapshot_codec.LEGACY_BOUNDS,
             None,
         ),
     )
     with patch.object(storage, "MAX_TILES", 2):
-        loaded = storage._decode_stored_snapshot(snapshot)
+        loaded = snapshot_codec.decode_snapshot(snapshot, storage._snapshot_limits())
         assert loaded.truncated and loaded.bounds == storage._current_bounds()
-        assert not loaded.recoverable
+        assert not loaded.can_recover_under(storage._current_bounds())
     with patch.object(storage, "MAX_LOAD_ITEMS_PER_LAYER", 2):
-        loaded = storage._decode_stored_snapshot(snapshot)
+        loaded = snapshot_codec.decode_snapshot(snapshot, storage._snapshot_limits())
     assert loaded.truncated and loaded.bounds == storage._current_bounds()
-    assert not loaded.recoverable
+    assert not loaded.can_recover_under(storage._current_bounds())
     # A mission change during legacy repair starts a fresh, untruncated cache.
     snapshot["tiles"].append(
-        storage._serialize_entry(synthetic_slam_entry(mission_id=9, page_x=9))
+        snapshot_codec.encode_entry(synthetic_slam_entry(mission_id=9, page_x=9))
     )
-    loaded = storage._decode_stored_snapshot(snapshot)
+    loaded = snapshot_codec.decode_snapshot(snapshot, storage._snapshot_limits())
     assert not loaded.truncated and loaded.bounds == storage._current_bounds()
 
 
@@ -667,7 +678,7 @@ async def test_replaying_only_surviving_pages_keeps_the_legacy_latch(hass):
     survivors = [
         pair
         for pair in entries
-        if storage._tile_key(decode_slam_tile(pair[0])) in recovery.retained[0]
+        if snapshot_codec.tile_key(decode_slam_tile(pair[0])) in recovery.retained[0]
     ]
     evicted = [pair for pair in entries if pair not in survivors]
     assert evicted and len(survivors) + len(evicted) == len(entries)
@@ -752,32 +763,40 @@ async def test_restart_after_gap_pages_keeps_the_recovery_baseline(hass):
 )
 def test_malformed_recovery_baseline_is_ignored_and_marked_dirty(baseline):
     tile = decode_slam_tile(synthetic_slam_entry())
-    snapshot = storage._serialize_snapshot(
+    snapshot = snapshot_codec.encode_snapshot(
         (synthetic_slam_entry(),),
         (synthetic_structure_entry(),),
-        (tile.mission_token, True, 1, 1, storage.LEGACY_BOUNDS, None),
+        snapshot_codec.SnapshotMetadata(
+            tile.mission_token, True, 1, 1, snapshot_codec.LEGACY_BOUNDS, None
+        ),
     )
     snapshot["legacy_retained"] = baseline
-    loaded = storage._decode_stored_snapshot(snapshot)
-    assert loaded.baseline is None and loaded.dirty and loaded.recoverable
+    loaded = snapshot_codec.decode_snapshot(snapshot, storage._snapshot_limits())
+    assert (
+        loaded.baseline is None
+        and loaded.dirty
+        and loaded.can_recover_under(storage._current_bounds())
+    )
 
 
 def test_recovery_baseline_round_trips_and_resets_on_mission_change():
     tile = decode_slam_tile(synthetic_slam_entry())
     baseline = (frozenset({"2:-1", "0:0"}), frozenset({"2:-1"}))
-    snapshot = storage._serialize_snapshot(
+    snapshot = snapshot_codec.encode_snapshot(
         (synthetic_slam_entry(),),
         (synthetic_structure_entry(),),
-        (tile.mission_token, True, 1, 1, storage.LEGACY_BOUNDS, baseline),
+        snapshot_codec.SnapshotMetadata(
+            tile.mission_token, True, 1, 1, snapshot_codec.LEGACY_BOUNDS, baseline
+        ),
     )
     assert snapshot["legacy_retained"] == {
         "tiles": ["0:0", "2:-1"],
         "structure_tiles": ["2:-1"],
     }
-    loaded = storage._decode_stored_snapshot(snapshot)
+    loaded = snapshot_codec.decode_snapshot(snapshot, storage._snapshot_limits())
     assert loaded.baseline == baseline and not loaded.dirty
     snapshot["tiles"].append(
-        storage._serialize_entry(synthetic_slam_entry(mission_id=9, page_x=9))
+        snapshot_codec.encode_entry(synthetic_slam_entry(mission_id=9, page_x=9))
     )
-    loaded = storage._decode_stored_snapshot(snapshot)
+    loaded = snapshot_codec.decode_snapshot(snapshot, storage._snapshot_limits())
     assert loaded.baseline is None and not loaded.truncated
