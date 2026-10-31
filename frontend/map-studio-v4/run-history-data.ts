@@ -231,8 +231,8 @@ const RUN_THUMBNAILS_KEPT = 12;
 /**
  * Read one clean's map picture into `runThumbnails`, keeping the newest few
  * and revoking the object URLs it drops. A failed read, including a 404 for
- * a clean whose picture the robot hasn't made yet, is asked again after a
- * minute, which is also how often the server looks for new pictures.
+ * a clean whose picture the robot hasn't made yet, is asked again a minute
+ * later, which is also how often the server looks for new pictures.
  */
 export const readRunThumbnail = async (
   store: WorkspaceStore,
@@ -249,6 +249,10 @@ export const readRunThumbnail = async (
     url = URL.createObjectURL(await backend.runThumbnail(entryId, id));
   } catch {
     pending.retry.set(id, Date.now() + 60_000);
+    // Re-render then, so a Cleaning history still showing the run asks again.
+    window.setTimeout(() => {
+      if (!disposed()) store.patch({ runThumbnails: { ...store.value.runThumbnails } });
+    }, 60_000);
     return;
   } finally {
     pending.reads.delete(id);

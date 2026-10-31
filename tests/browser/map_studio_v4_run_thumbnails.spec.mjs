@@ -25,9 +25,15 @@ test("run pictures retry a failed read and keep the newest twelve", async ({ pag
     const read = (id) => readRunThumbnail(store, backend, "entry", id, pending, () => false);
     let now = 1_000_000;
     Date.now = () => now;
+    const timers = [];
+    window.setTimeout = (callback, delay) => { timers.push({ callback, delay }); return timers.length; };
 
     await read("transient");
     const afterFailure = "transient" in store.value.runThumbnails;
+    const retryDelay = timers[0]?.delay;
+    const before = store.value;
+    timers[0].callback();
+    const rerendered = store.value !== before;
     await read("transient");
     const callsWithinMinute = calls.length;
     now += 60_001;
@@ -46,11 +52,13 @@ test("run pictures retry a failed read and keep the newest twelve", async ({ pag
     const first = store.value.runThumbnails.transient;
     for (let index = 0; index < 11; index += 1) await read(`run-${index}`);
     return {
-      afterFailure, callsWithinMinute, retried, laterMissing, later,
+      afterFailure, retryDelay, rerendered, callsWithinMinute, retried, laterMissing, later,
       kept: Object.keys(store.value.runThumbnails).length, firstRevoked: revoked.includes(first),
     };
   });
   expect(result.afterFailure).toBe(false);
+  expect(result.retryDelay).toBe(60_000);
+  expect(result.rerendered).toBe(true);
   expect(result.callsWithinMinute).toBe(1);
   expect(result.retried).toBe(true);
   expect(result.laterMissing).toBe(true);
