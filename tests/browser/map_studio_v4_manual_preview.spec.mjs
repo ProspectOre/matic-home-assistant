@@ -68,6 +68,8 @@ async function setupEffects(page, { initialPreview = null, previewProvider } = {
         const h = window.manualPreviewHarness;
         h.calls.push(args);
         h.previewCountAtService.push(h.previews.length);
+        if (h.holdService) await new Promise((resolve) => { h.releaseService = resolve; });
+        if (h.serviceError) throw h.serviceError;
       },
       dispose() {},
     });
@@ -627,6 +629,69 @@ test("go to room is offered for one room and sends only that room, with no previ
     previews: 0,
     calls: [["matic_robot", "go_to_room", { room: "room-a" }, "vacuum.synthetic"]],
   });
+});
+
+test("a queue change is sent only while the robot cleans, and its notice says what happened", async ({ page }) => {
+  await setupEffects(page);
+  const result = await page.evaluate(async () => {
+    const h = window.manualPreviewHarness;
+    const skip = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen" };
+    await h.effects.executeAction(skip);
+    const idle = h.calls.length;
+    h.store.patch({ activity: "cleaning" });
+    const sent = h.effects.executeAction(skip);
+    const pending = h.store.value.queuePending;
+    // A second tap while the first is unconfirmed sends nothing.
+    await h.effects.executeAction({ ...skip, change: "clean_room_next" });
+    await sent;
+    const done = { notice: h.store.value.notice, pending: h.store.value.queuePending };
+    // A clean started from Matic Map stays "starting" until its run ends.
+    h.store.patch({ command: "starting" });
+    await h.effects.executeAction({ ...skip, change: "clean_room_next" });
+    h.store.patch({ command: "idle" });
+    h.serviceError = Object.assign(new Error("refused"), { translation_domain: "matic_robot", translation_key: "queue_last_room" });
+    await h.effects.executeAction(skip);
+    const refused = h.store.value.notice;
+    h.serviceError = new Error("timeout");
+    await h.effects.executeAction({ ...skip, change: "clean_room_again" });
+    const unconfirmed = h.store.value.notice;
+    h.effects.dispose();
+    return { idle, pending, done, refused, unconfirmed,
+      calls: h.calls.map(([domain, service, data, entityId]) => [domain, service, data, entityId]) };
+  });
+  expect(result).toEqual({
+    idle: 0,
+    pending: true,
+    done: { notice: { tone: "success", key: "v4_notice_queue_skipped", fallback: "{room} skipped.", placeholders: { room: "Kitchen" } }, pending: false },
+    refused: { tone: "error", key: "v4_notice_queue_last_room", fallback: "That's the only room left. Stop the clean instead." },
+    unconfirmed: { tone: "error", key: "v4_notice_queue_unconfirmed", fallback: "The robot didn't confirm the change to {room}. Check the queue in the Matic app.", placeholders: { room: "Kitchen" } },
+    calls: [
+      ["matic_robot", "skip_room", { room: "room-a" }, "vacuum.synthetic"],
+      ["matic_robot", "clean_room_next", { room: "room-a" }, "vacuum.synthetic"],
+      ["matic_robot", "skip_room", { room: "room-a" }, "vacuum.synthetic"],
+      ["matic_robot", "clean_room_again", { room: "room-a" }, "vacuum.synthetic"],
+    ],
+  });
+});
+
+test("a robot change ends a pending queue change, and its late reply changes nothing", async ({ page }) => {
+  await setupEffects(page);
+  const result = await page.evaluate(async () => {
+    const h = window.manualPreviewHarness;
+    h.store.patch({ activity: "cleaning" });
+    h.holdService = true;
+    const sent = h.effects.executeAction({ id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen" });
+    for (let i = 0; i < 20 && !h.releaseService; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = h.store.value.queuePending;
+    h.effects.sync({ ...h.projection, entryKey: "other-entry", vacuumEntityId: "vacuum.other" });
+    const afterSwitch = h.store.value.queuePending;
+    h.releaseService();
+    await sent;
+    const output = { before, afterSwitch, afterReply: h.store.value.queuePending, notice: h.store.value.notice?.key ?? null };
+    h.effects.dispose();
+    return output;
+  });
+  expect(result).toEqual({ before: true, afterSwitch: false, afterReply: false, notice: null });
 });
 
 test("@safety preflight dispatches once with a fresh token when the effective preview is unchanged", async ({ page }) => {

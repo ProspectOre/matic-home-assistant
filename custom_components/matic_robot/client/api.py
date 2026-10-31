@@ -3413,7 +3413,26 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         mop_completed_rooms=mop_completed_rooms,
         combined_completed_rooms=combined_completed_rooms,
         mode_results=mode_results,
+        stop_reason_code=_decode_stop_reason_code(fields),
     )
+
+
+def _decode_stop_reason_code(summary_fields: tuple[WireField, ...]) -> int | None:
+    """Return the oneof tag of the session's stop reason, if it has one."""
+    reasons = [field for field in summary_fields if field.number == 10]
+    if len(reasons) != 1 or not isinstance(reasons[0].value, bytes):
+        return None
+    try:
+        variants = _bounded_fields(
+            reasons[0].value,
+            max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+            max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+        )
+    except DecodeError:
+        return None
+    if len(variants) != 1 or variants[0].wire_type != 2:
+        return None
+    return variants[0].number
 
 
 def _decode_nested_timestamp(payload: bytes, number: int) -> str | None:

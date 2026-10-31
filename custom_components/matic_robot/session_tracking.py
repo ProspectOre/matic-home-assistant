@@ -7,7 +7,7 @@ so room statistics remain useful without relying on that stale collection.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol
 
@@ -146,20 +146,12 @@ class CleaningSessionTracker:
             if native_session.mode_results or native_session.completed is False:
                 return native_session
             if tracked.completed is True:
-                return tracked
-            return CleaningSession(
-                started_at=native_session.started_at,
-                ended_at=native_session.ended_at,
-                duration_seconds=tracked.duration_seconds,
-                rooms=native_session.rooms,
-                room_durations=native_session.room_durations,
-                completed=native_session.completed,
-                completed_rooms=native_session.completed_rooms,
-                vacuum_completed_rooms=native_session.vacuum_completed_rooms,
-                mop_completed_rooms=native_session.mop_completed_rooms,
-                combined_completed_rooms=native_session.combined_completed_rooms,
-                mode_results=native_session.mode_results,
-            )
+                if native_session.stop_reason_code is None:
+                    return tracked
+                return replace(
+                    tracked, stop_reason_code=native_session.stop_reason_code
+                )
+            return replace(native_session, duration_seconds=tracked.duration_seconds)
         native_started = _parse_timestamp(native_session.started_at)
         tracked_started = _parse_timestamp(tracked.started_at)
         if native_started > tracked_started:

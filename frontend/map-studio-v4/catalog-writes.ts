@@ -3,7 +3,7 @@
 // Runtime imports are deliberately absent: an import edge into the startup
 // modules makes esbuild split them into more chunks, which costs the startup
 // graph more than this module saves. Startup helpers arrive in the context.
-import type { DeleteSharedCadenceAction, HassProjection, PlanDraft, ResetCadenceAction, WorkspaceNotice, WorkspaceState } from "./contracts";
+import type { DeleteSharedCadenceAction, HassProjection, PlanDraft, QueueChangeAction, ResetCadenceAction, WorkspaceNotice, WorkspaceState } from "./contracts";
 import type { MaticBackend } from "./backend";
 import type { WorkspaceStore } from "./state";
 import type { EffectController } from "./effects";
@@ -37,6 +37,41 @@ export const coverageGuardNotice = (
   if (domain !== "matic_robot" || typeof key !== "string" || !Object.hasOwn(COVERAGE_GUARD_NOTICES, key)) return null;
   const copy = COVERAGE_GUARD_NOTICES[key];
   return copy ? makeNotice("error", copy[0], copy[1]) : null;
+};
+
+// The integration's refusals (docs/queue-changes.md, Limits), keyed by its
+// exception translation keys.
+const QUEUE_REFUSED: Readonly<Record<string, readonly [string, string]>> = {
+  queue_no_clean_running: ["v4_notice_queue_not_cleaning", "Rooms can only be changed while the robot is cleaning."],
+  queue_current_room_unknown: ["v4_notice_queue_between_rooms", "The robot isn't in a room on this map right now. Try again once it's cleaning a room."],
+  queue_plan_unreadable: ["v4_notice_queue_unreadable", "This clean includes a custom area, so its rooms can't be changed here. Use the Matic app."],
+  queue_room_not_queued: ["v4_notice_queue_not_queued", "That room isn't waiting in this clean."],
+  queue_last_room: ["v4_notice_queue_last_room", "That's the only room left. Stop the clean instead."],
+  queue_already_next: ["v4_notice_queue_already_next", "That room is already being cleaned or is next."],
+  queue_room_settings_unknown: ["v4_notice_queue_not_in_plan", "That room isn't in this clean anymore. Clean it once this clean ends."],
+};
+
+/** The result of a queue change: what changed, the integration's refusal, or that the robot didn't confirm it. */
+export const queueChangeNotice = (
+  notice: CatalogWriteHelpers["notice"],
+  action: QueueChangeAction,
+  error?: unknown,
+): WorkspaceNotice => {
+  if (error === undefined) {
+    switch (action.change) {
+      case "skip_room":
+        return notice("success", "v4_notice_queue_skipped", "{room} skipped.", { room: action.room });
+      case "clean_room_next":
+        return notice("success", "v4_notice_queue_next", "{room} is next.", { room: action.room });
+      case "clean_room_again":
+        return notice("success", "v4_notice_queue_again", "{room} will be cleaned again.", { room: action.room });
+    }
+  }
+  const { translation_domain: domain, translation_key: key } = (error ?? {}) as Record<string, unknown>;
+  const copy = domain === "matic_robot" && typeof key === "string" && Object.hasOwn(QUEUE_REFUSED, key) ? QUEUE_REFUSED[key] : undefined;
+  return copy
+    ? notice("error", copy[0], copy[1])
+    : notice("error", "v4_notice_queue_unconfirmed", "The robot didn't confirm the change to {room}. Check the queue in the Matic app.", { room: action.room });
 };
 
 /**
