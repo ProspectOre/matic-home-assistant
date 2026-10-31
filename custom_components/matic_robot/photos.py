@@ -72,13 +72,21 @@ class RobotPhotoStore:
             return False
         photos = _decode_photos(entries)
         previous = self._latest
-        previous_ids = self._photo_ids
-        # A full read replaces what the stream saw, so photos deleted in the
-        # app drop out here.
-        self._latest = max(photos, key=lambda photo: photo.captured_at, default=None)
-        self._photo_ids = {photo.photo_id for photo in photos}
-        if self._latest != previous or self._photo_ids != previous_ids:
-            self._async_notify()
+        if len(entries) >= MAX_PHOTO_ENTRIES:
+            # A read that hit the limit may have missed photos, so it only
+            # adds to what is known.
+            if self._async_add_photos(photos):
+                self._async_notify()
+        else:
+            # A complete read replaces what the stream saw, so photos deleted
+            # in the app drop out here.
+            previous_ids = self._photo_ids
+            self._latest = max(
+                photos, key=lambda photo: photo.captured_at, default=None
+            )
+            self._photo_ids = {photo.photo_id for photo in photos}
+            if self._latest != previous or self._photo_ids != previous_ids:
+                self._async_notify()
         return self._latest is not None and (
             previous is None or self._latest.captured_at > previous.captured_at
         )
@@ -102,7 +110,7 @@ class RobotPhotoStore:
                     PHOTO_COLLECTION
                 ):
                     retry_delay = 1
-                    if self._async_add_entries((entry,)):
+                    if self._async_add_photos(_decode_photos((entry,))):
                         self._async_notify()
             except asyncio.CancelledError:
                 raise
@@ -114,9 +122,9 @@ class RobotPhotoStore:
             retry_delay = min(retry_delay * 2, 60)
 
     @callback
-    def _async_add_entries(self, entries: tuple[HermesCollectionEntry, ...]) -> bool:
+    def _async_add_photos(self, photos: list[RobotPhoto]) -> bool:
         changed = False
-        for photo in _decode_photos(entries):
+        for photo in photos:
             if photo.photo_id not in self._photo_ids:
                 self._photo_ids.add(photo.photo_id)
                 changed = True

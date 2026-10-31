@@ -326,3 +326,26 @@ async def test_take_photo_button_sends_snap_and_reads_the_photo(hass) -> None:
     ):
         await take_photo.async_press()
     take_photo.hass.services.async_call.assert_awaited_once()
+
+
+async def test_a_read_at_the_entry_limit_only_adds_photos() -> None:
+    newest = _snap(UUID(int=99), CAPTURED)
+    client = _client(entries=(newest,))
+    store = RobotPhotoStore(client)
+    await store.async_refresh()
+    listener = MagicMock()
+    store.async_add_listener(listener)
+    older = tuple(
+        _snap(UUID(int=index), CAPTURED - 60 - index)
+        for index in range(photos.MAX_PHOTO_ENTRIES)
+    )
+    client.async_get_tracked_collection_entries.return_value = older
+
+    # The newest photo fell outside this batch but is kept.
+    assert await store.async_refresh() is False
+    assert store.latest.photo_id == str(UUID(int=99))
+    assert store.photo_count == photos.MAX_PHOTO_ENTRIES + 1
+    listener.assert_called_once()
+
+    assert await store.async_refresh() is False
+    listener.assert_called_once()
