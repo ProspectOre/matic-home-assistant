@@ -14,7 +14,8 @@ Home Assistant requests and SSH file reads time out after 60 seconds; each assis
 times out after 30 seconds. A stalled operation or connection failure produces a failed receipt.
 Timed-out local MCP and SSH subprocesses are stopped. Receipt filenames are unique, so repeated
 runs against the same tag do not overwrite earlier evidence.
-The backup and restart each have a ten-minute deadline; physical waits allow up to an hour.
+Backup progress events may arrive more slowly: they share the backup's ten-minute deadline.
+Restart polling also has a ten-minute deadline; physical waits allow up to an hour.
 
 | Step | What it checks |
 | --- | --- |
