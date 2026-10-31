@@ -79,10 +79,12 @@ async def async_photo_patrol(
         if battery is not None and battery < MIN_BATTERY_PERCENT:
             raise _error("photo_patrol_low_battery", battery=str(battery))
         results: list[dict[str, str]] = []
+        # The area the robot reported at each room it reached.
+        arrivals: list[str | None] = []
         try:
-            for index, room in enumerate(rooms):
+            for room in rooms:
                 photo = await _async_photograph(
-                    hass, entry, entity_id, room, context, first=index == 0
+                    hass, entry, entity_id, room, context, arrivals
                 )
                 result = {
                     "room": room,
@@ -97,7 +99,11 @@ async def async_photo_patrol(
                     context=context,
                 )
         finally:
-            if return_to_dock and await _async_still_parked(entry):
+            if (
+                return_to_dock
+                and arrivals
+                and await _async_still_parked(entry, arrivals[-1])
+            ):
                 await hass.services.async_call(
                     VACUUM_DOMAIN,
                     SERVICE_RETURN_TO_BASE,
@@ -114,26 +120,26 @@ async def _async_photograph(
     entity_id: str,
     room: str,
     context: Context | None,
-    *,
-    first: bool,
+    arrivals: list[str | None],
 ) -> RobotPhoto:
     client = entry.runtime_data.client
     photos = entry.runtime_data.photos
     state = await _async_state(client)
     # Between rooms the patrol leaves the robot parked where it took the last
     # photo. A robot that has moved since was given something else to do.
-    if _busy(state) if first else not _left_parked(state):
+    if _busy(state) if not arrivals else not _left_parked(state, arrivals[-1]):
         raise _error("photo_patrol_robot_busy")
     was_parked = _parked(state)
     await _async_command(hass, entity_id, "go_to_room", {"room": room}, context)
     if was_parked:
         await _async_wait_for(client, lambda state: not _parked(state), None)
-    await _async_wait_for(
+    arrived = await _async_wait_for(
         client,
         _parked,
         _error("photo_patrol_no_arrival", room=room),
         within=ARRIVAL_TIMEOUT_SECONDS,
     )
+    arrivals.append(arrived.current_area if arrived is not None else None)
     # Read the collection first so an older photo the store hasn't seen yet
     # can't pass for the new one.
     try:
@@ -142,7 +148,7 @@ async def _async_photograph(
         raise _error("photo_patrol_unreachable") from err
     # A clean or another Go to room started during the read would take the
     # photo somewhere else.
-    if not _left_parked(await _async_state(client)):
+    if not _left_parked(await _async_state(client), arrivals[-1]):
         raise _error("photo_patrol_robot_busy")
     previous = photos.latest
     earliest = dt_util.utcnow() - CLOCK_TOLERANCE
@@ -167,18 +173,20 @@ async def _async_wait_for(
     timeout_error: HomeAssistantError | None,
     *,
     within: float = LEAVE_TIMEOUT_SECONDS,
-) -> None:
-    """Poll the robot until ``condition`` holds.
+) -> RobotOperationalState | None:
+    """Poll the robot until ``condition`` holds and return that state.
 
     Without ``timeout_error`` a timeout is accepted silently.
     """
     deadline = monotonic() + within
     while monotonic() < deadline:
         await asyncio.sleep(POLL_SECONDS)
-        if condition(await _async_state(client)):
-            return
+        state = await _async_state(client)
+        if condition(state):
+            return state
     if timeout_error is not None:
         raise timeout_error
+    return None
 
 
 async def _async_state(client: Any) -> RobotOperationalState:
@@ -202,15 +210,20 @@ def _busy(state: RobotOperationalState) -> bool:
     return state.cleaning or state.paused or (state.returning and not _parked(state))
 
 
-def _left_parked(state: RobotOperationalState) -> bool:
-    """Return whether the robot waits at a room with no task.
+def _left_parked(state: RobotOperationalState, area: str | None) -> bool:
+    """Return whether the robot still waits, with no task, where it arrived.
 
-    A clean paused near a room can also report 109.
+    A clean paused near a room can also report 109, and so does a Go to room
+    someone else sent once it arrives, but in another area.
     """
-    return _parked(state) and not (state.cleaning or state.paused)
+    return (
+        _parked(state)
+        and not (state.cleaning or state.paused)
+        and state.current_area == area
+    )
 
 
-async def _async_still_parked(entry: MaticConfigEntry) -> bool:
+async def _async_still_parked(entry: MaticConfigEntry, area: str | None) -> bool:
     """Return whether the robot is still where the patrol left it.
 
     Only then is docking safe: a robot that moved, or can't be read, may have
@@ -221,7 +234,7 @@ async def _async_still_parked(entry: MaticConfigEntry) -> bool:
         state: RobotOperationalState = await entry.runtime_data.client.async_get_state()
     except MaticError:
         return False
-    return _left_parked(state)
+    return _left_parked(state, area)
 
 
 async def _async_command(

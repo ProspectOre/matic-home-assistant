@@ -21,9 +21,13 @@ from tests.test_services import _registered_handler, _registered_services
 START = datetime(2026, 10, 31, 1, 0, tzinfo=UTC)
 
 
-def _state(*codes: int) -> SimpleNamespace:
+def _state(*codes: int, area: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
-        state_codes=codes, cleaning=119 in codes, paused=False, returning=104 in codes
+        state_codes=codes,
+        cleaning=119 in codes,
+        paused=False,
+        returning=104 in codes,
+        current_area=area,
     )
 
 
@@ -342,7 +346,11 @@ async def test_a_robot_moved_by_someone_else_ends_the_patrol() -> None:
 async def test_a_paused_clean_near_a_room_ends_the_patrol() -> None:
     hass = _hass()
     paused = SimpleNamespace(
-        state_codes=(109, 200, 119), cleaning=True, paused=True, returning=False
+        state_codes=(109, 200, 119),
+        cleaning=True,
+        paused=True,
+        returning=False,
+        current_area=None,
     )
     entry = _entry([DOCKED, PARKED, PARKED, paused, paused], _Photos(None, _photo(1)))
 
@@ -368,6 +376,38 @@ async def test_a_robot_moved_before_the_snap_is_not_photographed() -> None:
 
     assert raised.value.translation_key == "photo_patrol_robot_busy"
     assert [command for _, command, _ in _commands(hass)] == ["go_to_room"]
+
+
+async def test_a_robot_sent_to_another_room_is_left_there() -> None:
+    hass = _hass()
+    kitchen = _state(photo_patrol.PARKED_STATE_CODE, area="Kitchen")
+    den = _state(photo_patrol.PARKED_STATE_CODE, area="Den")
+    # During the kitchen photo someone sends the robot to the den, and it
+    # arrives there before the patrol looks again.
+    entry = _entry([DOCKED, kitchen, kitchen, den, den], _Photos(None, _photo(1)))
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await photo_patrol.async_photo_patrol(
+            hass, entry, "vacuum.matic", ["Kitchen", "Hall"], return_to_dock=True
+        )
+
+    assert raised.value.translation_key == "photo_patrol_robot_busy"
+    assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote"]
+
+
+async def test_patrol_leaves_a_robot_it_cannot_read_at_the_end() -> None:
+    hass = _hass()
+    entry = _entry(
+        [DOCKED, PARKED, PARKED, CannotConnectError("offline")],
+        _Photos(None, _photo(1)),
+    )
+
+    result = await photo_patrol.async_photo_patrol(
+        hass, entry, "vacuum.matic", ["Kitchen"], return_to_dock=True
+    )
+
+    assert [photo["photo_id"] for photo in result] == ["photo-1"]
+    assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote"]
 
 
 async def test_a_return_to_the_dock_ends_the_patrol() -> None:
