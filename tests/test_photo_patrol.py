@@ -22,7 +22,9 @@ START = datetime(2026, 10, 31, 1, 0, tzinfo=UTC)
 
 
 def _state(*codes: int) -> SimpleNamespace:
-    return SimpleNamespace(state_codes=codes, cleaning=119 in codes, paused=False)
+    return SimpleNamespace(
+        state_codes=codes, cleaning=119 in codes, paused=False, returning=104 in codes
+    )
 
 
 DOCKED = _state(100)
@@ -105,6 +107,11 @@ def clock():
     with (
         patch.object(photo_patrol, "monotonic", lambda: now[0]),
         patch.object(photo_patrol.asyncio, "sleep", sleep),
+        patch.object(
+            photo_patrol.dt_util,
+            "utcnow",
+            lambda: START + timedelta(seconds=90),
+        ),
     ):
         yield now
 
@@ -166,11 +173,20 @@ async def test_patrol_photographs_each_room_and_docks() -> None:
     assert fired[1].kwargs == {"context": context}
 
 
-async def test_patrol_ignores_an_older_photo_the_store_had_not_seen() -> None:
+@pytest.mark.parametrize(
+    "arrivals",
+    [
+        # The read before the snap finds an old photo the store hadn't seen.
+        (_photo(0), None, _photo(1)),
+        # That read fails, so the old photo only arrives after the snap.
+        (None, _photo(0), _photo(1)),
+    ],
+)
+async def test_patrol_ignores_an_older_photo_the_store_had_not_seen(
+    arrivals,
+) -> None:
     hass = _hass()
-    # Before the collection has been read, the first read finds an old photo;
-    # only the photo after the snap counts.
-    store = _Photos(_photo(0), None, _photo(1), seen=False)
+    store = _Photos(*arrivals, seen=False)
     entry = _entry([PARKED] * 30, store)
 
     result = await photo_patrol.async_photo_patrol(
@@ -258,6 +274,20 @@ async def test_a_clean_started_during_the_patrol_keeps_the_robot() -> None:
     assert raised.value.translation_key == "photo_patrol_robot_busy"
     assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote"]
     assert len(hass.bus.async_fire.call_args_list) == 1
+
+
+async def test_a_return_to_the_dock_ends_the_patrol() -> None:
+    hass = _hass()
+    returning = _state(104)
+    entry = _entry([DOCKED, PARKED, returning, returning], _Photos(None, _photo(1)))
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await photo_patrol.async_photo_patrol(
+            hass, entry, "vacuum.matic", ["Kitchen", "Den"], return_to_dock=True
+        )
+
+    assert raised.value.translation_key == "photo_patrol_robot_busy"
+    assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote"]
 
 
 async def test_patrol_runs_with_an_unknown_battery_level() -> None:

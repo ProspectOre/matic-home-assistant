@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from datetime import timedelta
 from time import monotonic
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,7 @@ from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.const import ATTR_COMMAND, ATTR_ENTITY_ID
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
 from .client.exceptions import MaticError
 from .client.models import RobotOperationalState
@@ -38,6 +40,10 @@ ARRIVAL_TIMEOUT_SECONDS = 180.0
 MIN_BATTERY_PERCENT = 20
 # The snap countdown is about 9 s and the photo lands about 6 s after it.
 PHOTO_TIMEOUT_SECONDS = 40.0
+# A photo captured more than this before the snap command, by the robot's
+# clock, is an older one. Live snaps matched Home Assistant's clock to within
+# a few seconds.
+CLOCK_TOLERANCE = timedelta(minutes=1)
 PHOTO_TAKEN_EVENT = f"{DOMAIN}_photo_taken"
 
 _patrols: dict[str, asyncio.Lock] = {}
@@ -123,17 +129,21 @@ async def _async_photograph(
         within=ARRIVAL_TIMEOUT_SECONDS,
     )
     # Read the collection first so an older photo the store hasn't seen yet
-    # can't pass for the new one.
+    # doesn't arrive during the wait below. The capture time check covers a
+    # read that fails.
     await photos.async_refresh()
     previous = photos.latest
+    earliest = dt_util.utcnow() - CLOCK_TOLERANCE
     await _async_command(hass, entity_id, "emote", {"kind": "snap"}, context)
     deadline = monotonic() + PHOTO_TIMEOUT_SECONDS
     while monotonic() < deadline:
         await asyncio.sleep(POLL_SECONDS)
         await photos.async_refresh()
         latest = photos.latest
-        if latest is not None and (
-            previous is None or latest.captured_at > previous.captured_at
+        if (
+            latest is not None
+            and latest.captured_at >= earliest
+            and (previous is None or latest.captured_at > previous.captured_at)
         ):
             return latest
     raise _error("photo_patrol_no_photo", room=room)
@@ -175,9 +185,10 @@ def _busy(state: RobotOperationalState) -> bool:
     """Return whether something else gave the robot a task during the patrol.
 
     The patrol leaves the robot parked at a room between photos, so a robot
-    that is cleaning or paused and not parked was taken over by a clean.
+    that is cleaning, paused or returning and not parked was taken over by a
+    clean or sent back to the dock.
     """
-    return not _parked(state) and (state.cleaning or state.paused)
+    return not _parked(state) and (state.cleaning or state.paused or state.returning)
 
 
 async def _async_taken_over(entry: MaticConfigEntry) -> bool:
