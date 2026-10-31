@@ -1278,6 +1278,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "areas_url": f"/api/matic_robot/areas/{loaded.entry_id}",
                 "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
                 "wifi_heatmap_url": f"/api/matic_robot/wifi_heatmap/{loaded.entry_id}",
+                "floor_layers_url": f"/api/matic_robot/floor_layers/{loaded.entry_id}",
                 "history_count": 0,
                 "history_floor_count": 0,
                 "map_revision": 7,

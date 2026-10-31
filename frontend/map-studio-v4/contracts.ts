@@ -194,6 +194,15 @@ export interface WifiSignalLayer {
   readonly cells: readonly WifiSignalCell[];
 }
 
+/** A closed outline in map metres; outlines inside another of the same layer are holes. */
+export type FloorTypeOutline = readonly (readonly [x: number, y: number])[];
+
+export interface FloorTypesLayer {
+  readonly status: "loading" | "ready" | "failed";
+  readonly carpet: readonly FloorTypeOutline[];
+  readonly vent: readonly FloorTypeOutline[];
+}
+
 export type PendingAction = "run-plan" | "save-plan" | "set-deep-mop";
 
 export interface PlanDraft {
@@ -334,6 +343,7 @@ export function readWorkspaceNotice(value: unknown): WorkspaceNotice | null {
 export interface WorkspaceState {
   readonly deepMop: RobotSetting | null;
   readonly lastRun: ManagedRunSummary | null;
+  readonly nextSchedule: ScheduledRun | null;
   readonly smartStop: SmartStopStatus | null;
   /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
   readonly trail: RunTrail | null;
@@ -370,6 +380,8 @@ export interface WorkspaceState {
   readonly labelsVisible: boolean;
   /** The Wi-Fi signal layer; null while hidden. */
   readonly wifiSignal: WifiSignalLayer | null;
+  /** The carpet and vent layer; null while hidden. */
+  readonly floorTypes: FloorTypesLayer | null;
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   /** Only preferences belonging to the verified live map can be restored. */
@@ -424,6 +436,7 @@ export type WorkspaceIntent =
     }
   | { readonly type: "toggle-labels" }
   | { readonly type: "toggle-wifi-signal" }
+  | { readonly type: "toggle-floor-types" }
   | { readonly type: "open-workflow"; readonly workflow: Workflow }
   | { readonly type: "enter-full-map" }
   | { readonly type: "exit-full-map" }
@@ -608,6 +621,16 @@ export interface HassProjection {
   readonly robots: readonly RobotChoice[];
   readonly lastRun: ManagedRunSummary | null;
   readonly smartStop?: SmartStopStatus | null;
+  readonly nextSchedule?: ScheduledRun | null;
+}
+
+/** The next run of a schedule set in the Matic app, from the robot schedules calendar. */
+export interface ScheduledRun {
+  readonly name: string;
+  /** ISO 8601 with an offset, so the browser's own time zone cannot shift it. */
+  readonly startsAt: string;
+  /** The calendar's description: cleaning mode and rooms, one per line. */
+  readonly detail: string | null;
 }
 
 /** An accepted finish-current-entry request, bound to the active managed run. */
@@ -650,6 +673,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-camera": true,
   "toggle-labels": true,
   "toggle-wifi-signal": true,
+  "toggle-floor-types": true,
   "open-workflow": true,
   "enter-full-map": true,
   "exit-full-map": true,

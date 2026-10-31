@@ -34,7 +34,15 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
     # Schedule definitions are live context, as on the scheduled cleanings
     # sensor, and stay out of Recorder.
     _unrecorded_attributes = frozenset(
-        {"message", "all_day", "start_time", "end_time", "location"}
+        {
+            "message",
+            "all_day",
+            "start_time",
+            "end_time",
+            "location",
+            "matic_entry_id",
+            "matic_next_run",
+        }
     )
 
     def __init__(self, entry: MaticConfigEntry) -> None:
@@ -51,6 +59,38 @@ class MaticScheduleCalendar(MaticEntity, CalendarEntity):
             self.coordinator.data, now, now + _UPCOMING_WINDOW
         )
         return events[0] if events else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Give Matic Map the entry and the next run that hasn't started.
+
+        The calendar's own event stays on a run for its nominal hour, and its
+        start_time is a naive local string that a browser in another time zone
+        would misread, so neither suits a "next clean" line.
+        """
+        now = dt_util.now()
+        upcoming = next(
+            (
+                event
+                for event in schedule_occurrences(
+                    self.coordinator.data, now, now + _UPCOMING_WINDOW
+                )
+                if event.start_datetime_local.timestamp() > now.timestamp()
+            ),
+            None,
+        )
+        return {
+            "matic_entry_id": self._config_entry.entry_id,
+            "matic_next_run": (
+                {
+                    "name": upcoming.summary,
+                    "start": upcoming.start_datetime_local.isoformat(),
+                    "description": upcoming.description,
+                }
+                if upcoming
+                else None
+            ),
+        }
 
     async def async_get_events(
         self, hass: HomeAssistant, start_date: datetime, end_date: datetime

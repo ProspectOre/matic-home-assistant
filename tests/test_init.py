@@ -56,6 +56,7 @@ from custom_components.matic_robot.const import (
     DOMAIN,
     PLATFORMS,
 )
+from custom_components.matic_robot.photos import RobotPhotoStore
 from custom_components.matic_robot.plans import (
     STOP_FENCE_EXPIRES_AT,
     AreaBindingUpgradeResult,
@@ -1311,9 +1312,10 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.run_trails is run_trails.return_value
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 6 + (
+    assert entry.async_create_background_task.call_count == 7 + (
         recovering_run or recovering_stop
     )
+    assert isinstance(entry.runtime_data.photos, RobotPhotoStore)
     coordinator.async_watch_cues.assert_called_once_with()
     coordinator.async_watch_floor_plan.assert_called_once_with()
     assert (
@@ -1409,7 +1411,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 9 + (
+    assert entry.async_create_background_task.call_count == 10 + (
         recovering_run or recovering_stop
     )
     assert plans.async_upgrade_area_bindings.await_count == 5

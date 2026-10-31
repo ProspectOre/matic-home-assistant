@@ -29,12 +29,15 @@ from .client.slam_map import (
     decode_slam_semantic_tile,
 )
 from .slam_map_store import SlamMapIdentity
-from .slam_scene import PRIVATE_NO_STORE_HEADERS, _runtime_for_entry
+from .slam_scene import (
+    FLOOR_LAYERS_API_URL,
+    PRIVATE_NO_STORE_HEADERS,
+    _runtime_for_entry,
+)
 
 if TYPE_CHECKING:
     from . import MaticRuntimeData
 
-FLOOR_LAYERS_API_URL = "/api/matic_robot/floor_layers/{entry_id}"
 FLOOR_LAYERS_CACHE_SECONDS = 600.0
 # A read that found no page for this floor is retried sooner.
 FLOOR_LAYERS_EMPTY_RETRY_SECONDS = 30.0

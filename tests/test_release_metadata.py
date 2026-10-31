@@ -682,6 +682,7 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
             "stop_intelligent_cleaning": "Stop cleaning",
             "clean_selected_area": "Clean custom area",
             "clear_wifi_survey": "Clear Wi-Fi survey",
+            "take_photo": "Take photo",
         }
         selects = translations["entity"]["select"]
         assert selects["cleaning_mode"]["name"] == "Default cleaning mode"

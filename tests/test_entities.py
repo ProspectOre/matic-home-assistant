@@ -34,6 +34,7 @@ from custom_components.matic_robot import (
 )
 from custom_components.matic_robot import calendar as calendar_platform
 from custom_components.matic_robot import event as event_platform
+from custom_components.matic_robot import image as image_platform
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
@@ -47,6 +48,7 @@ from custom_components.matic_robot.client.exceptions import (
 from custom_components.matic_robot.client.models import (
     CleaningSchedule,
     CleaningSession,
+    CleaningSessionRecord,
     FloorPlan,
     HermesCollectionEntry,
     RobotInfo,
@@ -209,6 +211,8 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             async_get_sink_posture=AsyncMock(return_value=b"synthetic-posture"),
             async_sink_summon=AsyncMock(),
             async_go_to_room=AsyncMock(),
+            async_get_cleaning_session_records=AsyncMock(return_value=()),
+            async_redo_clean=AsyncMock(),
             async_set_binary_setting=AsyncMock(),
             async_set_deep_mop=AsyncMock(),
             async_set_water_flow=AsyncMock(),
@@ -322,6 +326,12 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             wifi_survey=SimpleNamespace(
                 enabled=False, set_enabled=MagicMock(), clear=MagicMock()
             ),
+            photos=SimpleNamespace(
+                latest=None,
+                photo_count=0,
+                async_add_listener=MagicMock(return_value=MagicMock()),
+                async_refresh_after_snap=AsyncMock(),
+            ),
         ),
         options={},
         entry_id="entry",
@@ -358,18 +368,20 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("calendar", calendar_platform.async_setup_entry)
     await add_platform("camera", camera.async_setup_entry)
     await add_platform("event", event_platform.async_setup_entry)
+    await add_platform("image", image_platform.async_setup_entry)
     await add_platform("number", number.async_setup_entry)
     await add_platform("switch", switch.async_setup_entry)
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 62 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 64 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
         "binary_sensor": 14,
-        "button": 6,
+        "button": 7,
         "calendar": 1,
         "camera": 2,
         "event": 1,
+        "image": 1,
         "number": 1,
         "select": 4,
         "sensor": 30,
@@ -377,8 +389,8 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 66
-    assert len({entity.unique_id for entity in entities}) == 66
+    assert len(entities) == 68
+    assert len({entity.unique_id for entity in entities}) == 68
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -2792,6 +2804,101 @@ async def test_go_to_room_rejects_stale_maps_and_reports_robot_failures() -> Non
     assert not isinstance(failed.value, ServiceValidationError)
     assert failed.value.translation_key == "robot_command_failed"
     unsupported.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+
+
+_SESSION_KEY = bytes.fromhex("1214121209" + "aa" * 8 + "11" + "bb" * 8)
+
+
+def _session_record(key: bytes, started_at: str, ended_at: str | None):
+    return CleaningSessionRecord(
+        key,
+        CleaningSession(started_at, ended_at, None, ("Kitchen",), (), True),
+    )
+
+
+async def test_redo_last_clean_repeats_the_newest_finished_clean() -> None:
+    entry = _entry(idle=True)
+    client = entry.runtime_data.coordinator.client
+    newest = _SESSION_KEY[:-1] + b"\x01"
+    open_session = _SESSION_KEY[:-1] + b"\x02"
+    client.async_get_cleaning_session_records.return_value = (
+        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
+        _session_record(newest, "2026-10-30T10:00:00", "2026-10-30T10:30:00"),
+        _session_record(open_session, "2026-10-31T10:00:00", None),
+    )
+
+    await vacuum.MaticVacuum(entry).async_send_command("redo last clean")
+
+    client.async_redo_clean.assert_awaited_once_with(newest)
+    entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once_with()
+
+
+async def test_redo_last_clean_refuses_without_history_or_while_busy() -> None:
+    empty = _entry(idle=True)
+    with pytest.raises(ServiceValidationError) as missing:
+        await vacuum.MaticVacuum(empty).async_redo_last_clean()
+    assert missing.value.translation_key == "redo_no_previous_clean"
+
+    unfinished = _entry(idle=True)
+    open_records = (
+        unfinished.runtime_data.coordinator.client.async_get_cleaning_session_records
+    )
+    open_records.return_value = (
+        _session_record(_SESSION_KEY, "2026-10-31T10:00:00", None),
+    )
+    with pytest.raises(ServiceValidationError) as open_only:
+        await vacuum.MaticVacuum(unfinished).async_redo_last_clean()
+    assert open_only.value.translation_key == "redo_no_previous_clean"
+
+    busy = _entry()
+    with pytest.raises(ServiceValidationError) as cleaning:
+        await vacuum.MaticVacuum(busy).async_redo_last_clean()
+    assert cleaning.value.translation_key == "redo_robot_busy"
+    busy.runtime_data.coordinator.client.async_get_cleaning_session_records.assert_not_awaited()
+
+    unreadable = _entry(idle=True)
+    records = (
+        unreadable.runtime_data.coordinator.client.async_get_cleaning_session_records
+    )
+    records.side_effect = CannotConnectError("synthetic")
+    with pytest.raises(HomeAssistantError) as history:
+        await vacuum.MaticVacuum(unreadable).async_redo_last_clean()
+    assert history.value.translation_key == "robot_command_failed"
+    for entry in (empty, unfinished, busy, unreadable):
+        entry.runtime_data.coordinator.client.async_redo_clean.assert_not_awaited()
+
+
+async def test_redo_last_clean_rechecks_the_robot_and_reports_failures() -> None:
+    raced = _entry(idle=True)
+    client = raced.runtime_data.coordinator.client
+    client.async_get_cleaning_session_records.return_value = (
+        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
+    )
+    entity = vacuum.MaticVacuum(raced)
+
+    async def started(*args, **kwargs):
+        raced.runtime_data.coordinator.data = _state(floor_plan=_floor_plan())
+        return client.async_get_cleaning_session_records.return_value
+
+    client.async_get_cleaning_session_records.side_effect = started
+    with pytest.raises(ServiceValidationError) as busy:
+        await entity.async_redo_last_clean()
+    assert busy.value.translation_key == "redo_robot_busy"
+    client.async_redo_clean.assert_not_awaited()
+
+    failing = _entry(idle=True)
+    failing_client = failing.runtime_data.coordinator.client
+    failing_client.async_get_cleaning_session_records.return_value = (
+        _session_record(_SESSION_KEY, "2026-10-29T10:00:00", "2026-10-29T11:00:00"),
+    )
+    failing.runtime_data.coordinator.client.async_redo_clean.side_effect = (
+        EndpointUnsupportedError("synthetic")
+    )
+    with pytest.raises(HomeAssistantError) as failed:
+        await vacuum.MaticVacuum(failing).async_redo_last_clean()
+    assert not isinstance(failed.value, ServiceValidationError)
+    assert failed.value.translation_key == "robot_command_failed"
+    failing.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
 
 
 async def test_vacuum_dock_from_idle_sends_no_stop() -> None:

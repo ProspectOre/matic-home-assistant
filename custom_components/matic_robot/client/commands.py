@@ -75,6 +75,10 @@ _COMMAND_PAYLOADS = {
 }
 
 _SINK_REFILL_WAIT_SECONDS = 900
+# {2: {2: {1: fixed64, 2: fixed64}}}: the history key around one session UUID.
+_SESSION_KEY_LENGTH = 22
+_SESSION_KEY_PREFIX = bytes.fromhex("1214121209")
+_FIXED64_FIELD_2 = 0x11
 
 
 def encode_user_command(command: UserCommand) -> bytes:
@@ -106,6 +110,21 @@ def encode_sink_summon_command(*, mission_id: int, posture: bytes) -> bytes:
         + _field(4, wait_for_refill)
     )
     return _field(2, _field(4, navigate_to))
+
+
+def encode_redo_coverage_command(session_key: bytes) -> bytes:
+    """Clean a finished session again, as the Matic app's Clean again does.
+
+    ``session_key`` is the session's ``coverage_session_history`` key, the
+    session UUID in two wrappers, sent unchanged.
+    """
+    if (
+        len(session_key) != _SESSION_KEY_LENGTH
+        or session_key[:5] != _SESSION_KEY_PREFIX
+        or session_key[13] != _FIXED64_FIELD_2
+    ):
+        raise ValueError("a cleaning-session history key is required")
+    return _field(15, _field(3, session_key))
 
 
 def encode_go_to_room_command(

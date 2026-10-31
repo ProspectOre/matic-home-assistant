@@ -32,6 +32,7 @@ are disabled by default; enable them from the device's entity list.
 | Wi-Fi survey · Clear Wi-Fi survey | `switch.matic_wifi_survey` · `button.matic_clear_wifi_survey` | on |
 | Mopping water flow (0.5× to 2.0×) | `number.matic_water_flow` | on |
 | Map · 3D photo map | `camera.matic_map` · `camera.matic_photorealistic_map` | on · off |
+| Take photo · Latest photo | `button.matic_take_photo` · `image.matic_latest_photo` | on |
 | Robot schedules | `calendar.matic_native_schedules` | on |
 | Cues | `event.matic_cues` | on |
 | Firmware | `update.matic_firmware` | on |
@@ -114,6 +115,19 @@ attribute holds the whole preview.
 SLAM camera is disabled by default; enable it from the device's entity list if
 needed. Both return PNG images. Administrators also get the **Matic Map** panel.
 
+## Photos
+
+The robot has a camera. **Take photo** asks it to take a picture, the same as
+the snap emote: it counts down for about nine seconds, then saves the photo on
+the robot. `image.matic_latest_photo` shows the newest photo on the robot,
+including ones taken from the Matic app, as a WebP image. Its state is the
+capture time, so an automation can trigger on a state change of the image
+entity to act on each new photo, for example to send it in a phone
+notification with `image: /api/image_proxy/image.matic_latest_photo`, or save
+it with `image.snapshot`. The `photo_count` attribute counts the photos seen on
+the robot; Home Assistant keeps only the newest one, in memory. A photo deleted
+in the Matic app stays here until the integration reloads.
+
 ## Maintenance
 
 The robot's monthly cleaning recap can suggest maintenance. **Maintenance
@@ -169,7 +183,7 @@ attributes. See [privacy](privacy.md) for stored data and event data.
 Matic app, in each schedule's time zone (else the robot's). The robot stores no
 end time, so each run is a one-hour block. Descriptions give the cleaning mode,
 the rooms and whether order is kept. Switched-off schedules are hidden; details stay out of
-Recorder.
+Recorder. Matic Map shows the next run at the top of Cleaning history.
 
 ## Matic Cues
 

@@ -14,6 +14,7 @@ analytics, or maintainer cloud service.
 | Plans, room preferences, schedule progress, room duration history, results, custom-area geometry, and a running plan's restart checkpoint | Private integration storage |
 | Wi-Fi survey readings | Private integration storage; mean signal per one-metre map cell, up to 4,096 cells on each of 8 floors. Network names are not stored |
 | Current photographic map and saved map history | Private integration storage; the current map holds up to 4,096 pages per layer and 64 MiB of raw page data, and history is capped at 12 scenes and 48 MiB |
+| Robot camera photos | On the robot. Home Assistant holds only the newest photo, in memory, and never in storage or the Recorder |
 | Firmware endpoint summaries and research reports | Private storage, up to 52 snapshots and 8 superseded reports; sizes, hashes, and field shapes without payload values, plus any investigator's research text and public source links |
 | Activity and enabled entity states | Home Assistant Recorder, according to its configuration |
 | Command names, transport outcomes, and raw state transitions with timestamps | Last 512 observations in memory; local events follow Recorder retention |
@@ -36,7 +37,11 @@ map and scene endpoints require an administrator. If you enable the camera,
 Home Assistant's camera permissions govern access.
 
 Map responses are not browser-cached. An ordinary reload preserves the local
-map store; removing the integration deletes it. Home Assistant backups may
+map store; removing the integration deletes it.
+
+`image.matic_latest_photo` shows pictures the robot took inside your home.
+Every Home Assistant user who can see entities can open it; disable the entity
+if that is not wanted. Home Assistant backups may
 include credentials, plans, and maps—protect backups and screenshots accordingly.
 
 ## Assistant tools
