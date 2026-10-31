@@ -76,6 +76,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   command: "idle",
   planWriteBlock: null,
   rechecking: false,
+  queuePending: false,
   fullMap: false,
   precisionOpen: false,
   dialog: null,
@@ -1176,6 +1177,12 @@ export const canStopMotion = (state: WorkspaceState): boolean =>
   state.pageActive && state.host.connected && state.host.administrator && state.host.robotConnected
   && (state.command === "idle" || state.command === "failed" || state.command === "starting")
   && hasStoppableWork(state);
+
+/** Rooms in a running clean can be skipped, moved or redone while the robot cleans one (queue-changes.md). */
+export const canChangeQueue = (state: WorkspaceState): boolean =>
+  state.pageActive && state.host.connected && state.host.administrator && state.host.robotConnected
+  && state.dataMode === "live" && state.activity === "cleaning" && state.smartStop === null
+  && (state.command === "idle" || state.command === "failed") && !state.queuePending;
 
 const stopAction = (state: WorkspaceState): PrimaryAction => {
   const immediate = state.smartStop !== null;

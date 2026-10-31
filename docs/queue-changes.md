@@ -31,6 +31,14 @@ The action returns once the robot's own plan shows the change, usually within
 change fires `matic_robot_queue_changed` with `action`, `room_id`, `room` and,
 during a plan run, its `run_id`.
 
+## Matic Map
+
+While the robot is cleaning a room, Matic Map's home view shows **Change this
+clean**: pick a room (it starts on the room being cleaned) and choose Skip,
+Clean next or Clean again. The buttons wait while the robot confirms, and the
+notice under the heading says what changed or why the robot refused. Clean
+again there always keeps the room's modes and coverage.
+
 ## Plan runs
 
 A plan run keeps ownership of the clean. A room skipped during a plan run is
