@@ -1697,6 +1697,7 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
             + _vfield(5, status)
         )
         summary += _bfield(6, _bfield(1, _bfield(2, detail)))
+    summary += _bfield(10, _bfield(8, _bfield(1, b"")))
     session = _decode_cleaning_session(_bfield(5, summary))
     assert session.completed_rooms == ("Study",)
     assert session.combined_completed_rooms == ()
@@ -1710,10 +1711,12 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
     assert event.data["vacuum_completed_room_count"] == 1
     assert event.data["mop_completed_room_count"] == 0
     assert event.data["combined_completed_room_count"] == 0
+    assert event.data["stop_reason"] == "stopped"
     api = MaticRobotStatusAPI(hass)
     api._async_capture_event(event)
     assert api.recent_events[-1]["data"]["vacuum_completed_room_count"] == 1
     assert api.recent_events[-1]["data"]["completion_scope"] == "native_room_summary"
+    assert api.recent_events[-1]["data"]["stop_reason"] == "stopped"
     assert "Study" not in str(api.recent_events)
 
 

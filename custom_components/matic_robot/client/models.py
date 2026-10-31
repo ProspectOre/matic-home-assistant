@@ -286,6 +286,13 @@ class CleaningModeResult:
     duration_seconds: int | None
 
 
+# Only values matched to a known run are named (2026-10-30, v181.10): a Stop
+# from the Matic app records 8, and a clean that ended on its own records 5.
+# The app's other reasons (lost, replaced by a schedule, skipped and so on)
+# and the stop's source need their own captures before they are named.
+SESSION_STOP_REASONS = {5: "finished", 8: "stopped"}
+
+
 @dataclass(frozen=True, slots=True)
 class CleaningSession:
     """One session's room scope, visited rooms, and native mode outcomes."""
@@ -301,6 +308,15 @@ class CleaningSession:
     mop_completed_rooms: tuple[str, ...] = ()
     combined_completed_rooms: tuple[str, ...] = ()
     mode_results: tuple[CleaningModeResult, ...] = ()
+    # Oneof tag of the robot's SessionStopReason (summary field 10).
+    stop_reason_code: int | None = None
+
+    @property
+    def stop_reason(self) -> str | None:
+        """Name a captured stop reason; other robot values read ``unknown``."""
+        if self.stop_reason_code is None:
+            return None
+        return SESSION_STOP_REASONS.get(self.stop_reason_code, "unknown")
 
     @property
     def visited_rooms(self) -> tuple[str, ...]:
