@@ -346,7 +346,7 @@ export interface WorkspaceState {
   readonly smartStop: SmartStopStatus | null;
   /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
   readonly trail: RunTrail | null;
-  /** Object URLs of robot map pictures by history id; `failed` when the robot has none to give. */
+  /** Object URLs of robot map pictures by history id. */
   readonly runThumbnails: Readonly<Record<string, string>>;
   readonly pageActive: boolean;
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;

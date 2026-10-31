@@ -134,7 +134,7 @@ export class MaticRunHistoryV4 extends LitElement {
     const next = this.#nextStep(run);
     const picture = run.thumbnail ? this.state.runThumbnails[run.thumbnail] : undefined;
     return html`
-      ${picture && picture !== "failed" ? html`<img class="thumbnail" src=${picture} alt=${this.#t("v4_run_map_picture", "The robot's map of this clean")}>` : nothing}
+      ${picture ? html`<img class="thumbnail" src=${picture} alt=${this.#t("v4_run_map_picture", "The robot's map of this clean")}>` : nothing}
       ${outcome ? html`<p><strong>${this.#outcome(run)}</strong></p>` : nothing}
       ${run.source === "robot" ? html`<p class="subtle">${this.#t("v4_run_from_robot", "Started from the Matic app or the robot")}</p>` : nothing}
       ${run.rooms.length || run.areas.length ? this.#items([...run.rooms, ...run.areas])

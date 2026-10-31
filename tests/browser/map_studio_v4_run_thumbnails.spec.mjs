@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 
-// Cleaning history's map pictures: a 404 is final, anything else is asked
+// Cleaning history's map pictures: a failed read, a 404 included, is asked
 // again after a minute, and only the newest twelve object URLs are kept.
 
 test("run pictures retry a failed read and keep the newest twelve", async ({ page }) => {
@@ -11,7 +11,7 @@ test("run pictures retry a failed read and keep the newest twelve", async ({ pag
   const result = await page.evaluate(async () => {
     const { readRunThumbnail } = await import("/run-thumbnails.js");
     const store = { value: { runThumbnails: {} }, patch(next) { this.value = { ...this.value, ...next }; } };
-    const responses = { transient: [503, 200], gone: [404] };
+    const responses = { transient: [503, 200], later: [404, 200] };
     const calls = [];
     const backend = {
       async runThumbnail(_entry, id) {
@@ -34,9 +34,11 @@ test("run pictures retry a failed read and keep the newest twelve", async ({ pag
     await read("transient");
     const retried = store.value.runThumbnails.transient?.startsWith("blob:");
 
-    await read("gone");
-    await read("gone");
-    const gone = store.value.runThumbnails.gone;
+    await read("later");
+    const laterMissing = !("later" in store.value.runThumbnails);
+    now += 60_001;
+    await read("later");
+    const later = store.value.runThumbnails.later?.startsWith("blob:");
 
     const revoked = [];
     const revoke = URL.revokeObjectURL;
@@ -44,15 +46,15 @@ test("run pictures retry a failed read and keep the newest twelve", async ({ pag
     const first = store.value.runThumbnails.transient;
     for (let index = 0; index < 11; index += 1) await read(`run-${index}`);
     return {
-      afterFailure, callsWithinMinute, retried, gone, goneCalls: calls.filter((id) => id === "gone").length,
+      afterFailure, callsWithinMinute, retried, laterMissing, later,
       kept: Object.keys(store.value.runThumbnails).length, firstRevoked: revoked.includes(first),
     };
   });
   expect(result.afterFailure).toBe(false);
   expect(result.callsWithinMinute).toBe(1);
   expect(result.retried).toBe(true);
-  expect(result.gone).toBe("failed");
-  expect(result.goneCalls).toBe(1);
+  expect(result.laterMissing).toBe(true);
+  expect(result.later).toBe(true);
   expect(result.kept).toBe(12);
   expect(result.firstRevoked).toBe(true);
 });

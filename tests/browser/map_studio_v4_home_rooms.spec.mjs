@@ -1768,7 +1768,7 @@ test.describe("cleaning history", () => {
     const webp = "data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==";
     await patchState(gallery, { runThumbnails: { "robot-1": webp } });
     await expect(picture).toHaveAttribute("src", webp);
-    await patchState(gallery, { runThumbnails: { "robot-1": "failed" } });
+    await patchState(gallery, { runThumbnails: {} });
     await expect(picture).toHaveCount(0);
     // Runs without a robot picture never show one.
     await expect(gallery.getByRole("region", { name: "Daily clean" }).getByRole("img")).toHaveCount(0);

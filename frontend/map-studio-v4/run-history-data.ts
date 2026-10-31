@@ -230,9 +230,9 @@ const RUN_THUMBNAILS_KEPT = 12;
 
 /**
  * Read one clean's map picture into `runThumbnails`, keeping the newest few
- * and revoking the object URLs it drops. A 404 means the robot no longer
- * keeps the picture and is stored as "failed"; any other failure is asked
- * again after a minute.
+ * and revoking the object URLs it drops. A failed read, including a 404 for
+ * a clean whose picture the robot hasn't made yet, is asked again after a
+ * minute, which is also how often the server looks for new pictures.
  */
 export const readRunThumbnail = async (
   store: WorkspaceStore,
@@ -244,24 +244,20 @@ export const readRunThumbnail = async (
 ): Promise<void> => {
   if (id in store.value.runThumbnails || pending.reads.has(id) || (pending.retry.get(id) ?? 0) > Date.now()) return;
   pending.reads.add(id);
-  let url = "failed";
+  let url: string;
   try {
     url = URL.createObjectURL(await backend.runThumbnail(entryId, id));
-  } catch (error) {
-    if ((error as { status?: unknown }).status !== 404) {
-      pending.retry.set(id, Date.now() + 60_000);
-      return;
-    }
+  } catch {
+    pending.retry.set(id, Date.now() + 60_000);
+    return;
   } finally {
     pending.reads.delete(id);
   }
   if (disposed()) {
-    if (url !== "failed") URL.revokeObjectURL(url);
+    URL.revokeObjectURL(url);
     return;
   }
   const kept = Object.entries(store.value.runThumbnails);
-  for (const [, old] of kept.slice(0, Math.max(0, kept.length - RUN_THUMBNAILS_KEPT + 1))) {
-    if (old !== "failed") URL.revokeObjectURL(old);
-  }
+  for (const [, old] of kept.slice(0, Math.max(0, kept.length - RUN_THUMBNAILS_KEPT + 1))) URL.revokeObjectURL(old);
   store.patch({ runThumbnails: Object.fromEntries([...kept.slice(-RUN_THUMBNAILS_KEPT + 1), [id, url]]) });
 };

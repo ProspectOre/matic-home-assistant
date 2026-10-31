@@ -2987,7 +2987,7 @@ export class EffectController {
     this.#stopWifiSignal();
     this.#stopFloorTypes();
     for (const url of Object.values(this.#store.value.runThumbnails)) {
-      if (url !== "failed") URL.revokeObjectURL(url);
+      URL.revokeObjectURL(url);
     }
     this.#store.patch({ runThumbnails: {} });
     this.#clearPoseExpiry();
