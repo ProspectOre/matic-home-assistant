@@ -62,6 +62,7 @@ export const normalizeBrush = (value: number): number =>
 
 export const initialWorkspaceState = (): WorkspaceState => ({
   lastRun: null,
+  nextSchedule: null,
   smartStop: null,
   trail: null,
   pageActive: true,
@@ -87,6 +88,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   appearance: "photo",
   labelsVisible: true,
   wifiSignal: null,
+  floorTypes: null,
   quality: "auto",
   cameras: {},
   cameraKey: null,
@@ -377,6 +379,8 @@ export const reduceWorkspace = (
       return { ...state, labelsVisible: !state.labelsVisible };
     case "toggle-wifi-signal":
       return { ...state, wifiSignal: state.wifiSignal ? null : { status: "loading", surveying: false, cellSize: 0, cells: [] } };
+    case "toggle-floor-types":
+      return { ...state, floorTypes: state.floorTypes ? null : { status: "loading", carpet: [], vent: [] } };
     case "open-workflow":
       if (isReadOnlyWorkspace(state) && readOnlyWorkflows.has(intent.workflow)) return state;
       return {
@@ -645,7 +649,7 @@ export const reduceWorkspace = (
       return (state.selection.entryId === intent.entryId && state.selection.entrySource === "user")
         || !state.robots.some((robot) => robot.entryId === intent.entryId)
         ? state
-        : { ...state, wifiSignal: null, selection: { ...state.selection, entryId: intent.entryId, entrySource: "user" } };
+        : { ...state, wifiSignal: null, floorTypes: null, selection: { ...state.selection, entryId: intent.entryId, entrySource: "user" } };
     case "set-history":
       return {
         ...state,
@@ -1178,11 +1182,16 @@ export const canStopMotion = (state: WorkspaceState): boolean =>
   && (state.command === "idle" || state.command === "failed" || state.command === "starting")
   && hasStoppableWork(state);
 
-/** Rooms in a running clean can be skipped, moved or redone while the robot cleans one (queue-changes.md). */
+/**
+ * Rooms in a running clean can be skipped, moved or redone while the robot
+ * cleans one (queue-changes.md). A clean started here keeps `command` at
+ * "starting" until its service call returns at the end of the run, so that
+ * counts too once the robot reports cleaning.
+ */
 export const canChangeQueue = (state: WorkspaceState): boolean =>
   state.pageActive && state.host.connected && state.host.administrator && state.host.robotConnected
   && state.dataMode === "live" && state.activity === "cleaning" && state.smartStop === null
-  && (state.command === "idle" || state.command === "failed") && !state.queuePending;
+  && (state.command === "idle" || state.command === "failed" || state.command === "starting") && !state.queuePending;
 
 const stopAction = (state: WorkspaceState): PrimaryAction => {
   const immediate = state.smartStop !== null;

@@ -42,7 +42,12 @@ def _page(
     page_y: int = 0,
     mission: str = MISSION,
 ) -> SlamSemanticTile:
-    return SlamSemanticTile(page_x, page_y, mission, cells.astype(np.uint8).tobytes())
+    return SlamSemanticTile(page_x, page_y, mission, _wire(cells))
+
+
+def _wire(cells: np.ndarray) -> bytes:
+    """Serialize [y][x] cells the way the robot does, column by column."""
+    return cells.astype(np.uint8).T.tobytes()
 
 
 def _blank() -> np.ndarray:
@@ -52,6 +57,19 @@ def _blank() -> np.ndarray:
 def test_mission_token_matches_a_decoded_page_key() -> None:
     page = decode_slam_semantic_tile(synthetic_semantic_entry())
     assert page.mission_token == MISSION
+
+
+def test_page_cells_are_read_column_by_column() -> None:
+    # Cell x * 32 + y: a carpet run along the first 8 bytes is one column.
+    cells = bytearray([SemanticKind.HARD_FLOOR]) * 1024
+    cells[0:8] = bytes([SemanticKind.CARPET]) * 8
+    cells[32:40] = bytes([SemanticKind.CARPET]) * 8
+    layer = floor_type_layer(
+        [SlamSemanticTile(0, 0, MISSION, bytes(cells))], mission=MISSION
+    )
+    (outline,) = layer.layers["carpet"]
+    assert {point[0] for point in outline} == {0.0, 0.03}
+    assert {point[1] for point in outline} == {0.0, 0.12}
 
 
 def test_carpet_rectangle_becomes_one_outline_in_map_metres() -> None:
@@ -160,9 +178,7 @@ def test_page_and_raster_bounds_are_enforced() -> None:
 def _semantic_entry(cells: np.ndarray) -> HermesCollectionEntry:
     entry = synthetic_semantic_entry(page_x=0, page_y=0)
     template = bytes(index % 7 for index in range(32 * 32))
-    return HermesCollectionEntry(
-        entry.key, entry.value.replace(template, cells.astype(np.uint8).tobytes())
-    )
+    return HermesCollectionEntry(entry.key, entry.value.replace(template, _wire(cells)))
 
 
 def _runtime(

@@ -40,6 +40,9 @@ to try new features before 0.6.0.
   30 seconds while it's away from the dock. Open **Map options** and turn on
   **Wi-Fi signal** to see weak spots, from green for strong to red for weak.
   **Clear Wi-Fi survey** starts over, for example after you move your router.
+- **Carpet and vents.** Open **Map options** and turn on **Carpet and vents** to
+  see the rugs and floor vents the robot has found, carpet in brown and vents in
+  blue. Floor type changes made in the Matic app show up here too.
 
 ## Plans
 
@@ -91,6 +94,9 @@ to try new features before 0.6.0.
   maintenance, with a Repair naming the month. The recap doesn't say which part
   yet, so check the brush roll, side brush, mop roll, caster and wedge.
 - **Bag pass ends.** Shows when an active bag pass runs out.
+- **Robot camera photos.** **Take photo** asks the robot to take a picture,
+  and **Latest photo** shows the newest one, including photos taken in the
+  Matic app. Use it on a dashboard or attach it to a phone notification.
 
 ## Working with the Matic app
 
@@ -99,6 +105,9 @@ to try new features before 0.6.0.
   command to win the robot back.
 - **Time zone Repair.** If the robot's time zone would run its schedules at a
   different local time than Home Assistant's, a Repair says so.
+- **Finished or stopped.** The Cleaning finished event and the Robot cleaning
+  runs sensor say whether a run finished on its own or was stopped. When
+  the robot reports an ending Matic doesn't recognise yet, they say `unknown`.
 - See [Working alongside the Matic app](coexistence.md) for the full rules.
 
 ## Assistant tools

@@ -49,6 +49,7 @@ from .llm import async_register_matic_llm_api
 from .maintenance import async_delete_maintenance_issues
 from .managed_executor import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .migrations import async_migrate_entry
+from .photos import RobotPhotoStore
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
 from .run_history import RunTrails
@@ -86,6 +87,7 @@ class MaticRuntimeData:
     slam_history: SlamHistoryStore
     run_trails: RunTrails
     wifi_survey: WifiSurveyStore
+    photos: RobotPhotoStore
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -258,6 +260,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_history,
             run_trails,
             wifi_survey,
+            RobotPhotoStore(client),
         )
         entry.runtime_data = runtime_data
         entry.async_on_unload(
@@ -288,6 +291,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             hass,
             coordinator.async_watch_floor_plan(),
             f"{DOMAIN} displayed floor collector",
+        )
+        entry.async_create_background_task(
+            hass,
+            runtime_data.photos.async_watch(),
+            f"{DOMAIN} photo collector",
         )
         _schedule_native_reconciliation_recovery(
             hass,

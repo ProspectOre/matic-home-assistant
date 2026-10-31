@@ -18,6 +18,7 @@
     },
     "button": {
       "clear_wifi_survey": { "default": "mdi:wifi-remove" },
+      "take_photo": { "default": "mdi:camera" },
       "run_selected_plan": { "default": "mdi:play-circle-outline" },
       "intelligent_clean": { "default": "mdi:sort-clock-ascending-outline" },
       "clean_entire_plan": { "default": "mdi:home-floor-0" },
@@ -30,6 +31,9 @@
     "camera": {
       "map": { "default": "mdi:floor-plan" },
       "photorealistic_map": { "default": "mdi:home-map-marker" }
+    },
+    "image": {
+      "latest_photo": { "default": "mdi:image" }
     },
     "number": {
       "water_flow": { "default": "mdi:water-percent" }

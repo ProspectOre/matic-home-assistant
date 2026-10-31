@@ -34,6 +34,7 @@ from custom_components.matic_robot import (
 )
 from custom_components.matic_robot import calendar as calendar_platform
 from custom_components.matic_robot import event as event_platform
+from custom_components.matic_robot import image as image_platform
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
@@ -325,6 +326,12 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             wifi_survey=SimpleNamespace(
                 enabled=False, set_enabled=MagicMock(), clear=MagicMock()
             ),
+            photos=SimpleNamespace(
+                latest=None,
+                photo_count=0,
+                async_add_listener=MagicMock(return_value=MagicMock()),
+                async_refresh_after_snap=AsyncMock(),
+            ),
         ),
         options={},
         entry_id="entry",
@@ -361,18 +368,20 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("calendar", calendar_platform.async_setup_entry)
     await add_platform("camera", camera.async_setup_entry)
     await add_platform("event", event_platform.async_setup_entry)
+    await add_platform("image", image_platform.async_setup_entry)
     await add_platform("number", number.async_setup_entry)
     await add_platform("switch", switch.async_setup_entry)
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 62 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 64 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
         "binary_sensor": 14,
-        "button": 6,
+        "button": 7,
         "calendar": 1,
         "camera": 2,
         "event": 1,
+        "image": 1,
         "number": 1,
         "select": 4,
         "sensor": 30,
@@ -380,8 +389,8 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 66
-    assert len({entity.unique_id for entity in entities}) == 66
+    assert len(entities) == 68
+    assert len({entity.unique_id for entity in entities}) == 68
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -1382,6 +1391,7 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert sessions["latest_rooms"] == ["Kitchen"]
     assert sessions["latest_completed_rooms"] == ["Kitchen"]
     assert sessions["latest_room_durations"] == {"Kitchen": 600}
+    assert sessions["latest_stop_reason"] is None
     assert state_sensors["protocol_version"].extra_state_attributes is None
 
 

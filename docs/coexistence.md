@@ -15,12 +15,12 @@ missing rooms are reported, as custom areas already are.
 ## Who started or stopped a clean
 
 The robot records where each command came from (app, button, voice, gesture,
-Matter or Atrium) and why a session ended. The goal is to show both in history,
-in the Cleaning finished event and on the activity sensor, so an automation can
-tell a Home Assistant run from an app run. This is not shipped yet: the history
-fields are located, but which value means which source or reason still needs
-known runs. Field numbers come from the decompiled app and captures, never from
-guesses.
+Matter or Atrium) and why a session ended. The Cleaning finished event and the
+cleaning sessions sensor show the stop reason as `finished` or `stopped`, the
+two values matched to known runs; anything else reads `unknown`. The source,
+and the other reasons such as a schedule replacing the task, wait for their
+own captures. Field numbers come from the decompiled app and captures, never
+from guesses.
 
 ## A plan gives way
 
