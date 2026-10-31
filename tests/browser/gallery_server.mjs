@@ -162,7 +162,8 @@ export function createGalleryServer() {
       return;
     }
     response.writeHead(200, {
-      "Content-Type": "text/javascript; charset=utf-8",
+      "Content-Type": file.endsWith(".webp") ? "image/webp"
+        : file.endsWith(".json") ? "application/json" : "text/javascript; charset=utf-8",
       "Cache-Control": "no-store",
     });
     createReadStream(file).on("error", () => response.destroy()).pipe(response);
