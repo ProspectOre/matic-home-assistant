@@ -166,6 +166,8 @@ test("a cell ID staged with another cell's settings is refused, not labelled as 
   await expect(page.getByRole("alert")).toContainText("do not match cell R01-C01");
   await expect(page.getByRole("note")).not.toContainText(/^Cell R01-C01/u);
   await expect(page.getByRole("note").locator("strong")).toHaveText("Not cell R01-C01");
+  // Leaving while the iframe still mounts the gallery can stall WebKit's next navigation.
+  await stageFrame(page);
   await page.goto("about:blank");
   await openFrame(page, "cell=R01-C01&steps=plans&w=1024&h=768");
   await expect(page.locator("html")).toHaveAttribute("data-stage-error", /do not match cell R01-C01/u);
