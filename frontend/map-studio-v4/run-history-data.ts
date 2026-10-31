@@ -225,3 +225,43 @@ export const watchRuns = (store: WorkspaceStore, reload: () => void): (() => voi
     shown = key;
   });
 };
+
+const RUN_THUMBNAILS_KEPT = 12;
+
+/**
+ * Read one clean's map picture into `runThumbnails`, keeping the newest few
+ * and revoking the object URLs it drops. A 404 means the robot no longer
+ * keeps the picture and is stored as "failed"; any other failure is asked
+ * again after a minute.
+ */
+export const readRunThumbnail = async (
+  store: WorkspaceStore,
+  backend: MaticBackend,
+  entryId: string,
+  id: string,
+  pending: { reads: Set<string>; retry: Map<string, number> },
+  disposed: () => boolean,
+): Promise<void> => {
+  if (id in store.value.runThumbnails || pending.reads.has(id) || (pending.retry.get(id) ?? 0) > Date.now()) return;
+  pending.reads.add(id);
+  let url = "failed";
+  try {
+    url = URL.createObjectURL(await backend.runThumbnail(entryId, id));
+  } catch (error) {
+    if ((error as { status?: unknown }).status !== 404) {
+      pending.retry.set(id, Date.now() + 60_000);
+      return;
+    }
+  } finally {
+    pending.reads.delete(id);
+  }
+  if (disposed()) {
+    if (url !== "failed") URL.revokeObjectURL(url);
+    return;
+  }
+  const kept = Object.entries(store.value.runThumbnails);
+  for (const [, old] of kept.slice(0, Math.max(0, kept.length - RUN_THUMBNAILS_KEPT + 1))) {
+    if (old !== "failed") URL.revokeObjectURL(old);
+  }
+  store.patch({ runThumbnails: Object.fromEntries([...kept.slice(-RUN_THUMBNAILS_KEPT + 1), [id, url]]) });
+};

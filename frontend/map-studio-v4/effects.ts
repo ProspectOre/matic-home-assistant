@@ -142,7 +142,6 @@ const POSE_POLL_INTERVAL_MS = 1_000;
 const WIFI_SIGNAL_REFRESH_MS = 30_000;
 // The integration keeps a floor's outlines for ten minutes, or 30 s while none are known.
 const FLOOR_TYPES_REFRESH_MS = 60_000;
-const RUN_THUMBNAILS_KEPT = 12;
 const SPATIAL_READ_RECOVERY_INTERVAL_MS = 5_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "areas", "draw", "areaReview"];
 const MUTATION_RESOURCES = ["plan-mutation", "area-mutation", "setting-mutation"] as const;
@@ -2230,31 +2229,15 @@ export class EffectController {
     await this.#runRead("runs", null);
   }
 
-  /** Fetch one clean's map picture for Cleaning history, keeping the newest few. */
+  /** Fetch one clean's map picture for Cleaning history. */
   async loadRunThumbnail(id: string): Promise<void> {
     const entry = this.#store.value.resources.entry;
-    if (!entry || id in this.#store.value.runThumbnails || this.#thumbnailReads.has(id)) return;
-    this.#thumbnailReads.add(id);
-    let url = "failed";
-    try {
-      url = URL.createObjectURL(await this.#backend.runThumbnail(entry.entryId, id));
-    } catch {
-      // The robot keeps pictures for recent cleans only; the run shows without one.
-    } finally {
-      this.#thumbnailReads.delete(id);
-    }
-    if (this.#disposed) {
-      if (url !== "failed") URL.revokeObjectURL(url);
-      return;
-    }
-    const kept = Object.entries(this.#store.value.runThumbnails);
-    for (const [, old] of kept.slice(0, Math.max(0, kept.length - RUN_THUMBNAILS_KEPT + 1))) {
-      if (old !== "failed") URL.revokeObjectURL(old);
-    }
-    this.#store.patch({ runThumbnails: Object.fromEntries([...kept.slice(-RUN_THUMBNAILS_KEPT + 1), [id, url]]) });
+    if (!entry) return;
+    this.#runs ??= await import("./run-history-data");
+    await this.#runs.readRunThumbnail(this.#store, this.#backend, entry.entryId, id, this.#thumbnails, () => this.#disposed);
   }
 
-  #thumbnailReads = new Set<string>();
+  #thumbnails = { reads: new Set<string>(), retry: new Map<string, number>() };
 
   async showTrail(trail: string | null): Promise<void> {
     await this.#runRead("trail", trail);
