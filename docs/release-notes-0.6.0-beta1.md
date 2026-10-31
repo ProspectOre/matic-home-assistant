@@ -1,9 +1,7 @@
 # Matic 0.6 beta 1
 
-Matic 0.6 brings more of the Matic app into Home Assistant and lets the two
-work side by side. Send the robot to the sink or to a room, see how each clean
-went and where the robot drove, skip rooms people are in, and keep using the
-app whenever you like.
+Matic 0.6 adds sink and room navigation, cleaning history, robot trails and
+occupied-room skipping to Home Assistant while keeping the Matic app usable.
 
 This is an unpublished beta candidate from `release/0.6`. Publication waits
 for the owner's local testing and approval.
@@ -122,7 +120,6 @@ for the owner's local testing and approval.
 
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room
   schedules and map history.
-- The last unsaved room run recorded by 0.5 is renamed **One-time room clean**.
 - Keep a matching 0.5.0 backup before installing. The isolated
   [upgrade and rollback drill](upgrade-drill.md) checks saved plans, schedules
   and room history; custom areas and a restore on the owner's host remain
@@ -130,11 +127,10 @@ for the owner's local testing and approval.
 
 ## Checks still needed
 
-The interior phase label is inferred from one capture. Follow and run-map
-pictures still need hardware checks. The photo trial used equivalent manual
-commands; Photo patrol itself has not run on the installed integration.
+The interior phase label is inferred from one capture. Follow and run-map pictures
+need hardware checks. The photo trial used equivalent manual commands; Photo patrol
+itself has not run on the installed integration.
 
-See [Matic Map and features](features.md), [Actions](actions.md),
-[Entities](entities.md), [Cleaning](cleaning.md),
-[Changing a running clean](queue-changes.md) and
-[Assistant tools](assistant-tools.md) for details.
+See [Matic Map and features](features.md), [Actions](actions.md), [Entities](entities.md),
+[Cleaning](cleaning.md), [Changing a running clean](queue-changes.md) and
+[Assistant tools](assistant-tools.md).
