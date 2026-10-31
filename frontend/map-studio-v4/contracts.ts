@@ -343,6 +343,7 @@ export function readWorkspaceNotice(value: unknown): WorkspaceNotice | null {
 export interface WorkspaceState {
   readonly deepMop: RobotSetting | null;
   readonly lastRun: ManagedRunSummary | null;
+  readonly nextSchedule: ScheduledRun | null;
   readonly smartStop: SmartStopStatus | null;
   /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
   readonly trail: RunTrail | null;
@@ -620,6 +621,16 @@ export interface HassProjection {
   readonly robots: readonly RobotChoice[];
   readonly lastRun: ManagedRunSummary | null;
   readonly smartStop?: SmartStopStatus | null;
+  readonly nextSchedule?: ScheduledRun | null;
+}
+
+/** The next run of a schedule set in the Matic app, from the robot schedules calendar. */
+export interface ScheduledRun {
+  readonly name: string;
+  /** ISO 8601 with an offset, so the browser's own time zone cannot shift it. */
+  readonly startsAt: string;
+  /** The calendar's description: cleaning mode and rooms, one per line. */
+  readonly detail: string | null;
 }
 
 /** An accepted finish-current-entry request, bound to the active managed run. */

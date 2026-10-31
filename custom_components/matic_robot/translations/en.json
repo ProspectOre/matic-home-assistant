@@ -721,6 +721,8 @@
     "v4_runs_robot_unavailable": "Cleans started from the Matic app can't be read right now.",
     "v4_runs_empty": "No cleans yet. Each clean appears here once it starts.",
     "v4_runs_earlier": "Earlier",
+    "v4_schedule_from_app": "Set in the Matic app",
+    "v4_schedule_next": "Next scheduled clean",
     "v4_cleaning_history": "Cleaning history",
     "v4_runs_last_unfinished": "The last run didn't finish. See what happened.",
     "v4_runs_quick_detail": "See recent cleans and how they ended.",

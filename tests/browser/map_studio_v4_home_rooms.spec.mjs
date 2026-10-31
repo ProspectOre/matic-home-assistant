@@ -1767,6 +1767,54 @@ test.describe("cleaning history", () => {
     await expect(gallery.getByRole("button", { name: "Try again" })).toBeVisible();
   });
 
+  test("shows the next run of a schedule set in the Matic app, even while history loads", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "runs" });
+    const next = gallery.getByRole("region", { name: "Next scheduled clean" });
+    await expect(next).toHaveCount(0);
+    await patchState(gallery, { nextSchedule: { name: "Weekday mornings", startsAt: "2026-11-02T10:30:00-08:00", detail: "Vacuum\nRooms in this order: Kitchen, Office" } });
+    await expect(next).toContainText("Weekday mornings");
+    await expect(next).toContainText("Set in the Matic app");
+    await expect(next.locator("p").nth(2)).toHaveText("Vacuum\nRooms in this order: Kitchen, Office");
+    await patchState(gallery, { resources: { ...(await snapshot(page)).resources, runs: { status: "error", value: null, problem: "runs-unavailable" } } });
+    await expect(next).toContainText("Weekday mornings");
+    await expect(gallery.getByText("Cleaning history isn't available right now.")).toBeVisible();
+  });
+
+  test("projects the next scheduled run only from the selected robot's calendar", async ({ page }) => {
+    const bundle = await build({ stdin: { contents: 'export { HassAdapter } from "./frontend/map-studio-v4/hass-adapter";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    await page.route("**/schedule-projection.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { HassAdapter } = await import("/schedule-projection.js");
+      const calendar = (entry, next) => ({ state: "on", attributes: { matic_entry_id: entry, message: "Run under way", matic_next_run: next } });
+      const states = {
+        "vacuum.one": { state: "docked", attributes: { matic_entry_id: "one" } },
+        "vacuum.two": { state: "docked", attributes: { matic_entry_id: "two" } },
+        "calendar.one": calendar("one", { name: "Mornings", start: "2026-11-02T10:30:00-08:00", description: "Vacuum" }),
+        "calendar.two": calendar("two", { name: "Evenings", start: "2026-11-02T19:00:00-08:00", description: null }),
+      };
+      const hass = { connected: true, user: { is_admin: true }, states };
+      const read = (entry) => new HassAdapter().project(hass, undefined, entry).nextSchedule;
+      const one = read("one");
+      const two = read("two");
+      states["calendar.one"] = calendar("one", null);
+      const none = read("one");
+      states["calendar.one"] = calendar("one", { name: "Mornings", start: "not a time" });
+      const invalid = read("one");
+      states["calendar.one"] = calendar("one", { name: " ", start: "2026-11-02T10:30:00-08:00" });
+      const unnamed = read("one");
+      delete states["calendar.one"];
+      const missing = read("one");
+      return { one, two, none, invalid, unnamed, missing };
+    });
+    expect(result.one).toEqual({ name: "Mornings", startsAt: "2026-11-02T10:30:00-08:00", detail: "Vacuum" });
+    expect(result.two).toEqual({ name: "Evenings", startsAt: "2026-11-02T19:00:00-08:00", detail: null });
+    expect(result.none).toBeNull();
+    expect(result.invalid).toBeNull();
+    expect(result.unnamed).toBeNull();
+    expect(result.missing).toBeNull();
+  });
+
   test("the live trail grows only during a run and starts empty for the next one", async ({ page }) => {
     await loadStoreHarness(page);
     const steps = await page.evaluate(async (harness) => {

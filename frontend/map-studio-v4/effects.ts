@@ -495,6 +495,7 @@ export class EffectController {
       currentArea: projection.currentArea,
       deepMop: projection.deepMop,
       lastRun: projection.lastRun ?? null,
+      nextSchedule: projection.nextSchedule ?? null,
       smartStop: projection.smartStop ?? null,
       ...(projection.smartStop && !previousSmartStop && this.#store.value.command === "settling"
         ? { command: "idle" as const } : {}),

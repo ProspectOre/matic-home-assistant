@@ -183,7 +183,7 @@ attributes. See [privacy](privacy.md) for stored data and event data.
 Matic app, in each schedule's time zone (else the robot's). The robot stores no
 end time, so each run is a one-hour block. Descriptions give the cleaning mode,
 the rooms and whether order is kept. Switched-off schedules are hidden; details stay out of
-Recorder.
+Recorder. Matic Map shows the next run at the top of Cleaning history.
 
 ## Matic Cues
 
