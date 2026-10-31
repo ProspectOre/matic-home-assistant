@@ -138,7 +138,7 @@ async def test_refresh_keeps_only_the_newest_photo_and_counts_the_rest() -> None
     older = _snap(UUID(int=1), CAPTURED - 60)
     newer = _snap(UUID(int=2), CAPTURED)
     bad = HermesCollectionEntry(_key(UUID(int=3)), b"\x00")
-    client = _client(entries=(newer, older, bad))
+    client = _client(entries=(older, bad))
     store = RobotPhotoStore(client)
     listener = MagicMock()
     remove = store.async_add_listener(listener)
@@ -148,31 +148,32 @@ async def test_refresh_keeps_only_the_newest_photo_and_counts_the_rest() -> None
     client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "instamatic_snaps", limit=photos.MAX_PHOTO_ENTRIES
     )
-    assert store.latest is not None
-    assert store.latest.photo_id == str(UUID(int=2))
-    assert store.photo_count == 2
-    listener.assert_called_once()
-
-    # The same read again changes nothing.
-    assert await store.async_refresh() is False
-    listener.assert_called_once()
-
-    # A photo deleted in the app drops out and the older one becomes newest.
-    client.async_get_tracked_collection_entries.return_value = (older,)
-    assert await store.async_refresh() is False
     assert store.latest.photo_id == str(UUID(int=1))
     assert store.photo_count == 1
+    listener.assert_called_once()
+
+    client.async_get_tracked_collection_entries.return_value = (newer, older)
+    assert await store.async_refresh() is True
+    assert store.latest.photo_id == str(UUID(int=2))
+    assert store.photo_count == 2
     assert listener.call_count == 2
 
+    # A read that times out early returns fewer photos without an error, so
+    # reads never remove what is already known.
+    client.async_get_tracked_collection_entries.return_value = (older,)
+    assert await store.async_refresh() is False
     client.async_get_tracked_collection_entries.return_value = ()
     assert await store.async_refresh() is False
-    assert store.latest is None
-    assert listener.call_count == 3
+    assert store.latest.photo_id == str(UUID(int=2))
+    assert store.photo_count == 2
+    assert listener.call_count == 2
 
     remove()
-    client.async_get_tracked_collection_entries.return_value = (newer,)
+    client.async_get_tracked_collection_entries.return_value = (
+        _snap(UUID(int=4), CAPTURED + 60),
+    )
     assert await store.async_refresh() is True
-    assert listener.call_count == 3
+    assert listener.call_count == 2
 
 
 async def test_refresh_keeps_the_last_photo_when_the_robot_is_unreachable() -> None:
@@ -219,19 +220,13 @@ def _stream(*batches):
     return subscribe
 
 
-async def test_watch_reconciles_on_reconnect_and_follows_new_photos() -> None:
-    first = _snap(UUID(int=1), CAPTURED - 120)
-    deleted = _snap(UUID(int=2), CAPTURED - 60)
-    second = _snap(UUID(int=3), CAPTURED)
+async def test_watch_follows_new_photos_and_retries_until_retired() -> None:
+    first = _snap(UUID(int=1), CAPTURED - 60)
+    second = _snap(UUID(int=2), CAPTURED)
     client = _client(
-        stream=_stream((first, deleted), (first, second), CannotConnectError("drop")),
+        stream=_stream((first,), (first, second), CannotConnectError("drop")),
         retired=False,
     )
-    client.async_get_tracked_collection_entries.side_effect = [
-        (first, deleted),
-        (first,),
-        (first, second),
-    ]
     store = RobotPhotoStore(client)
     seen: list[tuple[str | None, int]] = []
     store.async_add_listener(
@@ -249,14 +244,10 @@ async def test_watch_reconciles_on_reconnect_and_follows_new_photos() -> None:
     with patch.object(photos.asyncio, "sleep", sleep):
         await store.async_watch()
 
-    # The full read on reconnect drops the photo deleted in the app before
-    # the stream adds the new one; replayed photos change nothing.
-    assert seen == [
-        (str(UUID(int=2)), 2),
-        (str(UUID(int=1)), 1),
-        (str(UUID(int=3)), 2),
-    ]
+    # A reconnect replays known photos, which change nothing.
+    assert seen == [(str(UUID(int=1)), 1), (str(UUID(int=2)), 2)]
     assert sleeps == [1, 1]
+    client.async_get_tracked_collection_entries.assert_not_awaited()
 
 
 async def test_watch_stops_on_cancel() -> None:
@@ -326,26 +317,3 @@ async def test_take_photo_button_sends_snap_and_reads_the_photo(hass) -> None:
     ):
         await take_photo.async_press()
     take_photo.hass.services.async_call.assert_awaited_once()
-
-
-async def test_a_read_at_the_entry_limit_only_adds_photos() -> None:
-    newest = _snap(UUID(int=99), CAPTURED)
-    client = _client(entries=(newest,))
-    store = RobotPhotoStore(client)
-    await store.async_refresh()
-    listener = MagicMock()
-    store.async_add_listener(listener)
-    older = tuple(
-        _snap(UUID(int=index), CAPTURED - 60 - index)
-        for index in range(photos.MAX_PHOTO_ENTRIES)
-    )
-    client.async_get_tracked_collection_entries.return_value = older
-
-    # The newest photo fell outside this batch but is kept.
-    assert await store.async_refresh() is False
-    assert store.latest.photo_id == str(UUID(int=99))
-    assert store.photo_count == photos.MAX_PHOTO_ENTRIES + 1
-    listener.assert_called_once()
-
-    assert await store.async_refresh() is False
-    listener.assert_called_once()

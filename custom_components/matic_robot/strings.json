@@ -1161,7 +1161,7 @@
         "name": "Latest photo",
         "state_attributes": {
           "photo_count": {
-            "name": "Photos on robot"
+            "name": "Photos seen"
           }
         }
       }

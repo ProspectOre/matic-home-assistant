@@ -31,7 +31,9 @@ class RobotPhotoStore:
     """Hold the newest robot photo in memory.
 
     Only the newest photo's bytes are kept. Older photos stay on the robot and
-    are counted by id.
+    are counted by id. Reads only add photos: a read that times out returns
+    what it has without an error, so it cannot prove a photo was deleted. A
+    photo deleted in the Matic app stays until the integration reloads.
     """
 
     def __init__(self, client: MaticHermesClient) -> None:
@@ -47,7 +49,7 @@ class RobotPhotoStore:
 
     @property
     def photo_count(self) -> int:
-        """Return how many photos the robot holds, as last read."""
+        """Return how many photos have been seen on the robot."""
         return len(self._photo_ids)
 
     @callback
@@ -62,7 +64,7 @@ class RobotPhotoStore:
         return remove
 
     async def async_refresh(self) -> bool:
-        """Read every photo once; return whether a newer photo arrived."""
+        """Read the robot's photos once; return whether a newer one arrived."""
         try:
             entries = await self._client.async_get_tracked_collection_entries(
                 PHOTO_COLLECTION, limit=MAX_PHOTO_ENTRIES
@@ -70,26 +72,10 @@ class RobotPhotoStore:
         except MaticError as err:
             _LOGGER.debug("Matic photos are unavailable: %s", err)
             return False
-        photos = _decode_photos(entries)
         previous = self._latest
-        if len(entries) >= MAX_PHOTO_ENTRIES:
-            # A read that hit the limit may have missed photos, so it only
-            # adds to what is known.
-            if self._async_add_photos(photos):
-                self._async_notify()
-        else:
-            # A complete read replaces what the stream saw, so photos deleted
-            # in the app drop out here.
-            previous_ids = self._photo_ids
-            self._latest = max(
-                photos, key=lambda photo: photo.captured_at, default=None
-            )
-            self._photo_ids = {photo.photo_id for photo in photos}
-            if self._latest != previous or self._photo_ids != previous_ids:
-                self._async_notify()
-        return self._latest is not None and (
-            previous is None or self._latest.captured_at > previous.captured_at
-        )
+        if self._async_add_photos(_decode_photos(entries)):
+            self._async_notify()
+        return self._latest is not previous
 
     async def async_refresh_after_snap(self) -> None:
         """Pick up the photo a snap command just asked for."""
@@ -103,9 +89,6 @@ class RobotPhotoStore:
         retry_delay = 1
         while True:
             try:
-                # The stream only adds photos. A full read first drops any
-                # deleted in the app while the stream was down.
-                await self.async_refresh()
                 async for entry in self._client.async_subscribe_collection_entries(
                     PHOTO_COLLECTION
                 ):

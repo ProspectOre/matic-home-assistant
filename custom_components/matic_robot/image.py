@@ -50,7 +50,7 @@ class MaticLatestPhotoImage(MaticEntity, ImageEntity):
 
     @property
     def extra_state_attributes(self) -> dict[str, int]:
-        """Return how many photos the robot holds."""
+        """Return how many photos have been seen on the robot."""
         return {"photo_count": self._photos.photo_count}
 
     async def async_image(self) -> bytes | None:
