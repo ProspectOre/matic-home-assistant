@@ -27,6 +27,11 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import ChannelRequest
         (UserCommand.PAUSE, "4801880101"),
         (UserCommand.RESUME, "4801880100"),
         (UserCommand.DOCK, "12042a020800"),
+        (UserCommand.STAY_PUT, "820100"),
+        (UserCommand.EMOTE_NOD, "12043a020a00"),
+        (UserCommand.EMOTE_SHAKE, "12043a021200"),
+        (UserCommand.EMOTE_PIROUETTE, "12043a022a00"),
+        (UserCommand.EMOTE_SNAP, "12043a024200"),
     ],
 )
 def test_official_app_command_payloads(command: UserCommand, expected_hex: str) -> None:
