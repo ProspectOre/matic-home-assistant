@@ -53,7 +53,6 @@ class _Photos:
     def __init__(self, *arrivals: RobotPhoto | None, seen: bool = True) -> None:
         self.latest: RobotPhoto | None = _photo(0) if seen else None
         self._arrivals = list(arrivals)
-        self._arrivals = list(arrivals)
 
     async def async_read(self) -> bool:
         arrival = self._arrivals.pop(0) if self._arrivals else None
@@ -134,7 +133,19 @@ async def test_patrol_photographs_each_room_and_docks() -> None:
     # Kitchen: docked, then moving and parked. Dining: already parked, so the
     # robot has to leave before its arrival counts.
     entry = _entry(
-        [DOCKED, MOVING, PARKED, PARKED, PARKED, MOVING, PARKED, PARKED], store
+        [
+            DOCKED,
+            MOVING,
+            PARKED,
+            PARKED,
+            PARKED,
+            PARKED,
+            MOVING,
+            PARKED,
+            PARKED,
+            PARKED,
+        ],
+        store,
     )
     context = Context()
 
@@ -227,7 +238,13 @@ async def test_patrol_accepts_a_robot_that_never_seems_to_leave() -> None:
             {"room": "Den"},
             False,
         ),
-        ([DOCKED, PARKED, PARKED], (), "photo_patrol_no_photo", {"room": "Den"}, True),
+        (
+            [DOCKED, PARKED, PARKED, PARKED],
+            (),
+            "photo_patrol_no_photo",
+            {"room": "Den"},
+            True,
+        ),
         # Docking an unreadable robot could stop a clean it has since started.
         (CannotConnectError("offline"), (), "photo_patrol_unreachable", None, False),
     ],
@@ -277,7 +294,9 @@ async def test_patrol_refuses_a_busy_or_flat_robot(
 async def test_a_clean_started_during_the_patrol_keeps_the_robot() -> None:
     hass = _hass()
     # Kitchen is photographed, then a clean takes the robot away from it.
-    entry = _entry([DOCKED, PARKED, CLEANING, CLEANING], _Photos(None, _photo(1)))
+    entry = _entry(
+        [DOCKED, PARKED, PARKED, CLEANING, CLEANING], _Photos(None, _photo(1))
+    )
 
     with pytest.raises(HomeAssistantError) as raised:
         await photo_patrol.async_photo_patrol(
@@ -309,7 +328,7 @@ async def test_patrol_stops_when_it_cannot_read_photos_before_the_snap() -> None
 async def test_a_robot_moved_by_someone_else_ends_the_patrol() -> None:
     hass = _hass()
     # After the kitchen photo, another Go to room takes the robot away.
-    entry = _entry([DOCKED, PARKED, MOVING, MOVING], _Photos(None, _photo(1)))
+    entry = _entry([DOCKED, PARKED, PARKED, MOVING, MOVING], _Photos(None, _photo(1)))
 
     with pytest.raises(HomeAssistantError) as raised:
         await photo_patrol.async_photo_patrol(
@@ -325,7 +344,7 @@ async def test_a_paused_clean_near_a_room_ends_the_patrol() -> None:
     paused = SimpleNamespace(
         state_codes=(109, 200, 119), cleaning=True, paused=True, returning=False
     )
-    entry = _entry([DOCKED, PARKED, paused, paused], _Photos(None, _photo(1)))
+    entry = _entry([DOCKED, PARKED, PARKED, paused, paused], _Photos(None, _photo(1)))
 
     with pytest.raises(HomeAssistantError) as raised:
         await photo_patrol.async_photo_patrol(
@@ -337,10 +356,26 @@ async def test_a_paused_clean_near_a_room_ends_the_patrol() -> None:
     assert [command for _, command, _ in _commands(hass)] == ["go_to_room", "emote"]
 
 
+async def test_a_robot_moved_before_the_snap_is_not_photographed() -> None:
+    hass = _hass()
+    # Another Go to room starts while the patrol reads the photos.
+    entry = _entry([DOCKED, PARKED, MOVING, MOVING], _Photos(None, _photo(1)))
+
+    with pytest.raises(HomeAssistantError) as raised:
+        await photo_patrol.async_photo_patrol(
+            hass, entry, "vacuum.matic", ["Kitchen"], return_to_dock=True
+        )
+
+    assert raised.value.translation_key == "photo_patrol_robot_busy"
+    assert [command for _, command, _ in _commands(hass)] == ["go_to_room"]
+
+
 async def test_a_return_to_the_dock_ends_the_patrol() -> None:
     hass = _hass()
     returning = _state(104)
-    entry = _entry([DOCKED, PARKED, returning, returning], _Photos(None, _photo(1)))
+    entry = _entry(
+        [DOCKED, PARKED, PARKED, returning, returning], _Photos(None, _photo(1))
+    )
 
     with pytest.raises(HomeAssistantError) as raised:
         await photo_patrol.async_photo_patrol(

@@ -140,6 +140,10 @@ async def _async_photograph(
         await photos.async_read()
     except MaticError as err:
         raise _error("photo_patrol_unreachable") from err
+    # A clean or another Go to room started during the read would take the
+    # photo somewhere else.
+    if not _left_parked(await _async_state(client)):
+        raise _error("photo_patrol_robot_busy")
     previous = photos.latest
     earliest = dt_util.utcnow() - CLOCK_TOLERANCE
     await _async_command(hass, entity_id, "emote", {"kind": "snap"}, context)
