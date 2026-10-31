@@ -2,7 +2,7 @@ import { clamp } from "./numeric";
 import { liveCameraKey, cameraPreferences, mapCameraIdentity } from "./camera-preferences";
 import type { AreaCircle, MapZoneOverlay, SceneModel, SceneRoom } from "./backend-contracts";
 import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
-import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WifiSignalCell, WorkspaceState } from "./contracts";
+import type { CameraPreference, CoordinateEditCapture, FloorTypeOutline, MapQuality, MapView, WifiSignalCell, WorkspaceState } from "./contracts";
 import { canShowExactPose, hasCoordinateEditAdmission, forcesTop, topView } from "./state";
 import { rgba, type CanvasPalette, type Channel } from "./theme-probe";
 import type { drawRobot as DrawRobot } from "./robot-model";
@@ -1464,14 +1464,18 @@ export class RendererController {
       context.drawImage(this.#fallbackCanvas, 0, 0, bounds.width, bounds.height);
     }
     const wifi = state.wifiSignal;
+    const floorTypes = state.floorTypes;
     // Drawn above the room fills, which are nearly opaque in Room colors, and
     // below the room names. A retained scene stays read-only until the live
     // one is admitted, so its geometry may belong to another floor or frame.
-    let wifiPending = wifi?.status === "ready" && state.dataMode === "live"
-      && !state.floor.readOnly && state.selection.floorId === "current";
-    const drawWifi = (): void => {
-      if (wifiPending && wifi) this.#drawWifiSignal(context, wifi.cells, wifi.cellSize / 2);
-      wifiPending = false;
+    let layersPending = state.dataMode === "live" && !state.floor.readOnly && state.selection.floorId === "current";
+    const drawLayers = (): void => {
+      if (layersPending && floorTypes?.status === "ready") {
+        this.#drawFloorType(context, floorTypes.carpet, "hsl(28 55% 42%)");
+        this.#drawFloorType(context, floorTypes.vent, "hsl(205 80% 50%)");
+      }
+      if (layersPending && wifi?.status === "ready") this.#drawWifiSignal(context, wifi.cells, wifi.cellSize / 2);
+      layersPending = false;
     };
     const selectedNames = this.#selectedRoomNames(state);
     const selectedPositions = state.workflow === "plan" && state.planDraft.runBehavior === "ordered"
@@ -1526,7 +1530,7 @@ export class RendererController {
           context.stroke();
         }
       }
-      drawWifi();
+      drawLayers();
       // Labels draw after all fills. Place selected/current rooms first so a
       // crowded viewport keeps the names that explain the user's current work.
       const currentName = state.currentArea?.toLocaleLowerCase();
@@ -1625,7 +1629,7 @@ export class RendererController {
       }
       for (const paint of labels) paint();
     }
-    drawWifi();
+    drawLayers();
     this.#labelOffsets = labelOffsets;
     const preview = this.#circlePreview;
     const circles = preview && hasCoordinateEditAdmission(state, preview.capture)
@@ -1789,6 +1793,32 @@ export class RendererController {
       context.closePath();
       context.fill();
     }
+    context.restore();
+  }
+
+  // Even-odd fill keeps the holes the integration traces inside a rug.
+  #drawFloorType(context: CanvasRenderingContext2D, outlines: readonly FloorTypeOutline[], colour: string): void {
+    if (!outlines.length) return;
+    context.save();
+    context.beginPath();
+    for (const outline of outlines) {
+      let started = false;
+      for (const [x, y] of outline) {
+        const point = this.#projectMeters(x, y, 0.05, false);
+        if (!point) continue;
+        if (started) context.lineTo(point.x, point.y);
+        else context.moveTo(point.x, point.y);
+        started = true;
+      }
+      if (started) context.closePath();
+    }
+    context.globalAlpha = 0.35;
+    context.fillStyle = colour;
+    context.fill("evenodd");
+    context.globalAlpha = 0.8;
+    context.strokeStyle = colour;
+    context.lineWidth = 1.25;
+    context.stroke();
     context.restore();
   }
 

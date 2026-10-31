@@ -32,6 +32,8 @@ export interface MapEntry {
   readonly plansUrl: string;
   /** Absent on integrations without the Wi-Fi survey. */
   readonly wifiHeatmapUrl: string | null;
+  /** Absent on integrations without the carpet and vent layer. */
+  readonly floorTypesUrl: string | null;
   readonly mapRevision: number;
   readonly mapSceneEpoch: string | null;
   readonly mapFloorCoherent: boolean;
@@ -487,6 +489,9 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
       wifiHeatmapUrl: entry.wifi_heatmap_url === undefined || entry.wifi_heatmap_url === null
         ? null
         : privatePath(entry.wifi_heatmap_url, "invalid-wifi-heatmap-url"),
+      floorTypesUrl: entry.floor_layers_url === undefined || entry.floor_layers_url === null
+        ? null
+        : privatePath(entry.floor_layers_url, "invalid-floor-layers-url"),
       mapRevision,
       mapSceneEpoch: selectedId(entry.map_scene_epoch, "invalid-scene-epoch"),
       mapFloorCoherent: booleanValue(entry.map_floor_coherent, "invalid-floor-coherence"),

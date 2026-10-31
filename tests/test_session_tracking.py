@@ -270,6 +270,17 @@ def test_session_preference_uses_newest_and_richer_source() -> None:
         True,
         completed_rooms=("Office",),
     )
+    # The robot's stop reason survives either merge with a tracked session.
+    stopped_native = replace(overlapping_native, stop_reason_code=8)
+    assert tracker.preferred_session(stopped_native) == replace(
+        tracked, stop_reason_code=8
+    )
+    merged_stopped = CleaningSessionTracker(interrupted).preferred_session(
+        stopped_native
+    )
+    assert merged_stopped is not None
+    assert merged_stopped.stop_reason == "stopped"
+    assert merged_stopped.duration_seconds == interrupted.duration_seconds
     assert (
         _sessions_overlap(
             overlapping_native,

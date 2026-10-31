@@ -571,6 +571,7 @@ class MaticStateSensor(MaticEntity, SensorEntity):
                 "latest_completed_rooms": list(latest.completed_rooms),
                 "latest_room_durations": dict(latest.room_durations),
                 "latest_completed": latest.completed,
+                "latest_stop_reason": latest.stop_reason,
             }
             if latest.mode_results:
                 attributes["latest_mode_results"] = [

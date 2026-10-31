@@ -1388,6 +1388,7 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert sessions["latest_rooms"] == ["Kitchen"]
     assert sessions["latest_completed_rooms"] == ["Kitchen"]
     assert sessions["latest_room_durations"] == {"Kitchen": 600}
+    assert sessions["latest_stop_reason"] is None
     assert state_sensors["protocol_version"].extra_state_attributes is None
 
 

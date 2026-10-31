@@ -645,6 +645,10 @@ test("a queue change is sent only while the robot cleans, and its notice says wh
     await h.effects.executeAction({ ...skip, change: "clean_room_next" });
     await sent;
     const done = { notice: h.store.value.notice, pending: h.store.value.queuePending };
+    // A clean started from Matic Map stays "starting" until its run ends.
+    h.store.patch({ command: "starting" });
+    await h.effects.executeAction({ ...skip, change: "clean_room_next" });
+    h.store.patch({ command: "idle" });
     h.serviceError = Object.assign(new Error("refused"), { translation_domain: "matic_robot", translation_key: "queue_last_room" });
     await h.effects.executeAction(skip);
     const refused = h.store.value.notice;
@@ -663,6 +667,7 @@ test("a queue change is sent only while the robot cleans, and its notice says wh
     unconfirmed: { tone: "error", key: "v4_notice_queue_unconfirmed", fallback: "The robot didn't confirm the change to {room}. Check the queue in the Matic app.", placeholders: { room: "Kitchen" } },
     calls: [
       ["matic_robot", "skip_room", { room: "room-a" }, "vacuum.synthetic"],
+      ["matic_robot", "clean_room_next", { room: "room-a" }, "vacuum.synthetic"],
       ["matic_robot", "skip_room", { room: "room-a" }, "vacuum.synthetic"],
       ["matic_robot", "clean_room_again", { room: "room-a" }, "vacuum.synthetic"],
     ],

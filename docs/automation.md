@@ -117,12 +117,17 @@ Each event's type is `matic_robot_` plus the name in the second column.
 | Plan area failed | `area_failed` | area fields, `reason_code` |
 | Plan finished | `plan_finished` | `entity_id`, `plan_id`, `run_id`, `outcome`, `reason_code`, `cause`, `provenance`, `terminal_activity`, times, room counts |
 | Plan docked | `plan_docked` | `entity_id`, `plan_id`, `run_id`, `outcome`, `docked_at` |
-| Cleaning finished | `cleaning_finished` | `device_id`, `entry_id`, `started_at`, `ended_at`, `duration_seconds`, `completed`, `rooms`, `completed_rooms`, `room_durations` |
+| Cleaning finished | `cleaning_finished` | `device_id`, `entry_id`, `started_at`, `ended_at`, `duration_seconds`, `completed`, `rooms`, `completed_rooms`, `room_durations`, `stop_reason` |
 | Firmware changed | `firmware_changed` | `device_id`, `entry_id`, `previous_version`, `firmware_version` |
 | Firmware checked | `firmware_analyzed` | `entry_id`, `firmware_version`, `compatibility_status`, change counts |
 | Firmware report updated | `firmware_report_updated` | `entry_id`, `report_id`, `revision` |
 | Cues activity | `cues` | `device_id`, `entry_id`, `event_type`, `intent` |
 | Robot activity recorded | `activity_observed` | `entry_id`, `kind`, `source`, `run_id`, `command`, `outcome`, `activity` |
+
+`stop_reason` is the robot's own record of how a clean ended: `finished` when
+it ended on its own, `stopped` when someone pressed Stop (confirmed for the
+Matic app), `unknown` for any other reason the robot records, and empty
+when the robot recorded none. Who pressed Stop is not reported yet.
 
 "Room fields" are those of Room started; "area fields" those of Plan area
 started. A plan of Kitchen, a custom area and Hall, in Saved order, sends Room
