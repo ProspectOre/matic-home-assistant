@@ -120,7 +120,7 @@ class MaticSavedPlanSelect(MaticEntity, SelectEntity):
         """Subscribe to saved-plan changes."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self._history.async_add_listener(
+            self._history.repository.async_add_listener(
                 self._serial_number, self._async_plans_updated
             )
         )
@@ -134,20 +134,22 @@ class MaticSavedPlanSelect(MaticEntity, SelectEntity):
         """Return enabled human-readable plan names."""
         return [
             plan.get("name", plan_id)
-            for plan_id, plan in self._history.plans(self._serial_number).items()
+            for plan_id, plan in self._history.catalog.plans(
+                self._serial_number
+            ).items()
             if plan.get("enabled", True)
         ]
 
     @property
     def current_option(self) -> str | None:
         """Return the selected plan's human-readable name."""
-        value = self._history.snapshot(self._serial_number)["selected_plan_name"]
+        value = self._history.ledger.snapshot(self._serial_number)["selected_plan_name"]
         return str(value) if value is not None else None
 
     async def async_select_option(self, option: str) -> None:
         """Select a saved plan by its displayed name."""
-        plan = self._history.plan(self._serial_number, option)
-        await self._history.async_select_plan(self._serial_number, plan["id"])
+        plan = self._history.catalog.plan(self._serial_number, option)
+        await self._history.catalog.async_select_plan(self._serial_number, plan["id"])
 
 
 class MaticCustomAreaSelect(MaticEntity, SelectEntity):
@@ -165,7 +167,7 @@ class MaticCustomAreaSelect(MaticEntity, SelectEntity):
         """Subscribe to custom-area changes."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self._areas.async_add_listener(
+            self._areas.repository.async_add_listener(
                 self._serial_number, self._async_areas_updated
             )
         )
@@ -179,16 +181,16 @@ class MaticCustomAreaSelect(MaticEntity, SelectEntity):
         """Return human-readable saved-area names."""
         return [
             str(area.get("name", area_id))
-            for area_id, area in self._areas.areas(self._serial_number).items()
+            for area_id, area in self._areas.catalog.areas(self._serial_number).items()
         ]
 
     @property
     def current_option(self) -> str | None:
         """Return the selected area's human-readable name."""
-        value = self._areas.snapshot(self._serial_number)["selected_area_name"]
+        value = self._areas.ledger.snapshot(self._serial_number)["selected_area_name"]
         return str(value) if value is not None else None
 
     async def async_select_option(self, option: str) -> None:
         """Select a saved custom area by its displayed name."""
-        area = self._areas.area(self._serial_number, option)
-        await self._areas.async_select_area(self._serial_number, area["id"])
+        area = self._areas.catalog.area(self._serial_number, option)
+        await self._areas.catalog.async_select_area(self._serial_number, area["id"])

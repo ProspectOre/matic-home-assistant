@@ -17,16 +17,7 @@ from grpclib.exceptions import GRPCError, ProtocolError, StreamTerminatedError
 from h2.exceptions import H2Error
 
 from custom_components.matic_robot.client.api import (
-    MAX_HERMES_MESSAGE_BYTES,
     MaticHermesClient,
-    _async_connection_candidates,
-    _async_recv_bounded_message,
-    _BoundedStream,
-    _decode_cleaning_session,
-    _decode_pose_observation_time,
-    _decode_schedule,
-    _decode_text_field,
-    _uuid_candidates,
 )
 from custom_components.matic_robot.client.auth import HermesCredential
 from custom_components.matic_robot.client.commands import (
@@ -65,6 +56,19 @@ from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequ
 from custom_components.matic_robot.client.proto.hermes_pb2 import (
     KabukiOutputWire,
     SequenceId,
+)
+from custom_components.matic_robot.client.telemetry import (
+    _uuid_candidates,
+    decode_cleaning_session,
+    decode_pose_observation_time,
+    decode_schedule,
+    decode_text_field,
+)
+from custom_components.matic_robot.client.transport import (
+    MAX_HERMES_MESSAGE_BYTES,
+    BoundedStream,
+    _async_recv_bounded_message,
+    async_connection_candidates,
 )
 from custom_components.matic_robot.client.wire import first_bytes, uuid_string
 from tests.test_mission import _labeled as _labeled_floor
@@ -220,7 +224,7 @@ async def test_connection_candidates_survive_dns_failure(monkeypatch) -> None:
         raise OSError("dns unavailable")
 
     monkeypatch.setattr("asyncio.BaseEventLoop.getaddrinfo", fail_dns)
-    assert await _async_connection_candidates("192.0.2.5", "robot.invalid", 16320) == [
+    assert await async_connection_candidates("192.0.2.5", "robot.invalid", 16320) == [
         "192.0.2.5"
     ]
 
@@ -263,7 +267,7 @@ async def test_connect_is_idempotent_and_reports_no_reachable_address(
             self.closed = True
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", FailingChannel
+        "custom_components.matic_robot.client.api.PinnedChannel", FailingChannel
     )
     with pytest.raises(CannotConnectError, match="offline"):
         await client.async_connect()
@@ -290,7 +294,7 @@ async def test_connect_maps_transport_timeout_and_closes_candidate(monkeypatch) 
             self.closed = True
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", TimedOutChannel
+        "custom_components.matic_robot.client.api.PinnedChannel", TimedOutChannel
     )
 
     with pytest.raises(CannotConnectError, match="connection timed out"):
@@ -319,7 +323,7 @@ async def test_connect_cancellation_closes_unowned_candidate(monkeypatch) -> Non
             self.closed += 1
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", CancelledChannel
+        "custom_components.matic_robot.client.api.PinnedChannel", CancelledChannel
     )
     with pytest.raises(asyncio.CancelledError):
         await client.async_connect()
@@ -348,10 +352,10 @@ async def test_connect_h2_failure_closes_candidate_and_fails_over(monkeypatch) -
             self.closed += 1
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", H2Channel
+        "custom_components.matic_robot.client.api.PinnedChannel", H2Channel
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._async_connection_candidates",
+        "custom_components.matic_robot.client.api.async_connection_candidates",
         AsyncMock(return_value=["192.0.2.1", "192.0.2.2"]),
     )
     await client.async_connect()
@@ -383,7 +387,9 @@ async def test_pinned_channel_revalidates_identity_on_every_connect(
     """Reconnects must re-run the pin, not trust the first handshake."""
     from grpclib.client import Channel
 
-    from custom_components.matic_robot.client.api import _PinnedChannel
+    from custom_components.matic_robot.client.transport import (
+        PinnedChannel,
+    )
 
     closed: list[bool] = []
     certificates = iter([b"pinned-cert", b"rotated-cert"])
@@ -401,10 +407,11 @@ async def test_pinned_channel_revalidates_identity_on_every_connect(
             raise CertificateMismatchError("robot certificate changed")
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.validate_certificate", fake_validate
+        "custom_components.matic_robot.client.transport.validate_certificate",
+        fake_validate,
     )
 
-    channel = _PinnedChannel(
+    channel = PinnedChannel(
         "192.0.2.1",
         16320,
         ssl=object(),
@@ -422,12 +429,14 @@ async def test_pinned_channel_revalidates_identity_on_every_connect(
 
 
 def test_pinned_channel_rejects_missing_certificate() -> None:
-    from custom_components.matic_robot.client.api import _PinnedChannel
     from custom_components.matic_robot.client.exceptions import (
         InvalidRobotCertificateError,
     )
+    from custom_components.matic_robot.client.transport import (
+        PinnedChannel,
+    )
 
-    channel = _PinnedChannel(
+    channel = PinnedChannel(
         "192.0.2.1",
         16320,
         ssl=object(),
@@ -459,7 +468,7 @@ async def test_bounded_grpc_frame_rejects_length_before_reading_body(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.MAX_HERMES_MESSAGE_BYTES", 4
+        "custom_components.matic_robot.client.transport.MAX_HERMES_MESSAGE_BYTES", 4
     )
     raw = _RawFrameStream(b"\x00" + struct.pack(">I", 5))
 
@@ -548,7 +557,7 @@ async def test_bounded_grpc_frame_rejects_malformed_framing() -> None:
 
 
 async def test_bounded_stream_dispatches_and_records_received_message() -> None:
-    stream = object.__new__(_BoundedStream)
+    stream = object.__new__(BoundedStream)
     raw = _RawFrameStream(b"\x00" + struct.pack(">I", 3), b"abc")
     stream._recv_initial_metadata_done = False
     stream._wrapper = nullcontext()
@@ -577,9 +586,11 @@ async def test_bounded_stream_dispatches_and_records_received_message() -> None:
 
 
 def test_pinned_channel_uses_bounded_stream_for_every_rpc() -> None:
-    from custom_components.matic_robot.client.api import _PinnedChannel
+    from custom_components.matic_robot.client.transport import (
+        PinnedChannel,
+    )
 
-    channel = _PinnedChannel(
+    channel = PinnedChannel(
         "192.0.2.1",
         16320,
         ssl=object(),
@@ -589,7 +600,7 @@ def test_pinned_channel_uses_bounded_stream_for_every_rpc() -> None:
     )
     stream = channel.request("/hermes.Test/Read", Cardinality.UNARY_UNARY, bytes, bytes)
 
-    assert isinstance(stream, _BoundedStream)
+    assert isinstance(stream, BoundedStream)
     assert MAX_HERMES_MESSAGE_BYTES > 0
     channel.close()
 
@@ -1466,7 +1477,7 @@ async def test_decode_wrappers_translate_malformed_payloads(monkeypatch) -> None
     client.async_subscribe_collection_entries = lambda _name: pose_stream()
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._decode_operational_state",
+        "custom_components.matic_robot.client.api.decode_operational_state",
         lambda payload: (_ for _ in ()).throw(DecodeError()),
     )
     monkeypatch.setattr(
@@ -1512,7 +1523,7 @@ def test_latest_pose_endpoint_is_a_keyed_collection() -> None:
 @pytest.mark.parametrize("payload", [_bfield(2, b""), _bfield(5, b"")])
 def test_pose_timestamp_requires_both_native_layers(payload: bytes) -> None:
     with pytest.raises(DecodeError):
-        _decode_pose_observation_time(payload)
+        decode_pose_observation_time(payload)
 
 
 async def test_pose_selects_active_mission_without_first_record_guessing() -> None:
@@ -2088,19 +2099,19 @@ async def test_multi_floor_read_rejects_truncated_mission_snapshot(
 
 
 def test_decode_text_field_rejects_non_bytes_payloads() -> None:
-    assert _decode_text_field(None, 1) is None
-    assert _decode_text_field(_bfield(1, b"x" * 513), 1) is None
+    assert decode_text_field(None, 1) is None
+    assert decode_text_field(_bfield(1, b"x" * 513), 1) is None
 
 
 def test_decode_schedule_reads_explicit_enabled_markers() -> None:
     weekly = _bfield(1, _vfield(2, 1)) + _bfield(3, _vfield(1, 510))
     base = _bfield(1, weekly)
 
-    enabled = _decode_schedule(base + _bfield(9, _bfield(1, b"")))
+    enabled = decode_schedule(base + _bfield(9, _bfield(1, b"")))
     assert enabled is not None
     assert enabled.enabled is True
 
-    disabled = _decode_schedule(base + _bfield(9, _bfield(2, b"")))
+    disabled = decode_schedule(base + _bfield(9, _bfield(2, b"")))
     assert disabled is not None
     assert disabled.enabled is False
 
@@ -2116,7 +2127,7 @@ def test_uuid_candidates_bound_recursion_depth() -> None:
 
 
 def test_decode_cleaning_session_rejects_malformed_summaries() -> None:
-    assert _decode_cleaning_session(_bfield(5, b"\x0a\xff")) is None
+    assert decode_cleaning_session(_bfield(5, b"\x0a\xff")) is None
 
 
 def test_decode_cleaning_session_skips_unusable_room_entries() -> None:
@@ -2132,7 +2143,7 @@ def test_decode_cleaning_session_skips_unusable_room_entries() -> None:
         + _bfield(6, rooms_group)
     )
 
-    session = _decode_cleaning_session(_bfield(5, summary))
+    session = decode_cleaning_session(_bfield(5, summary))
     assert session is not None
     assert session.rooms == ("Hallway",)
     assert session.room_durations == ()
@@ -2919,7 +2930,7 @@ async def test_retirement_during_tls_connect_closes_unpublished_channel(
         AsyncMock(return_value=object()),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", PendingChannel
+        "custom_components.matic_robot.client.api.PinnedChannel", PendingChannel
     )
     task = asyncio.create_task(client.async_connect())
     await started.wait()
@@ -2941,10 +2952,12 @@ async def test_retirement_revokes_captured_channel_and_pending_tls_protocol(
     """Old streams cannot use grpclib's transparent reconnect after unload."""
     from grpclib.client import Channel
 
-    from custom_components.matic_robot.client.api import _PinnedChannel
+    from custom_components.matic_robot.client.transport import (
+        PinnedChannel,
+    )
 
     client = MaticHermesClient("192.0.2.1", 16320)
-    channel = _PinnedChannel(
+    channel = PinnedChannel(
         "192.0.2.1",
         16320,
         ssl=object(),

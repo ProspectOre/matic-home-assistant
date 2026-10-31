@@ -30,9 +30,9 @@ from custom_components.matic_robot.client.commands import (
     UserCommand,
 )
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.plan_model import CleaningRoom
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
-    CleaningRoom,
     async_get_plan_manager,
 )
 from tests.test_entities import _entry
@@ -48,9 +48,19 @@ PLATFORMS = ["button", "select", "vacuum", "switch", "number"]
 
 
 @pytest.fixture
-def mock_recorder_before_hass(request: pytest.FixtureRequest) -> None:
+def mock_recorder_before_hass(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Choose the test database before the Core fixture initializes."""
     if "recorder_mock" in request.fixturenames:
+        # Python 3.14 evaluates TYPE_CHECKING-only names when the recorder
+        # fixture autospecs its migration and session helpers.
+        from homeassistant.components.recorder import Recorder, migration
+        from homeassistant.helpers import recorder as recorder_helper
+        from sqlalchemy.orm import Session
+
+        monkeypatch.setattr(migration, "Recorder", Recorder, raising=False)
+        monkeypatch.setattr(recorder_helper, "Session", Session, raising=False)
         request.getfixturevalue("recorder_db_url")
 
 
@@ -74,7 +84,7 @@ async def platforms(hass: HomeAssistant) -> AsyncIterator[SimpleNamespace]:
     manager = await async_get_plan_manager(hass)
     serial = coordinator.data.info.serial_number
     for plan_id, name in (("one", "First plan"), ("two", "Second plan")):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             serial,
             plan_id,
             {
@@ -91,7 +101,7 @@ async def platforms(hass: HomeAssistant) -> AsyncIterator[SimpleNamespace]:
             },
         )
     for area_id, name in (("area-one", "First area"), ("area-two", "Second area")):
-        await manager.async_save_area(serial, area_id, {"name": name})
+        await manager.catalog.async_save_area(serial, area_id, {"name": name})
     dependency.runtime_data.cleaning_plans = manager
     entry = MockConfigEntry(
         domain=DOMAIN, data={"serial_number": serial}, state=ConfigEntryState.LOADED
@@ -153,11 +163,14 @@ async def test_select_service_updates_persistent_selection_and_display(
         )
         await hass.async_block_till_done()
         assert hass.states.get(entity_id).state == option
-        assert platforms.manager.snapshot(platforms.serial)[selected_key] == expected
+        assert (
+            platforms.manager.ledger.snapshot(platforms.serial)[selected_key]
+            == expected
+        )
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    assert reloaded.snapshot(platforms.serial)["selected_plan"] == "one"
-    assert reloaded.snapshot(platforms.serial)["selected_area"] == "area-one"
+    assert reloaded.ledger.snapshot(platforms.serial)["selected_plan"] == "one"
+    assert reloaded.ledger.snapshot(platforms.serial)["selected_area"] == "area-one"
 
 
 async def test_config_select_service_updates_entry_and_native_preference(
@@ -192,10 +205,10 @@ async def test_button_press_reaches_owned_vacuum_service(
         calls.append(call)
 
     hass.services.async_register(DOMAIN, service, record)
-    snapshot = platforms.manager.snapshot(platforms.serial)
+    snapshot = platforms.manager.ledger.snapshot(platforms.serial)
     if button == "stop_intelligent_cleaning":
         snapshot["active_plan"] = {"plan_id": "two"}
-    with patch.object(platforms.manager, "snapshot", return_value=snapshot):
+    with patch.object(platforms.manager.ledger, "snapshot", return_value=snapshot):
         await hass.services.async_call(
             "button", "press", {"entity_id": platforms.entities[button]}, blocking=True
         )
@@ -332,8 +345,8 @@ async def test_room_statistics_record_and_restore_native_values(
     )
     assert duration is not None and last_cleaned is not None
     room = CleaningRoom("room-1", "Kitchen", "vacuum", "quick")
-    await platforms.manager.async_mark_started(platforms.serial, "one", room)
-    assert await platforms.manager.async_mark_completed(
+    await platforms.manager.ledger.async_mark_started(platforms.serial, "one", room)
+    assert await platforms.manager.ledger.async_mark_completed(
         platforms.serial, "one", room, duration_seconds=1738
     )
     await hass.async_block_till_done()

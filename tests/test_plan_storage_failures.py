@@ -8,14 +8,14 @@ from homeassistant.helpers.json import JSONEncoder, prepare_save_json
 from homeassistant.util.file import WriteError
 from homeassistant.util.json import SerializationError
 
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_model import CleaningRoom
+from custom_components.matic_robot.plan_storage import (
     STORAGE_KEY,
     STORAGE_MINOR_VERSION,
     STORAGE_VERSION,
-    CleaningPlanManager,
-    CleaningRoom,
     _CleaningPlanStore,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 
 
 @pytest.fixture
@@ -65,11 +65,11 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
 
     manager = CleaningPlanManager(hass)
     store = _new_store(hass)
-    manager._store = store
+    manager.repository.store = store
     await manager.async_load()
 
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "synthetic-robot",
         "home",
         {
@@ -85,13 +85,13 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
             ],
         },
     )
-    _effective_rooms, cadence = manager.resolve_cadence(
+    _effective_rooms, cadence = manager.cadence.resolve_cadence(
         "synthetic-robot", "home", [room]
     )
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "synthetic-robot", "home", "run-one", 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "synthetic-robot",
         "run-one",
         {
@@ -99,14 +99,16 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
             "completed_room_ids": [],
         },
     )
-    assert await manager.async_mark_started(
+    assert await manager.ledger.async_mark_started(
         "synthetic-robot", "home", room, run_id="run-one"
     )
 
     durable_before = await _load_from_disk(hass)
-    robot_before = deepcopy(manager._robot("synthetic-robot"))
+    robot_before = deepcopy(manager.repository.robot("synthetic-robot"))
     notifications: list[None] = []
-    manager.async_add_listener("synthetic-robot", lambda: notifications.append(None))
+    manager.repository.async_add_listener(
+        "synthetic-robot", lambda: notifications.append(None)
+    )
     notifications.clear()
 
     if failure == "write":
@@ -125,7 +127,7 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
     with pytest.raises(
         HomeAssistantError, match="Cleaning plan state could not be saved"
     ) as raised:
-        await manager.async_mark_completed(
+        await manager.ledger.async_mark_completed(
             "synthetic-robot", "home", room, duration_seconds=90
         )
 
@@ -133,7 +135,7 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
     assert "synthetic disk-full failure" not in str(raised.value)
     assert raised.value.__cause__ is None
     assert raised.value.__suppress_context__ is True
-    assert manager._robot("synthetic-robot") == robot_before
+    assert manager.repository.robot("synthetic-robot") == robot_before
     assert notifications == []
 
     durable_after_failure = await _load_from_disk(hass)
@@ -144,10 +146,10 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
     else:
         store._encoder = real_encoder
 
-    await manager.async_mark_completed(
+    await manager.ledger.async_mark_completed(
         "synthetic-robot", "home", room, duration_seconds=90
     )
-    after_retry = manager._robot("synthetic-robot")
+    after_retry = manager.repository.robot("synthetic-robot")
     assert after_retry["rooms"][room.room_id]["completed_runs"] == 1
     assert after_retry["plan_room_cadence"]["home"][room.room_id]["progress"] == {
         "mop": 1,
@@ -164,7 +166,7 @@ async def test_failed_store_commit_rolls_back_room_credit_and_allows_retry(
     assert profile["duration_samples"] == 1
 
     # Duplicate verified evidence retries persistence but never credits twice.
-    await manager.async_mark_completed(
+    await manager.ledger.async_mark_completed(
         "synthetic-robot", "home", room, duration_seconds=90
     )
     assert after_retry["rooms"][room.room_id]["completed_runs"] == 1

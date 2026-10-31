@@ -10,18 +10,16 @@ from homeassistant.core import CoreState
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.matic_robot.client.exceptions import MaticError
-from custom_components.matic_robot.managed_executor import (
+from custom_components.matic_robot.managed_dispatch import _shutdown_suspends_run
+from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_run import (
     RoomInterruptedError,
     RoomTakenOverError,
-    _async_execute_rooms,
-    _shutdown_suspends_run,
 )
-from custom_components.matic_robot.plans import (
-    CleaningPlanManager,
-    CleaningRoom,
-    ManagedMotionReplacedError,
-)
+from custom_components.matic_robot.plan_model import CleaningRoom
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
+from custom_components.matic_robot.run_control import ManagedMotionReplacedError
 
 from .test_restart import recovery_state as recovery_fixture
 
@@ -51,8 +49,8 @@ async def test_shutdown_non_cancellation_errors_preserve_real_executor(
         checkpoint["rooms"].append(
             asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
         )
-        manager._robot("serial")["last_run"]["room_count"] = 2
-        await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+        manager.repository.robot("serial")["last_run"]["room_count"] = 2
+        await manager.ledger.async_set_recovery_checkpoint("serial", "run", checkpoint)
     terminal_events = []
     for kind in ("room_failed", "room_cancelled", "room_interrupted", "plan_finished"):
         hass.bus.async_listen("matic_robot_" + kind, terminal_events.append)
@@ -62,12 +60,12 @@ async def test_shutdown_non_cancellation_errors_preserve_real_executor(
         raise error_type("synthetic shutdown error")
 
     with patch(
-        "custom_components.matic_robot.managed_executor._async_wait_with_native_identity",
+        "custom_components.matic_robot.managed_observation._async_wait_with_native_identity",
         side_effect=shutdown_error,
     ):
         await async_recover_managed_run(hass, entry, "serial")
     await hass.async_block_till_done()
-    saved = manager.recovery_run("serial")
+    saved = manager.control.recovery_run("serial")
     assert saved is not None
     assert saved["run_id"] == "run"
     assert (
@@ -96,7 +94,7 @@ def test_shutdown_suspension_is_distinct_from_explicit_unload(
 ) -> None:
     """Only HA shutdown may preserve a managed run."""
     manager = MagicMock()
-    manager.cancellation_reason.return_value = reason
+    manager.control.cancellation_reason.return_value = reason
     hass.set_state(CoreState.stopping if stopping else CoreState.running)
     assert _shutdown_suspends_run(hass, manager, "serial") is expected
 
@@ -104,8 +102,8 @@ def test_shutdown_suspension_is_distinct_from_explicit_unload(
 async def test_shutdown_checkpoint_is_retained(hass) -> None:
     """A shutdown candidate remains durable until native reconciliation."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    await manager.async_begin_run(
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    await manager.ledger.async_begin_run(
         "serial",
         "plan",
         "run",
@@ -113,18 +111,20 @@ async def test_shutdown_checkpoint_is_retained(hass) -> None:
         trigger="automation",
         service="run_selected_plan",
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "run",
         {"plan_id": "plan", "rooms": [{"room_id": "room", "name": "Kitchen"}]},
     )
-    manager._store.async_load = AsyncMock(return_value=manager._data)
+    manager.repository.store.async_load = AsyncMock(
+        return_value=manager.repository.data
+    )
     recovering = CleaningPlanManager(hass)
-    recovering._store = manager._store
+    recovering.repository.store = manager.repository.store
     await recovering.async_load()
-    last_run = recovering.snapshot("serial")["last_run"]
+    last_run = recovering.ledger.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "running"
-    recovered = recovering.recovery_run("serial")
+    recovered = recovering.control.recovery_run("serial")
     assert recovered is not None
     assert recovered["recovery_checkpoint"]["rooms"][0]["room_id"] == "room"
 
@@ -138,8 +138,8 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
 ) -> None:
     """A task cancellation during shutdown cannot finalize or stop the robot."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._cancellation_reasons["serial"] = (
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.control.cancellation_reasons["serial"] = (
         "home_assistant_shutdown" if stopping else None
     )
     hass.set_state(CoreState.stopping if stopping else CoreState.running)
@@ -151,13 +151,13 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
     )
 
     async def cancel_leg(*args, **kwargs):
-        await manager.async_mark_started(
-            "serial", "plan", room, run_id=manager.active_run_id("serial")
+        await manager.ledger.async_mark_started(
+            "serial", "plan", room, run_id=manager.ledger.active_run_id("serial")
         )
         raise error_type
 
     with patch(
-        "custom_components.matic_robot.managed_executor._async_run_leg",
+        "custom_components.matic_robot.managed_leg._async_run_leg",
         AsyncMock(side_effect=cancel_leg),
     ):
         with pytest.raises(error_type):
@@ -169,13 +169,13 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
                 "serial",
                 [room],
             )
-    assert manager.snapshot("serial")["last_run"]["outcome"] == expected
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == expected
 
 
 async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
     """HA's actual stop path must not send STOP or finish the managed run."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     started = asyncio.Event()
     release = asyncio.Event()
     room = CleaningRoom("room", "Kitchen", "vacuum", "standard")
@@ -189,15 +189,15 @@ async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
     hass.bus.async_listen("matic_robot_plan_finished", events.append)
 
     async def held_leg(*args, **kwargs):
-        await manager.async_mark_started(
-            "serial", "plan", room, run_id=manager.active_run_id("serial")
+        await manager.ledger.async_mark_started(
+            "serial", "plan", room, run_id=manager.ledger.active_run_id("serial")
         )
         started.set()
         await release.wait()
         return True
 
     with patch(
-        "custom_components.matic_robot.managed_executor._async_run_leg",
+        "custom_components.matic_robot.managed_leg._async_run_leg",
         AsyncMock(side_effect=held_leg),
     ):
         task = hass.async_create_background_task(
@@ -219,4 +219,4 @@ async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
 
     assert not stop.await_args_list
     assert not events
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "running"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "running"

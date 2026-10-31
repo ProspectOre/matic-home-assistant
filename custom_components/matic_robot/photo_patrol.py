@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import sys
 from collections.abc import Callable
 from datetime import timedelta
 from time import monotonic
@@ -22,8 +24,14 @@ from homeassistant.util import dt as dt_util
 from .client.exceptions import MaticError
 from .client.floor_plan import room_name_key
 from .client.models import RobotOperationalState
-from .const import DOMAIN
-from .plans import resolve_room_reference
+from .const import (
+    CONF_PHOTO_PATROL_ALLOW_UNATTENDED,
+    CONF_PHOTO_PATROL_COOLDOWN_SECONDS,
+    CONF_PHOTO_PATROL_NO_PHOTO_ROOMS,
+    DOMAIN,
+)
+from .native_schedules import schedule_occurrences
+from .plan_model import resolve_room_reference
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -42,6 +50,10 @@ ARRIVAL_TIMEOUT_SECONDS = 180.0
 MIN_BATTERY_PERCENT = 20
 # The snap countdown is about 9 s and the photo lands about 6 s after it.
 PHOTO_TIMEOUT_SECONDS = 40.0
+MAX_PATROL_SECONDS = 15 * 60
+CLEANUP_RESERVE_SECONDS = 60
+SCHEDULE_GUARD_BEFORE = timedelta(minutes=30)
+DEFAULT_PATROL_COOLDOWN_SECONDS = 15 * 60
 # A photo captured more than this before the snap command, by the robot's
 # clock, is an older one. Live snaps matched Home Assistant's clock to within
 # a few seconds.
@@ -49,11 +61,18 @@ CLOCK_TOLERANCE = timedelta(minutes=1)
 PHOTO_TAKEN_EVENT = f"{DOMAIN}_photo_taken"
 
 _patrols: dict[str, asyncio.Lock] = {}
+_last_patrol_started: dict[str, float] = {}
+_LOGGER = logging.getLogger(__name__)
 
 
 def photo_url(entry_id: str, photo_id: str) -> str:
     """Return the authenticated URL that serves one recent photo."""
     return f"/api/{DOMAIN}/photo/{entry_id}/{photo_id}"
+
+
+def photo_preview_url(entry_id: str, photo_id: str) -> str:
+    """Return the authenticated, pixelated URL safe for notifications."""
+    return f"/api/{DOMAIN}/photo/{entry_id}/preview/{photo_id}"
 
 
 async def async_photo_patrol(
@@ -62,37 +81,85 @@ async def async_photo_patrol(
     entity_id: str,
     rooms: list[str],
     *,
-    return_to_dock: bool,
+    full_resolution: bool = False,
     context: Context | None = None,
 ) -> list[dict[str, str]]:
     """Visit each room in turn, photograph it, then dock.
 
     Each photo is returned with its room as soon as the robot has saved it,
-    and a ``matic_robot_photo_taken`` event is fired for it.
+    and a ``matic_robot_photo_taken`` event is fired for it. The robot is sent
+    to the dock after the last photo and after a failure when ownership is
+    still confirmed.
     """
     lock = _patrols.setdefault(entry.entry_id, asyncio.Lock())
     if lock.locked():
         raise _error("photo_patrol_running")
     async with lock:
+        _assert_patrol_allowed(entry, rooms)
+        room_ids = _resolve_patrol_rooms(entry, rooms)
+        if room_ids is None:
+            raise _error("photo_patrol_rooms_unavailable")
+        forbidden = set(entry.options.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, ()))
+        current_ids = _current_room_ids(entry)
+        if current_ids is None or not forbidden <= current_ids:
+            raise _error("photo_patrol_rooms_unavailable")
+        if forbidden.intersection(room_ids):
+            raise _error("photo_patrol_room_blocked")
         operational = entry.runtime_data.coordinator.data.operational
         if operational.cleaning or operational.paused or operational.returning:
             raise _error("photo_patrol_robot_busy")
         battery = operational.battery_percentage
         if battery is not None and battery < MIN_BATTERY_PERCENT:
             raise _error("photo_patrol_low_battery", battery=str(battery))
+        cooldown = max(
+            0,
+            int(
+                entry.options.get(
+                    CONF_PHOTO_PATROL_COOLDOWN_SECONDS,
+                    DEFAULT_PATROL_COOLDOWN_SECONDS,
+                )
+            ),
+        )
+        elapsed = monotonic() - _last_patrol_started.get(entry.entry_id, -float("inf"))
+        if elapsed < cooldown:
+            raise _error(
+                "photo_patrol_cooldown",
+                seconds=str(max(1, int(cooldown - elapsed))),
+            )
+        deadline = monotonic() + MAX_PATROL_SECONDS
+        operation_deadline = deadline - CLEANUP_RESERVE_SECONDS
+        try:
+            async with asyncio.timeout(max(0, operation_deadline - monotonic())):
+                await _async_check_schedule(entry)
+        except TimeoutError as err:
+            raise _error("photo_patrol_timeout") from err
+        _last_patrol_started[entry.entry_id] = monotonic()
         results: list[dict[str, str]] = []
         # The area the robot reported at each room it reached.
         arrivals: list[str] = []
         try:
             for room in rooms:
-                photo = await _async_photograph(
-                    hass, entry, entity_id, room, context, arrivals
-                )
+                _assert_patrol_allowed(entry, [room])
+                try:
+                    async with asyncio.timeout(
+                        max(0, operation_deadline - monotonic())
+                    ):
+                        await _async_check_schedule(entry)
+                        photo = await _async_photograph(
+                            hass, entry, entity_id, room, context, arrivals
+                        )
+                except TimeoutError as err:
+                    raise _error("photo_patrol_timeout") from err
                 result = {
                     "room": room,
                     "photo_id": photo.photo_id,
                     "captured_at": photo.captured_at.isoformat(),
-                    "url": photo_url(entry.entry_id, photo.photo_id),
+                    "url": (
+                        photo_url(entry.entry_id, photo.photo_id)
+                        if full_resolution
+                        else photo_preview_url(entry.entry_id, photo.photo_id)
+                    ),
+                    "preview_url": photo_preview_url(entry.entry_id, photo.photo_id),
                 }
                 results.append(result)
                 hass.bus.async_fire(
@@ -101,18 +168,40 @@ async def async_photo_patrol(
                     context=context,
                 )
         finally:
-            if (
-                return_to_dock
-                and arrivals
-                and await _async_still_parked(entry, arrivals[-1])
-            ):
-                await hass.services.async_call(
-                    VACUUM_DOMAIN,
-                    SERVICE_RETURN_TO_BASE,
-                    {ATTR_ENTITY_ID: entity_id},
-                    blocking=True,
-                    context=context,
-                )
+            # Patrol always returns to the dock when it still owns the parked
+            # robot.
+            active_error = sys.exc_info()[1]
+            can_dock = False
+            if arrivals:
+                try:
+                    remaining = max(0, deadline - monotonic())
+                    if remaining == 0:
+                        raise TimeoutError(
+                            "patrol deadline exhausted before ownership check"
+                        )
+                    async with asyncio.timeout(remaining):
+                        can_dock = await _async_still_parked(entry, arrivals[-1])
+                except Exception:
+                    _LOGGER.exception("Could not verify Matic photo patrol ownership")
+                if can_dock:
+                    try:
+                        remaining = max(0, deadline - monotonic())
+                        if remaining == 0:
+                            raise TimeoutError(
+                                "patrol deadline exhausted before docking"
+                            )
+                        async with asyncio.timeout(remaining):
+                            await hass.services.async_call(
+                                VACUUM_DOMAIN,
+                                SERVICE_RETURN_TO_BASE,
+                                {ATTR_ENTITY_ID: entity_id},
+                                blocking=True,
+                                context=context,
+                            )
+                    except Exception as err:
+                        _LOGGER.exception("Could not safely finish Matic photo patrol")
+                        if active_error is None:
+                            raise _error("photo_patrol_dock_timeout") from err
         return results
 
 
@@ -127,6 +216,12 @@ async def _async_photograph(
     client = entry.runtime_data.client
     photos = entry.runtime_data.photos
     state = await _async_state(client)
+    _assert_patrol_allowed(entry, [room])
+    battery = state.battery_percentage
+    if battery is None:
+        raise _error("photo_patrol_battery_unknown")
+    if battery < MIN_BATTERY_PERCENT:
+        raise _error("photo_patrol_low_battery", battery=str(battery))
     # Between rooms the patrol leaves the robot parked where it took the last
     # photo. A robot that has moved since was given something else to do.
     if _busy(state) if not arrivals else not _left_parked(state, arrivals[-1]):
@@ -151,9 +246,19 @@ async def _async_photograph(
         await photos.async_read()
     except MaticError as err:
         raise _error("photo_patrol_unreachable") from err
-    # A clean or another Go to room started during the read would take the
-    # photo somewhere else.
-    if not _left_parked(await _async_state(client), arrivals[-1]):
+    _assert_patrol_allowed(entry, [room])
+    await _async_check_schedule(entry)
+    # The collection read and schedule refresh can both take long enough for
+    # another command to move the robot or for its battery to fall.
+    current = await _async_state(client)
+    _assert_patrol_allowed(entry, [room])
+    if current.battery_percentage is None:
+        raise _error("photo_patrol_battery_unknown")
+    if current.battery_percentage < MIN_BATTERY_PERCENT:
+        raise _error(
+            "photo_patrol_low_battery", battery=str(current.battery_percentage)
+        )
+    if not _left_parked(current, arrivals[-1]):
         raise _error("photo_patrol_robot_busy")
     previous = photos.latest
     earliest = dt_util.utcnow() - CLOCK_TOLERANCE
@@ -270,6 +375,111 @@ def _same_area(first: str | None, second: str | None) -> bool:
         and second_key not in {"unknown", "unavailable"}
         and first_key == second_key
     )
+
+
+def _resolve_patrol_rooms(entry: MaticConfigEntry, rooms: list[str]) -> set[str] | None:
+    """Resolve requested rooms using the current coherent floor plan."""
+    state = entry.runtime_data.coordinator.data
+    floor_plan = state.floor_plan if state is not None else None
+    if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
+        floor_plan
+    ):
+        return None
+    room_names = {room.id: room.name for room in floor_plan.rooms}
+    resolved: set[str] = set()
+    for room in rooms:
+        try:
+            room_id, _name = resolve_room_reference(room, room_names)
+        except ValueError as err:
+            raise _error("photo_patrol_room_unknown", room=room) from err
+        resolved.add(room_id)
+    return resolved
+
+
+def _current_room_ids(entry: MaticConfigEntry) -> set[str] | None:
+    """Return IDs from the coherent active map, or None when it is stale."""
+    state = entry.runtime_data.coordinator.data
+    floor_plan = state.floor_plan if state is not None else None
+    if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
+        floor_plan
+    ):
+        return None
+    return {room.id for room in floor_plan.rooms}
+
+
+def _assert_patrol_allowed(entry: MaticConfigEntry, rooms: list[str]) -> None:
+    """Recheck opt-in and room privacy before dispatch and before each snap."""
+    if not entry.options.get(CONF_PHOTO_PATROL_ALLOW_UNATTENDED, False):
+        raise _error("photo_patrol_not_opted_in")
+    current_ids = _current_room_ids(entry)
+    if current_ids is None:
+        raise _error("photo_patrol_rooms_unavailable")
+    forbidden = set(entry.options.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, ()))
+    if not forbidden <= current_ids:
+        raise _error("photo_patrol_rooms_unavailable")
+    if rooms:
+        room_ids = _resolve_patrol_rooms(entry, rooms)
+        if room_ids is None:
+            raise _error("photo_patrol_rooms_unavailable")
+        if forbidden.intersection(room_ids):
+            raise _error("photo_patrol_room_blocked")
+
+
+async def _async_check_schedule(entry: MaticConfigEntry) -> None:
+    """Refresh native schedules before each leg and refuse stale schedule data."""
+    coordinator = entry.runtime_data.coordinator
+    refresh = getattr(coordinator, "async_request_refresh", None)
+    if callable(refresh):
+        try:
+            async with asyncio.timeout(30):
+                await refresh()
+        except Exception as err:
+            raise _error("photo_patrol_schedule_conflict") from err
+    if getattr(coordinator, "last_update_success", True) is False:
+        raise _error("photo_patrol_schedule_conflict")
+    state = coordinator.data
+    if (
+        state is None
+        or getattr(getattr(state, "telemetry", None), "schedules", None) is None
+    ):
+        raise _error("photo_patrol_schedule_conflict")
+    if _schedule_conflict(entry, dt_util.now()):
+        raise _error("photo_patrol_schedule_conflict")
+
+
+def _schedule_conflict(entry: MaticConfigEntry, now: Any) -> bool:
+    """Block a patrol whose bounded run overlaps an enabled native schedule."""
+    state = entry.runtime_data.coordinator.data
+    if state is None:
+        return True
+    begin = now - SCHEDULE_GUARD_BEFORE
+    end = now + timedelta(seconds=MAX_PATROL_SECONDS) + SCHEDULE_GUARD_BEFORE
+    return bool(schedule_occurrences(state, begin, end))
+
+
+def ensure_current_room_allows_photo(entry: MaticConfigEntry) -> None:
+    """Refuse manual snaps when the reported room is blocked or unverifiable."""
+    forbidden = set(entry.options.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, ()))
+    if not forbidden:
+        return
+    state = entry.runtime_data.coordinator.data
+    floor_plan = state.floor_plan if state is not None else None
+    if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
+        floor_plan
+    ):
+        raise _error("photo_patrol_rooms_unavailable")
+    room_names = {room.id: room.name for room in floor_plan.rooms}
+    if not forbidden <= set(room_names):
+        raise _error("photo_patrol_rooms_unavailable")
+    area = state.operational.current_area
+    if not isinstance(area, str) or not area.strip():
+        raise _error("photo_patrol_rooms_unavailable")
+    try:
+        room_id, _name = resolve_room_reference(area, room_names)
+    except ValueError as err:
+        raise _error("photo_patrol_rooms_unavailable") from err
+    if room_id in forbidden:
+        raise _error("photo_patrol_room_blocked")
 
 
 async def _async_still_parked(entry: MaticConfigEntry, area: str) -> bool:

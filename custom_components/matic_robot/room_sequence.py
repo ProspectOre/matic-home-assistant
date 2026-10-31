@@ -9,8 +9,7 @@ from typing import Any
 
 from .client.models import FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
-from .plans import (
-    CleaningPlanManager,
+from .plan_model import (
     CleaningRoom,
     DuplicateRoomError,
     RoomSequenceLimitError,
@@ -18,6 +17,7 @@ from .plans import (
     resolve_room_reference,
     room_cadence_identity,
 )
+from .plans import CleaningPlanManager
 
 
 def resolve_room_sequence(
@@ -65,7 +65,7 @@ def resolve_room_sequence(
     room_identities = {
         room.id: room_cadence_identity(floor_plan, room.id) for room in floor_plan.rooms
     }
-    effective_rooms, cadence_by_room = manager.resolve_cadence(
+    effective_rooms, cadence_by_room = manager.cadence.resolve_cadence(
         serial_number,
         None,
         rooms,

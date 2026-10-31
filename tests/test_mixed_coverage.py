@@ -52,7 +52,7 @@ from custom_components.matic_robot.client.wire import (
 from custom_components.matic_robot.client.wire import (
     first_varint as v,
 )
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_model import (
     PLAN_SESSION_ID,
     CleaningRoom,
     leg_groups,
@@ -1780,18 +1780,16 @@ def test_mismatched_per_room_encoder_options(key):
 async def test_entity_mixed_dispatch_guards(hass, failure):
     from homeassistant.exceptions import HomeAssistantError
 
-    from custom_components.matic_robot.plans import (
-        PLAN_MOTION_TOKEN,
-        CleaningPlanManager,
-    )
+    from custom_components.matic_robot.plan_model import PLAN_MOTION_TOKEN
+    from custom_components.matic_robot.plans import CleaningPlanManager
     from custom_components.matic_robot.vacuum import MaticVacuum
     from tests.test_entities import _entry
 
     entry = _entry()
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    token = manager.begin_managed_motion("synthetic-serial")
+    token = manager.control.begin_managed_motion("synthetic-serial")
 
     async def send(*args, **kwargs):
         kwargs["require_owned"]()
@@ -1799,11 +1797,14 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
             await kwargs["prepare_stop"]()
             raise MaticError("unavailable")
         if failure == "stop":
-            assert manager.request_stop("synthetic-serial").behavior == "after_room"
+            assert (
+                manager.control.request_stop("synthetic-serial").behavior
+                == "after_room"
+            )
         if failure == "replacement":
-            manager.replace_managed_motion("synthetic-serial")
+            manager.control.replace_managed_motion("synthetic-serial")
         if failure == "cancelled":
-            manager.cancellation_event("synthetic-serial").set()
+            manager.control.cancellation_event("synthetic-serial").set()
         if failure == "prepare_error":
             await kwargs["prepare_stop"]()
         if failure == "rollback":
@@ -1828,12 +1829,12 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
         "room_modes": ["vacuum", "mop"],
     }
     if failure in {"prepare_error", "rollback"}:
-        manager.async_mark_stop_pending = AsyncMock(
+        manager.control.async_mark_stop_pending = AsyncMock(
             side_effect=OSError("synthetic stop-fence persistence failure")
             if failure == "prepare_error"
             else None
         )
-        manager.async_clear_stop_pending = AsyncMock()
+        manager.control.async_clear_stop_pending = AsyncMock()
     if failure in {
         "transport",
         "replacement",
@@ -1845,31 +1846,31 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
             await entity.async_send_command("clean_rooms", params)
     else:
         if failure == "stop":
-            manager._robot("synthetic-serial")["plans"]["test"] = {
+            manager.repository.robot("synthetic-serial")["plans"]["test"] = {
                 "finish_current_room": True,
                 "finish_current_room_threshold": 50,
             }
-            manager._robot("synthetic-serial")["active_plan"] = {
+            manager.repository.robot("synthetic-serial")["active_plan"] = {
                 "plan_id": "test",
                 "room_id": "Kitchen",
             }
-            await manager.lock("synthetic-serial").acquire()
+            await manager.control.lock("synthetic-serial").acquire()
         try:
             await entity.async_send_command("clean_rooms", params)
         finally:
             if failure == "stop":
-                manager.lock("synthetic-serial").release()
+                manager.control.lock("synthetic-serial").release()
     client.async_start_coverage.assert_not_awaited()
     client.async_start_mixed_coverage.assert_awaited_once()
     if failure == "prepare_error":
-        manager.async_clear_stop_pending.assert_awaited_once_with(
+        manager.control.async_clear_stop_pending.assert_awaited_once_with(
             "synthetic-serial", run_id=None
         )
     if failure == "rollback":
-        manager.async_mark_stop_pending.assert_awaited_once_with(
+        manager.control.async_mark_stop_pending.assert_awaited_once_with(
             "synthetic-serial", run_id=None
         )
-        manager.async_clear_stop_pending.assert_awaited_once_with(
+        manager.control.async_clear_stop_pending.assert_awaited_once_with(
             "synthetic-serial", run_id=None
         )
     if failure == "transmitted_stop":
@@ -1885,9 +1886,9 @@ async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):
 
     entry = _entry()
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "synthetic-serial",
         "plan",
         "run",
@@ -1895,7 +1896,7 @@ async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):
         trigger="user",
         service="run_selected_plan",
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "synthetic-serial",
         "run",
         {
@@ -1905,7 +1906,7 @@ async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):
             "leg_index": 0,
         },
     )
-    token = manager.begin_managed_motion("synthetic-serial")
+    token = manager.control.begin_managed_motion("synthetic-serial")
     session_id = UUID("33333333-3333-4333-8333-333333333333")
     session_hash = hashlib.sha256(str(session_id).encode("ascii")).hexdigest()
 
@@ -1932,7 +1933,7 @@ async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):
     )
 
     assert (
-        manager.recovery_run("synthetic-serial")["recovery_checkpoint"][
+        manager.control.recovery_run("synthetic-serial")["recovery_checkpoint"][
             "mixed_initial_session_hash"
         ]
         == session_hash
@@ -1970,7 +1971,7 @@ async def test_runner_passes_each_rooms_mode_and_setting(
 ):
     from homeassistant.core import ServiceCall
 
-    from custom_components.matic_robot.managed_executor import (
+    from custom_components.matic_robot.managed_dispatch import (
         _async_dispatch_leg_command,
     )
 

@@ -18,7 +18,7 @@ from . import MaticConfigEntry
 from .const import DOMAIN
 from .entity import MaticEntity
 from .occupancy import entry_vacuum_entity_id
-from .plans import plan_floor_token, room_cadence_identity
+from .plan_model import plan_floor_token, room_cadence_identity
 
 PARALLEL_UPDATES = 0
 
@@ -112,7 +112,7 @@ class MaticPlanButton(_MaticFloorBoundButton):
         """Refresh availability when plans or managed runs change."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self._plans.async_add_listener(
+            self._plans.repository.async_add_listener(
                 self._serial_number, self._async_plans_updated
             )
         )
@@ -127,14 +127,17 @@ class MaticPlanButton(_MaticFloorBoundButton):
         if not super().available:
             return False
         if self._service == "stop_intelligent_cleaning":
-            return self._plans.snapshot(self._serial_number)["active_plan"] is not None
+            return (
+                self._plans.ledger.snapshot(self._serial_number)["active_plan"]
+                is not None
+            )
 
         floor_plan = self.coordinator.data.floor_plan
         if not self._floor_coherent() or floor_plan is None:
             return False
         room_map = {room.id: room.name for room in floor_plan.rooms}
         try:
-            self._plans.preview(
+            self._plans.catalog.preview(
                 self._serial_number,
                 room_map,
                 floor_token=plan_floor_token(floor_plan),
@@ -187,7 +190,7 @@ class MaticAreaButton(_MaticFloorBoundButton):
         """Refresh availability when custom areas change."""
         await super().async_added_to_hass()
         self.async_on_remove(
-            self._areas.async_add_listener(
+            self._areas.repository.async_add_listener(
                 self._serial_number, self._async_areas_updated
             )
         )
@@ -202,7 +205,7 @@ class MaticAreaButton(_MaticFloorBoundButton):
         if not super().available or not self._floor_coherent():
             return False
         try:
-            self._areas.area(self._serial_number)
+            self._areas.catalog.area(self._serial_number)
         except KeyError:
             return False
         return True
@@ -222,7 +225,7 @@ class MaticAreaButton(_MaticFloorBoundButton):
 
     async def async_press(self) -> None:
         """Run the selected private custom area through the validated action."""
-        area = self._areas.area(self._serial_number)
+        area = self._areas.catalog.area(self._serial_number)
         await self.hass.services.async_call(
             DOMAIN,
             "clean_area",

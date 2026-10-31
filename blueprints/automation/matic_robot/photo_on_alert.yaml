@@ -47,6 +47,14 @@ blueprint:
         minutes: 15
       selector:
         duration:
+    full_resolution_notification:
+      name: Send the full photo
+      description: >-
+        By default the notification uses a pixelated preview. Choose this only
+        when people who receive the notification may see the full photo.
+      default: false
+      selector:
+        boolean:
 
 mode: single
 max_exceeded: silent
@@ -54,6 +62,7 @@ max_exceeded: silent
 variables:
   room_name: !input room
   notify_service: !input notify_service
+  full_resolution_notification: !input full_resolution_notification
 
 triggers:
   - trigger: state
@@ -74,6 +83,7 @@ actions:
       entity_id: !input vacuum
     data:
       rooms: ["{{ room }}"]
+      full_resolution: "{{ full_resolution_notification }}"
     response_variable: patrol
     continue_on_error: true
   - variables:

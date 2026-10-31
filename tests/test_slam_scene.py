@@ -25,6 +25,9 @@ from custom_components.matic_robot.area_binding import (
     binding_for_floor_plan,
 )
 from custom_components.matic_robot.area_geometry import RoomGeometryIndex
+from custom_components.matic_robot.area_views import (
+    MaticAreasView,
+)
 from custom_components.matic_robot.client.commands import CleaningMode, CoverageSetting
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
@@ -40,19 +43,7 @@ from custom_components.matic_robot.const import (
     DOMAIN,
 )
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
-from custom_components.matic_robot.plans import (
-    AreaFramePointLimitError,
-    AreaInUseError,
-    CleaningPlanManager,
-    MetadataAdmissionClosedError,
-    RoomSequenceLimitError,
-    plan_floor_token,
-    room_cadence_identity,
-)
-from custom_components.matic_robot.room_sequence import saved_plan_preview_token
-from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
-from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from custom_components.matic_robot.slam_scene import (
+from custom_components.matic_robot.http import (
     AREAS_API_URL,
     CATALOG_API_URL,
     DELTA_API_URL,
@@ -62,8 +53,30 @@ from custom_components.matic_robot.slam_scene import (
     POSE_API_URL,
     PRIVATE_NO_STORE_HEADERS,
     SCENE_API_URL,
-    MaticAreasView,
+    areas_api_url,
+    delta_api_url,
+    history_api_url,
+    history_scene_api_url,
+    plans_api_url,
+    pose_api_url,
+    scene_api_url,
+)
+from custom_components.matic_robot.plan_model import (
+    AreaFramePointLimitError,
+    AreaInUseError,
+    RoomSequenceLimitError,
+    plan_floor_token,
+    room_cadence_identity,
+)
+from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
+from custom_components.matic_robot.plan_views import (
     MaticPlansView,
+)
+from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.room_sequence import saved_plan_preview_token
+from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
+from custom_components.matic_robot.slam_map_store import SlamMapIdentity
+from custom_components.matic_robot.slam_scene import (
     MaticSlamCatalogView,
     MaticSlamDeltaView,
     MaticSlamHistorySceneView,
@@ -71,14 +84,7 @@ from custom_components.matic_robot.slam_scene import (
     MaticSlamPoseView,
     MaticSlamSceneView,
     _map_session_key,
-    areas_api_url,
     catalog_entry_projection,
-    delta_api_url,
-    history_api_url,
-    history_scene_api_url,
-    plans_api_url,
-    pose_api_url,
-    scene_api_url,
 )
 from custom_components.matic_robot.workspace_socket import WorkspaceSocket
 from tests.test_slam_map import synthetic_slam_entry
@@ -173,20 +179,28 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
             async_scene=AsyncMock(return_value=None),
         ),
         cleaning_plans=SimpleNamespace(
-            areas=MagicMock(return_value={}),
-            plans=MagicMock(return_value={}),
-            preview=MagicMock(return_value={"rooms": []}),
-            snapshot=MagicMock(
-                return_value={"selected_plan": None, "active_plan": None}
+            catalog=SimpleNamespace(
+                areas=MagicMock(return_value={}),
+                plans=MagicMock(return_value={}),
+                preview=MagicMock(return_value={"rooms": []}),
+                selected_area=MagicMock(return_value=None),
+                async_save_area=AsyncMock(),
+                async_delete_area=AsyncMock(),
             ),
-            selected_area=MagicMock(return_value=None),
-            lock=MagicMock(
-                return_value=SimpleNamespace(locked=MagicMock(return_value=False))
+            ledger=SimpleNamespace(
+                snapshot=MagicMock(
+                    return_value={"selected_plan": None, "active_plan": None}
+                ),
+                pending_native_reconciliation=MagicMock(return_value=None),
             ),
-            stop_pending=MagicMock(return_value=False),
-            pending_native_reconciliation=MagicMock(return_value=None),
-            async_save_area=AsyncMock(),
-            async_delete_area=AsyncMock(),
+            control=SimpleNamespace(
+                lock=MagicMock(
+                    return_value=SimpleNamespace(locked=MagicMock(return_value=False))
+                ),
+                stop_pending=MagicMock(return_value=False),
+            ),
+            cadence=SimpleNamespace(),
+            repository=SimpleNamespace(),
         ),
     )
 
@@ -371,7 +385,7 @@ async def test_scene_withholds_floor_overlays_until_mission_identity_matches() -
     assert json.loads(pose.body)["map_floor_coherent"] is False
     assert areas_get.status == HTTPStatus.CONFLICT
     assert areas_post.status == HTTPStatus.CONFLICT
-    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
 
 
 @pytest.mark.parametrize("first_change", ["floor", "slam"])
@@ -1321,12 +1335,12 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert snapshot_entry is not None
     assert snapshot_entry == {key: rest_entry[key] for key in snapshot_entry}
 
-    runtime.cleaning_plans.lock.return_value.locked.return_value = True
-    runtime.cleaning_plans.stop_pending.return_value = True
-    runtime.cleaning_plans.snapshot.return_value = {
+    runtime.cleaning_plans.control.lock.return_value.locked.return_value = True
+    runtime.cleaning_plans.control.stop_pending.return_value = True
+    runtime.cleaning_plans.ledger.snapshot.return_value = {
         "active_plan": {"plan_id": "private-plan", "room_id": "private-room"}
     }
-    runtime.cleaning_plans.pending_native_reconciliation.return_value = {
+    runtime.cleaning_plans.ledger.pending_native_reconciliation.return_value = {
         "session_id": "private-session"
     }
     runtime.coordinator.data.telemetry.active_cleaning_session = True
@@ -1417,7 +1431,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     circle = {"x": 0.1, "y": 0.1, "radius": 0.2}
     review_circle = {"x": 0.1, "y": 0.1, "radius": 0.1}
     current_binding = binding_for_area(runtime.coordinator.data.floor_plan, [circle])
-    runtime.cleaning_plans.areas.return_value = {
+    runtime.cleaning_plans.catalog.areas.return_value = {
         "table": {
             "name": "Table",
             "circles": [circle],
@@ -1451,7 +1465,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
         },
         "legacy": {"name": "Legacy"},
     }
-    runtime.cleaning_plans.selected_area.return_value = "review"
+    runtime.cleaning_plans.catalog.selected_area.return_value = "review"
     no_go = ((0.2, 0.2), (0.6, 0.2), (0.6, 0.6), (0.2, 0.6))
     runtime.coordinator.data.telemetry.zones = (
         MapZone(1, "no_go", 1, no_go),
@@ -1462,15 +1476,17 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     view = MaticAreasView()
 
     with patch(
-        "custom_components.matic_robot.slam_scene.area_binding_status",
+        "custom_components.matic_robot.area_views.area_binding_status",
         wraps=area_binding_status,
     ) as classify:
         response = await view.get(_request(hass), "entry")
 
     assert classify.call_count == 3
     # The selection is read directly; snapshot() deep-copies the plan history.
-    runtime.cleaning_plans.selected_area.assert_called_once_with("synthetic-serial")
-    runtime.cleaning_plans.snapshot.assert_not_called()
+    runtime.cleaning_plans.catalog.selected_area.assert_called_once_with(
+        "synthetic-serial"
+    )
+    runtime.cleaning_plans.ledger.snapshot.assert_not_called()
     room_geometry = classify.call_args_list[0].kwargs["room_geometry"]
     assert all(
         call.kwargs["room_geometry"] is room_geometry
@@ -1534,11 +1550,11 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
 
 async def test_area_workspace_does_not_index_geometry_without_saved_areas() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.areas.return_value = {}
+    runtime.cleaning_plans.catalog.areas.return_value = {}
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
-    with patch("custom_components.matic_robot.slam_scene.RoomGeometryIndex") as index:
+    with patch("custom_components.matic_robot.area_views.RoomGeometryIndex") as index:
         response = await view.get(_request(hass), "entry")
 
     assert response.status == HTTPStatus.OK
@@ -1558,7 +1574,7 @@ async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
             ),
         ),
     )
-    runtime.cleaning_plans.areas.return_value = {
+    runtime.cleaning_plans.catalog.areas.return_value = {
         "review": {
             "name": "Review",
             "circles": [circle],
@@ -1571,7 +1587,7 @@ async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
     hass = _hass(_entry(runtime))
 
     with patch(
-        "custom_components.matic_robot.slam_scene.RoomGeometryIndex",
+        "custom_components.matic_robot.area_views.RoomGeometryIndex",
         wraps=RoomGeometryIndex,
     ) as index:
         response = await MaticAreasView().get(_request(hass), "entry")
@@ -1584,7 +1600,7 @@ async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
 
 async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "weekday": {
             "name": "Weekday",
             "enabled": True,
@@ -1602,8 +1618,8 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
             "finish_current_room_threshold": 60,
         }
     }
-    runtime.cleaning_plans.snapshot.return_value = {"selected_plan": "weekday"}
-    runtime.cleaning_plans.preview.return_value = {
+    runtime.cleaning_plans.ledger.snapshot.return_value = {"selected_plan": "weekday"}
+    runtime.cleaning_plans.catalog.preview.return_value = {
         "rooms": [
             {
                 "room_id": "room-1",
@@ -1614,11 +1630,11 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
             }
         ]
     }
-    runtime.cleaning_plans.preview.side_effect = None
+    runtime.cleaning_plans.catalog.preview.side_effect = None
     hass = _hass(_entry(runtime))
     view = MaticPlansView()
     preview_token = saved_plan_preview_token(
-        runtime.cleaning_plans.preview.return_value,
+        runtime.cleaning_plans.catalog.preview.return_value,
         entry_id="entry",
         floor_token=plan_floor_token(runtime.coordinator.data.floor_plan),
         room_identities={
@@ -1691,7 +1707,7 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
 
 async def test_plan_workspace_explains_legacy_room_limit() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "legacy": {
             "name": "Legacy",
             "enabled": True,
@@ -1706,10 +1722,12 @@ async def test_plan_workspace_explains_legacy_room_limit() -> None:
             "room_order": ["room-1"],
         }
     }
-    runtime.cleaning_plans.preview.side_effect = RoomSequenceLimitError(
+    runtime.cleaning_plans.catalog.preview.side_effect = RoomSequenceLimitError(
         "A plan can include at most 100 rooms"
     )
-    runtime.cleaning_plans.next_run_estimate_seconds = MagicMock(return_value=1980)
+    runtime.cleaning_plans.ledger.next_run_estimate_seconds = MagicMock(
+        return_value=1980
+    )
     hass = _hass(_entry(runtime))
 
     response = await MaticPlansView().get(_request(hass), "entry")
@@ -1721,15 +1739,15 @@ async def test_plan_workspace_explains_legacy_room_limit() -> None:
         "blocker": "plan_room_limit",
     }
     assert plan["next_run_estimate_seconds"] is None
-    runtime.cleaning_plans.next_run_estimate_seconds.assert_not_called()
+    runtime.cleaning_plans.ledger.next_run_estimate_seconds.assert_not_called()
 
 
 async def test_plan_workspace_projects_saved_and_shared_cadence_state() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.shared_cadence_delete_token = MagicMock(
+    runtime.cleaning_plans.cadence.shared_cadence_delete_token = MagicMock(
         return_value="d" * 64
     )
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "weekday": {
             "rooms": [
                 {
@@ -1740,7 +1758,7 @@ async def test_plan_workspace_projects_saved_and_shared_cadence_state() -> None:
             ]
         }
     }
-    runtime.cleaning_plans.cadence_editor_state = MagicMock(
+    runtime.cleaning_plans.cadence.cadence_editor_state = MagicMock(
         return_value={
             "cadence": {"scope": "plan", "mop_every_n": 3},
             "cadence_progress": {"mop": 2},
@@ -1767,13 +1785,15 @@ async def test_plan_workspace_projects_saved_and_shared_cadence_state() -> None:
         "shared_cadence_progress": {"mop": 2},
         "shared_cadence_reasons": ["mop_due"],
     }
-    assert runtime.cleaning_plans.cadence_editor_state.call_count == 2
-    saved_call, shared_call = runtime.cleaning_plans.cadence_editor_state.call_args_list
+    assert runtime.cleaning_plans.cadence.cadence_editor_state.call_count == 2
+    saved_call, shared_call = (
+        runtime.cleaning_plans.cadence.cadence_editor_state.call_args_list
+    )
     assert saved_call.kwargs["use_shared_schedule"] is False
     assert shared_call.kwargs["use_shared_schedule"] is True
     assert saved_call.kwargs["floor_token"] == shared_call.kwargs["floor_token"]
     assert saved_call.kwargs["identity"] == shared_call.kwargs["identity"]
-    runtime.cleaning_plans.shared_cadence_delete_token.assert_called_once_with(
+    runtime.cleaning_plans.cadence.shared_cadence_delete_token.assert_called_once_with(
         "synthetic-serial", "room-1"
     )
 
@@ -1787,7 +1807,7 @@ async def test_plan_workspace_preserves_invalid_cadence_reasons_and_other_rooms(
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
     }
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "legacy": {"rooms": [room]},
         "unconfigured": {"rooms": [room]},
     }
@@ -1802,7 +1822,9 @@ async def test_plan_workspace_preserves_invalid_cadence_reasons_and_other_rooms(
             return invalid
         return {"cadence": None}
 
-    runtime.cleaning_plans.cadence_editor_state = MagicMock(side_effect=cadence_state)
+    runtime.cleaning_plans.cadence.cadence_editor_state = MagicMock(
+        side_effect=cadence_state
+    )
     request_hass = _hass(_entry(runtime))
 
     response = await MaticPlansView().get(_request(request_hass), "entry")
@@ -1834,7 +1856,7 @@ async def test_plan_workspace_projects_malformed_persisted_cadence_safely(hass) 
         ),
     )
     manager = CleaningPlanManager(hass)
-    robot = manager._robot("synthetic-serial")
+    robot = manager.repository.robot("synthetic-serial")
     robot["plans"] = {
         "invalid-private": {
             "name": "Invalid private cadence",
@@ -1884,11 +1906,11 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "custom_components.matic_robot.plans.leg_groups",
+        "custom_components.matic_robot.plan_model.leg_groups",
         lambda rooms, mixed_settings=False, **_kwargs: [[room] for room in rooms],
     )
     runtime = _runtime()
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "weekday": {
             "rooms": [
                 {
@@ -1937,9 +1959,11 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
             },
         ]
     }
-    runtime.cleaning_plans.preview.return_value = preview_result
-    runtime.cleaning_plans.preview.side_effect = None
-    runtime.cleaning_plans.next_run_estimate_seconds = MagicMock(return_value=1980)
+    runtime.cleaning_plans.catalog.preview.return_value = preview_result
+    runtime.cleaning_plans.catalog.preview.side_effect = None
+    runtime.cleaning_plans.ledger.next_run_estimate_seconds = MagicMock(
+        return_value=1980
+    )
     request_hass = _hass(_entry(runtime))
     view = MaticPlansView()
     preview_token = saved_plan_preview_token(
@@ -1981,14 +2005,14 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
         "blocker": None,
     }
     assert json.loads(first.body)["plans"][0]["next_run_estimate_seconds"] == 1980
-    runtime.cleaning_plans.next_run_estimate_seconds.assert_called_with(
+    runtime.cleaning_plans.ledger.next_run_estimate_seconds.assert_called_with(
         "synthetic-serial",
         [
             ("room-2", "vacuum_and_mop", "heavy_duty"),
             ("room-1", "vacuum", "standard"),
         ],
     )
-    runtime.cleaning_plans.preview.assert_any_call(
+    runtime.cleaning_plans.catalog.preview.assert_any_call(
         "synthetic-serial",
         {"room-1": "Kitchen", "room-2": "Study"},
         "weekday",
@@ -1999,13 +2023,13 @@ async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
         },
         floor_plan=runtime.coordinator.data.floor_plan,
     )
-    runtime.cleaning_plans.async_save_area.assert_not_awaited()
-    runtime.cleaning_plans.async_delete_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.async_delete_area.assert_not_awaited()
 
 
 async def test_plan_workspace_reports_preview_unavailable() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "weekday": {
             "rooms": [
                 {
@@ -2018,7 +2042,7 @@ async def test_plan_workspace_reports_preview_unavailable() -> None:
         }
     }
     runtime.slam_map.floor_plan_is_current.return_value = True
-    runtime.cleaning_plans.preview = None
+    runtime.cleaning_plans.catalog.preview = None
     request_hass = _hass(_entry(runtime))
 
     response = await MaticPlansView().get(_request(request_hass), "entry")
@@ -2033,7 +2057,7 @@ async def test_plan_workspace_reports_preview_unavailable() -> None:
 
 async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "quick_clean": {
             "name": "Quick Clean",
             "enabled": True,
@@ -2048,7 +2072,7 @@ async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
             "room_order": ["room-1"],
         }
     }
-    runtime.cleaning_plans.preview.side_effect = ValueError(
+    runtime.cleaning_plans.catalog.preview.side_effect = ValueError(
         "room cadence progress is unverified; reset mop before use"
     )
     runtime.slam_map.floor_plan_is_current.return_value = True
@@ -2066,7 +2090,7 @@ async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
 async def test_plan_workspace_keeps_inapplicable_mop_cadence_editable(hass) -> None:
     runtime = _runtime()
     manager = CleaningPlanManager(hass)
-    robot = manager._robot("synthetic-serial")
+    robot = manager.repository.robot("synthetic-serial")
     robot["plans"]["legacy"] = {
         "name": "Legacy mop plan",
         "rooms": [
@@ -2082,7 +2106,7 @@ async def test_plan_workspace_keeps_inapplicable_mop_cadence_editable(hass) -> N
         ],
     }
     runtime.cleaning_plans = manager
-    before = manager.plans("synthetic-serial")
+    before = manager.catalog.plans("synthetic-serial")
 
     response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
 
@@ -2092,15 +2116,15 @@ async def test_plan_workspace_keeps_inapplicable_mop_cadence_editable(hass) -> N
     assert plan["rooms"][0]["cadence_reasons"] == ["coverage_requires_vacuum"]
     assert plan["rooms"][0]["cadence"]["coverage_every_n"] == 3
     assert plan["rooms"][0]["cadence"]["periodic_coverage_setting"] == "heavy_duty"
-    assert manager.plans("synthetic-serial") == before
+    assert manager.catalog.plans("synthetic-serial") == before
 
 
 async def test_plan_workspace_skips_malformed_rooms_and_uses_safe_defaults() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "legacy": {"rooms": [None, {}, {"room_id": ""}, {"room_id": "room-1"}]}
     }
-    runtime.cleaning_plans.cadence_editor_state = MagicMock(
+    runtime.cleaning_plans.cadence.cadence_editor_state = MagicMock(
         return_value={"cadence": None}
     )
 
@@ -2116,7 +2140,7 @@ async def test_plan_workspace_skips_malformed_rooms_and_uses_safe_defaults() -> 
             "coverage_setting": CoverageSetting.OPTIMAL.value,
         }
     ]
-    calls = runtime.cleaning_plans.cadence_editor_state.call_args_list
+    calls = runtime.cleaning_plans.cadence.cadence_editor_state.call_args_list
     assert len(calls) == 2
     assert calls[0].args[1] == "legacy"
     assert calls[1].args[1] == "quick_clean"
@@ -2124,16 +2148,16 @@ async def test_plan_workspace_skips_malformed_rooms_and_uses_safe_defaults() -> 
 
 async def test_plan_workspace_projects_unavailable_cadence_identity() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.plans.return_value = {
+    runtime.cleaning_plans.catalog.plans.return_value = {
         "weekday": {"rooms": [{"room_id": "room-1"}]}
     }
-    runtime.cleaning_plans.cadence_editor_state = MagicMock(
+    runtime.cleaning_plans.cadence.cadence_editor_state = MagicMock(
         side_effect=AssertionError("unavailable identities must not be projected")
     )
     hass = _hass(_entry(runtime))
 
     with patch(
-        "custom_components.matic_robot.slam_scene.room_cadence_identity",
+        "custom_components.matic_robot.plan_views.room_cadence_identity",
         side_effect=ValueError("room identity unavailable"),
     ):
         response = await MaticPlansView().get(_request(hass), "entry")
@@ -2152,7 +2176,7 @@ async def test_plan_workspace_projects_unavailable_cadence_identity() -> None:
         "name": "Kitchen",
         "shared_cadence_reasons": ["room_not_on_current_map"],
     }
-    runtime.cleaning_plans.cadence_editor_state.assert_not_called()
+    runtime.cleaning_plans.cadence.cadence_editor_state.assert_not_called()
 
 
 async def test_plan_workspace_handles_missing_entry_and_floor_plan() -> None:
@@ -2216,8 +2240,8 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
     created = await view.post(_json_request(hass, "POST", values), "entry")
 
     assert json.loads(created.body) == {"id": "under_table"}
-    runtime.cleaning_plans.async_save_area.assert_awaited_once()
-    saved_args = runtime.cleaning_plans.async_save_area.await_args
+    runtime.cleaning_plans.catalog.async_save_area.assert_awaited_once()
+    saved_args = runtime.cleaning_plans.catalog.async_save_area.await_args
     assert saved_args.args == (
         "synthetic-serial",
         "under_table",
@@ -2234,7 +2258,9 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
     )
     assert callable(saved_args.kwargs["precondition"])
 
-    runtime.cleaning_plans.areas.return_value = {"under_table": {"name": "Under table"}}
+    runtime.cleaning_plans.catalog.areas.return_value = {
+        "under_table": {"name": "Under table"}
+    }
     updated = await view.post(
         _json_request(hass, "POST", {**values, "area_id": "under_table"}),
         "entry",
@@ -2243,7 +2269,7 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
 
     deleted = await view.delete(_request(hass, path="/?area_id=under_table"), "entry")
     assert deleted.status == HTTPStatus.NO_CONTENT
-    runtime.cleaning_plans.async_delete_area.assert_awaited_once_with(
+    runtime.cleaning_plans.catalog.async_delete_area.assert_awaited_once_with(
         "synthetic-serial", "under_table"
     )
 
@@ -2253,14 +2279,14 @@ async def test_area_workspace_reports_metadata_admission_closed(operation) -> No
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
-    runtime.cleaning_plans.areas.return_value = (
+    runtime.cleaning_plans.catalog.areas.return_value = (
         {"under_table": {"name": "Under table"}} if operation == "delete" else {}
     )
-    runtime.cleaning_plans.async_save_area.side_effect = MetadataAdmissionClosedError(
-        "Matic metadata is unavailable during unload"
+    runtime.cleaning_plans.catalog.async_save_area.side_effect = (
+        MetadataAdmissionClosedError("Matic metadata is unavailable during unload")
     )
-    runtime.cleaning_plans.async_delete_area.side_effect = MetadataAdmissionClosedError(
-        "Matic metadata is unavailable during unload"
+    runtime.cleaning_plans.catalog.async_delete_area.side_effect = (
+        MetadataAdmissionClosedError("Matic metadata is unavailable during unload")
     )
     values = {
         "name": "Under table",
@@ -2271,16 +2297,16 @@ async def test_area_workspace_reports_metadata_admission_closed(operation) -> No
 
     if operation == "save":
         response = await view.post(_json_request(hass, "POST", values), "entry")
-        runtime.cleaning_plans.async_save_area.assert_awaited_once()
-        runtime.cleaning_plans.async_delete_area.assert_not_awaited()
+        runtime.cleaning_plans.catalog.async_save_area.assert_awaited_once()
+        runtime.cleaning_plans.catalog.async_delete_area.assert_not_awaited()
     else:
         response = await view.delete(
             _request(hass, path="/?area_id=under_table"), "entry"
         )
-        runtime.cleaning_plans.async_delete_area.assert_awaited_once_with(
+        runtime.cleaning_plans.catalog.async_delete_area.assert_awaited_once_with(
             "synthetic-serial", "under_table"
         )
-        runtime.cleaning_plans.async_save_area.assert_not_awaited()
+        runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
 
     assert response.status == HTTPStatus.SERVICE_UNAVAILABLE
     assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
@@ -2290,8 +2316,8 @@ async def test_area_workspace_reports_room_frame_capacity_to_client() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
-    runtime.cleaning_plans.async_save_area.side_effect = AreaFramePointLimitError(
-        "aggregate room frame boundary point limit exceeded"
+    runtime.cleaning_plans.catalog.async_save_area.side_effect = (
+        AreaFramePointLimitError("aggregate room frame boundary point limit exceeded")
     )
     values = {
         "name": "Under table",
@@ -2305,7 +2331,7 @@ async def test_area_workspace_reports_room_frame_capacity_to_client() -> None:
     assert response.status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     assert json.loads(response.body) == {"error": "area_boundary_point_limit"}
     assert response.headers["Cache-Control"] == "private, no-store, max-age=0"
-    runtime.cleaning_plans.async_save_area.assert_awaited_once()
+    runtime.cleaning_plans.catalog.async_save_area.assert_awaited_once()
 
 
 async def test_area_mutations_require_admin_before_body_or_store_access() -> None:
@@ -2320,16 +2346,16 @@ async def test_area_mutations_require_admin_before_body_or_store_access() -> Non
         await view.post(request, "entry")
 
     request.json.assert_not_awaited()
-    runtime.cleaning_plans.areas.assert_not_called()
-    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.areas.assert_not_called()
+    runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
 
     with pytest.raises(Unauthorized):
         await view.delete(
             _request(hass, admin=False, path="/?area_id=under_table"), "entry"
         )
 
-    runtime.cleaning_plans.areas.assert_not_called()
-    runtime.cleaning_plans.async_delete_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.areas.assert_not_called()
+    runtime.cleaning_plans.catalog.async_delete_area.assert_not_awaited()
 
 
 async def test_area_post_cancellation_during_body_read_does_not_reach_store() -> None:
@@ -2373,8 +2399,8 @@ async def test_area_post_cancellation_during_body_read_does_not_reach_store() ->
 
     assert body_cancelled.is_set()
     request.json.assert_awaited_once_with(loads=json.loads)
-    runtime.cleaning_plans.areas.assert_not_called()
-    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.areas.assert_not_called()
+    runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
 
 
 async def test_area_workspace_rejects_floor_change_during_request_body_read() -> None:
@@ -2411,7 +2437,7 @@ async def test_area_workspace_rejects_floor_change_during_request_body_read() ->
     response = await MaticAreasView().post(request, "entry")
 
     assert response.status == HTTPStatus.CONFLICT
-    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
 
 
 async def test_area_workspace_rejects_runtime_replacement_during_body_read() -> None:
@@ -2444,8 +2470,8 @@ async def test_area_workspace_rejects_runtime_replacement_during_body_read() -> 
     response = await MaticAreasView().post(request, "entry")
 
     assert response.status == HTTPStatus.CONFLICT
-    runtime.cleaning_plans.async_save_area.assert_not_awaited()
-    entry.runtime_data.cleaning_plans.async_save_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
+    entry.runtime_data.cleaning_plans.catalog.async_save_area.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -2509,7 +2535,7 @@ async def test_area_workspace_handles_missing_maps_entries_and_conflicts() -> No
         "cleaning_mode": "vacuum",
         "coverage_setting": "quick",
     }
-    runtime.cleaning_plans.areas.return_value = {"table": {"name": "Table"}}
+    runtime.cleaning_plans.catalog.areas.return_value = {"table": {"name": "Table"}}
     assert (await view.post(_json_request(hass, "POST", values), "entry")).status == 409
     assert (
         await view.post(
@@ -2517,7 +2543,7 @@ async def test_area_workspace_handles_missing_maps_entries_and_conflicts() -> No
             "entry",
         )
     ).status == 404
-    runtime.cleaning_plans.areas.return_value = {
+    runtime.cleaning_plans.catalog.areas.return_value = {
         "table": {"name": "Table"},
         "other": {"name": "Other"},
     }
@@ -3136,16 +3162,18 @@ async def test_area_workspace_preserves_perimeter_and_rejects_excess_coverage() 
     }
     response = await view.post(_json_request(hass, "POST", body), "entry")
     assert response.status == HTTPStatus.OK
-    saved = runtime.cleaning_plans.async_save_area.await_args.args[2]
+    saved = runtime.cleaning_plans.catalog.async_save_area.await_args.args[2]
     assert saved["outline"] == outline
-    runtime.cleaning_plans.areas.return_value = {"zone": saved}
+    runtime.cleaning_plans.catalog.areas.return_value = {"zone": saved}
     response = await view.get(_request(hass), "entry")
     assert json.loads(response.body)["areas"][0]["outline"] == outline
     # The authenticated read must withhold perimeter coordinates with stale circles.
-    runtime.cleaning_plans.areas.return_value = {"zone": {**saved, "map_binding": None}}
+    runtime.cleaning_plans.catalog.areas.return_value = {
+        "zone": {**saved, "map_binding": None}
+    }
     response = await view.get(_request(hass), "entry")
     assert "outline" not in json.loads(response.body)["areas"][0]
-    runtime.cleaning_plans.async_save_area.reset_mock()
+    runtime.cleaning_plans.catalog.async_save_area.reset_mock()
     response = await view.post(
         _json_request(
             hass, "POST", {**body, "circles": [{"x": 0.15, "y": 0.15, "radius": 0.2}]}
@@ -3153,7 +3181,7 @@ async def test_area_workspace_preserves_perimeter_and_rejects_excess_coverage() 
         "entry",
     )
     assert response.status == HTTPStatus.BAD_REQUEST
-    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+    runtime.cleaning_plans.catalog.async_save_area.assert_not_awaited()
 
 
 async def test_pose_cache_does_not_relabel_previous_floor_position() -> None:
@@ -3320,11 +3348,11 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     floor_plan = replace(floor_plan, rooms=(*floor_plan.rooms, second_room))
     runtime.coordinator.data.floor_plan = floor_plan
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     serial = "synthetic-serial"
-    await manager.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
-    await manager.async_save_area(serial, "mat", _saved_area(floor_plan, "Mat"))
-    await manager.async_save_plan(
+    await manager.catalog.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
+    await manager.catalog.async_save_area(serial, "mat", _saved_area(floor_plan, "Mat"))
+    await manager.catalog.async_save_plan(
         serial,
         "mixed",
         {
@@ -3343,13 +3371,13 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
             ],
         },
     )
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         serial,
         "spots",
         {"name": "Spots", "rooms": [], "entries": [_area_entry("rug")]},
         select=False,
     )
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         serial,
         "smart-stop",
         {
@@ -3370,7 +3398,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         },
         select=False,
     )
-    manager._robot(serial)["plans"]["corrupt"] = {
+    manager.repository.robot(serial)["plans"]["corrupt"] = {
         "name": "Corrupt",
         "rooms": [
             {
@@ -3402,7 +3430,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         {"kind": "room", "room_id": "room-1"},
         {**_area_entry("mat"), "name": "Mat"},
     ]
-    assert "name" not in manager.plan(serial, "mixed")["entries"][0]
+    assert "name" not in manager.catalog.plan(serial, "mixed")["entries"][0]
     area_projection = {
         "kind": "area",
         "area_id": "rug",
@@ -3427,7 +3455,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         ],
         "mission_boundaries": [1, 2],
         "preview_token": saved_plan_preview_token(
-            manager.preview(
+            manager.catalog.preview(
                 serial,
                 {"room-1": "Kitchen"},
                 "mixed",
@@ -3443,7 +3471,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     smart_stop = plans["smart-stop"]["next_run_preview"]
     assert smart_stop["mission_boundaries"] == [1]
     assert smart_stop["preview_token"] == saved_plan_preview_token(
-        manager.preview(
+        manager.catalog.preview(
             serial,
             {"room-1": "Kitchen", "room-2": "Office"},
             "smart-stop",
@@ -3462,11 +3490,13 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
     assert plans["corrupt"]["next_run_preview"]["blocker"] == "invalid_plan"
 
     # A redrawn map or a missing area blocks the plan before anything runs.
-    manager._robot(serial)["areas"]["mat"]["map_binding"] = binding_for_floor_plan(
-        replace(floor_plan, mission_id=floor_plan.mission_id + 1)
+    manager.repository.robot(serial)["areas"]["mat"]["map_binding"] = (
+        binding_for_floor_plan(
+            replace(floor_plan, mission_id=floor_plan.mission_id + 1)
+        )
     )
-    manager._robot(serial)["areas"].pop("rug")
-    manager._robot(serial)["areas"]["mat"]["name"] = None
+    manager.repository.robot(serial)["areas"].pop("rug")
+    manager.repository.robot(serial)["areas"]["mat"]["name"] = None
     response = await MaticPlansView().get(_request(hass_view), "entry")
     plans = {plan["id"]: plan for plan in json.loads(response.body)["plans"]}
     # A deleted or unnamed area is still listed, under its ID.
@@ -3481,7 +3511,7 @@ async def test_plan_workspace_projects_area_entries_and_mission_boundaries(
         "mission_boundaries": [],
         "blocker": "area_missing",
     }
-    await manager.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
+    await manager.catalog.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
     response = await MaticPlansView().get(_request(hass_view), "entry")
     plans = {plan["id"]: plan for plan in json.loads(response.body)["plans"]}
     assert plans["mixed"]["next_run_preview"]["blocker"] == "area_map_changed"
@@ -3494,18 +3524,18 @@ async def test_area_delete_keeps_the_area_and_plans_a_delete_would_empty(
     runtime = _runtime()
     floor_plan = runtime.coordinator.data.floor_plan
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     serial = "synthetic-serial"
-    await manager.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
+    await manager.catalog.async_save_area(serial, "rug", _saved_area(floor_plan, "Rug"))
     for plan_id, name in (("spots", "Spots"), ("rug-only", "Rug only")):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             serial,
             plan_id,
             {"name": name, "rooms": [], "entries": [_area_entry("rug")]},
             select=False,
         )
     runtime.cleaning_plans = manager
-    saves = manager._store.async_save.await_count
+    saves = manager.repository.store.async_save.await_count
 
     response = await MaticAreasView().delete(
         _request(_hass(_entry(runtime)), path="/?area_id=rug"), "entry"
@@ -3514,16 +3544,18 @@ async def test_area_delete_keeps_the_area_and_plans_a_delete_would_empty(
     assert response.status == HTTPStatus.CONFLICT
     assert response.headers["X-Matic-Areas-Conflict"] == "plan-would-be-empty"
     assert sorted(json.loads(response.body)["plans"]) == ["Rug only", "Spots"]
-    assert "rug" in manager.areas(serial)
-    plans = manager._robot(serial)["plans"]
+    assert "rug" in manager.catalog.areas(serial)
+    plans = manager.repository.robot(serial)["plans"]
     assert all(plans[plan_id]["entries"] == [_area_entry("rug")] for plan_id in plans)
-    assert manager._store.async_save.await_count == saves
+    assert manager.repository.store.async_save.await_count == saves
 
 
 async def test_area_delete_reports_the_plans_it_would_empty() -> None:
     runtime = _runtime()
-    runtime.cleaning_plans.areas.return_value = {"rug": {"name": "Rug"}}
-    runtime.cleaning_plans.async_delete_area.side_effect = AreaInUseError(["Rug only"])
+    runtime.cleaning_plans.catalog.areas.return_value = {"rug": {"name": "Rug"}}
+    runtime.cleaning_plans.catalog.async_delete_area.side_effect = AreaInUseError(
+        ["Rug only"]
+    )
     hass = _hass(_entry(runtime))
 
     response = await MaticAreasView().delete(

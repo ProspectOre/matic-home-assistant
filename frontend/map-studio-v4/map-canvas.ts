@@ -1,6 +1,6 @@
 import { LitElement, adoptStyles, css, html, nothing } from "lit";
 import { controls } from "./controls";
-import { renderDrawTools } from "./draw-tools";
+import type { renderDrawTools } from "./draw-tools";
 import { icon, iconFit, iconHelp, iconOrbitLeft, iconOrbitRight, iconRoomNames, iconTiltDown, iconTiltUp } from "./icons";
 import { RovingFocusController } from "./roving-focus";
 import { readCanvasPalette, watchTheme } from "./theme-probe";
@@ -62,6 +62,8 @@ export class MaticMapCanvasV4 extends LitElement {
     dates: { attribute: false },
     // Draw's point editor, loaded and built by the shell (shell.ts #outline).
     outlineEditor: { attribute: false },
+    renderDrawTools: { attribute: false },
+    drawReady: { type: Boolean },
     // Reflected so the stylesheet can anchor the rail with :host([narrow]).
     // On a phone the sheet owns the drawing tools, appearance switch and
     // room names; the map keeps view, fit and help.
@@ -270,6 +272,8 @@ export class MaticMapCanvasV4 extends LitElement {
   localize?: Localize;
   dates?: DateFormat;
   outlineEditor?: OutlineEditor;
+  renderDrawTools?: typeof renderDrawTools;
+  drawReady = false;
   #zoneStyled = false;
   narrow = false;
   help: TemplateResult | typeof nothing | null = null;
@@ -350,6 +354,7 @@ export class MaticMapCanvasV4 extends LitElement {
     });
     this.#gestures = new GestureController(root, this.#renderer, {
       state: () => this.state,
+      drawReady: () => this.drawReady,
       onOutlinePoint: (point, coordinateEdit) => {
         this.outlineEditor?.addPoint(point, coordinateEdit);
       },
@@ -628,10 +633,10 @@ export class MaticMapCanvasV4 extends LitElement {
   #renderDock(showScene: boolean) {
     const state = this.state;
     if (!showScene) return nothing;
-    if (state.workflow === "draw" && !this.narrow) {
+    if (state.workflow === "draw" && !this.narrow && this.drawReady && this.renderDrawTools) {
       return html`
         <div class="map-dock ms-surface ms-surface--floating" data-map-control>
-          ${renderDrawTools(state, {
+          ${this.renderDrawTools(state, {
             intent: (intent) => this.#intent(intent),
             openBrush: () => this.#intent({ type: "set-precision-open", value: !state.precisionOpen }),
             t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders),
@@ -690,7 +695,7 @@ export class MaticMapCanvasV4 extends LitElement {
           ${showDraw ? html`<span class="keyboard-aim" aria-hidden="true"></span>` : nothing}
           <canvas class="scene-canvas"></canvas>
           <canvas class="overlay-canvas"></canvas>
-          ${showDraw ? this.outlineEditor?.render() ?? nothing : nothing}
+          ${showDraw && this.drawReady ? this.outlineEditor?.render() ?? nothing : nothing}
         </div>
 
         ${showDraw ? html`

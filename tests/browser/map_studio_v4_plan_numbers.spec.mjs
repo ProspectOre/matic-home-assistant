@@ -82,6 +82,7 @@ test("plan map labels number rooms only in Saved order, and taps edit only in Ed
       }
       const gestures = new GestureController(scene, renderer, {
         state: () => store.value,
+        drawReady: () => true,
         onRoom: (roomId) => store.dispatch({ type: "toggle-room", roomId }),
         onCircles: () => {}, onCirclePreview: () => {},
       });

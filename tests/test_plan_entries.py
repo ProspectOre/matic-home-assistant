@@ -15,10 +15,9 @@ from custom_components.matic_robot.area_binding import (
 )
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_model import (
     AreaInUseError,
     AreaLeg,
-    CleaningPlanManager,
     CleaningRoom,
     DuplicatePlanAreaError,
     EmptyPlanError,
@@ -36,13 +35,16 @@ from custom_components.matic_robot.plans import (
     plan_legs,
     run_entries,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
-from custom_components.matic_robot.services import (
+from custom_components.matic_robot.service_plans import (
+    _plan_request_error,
+)
+from custom_components.matic_robot.service_schemas import (
     DELETE_PLAN_ROOM_SCHEMA,
     MOVE_PLAN_ROOM_SCHEMA,
     SAVE_PLAN_ROOM_SCHEMA,
     SAVE_PLAN_SCHEMA,
-    _plan_request_error,
 )
 from tests.test_services import _registered_handler, _registered_services
 
@@ -98,10 +100,10 @@ def _room_entry(room_id: str) -> dict:
 
 async def _manager(hass, floor: FloorPlan | None = None) -> CleaningPlanManager:
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     floor = floor or _floor()
-    await manager.async_save_area(SERIAL, "rug", _area(floor))
-    await manager.async_save_area(SERIAL, "mat", _area(floor, "Mat", 2.0))
+    await manager.catalog.async_save_area(SERIAL, "rug", _area(floor))
+    await manager.catalog.async_save_area(SERIAL, "mat", _area(floor, "Mat", 2.0))
     return manager
 
 
@@ -124,7 +126,7 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     hass,
 ) -> None:
     manager = CleaningPlanManager(hass)
-    assert manager._store.minor_version == 12
+    assert manager.repository.store.minor_version == 12
     stored = {
         "robots": {
             SERIAL: {
@@ -152,7 +154,7 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     }
     original_rooms = deepcopy(stored["robots"][SERIAL]["plans"]["home"]["rooms"])
 
-    migrated = await manager._store._async_migrate_func(1, 10, stored)
+    migrated = await manager.repository.store._async_migrate_func(1, 10, stored)
 
     plans = migrated["robots"][SERIAL]["plans"]
     assert plans["home"]["entries"] == [
@@ -165,16 +167,18 @@ async def test_store_minor_eleven_stamps_existing_plan_entries_as_rooms(
     assert plans["stamped"]["entries"] == [_room_entry("room-hall")]
     assert plans["corrupt"] == "not-a-plan"
     with pytest.raises(ValueError, match="minor version"):
-        await manager._store._async_migrate_func(1, 13, stored)
+        await manager.repository.store._async_migrate_func(1, 13, stored)
 
 
 async def test_room_only_save_stores_identical_rooms_and_room_entries(hass) -> None:
     manager = await _manager(hass)
     rooms = [_room("room-kitchen", "vacuum_and_mop"), _room("room-study")]
 
-    await manager.async_save_plan(SERIAL, "home", {"name": "Home", "rooms": rooms})
+    await manager.catalog.async_save_plan(
+        SERIAL, "home", {"name": "Home", "rooms": rooms}
+    )
 
-    plan = manager.plan(SERIAL, "home")
+    plan = manager.catalog.plan(SERIAL, "home")
     assert plan["rooms"] == rooms
     assert plan["entries"] == [_room_entry("room-kitchen"), _room_entry("room-study")]
     assert plan_entries(plan) == plan["entries"]
@@ -183,12 +187,12 @@ async def test_room_only_save_stores_identical_rooms_and_room_entries(hass) -> N
 async def test_save_accepts_area_only_and_mixed_plans(hass) -> None:
     manager = await _manager(hass)
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "spots",
         {"name": "Spots", "rooms": [], "entries": [_area_entry("rug")]},
     )
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "mixed",
         {
@@ -203,17 +207,19 @@ async def test_save_accepts_area_only_and_mixed_plans(hass) -> None:
         },
     )
 
-    assert manager.plan(SERIAL, "spots")["entries"] == [_area_entry("rug")]
-    assert manager.plan(SERIAL, "spots")["rooms"] == []
-    assert [entry["kind"] for entry in manager.plan(SERIAL, "mixed")["entries"]] == [
+    assert manager.catalog.plan(SERIAL, "spots")["entries"] == [_area_entry("rug")]
+    assert manager.catalog.plan(SERIAL, "spots")["rooms"] == []
+    assert [
+        entry["kind"] for entry in manager.catalog.plan(SERIAL, "mixed")["entries"]
+    ] == [
         "room",
         "area",
         "room",
         "area",
     ]
-    assert manager.plans_using_area(SERIAL, "rug") == ["mixed", "spots"]
-    assert manager.plans_using_area(SERIAL, "mat") == ["mixed"]
-    assert manager.plans_using_area(SERIAL, "missing") == []
+    assert manager.catalog.plans_using_area(SERIAL, "rug") == ["mixed", "spots"]
+    assert manager.catalog.plans_using_area(SERIAL, "mat") == ["mixed"]
+    assert manager.catalog.plans_using_area(SERIAL, "missing") == []
 
 
 @pytest.mark.parametrize(
@@ -250,7 +256,7 @@ async def test_save_rejects_invalid_entries_without_writing(
     hass, entries, error, message: str
 ) -> None:
     manager = await _manager(hass)
-    manager._store.async_save.reset_mock()
+    manager.repository.store.async_save.reset_mock()
     areas_only = (
         isinstance(entries, list)
         and bool(entries)
@@ -262,23 +268,23 @@ async def test_save_rejects_invalid_entries_without_writing(
     plan = {"name": "Home", "rooms": rooms, "entries": entries}
 
     with pytest.raises(error, match=message):
-        await manager.async_save_plan(SERIAL, "home", plan)
+        await manager.catalog.async_save_plan(SERIAL, "home", plan)
 
-    assert manager.plans(SERIAL) == {}
-    manager._store.async_save.assert_not_awaited()
+    assert manager.catalog.plans(SERIAL) == {}
+    manager.repository.store.async_save.assert_not_awaited()
 
 
 async def test_save_rejects_more_areas_than_a_plan_can_hold(hass) -> None:
     manager = await _manager(hass)
     for index in range(MAX_ROOM_SEQUENCE_SIZE + 1):
-        manager._robot(SERIAL)["areas"][f"area-{index}"] = _area(_floor())
+        manager.repository.robot(SERIAL)["areas"][f"area-{index}"] = _area(_floor())
     entries = [_area_entry(f"area-{index}") for index in range(MAX_ROOM_SEQUENCE_SIZE)]
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL, "many", {"name": "Many", "rooms": [], "entries": entries}
     )
     with pytest.raises(PlanAreaLimitError, match="at most 100 custom areas"):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             SERIAL,
             "many",
             {
@@ -287,7 +293,9 @@ async def test_save_rejects_more_areas_than_a_plan_can_hold(hass) -> None:
                 "entries": [*entries, _area_entry(f"area-{MAX_ROOM_SEQUENCE_SIZE}")],
             },
         )
-    assert len(manager.plan(SERIAL, "many")["entries"]) == MAX_ROOM_SEQUENCE_SIZE
+    assert (
+        len(manager.catalog.plan(SERIAL, "many")["entries"]) == MAX_ROOM_SEQUENCE_SIZE
+    )
 
 
 def test_plan_entries_reads_unstamped_plans_and_rejects_corrupt_order() -> None:
@@ -307,7 +315,7 @@ def test_plan_entries_reads_unstamped_plans_and_rejects_corrupt_order() -> None:
 
 async def test_deleting_an_area_removes_it_from_every_plan_atomically(hass) -> None:
     manager = await _manager(hass)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "mixed",
         {
@@ -316,7 +324,7 @@ async def test_deleting_an_area_removes_it_from_every_plan_atomically(hass) -> N
             "entries": [_area_entry("rug"), _room_entry("room-kitchen")],
         },
     )
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "spots",
         {
@@ -326,28 +334,30 @@ async def test_deleting_an_area_removes_it_from_every_plan_atomically(hass) -> N
         },
         select=False,
     )
-    await manager.async_select_area(SERIAL, "rug")
+    await manager.catalog.async_select_area(SERIAL, "rug")
     listener = MagicMock()
-    manager.async_add_listener(SERIAL, listener)
+    manager.repository.async_add_listener(SERIAL, listener)
 
-    await manager.async_delete_area(SERIAL, "rug")
+    await manager.catalog.async_delete_area(SERIAL, "rug")
 
-    assert "rug" not in manager.areas(SERIAL)
-    assert manager.plan(SERIAL, "mixed")["entries"] == [_room_entry("room-kitchen")]
-    assert manager.plan(SERIAL, "spots")["entries"] == [_area_entry("mat")]
-    assert manager.plans_using_area(SERIAL, "rug") == []
-    assert manager.snapshot(SERIAL)["selected_area"] == "mat"
+    assert "rug" not in manager.catalog.areas(SERIAL)
+    assert manager.catalog.plan(SERIAL, "mixed")["entries"] == [
+        _room_entry("room-kitchen")
+    ]
+    assert manager.catalog.plan(SERIAL, "spots")["entries"] == [_area_entry("mat")]
+    assert manager.catalog.plans_using_area(SERIAL, "rug") == []
+    assert manager.ledger.snapshot(SERIAL)["selected_area"] == "mat"
     listener.assert_called()
 
 
 async def test_deleting_an_area_refuses_to_empty_a_plan(hass, caplog) -> None:
     manager = await _manager(hass)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "spots",
         {"name": "Rug only", "rooms": [], "entries": [_area_entry("rug")]},
     )
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "mixed",
         {
@@ -356,22 +366,22 @@ async def test_deleting_an_area_refuses_to_empty_a_plan(hass, caplog) -> None:
             "entries": [_room_entry("room-kitchen"), _area_entry("rug")],
         },
     )
-    before = deepcopy(manager._robot(SERIAL))
-    manager._store.async_save.reset_mock()
+    before = deepcopy(manager.repository.robot(SERIAL))
+    manager.repository.store.async_save.reset_mock()
 
     with pytest.raises(AreaInUseError) as raised:
-        await manager.async_delete_area(SERIAL, "rug")
+        await manager.catalog.async_delete_area(SERIAL, "rug")
 
     assert raised.value.plan_names == ("Rug only",)
-    assert manager._robot(SERIAL) == before
-    manager._store.async_save.assert_not_awaited()
+    assert manager.repository.robot(SERIAL) == before
+    manager.repository.store.async_save.assert_not_awaited()
     await hass.async_block_till_done()
     assert "Metadata persistence task failed" not in caplog.text
 
 
 async def test_deleting_an_area_restores_plans_when_storage_fails(hass, caplog) -> None:
     manager = await _manager(hass)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "mixed",
         {
@@ -380,29 +390,31 @@ async def test_deleting_an_area_restores_plans_when_storage_fails(hass, caplog) 
             "entries": [_room_entry("room-kitchen"), _area_entry("rug")],
         },
     )
-    before = deepcopy(manager._robot(SERIAL))
-    manager._store.async_save = AsyncMock(side_effect=HomeAssistantError("disk"))
+    before = deepcopy(manager.repository.robot(SERIAL))
+    manager.repository.store.async_save = AsyncMock(
+        side_effect=HomeAssistantError("disk")
+    )
 
     with pytest.raises(HomeAssistantError, match="disk"):
-        await manager.async_delete_area(SERIAL, "rug")
+        await manager.catalog.async_delete_area(SERIAL, "rug")
 
-    assert manager._robot(SERIAL) == before
+    assert manager.repository.robot(SERIAL) == before
     await hass.async_block_till_done()
     assert "Metadata persistence task failed" in caplog.text
 
 
 async def test_deleting_an_unused_area_keeps_plans_untouched(hass) -> None:
     manager = await _manager(hass)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL, "home", {"name": "Home", "rooms": [_room("room-kitchen")]}
     )
-    manager._robot(SERIAL)["plans"]["legacy"] = {"rooms": "corrupt"}
-    plans = deepcopy(manager.plans(SERIAL))
+    manager.repository.robot(SERIAL)["plans"]["legacy"] = {"rooms": "corrupt"}
+    plans = deepcopy(manager.catalog.plans(SERIAL))
 
-    await manager.async_delete_area(SERIAL, "rug")
+    await manager.catalog.async_delete_area(SERIAL, "rug")
 
-    assert "rug" not in manager.areas(SERIAL)
-    assert manager.plans(SERIAL) == plans
+    assert "rug" not in manager.catalog.areas(SERIAL)
+    assert manager.catalog.plans(SERIAL) == plans
 
 
 # Preview -----------------------------------------------------------------
@@ -410,7 +422,7 @@ async def test_deleting_an_unused_area_keeps_plans_untouched(hass) -> None:
 
 async def _mixed_manager(hass, floor: FloorPlan) -> CleaningPlanManager:
     manager = await _manager(hass, floor)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "mixed",
         {
@@ -436,7 +448,7 @@ async def _mixed_manager(hass, floor: FloorPlan) -> CleaningPlanManager:
 async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact(hass):
     floor = _floor()
     manager = await _mixed_manager(hass, floor)
-    robot = manager._robot(SERIAL)
+    robot = manager.repository.robot(SERIAL)
     robot["rooms"] = {
         "room-kitchen": {"last_opportunity": "2026-01-04T00:00:00+00:00"},
         "room-study": {"last_opportunity": "2026-01-02T00:00:00+00:00"},
@@ -446,7 +458,7 @@ async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact
         "last_opportunity": "2026-01-03T00:00:00+00:00",
     }
     # Mat and Hall are unattempted, so their saved relative order breaks the tie.
-    preview = manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     entries = preview["entries"]
     assert [e.get("room_id", e.get("area_id")) for e in entries] == [
         "mat",
@@ -497,7 +509,7 @@ async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact
         "rug",
         ["room-kitchen"],
     ]
-    ordered = manager.preview(
+    ordered = manager.catalog.preview(
         SERIAL, ROOM_MAP, "mixed", intelligent=False, floor_plan=floor
     )
     assert [e.get("room_id", e.get("area_id")) for e in ordered["entries"]] == [
@@ -513,13 +525,13 @@ async def test_preview_rotates_rooms_and_areas_together_but_saved_order_is_exact
 async def test_preview_supports_area_only_plans(hass) -> None:
     floor = _floor()
     manager = await _manager(hass, floor)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "spots",
         {"name": "Spots", "rooms": [], "entries": [_area_entry("rug")]},
     )
 
-    preview = manager.preview(SERIAL, ROOM_MAP, "spots", floor_plan=floor)
+    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "spots", floor_plan=floor)
 
     assert preview["rooms"] == []
     assert [entry["area_id"] for entry in preview["entries"]] == ["rug"]
@@ -532,18 +544,18 @@ async def test_room_only_preview_lists_room_entries_without_area_counts(
 ) -> None:
     floor = _floor()
     manager = await _manager(hass, floor)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL, "home", {"name": "Home", "rooms": [_room("room-kitchen")]}
     )
 
-    preview = manager.preview(SERIAL, ROOM_MAP, "home")
+    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "home")
 
     assert preview["entries"] == [{"kind": "room", **preview["rooms"][0]}]
     assert "area_count" not in preview
-    manager._robot(SERIAL)["plans"]["home"]["rooms"] = []
-    manager._robot(SERIAL)["plans"]["home"]["entries"] = []
+    manager.repository.robot(SERIAL)["plans"]["home"]["rooms"] = []
+    manager.repository.robot(SERIAL)["plans"]["home"]["entries"] = []
     with pytest.raises(EmptyPlanError):
-        manager.preview(SERIAL, ROOM_MAP, "home")
+        manager.catalog.preview(SERIAL, ROOM_MAP, "home")
 
 
 async def test_preview_blocks_missing_and_stale_areas(hass) -> None:
@@ -551,26 +563,28 @@ async def test_preview_blocks_missing_and_stale_areas(hass) -> None:
     manager = await _mixed_manager(hass, floor)
 
     with pytest.raises(PlanAreaMapChangedError):
-        manager.preview(SERIAL, ROOM_MAP, "mixed")
+        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed")
     with pytest.raises(PlanAreaMapChangedError):
-        manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=_floor(mission_id=43))
-    manager._robot(SERIAL)["areas"].pop("mat")
+        manager.catalog.preview(
+            SERIAL, ROOM_MAP, "mixed", floor_plan=_floor(mission_id=43)
+        )
+    manager.repository.robot(SERIAL)["areas"].pop("mat")
     with pytest.raises(PlanAreaMissingError):
-        manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
-    manager._robot(SERIAL)["areas"]["mat"] = "corrupt"
+        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    manager.repository.robot(SERIAL)["areas"]["mat"] = "corrupt"
     with pytest.raises(PlanAreaMissingError):
-        manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
-    manager._robot(SERIAL)["plans"]["mixed"]["enabled"] = False
+        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    manager.repository.robot(SERIAL)["plans"]["mixed"]["enabled"] = False
     with pytest.raises(PlanDisabledError):
-        manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
-    manager._robot(SERIAL)["plans"]["mixed"]["enabled"] = True
-    manager._robot(SERIAL)["plans"]["mixed"]["rooms"].append("corrupt")
+        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    manager.repository.robot(SERIAL)["plans"]["mixed"]["enabled"] = True
+    manager.repository.robot(SERIAL)["plans"]["mixed"]["rooms"].append("corrupt")
     with pytest.raises(ValueError, match="invalid room"):
-        manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
-    manager._robot(SERIAL)["plans"]["mixed"]["rooms"] = "corrupt"
-    manager._robot(SERIAL)["plans"]["mixed"]["entries"] = [_area_entry("rug")]
+        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    manager.repository.robot(SERIAL)["plans"]["mixed"]["rooms"] = "corrupt"
+    manager.repository.robot(SERIAL)["plans"]["mixed"]["entries"] = [_area_entry("rug")]
     with pytest.raises(ValueError, match="invalid room"):
-        manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+        manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
 
 
 async def test_preview_token_covers_area_binding_but_not_room_only_plans(
@@ -583,7 +597,7 @@ async def test_preview_token_covers_area_binding_but_not_room_only_plans(
         "floor_token": plan_floor_token(floor),
         "room_identities": {},
     }
-    preview = manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    preview = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     token = saved_plan_preview_token(preview, **token_inputs)
 
     # Room-only previews hash exactly what they hashed before entries existed.
@@ -604,8 +618,8 @@ async def test_preview_token_covers_area_binding_but_not_room_only_plans(
     restated["entries"][2]["binding_status"] = "geometry_changed"
     assert saved_plan_preview_token(restated, **token_inputs) != token
 
-    await manager.async_save_area(SERIAL, "rug", _area(floor, "Rug", 3.0))
-    moved = manager.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
+    await manager.catalog.async_save_area(SERIAL, "rug", _area(floor, "Rug", 3.0))
+    moved = manager.catalog.preview(SERIAL, ROOM_MAP, "mixed", floor_plan=floor)
     assert saved_plan_preview_token(moved, **token_inputs) != token
 
 
@@ -776,7 +790,7 @@ async def test_save_plan_service_rejects_unusable_areas(
         )
 
     assert raised.value.translation_key == key
-    assert manager.plans(SERIAL) == {}
+    assert manager.catalog.plans(SERIAL) == {}
 
 
 async def test_plan_area_crud_services_edit_one_ordered_list(hass) -> None:
@@ -833,7 +847,7 @@ async def test_plan_area_crud_services_edit_one_ordered_list(hass) -> None:
     )
     assert moved_room["previous_position"] == 3
     assert moved_room["room"]["room_id"] == "room-study"
-    plan = manager.plan(SERIAL, "home")
+    plan = manager.catalog.plan(SERIAL, "home")
     assert plan["entries"] == [
         _room_entry("room-study"),
         _area_entry("rug", "mop", "standard"),
@@ -873,7 +887,7 @@ async def test_plan_area_crud_services_edit_one_ordered_list(hass) -> None:
             DELETE_PLAN_ROOM_SCHEMA,
             {"plan": "Home", "room": room},
         )
-    emptied = manager.plan(SERIAL, "home")
+    emptied = manager.catalog.plan(SERIAL, "home")
     assert emptied["entries"] == []
     assert emptied["rooms"] == []
     assert emptied["enabled"] is False
@@ -897,7 +911,7 @@ async def test_removing_the_last_room_keeps_an_area_plan_enabled(hass) -> None:
         {"plan": "Home", "room": "Kitchen"},
     )
 
-    plan = manager.plan(SERIAL, "home")
+    plan = manager.catalog.plan(SERIAL, "home")
     assert plan["enabled"] is True
     assert plan["entries"] == [_area_entry("rug", "vacuum", "standard")]
 
@@ -948,13 +962,13 @@ async def test_plan_area_crud_reports_unknown_areas_and_positions(
         SAVE_PLAN_SCHEMA,
         {"name": "Home", "rooms": [{"room": "Kitchen"}, {"area": "Rug"}]},
     )
-    before = manager.plan(SERIAL, "home")
+    before = manager.catalog.plan(SERIAL, "home")
 
     with pytest.raises(ServiceValidationError) as raised:
         await _handler(hass, manager, service, schema, {"plan": "Home", **data})
 
     assert raised.value.translation_key == key
-    assert manager.plan(SERIAL, "home") == before
+    assert manager.catalog.plan(SERIAL, "home") == before
 
 
 async def test_plan_area_crud_reaches_a_deleted_area_by_its_id(hass) -> None:
@@ -967,7 +981,7 @@ async def test_plan_area_crud_reaches_a_deleted_area_by_its_id(hass) -> None:
         {"name": "Home", "rooms": [{"room": "Kitchen"}, {"area": "Rug"}]},
     )
     # A store written by another tool can still name an area that is gone.
-    manager._robot(SERIAL)["areas"].pop("rug")
+    manager.repository.robot(SERIAL)["areas"].pop("rug")
 
     removed = await _handler(
         hass,
@@ -978,7 +992,9 @@ async def test_plan_area_crud_reaches_a_deleted_area_by_its_id(hass) -> None:
     )
 
     assert removed["deleted"]["area_id"] == "rug"
-    assert manager.plan(SERIAL, "home")["entries"] == [_room_entry("room-kitchen")]
+    assert manager.catalog.plan(SERIAL, "home")["entries"] == [
+        _room_entry("room-kitchen")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1002,14 +1018,14 @@ async def test_plan_edits_report_another_missing_area(
             "rooms": [{"room": "Kitchen"}, {"area": "Rug"}, {"area": "Mat"}],
         },
     )
-    manager._robot(SERIAL)["areas"].pop("mat")
-    before = manager.plan(SERIAL, "home")
+    manager.repository.robot(SERIAL)["areas"].pop("mat")
+    before = manager.catalog.plan(SERIAL, "home")
 
     with pytest.raises(ServiceValidationError) as raised:
         await _handler(hass, manager, service, schema, {"plan": "Home", **data})
 
     assert raised.value.translation_key == "plan_area_missing"
-    assert manager.plan(SERIAL, "home") == before
+    assert manager.catalog.plan(SERIAL, "home") == before
 
 
 async def test_plan_edits_report_a_corrupt_entry_order(hass) -> None:
@@ -1021,7 +1037,7 @@ async def test_plan_edits_report_a_corrupt_entry_order(hass) -> None:
         SAVE_PLAN_SCHEMA,
         {"name": "Home", "rooms": [{"room": "Kitchen"}]},
     )
-    manager._robot(SERIAL)["plans"]["home"]["entries"] = []
+    manager.repository.robot(SERIAL)["plans"]["home"]["entries"] = []
 
     with pytest.raises(ServiceValidationError) as raised:
         await _handler(
@@ -1059,7 +1075,7 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
 ) -> None:
     floor = _floor()
     manager = await _mixed_manager(hass, floor)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "spots",
         {
@@ -1102,7 +1118,7 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
     # Every area entry carries its fingerprint, in the preview's run order.
     assert all(
         entry["binding_fingerprint"]
-        == plan_area_fingerprint(manager.areas(SERIAL)[entry["area_id"]])
+        == plan_area_fingerprint(manager.catalog.areas(SERIAL)[entry["area_id"]])
         for entry in entries
         if entry["kind"] == "area"
     )
@@ -1118,13 +1134,13 @@ async def test_running_a_plan_with_areas_hands_its_run_order_to_the_executor(
     assert kwargs["floor_token"] == plan_floor_token(floor)
     assert kwargs["floor_is_current"]() is True
     kwargs["validate_prepared_run"]()
-    assert manager.snapshot(SERIAL)["active_plan"] is None
+    assert manager.ledger.snapshot(SERIAL)["active_plan"] is None
 
 
 async def test_running_a_room_only_plan_keeps_its_legacy_executor_call(hass) -> None:
     floor = _floor()
     manager = await _manager(hass, floor)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL, "home", {"name": "Home", "rooms": [_room("room-kitchen")]}
     )
     services = await _registered_services(hass, manager)

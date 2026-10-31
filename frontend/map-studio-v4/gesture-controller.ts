@@ -11,6 +11,7 @@ import {
 
 interface GestureCallbacks {
   readonly state: () => WorkspaceState;
+  readonly drawReady: () => boolean;
   readonly onCircles: (
     circles: readonly AreaCircle[],
     coordinateEdit: CoordinateEditCapture,
@@ -164,7 +165,8 @@ export class GestureController {
       return;
     }
     const state = this.#callbacks.state();
-    const drawing = state.workflow === "draw" && state.map.available && !state.floor.readOnly;
+    const drawing = state.workflow === "draw" && state.map.available && !state.floor.readOnly
+      && this.#callbacks.drawReady();
     // D1 (map-surfaces.md §10): one-finger drag moves the map. Two-finger
     // vertical drag tilts in 3D; in top view it remains a pan. Space-drag
     // moves while drawing. The effective view decides in review surfaces.
@@ -563,7 +565,7 @@ export class GestureController {
     const state = this.#callbacks.state();
     if (event.repeat || this.#disposed || this.#pointers.size
       || event.composedPath()[0] !== this.#host || !this.#host.matches(":focus")
-      || state.workflow !== "draw" || !canEditCoordinates(state)
+      || state.workflow !== "draw" || !this.#callbacks.drawReady() || !canEditCoordinates(state)
       || (state.command !== "idle" && state.command !== "failed")
       || (state.draw.tool !== "paint" && state.draw.tool !== "erase" && state.draw.tool !== "outline")) return;
     const canvas = this.#host.querySelector<HTMLCanvasElement>(".scene-canvas");
@@ -616,8 +618,8 @@ export class GestureController {
     else if (event.key === "]") this.#renderer.orbitBy(40, 0);
     else if (event.key === "PageUp") this.#renderer.orbitBy(0, -30);
     else if (event.key === "PageDown") this.#renderer.orbitBy(0, 30);
-    else if (key === "d" && state.workflow === "draw") this.#dispatch({ type: "set-draw-tool", tool: "paint" });
-    else if (key === "e" && state.workflow === "draw") this.#dispatch({ type: "set-draw-tool", tool: "erase" });
+    else if (key === "d" && state.workflow === "draw" && this.#callbacks.drawReady()) this.#dispatch({ type: "set-draw-tool", tool: "paint" });
+    else if (key === "e" && state.workflow === "draw" && this.#callbacks.drawReady()) this.#dispatch({ type: "set-draw-tool", tool: "erase" });
     else if (["arrowleft", "arrowright", "arrowup", "arrowdown"].includes(key)) {
       if (topView(state) === "three" && !event.shiftKey) {
         const horizontal = key === "arrowleft" ? -24 : key === "arrowright" ? 24 : 0;

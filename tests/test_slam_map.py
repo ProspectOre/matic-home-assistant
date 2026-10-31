@@ -32,9 +32,11 @@ from custom_components.matic_robot.client.slam_map import (
     decode_slam_tile,
     encode_slam_scene,
     parse_slam_scene_header,
-    render_slam_map,
 )
 from custom_components.matic_robot.client.wire import first_bytes
+from custom_components.matic_robot.slam_render import (
+    render_slam_map,
+)
 
 
 def _varint(value: int) -> bytes:
@@ -210,6 +212,22 @@ def synthetic_semantic_entry(
     return HermesCollectionEntry(key, value)
 
 
+def _scene_surface_points(tile: SlamTile) -> tuple[tuple[int, ...], ...]:
+    """Read global positions and RGB from the actual browser scene payload."""
+    scene = encode_slam_scene((tile,))
+    header = parse_slam_scene_header(scene)
+    metadata_start = struct.calcsize("<8sHHIII")
+    metadata_end = metadata_start + header.metadata_bytes
+    origin_x, origin_y = json.loads(scene[metadata_start:metadata_end])["origin_cells"]
+    surface_start = metadata_end + header.floor_points * SCENE_POINT_STRIDE
+    return tuple(
+        (x + origin_x, y + origin_y, z, red, green, blue)
+        for x, y, z, red, green, blue in struct.iter_unpack(
+            "<HHBBBB", scene[surface_start:]
+        )
+    )
+
+
 def test_decode_slam_tile_matches_verified_geometry_and_texture() -> None:
     tile = decode_slam_tile(synthetic_slam_entry())
 
@@ -218,8 +236,7 @@ def test_decode_slam_tile_matches_verified_geometry_and_texture() -> None:
     assert tile.mission_id == 0x1234ABCD
     assert tile.floor_rgba[:4] == bytes((12, 34, 56, 255))
     assert len(tile.floor_rgba) == 32 * 32 * 4
-    assert len(tile.voxels) == 1
-    assert (tile.voxels[0].x, tile.voxels[0].y, tile.voxels[0].z) == (64, -32, 0)
+    assert _scene_surface_points(tile) == ((64, -32, 0, 100, 110, 120),)
 
 
 def test_decode_slam_mission_id_requires_the_verified_exact_shape() -> None:
@@ -283,9 +300,7 @@ def test_decode_slam_tile_decodes_visible_rgb_voxel() -> None:
     )
     tile = decode_slam_tile(entry)
 
-    assert len(tile.voxels) == 1
-    assert (tile.voxels[0].x, tile.voxels[0].y, tile.voxels[0].z) == (1, 2, 1)
-    assert tile.voxels[0].color == (100, 110, 120)
+    assert _scene_surface_points(tile) == ((1, 2, 1, 100, 110, 120),)
 
 
 @pytest.mark.parametrize(
@@ -319,13 +334,13 @@ def test_decode_slam_tile_applies_defaults_for_omitted_fields() -> None:
     tile = decode_slam_tile(HermesCollectionEntry(key, entry.value))
 
     assert (tile.page_x, tile.page_y) == (0, 0)
-    assert tile.voxels == ()
+    assert _scene_surface_points(tile) == ()
 
 
 def test_decode_slam_tile_uses_neutral_color_when_rgb_is_absent() -> None:
     tile = decode_slam_tile(synthetic_slam_entry(with_rgb=False))
 
-    assert tile.voxels[0].color == (96, 112, 128)
+    assert _scene_surface_points(tile)[0][3:] == (96, 112, 128)
 
 
 def test_encode_slam_scene_packs_floor_surface_rooms_and_neutral_color() -> None:
@@ -743,7 +758,7 @@ def test_decode_integrated_slam_tile_rejects_malformed_shapes(malformed: str) ->
 def test_render_slam_map_produces_requested_local_png() -> None:
     tile = decode_slam_tile(synthetic_slam_entry())
     with patch(
-        "custom_components.matic_robot.client.slam_map.ImageOps.mirror",
+        "custom_components.matic_robot.slam_render.ImageOps.mirror",
         wraps=ImageOps.mirror,
     ) as mirror:
         result = render_slam_map((tile,), width=320, height=240)

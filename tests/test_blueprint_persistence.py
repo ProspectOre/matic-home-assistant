@@ -252,7 +252,11 @@ async def test_import_save_reload_and_source_trigger(
             ("matic_robot", "photo_patrol"),
             ("notify", "blueprint_test_phone"),
         ]
-        assert calls[0].data == {"entity_id": [VACUUM], "rooms": ["Kitchen"]}
+        assert calls[0].data == {
+            "entity_id": [VACUUM],
+            "rooms": ["Kitchen"],
+            "full_resolution": False,
+        }
         assert calls[1].data == {
             "title": "Sink leak",
             "message": "The robot took this photo in Kitchen.",

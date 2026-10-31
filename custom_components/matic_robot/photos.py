@@ -6,18 +6,23 @@ import asyncio
 import logging
 from collections.abc import Callable, Iterable, Iterator
 from http import HTTPStatus
+from io import BytesIO
 from typing import TYPE_CHECKING
 
 from aiohttp import web
 from google.protobuf.message import DecodeError
 from homeassistant.core import CALLBACK_TYPE, callback
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
+from PIL import Image, UnidentifiedImageError
 
 from .client.exceptions import MaticError
 from .client.models import HermesCollectionEntry
 from .client.snaps import RobotPhoto, decode_instamatic_snap
 from .const import DOMAIN
-from .slam_scene import PRIVATE_NO_STORE_HEADERS, _runtime_for_entry
+from .http import (
+    PRIVATE_NO_STORE_HEADERS,
+    runtime_for_entry,
+)
 
 if TYPE_CHECKING:
     from .client.api import MaticHermesClient
@@ -32,6 +37,7 @@ MAX_PHOTO_ENTRIES = 64
 SNAP_READ_DELAYS_SECONDS = (12.0, 8.0)
 # About 6 MiB of full-size photos.
 MAX_RECENT_PHOTOS = 16
+PREVIEW_BLOCKS = 24
 
 
 class RobotPhotoStore:
@@ -164,7 +170,7 @@ class MaticRobotPhotoView(HomeAssistantView):
         self, request: web.Request, entry_id: str, photo_id: str
     ) -> web.Response:
         """Return the WebP, or 404 once it has left the recent photos."""
-        runtime = _runtime_for_entry(request.app[KEY_HASS], entry_id)
+        runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
         photo = runtime.photos.photo(photo_id) if runtime is not None else None
         if photo is None:
             return web.Response(
@@ -175,3 +181,51 @@ class MaticRobotPhotoView(HomeAssistantView):
             content_type="image/webp",
             headers=PRIVATE_NO_STORE_HEADERS,
         )
+
+
+class MaticRobotPhotoPreviewView(HomeAssistantView):
+    """Serve a deliberately pixelated photo for private notifications."""
+
+    url = f"/api/{DOMAIN}/photo/{{entry_id}}/preview/{{photo_id}}"
+    name = f"api:{DOMAIN}:photo-preview"
+
+    async def get(
+        self, request: web.Request, entry_id: str, photo_id: str
+    ) -> web.Response:
+        """Return the pixelated WebP; never fall back to the original image."""
+        hass = request.app[KEY_HASS]
+        runtime = runtime_for_entry(hass, entry_id)
+        photo = runtime.photos.photo(photo_id) if runtime is not None else None
+        if photo is None:
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        try:
+            image = await hass.async_add_executor_job(
+                _pixelated_preview, photo.preview or photo.image
+            )
+        except OSError, UnidentifiedImageError, ValueError:
+            return web.Response(
+                status=HTTPStatus.UNPROCESSABLE_ENTITY,
+                headers=PRIVATE_NO_STORE_HEADERS,
+            )
+        return web.Response(
+            body=image,
+            content_type="image/webp",
+            headers=PRIVATE_NO_STORE_HEADERS,
+        )
+
+
+def _pixelated_preview(image_bytes: bytes) -> bytes:
+    """Shrink to a small mosaic and enlarge with hard pixel edges."""
+    with Image.open(BytesIO(image_bytes)) as source:
+        source.load()
+        width, height = source.size
+        small = source.convert("RGB").resize(
+            (max(1, width // PREVIEW_BLOCKS), max(1, height // PREVIEW_BLOCKS)),
+            Image.Resampling.BOX,
+        )
+        mosaic = small.resize((width, height), Image.Resampling.NEAREST)
+        output = BytesIO()
+        mosaic.save(output, format="WEBP", quality=55, method=0)
+        return output.getvalue()

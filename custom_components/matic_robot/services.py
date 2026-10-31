@@ -5,8 +5,6 @@ from __future__ import annotations
 from collections.abc import (
     Callable,
     Coroutine,
-    Mapping,
-    Sequence,
 )
 from functools import partial, wraps
 from typing import Any, cast
@@ -42,18 +40,14 @@ from homeassistant.helpers import target
 from homeassistant.util import slugify
 from homeassistant.util.json import JsonValueType
 
-from .area_binding import AreaBindingStatus, area_binding_status
-from .cadence import MAX_CADENCE_INTERVAL, validate_cadence_interval
-from .client.commands import CleaningMode, CoverageSetting, UserCommand
-from .client.endpoints import HERMES_ENDPOINT_MAP, HERMES_ENDPOINT_NAMES
+from .client.commands import UserCommand
+from .client.endpoints import HERMES_ENDPOINT_MAP
 from .client.exceptions import MaticError
 from .client.floor_plan import pose_vector_paths
 from .client.models import FloorPlan
 from .const import (
     DATA_FIRMWARE_TRACKER,
     DOMAIN,
-    MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
-    MAX_ROOM_SEQUENCE_SIZE,
 )
 from .firmware import (
     FirmwareTracker,
@@ -61,41 +55,64 @@ from .firmware import (
     fingerprint_entry,
 )
 from .firmware_reports import valid_investigator
-from .managed_executor import (
-    _async_execute_rooms,
-    _async_managed_user_command,
-    _ensure_stop_settled,
+from .managed_dispatch import _async_managed_user_command, _ensure_stop_settled
+from .managed_executor import _async_execute_rooms
+from .managed_run import (
     _validation_error,
 )
-from .occupancy import occupancy_holds
 from .photo_patrol import async_photo_patrol
-from .plans import (
-    CadenceBindingError,
-    CleaningPlanManager,
-    CleaningRoom,
-    DuplicatePlanAreaError,
-    DuplicateRoomError,
-    EmptyPlanError,
-    PlanAreaLimitError,
-    PlanAreaMapChangedError,
-    PlanAreaMissingError,
-    PlanDisabledError,
-    PlanRoomsHeldError,
-    RoomSequenceLimitError,
-    SavedPlanLimitError,
+from .plan_catalog import SavedPlanLimitError
+from .plan_model import (
     SharedRoomScheduleLockedError,
     SharedRoomScheduleMapChangedError,
     SharedRoomScheduleStaleError,
-    async_get_plan_manager,
     plan_entries,
     plan_floor_token,
-    resolve_room_reference,
-    resolve_rooms,
     room_cadence_identity,
 )
+from .plans import CleaningPlanManager, async_get_plan_manager
 from .room_coherence import current_floor_plan as _current_floor_plan
 from .room_coherence import room_completion_names_are_current
-from .room_sequence import resolve_room_sequence, saved_plan_preview_token
+from .room_sequence import resolve_room_sequence
+from .service_plans import (
+    _invalid_room_position,
+    _normalize_saved_area,
+    _normalize_saved_room,
+    _plan_cadence_bindings,
+    _plan_entry_position,
+    _plan_occupancy_holds,
+    _plan_request_error,
+    _preview_has_area,
+    _resolve_room_id,
+    _resolve_saved_plan,
+    _saved_plan_entries,
+    _saved_plan_execution,
+    _saved_plan_preview,
+    _validated_area_command,
+)
+from .service_schemas import (
+    CLEAN_AREA_SERVICE_SCHEMA,
+    CLEAN_ROOM_AGAIN_SERVICE_SCHEMA,
+    CLEAN_ROOM_SEQUENCE_SCHEMA,
+    CLEAN_SERVICE_SCHEMA,
+    DELETE_PLAN_ROOM_SCHEMA,
+    DELETE_ROOM_SCHEDULE_SCHEMA,
+    FIRMWARE_SNAPSHOT_SCHEMA,
+    GO_TO_ROOM_SERVICE_SCHEMA,
+    INSPECT_ENDPOINT_SERVICE_SCHEMA,
+    LIST_PLANS_SCHEMA,
+    MOVE_PLAN_ROOM_SCHEMA,
+    PHOTO_PATROL_SERVICE_SCHEMA,
+    PLAN_REFERENCE_SCHEMA,
+    PLAN_TARGET_SCHEMA,
+    PREVIEW_ROOM_SEQUENCE_SCHEMA,
+    RESET_PLAN_HISTORY_SCHEMA,
+    RESET_ROOM_CADENCE_SCHEMA,
+    RUN_SELECTED_PLAN_SCHEMA,
+    SAVE_PLAN_ROOM_SCHEMA,
+    SAVE_PLAN_SCHEMA,
+    SAVED_PLAN_SERVICE_SCHEMA,
+)
 
 SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
@@ -130,335 +147,6 @@ TARGET_KEYS = (
     ATTR_FLOOR_ID,
     ATTR_LABEL_ID,
 )
-
-CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Optional("rooms"): probatio.All(
-            cv.ensure_list, [cv.string], probatio.Length(max=MAX_ROOM_SEQUENCE_SIZE)
-        ),
-        probatio.Optional("cleaning_mode"): probatio.In(
-            [value.value for value in CleaningMode]
-        ),
-        probatio.Optional("coverage_setting"): probatio.In(
-            [value.value for value in CoverageSetting]
-        ),
-        probatio.Optional("ordered", default=False): cv.boolean,
-    }
-)
-
-GO_TO_ROOM_SERVICE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("room"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        )
-    }
-)
-
-PHOTO_PATROL_SERVICE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("rooms"): probatio.All(
-            cv.ensure_list,
-            [probatio.All(cv.string, probatio.Length(min=1, max=128))],
-            probatio.Length(min=1, max=12),
-        ),
-        probatio.Optional("return_to_dock", default=True): cv.boolean,
-    }
-)
-
-CLEAN_ROOM_AGAIN_SERVICE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("room"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Optional("cleaning_mode"): probatio.In(
-            [mode.value for mode in CleaningMode]
-        ),
-        probatio.Optional("coverage_setting"): probatio.In(
-            [setting.value for setting in CoverageSetting]
-        ),
-    }
-)
-
-CLEAN_AREA_SERVICE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("area"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Optional("cleaning_mode"): probatio.In(
-            [value.value for value in CleaningMode]
-        ),
-        probatio.Optional("coverage_setting"): probatio.In(
-            [value.value for value in CoverageSetting]
-        ),
-    }
-)
-
-
-def _cadence_interval_validator(field: str) -> Callable[[object], int | None]:
-    """Adapt the shared cadence validator to probatio errors."""
-
-    def validate(value: object) -> int | None:
-        try:
-            return validate_cadence_interval(value, field)
-        except ValueError as err:
-            raise probatio.Invalid(
-                f"Use a whole number from 1 to {MAX_CADENCE_INTERVAL}"
-            ) from err
-
-    return validate
-
-
-ROOM_CADENCE_SCHEMA = probatio.Schema(
-    {
-        probatio.Optional("scope", default="plan"): probatio.In(("plan", "shared")),
-        probatio.Optional("mop_every_n"): probatio.Any(
-            None,
-            _cadence_interval_validator("mop_every_n"),
-        ),
-        probatio.Optional("coverage_every_n"): probatio.Any(
-            None,
-            _cadence_interval_validator("coverage_every_n"),
-        ),
-        probatio.Optional("periodic_coverage_setting"): probatio.Any(
-            None, probatio.In([value.value for value in CoverageSetting])
-        ),
-        probatio.Optional("do_mop_next", default=False): cv.boolean,
-        probatio.Optional("do_coverage_next", default=False): cv.boolean,
-    }
-)
-
-_ROOM_FIELDS = {
-    probatio.Required("room"): cv.string,
-    probatio.Optional("cleaning_mode", default=CleaningMode.BOTH.value): probatio.In(
-        [value.value for value in CleaningMode]
-    ),
-    probatio.Optional(
-        "coverage_setting", default=CoverageSetting.OPTIMAL.value
-    ): probatio.In([value.value for value in CoverageSetting]),
-}
-SAVED_ROOM_SCHEMA = probatio.Schema(_ROOM_FIELDS)
-SAVED_PLAN_ROOM_SCHEMA = probatio.Schema(
-    {**_ROOM_FIELDS, probatio.Optional("cadence"): ROOM_CADENCE_SCHEMA}
-)
-# Areas take the same overrides as clean_area and never a cadence: the robot
-# reports no per-area completion, so an area runs every time.
-SAVED_PLAN_AREA_SCHEMA = probatio.Schema(
-    {
-        probatio.Required("area"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Optional("cleaning_mode"): probatio.In(
-            [value.value for value in CleaningMode]
-        ),
-        probatio.Optional("coverage_setting"): probatio.In(
-            [value.value for value in CoverageSetting]
-        ),
-    }
-)
-
-
-def saved_plan_entry(value: object) -> dict[str, Any]:
-    """Validate one plan entry: a mapped room or a saved custom area."""
-    if isinstance(value, Mapping) and "area" in value:
-        if "room" in value:
-            raise probatio.Invalid("Use either room or area in one entry")
-        return dict(SAVED_PLAN_AREA_SCHEMA(value))
-    return dict(SAVED_PLAN_ROOM_SCHEMA(value))
-
-
-SAVED_PLAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Optional("plan"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        )
-    }
-)
-
-RUN_SELECTED_PLAN_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Optional("plan"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Optional("preview_token"): probatio.All(
-            cv.string,
-            probatio.Match(r"^[0-9a-f]{64}$"),
-        ),
-    }
-)
-
-_ROOM_SEQUENCE_FIELDS = {
-    probatio.Required("rooms"): probatio.All(
-        cv.ensure_list,
-        [SAVED_ROOM_SCHEMA],
-        probatio.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
-    ),
-    probatio.Optional("return_to_base", default=True): cv.boolean,
-    probatio.Optional("use_room_schedule", default=False): cv.boolean,
-    probatio.Optional("override_room_schedule", default=False): cv.boolean,
-}
-CLEAN_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(
-    {
-        **_ROOM_SEQUENCE_FIELDS,
-        probatio.Optional("preview_token"): probatio.All(
-            cv.string,
-            probatio.Match(r"^[0-9a-f]{64}$"),
-        ),
-    }
-)
-PREVIEW_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(_ROOM_SEQUENCE_FIELDS)
-
-PLAN_TARGET_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Optional("include_unmanaged", default=False): cv.boolean,
-        probatio.Optional("stop_now", default=False): cv.boolean,
-        probatio.Optional("expected_run_id"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-    }
-)
-
-RESET_PLAN_HISTORY_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Optional("plan"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Optional("all_plans", default=False): cv.boolean,
-    }
-)
-
-RESET_ROOM_CADENCE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("plan"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Optional("room_id"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Optional("modes"): probatio.All(
-            cv.ensure_list,
-            [probatio.In(("mop", "coverage"))],
-            probatio.Length(min=1, max=2),
-        ),
-    }
-)
-
-DELETE_ROOM_SCHEDULE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("room_id"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Required("expected_token"): probatio.All(
-            cv.string, probatio.Match(r"^[0-9a-f]{64}$")
-        ),
-    }
-)
-
-LIST_PLANS_SCHEMA = cv.make_entity_service_schema({})
-
-SAVE_PLAN_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Optional("plan_id"): probatio.All(
-            cv.string, probatio.Length(min=1, max=64)
-        ),
-        probatio.Required("name"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Optional("enabled", default=True): cv.boolean,
-        probatio.Optional("run_behavior", default="intelligent"): probatio.In(
-            ("intelligent", "ordered")
-        ),
-        probatio.Required("rooms"): probatio.All(
-            cv.ensure_list,
-            [saved_plan_entry],
-            probatio.Length(min=1, max=MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE),
-        ),
-        probatio.Optional("return_to_base", default=True): cv.boolean,
-        probatio.Optional("finish_current_room", default=False): cv.boolean,
-        probatio.Optional("finish_current_room_threshold", default=50): probatio.All(
-            probatio.Coerce(int), probatio.Range(min=0, max=100)
-        ),
-        probatio.Optional("occupancy_aware", default=False): cv.boolean,
-        probatio.Optional("occupancy_sensors", default=dict): probatio.All(
-            {
-                probatio.All(cv.string, probatio.Length(min=1, max=128)): (
-                    cv.entity_domain("binary_sensor")
-                )
-            },
-            probatio.Length(max=MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE),
-        ),
-        probatio.Optional("start_timeout", default=120): probatio.All(
-            probatio.Coerce(int), probatio.Range(min=10, max=600)
-        ),
-        probatio.Optional("completion_timeout", default=21600): probatio.All(
-            probatio.Coerce(int), probatio.Range(min=60, max=43200)
-        ),
-        probatio.Optional("select", default=True): cv.boolean,
-    }
-)
-
-PLAN_REFERENCE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("plan"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        )
-    }
-)
-
-SAVE_PLAN_ROOM_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("plan"): probatio.All(
-            cv.string, probatio.Length(min=1, max=128)
-        ),
-        probatio.Required("room"): saved_plan_entry,
-    }
-)
-
-_PLAN_ENTRY_TARGET = {
-    probatio.Exclusive("room", "plan_entry"): cv.string,
-    probatio.Exclusive("area", "plan_entry"): probatio.All(
-        cv.string, probatio.Length(min=1, max=128)
-    ),
-}
-
-DELETE_PLAN_ROOM_SCHEMA = probatio.All(
-    cv.make_entity_service_schema(
-        {
-            probatio.Required("plan"): probatio.All(
-                cv.string, probatio.Length(min=1, max=128)
-            ),
-            **_PLAN_ENTRY_TARGET,
-        }
-    ),
-    cv.has_at_least_one_key("room", "area"),
-)
-
-MOVE_PLAN_ROOM_SCHEMA = probatio.All(
-    cv.make_entity_service_schema(
-        {
-            probatio.Required("plan"): probatio.All(
-                cv.string, probatio.Length(min=1, max=128)
-            ),
-            **_PLAN_ENTRY_TARGET,
-            # A plan holds up to the room limit and as many custom areas again.
-            probatio.Required("new_position"): probatio.All(
-                probatio.Coerce(int),
-                probatio.Range(min=1, max=2 * MAX_ROOM_SEQUENCE_SIZE),
-            ),
-        }
-    ),
-    cv.has_at_least_one_key("room", "area"),
-)
-
-INSPECT_ENDPOINT_SERVICE_SCHEMA = cv.make_entity_service_schema(
-    {
-        probatio.Required("endpoint"): probatio.In(HERMES_ENDPOINT_NAMES),
-        probatio.Optional("limit", default=32): probatio.All(
-            probatio.Coerce(int), probatio.Range(min=1, max=256)
-        ),
-    }
-)
-
-FIRMWARE_SNAPSHOT_SCHEMA = cv.make_entity_service_schema({})
 
 
 def _require_matic_control[ServiceResult](
@@ -614,7 +302,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     async def async_clean(call: ServiceCall) -> None:
         """Route the complete verified cleaning matrix to selected vacuums."""
         entity_ids = _resolve_loaded_matic_vacuums(hass, call)
-        if callable(getattr(manager, "stop_pending", None)):
+        if callable(getattr(manager.control, "stop_pending", None)):
             for entity_id in entity_ids:
                 entry = _entry_for_entity(hass, entity_id)
                 await _ensure_stop_settled(
@@ -685,7 +373,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 _entry_for_entity(hass, entity_id),
                 entity_id,
                 call.data["rooms"],
-                return_to_dock=call.data["return_to_dock"],
+                full_resolution=call.data["full_resolution"],
                 context=call.context,
             )
             robots.append(
@@ -742,21 +430,24 @@ async def async_register_services(hass: HomeAssistant) -> None:
         entity_id, entry, serial_number, _room_map = _saved_plan_context(
             hass, call, require_current_floor=True
         )
-        request_generation = manager.motion_generation(serial_number)
-        request_stop_generation = manager.stop_request_generation(serial_number)
-        request_admission_epoch = manager.command_admission_epoch(serial_number)
-        manager.require_command_admission(
+        request_generation = manager.control.motion_generation(serial_number)
+        request_stop_generation = manager.control.stop_request_generation(serial_number)
+        request_admission_epoch = manager.control.command_admission_epoch(serial_number)
+        manager.control.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
 
         def require_current_request(expected_motion_generation: int) -> None:
-            if manager.motion_generation(serial_number) != expected_motion_generation:
+            if (
+                manager.control.motion_generation(serial_number)
+                != expected_motion_generation
+            ):
                 raise _validation_error(
                     "The cleaning request was superseded before it could start",
                     "robot_command_failed",
                 )
             if (
-                manager.stop_request_generation(serial_number)
+                manager.control.stop_request_generation(serial_number)
                 != request_stop_generation
             ):
                 raise _validation_error(
@@ -772,11 +463,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             entry.runtime_data.client.async_get_active_cleaning_session_state,
         )
         require_current_request(request_generation)
-        manager.require_command_admission(
+        manager.control.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
         try:
-            area = manager.area(serial_number, call.data["area"])
+            area = manager.catalog.area(serial_number, call.data["area"])
         except KeyError as err:
             raise _validation_error(
                 f"Unknown Matic custom area: {call.data['area']}",
@@ -790,7 +481,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             call.data.get("coverage_setting"),
         )
 
-        async with manager.external_command(serial_number):
+        async with manager.control.external_command(serial_number):
             require_current_request(request_generation)
             await _ensure_stop_settled(
                 hass,
@@ -801,7 +492,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
             require_current_request(request_generation)
             try:
-                current_area = manager.area(serial_number, call.data["area"])
+                current_area = manager.catalog.area(serial_number, call.data["area"])
             except KeyError as err:
                 raise _validation_error(
                     f"Unknown Matic custom area: {call.data['area']}",
@@ -816,7 +507,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 call.data.get("coverage_setting"),
             )
             require_current_request(request_generation)
-            generation = await manager.async_replace_managed_motion(serial_number)
+            generation = await manager.control.async_replace_managed_motion(
+                serial_number
+            )
             require_current_request(generation)
             floor_plan = _current_floor_plan(entry)
             floor_plan, circles, mode, coverage = _validated_area_command(
@@ -1039,8 +732,10 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
             )
 
-        manager.require_command_admission(serial_number)
-        internal_plan_id = manager.reserve_manual_room_sequence_plan_id(serial_number)
+        manager.control.require_command_admission(serial_number)
+        internal_plan_id = manager.catalog.reserve_manual_room_sequence_plan_id(
+            serial_number
+        )
         try:
             execution_call = ServiceCall(
                 hass,
@@ -1138,7 +833,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 validate_prepared_run=validate_prepared_run,
             )
         finally:
-            manager.release_manual_room_sequence_plan_id(
+            manager.catalog.release_manual_room_sequence_plan_id(
                 serial_number, internal_plan_id
             )
 
@@ -1269,11 +964,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
             hass, call, require_rooms=False
         )
         will_dispatch = False
-        async with manager.external_command(serial_number):
-            run_id = manager.active_run_id(serial_number)
+        async with manager.control.external_command(serial_number):
+            run_id = manager.ledger.active_run_id(serial_number)
             if "expected_run_id" in call.data and (
                 call.data["expected_run_id"] != run_id
-                or manager.cancellation_reason(serial_number) == "motion_replaced"
+                or manager.control.cancellation_reason(serial_number)
+                == "motion_replaced"
             ):
                 raise _validation_error(
                     "The managed cleaning run has changed; Stop was not sent",
@@ -1281,7 +977,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 )
             stop_now = bool(call.data.get("stop_now"))
             if stop_now:
-                active_plan = manager.snapshot(serial_number).get("active_plan")
+                active_plan = manager.ledger.snapshot(serial_number).get("active_plan")
                 if (
                     not run_id
                     or call.data.get("expected_run_id") != run_id
@@ -1297,18 +993,20 @@ async def async_register_services(hass: HomeAssistant) -> None:
                         "smart_stop_not_pending",
                     )
             decision = (
-                manager.request_stop(serial_number, stop_now=True)
+                manager.control.request_stop(serial_number, stop_now=True)
                 if stop_now
-                else manager.request_stop(serial_number)
+                else manager.control.request_stop(serial_number)
             )
-            expected_generation = manager.motion_generation(serial_number)
-            expected_stop_generation = manager.stop_request_generation(serial_number)
-            await manager.async_checkpoint_stop_intent(
+            expected_generation = manager.control.motion_generation(serial_number)
+            expected_stop_generation = manager.control.stop_request_generation(
+                serial_number
+            )
+            await manager.ledger.async_checkpoint_stop_intent(
                 serial_number, decision.behavior, run_id=run_id
             )
             if (
-                manager.motion_generation(serial_number) != expected_generation
-                or manager.stop_request_generation(serial_number)
+                manager.control.motion_generation(serial_number) != expected_generation
+                or manager.control.stop_request_generation(serial_number)
                 != expected_stop_generation
             ):
                 return
@@ -1317,7 +1015,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 or bool(call.data.get("include_unmanaged"))
             )
             if will_dispatch:
-                manager.reserve_stop_dispatch(
+                manager.control.reserve_stop_dispatch(
                     serial_number,
                     expected_generation=expected_generation,
                     expected_stop_generation=expected_stop_generation,
@@ -1325,13 +1023,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
         if not will_dispatch:
             return
         if (
-            manager.motion_generation(serial_number) == expected_generation
-            and manager.stop_request_generation(serial_number)
+            manager.control.motion_generation(serial_number) == expected_generation
+            and manager.control.stop_request_generation(serial_number)
             == expected_stop_generation
         ):
             entry.runtime_data.coordinator.async_discard_current_room()
         try:
-            with manager.managed_stop_dispatch(
+            with manager.control.managed_stop_dispatch(
                 serial_number,
                 expected_generation=expected_generation,
                 expected_stop_generation=expected_stop_generation,
@@ -1344,7 +1042,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     context=call.context,
                 )
         finally:
-            manager.release_stop_dispatch(
+            manager.control.release_stop_dispatch(
                 serial_number,
                 expected_generation=expected_generation,
                 expected_stop_generation=expected_stop_generation,
@@ -1363,14 +1061,16 @@ async def async_register_services(hass: HomeAssistant) -> None:
         plan_id: str | None = None
         if not call.data["all_plans"]:
             try:
-                plan_id = manager.plan(serial_number, call.data.get("plan"))["id"]
+                plan_id = manager.catalog.plan(serial_number, call.data.get("plan"))[
+                    "id"
+                ]
             except KeyError as err:
                 raise _validation_error(
                     f"Unknown Matic cleaning plan: {err.args[0]}",
                     "unknown_plan",
                     {"plan": str(err.args[0])},
                 ) from err
-        await manager.async_reset_history(serial_number, plan_id)
+        await manager.ledger.async_reset_history(serial_number, plan_id)
 
     hass.services.async_register(
         DOMAIN,
@@ -1394,7 +1094,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
         modes = call.data.get("modes")
         try:
-            receipt = await manager.async_reset_cadence(
+            receipt = await manager.cadence.async_reset_cadence(
                 serial_number, plan["id"], room_ids=room_ids, modes=modes
             )
         except ValueError as err:
@@ -1429,7 +1129,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         try:
             floor_token = plan_floor_token(floor_plan)
             identity = room_cadence_identity(floor_plan, room_id)
-            receipt = await manager.async_delete_room_schedule(
+            receipt = await manager.cadence.async_delete_room_schedule(
                 serial_number,
                 room_id,
                 call.data["expected_token"],
@@ -1471,14 +1171,14 @@ async def async_register_services(hass: HomeAssistant) -> None:
         entity_id, _entry, serial_number, room_map = _saved_plan_context(
             hass, call, require_rooms=False
         )
-        snapshot = manager.snapshot(serial_number)
+        snapshot = manager.ledger.snapshot(serial_number)
         return {
             "entity_id": entity_id,
             "selected_plan": snapshot.get("selected_plan"),
             "room_count": len(room_map),
             "plans": [
                 {"id": plan_id, **plan}
-                for plan_id, plan in manager.plans(serial_number).items()
+                for plan_id, plan in manager.catalog.plans(serial_number).items()
             ],
         }
 
@@ -1530,7 +1230,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         }
         try:
             cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
-            await manager.async_save_plan(
+            await manager.catalog.async_save_plan(
                 serial_number,
                 plan_id,
                 plan,
@@ -1544,7 +1244,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             ) from err
         except ValueError as err:
             raise _plan_request_error(err) from err
-        return {"plan": manager.plan(serial_number, plan_id)}
+        return {"plan": manager.catalog.plan(serial_number, plan_id)}
 
     hass.services.async_register(
         DOMAIN,
@@ -1561,7 +1261,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
         try:
-            await manager.async_delete_plan(serial_number, plan["id"])
+            await manager.catalog.async_delete_plan(serial_number, plan["id"])
         except ValueError as err:
             raise _validation_error(
                 "The plan is in use by a run", "plan_locked"
@@ -1582,7 +1282,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             hass, call, require_rooms=False
         )
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
-        await manager.async_select_plan(serial_number, plan["id"])
+        await manager.catalog.async_select_plan(serial_number, plan["id"])
         return {"selected_plan_id": plan["id"], "selected_plan_name": plan["name"]}
 
     hass.services.async_register(
@@ -1633,7 +1333,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         plan_id = plan.pop("id")
         cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
         try:
-            await manager.async_save_plan(
+            await manager.catalog.async_save_plan(
                 serial_number,
                 plan_id,
                 plan,
@@ -1643,7 +1343,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
         except ValueError as err:
             raise _plan_request_error(err) from err
-        persisted = manager.plan(serial_number, plan_id)
+        persisted = manager.catalog.plan(serial_number, plan_id)
         if saved_entry["kind"] == "area":
             return {
                 "plan_id": plan_id,
@@ -1693,7 +1393,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         plan_id = plan.pop("id")
         cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
         try:
-            await manager.async_save_plan(
+            await manager.catalog.async_save_plan(
                 serial_number,
                 plan_id,
                 plan,
@@ -1738,7 +1438,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         plan_id = plan.pop("id")
         cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
         try:
-            await manager.async_save_plan(
+            await manager.catalog.async_save_plan(
                 serial_number,
                 plan_id,
                 plan,
@@ -1748,7 +1448,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
         except ValueError as err:
             raise _plan_request_error(err) from err
-        persisted = manager.plan(serial_number, plan_id)
+        persisted = manager.catalog.plan(serial_number, plan_id)
         if moved["kind"] == "area":
             return {
                 "plan_id": plan_id,
@@ -1845,45 +1545,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
 
 
-def _validated_area_command(
-    area: dict[str, Any],
-    floor_plan: FloorPlan | None,
-    cleaning_mode: object,
-    coverage_setting: object,
-) -> tuple[
-    FloorPlan,
-    list[tuple[float, float, float]],
-    CleaningMode,
-    CoverageSetting,
-]:
-    """Validate saved private geometry without changing robot ownership."""
-    if floor_plan is None or not floor_plan.rooms:
-        raise _validation_error(
-            "The robot's room map is unavailable", "room_plan_unavailable"
-        )
-    if area_binding_status(area, floor_plan) is not AreaBindingStatus.CURRENT:
-        raise _validation_error(
-            "The saved custom area belongs to a different room map",
-            "area_map_changed",
-        )
-    try:
-        circles = [
-            (float(item["x"]), float(item["y"]), float(item["radius"]))
-            for item in area["circles"]
-        ]
-        mode_value = cleaning_mode or area["cleaning_mode"]
-        coverage_value = coverage_setting or area["coverage_setting"]
-        if not isinstance(mode_value, str) or not isinstance(coverage_value, str):
-            raise TypeError("cleaning settings must be strings")
-        mode = CleaningMode(mode_value)
-        coverage = CoverageSetting(coverage_value)
-    except (KeyError, TypeError, ValueError) as err:
-        raise _validation_error(
-            "The saved custom area is invalid", "invalid_area"
-        ) from err
-    return floor_plan, circles, mode, coverage
-
-
 def _saved_plan_context(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -1915,309 +1576,6 @@ def _saved_plan_context(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     return entity_id, entry, serial_number, room_map
-
-
-def _room_cadence_identities(floor_plan: FloorPlan) -> dict[str, str]:
-    """Return room identity tokens that survive labels and geometry edits."""
-    return {
-        room.id: room_cadence_identity(floor_plan, room.id) for room in floor_plan.rooms
-    }
-
-
-def _plan_cadence_bindings(
-    entry: ConfigEntry[Any],
-) -> tuple[str | None, dict[str, str]]:
-    """Read current map bindings when the typed config entry is available."""
-    try:
-        floor_plan = _current_floor_plan(entry)
-    except AttributeError:
-        # Service unit tests and pre-runtime adapters can still save fixed
-        # plans; cadence identity is attached on the next verified map edit.
-        return None, {}
-    return plan_floor_token(floor_plan), _room_cadence_identities(floor_plan)
-
-
-def _saved_plan_preview(
-    manager: CleaningPlanManager,
-    serial_number: str,
-    entry: ConfigEntry[Any],
-    room_map: Mapping[str, str],
-    plan_reference: str | None,
-    *,
-    intelligent: bool | None = None,
-    held_rooms: Mapping[str, Mapping[str, str]] | None = None,
-) -> tuple[FloorPlan, dict[str, Any], str]:
-    """Resolve one saved plan and its stable execution fingerprint."""
-    floor_plan = _current_floor_plan(entry)
-    floor_token = plan_floor_token(floor_plan)
-    room_identities = _room_cadence_identities(floor_plan)
-    preview_kwargs: dict[str, Any] = {
-        "floor_token": floor_token,
-        "room_identities": room_identities,
-        "floor_plan": floor_plan,
-    }
-    if intelligent is not None:
-        preview_kwargs["intelligent"] = intelligent
-    if held_rooms:
-        preview_kwargs["held_rooms"] = held_rooms
-    preview = manager.preview(serial_number, room_map, plan_reference, **preview_kwargs)
-    token = saved_plan_preview_token(
-        preview,
-        entry_id=str(getattr(entry, "entry_id", "")),
-        floor_token=floor_token,
-        room_identities=room_identities,
-    )
-    return floor_plan, preview, token
-
-
-def _plan_occupancy_holds(
-    hass: HomeAssistant,
-    manager: CleaningPlanManager,
-    serial_number: str,
-    entity_id: str,
-    plan_reference: str | None,
-    room_map: Mapping[str, str],
-) -> dict[str, dict[str, str]]:
-    """Read which rooms an occupancy-aware plan holds right now."""
-    try:
-        plan = manager.plan(serial_number, plan_reference)
-    except KeyError:
-        # The preview reports the unknown plan in its own words.
-        return {}
-    return occupancy_holds(hass, entity_id, plan, room_map)
-
-
-def _saved_plan_execution(
-    manager: CleaningPlanManager,
-    serial_number: str,
-    floor_plan: FloorPlan,
-    preview: Mapping[str, Any],
-) -> tuple[dict[str, Any], list[CleaningRoom], dict[str, dict[str, Any]]]:
-    """Materialize the authoritative preview for executor dispatch."""
-    room_identities = _room_cadence_identities(floor_plan)
-    plan = manager.plan(serial_number, str(preview["plan_id"]))
-    raw_rooms = preview.get("rooms")
-    # A plan of custom areas alone runs with no rooms.
-    if not isinstance(raw_rooms, list) or not (raw_rooms or _preview_has_area(preview)):
-        raise ValueError("plan has no rooms")
-    if any(not isinstance(room, Mapping) for room in raw_rooms):
-        raise ValueError("plan contains an invalid room")
-    rooms = [
-        CleaningRoom(
-            str(room["room_id"]),
-            str(room["name"]),
-            str(room["cleaning_mode"]),
-            str(room["coverage_setting"]),
-        )
-        for room in raw_rooms
-    ]
-    cadence_by_room = {
-        str(room["room_id"]): dict(room["cadence"]) for room in raw_rooms
-    }
-    for room_id, snapshot in cadence_by_room.items():
-        snapshot["identity"] = room_identities.get(room_id)
-    return plan, rooms, cadence_by_room
-
-
-def _preview_has_area(preview: Mapping[str, Any]) -> bool:
-    """Report whether an authoritative preview includes a custom area."""
-    entries = preview.get("entries")
-    return isinstance(entries, list) and any(
-        isinstance(entry, Mapping) and entry.get("kind") == "area" for entry in entries
-    )
-
-
-def _plan_request_error(err: ValueError) -> ServiceValidationError:
-    """Translate a rejected plan or room sequence without exposing its text."""
-    if isinstance(err, PlanAreaLimitError):
-        return _validation_error(
-            "The custom area limit is exceeded",
-            "plan_area_limit",
-            {"limit": str(MAX_ROOM_SEQUENCE_SIZE)},
-        )
-    if isinstance(err, PlanAreaMissingError):
-        return _validation_error(
-            "A custom area in the plan no longer exists", "plan_area_missing"
-        )
-    if isinstance(err, PlanAreaMapChangedError):
-        return _validation_error(
-            "The saved custom area belongs to a different room map",
-            "area_map_changed",
-        )
-    if isinstance(err, DuplicatePlanAreaError):
-        return _validation_error(
-            "A custom area appears more than once", "duplicate_area"
-        )
-    if isinstance(err, RoomSequenceLimitError):
-        return _validation_error(
-            "The room limit is exceeded",
-            "room_sequence_limit",
-            {"limit": str(MAX_ROOM_SEQUENCE_SIZE)},
-        )
-    if isinstance(err, PlanDisabledError):
-        return _validation_error("The plan is turned off", "plan_disabled")
-    if isinstance(err, EmptyPlanError):
-        return _validation_error("The plan has no rooms", "plan_empty")
-    if isinstance(err, PlanRoomsHeldError):
-        return _validation_error(
-            "Every room in the plan is occupied", "plan_rooms_held"
-        )
-    if isinstance(err, DuplicateRoomError):
-        return _validation_error("A room appears more than once", "duplicate_room")
-    if isinstance(err, CadenceBindingError):
-        return _validation_error(
-            "A shared room schedule has no confirmed map room",
-            "room_schedule_map_unconfirmed",
-        )
-    return _validation_error("The plan request cannot run", "invalid_plan")
-
-
-def _resolve_saved_plan(
-    manager: CleaningPlanManager, serial_number: str, reference: str
-) -> dict[str, Any]:
-    """Resolve a plan reference and produce a localized action error."""
-    try:
-        return manager.plan(serial_number, reference)
-    except KeyError as err:
-        raise _validation_error(
-            f"Unknown Matic cleaning plan: {reference}",
-            "unknown_plan",
-            {"plan": reference},
-        ) from err
-
-
-def _normalize_saved_room(
-    room: dict[str, Any], room_map: dict[str, str]
-) -> dict[str, Any]:
-    """Resolve one mapped room and preserve its individual preferences."""
-    raw = dict(room)
-    raw["room_id"] = _resolve_room_id(str(raw["room"]), room_map)
-    resolved = resolve_rooms([raw], room_map)[0]
-    return {
-        "room_id": resolved.room_id,
-        "cleaning_mode": resolved.cleaning_mode,
-        "coverage_setting": resolved.coverage_setting,
-        **(
-            {"cadence": dict(raw["cadence"])}
-            if isinstance(raw.get("cadence"), dict)
-            else {}
-        ),
-    }
-
-
-def _normalize_saved_area(
-    manager: CleaningPlanManager,
-    serial_number: str,
-    entry: ConfigEntry[Any],
-    item: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Resolve one saved custom area that is bound to the current map."""
-    try:
-        area = manager.area(serial_number, item["area"])
-    except KeyError as err:
-        raise _validation_error(
-            f"Unknown Matic custom area: {item['area']}",
-            "unknown_area",
-            {"area": str(item["area"])},
-        ) from err
-    _floor_plan, _circles, mode, coverage = _validated_area_command(
-        area,
-        _current_floor_plan(entry),
-        item.get("cleaning_mode"),
-        item.get("coverage_setting"),
-    )
-    return {
-        "kind": "area",
-        "area_id": area["id"],
-        "cleaning_mode": mode.value,
-        "coverage_setting": coverage.value,
-    }
-
-
-def _saved_plan_entries(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Read a plan's ordered entries for an edit, or explain why it can't."""
-    try:
-        return plan_entries(plan)
-    except ValueError as err:
-        raise _plan_request_error(err) from err
-
-
-def _plan_entry_position(
-    manager: CleaningPlanManager,
-    serial_number: str,
-    room_map: Mapping[str, str],
-    call: ServiceCall,
-    entries: Sequence[Mapping[str, Any]],
-) -> int:
-    """Find the zero-based entry named by an action's room or area field."""
-    if "area" not in call.data:
-        room_id = _resolve_room_id(call.data["room"], room_map)
-        position = next(
-            (
-                index
-                for index, saved in enumerate(entries)
-                if saved["kind"] == "room" and saved["room_id"] == room_id
-            ),
-            None,
-        )
-        if position is None:
-            raise _validation_error(
-                f"Room is not part of this plan: {call.data['room']}",
-                "unknown_rooms",
-                {"rooms": str(call.data["room"])},
-            )
-        return position
-    reference = str(call.data["area"])
-    area_ids = [saved["area_id"] for saved in entries if saved["kind"] == "area"]
-    try:
-        area_id = str(manager.area(serial_number, reference)["id"])
-    except KeyError as err:
-        # An entry can still name an area that a store edit removed.
-        if reference not in area_ids:
-            raise _validation_error(
-                f"Unknown Matic custom area: {reference}",
-                "unknown_area",
-                {"area": reference},
-            ) from err
-        area_id = reference
-    if area_id not in area_ids:
-        raise _validation_error(
-            f"Custom area is not part of this plan: {reference}",
-            "area_not_in_plan",
-            {"area": reference},
-        )
-    return next(
-        index
-        for index, saved in enumerate(entries)
-        if saved["kind"] == "area" and saved["area_id"] == area_id
-    )
-
-
-def _resolve_room_id(identifier: str, room_map: Mapping[str, str]) -> str:
-    """Resolve one live room ID or unambiguous display name."""
-    try:
-        room_id, _room_name = resolve_room_reference(identifier, room_map)
-    except ValueError as err:
-        if str(err).startswith("ambiguous "):
-            raise _validation_error(
-                f"Ambiguous Matic room: {identifier}",
-                "ambiguous_room",
-                {"room": identifier},
-            ) from err
-        raise _validation_error(
-            f"Unknown Matic room: {identifier}",
-            "unknown_rooms",
-            {"rooms": identifier},
-        ) from err
-    return room_id
-
-
-def _invalid_room_position(position: int, room_count: int) -> ServiceValidationError:
-    return _validation_error(
-        f"Room position {position} is invalid; expected 1 through {room_count}",
-        "invalid_room_position",
-        {"count": str(room_count)},
-    )
 
 
 def _resolve_loaded_matic_vacuums(

@@ -2251,7 +2251,7 @@ export class EffectController {
       if (name === "trail" && !trail) this.#store.patch({ trail: null });
       else if (entry && this.#pageLifecycle.active) {
         this.#runs = await import("./run-history-data");
-        if (!this.#unwatchRuns && !this.#disposed) this.#unwatchRuns = this.#runs.watchRuns(this.#store, () => void this.loadRuns());
+        if (!this.#unwatchRuns && !this.#disposed) this.#unwatchRuns = this.#runs.watchRuns(this.#store, () => this.loadRuns());
         await this.#runs.readRuns(this.#store, this.#backend, entry, trail, controller.signal, NOTICES.trailUnavailable);
       }
     } finally {

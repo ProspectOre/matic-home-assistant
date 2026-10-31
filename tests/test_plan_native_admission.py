@@ -16,12 +16,12 @@ from custom_components.matic_robot.client.models import (
     FloorPlan,
     Room,
 )
-from custom_components.matic_robot.plans import (
-    CleaningPlanManager,
+from custom_components.matic_robot.plan_model import (
     CleaningRoom,
     plan_floor_token,
     room_cadence_identity,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 
 SERIAL = "synthetic-native-import-robot"
 
@@ -36,7 +36,7 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
     async def save(data: dict) -> None:
         persisted.append(deepcopy(data))
 
-    manager._store = SimpleNamespace(async_save=AsyncMock(side_effect=save))
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock(side_effect=save))
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     floor_plan = FloorPlan(
         7,
@@ -45,7 +45,7 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
         (Room(room.room_id, room.name, "room-proto", b"room-wire", ()),),
     )
     identity = room_cadence_identity(floor_plan, room.room_id)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         SERIAL,
         "home",
         {
@@ -63,7 +63,7 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
         floor_token=plan_floor_token(floor_plan),
         room_identities={room.room_id: identity},
     )
-    _effective_rooms, cadence = manager.resolve_cadence(
+    _effective_rooms, cadence = manager.cadence.resolve_cadence(
         SERIAL,
         "home",
         [room],
@@ -71,17 +71,17 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
         room_identities={room.room_id: identity},
     )
     cadence_state = {**cadence[room.room_id], "identity": identity}
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         SERIAL, "home", "run-old", 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         SERIAL,
         "run-old",
         {"cadence_by_room": {room.room_id: cadence_state}},
     )
     dispatched_at = dt_util.utcnow() - timedelta(seconds=10)
-    await manager.async_mark_started(SERIAL, "home", room, run_id="run-old")
-    await manager.async_mark_failed(
+    await manager.ledger.async_mark_started(SERIAL, "home", room, run_id="run-old")
+    await manager.ledger.async_mark_failed(
         SERIAL,
         "home",
         room,
@@ -98,12 +98,14 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
     )
 
     notifications: list[None] = []
-    manager.async_add_listener(SERIAL, lambda: notifications.append(None))
+    manager.repository.async_add_listener(SERIAL, lambda: notifications.append(None))
     reconciled_events = []
     hass.bus.async_listen("matic_robot_room_reconciled", reconciled_events.append)
     before_durable = deepcopy(persisted[-1])
     before_save_count = len(persisted)
-    before_progress = deepcopy(manager.cadence_progress(SERIAL, "home", room.room_id))
+    before_progress = deepcopy(
+        manager.cadence.cadence_progress(SERIAL, "home", room.room_id)
+    )
 
     history = [
         CleaningSessionRecord(
@@ -120,20 +122,20 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
         )
     ]
 
-    command_lock = manager.command_lock(SERIAL)
+    command_lock = manager.control.command_lock(SERIAL)
     command_lock_requested = asyncio.Event()
-    original_command_lock = manager.command_lock
+    original_command_lock = manager.control.command_lock
 
     def observe_command_lock(serial_number: str):
         command_lock_requested.set()
         return original_command_lock(serial_number)
 
-    manager.command_lock = observe_command_lock
-    await manager._store_lock.acquire()
+    manager.control.command_lock = observe_command_lock
+    await manager.repository.store_lock.acquire()
     await command_lock.acquire()
     test_holds_command_lock = True
     import_task = asyncio.create_task(
-        manager.async_import_native_history(SERIAL, floor_plan, history)
+        manager.ledger.async_import_native_history(SERIAL, floor_plan, history)
     )
     command_observer = None
     try:
@@ -151,14 +153,17 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
         test_holds_command_lock = False
 
         # Import releases its command lease before waiting for the shared Store.
-        assert manager._store_lock.locked()
+        assert manager.repository.store_lock.locked()
         assert not import_task.done()
 
-        old_motion_generation = manager.motion_generation(SERIAL)
-        assert manager.replace_managed_motion(SERIAL) is True
-        assert manager.motion_generation(SERIAL) == old_motion_generation + 1
-        assert "pending_native_reconciliation" not in manager._robot(SERIAL)
-        assert manager.cadence_progress(SERIAL, "home", room.room_id) == before_progress
+        old_motion_generation = manager.control.motion_generation(SERIAL)
+        assert manager.control.replace_managed_motion(SERIAL) is True
+        assert manager.control.motion_generation(SERIAL) == old_motion_generation + 1
+        assert "pending_native_reconciliation" not in manager.repository.robot(SERIAL)
+        assert (
+            manager.cadence.cadence_progress(SERIAL, "home", room.room_id)
+            == before_progress
+        )
         assert len(persisted) == before_save_count
     finally:
         if test_holds_command_lock:
@@ -166,17 +171,20 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
         if command_observer is not None and not command_observer.done():
             command_observer.cancel()
             await asyncio.gather(command_observer, return_exceptions=True)
-        manager._store_lock.release()
+        manager.repository.store_lock.release()
         import_result = await asyncio.wait_for(import_task, timeout=2)
 
     assert import_result is False
     await hass.async_block_till_done()
 
-    robot = manager._robot(SERIAL)
+    robot = manager.repository.robot(SERIAL)
     assert robot["rooms"].get(room.room_id, {}).get("last_opportunity") is None
     assert robot["rooms"].get(room.room_id, {}).get("completed_runs", 0) == 0
     assert robot["native_completion_dedup"] == []
-    assert manager.cadence_progress(SERIAL, "home", room.room_id) == before_progress
+    assert (
+        manager.cadence.cadence_progress(SERIAL, "home", room.room_id)
+        == before_progress
+    )
     assert reconciled_events == []
     assert notifications == []
     assert len(persisted) == before_save_count

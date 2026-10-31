@@ -17,8 +17,11 @@ from homeassistant.components.http.decorators import require_admin
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 
 from .client.exceptions import MaticError
+from .http import (
+    PRIVATE_NO_STORE_HEADERS,
+    runtime_for_entry,
+)
 from .run_history import native_run_id
-from .slam_scene import PRIVATE_NO_STORE_HEADERS, _runtime_for_entry
 
 RUN_THUMBNAIL_API_URL = "/api/matic_robot/run_thumbnail/{entry_id}/{run_id}"
 RUN_THUMBNAILS_READ_SECONDS = 20.0
@@ -54,7 +57,7 @@ class MaticRunThumbnailView(HomeAssistantView):
         self, request: web.Request, entry_id: str, run_id: str
     ) -> web.Response:
         """Return the WebP picture for a robot history id."""
-        runtime = _runtime_for_entry(request.app[KEY_HASS], entry_id)
+        runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
         if runtime is None or not run_id.startswith("robot-"):
             return _not_found()
         async with self._locks.setdefault(entry_id, asyncio.Lock()):
@@ -76,7 +79,7 @@ class MaticRunThumbnailView(HomeAssistantView):
                         status=HTTPStatus.SERVICE_UNAVAILABLE,
                         headers=PRIVATE_NO_STORE_HEADERS,
                     )
-                if _runtime_for_entry(request.app[KEY_HASS], entry_id) is not runtime:
+                if runtime_for_entry(request.app[KEY_HASS], entry_id) is not runtime:
                     return _not_found()
                 # Keep the requested image first, even when it is late in the
                 # collection. Remember evicted IDs so a later request can read

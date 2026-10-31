@@ -46,6 +46,23 @@ HA_TOKEN=... .venv/bin/python scripts/installed_check.py v0.6.0b1 \
 
 Add `--physical --room Kitchen` for the physical steps.
 
+## Checking an unpublished candidate
+
+Before beta publication, install the reviewed commit only after the owner's approval,
+then check those files by their full commit ID:
+
+```sh
+HA_TOKEN=... .venv/bin/python scripts/installed_check.py \
+  --commit FULL_REVIEWED_COMMIT_ID --skip-install \
+  --url http://homeassistant.local:8123 \
+  --receipts ~/Dev/sources/matic/qualification --ssh homeassistant
+```
+
+`--commit` requires `--skip-install`; it cannot invoke a HACS download or restart.
+The check reads committed files even if the local checkout has changes. Its receipt
+records the full commit and a null tag. No tag or GitHub release is created. Without
+`--physical`, it sends no cleaning or navigation command.
+
 ## Boundaries
 
 - Installing a candidate and sending robot commands both need the owner's go for that candidate. Only one
@@ -55,5 +72,5 @@ Add `--physical --room Kitchen` for the physical steps.
   press Enter once it is docked again.
 - The script never restores a backup. The [upgrade drill](upgrade-drill.md) covers rollback on the simulator.
 - Receipts include entity counts and backup IDs, and the token is never written. Keep receipts in the
-  private sources tree, not in this repository. Each receipt names its tag, commit and Home Assistant
+  private sources tree, not in this repository. Each receipt names its tag when present, commit and Home Assistant
   version.

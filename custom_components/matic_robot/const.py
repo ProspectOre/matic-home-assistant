@@ -32,6 +32,9 @@ CONF_LIVE_WORKSPACE_TRANSPORT: Final = "live_workspace_transport"
 # was recorded were all paired over Bluetooth.
 CONF_PAIRING_METHOD: Final = "pairing_method"
 CONF_SERIAL_NUMBER: Final = "serial_number"
+CONF_PHOTO_PATROL_ALLOW_UNATTENDED: Final = "photo_patrol_allow_unattended"
+CONF_PHOTO_PATROL_NO_PHOTO_ROOMS: Final = "photo_patrol_no_photo_rooms"
+CONF_PHOTO_PATROL_COOLDOWN_SECONDS: Final = "photo_patrol_cooldown_seconds"
 
 PAIRING_METHOD_BLUETOOTH: Final = "bluetooth"
 PAIRING_METHOD_IMPORT: Final = "import"

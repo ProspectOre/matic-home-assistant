@@ -4,7 +4,6 @@ import type { WorkspaceIntent, WorkspaceState } from "./contracts";
 import { icon, iconBrush, iconClear, iconErase, iconMoveMap, iconPaint, iconNewArea, iconRedo, iconUndo } from "./icons";
 import { heldReasonKey } from "./state";
 
-export { heldReasonKey };
 
 // The drawing tools, rendered by whichever surface owns them: the map's
 // dock at desktop width, the sheet's rows on a phone. One template so the

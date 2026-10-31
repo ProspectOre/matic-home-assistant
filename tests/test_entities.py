@@ -64,13 +64,13 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.coordinator import MaticCuesEvent
 from custom_components.matic_robot.entity import MaticEntity
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_model import (
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
-    CleaningPlanManager,
     CleaningRoom,
     PlanStopDecision,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     SlamMapStore,
@@ -229,71 +229,79 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         last_update_success=True,
     )
     history = SimpleNamespace(
-        snapshot=MagicMock(
-            return_value={
-                "completed_runs": 0,
-                "failed_runs": 0,
-                "last_completed": None,
-                "last_completed_by_room": {},
-                "plan_history": {},
-                "plans": {
+        ledger=SimpleNamespace(
+            snapshot=MagicMock(
+                return_value={
+                    "completed_runs": 0,
+                    "failed_runs": 0,
+                    "last_completed": None,
+                    "last_completed_by_room": {},
+                    "plan_history": {},
+                    "plans": {
+                        "whole_home": {
+                            "name": "Whole home",
+                            "enabled": True,
+                            "room_count": 2,
+                        }
+                    },
+                    "selected_plan": "whole_home",
+                    "selected_plan_name": "Whole home",
+                    "selected_area": "litter_box",
+                    "selected_area_name": "Litter box",
+                    "active_plan": None,
+                    "last_interrupted_plan": None,
+                }
+            ),
+            current_room_timing=MagicMock(return_value=None),
+            async_checkpoint_stop_intent=AsyncMock(),
+            active_run_id=MagicMock(return_value=None),
+        ),
+        catalog=SimpleNamespace(
+            plans=MagicMock(
+                return_value={
                     "whole_home": {
                         "name": "Whole home",
                         "enabled": True,
-                        "room_count": 2,
                     }
-                },
-                "selected_plan": "whole_home",
-                "selected_plan_name": "Whole home",
-                "selected_area": "litter_box",
-                "selected_area_name": "Litter box",
-                "active_plan": None,
-                "last_interrupted_plan": None,
-            }
-        ),
-        plans=MagicMock(
-            return_value={
-                "whole_home": {
-                    "name": "Whole home",
-                    "enabled": True,
                 }
-            }
+            ),
+            plan=MagicMock(return_value={"id": "whole_home", "name": "Whole home"}),
+            areas=MagicMock(return_value={"litter_box": {"name": "Litter box"}}),
+            area=MagicMock(return_value={"id": "litter_box", "name": "Litter box"}),
+            preview=MagicMock(
+                return_value={
+                    "valid": True,
+                    "plan_name": "Whole home",
+                    "rooms": [{"name": "Kitchen", "room_id": "room-1"}],
+                }
+            ),
+            async_select_plan=AsyncMock(),
+            async_select_area=AsyncMock(),
         ),
-        plan=MagicMock(return_value={"id": "whole_home", "name": "Whole home"}),
-        areas=MagicMock(return_value={"litter_box": {"name": "Litter box"}}),
-        area=MagicMock(return_value={"id": "litter_box", "name": "Litter box"}),
-        preview=MagicMock(
-            return_value={
-                "valid": True,
-                "plan_name": "Whole home",
-                "rooms": [{"name": "Kitchen", "room_id": "room-1"}],
-            }
+        repository=SimpleNamespace(
+            async_add_listener=MagicMock(return_value=MagicMock())
         ),
-        async_select_plan=AsyncMock(),
-        async_select_area=AsyncMock(),
-        async_add_listener=MagicMock(return_value=MagicMock()),
-        current_room_timing=MagicMock(return_value=None),
-        cancel=MagicMock(return_value=True),
-        request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
-        async_checkpoint_stop_intent=AsyncMock(),
-        async_replace_managed_motion=AsyncMock(return_value=0),
-        active_run_id=MagicMock(return_value=None),
-        has_managed_task=MagicMock(return_value=False),
-        recovery_run=MagicMock(return_value=None),
-        motion_generation=MagicMock(return_value=0),
-        stop_request_generation=MagicMock(return_value=0),
-        stop_pending=MagicMock(return_value=False),
-        async_mark_stop_pending=AsyncMock(),
-        async_clear_stop_pending=AsyncMock(),
-        command_admission_open=MagicMock(return_value=True),
-        command_admission_epoch=MagicMock(return_value=0),
-        require_command_admission=MagicMock(),
-        cancellation_event=MagicMock(return_value=asyncio.Event()),
-        command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
-        external_command=MagicMock(side_effect=_motion_context),
-        external_motion=MagicMock(side_effect=_motion_context),
-        managed_stop_dispatch=MagicMock(side_effect=_managed_stop_dispatch_context),
-        managed_command=MagicMock(side_effect=_managed_motion_context),
+        control=SimpleNamespace(
+            cancel=MagicMock(return_value=True),
+            request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
+            async_replace_managed_motion=AsyncMock(return_value=0),
+            has_managed_task=MagicMock(return_value=False),
+            recovery_run=MagicMock(return_value=None),
+            motion_generation=MagicMock(return_value=0),
+            stop_request_generation=MagicMock(return_value=0),
+            stop_pending=MagicMock(return_value=False),
+            async_mark_stop_pending=AsyncMock(),
+            async_clear_stop_pending=AsyncMock(),
+            command_admission_open=MagicMock(return_value=True),
+            command_admission_epoch=MagicMock(return_value=0),
+            require_command_admission=MagicMock(),
+            cancellation_event=MagicMock(return_value=asyncio.Event()),
+            command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
+            external_command=MagicMock(side_effect=_motion_context),
+            external_motion=MagicMock(side_effect=_motion_context),
+            managed_stop_dispatch=MagicMock(side_effect=_managed_stop_dispatch_context),
+            managed_command=MagicMock(side_effect=_managed_motion_context),
+        ),
     )
     firmware = SimpleNamespace(
         summary=MagicMock(
@@ -876,7 +884,7 @@ def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
     entry = _entry()
     coordinator = entry.runtime_data.coordinator
     history = entry.runtime_data.cleaning_plans
-    history.snapshot.return_value["plan_history"] = {
+    history.ledger.snapshot.return_value["plan_history"] = {
         "handoff": {
             "rooms": {
                 "retired": {"room_id": "retired"},
@@ -970,7 +978,7 @@ def test_managed_room_statistics_validate_session_and_unmatched_room() -> None:
 def test_room_statistics_apply_newer_verified_plan_history() -> None:
     entry = _entry()
     history = entry.runtime_data.cleaning_plans
-    snapshot = history.snapshot.return_value
+    snapshot = history.ledger.snapshot.return_value
     snapshot["last_completed_by_room"] = {
         "room-1": {
             "name": "Kitchen",
@@ -1186,12 +1194,12 @@ async def test_history_payload_matches_the_panel_contract(hass, active) -> None:
     entry = _entry()
     entry.entry_id = payload["matic_entry_id"]
     manager = CleaningPlanManager(hass)
-    manager._store.async_save = AsyncMock()
-    robot = manager._robot("synthetic-serial")
+    manager.repository.store.async_save = AsyncMock()
+    robot = manager.repository.robot("synthetic-serial")
     robot["plans"] = {
         "daily": {"name": "Daily", "enabled": True, "rooms": [{}, {}, {}]}
     }
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "synthetic-serial",
         "daily",
         "partial-1",
@@ -1200,14 +1208,14 @@ async def test_history_payload_matches_the_panel_contract(hass, active) -> None:
         service="run_selected_plan",
     )
     if active:
-        await manager.async_mark_started(
+        await manager.ledger.async_mark_started(
             "synthetic-serial",
             "daily",
             CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard"),
             run_id="partial-1",
         )
     else:
-        assert await manager.async_finish_run(
+        assert await manager.ledger.async_finish_run(
             "synthetic-serial",
             "partial-1",
             "failed",
@@ -1419,7 +1427,7 @@ def test_session_attributes_require_a_recorded_session() -> None:
 def test_next_room_preview_hides_stale_plan_errors() -> None:
     for error in (KeyError("room-1"), ValueError("plan references retired rooms")):
         entry = _entry()
-        entry.runtime_data.cleaning_plans.preview = MagicMock(side_effect=error)
+        entry.runtime_data.cleaning_plans.catalog.preview = MagicMock(side_effect=error)
         next_room = sensor.MaticNextCleaningRoomSensor(entry)
 
         assert next_room.native_value is None
@@ -1427,16 +1435,16 @@ def test_next_room_preview_hides_stale_plan_errors() -> None:
 
     entry = _entry()
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
-    entry.runtime_data.cleaning_plans.preview = MagicMock()
+    entry.runtime_data.cleaning_plans.catalog.preview = MagicMock()
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
     assert next_room.native_value is None
-    entry.runtime_data.cleaning_plans.preview.assert_not_called()
+    entry.runtime_data.cleaning_plans.catalog.preview.assert_not_called()
 
 
 def test_plan_entities_preview_custom_areas_on_the_current_map() -> None:
     entry = _entry()
     floor = entry.runtime_data.coordinator.data.floor_plan
-    preview = entry.runtime_data.cleaning_plans.preview
+    preview = entry.runtime_data.cleaning_plans.catalog.preview
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
     plan_button = button.MaticPlanButton(entry, "run_selected_plan")
 
@@ -1474,10 +1482,10 @@ async def test_storage_backed_sensors_track_history_and_stay_available() -> None
             entity.async_write_ha_state = MagicMock()
             await entity.async_added_to_hass()
 
-    assert history.async_add_listener.call_count == 2
+    assert history.repository.async_add_listener.call_count == 2
     for entity, listener_call in zip(
         (history_sensor, plan_sensor),
-        history.async_add_listener.call_args_list,
+        history.repository.async_add_listener.call_args_list,
         strict=True,
     ):
         serial, listener = listener_call.args
@@ -1497,7 +1505,7 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
     entry = _entry()
     entry.entry_id = "synthetic-entry"
     manager = CleaningPlanManager(hass)
-    manager._store.async_save = AsyncMock()
+    manager.repository.store.async_save = AsyncMock()
     entry.runtime_data.cleaning_plans = manager
     coordinator = entry.runtime_data.coordinator
     coordinator.data = replace(
@@ -1507,7 +1515,7 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
     room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
     base = dt_util.utcnow()
     with patch("custom_components.matic_robot.plans.dt_util.utcnow", return_value=base):
-        await manager.async_begin_run(
+        await manager.ledger.async_begin_run(
             "synthetic-serial",
             "daily",
             "partial-1",
@@ -1515,13 +1523,13 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
             trigger="user",
             service="run_selected_plan",
         )
-        await manager.async_mark_started(
+        await manager.ledger.async_mark_started(
             "synthetic-serial", "daily", room, run_id="partial-1"
         )
-        await manager.async_mark_resumed("synthetic-serial", "daily", room)
-    record = manager._robot("synthetic-serial")["rotations"]["daily"]["rooms"][
-        room.room_id
-    ]
+        await manager.ledger.async_mark_resumed("synthetic-serial", "daily", room)
+    record = manager.repository.robot("synthetic-serial")["rotations"]["daily"][
+        "rooms"
+    ][room.room_id]
     record["duration_history_seconds"] = [100, 100, 100]
     record["duration_profiles"] = {
         f"{record['cleaning_mode']}:{record['coverage_setting']}": {
@@ -1579,7 +1587,9 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
         publisher.refresh()
         for entity in entities:
             entity.async_write_ha_state.assert_called_once()
-        await manager.async_mark_suspended("synthetic-serial", "daily", room, "paused")
+        await manager.ledger.async_mark_suspended(
+            "synthetic-serial", "daily", room, "paused"
+        )
         assert publisher.data is None  # Source/manager disagree during the handoff.
         coordinator.data = replace(
             coordinator.data,
@@ -1611,14 +1621,19 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
         )
         publisher.refresh()
         assert publisher.data is not None
-        async with manager.lock("synthetic-serial"):
-            await manager.async_replace_managed_motion("synthetic-serial")
-            assert manager.cancellation_reason("synthetic-serial") == "motion_replaced"
+        async with manager.control.lock("synthetic-serial"):
+            await manager.control.async_replace_managed_motion("synthetic-serial")
+            assert (
+                manager.control.cancellation_reason("synthetic-serial")
+                == "motion_replaced"
+            )
             assert publisher.data is None  # Clear immediately, without a timer tick.
-        manager.prepare_run("synthetic-serial")
+        manager.control.prepare_run("synthetic-serial")
         publisher.refresh()
         assert publisher.data is not None
-        manager._robot("synthetic-serial")["last_run"]["run_id"] = "replacement"
+        manager.repository.robot("synthetic-serial")["last_run"]["run_id"] = (
+            "replacement"
+        )
         publisher.refresh()
         assert publisher.data is None
         coordinator.data = replace(
@@ -1636,7 +1651,7 @@ async def test_current_room_entities_share_live_sample_and_close_on_unload(
     close()
     cancel_timer.assert_called_once()
     coordinator.async_add_listener.return_value.assert_called_once()
-    with patch.object(manager, "current_room_timing") as read:
+    with patch.object(manager.ledger, "current_room_timing") as read:
         publisher.refresh()
         read.assert_not_called()
 
@@ -1731,7 +1746,7 @@ async def test_saved_plan_select_and_native_button() -> None:
     assert plan_select.options == ["Whole home"]
     assert plan_select.current_option == "Whole home"
     await plan_select.async_select_option("Whole home")
-    entry.runtime_data.cleaning_plans.async_select_plan.assert_awaited_once_with(
+    entry.runtime_data.cleaning_plans.catalog.async_select_plan.assert_awaited_once_with(
         "synthetic-serial", "whole_home"
     )
 
@@ -1781,11 +1796,13 @@ async def test_custom_area_select_and_native_button() -> None:
     assert area_select.options == ["Litter box"]
     assert area_select.current_option == "Litter box"
     await area_select.async_select_option("Litter box")
-    history.async_select_area.assert_awaited_once_with("synthetic-serial", "litter_box")
+    history.catalog.async_select_area.assert_awaited_once_with(
+        "synthetic-serial", "litter_box"
+    )
     area_select.async_write_ha_state = MagicMock()
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         await area_select.async_added_to_hass()
-    serial, listener = history.async_add_listener.call_args.args
+    serial, listener = history.repository.async_add_listener.call_args.args
     assert serial == "synthetic-serial"
     listener()
     area_select.async_write_ha_state.assert_called_once()
@@ -1805,18 +1822,18 @@ async def test_custom_area_select_and_native_button() -> None:
         blocking=True,
     )
 
-    history.area.side_effect = KeyError(None)
+    history.catalog.area.side_effect = KeyError(None)
     assert area_button.available is False
     assert button.MaticAreaButton(_entry(with_floor_plan=False)).available is False
 
-    history.area.side_effect = None
+    history.catalog.area.side_effect = None
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
     assert area_button.available is False
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
     area_button.async_write_ha_state = MagicMock()
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         await area_button.async_added_to_hass()
-    serial, listener = history.async_add_listener.call_args.args
+    serial, listener = history.repository.async_add_listener.call_args.args
     assert serial == "synthetic-serial"
     listener()
     area_button.async_write_ha_state.assert_called_once()
@@ -1865,13 +1882,16 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     entry.runtime_data.coordinator.last_update_success = True
 
     assert stop_button.available is False
-    snapshot = history.snapshot.return_value
-    history.snapshot.return_value = {**snapshot, "active_plan": {"room_id": "room-1"}}
+    snapshot = history.ledger.snapshot.return_value
+    history.ledger.snapshot.return_value = {
+        **snapshot,
+        "active_plan": {"room_id": "room-1"},
+    }
     assert stop_button.available is True
 
-    history.preview.side_effect = KeyError("missing")
+    history.catalog.preview.side_effect = KeyError("missing")
     assert start_button.available is False
-    history.preview.side_effect = None
+    history.catalog.preview.side_effect = None
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
     assert start_button.available is False
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
@@ -1885,7 +1905,7 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     start_button.async_write_ha_state = MagicMock()
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         await start_button.async_added_to_hass()
-    serial, listener = history.async_add_listener.call_args.args
+    serial, listener = history.repository.async_add_listener.call_args.args
     assert serial == "synthetic-serial"
     listener()
     start_button.async_write_ha_state.assert_called_once()
@@ -1915,7 +1935,7 @@ async def test_saved_plan_select_rerenders_when_plans_change() -> None:
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         await plan_select.async_added_to_hass()
 
-    serial, listener = history.async_add_listener.call_args.args
+    serial, listener = history.repository.async_add_listener.call_args.args
     assert serial == "synthetic-serial"
     listener()
     plan_select.async_write_ha_state.assert_called_once()
@@ -2385,7 +2405,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     plans = entry.runtime_data.cleaning_plans
     await entity.async_pause()
     # Pausing must keep a managed plan resumable.
-    assert plans.cancel.call_count == 0
+    assert plans.control.cancel.call_count == 0
     await entity.async_stop()
     await entity.async_return_to_base()
     commands = [
@@ -2399,10 +2419,12 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     ]
     # A user stop or dock ends the managed plan instead of letting the
     # runner treat the docked robot as a finished room and continue.
-    assert plans.request_stop.call_count == 1
-    assert plans.external_command.call_count == 2
-    assert plans.external_motion.call_count == 1
-    plans.async_replace_managed_motion.assert_awaited_once_with("synthetic-serial")
+    assert plans.control.request_stop.call_count == 1
+    assert plans.control.external_command.call_count == 2
+    assert plans.control.external_motion.call_count == 1
+    plans.control.async_replace_managed_motion.assert_awaited_once_with(
+        "synthetic-serial"
+    )
 
     await entity.async_clean_segments(["room-2"])
     coverage_call = coordinator.client.async_start_coverage.await_args
@@ -2423,12 +2445,12 @@ async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:
     entry = _entry()
     entity = vacuum.MaticVacuum(entry)
     plans = entry.runtime_data.cleaning_plans
-    plans.request_stop.return_value = PlanStopDecision("after_room", 75, 50)
+    plans.control.request_stop.return_value = PlanStopDecision("after_room", 75, 50)
 
     await entity.async_stop()
     await entity.async_send_command("stop")
 
-    assert plans.request_stop.call_count == 2
+    assert plans.control.request_stop.call_count == 2
     entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
 
 
@@ -2459,7 +2481,7 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
             "session_id": UUID("11111111-1111-4111-8111-111111111111"),
         },
     )
-    entry.runtime_data.cleaning_plans.managed_command.assert_called_once_with(
+    entry.runtime_data.cleaning_plans.control.managed_command.assert_called_once_with(
         "synthetic-serial", 7
     )
 
@@ -2942,8 +2964,8 @@ async def test_room_statistics_sensors_use_verified_managed_runs() -> None:
     """A verified managed run still populates room statistics."""
     entry = _entry()
     kitchen = entry.runtime_data.coordinator.data.floor_plan.rooms[0]
-    entry.runtime_data.cleaning_plans.snapshot.return_value = {
-        **entry.runtime_data.cleaning_plans.snapshot.return_value,
+    entry.runtime_data.cleaning_plans.ledger.snapshot.return_value = {
+        **entry.runtime_data.cleaning_plans.ledger.snapshot.return_value,
         "plan_history": {
             "whole_home": {
                 "rooms": {

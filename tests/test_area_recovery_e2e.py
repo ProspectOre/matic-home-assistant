@@ -24,21 +24,23 @@ from custom_components.matic_robot.area_binding import (
     area_binding_status,
     binding_for_area,
 )
+from custom_components.matic_robot.area_views import (
+    MaticAreasView,
+)
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.llm import (
     MaticGetPlanReadinessTool,
     MaticGetPlanTool,
 )
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_model import (
     AreaBindingUpgradeResult,
-    CleaningPlanManager,
     PlanAreaMapChangedError,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.services import (
     _saved_plan_preview,
     _validated_area_command,
 )
-from custom_components.matic_robot.slam_scene import MaticAreasView
 from tests.test_area_frame_witnesses import (
     _area as _witness_area,
 )
@@ -153,7 +155,7 @@ def _map_with_overlapping_room(floor_plan: FloorPlan) -> FloorPlan:
 
 def _mixed_saved_plan(manager: CleaningPlanManager) -> None:
     _saved_plan(manager)
-    plan = manager._robot("synthetic-serial")["plans"]["area-plan"]
+    plan = manager.repository.robot("synthetic-serial")["plans"]["area-plan"]
     plan["rooms"] = [
         {
             "room_id": "room-1",
@@ -176,7 +178,7 @@ def _mixed_saved_plan(manager: CleaningPlanManager) -> None:
 
 
 def _saved_plan(manager: CleaningPlanManager) -> None:
-    robot = manager._robot("synthetic-serial")
+    robot = manager.repository.robot("synthetic-serial")
     robot["plans"]["area-plan"] = {
         "id": "area-plan",
         "name": "Area plan",
@@ -201,7 +203,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
 ) -> None:
     """A stale legacy binding stays blocked until explicit validated rebind."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     original_map = _dense_floor_plan()
     current_map = _map_with_unrelated_room(original_map)
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]
@@ -213,7 +215,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
         "coverage_setting": "standard",
         "map_binding": _legacy_v4_binding(original_map, circles),
     }
-    manager._robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
+    manager.repository.robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
     _saved_plan(manager)
 
     runtime = _runtime()
@@ -228,7 +230,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     get_plan = MaticGetPlanTool()
     readiness = MaticGetPlanReadinessTool()
 
-    migration = await manager.async_upgrade_area_bindings(
+    migration = await manager.catalog.async_upgrade_area_bindings(
         "synthetic-serial", current_map
     )
     assert migration == AreaBindingUpgradeResult(0, True)
@@ -286,25 +288,25 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
         },
     )
     original_identity = runtime.slam_map.mission_identity
-    await manager._store_lock.acquire()
+    await manager.repository.store_lock.acquire()
     rebind_task = asyncio.create_task(api.post(rebind_request, "entry"))
     try:
         for _ in range(100):
-            if manager._metadata_persistence_tasks.get("synthetic-serial"):
+            if manager.repository.metadata_persistence_tasks.get("synthetic-serial"):
                 break
             await asyncio.sleep(0)
-        assert manager._metadata_persistence_tasks.get("synthetic-serial")
+        assert manager.repository.metadata_persistence_tasks.get("synthetic-serial")
         # The HTTP checks already passed, but the owned Store transaction is
         # queued. Revoke the captured map before releasing it.
         runtime.slam_map.mission_identity = None
     finally:
-        manager._store_lock.release()
+        manager.repository.store_lock.release()
     stale_commit = await rebind_task
     assert stale_commit.status == 409
-    assert manager._store.async_save.await_count == 0
-    assert manager.area("synthetic-serial", "saved-zone")["map_binding"]["version"] == (
-        BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-    )
+    assert manager.repository.store.async_save.await_count == 0
+    assert manager.catalog.area("synthetic-serial", "saved-zone")["map_binding"][
+        "version"
+    ] == (BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION)
     still_stale = await readiness.async_call(
         tool_hass,
         llm.ToolInput(readiness.name, {"plan": "area-plan"}),
@@ -318,7 +320,7 @@ async def test_stale_v4_area_recovers_through_catalog_and_saved_plan_preview(
     response = await api.post(rebind_request, "entry")
     assert response.status == 200
     assert json.loads(response.body) == {"id": "saved-zone"}
-    rebound = manager.area("synthetic-serial", "saved-zone")
+    rebound = manager.catalog.area("synthetic-serial", "saved-zone")
     assert rebound is not None
     assert (
         rebound["map_binding"]["version"]
@@ -400,7 +402,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
     )
     if binding_kind == "v3_without_invariant_digest":
         del saved_area["map_binding"]["translation_invariant_geometry_sha256"]
-    manager._robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
+    manager.repository.robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
     _mixed_saved_plan(manager)
 
     refreshed_map = (
@@ -425,14 +427,14 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
 
     # Persist the starting catalog through the real HA Store, then observe
     # writes caused by the automatic map-revision upgrade path.
-    await manager._store.async_save(manager._data)
-    store_save = manager._store.async_save
-    manager._store.async_save = AsyncMock(wraps=store_save)
+    await manager.repository.store.async_save(manager.repository.data)
+    store_save = manager.repository.store.async_save
+    manager.repository.store.async_save = AsyncMock(wraps=store_save)
 
     # This is the manager operation scheduled by the coordinator on a fresh
     # supported floor-plan revision. It may upgrade legacy records, but must
     # not rebind a current anchored area as a side effect of unrelated map churn.
-    upgrade = await manager.async_upgrade_area_bindings(
+    upgrade = await manager.catalog.async_upgrade_area_bindings(
         "synthetic-serial", refreshed_map
     )
     unsafe_drift = refresh in {"translated", "partition_overlapping_room"} or (
@@ -440,7 +442,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
     )
     assert upgrade == AreaBindingUpgradeResult(0, False)
     assert saved_area == original_record
-    manager._store.async_save.assert_not_awaited()
+    manager.repository.store.async_save.assert_not_awaited()
 
     # Simulate HA Store reload after that automatic refresh, then run the same
     # read-only readiness, plan preview, and service-side area validation used
@@ -477,14 +479,14 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
             )
         with pytest.raises(HomeAssistantError):
             _validated_area_command(
-                reloaded.area("synthetic-serial", "saved-zone"),
+                reloaded.catalog.area("synthetic-serial", "saved-zone"),
                 refreshed_map,
                 None,
                 None,
             )
         assert (
             area_binding_status(
-                reloaded.area("synthetic-serial", "saved-zone"), refreshed_map
+                reloaded.catalog.area("synthetic-serial", "saved-zone"), refreshed_map
             )
             is not AreaBindingStatus.CURRENT
         )
@@ -494,7 +496,7 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
         assert readiness.data["areas"] == [{"name": "Saved zone", "status": "ready"}]
         assert (
             area_binding_status(
-                reloaded.area("synthetic-serial", "saved-zone"), refreshed_map
+                reloaded.catalog.area("synthetic-serial", "saved-zone"), refreshed_map
             )
             is AreaBindingStatus.CURRENT
         )
@@ -517,15 +519,15 @@ async def test_run_like_map_refresh_preserves_only_proven_area_continuity(
         ]
         assert llm_preview.data["legs"][1]["custom_area"]["id"] == "saved-zone"
         _validated_area_command(
-            reloaded.area("synthetic-serial", "saved-zone"),
+            reloaded.catalog.area("synthetic-serial", "saved-zone"),
             refreshed_map,
             None,
             None,
         )
 
-    loaded_area = reloaded.areas("synthetic-serial")["saved-zone"]
+    loaded_area = reloaded.catalog.areas("synthetic-serial")["saved-zone"]
     assert loaded_area == original_record
-    assert set(reloaded.areas("synthetic-serial")) == {"saved-zone"}
+    assert set(reloaded.catalog.areas("synthetic-serial")) == {"saved-zone"}
     assert loaded_area["circles"] == circles
     assert loaded_area["cleaning_mode"] == "vacuum"
     assert loaded_area["coverage_setting"] == "standard"
@@ -539,7 +541,7 @@ async def test_area_commit_rejects_floor_or_runtime_drift_while_store_queued(
 ) -> None:
     """A queued save cannot outlive the runtime or floor it was authored for."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     runtime = _runtime()
     runtime.client.async_send_command = AsyncMock()
     runtime.cleaning_plans = manager
@@ -556,14 +558,14 @@ async def test_area_commit_rejects_floor_or_runtime_drift_while_store_queued(
         },
     )
     original_floor = runtime.coordinator.data.floor_plan
-    await manager._store_lock.acquire()
+    await manager.repository.store_lock.acquire()
     pending = asyncio.create_task(MaticAreasView().post(request, "entry"))
     try:
         for _ in range(100):
-            if manager._metadata_persistence_tasks.get("synthetic-serial"):
+            if manager.repository.metadata_persistence_tasks.get("synthetic-serial"):
                 break
             await asyncio.sleep(0)
-        assert manager._metadata_persistence_tasks.get("synthetic-serial")
+        assert manager.repository.metadata_persistence_tasks.get("synthetic-serial")
         if drift == "floor":
             runtime.coordinator.data.floor_plan = replace(
                 original_floor,
@@ -576,12 +578,12 @@ async def test_area_commit_rejects_floor_or_runtime_drift_while_store_queued(
             runtime.slam_map.floor_plan_is_current.side_effect = None
             runtime.slam_map.floor_plan_is_current.return_value = False
     finally:
-        manager._store_lock.release()
+        manager.repository.store_lock.release()
 
     response = await pending
     assert response.status == 409
-    assert manager.areas("synthetic-serial") == {}
-    assert manager._store.async_save.await_count == 0
+    assert manager.catalog.areas("synthetic-serial") == {}
+    assert manager.repository.store.async_save.await_count == 0
     runtime.client.async_send_command.assert_not_awaited()
 
 
@@ -591,7 +593,7 @@ async def test_concurrent_area_creates_cannot_overwrite_same_slug(
 ) -> None:
     """Commit-time catalog checks reject the second create for a slug."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     runtime = _runtime()
     runtime.cleaning_plans = manager
     entry = _entry(runtime)
@@ -603,22 +605,22 @@ async def test_concurrent_area_creates_cannot_overwrite_same_slug(
         "cleaning_mode": "vacuum",
         "coverage_setting": "standard",
     }
-    await manager._store_lock.acquire()
+    await manager.repository.store_lock.acquire()
     first = asyncio.create_task(api.post(_json_request(hass, "POST", body), "entry"))
     second = asyncio.create_task(api.post(_json_request(hass, "POST", body), "entry"))
     try:
         for _ in range(100):
-            if manager._metadata_admissions.get("synthetic-serial", 0) >= 1:
+            if manager.repository.metadata_admissions.get("synthetic-serial", 0) >= 1:
                 break
             await asyncio.sleep(0)
-        assert manager._metadata_admissions.get("synthetic-serial", 0) >= 1
+        assert manager.repository.metadata_admissions.get("synthetic-serial", 0) >= 1
     finally:
-        manager._store_lock.release()
+        manager.repository.store_lock.release()
 
     responses = await asyncio.gather(first, second)
     assert sorted(response.status for response in responses) == [200, 409]
-    assert set(manager.areas("synthetic-serial")) == {"kitchen_nook"}
-    assert manager._store.async_save.await_count == 1
+    assert set(manager.catalog.areas("synthetic-serial")) == {"kitchen_nook"}
+    assert manager.repository.store.async_save.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -627,8 +629,8 @@ async def test_concurrent_area_renames_enforce_casefold_name_uniqueness(
 ) -> None:
     """Distinct area IDs cannot commit duplicate casefolded names."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("synthetic-serial")["areas"].update(
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("synthetic-serial")["areas"].update(
         {"first-zone": {"name": "First"}, "second-zone": {"name": "Second"}}
     )
     runtime = _runtime()
@@ -661,24 +663,24 @@ async def test_concurrent_area_renames_enforce_casefold_name_uniqueness(
             "entry",
         )
     )
-    await manager._store_lock.acquire()
+    await manager.repository.store_lock.acquire()
     try:
         for _ in range(100):
-            if manager._metadata_admissions.get("synthetic-serial", 0) >= 1:
+            if manager.repository.metadata_admissions.get("synthetic-serial", 0) >= 1:
                 break
             await asyncio.sleep(0)
-        assert manager._metadata_admissions.get("synthetic-serial", 0) >= 1
+        assert manager.repository.metadata_admissions.get("synthetic-serial", 0) >= 1
     finally:
-        manager._store_lock.release()
+        manager.repository.store_lock.release()
 
     responses = await asyncio.gather(first, second)
     assert sorted(response.status for response in responses) == [200, 409]
-    areas = manager.areas("synthetic-serial")
+    areas = manager.catalog.areas("synthetic-serial")
     assert (
         areas["first-zone"]["name"],
         areas["second-zone"]["name"],
     ) in {("Shared name", "Second"), ("First", "sHARED NAME")}
-    assert manager._store.async_save.await_count == 1
+    assert manager.repository.store.async_save.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -687,7 +689,7 @@ async def test_queued_area_update_does_not_recreate_deleted_area(
 ) -> None:
     """A queued update preserves 404 semantics when its area is deleted first."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     runtime = _runtime()
     saved_area = {
         "schema_version": AREA_SCHEMA_VERSION,
@@ -700,21 +702,21 @@ async def test_queued_area_update_does_not_recreate_deleted_area(
             [{"x": 0.1, "y": 0.1, "radius": 0.2}],
         ),
     }
-    manager._robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
+    manager.repository.robot("synthetic-serial")["areas"]["saved-zone"] = saved_area
     runtime.cleaning_plans = manager
     entry = _entry(runtime)
     hass = _hass(entry)
     api = MaticAreasView()
-    await manager._store_lock.acquire()
+    await manager.repository.store_lock.acquire()
     deleting = asyncio.create_task(
-        manager.async_delete_area("synthetic-serial", "saved-zone")
+        manager.catalog.async_delete_area("synthetic-serial", "saved-zone")
     )
     try:
         for _ in range(100):
-            if manager._metadata_persistence_tasks.get("synthetic-serial"):
+            if manager.repository.metadata_persistence_tasks.get("synthetic-serial"):
                 break
             await asyncio.sleep(0)
-        assert manager._metadata_persistence_tasks.get("synthetic-serial")
+        assert manager.repository.metadata_persistence_tasks.get("synthetic-serial")
         updating = asyncio.create_task(
             api.post(
                 _json_request(
@@ -732,18 +734,18 @@ async def test_queued_area_update_does_not_recreate_deleted_area(
             )
         )
         for _ in range(100):
-            if manager._metadata_admissions.get("synthetic-serial", 0) >= 1:
+            if manager.repository.metadata_admissions.get("synthetic-serial", 0) >= 1:
                 break
             await asyncio.sleep(0)
-        assert manager._metadata_admissions["synthetic-serial"] >= 1
+        assert manager.repository.metadata_admissions["synthetic-serial"] >= 1
     finally:
-        manager._store_lock.release()
+        manager.repository.store_lock.release()
 
     await deleting
     response = await updating
     assert response.status == 404
-    assert manager.areas("synthetic-serial") == {}
-    assert manager._store.async_save.await_count == 1
+    assert manager.catalog.areas("synthetic-serial") == {}
+    assert manager.repository.store.async_save.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -752,7 +754,7 @@ async def test_v5_area_survives_unrelated_room_addition_but_not_room_translation
 ) -> None:
     """Anchors preserve safe remote edits and reject movement of the bound room."""
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     original_map = _dense_floor_plan()
     current_map = _map_with_unrelated_room(original_map)
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]
@@ -768,14 +770,14 @@ async def test_v5_area_survives_unrelated_room_addition_but_not_room_translation
         area["map_binding"]["version"]
         == SHAPE_ANCHORED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
     )
-    manager._robot("synthetic-serial")["areas"]["saved-zone"] = area
+    manager.repository.robot("synthetic-serial")["areas"]["saved-zone"] = area
     _saved_plan(manager)
 
     assert area_binding_status(area, current_map) is AreaBindingStatus.CURRENT
     assert (
-        manager.preview("synthetic-serial", {}, "area-plan", floor_plan=current_map)[
-            "valid"
-        ]
+        manager.catalog.preview(
+            "synthetic-serial", {}, "area-plan", floor_plan=current_map
+        )["valid"]
         is True
     )
 
@@ -788,4 +790,6 @@ async def test_v5_area_survives_unrelated_room_addition_but_not_room_translation
         area_binding_status(area, translated_map) is AreaBindingStatus.GEOMETRY_CHANGED
     )
     with pytest.raises(PlanAreaMapChangedError):
-        manager.preview("synthetic-serial", {}, "area-plan", floor_plan=translated_map)
+        manager.catalog.preview(
+            "synthetic-serial", {}, "area-plan", floor_plan=translated_map
+        )

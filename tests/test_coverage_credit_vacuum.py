@@ -15,13 +15,13 @@ from custom_components.matic_robot.client.coverage_receipts import (
     coverage_floor_hash,
     coverage_region_hash,
 )
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_model import (
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
-    CleaningPlanManager,
     CleaningRoom,
     plan_floor_token,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.vacuum import MaticVacuum
 
 from .test_entities import _entry
@@ -34,7 +34,7 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
 ):
     entry = _entry()
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     floor = entry.runtime_data.coordinator.data.floor_plan
     selected = floor.rooms[: 2 if mixed else 1]
@@ -55,10 +55,10 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
             for i, (native, room) in enumerate(zip(selected, rooms, strict=True))
         ),
     )
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "synthetic-serial", "plan", "run", len(rooms), trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "synthetic-serial",
         "run",
         {
@@ -69,11 +69,11 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
             "floor_token": plan_floor_token(floor),
         },
     )
-    token = manager.begin_managed_motion("synthetic-serial")
+    token = manager.control.begin_managed_motion("synthetic-serial")
 
     async def dispatch(*_args, **_kwargs):
         if ownership_changed:
-            await manager.async_finish_run(
+            await manager.ledger.async_finish_run(
                 "synthetic-serial", "run", "cancelled", "managed_stop", 0
             )
         return receipt
@@ -100,6 +100,6 @@ async def test_entity_binds_dispatch_receipt_to_owned_room_queue(
     await MaticVacuum(entry).async_send_command("clean_rooms", params)
 
     sender.assert_awaited_once()
-    assert manager.coverage_receipt("synthetic-serial", "run") == (
+    assert manager.ledger.coverage_receipt("synthetic-serial", "run") == (
         None if ownership_changed else receipt
     )

@@ -43,20 +43,20 @@ async def test_listener_failure_does_not_reject_or_rollback_committed_plan(
     def following_listener() -> None:
         called.append("following")
 
-    manager.async_add_listener(SERIAL, broken_listener)
-    manager.async_add_listener(SERIAL, following_listener)
+    manager.repository.async_add_listener(SERIAL, broken_listener)
+    manager.repository.async_add_listener(SERIAL, following_listener)
 
     with caplog.at_level(logging.DEBUG):
-        await manager.async_save_plan(SERIAL, "home", {"name": "Home"})
+        await manager.catalog.async_save_plan(SERIAL, "home", {"name": "Home"})
 
     assert sorted(called) == ["broken", "following"]
-    assert manager.plan(SERIAL, "home")["name"] == "Home"
+    assert manager.catalog.plan(SERIAL, "home")["name"] == "Home"
     assert "listener" in caplog.text.casefold()
     assert "synthetic private listener detail" not in caplog.text
 
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    assert reloaded.plan(SERIAL, "home")["name"] == "Home"
+    assert reloaded.catalog.plan(SERIAL, "home")["name"] == "Home"
 
 
 @pytest.mark.parametrize("held_lock", ("state", "plan_write"))
@@ -72,7 +72,7 @@ async def test_cancelled_plan_before_owned_admission_does_not_mutate(
 
     def count_writes(store, mode: str, payload: str | bytes) -> None:
         nonlocal writes
-        if store is manager._store:
+        if store is manager.repository.store:
             writes += 1
             write_payloads.append(
                 payload.decode() if isinstance(payload, bytes) else payload
@@ -81,39 +81,41 @@ async def test_cancelled_plan_before_owned_admission_does_not_mutate(
 
     monkeypatch.setattr(Store, "_write_prepared_data", count_writes)
     held = (
-        manager.state_lock(SERIAL)
+        manager.repository.state_lock(SERIAL)
         if held_lock == "state"
-        else manager.plan_write_lock(SERIAL)
+        else manager.repository.plan_write_lock(SERIAL)
     )
     await held.acquire()
     waiter = asyncio.create_task(
-        manager.async_save_plan(SERIAL, "not-admitted", {"name": "No"})
+        manager.catalog.async_save_plan(SERIAL, "not-admitted", {"name": "No"})
     )
     try:
         await asyncio.sleep(0)
         assert not waiter.done()
-        assert "not-admitted" not in manager._robot(SERIAL)["plans"]
+        assert "not-admitted" not in manager.repository.robot(SERIAL)["plans"]
         waiter.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiter
     finally:
         held.release()
 
-    await asyncio.wait_for(manager.async_cancel_and_wait(SERIAL), timeout=3)
-    await asyncio.wait_for(manager._async_wait_metadata_persistence(SERIAL), timeout=3)
+    await asyncio.wait_for(manager.control.async_cancel_and_wait(SERIAL), timeout=3)
+    await asyncio.wait_for(
+        manager.repository.async_wait_metadata_persistence(SERIAL), timeout=3
+    )
     assert writes == 0, write_payloads
-    assert "not-admitted" not in manager._robot(SERIAL)["plans"]
-    assert SERIAL not in manager._metadata_persistence_tasks
-    assert not manager.plan_write_lock(SERIAL).locked()
-    assert not manager.state_lock(SERIAL).locked()
+    assert "not-admitted" not in manager.repository.robot(SERIAL)["plans"]
+    assert SERIAL not in manager.repository.metadata_persistence_tasks
+    assert not manager.repository.plan_write_lock(SERIAL).locked()
+    assert not manager.repository.state_lock(SERIAL).locked()
 
-    await manager.async_save_plan(SERIAL, "after-cancel", {"name": "After"})
-    assert manager.plan(SERIAL, "after-cancel")["name"] == "After"
+    await manager.catalog.async_save_plan(SERIAL, "after-cancel", {"name": "After"})
+    assert manager.catalog.plan(SERIAL, "after-cancel")["name"] == "After"
 
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    assert "not-admitted" not in reloaded._robot(SERIAL)["plans"]
-    assert reloaded.plan(SERIAL, "after-cancel")["name"] == "After"
+    assert "not-admitted" not in reloaded.repository.robot(SERIAL)["plans"]
+    assert reloaded.catalog.plan(SERIAL, "after-cancel")["name"] == "After"
 
 
 async def test_cancelled_plan_waiter_drains_owned_real_store_commit_before_peer(
@@ -129,12 +131,12 @@ async def test_cancelled_plan_waiter_drains_owned_real_store_commit_before_peer(
     release_write = threading.Event()
     write_payloads: list[tuple[str, dict]] = []
     original_write = Store._write_prepared_data
-    original_async_save = manager._store.async_save
+    original_async_save = manager.repository.store.async_save
     first_write_paused = False
 
     def pause_target_write(store, mode: str, payload: str | bytes) -> None:
         nonlocal first_write_paused
-        if store is manager._store:
+        if store is manager.repository.store:
             envelope = json.loads(payload)
             write_payloads.append((mode, envelope))
             if not first_write_paused:
@@ -155,10 +157,10 @@ async def test_cancelled_plan_waiter_drains_owned_real_store_commit_before_peer(
         await original_async_save(data)
 
     monkeypatch.setattr(Store, "_write_prepared_data", pause_target_write)
-    monkeypatch.setattr(manager._store, "async_save", observe_async_save)
+    monkeypatch.setattr(manager.repository.store, "async_save", observe_async_save)
 
     target_waiter = asyncio.create_task(
-        manager.async_save_plan(SERIAL, "accepted", {"name": "Accepted"})
+        manager.catalog.async_save_plan(SERIAL, "accepted", {"name": "Accepted"})
     )
     peer_waiter = None
     unload_drain = None
@@ -170,9 +172,11 @@ async def test_cancelled_plan_waiter_drains_owned_real_store_commit_before_peer(
             await target_waiter
 
         peer_waiter = asyncio.create_task(
-            manager.async_save_plan(PEER, "peer", {"name": "Peer"})
+            manager.catalog.async_save_plan(PEER, "peer", {"name": "Peer"})
         )
-        unload_drain = asyncio.create_task(manager.async_cancel_and_wait(SERIAL))
+        unload_drain = asyncio.create_task(
+            manager.control.async_cancel_and_wait(SERIAL)
+        )
         await asyncio.sleep(0)
         await asyncio.sleep(0)
         assert not peer_store_call.is_set()
@@ -186,7 +190,7 @@ async def test_cancelled_plan_waiter_drains_owned_real_store_commit_before_peer(
         await asyncio.wait_for(unload_drain, timeout=3)
         await asyncio.wait_for(peer_waiter, timeout=3)
         await asyncio.wait_for(
-            manager._async_wait_metadata_persistence(SERIAL), timeout=3
+            manager.repository.async_wait_metadata_persistence(SERIAL), timeout=3
         )
     finally:
         release_write.set()
@@ -207,12 +211,12 @@ async def test_cancelled_plan_waiter_drains_owned_real_store_commit_before_peer(
     assert PEER not in first_robots
     assert second_robots[SERIAL]["plans"]["accepted"]["name"] == "Accepted"
     assert second_robots[PEER]["plans"]["peer"]["name"] == "Peer"
-    assert manager.plan(SERIAL, "accepted")["name"] == "Accepted"
-    assert manager.plan(PEER, "peer")["name"] == "Peer"
-    assert SERIAL not in manager._metadata_persistence_tasks
-    assert not manager._store_lock.locked()
+    assert manager.catalog.plan(SERIAL, "accepted")["name"] == "Accepted"
+    assert manager.catalog.plan(PEER, "peer")["name"] == "Peer"
+    assert SERIAL not in manager.repository.metadata_persistence_tasks
+    assert not manager.repository.store_lock.locked()
 
     reloaded = CleaningPlanManager(hass)
     await reloaded.async_load()
-    assert reloaded.plan(SERIAL, "accepted")["name"] == "Accepted"
-    assert reloaded.plan(PEER, "peer")["name"] == "Peer"
+    assert reloaded.catalog.plan(SERIAL, "accepted")["name"] == "Accepted"
+    assert reloaded.catalog.plan(PEER, "peer")["name"] == "Peer"

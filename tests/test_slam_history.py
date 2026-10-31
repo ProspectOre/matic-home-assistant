@@ -120,6 +120,36 @@ async def test_history_is_scoped_per_floor_mission(hass) -> None:
     ] == [2]
 
 
+@pytest.mark.parametrize("close_method", ["async_remove", "async_shutdown"])
+async def test_history_discards_encoding_finished_after_close(hass, close_method):
+    store = SlamHistoryStore(hass, "closing-history")
+    await store.async_load()
+    listener = MagicMock()
+    store.async_add_listener(listener)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    executor = hass.async_add_executor_job
+
+    async def delayed_encoding(function, *args):
+        if function.__name__ == "_build_snapshot":
+            started.set()
+            await release.wait()
+        return await executor(function, *args)
+
+    with patch.object(hass, "async_add_executor_job", delayed_encoding):
+        addition = asyncio.create_task(store.async_add(_scene(), 1))
+        await started.wait()
+        await getattr(store, close_method)()
+        release.set()
+        assert await addition is False
+
+    assert store.catalog() == ()
+    listener.assert_not_called()
+    restored = SlamHistoryStore(hass, "closing-history")
+    await restored.async_load()
+    assert restored.catalog() == ()
+
+
 async def test_history_round_trips_replaces_recent_and_removes(hass) -> None:
     store = SlamHistoryStore(hass, "synthetic-entry")
     await store.async_load()

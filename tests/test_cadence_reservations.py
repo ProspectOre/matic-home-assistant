@@ -14,18 +14,15 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.managed_executor import _async_execute_rooms
-from custom_components.matic_robot.plans import (
-    CleaningPlanManager,
-    CleaningRoom,
-    _managed_stop_policy,
-)
+from custom_components.matic_robot.plan_model import CleaningRoom, _managed_stop_policy
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.restart import async_recover_managed_run
 from tests.test_restart import recovery_state as restart_recovery_fixture
 
 
 def _manager(hass) -> CleaningPlanManager:
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     return manager
 
 
@@ -67,7 +64,7 @@ async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
     hass,
 ) -> None:
     manager = _manager(hass)
-    await manager.async_save_plan("serial", "home", _plan("room-a", "room-b"))
+    await manager.catalog.async_save_plan("serial", "home", _plan("room-a", "room-b"))
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -91,7 +88,7 @@ async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
         CleaningRoom("room-b", "Room B", "vacuum", "standard"),
     ]
     with patch(
-        "custom_components.matic_robot.managed_executor._ensure_stop_settled",
+        "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
         new=stop_fence,
     ):
         task = asyncio.create_task(
@@ -106,39 +103,41 @@ async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
         )
         await entered.wait()
         try:
-            assert manager.snapshot("serial")["active_plan"] is None
-            assert manager._prepared_runs["serial"].rooms.keys() == {
+            assert manager.ledger.snapshot("serial")["active_plan"] is None
+            assert manager.cadence.prepared_runs["serial"].rooms.keys() == {
                 "room-a",
                 "room-b",
             }
             with pytest.raises(ValueError, match="reserved"):
-                await manager.async_reset_cadence("serial", "home", ["room-b"])
+                await manager.cadence.async_reset_cadence("serial", "home", ["room-b"])
         finally:
-            manager.request_stop("serial")
+            manager.control.request_stop("serial")
             release.set()
             await task
 
-    assert "serial" not in manager._prepared_runs
+    assert "serial" not in manager.cadence.prepared_runs
 
 
 async def test_reservation_covers_room_b_during_room_a_and_leaves_other_plan_editable(
     hass,
 ) -> None:
     manager = _manager(hass)
-    await manager.async_save_plan("serial", "home", _plan("room-a", "room-b"))
-    await manager.async_save_plan("serial", "other", _plan("room-c"))
-    manager.reserve_prepared_run("serial", "home", "run-a", ["room-a", "room-b"])
-    await manager.async_mark_started(
+    await manager.catalog.async_save_plan("serial", "home", _plan("room-a", "room-b"))
+    await manager.catalog.async_save_plan("serial", "other", _plan("room-c"))
+    manager.cadence.reserve_prepared_run(
+        "serial", "home", "run-a", ["room-a", "room-b"]
+    )
+    await manager.ledger.async_mark_started(
         "serial", "home", CleaningRoom("room-a", "Room A", "vacuum", "standard")
     )
 
     with pytest.raises(ValueError, match="reserved"):
-        await manager.async_reset_cadence("serial", "home", ["room-b"])
+        await manager.cadence.async_reset_cadence("serial", "home", ["room-b"])
     # An unrelated private schedule is independent of this queued run.
-    await manager.async_reset_cadence("serial", "other", ["room-c"])
+    await manager.cadence.async_reset_cadence("serial", "other", ["room-c"])
 
-    manager.release_prepared_run("serial", "run-a")
-    await manager.async_reset_cadence("serial", "home", ["room-b"])
+    manager.cadence.release_prepared_run("serial", "run-a")
+    await manager.cadence.async_reset_cadence("serial", "home", ["room-b"])
 
 
 async def test_shared_cadence_reservation_covers_mutations_from_another_plan(
@@ -148,14 +147,14 @@ async def test_shared_cadence_reservation_covers_mutations_from_another_plan(
     floor_token = "a" * 64
     identity = "b" * 64
     shared_plan = _plan("room-b", scope="shared")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         shared_plan,
         floor_token=floor_token,
         room_identities={"room-b": identity},
     )
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "other",
         shared_plan,
@@ -164,24 +163,26 @@ async def test_shared_cadence_reservation_covers_mutations_from_another_plan(
     )
     # Old saved plans can lack their room token while the durable shared row
     # still carries the verified identity needed to freeze queued work.
-    manager._robot("serial")["plans"]["home"]["rooms"][0].pop("cadence_identity", None)
-    manager.reserve_prepared_run(
+    manager.repository.robot("serial")["plans"]["home"]["rooms"][0].pop(
+        "cadence_identity", None
+    )
+    manager.cadence.reserve_prepared_run(
         "serial",
         "home",
         "run-shared",
         ["room-b"],
     )
-    assert manager._prepared_runs["serial"].rooms["room-b"] == (
+    assert manager.cadence.prepared_runs["serial"].rooms["room-b"] == (
         "shared",
         identity,
     )
 
     with pytest.raises(ValueError, match="shared room cadence is reserved"):
-        await manager.async_reset_cadence("serial", "other", ["room-b"])
+        await manager.cadence.async_reset_cadence("serial", "other", ["room-b"])
     changed = _plan("room-b", scope="shared")
     changed["rooms"][0]["cadence"]["mop_every_n"] = 4
     with pytest.raises(ValueError, match="shared room cadence is reserved"):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             "serial",
             "other",
             changed,
@@ -189,7 +190,7 @@ async def test_shared_cadence_reservation_covers_mutations_from_another_plan(
             room_identities={"room-b": identity},
         )
 
-    manager.release_prepared_run("serial", "run-shared")
+    manager.cadence.release_prepared_run("serial", "run-shared")
 
 
 async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
@@ -200,7 +201,7 @@ async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
     identity_b = "b" * 64
     identity_c = "c" * 64
     room_b = CleaningRoom("room-b", "Room B", "vacuum", "standard")
-    _effective, cadence = manager.resolve_cadence(
+    _effective, cadence = manager.cadence.resolve_cadence(
         "serial",
         "quick_clean",
         [room_b],
@@ -232,7 +233,7 @@ async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
         },
     )
     with patch(
-        "custom_components.matic_robot.managed_executor._ensure_stop_settled",
+        "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
         new=hold_preflight,
     ):
         task = asyncio.create_task(
@@ -249,7 +250,7 @@ async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
         await entered.wait()
         try:
             with pytest.raises(ValueError, match="shared room cadence is reserved"):
-                await manager.async_save_plan(
+                await manager.catalog.async_save_plan(
                     "serial",
                     "created-b",
                     _plan("room-b", scope="shared"),
@@ -258,17 +259,20 @@ async def test_opted_in_inactive_room_blocks_shared_creation_during_preflight(
                 )
             # The reservation is room-specific; an unrelated shared schedule
             # remains editable while this one-off waits at the stop fence.
-            await manager.async_save_plan(
+            await manager.catalog.async_save_plan(
                 "serial",
                 "created-c",
                 _plan("room-c", scope="shared"),
                 floor_token=floor_token,
                 room_identities={"room-c": identity_c},
             )
-            assert "room-b" not in manager._robot("serial")["shared_room_cadence"]
-            assert "room-c" in manager._robot("serial")["shared_room_cadence"]
+            assert (
+                "room-b"
+                not in manager.repository.robot("serial")["shared_room_cadence"]
+            )
+            assert "room-c" in manager.repository.robot("serial")["shared_room_cadence"]
         finally:
-            manager.request_stop("serial")
+            manager.control.request_stop("serial")
             release.set()
             await task
 
@@ -280,7 +284,7 @@ async def test_non_opted_in_inactive_room_does_not_reserve_future_shared_schedul
     floor_token = "a" * 64
     identity = "b" * 64
     room = CleaningRoom("room-b", "Room B", "vacuum", "standard")
-    _effective, cadence = manager.resolve_cadence(
+    _effective, cadence = manager.cadence.resolve_cadence(
         "serial",
         "quick_clean",
         [room],
@@ -290,11 +294,11 @@ async def test_non_opted_in_inactive_room_does_not_reserve_future_shared_schedul
     )
     assert cadence["room-b"]["schedule_active"] is False
     assert cadence["room-b"]["shared_schedule_participating"] is False
-    manager.reserve_prepared_run(
+    manager.cadence.reserve_prepared_run(
         "serial", "quick_clean", "run-private", ["room-b"], cadence
     )
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "created-b",
         _plan("room-b", scope="shared"),
@@ -302,8 +306,8 @@ async def test_non_opted_in_inactive_room_does_not_reserve_future_shared_schedul
         room_identities={"room-b": identity},
     )
 
-    assert "room-b" in manager._robot("serial")["shared_room_cadence"]
-    manager.release_prepared_run("serial", "run-private")
+    assert "room-b" in manager.repository.robot("serial")["shared_room_cadence"]
+    manager.cadence.release_prepared_run("serial", "run-private")
 
 
 async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -> None:
@@ -314,7 +318,7 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
         "finish_current_room": True,
         "finish_current_room_threshold": 50,
     }
-    await manager.async_save_plan("serial", "home", saved_plan)
+    await manager.catalog.async_save_plan("serial", "home", saved_plan)
     entered = asyncio.Event()
     release_preflight = asyncio.Event()
     room_started = asyncio.Event()
@@ -328,7 +332,7 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
         _hass, call, room_manager = args[:3]
         serial_number = args[4]
         run_room = args[5][0]
-        await room_manager.async_mark_started(
+        await room_manager.ledger.async_mark_started(
             serial_number,
             call.data["plan_id"],
             run_room,
@@ -351,11 +355,11 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._ensure_stop_settled",
+            "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
             new=hold_preflight,
         ),
         patch(
-            "custom_components.matic_robot.managed_executor._async_run_leg",
+            "custom_components.matic_robot.managed_leg._async_run_leg",
             new=hold_room,
         ),
     ):
@@ -370,23 +374,24 @@ async def test_saved_plan_stop_edits_apply_to_future_runs_not_active_run(hass) -
             )
         )
         await entered.wait()
-        edited_plan = deepcopy(manager._robot("serial")["plans"]["home"])
+        edited_plan = deepcopy(manager.repository.robot("serial")["plans"]["home"])
         edited_plan["finish_current_room"] = False
         edited_plan["finish_current_room_threshold"] = 0
-        await manager.async_save_plan("serial", "home", edited_plan)
+        await manager.catalog.async_save_plan("serial", "home", edited_plan)
         release_preflight.set()
         await room_started.wait()
         try:
             assert (
-                manager.snapshot("serial")["active_plan"]["finish_current_room"] is True
+                manager.ledger.snapshot("serial")["active_plan"]["finish_current_room"]
+                is True
             )
             assert (
-                manager.snapshot("serial")["active_plan"][
+                manager.ledger.snapshot("serial")["active_plan"][
                     "finish_current_room_threshold"
                 ]
                 == 50
             )
-            assert manager.request_stop("serial").behavior == "after_room"
+            assert manager.control.request_stop("serial").behavior == "after_room"
         finally:
             release_room.set()
             await task
@@ -400,12 +405,12 @@ async def test_restart_restores_frozen_stop_policy_after_saved_plan_edit(hass) -
         "finish_current_room": True,
         "finish_current_room_threshold": 70,
     }
-    await manager.async_save_plan("serial", "home", saved_plan)
-    manager.reserve_prepared_run("serial", "home", "run-frozen", [room.room_id])
-    stop_enabled, stop_threshold = manager.prepared_run_stop_policy(
+    await manager.catalog.async_save_plan("serial", "home", saved_plan)
+    manager.cadence.reserve_prepared_run("serial", "home", "run-frozen", [room.room_id])
+    stop_enabled, stop_threshold = manager.cadence.prepared_run_stop_policy(
         "serial", "run-frozen"
     )
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial",
         "home",
         "run-frozen",
@@ -429,29 +434,31 @@ async def test_restart_restores_frozen_stop_policy_after_saved_plan_edit(hass) -
         "finish_current_room": stop_enabled,
         "finish_current_room_threshold": stop_threshold,
     }
-    await manager.async_set_recovery_checkpoint("serial", "run-frozen", checkpoint)
-    await manager.async_mark_started("serial", "home", room, run_id="run-frozen")
-    edited_plan = deepcopy(manager._robot("serial")["plans"]["home"])
+    await manager.ledger.async_set_recovery_checkpoint(
+        "serial", "run-frozen", checkpoint
+    )
+    await manager.ledger.async_mark_started("serial", "home", room, run_id="run-frozen")
+    edited_plan = deepcopy(manager.repository.robot("serial")["plans"]["home"])
     edited_plan["finish_current_room"] = False
     edited_plan["finish_current_room_threshold"] = 10
-    await manager.async_save_plan("serial", "home", edited_plan)
+    await manager.catalog.async_save_plan("serial", "home", edited_plan)
 
-    stored = deepcopy(manager._data)
+    stored = deepcopy(manager.repository.data)
     recovered = _manager(hass)
-    recovered._store = SimpleNamespace(
+    recovered.repository.store = SimpleNamespace(
         async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
     )
     await recovered.async_load()
-    await recovered.lock("serial").acquire()
+    await recovered.control.lock("serial").acquire()
     try:
-        decision = recovered.request_stop("serial")
+        decision = recovered.control.request_stop("serial")
     finally:
-        recovered.lock("serial").release()
+        recovered.control.lock("serial").release()
 
     assert decision.behavior == "after_room"
     assert decision.threshold == 70
-    assert recovered._prepared_runs["serial"].finish_current_room is True
-    assert recovered._prepared_runs["serial"].finish_current_room_threshold == 70
+    assert recovered.cadence.prepared_runs["serial"].finish_current_room is True
+    assert recovered.cadence.prepared_runs["serial"].finish_current_room_threshold == 70
 
 
 async def test_inflight_shared_write_blocks_a_run_in_another_plan(hass) -> None:
@@ -460,7 +467,7 @@ async def test_inflight_shared_write_blocks_a_run_in_another_plan(hass) -> None:
     identity = "b" * 64
     shared = _plan("room-b", scope="shared")
     for plan_id in ("home", "other"):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             "serial",
             plan_id,
             shared,
@@ -474,11 +481,11 @@ async def test_inflight_shared_write_blocks_a_run_in_another_plan(hass) -> None:
         entered.set()
         await release.wait()
 
-    manager._store.async_save = pause_save
+    manager.repository.store.async_save = pause_save
     changed = _plan("room-b", scope="shared")
     changed["rooms"][0]["cadence"]["mop_every_n"] = 4
     save_task = asyncio.create_task(
-        manager.async_save_plan(
+        manager.catalog.async_save_plan(
             "serial",
             "other",
             changed,
@@ -489,20 +496,22 @@ async def test_inflight_shared_write_blocks_a_run_in_another_plan(hass) -> None:
     await entered.wait()
     try:
         with pytest.raises(HomeAssistantError, match="shared cadence is being saved"):
-            manager.reserve_prepared_run("serial", "home", "run-shared", ["room-b"])
+            manager.cadence.reserve_prepared_run(
+                "serial", "home", "run-shared", ["room-b"]
+            )
     finally:
         release.set()
     await save_task
-    manager._store.async_save = AsyncMock()
-    manager.reserve_prepared_run("serial", "home", "run-after-save", ["room-b"])
-    manager.release_prepared_run("serial", "run-after-save")
+    manager.repository.store.async_save = AsyncMock()
+    manager.cadence.reserve_prepared_run("serial", "home", "run-after-save", ["room-b"])
+    manager.cadence.release_prepared_run("serial", "run-after-save")
 
 
 async def test_executor_maps_a_conflicting_restored_reservation_to_validation_error(
     hass,
 ) -> None:
     manager = _manager(hass)
-    manager.reserve_prepared_run("serial", "home", "restored-run", ["room-a"])
+    manager.cadence.reserve_prepared_run("serial", "home", "restored-run", ["room-a"])
     call = ServiceCall(
         hass,
         DOMAIN,
@@ -516,7 +525,7 @@ async def test_executor_maps_a_conflicting_restored_reservation_to_validation_er
     )
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._ensure_stop_settled",
+            "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
             new=AsyncMock(),
         ) as stop_settlement,
         pytest.raises(ServiceValidationError, match="already owns the robot"),
@@ -531,12 +540,12 @@ async def test_executor_maps_a_conflicting_restored_reservation_to_validation_er
         )
 
     stop_settlement.assert_not_awaited()
-    assert manager._prepared_runs["serial"].run_id == "restored-run"
+    assert manager.cadence.prepared_runs["serial"].run_id == "restored-run"
 
 
 async def test_inflight_failed_cadence_write_cannot_seed_a_run(hass) -> None:
     manager = _manager(hass)
-    await manager.async_save_plan("serial", "home", _plan("room-a"))
+    await manager.catalog.async_save_plan("serial", "home", _plan("room-a"))
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -545,27 +554,31 @@ async def test_inflight_failed_cadence_write_cannot_seed_a_run(hass) -> None:
         await release.wait()
         raise OSError("synthetic persistence failure")
 
-    manager._store.async_save = fail_after_pause
+    manager.repository.store.async_save = fail_after_pause
     updated = _plan("room-a")
     updated["rooms"][0]["cadence"] = {"scope": "plan", "mop_every_n": 4}
-    task = asyncio.create_task(manager.async_save_plan("serial", "home", updated))
+    task = asyncio.create_task(
+        manager.catalog.async_save_plan("serial", "home", updated)
+    )
     await entered.wait()
     try:
         with pytest.raises(HomeAssistantError, match="being saved"):
-            manager.reserve_prepared_run("serial", "home", "run-one", ["room-a"])
+            manager.cadence.reserve_prepared_run(
+                "serial", "home", "run-one", ["room-a"]
+            )
     finally:
         release.set()
     with pytest.raises(OSError, match="synthetic persistence failure"):
         await task
 
-    manager._store.async_save = AsyncMock()
-    manager.reserve_prepared_run("serial", "home", "run-two", ["room-a"])
-    manager.release_prepared_run("serial", "run-two")
+    manager.repository.store.async_save = AsyncMock()
+    manager.cadence.reserve_prepared_run("serial", "home", "run-two", ["room-a"])
+    manager.cadence.release_prepared_run("serial", "run-two")
 
 
 async def test_recovery_restores_reservation_from_durable_checkpoint(hass) -> None:
     manager = _manager(hass)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plans"]["home"] = _plan("room-a", "room-b")
     robot["last_run"] = {
         "plan_id": "home",
@@ -587,24 +600,24 @@ async def test_recovery_restores_reservation_from_durable_checkpoint(hass) -> No
         },
     }
     stored = {"robots": {"serial": robot}}
-    manager._store.async_load = AsyncMock(return_value=stored)
+    manager.repository.store.async_load = AsyncMock(return_value=stored)
 
     await manager.async_load()
 
-    assert manager._prepared_runs["serial"].run_id == "recovered-run"
-    assert manager._prepared_runs["serial"].shared_schedule_rooms == {"room-b"}
+    assert manager.cadence.prepared_runs["serial"].run_id == "recovered-run"
+    assert manager.cadence.prepared_runs["serial"].shared_schedule_rooms == {"room-b"}
     with pytest.raises(ValueError, match="reserved"):
-        await manager.async_reset_cadence("serial", "home", ["room-b"])
-    manager.release_prepared_run("serial", "recovered-run")
+        await manager.cadence.async_reset_cadence("serial", "home", ["room-b"])
+    manager.cadence.release_prepared_run("serial", "recovered-run")
 
 
 async def test_checkpoint_roundtrip_preserves_shared_schedule_reservation(hass) -> None:
     manager = _manager(hass)
-    manager._robot("serial")["plans"]["home"] = _plan("room-b")
-    await manager.async_begin_run(
+    manager.repository.robot("serial")["plans"]["home"] = _plan("room-b")
+    await manager.ledger.async_begin_run(
         "serial", "home", "roundtrip-run", 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "roundtrip-run",
         {
@@ -614,19 +627,19 @@ async def test_checkpoint_roundtrip_preserves_shared_schedule_reservation(hass) 
             },
         },
     )
-    stored = deepcopy(manager._data)
+    stored = deepcopy(manager.repository.data)
 
     restored = _manager(hass)
-    restored._store.async_load = AsyncMock(return_value=stored)
+    restored.repository.store.async_load = AsyncMock(return_value=stored)
     await restored.async_load()
 
-    assert restored._prepared_runs["serial"].run_id == "roundtrip-run"
-    assert restored._prepared_runs["serial"].shared_schedule_rooms == {"room-b"}
+    assert restored.cadence.prepared_runs["serial"].run_id == "roundtrip-run"
+    assert restored.cadence.prepared_runs["serial"].shared_schedule_rooms == {"room-b"}
 
 
 async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> None:
     manager, entry, _checkpoint, room = await restart_recovery_fixture.__wrapped__(hass)
-    manager._robot("serial")["plans"]["plan"] = {
+    manager.repository.robot("serial")["plans"]["plan"] = {
         "name": "Home",
         "rooms": [
             {
@@ -637,8 +650,10 @@ async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> 
         ],
     }
     # Match async_load's durable-checkpoint restoration before recovery runs.
-    manager.restore_prepared_run("serial", "plan", "run", [room.room_id])
-    manager._robot("serial")["last_run"]["recovery_checkpoint"]["phase"] = "ready"
+    manager.cadence.restore_prepared_run("serial", "plan", "run", [room.room_id])
+    manager.repository.robot("serial")["last_run"]["recovery_checkpoint"]["phase"] = (
+        "ready"
+    )
 
     with patch(
         "custom_components.matic_robot.restart._async_execute_rooms",
@@ -647,24 +662,24 @@ async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> 
         await async_recover_managed_run(hass, entry, "serial")
 
     executor.assert_not_awaited()
-    assert manager.recovery_run("serial") is None
-    assert "serial" not in manager._prepared_runs
-    await manager.async_reset_cadence("serial", "plan", [room.room_id])
+    assert manager.control.recovery_run("serial") is None
+    assert "serial" not in manager.cadence.prepared_runs
+    await manager.cadence.async_reset_cadence("serial", "plan", [room.room_id])
 
 
 def test_prepared_stop_policy_requires_the_owning_run(hass) -> None:
     manager = _manager(hass)
-    manager.reserve_prepared_run("serial", "home", "run-one", ["room-a"])
+    manager.cadence.reserve_prepared_run("serial", "home", "run-one", ["room-a"])
 
     with pytest.raises(HomeAssistantError, match="does not own"):
-        manager.prepared_run_stop_policy("serial", "run-two")
+        manager.cadence.prepared_run_stop_policy("serial", "run-two")
 
-    assert manager.prepared_run_stop_policy("serial", "run-one") == (False, 50)
+    assert manager.cadence.prepared_run_stop_policy("serial", "run-one") == (False, 50)
 
 
 async def test_request_stop_uses_matching_recovery_checkpoint_policy(hass) -> None:
     manager = _manager(hass)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plans"]["home"] = {
         "finish_current_room": False,
         "finish_current_room_threshold": 100,
@@ -684,8 +699,8 @@ async def test_request_stop_uses_matching_recovery_checkpoint_policy(hass) -> No
         "run_id": "run-one",
         "recovery_checkpoint": checkpoint,
     }
-    async with manager.lock("serial"):
-        decision = manager.request_stop("serial")
+    async with manager.control.lock("serial"):
+        decision = manager.control.request_stop("serial")
 
     assert decision.threshold == 0
     assert decision.behavior == "after_room"
@@ -693,7 +708,7 @@ async def test_request_stop_uses_matching_recovery_checkpoint_policy(hass) -> No
 
 async def test_request_stop_fails_closed_for_invalid_persisted_plan(hass) -> None:
     manager = _manager(hass)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plans"]["damaged"] = None
     robot["active_plan"] = {
         "plan_id": "damaged",
@@ -701,8 +716,8 @@ async def test_request_stop_fails_closed_for_invalid_persisted_plan(hass) -> Non
         "started": dt_util.utcnow().isoformat(),
     }
 
-    async with manager.lock("serial"):
-        decision = manager.request_stop("serial")
+    async with manager.control.lock("serial"):
+        decision = manager.control.request_stop("serial")
 
     assert decision.behavior == "immediate"
 
@@ -715,7 +730,7 @@ async def test_prepared_preview_rejection_cleans_reservation_before_dispatch(
     hass,
 ) -> None:
     manager = _manager(hass)
-    await manager.async_save_plan("serial", "home", _plan("room-a"))
+    await manager.catalog.async_save_plan("serial", "home", _plan("room-a"))
     call = ServiceCall(
         hass,
         DOMAIN,
@@ -737,12 +752,10 @@ async def test_prepared_preview_rejection_cleans_reservation_before_dispatch(
 
     with (
         patch(
-            "custom_components.matic_robot.managed_executor._ensure_stop_settled",
+            "custom_components.matic_robot.managed_dispatch._ensure_stop_settled",
             new=AsyncMock(),
         ),
-        patch(
-            "custom_components.matic_robot.managed_executor._async_run_leg"
-        ) as run_leg,
+        patch("custom_components.matic_robot.managed_leg._async_run_leg") as run_leg,
         pytest.raises(ValueError, match="preview changed"),
     ):
         await _async_execute_rooms(
@@ -759,4 +772,4 @@ async def test_prepared_preview_rejection_cleans_reservation_before_dispatch(
 
     assert validate_calls == 2
     run_leg.assert_not_awaited()
-    assert "serial" not in manager._prepared_runs
+    assert "serial" not in manager.cadence.prepared_runs

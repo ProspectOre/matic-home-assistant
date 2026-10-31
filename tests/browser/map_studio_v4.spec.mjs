@@ -180,27 +180,39 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   for (const narrow of [false, true]) {
-    test(`Draw ${narrow ? "on a phone" : "at desktop width"} shows its tools at once and says Loading once${narrow ? " @mobile" : ""}`, async ({ page }) => {
+    test(`Draw ${narrow ? "on a phone" : "at desktop width"} shows Loading until its tools are ready${narrow ? " @mobile" : ""}`, async ({ page }) => {
       if (narrow) await page.setViewportSize({ width: 390, height: 844 });
       let release;
       const held = new Promise((resolve) => { release = resolve; });
-      await page.route("**/chunks/{workflow-panel,outline-editor,draw-tools}-*.js", async (route) => {
+      await page.route("**/chunks/outline-editor-*.js", async (route) => {
         await held;
         await route.continue();
       });
       const gallery = await loadGallery(page, { scenario: "ready", narrow });
+      const viewsLoaded = page.waitForResponse((response) => /\/chunks\/workflow-panel-[^/]+\.js/u.test(response.url()) && response.ok());
       await gallery.evaluate((element) => element.setScenario("draw"));
+      await viewsLoaded;
+      await page.evaluate(() => customElements.whenDefined("matic-map-workflow-v4"));
       const toolbar = gallery.getByRole("toolbar", { name: "Draw area tools" });
       const loading = gallery.locator(".loading[role=status]", { hasText: "Loading…" });
-      await expect(toolbar).toBeVisible();
+      await expect(toolbar).toHaveCount(0);
       await expect(loading).toHaveCount(1);
       // A phone's draw sheet rests at peek: the line sits by the tools it is about.
       await expect(loading).toBeInViewport();
-      const before = await toolbar.boundingBox();
+      const map = gallery.locator(".map-root");
+      const drawBefore = await gallery.evaluate((element) => JSON.stringify(element.getWorkspaceSnapshot().draw));
+      await map.click();
+      await map.press("d");
+      await map.press("Enter");
+      expect(await gallery.evaluate((element) => JSON.stringify(element.getWorkspaceSnapshot().draw))).toBe(drawBefore);
       release();
       await expect(gallery.locator("matic-map-workflow-v4")).toBeAttached();
       await expect(loading).toHaveCount(0);
-      expect(await toolbar.boundingBox(), "the tools must not move when the rest arrives").toEqual(before);
+      await expect(toolbar).toBeVisible();
+      await expect(toolbar.getByRole("button", { name: "Points" })).toBeEnabled();
+      await map.focus();
+      await map.press("d");
+      await expect.poll(() => gallery.evaluate((element) => element.getWorkspaceSnapshot().draw.tool)).toBe("paint");
     });
   }
 
@@ -208,6 +220,10 @@ test.describe("Map Studio v0.4 foundation", () => {
   // reloads; the failure shows where the workflow is looked at, once.
   for (const [chunk, workflow, view, narrow] of [
     ["workflow-panel", "rooms", "matic-map-workflow-v4", false],
+    ["workflow-panel", "draw", "matic-map-workflow-v4", false],
+    ["workflow-panel", "draw", "matic-map-workflow-v4", true],
+    ["draw-tools", "draw", "matic-map-workflow-v4", false],
+    ["draw-tools", "draw", "matic-map-workflow-v4", true],
     ["outline-editor", "draw", "matic-map-workflow-v4", false],
     ["outline-editor", "draw", "matic-map-workflow-v4", true],
     ["diagnostics-panel", "support", "matic-map-diagnostics-v4", false],
@@ -226,6 +242,15 @@ test.describe("Map Studio v0.4 foundation", () => {
       await expect(failure).toHaveCount(1);
       await expect(failure).toBeInViewport();
       await expect(gallery.locator(".loading[role=status]", { hasText: "Loading…" })).toHaveCount(0);
+      if (workflow === "draw") {
+        await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toHaveCount(0);
+        const drawBefore = await gallery.evaluate((element) => JSON.stringify(element.getWorkspaceSnapshot().draw));
+        const map = gallery.locator(".map-root");
+        await map.click();
+        await map.press("d");
+        await map.press("Enter");
+        expect(await gallery.evaluate((element) => JSON.stringify(element.getWorkspaceSnapshot().draw))).toBe(drawBefore);
+      }
 
       await page.unroute(pattern);
       await Promise.all([
@@ -237,6 +262,9 @@ test.describe("Map Studio v0.4 foundation", () => {
       // A phone's draw sheet rests at peek, with the workflow body below it.
       await expect(gallery.locator(view)).toBeAttached();
       if (!narrow) await expect(gallery.locator(view)).toBeVisible();
+      if (chunk === "workflow-panel" && workflow === "draw") {
+        await expect(gallery.getByRole("toolbar", { name: "Draw area tools" }).getByRole("button", { name: "Points" })).toBeEnabled();
+      }
       await expect(failure).toHaveCount(0);
       expect(await page.evaluate(() => sessionStorage.length), "the resume marker lasts one reload").toBe(0);
     });
@@ -10094,7 +10122,7 @@ test("map taps select run and plan rooms in both views and clear old deletion no
       const renderer = new RendererController(canvas, overlay);
       renderer.setState(store.value);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const gestures = new GestureController(canvas, renderer, { state: () => store.value, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {}, onCirclePreview: () => {} });
+      const gestures = new GestureController(canvas, renderer, { state: () => store.value, drawReady: () => true, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {}, onCirclePreview: () => {} });
       const bounds = canvas.getBoundingClientRect();
       let hit;
       for (let y = 20; y < 520 && !hit; y += 10) for (let x = 20; x < 700 && !hit; x += 10) {

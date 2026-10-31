@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from custom_components.matic_robot.client.api import _decode_cleaning_session
+from custom_components.matic_robot.client.telemetry import (
+    decode_cleaning_session,
+)
 from tests.wire_builders import _bfield, _vfield
 
 # Shapes match read-only reads on firmware v181.10: summary field 10 holds
@@ -39,7 +41,7 @@ def _session(stop_reason: bytes | None) -> bytes:
 def test_stop_reason_is_named_only_for_captured_values(
     stop_reason: bytes | None, code: int | None, name: str | None
 ) -> None:
-    session = _decode_cleaning_session(_session(stop_reason))
+    session = decode_cleaning_session(_session(stop_reason))
 
     assert session is not None
     assert session.stop_reason_code == code

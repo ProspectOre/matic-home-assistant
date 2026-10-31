@@ -16,8 +16,7 @@ import {
 } from "./contracts";
 import { PLAN_VIEWS_TAG, PRECISION_CONTROLS_TAG, ROOMS_VIEW_TAG, WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
-import { deleteSubject, hasStoppableWork, initialWorkspaceState } from "./state";
-import { heldReasonKey } from "./draw-tools";
+import { deleteSubject, hasStoppableWork, heldReasonKey, initialWorkspaceState } from "./state";
 import { formatDateTime, formatList, translate } from "./localize";
 import { LazyChunk, chunkStatus } from "./lazy-chunk";
 import { COVERAGES, MODES, coverageLabel, modeLabel, settingLabel } from "./plan-cadence";

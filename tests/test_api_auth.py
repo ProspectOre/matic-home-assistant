@@ -145,7 +145,7 @@ async def test_authenticated_connect_handshakes_on_the_created_channel(
         lambda: _async_value(object()),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", FakeChannel
+        "custom_components.matic_robot.client.api.PinnedChannel", FakeChannel
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.HermesStub", FakeHermesStub
@@ -239,7 +239,7 @@ async def test_connect_prefers_resolved_ipv4_and_falls_back_from_ipv6(
         lambda: _async_value(context),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", FakeChannel
+        "custom_components.matic_robot.client.api.PinnedChannel", FakeChannel
     )
 
     client = MaticHermesClient(
@@ -295,7 +295,7 @@ async def test_failed_handshake_resets_channel_for_later_reconnect(
         lambda: _async_value(context),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", FakeChannel
+        "custom_components.matic_robot.client.api.PinnedChannel", FakeChannel
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.HermesStub", FakeHermesStub

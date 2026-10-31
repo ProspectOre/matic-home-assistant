@@ -10,7 +10,11 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.util import dt as dt_util
 
+import custom_components.matic_robot.plan_storage as plan_storage_module
 from custom_components.matic_robot.cadence import advance_cadence
+from custom_components.matic_robot.cadence_accounting import (
+    apply_verified_cadence as _apply_verified_cadence,
+)
 from custom_components.matic_robot.cadence_accounting import (
     validated_cadence_snapshots,
 )
@@ -21,16 +25,19 @@ from custom_components.matic_robot.client.models import (
     FloorPlan,
     Room,
 )
-from custom_components.matic_robot.plans import (
-    CadenceBindingError,
-    CleaningPlanManager,
-    CleaningRoom,
-    _apply_verified_cadence,
+from custom_components.matic_robot.native_history import (
     _reconcile_pending_native_history,
     _record_native_completion,
     _remember_native_reconciliation,
+)
+from custom_components.matic_robot.plan_model import (
+    CadenceBindingError,
+    CleaningRoom,
     plan_floor_token,
     room_cadence_identity,
+)
+from custom_components.matic_robot.plans import (
+    CleaningPlanManager,
 )
 
 
@@ -45,7 +52,7 @@ def _floor(*, mission_id: int = 7, name: str = "Kitchen") -> FloorPlan:
 
 def _manager(hass) -> CleaningPlanManager:
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     return manager
 
 
@@ -108,10 +115,10 @@ async def test_active_shared_cadence_requires_verified_binding_without_mutation(
     hass,
 ) -> None:
     manager = _manager(hass)
-    before = manager.plans("serial")
+    before = manager.catalog.plans("serial")
 
     with pytest.raises(CadenceBindingError, match="verified floor and room binding"):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             "serial",
             "home",
             {
@@ -127,15 +134,15 @@ async def test_active_shared_cadence_requires_verified_binding_without_mutation(
             },
         )
 
-    assert manager.plans("serial") == before
-    assert manager._robot("serial")["shared_room_cadence"] == {}
+    assert manager.catalog.plans("serial") == before
+    assert manager.repository.robot("serial")["shared_room_cadence"] == {}
 
 
 async def test_active_shared_cadence_rejects_malformed_binding_tokens(hass) -> None:
     manager = _manager(hass)
 
     with pytest.raises(CadenceBindingError):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             "serial",
             "home",
             {
@@ -153,7 +160,7 @@ async def test_active_shared_cadence_rejects_malformed_binding_tokens(hass) -> N
             room_identities={"room-a": "f" * 64},
         )
 
-    assert manager._robot("serial")["shared_room_cadence"] == {}
+    assert manager.repository.robot("serial")["shared_room_cadence"] == {}
 
 
 async def test_bound_shared_definition_can_be_saved_while_floor_is_temporarily_stale(
@@ -173,17 +180,17 @@ async def test_bound_shared_definition_can_be_saved_while_floor_is_temporarily_s
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
         floor_token=plan_floor_token(floor),
         room_identities={"room-a": identity},
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 2, "coverage": 1}
 
-    await manager.async_save_plan("serial", "home", plan)
+    await manager.catalog.async_save_plan("serial", "home", plan)
 
     assert schedule["identity"] == identity
     assert schedule["floor_token"] == plan_floor_token(floor)
@@ -207,17 +214,17 @@ async def test_disabling_bound_shared_schedule_reuses_inherited_identity_when_st
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         active,
         floor_token=plan_floor_token(floor),
         room_identities={"room-a": identity},
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 2, "coverage": 1}
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -236,7 +243,10 @@ async def test_disabling_bound_shared_schedule_reuses_inherited_identity_when_st
     assert schedule["identity"] == identity
     assert schedule["floor_token"] == plan_floor_token(floor)
     assert schedule["progress"] == {"mop": 2, "coverage": 1}
-    assert manager.plan("serial", "home")["rooms"][0]["cadence"]["mop_every_n"] is None
+    assert (
+        manager.catalog.plan("serial", "home")["rooms"][0]["cadence"]["mop_every_n"]
+        is None
+    )
 
 
 async def test_shared_floor_rebind_resets_progress_with_stable_room_identity(
@@ -257,17 +267,17 @@ async def test_shared_floor_rebind_resets_progress_with_stable_room_identity(
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
         floor_token=floor_token_a,
         room_identities={"room-a": identity},
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 2, "coverage": 1}
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
@@ -295,26 +305,31 @@ async def test_new_shared_join_requires_a_verified_binding(hass) -> None:
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         shared_plan,
         floor_token=plan_floor_token(floor),
         room_identities={"room-a": identity},
     )
-    schedule_before = manager._robot("serial")["shared_room_cadence"]["room-a"].copy()
+    schedule_before = manager.repository.robot("serial")["shared_room_cadence"][
+        "room-a"
+    ].copy()
 
     with pytest.raises(CadenceBindingError):
-        await manager.async_save_plan("serial", "joining-plan", shared_plan)
+        await manager.catalog.async_save_plan("serial", "joining-plan", shared_plan)
 
-    assert "joining-plan" not in manager.plans("serial")
-    assert manager._robot("serial")["shared_room_cadence"]["room-a"] == schedule_before
+    assert "joining-plan" not in manager.catalog.plans("serial")
+    assert (
+        manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
+        == schedule_before
+    )
 
 
 async def test_disabled_shared_policy_does_not_create_unbound_schedule(hass) -> None:
     manager = _manager(hass)
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -330,14 +345,14 @@ async def test_disabled_shared_policy_does_not_create_unbound_schedule(hass) -> 
         },
     )
 
-    assert manager._robot("serial")["shared_room_cadence"] == {}
+    assert manager.repository.robot("serial")["shared_room_cadence"] == {}
 
 
 async def test_verified_managed_completion_advances_private_cadence_once(hass) -> None:
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -354,28 +369,28 @@ async def test_verified_managed_completion_advances_private_cadence_once(hass) -
         room_identities={room.room_id: identity},
         floor_token=plan_floor_token(_floor()),
     )
-    _rooms, snapshots = manager.resolve_cadence(
+    _rooms, snapshots = manager.cadence.resolve_cadence(
         "serial", "home", [room], room_identities={room.room_id: identity}
     )
     snapshot = {**snapshots[room.room_id], "identity": identity}
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", "run-1", 1, trigger="user", service="test"
     )
-    await manager.async_mark_started("serial", "home", room, run_id="run-1")
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_mark_started("serial", "home", room, run_id="run-1")
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "run-1",
         {"cadence_by_room": {room.room_id: snapshot}, "completed_room_ids": []},
     )
 
-    await manager.async_mark_completed("serial", "home", room)
-    await manager.async_mark_completed("serial", "home", room)
+    await manager.ledger.async_mark_completed("serial", "home", room)
+    await manager.ledger.async_mark_completed("serial", "home", room)
 
-    assert manager.cadence_progress("serial", "home", room.room_id) == {
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id) == {
         "mop": 1,
         "coverage": 0,
     }
-    assert manager._store.async_save.await_count >= 1
+    assert manager.repository.store.async_save.await_count >= 1
 
 
 async def test_checkpoint_save_failure_does_not_leak_frozen_policy(hass):
@@ -395,28 +410,28 @@ async def test_checkpoint_save_failure_does_not_leak_frozen_policy(hass):
             }
         }
     }
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", "run-checkpoint", 1, trigger="user", service="test"
     )
-    manager._store.async_save.side_effect = OSError("disk unavailable")
+    manager.repository.store.async_save.side_effect = OSError("disk unavailable")
 
     with pytest.raises(OSError, match="disk unavailable"):
-        await manager.async_set_recovery_checkpoint(
+        await manager.ledger.async_set_recovery_checkpoint(
             "serial",
             "run-checkpoint",
             checkpoint,
         )
 
-    assert "recovery_checkpoint" not in manager._robot("serial")["last_run"]
-    manager._store.async_save.side_effect = None
-    await manager.async_set_recovery_checkpoint(
+    assert "recovery_checkpoint" not in manager.repository.robot("serial")["last_run"]
+    manager.repository.store.async_save.side_effect = None
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "run-checkpoint",
         checkpoint,
     )
     assert (
         "room-a"
-        in manager._robot("serial")["last_run"]["recovery_checkpoint"][
+        in manager.repository.robot("serial")["last_run"]["recovery_checkpoint"][
             "cadence_by_room"
         ]
     )
@@ -426,7 +441,7 @@ async def test_failed_completion_persistence_rolls_back_and_can_retry(hass) -> N
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -446,34 +461,34 @@ async def test_failed_completion_persistence_rolls_back_and_can_retry(hass) -> N
         },
         room_identities={room.room_id: identity},
     )
-    _rooms, snapshots = manager.resolve_cadence(
+    _rooms, snapshots = manager.cadence.resolve_cadence(
         "serial", "home", [room], room_identities={room.room_id: identity}
     )
     snapshot = {**snapshots[room.room_id], "identity": identity}
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", "run-fail-save", 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "run-fail-save",
         {"cadence_by_room": {room.room_id: snapshot}, "completed_room_ids": []},
     )
 
-    manager._store.async_save.side_effect = OSError("disk unavailable")
+    manager.repository.store.async_save.side_effect = OSError("disk unavailable")
     with pytest.raises(OSError, match="disk unavailable"):
-        await manager.async_mark_completed("serial", "home", room)
+        await manager.ledger.async_mark_completed("serial", "home", room)
 
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     assert robot["last_run"]["recovery_checkpoint"]["completed_room_ids"] == []
-    assert manager.cadence_progress("serial", "home", room.room_id) == {
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id) == {
         "mop": 0,
         "coverage": 0,
     }
     assert robot["rooms"].get(room.room_id, {}).get("completed_runs", 0) == 0
 
-    manager._store.async_save.side_effect = None
-    await manager.async_mark_completed("serial", "home", room)
-    assert manager.cadence_progress("serial", "home", room.room_id) == {
+    manager.repository.store.async_save.side_effect = None
+    await manager.ledger.async_mark_completed("serial", "home", room)
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id) == {
         "mop": 0,
         "coverage": 1,
     }
@@ -485,7 +500,7 @@ async def test_failed_cadence_edit_persistence_restores_shared_policy_and_progre
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
     original_policy = {"scope": "shared", "mop_every_n": 3}
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -502,13 +517,13 @@ async def test_failed_cadence_edit_persistence_restores_shared_policy_and_progre
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(_floor()),
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 2, "coverage": 0}
-    old_plan = manager.plan("serial", "home")
+    old_plan = manager.catalog.plan("serial", "home")
 
-    manager._store.async_save.side_effect = OSError("disk unavailable")
+    manager.repository.store.async_save.side_effect = OSError("disk unavailable")
     with pytest.raises(OSError, match="disk unavailable"):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             "serial",
             "home",
             {
@@ -526,7 +541,7 @@ async def test_failed_cadence_edit_persistence_restores_shared_policy_and_progre
             floor_token=plan_floor_token(_floor()),
         )
 
-    assert manager.plan("serial", "home")["rooms"][0]["cadence"] == {
+    assert manager.catalog.plan("serial", "home")["rooms"][0]["cadence"] == {
         "scope": "shared",
         "mop_every_n": 3,
         "coverage_every_n": None,
@@ -534,7 +549,9 @@ async def test_failed_cadence_edit_persistence_restores_shared_policy_and_progre
         "do_mop_next": False,
         "do_coverage_next": False,
     }
-    assert manager._robot("serial")["shared_room_cadence"]["room-a"]["progress"] == {
+    assert manager.repository.robot("serial")["shared_room_cadence"]["room-a"][
+        "progress"
+    ] == {
         "mop": 2,
         "coverage": 0,
     }
@@ -543,7 +560,7 @@ async def test_failed_cadence_edit_persistence_restores_shared_policy_and_progre
 async def test_failed_explicit_reset_restores_progress_and_do_next_policy(hass):
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -563,20 +580,22 @@ async def test_failed_explicit_reset_restores_progress_and_do_next_policy(hass):
             ],
         },
     )
-    manager._robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
         "progress": {"mop": 0, "coverage": 3},
     }
-    manager._store.async_save.side_effect = OSError("disk unavailable")
+    manager.repository.store.async_save.side_effect = OSError("disk unavailable")
 
     with pytest.raises(OSError, match="disk unavailable"):
-        await manager.async_reset_cadence("serial", "home")
+        await manager.cadence.async_reset_cadence("serial", "home")
 
-    assert manager.cadence_progress("serial", "home", room.room_id) == {
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id) == {
         "mop": 0,
         "coverage": 3,
     }
     assert (
-        manager.plan("serial", "home")["rooms"][0]["cadence"]["do_coverage_next"]
+        manager.catalog.plan("serial", "home")["rooms"][0]["cadence"][
+            "do_coverage_next"
+        ]
         is True
     )
 
@@ -595,28 +614,30 @@ async def test_removed_room_and_unbound_legacy_progress_start_fresh(hass):
             }
         ],
     }
-    manager._robot("serial")["plan_room_cadence"]["home"] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"] = {
         "room-a": {"progress": {"mop": 2, "coverage": 0}}
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial", "home", definition, room_identities={"room-a": identity}
     )
-    assert manager.cadence_progress("serial", "home", "room-a")["mop"] == 0
+    assert manager.cadence.cadence_progress("serial", "home", "room-a")["mop"] == 0
 
-    manager._robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
         "identity": identity,
         "progress": {"mop": 2, "coverage": 0},
     }
-    await manager.async_save_plan("serial", "home", {"name": "Home", "rooms": []})
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
+        "serial", "home", {"name": "Home", "rooms": []}
+    )
+    await manager.catalog.async_save_plan(
         "serial", "home", definition, room_identities={"room-a": identity}
     )
-    assert manager.cadence_progress("serial", "home", "room-a")["mop"] == 0
+    assert manager.cadence.cadence_progress("serial", "home", "room-a")["mop"] == 0
 
 
 async def test_plan_deletion_is_blocked_during_run_and_atomic_on_failure(hass):
     manager = _manager(hass)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -630,13 +651,13 @@ async def test_plan_deletion_is_blocked_during_run_and_atomic_on_failure(hass):
             ],
         },
     )
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plan_room_cadence"]["home"] = {
         "room-a": {"progress": {"mop": 1, "coverage": 0}}
     }
     robot["active_plan"] = {"plan_id": "home", "room_id": "room-a"}
     with pytest.raises(ValueError, match="while it is running"):
-        await manager.async_delete_plan("serial", "home")
+        await manager.catalog.async_delete_plan("serial", "home")
     assert "home" in robot["plans"]
 
     robot["active_plan"] = None
@@ -649,20 +670,20 @@ async def test_plan_deletion_is_blocked_during_run_and_atomic_on_failure(hass):
     }
     robot["pending_native_reconciliation"] = pending
     with pytest.raises(ValueError, match="completion is being verified"):
-        await manager.async_delete_plan("serial", "home")
+        await manager.catalog.async_delete_plan("serial", "home")
     robot.pop("pending_native_reconciliation")
-    manager._store.async_save.side_effect = OSError("disk unavailable")
+    manager.repository.store.async_save.side_effect = OSError("disk unavailable")
     with pytest.raises(OSError, match="disk unavailable"):
-        await manager.async_delete_plan("serial", "home")
-    assert "home" in manager._robot("serial")["plans"]
-    assert manager.cadence_progress("serial", "home", "room-a")["mop"] == 1
+        await manager.catalog.async_delete_plan("serial", "home")
+    assert "home" in manager.repository.robot("serial")["plans"]
+    assert manager.cadence.cadence_progress("serial", "home", "room-a")["mop"] == 1
 
 
 async def test_shared_due_cadence_is_available_to_tracked_manual_room_run(hass) -> None:
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -679,12 +700,14 @@ async def test_shared_due_cadence_is_available_to_tracked_manual_room_run(hass) 
         room_identities={room.room_id: identity},
         floor_token=plan_floor_token(_floor()),
     )
-    manager._robot("serial")["shared_room_cadence"][room.room_id]["progress"] = {
+    manager.repository.robot("serial")["shared_room_cadence"][room.room_id][
+        "progress"
+    ] = {
         "mop": 1,
         "coverage": 0,
     }
 
-    effective, snapshots = manager.resolve_cadence(
+    effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "quick_clean",
         [room],
@@ -702,7 +725,7 @@ async def test_shared_due_cadence_is_available_to_tracked_manual_room_run(hass) 
 async def test_tracked_manual_override_counts_only_verified_compatible_work(hass):
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -719,10 +742,10 @@ async def test_tracked_manual_override_counts_only_verified_compatible_work(hass
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(_floor()),
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 1, "coverage": 0}
     explicit_mop = CleaningRoom("room-a", "Kitchen", "vacuum_and_mop", "standard")
-    effective, snapshots = manager.resolve_cadence(
+    effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "quick_clean",
         [explicit_mop],
@@ -732,7 +755,7 @@ async def test_tracked_manual_override_counts_only_verified_compatible_work(hass
     )
     assert effective == [explicit_mop]
     assert snapshots["room-a"]["mop_due"] is True
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial",
         "quick_clean",
         "manual-compatible",
@@ -740,17 +763,17 @@ async def test_tracked_manual_override_counts_only_verified_compatible_work(hass
         trigger="user",
         service="clean_room_sequence",
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "manual-compatible",
         {"cadence_by_room": {"room-a": {**snapshots["room-a"], "identity": identity}}},
     )
-    await manager.async_mark_completed("serial", "quick_clean", explicit_mop)
+    await manager.ledger.async_mark_completed("serial", "quick_clean", explicit_mop)
     assert schedule["progress"]["mop"] == 0
 
     schedule["progress"] = {"mop": 1, "coverage": 0}
     vacuum_override = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "quick_clean",
         [vacuum_override],
@@ -758,7 +781,7 @@ async def test_tracked_manual_override_counts_only_verified_compatible_work(hass
         use_shared_schedule=True,
         apply_due_settings=False,
     )
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial",
         "quick_clean",
         "manual-omitted",
@@ -766,12 +789,12 @@ async def test_tracked_manual_override_counts_only_verified_compatible_work(hass
         trigger="user",
         service="clean_room_sequence",
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "manual-omitted",
         {"cadence_by_room": {"room-a": {**snapshots["room-a"], "identity": identity}}},
     )
-    await manager.async_mark_completed("serial", "quick_clean", vacuum_override)
+    await manager.ledger.async_mark_completed("serial", "quick_clean", vacuum_override)
     assert schedule["progress"]["mop"] == 1
 
 
@@ -783,7 +806,7 @@ async def test_one_time_due_shared_schedule_accepts_requested_mop_modes(
 ):
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -805,11 +828,11 @@ async def test_one_time_due_shared_schedule_accepts_requested_mop_modes(
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(_floor()),
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 2, "coverage": 2}
-    before = deepcopy(manager._robot("serial"))
+    before = deepcopy(manager.repository.robot("serial"))
 
-    effective, snapshots = manager.resolve_cadence(
+    effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         plan_id,
         [CleaningRoom("room-a", "Kitchen", requested_mode, "standard")],
@@ -826,14 +849,14 @@ async def test_one_time_due_shared_schedule_accepts_requested_mop_modes(
     assert snapshots["room-a"]["coverage_due"] is True
     assert snapshots["room-a"]["effective_cleaning_mode"] == expected_mode
     assert snapshots["room-a"]["effective_coverage_setting"] == expected_coverage
-    assert manager._robot("serial") == before
+    assert manager.repository.robot("serial") == before
 
 
 @pytest.mark.parametrize("plan_id", [None, "home"])
 async def test_one_time_mop_borrowing_due_coverage_keeps_its_coverage(hass, plan_id):
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -854,10 +877,10 @@ async def test_one_time_mop_borrowing_due_coverage_keeps_its_coverage(hass, plan
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(_floor()),
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 0, "coverage": 2}
 
-    effective, snapshots = manager.resolve_cadence(
+    effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         plan_id,
         [CleaningRoom("room-a", "Kitchen", "mop", "standard")],
@@ -881,7 +904,7 @@ async def test_cadence_editor_state_uses_the_dispatch_policy_and_explanation(has
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -902,12 +925,12 @@ async def test_cadence_editor_state_uses_the_dispatch_policy_and_explanation(has
         room_identities={room.room_id: identity},
         floor_token=plan_floor_token(_floor()),
     )
-    manager._robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
         "identity": identity,
         "progress": {"mop": 0, "coverage": 1},
     }
 
-    state = manager.cadence_editor_state(
+    state = manager.cadence.cadence_editor_state(
         "serial",
         "home",
         room,
@@ -932,7 +955,7 @@ async def test_manual_cadence_editor_state_reads_shared_room_schedule(hass):
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -949,12 +972,14 @@ async def test_manual_cadence_editor_state_reads_shared_room_schedule(hass):
         room_identities={room.room_id: identity},
         floor_token=plan_floor_token(_floor()),
     )
-    manager._robot("serial")["shared_room_cadence"][room.room_id]["progress"] = {
+    manager.repository.robot("serial")["shared_room_cadence"][room.room_id][
+        "progress"
+    ] = {
         "mop": 1,
         "coverage": 0,
     }
 
-    state = manager.cadence_editor_state(
+    state = manager.cadence.cadence_editor_state(
         "serial",
         "quick_clean",
         room,
@@ -972,7 +997,7 @@ async def test_unverified_private_cadence_blocks_until_each_mode_is_reset(hass) 
     floor = _floor()
     identity = room_cadence_identity(floor, "room-a")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "quick_clean",
         {
@@ -995,14 +1020,14 @@ async def test_unverified_private_cadence_blocks_until_each_mode_is_reset(hass) 
         room_identities={room.room_id: identity},
     )
     record = (
-        manager._robot("serial")["plan_room_cadence"]
+        manager.repository.robot("serial")["plan_room_cadence"]
         .setdefault("quick_clean", {})
         .setdefault(room.room_id, {})
     )
     record["progress"] = {"mop": 2, "coverage": 1}
     record["unverified_modes"] = ["mop", "coverage"]
     room_map = {room.room_id: room.name}
-    state = manager.cadence_editor_state(
+    state = manager.cadence.cadence_editor_state(
         "serial",
         "quick_clean",
         room,
@@ -1015,7 +1040,7 @@ async def test_unverified_private_cadence_blocks_until_each_mode_is_reset(hass) 
         "coverage_progress_unverified",
     ]
     with pytest.raises(ValueError, match="progress is unverified"):
-        manager.preview(
+        manager.catalog.preview(
             "serial",
             room_map,
             "quick_clean",
@@ -1023,12 +1048,12 @@ async def test_unverified_private_cadence_blocks_until_each_mode_is_reset(hass) 
             room_identities={room.room_id: identity},
         )
 
-    await manager.async_reset_cadence(
+    await manager.cadence.async_reset_cadence(
         "serial", "quick_clean", [room.room_id], modes=("mop",)
     )
     assert record["progress"] == {"mop": 0, "coverage": 1}
     assert record["unverified_modes"] == ["coverage"]
-    state = manager.cadence_editor_state(
+    state = manager.cadence.cadence_editor_state(
         "serial",
         "quick_clean",
         room,
@@ -1037,14 +1062,14 @@ async def test_unverified_private_cadence_blocks_until_each_mode_is_reset(hass) 
     )
     assert state["cadence_reasons"] == ["coverage_progress_unverified"]
     with pytest.raises(ValueError, match="coverage before use"):
-        manager.resolve_cadence("serial", "quick_clean", [room])
+        manager.cadence.resolve_cadence("serial", "quick_clean", [room])
 
-    await manager.async_reset_cadence(
+    await manager.cadence.async_reset_cadence(
         "serial", "quick_clean", [room.room_id], modes=("coverage",)
     )
     assert record["progress"] == {"mop": 0, "coverage": 0}
     assert "unverified_modes" not in record
-    preview = manager.preview(
+    preview = manager.catalog.preview(
         "serial",
         room_map,
         "quick_clean",
@@ -1067,12 +1092,12 @@ def test_unverified_cadence_storage_normalizes_modes_and_removes_empty_marker() 
         },
     }
 
-    assert CleaningPlanManager._normalize_robot(robot) is True
+    assert plan_storage_module._normalize_robot(robot) is True
     record = robot["plan_room_cadence"]["quick_clean"]["room-a"]
     assert record["unverified_modes"] == ["mop", "coverage"]
     record["unverified_modes"] = None
 
-    assert CleaningPlanManager._normalize_robot(robot) is True
+    assert plan_storage_module._normalize_robot(robot) is True
     assert "unverified_modes" not in record
 
 
@@ -1080,7 +1105,7 @@ def test_unverified_cadence_storage_normalizes_modes_and_removes_empty_marker() 
 async def test_cadence_editor_contains_invalid_persisted_policy(hass, shared) -> None:
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plans"]["home"] = {
         "name": "Home",
         "rooms": [
@@ -1102,7 +1127,7 @@ async def test_cadence_editor_contains_invalid_persisted_policy(hass, shared) ->
             "progress": {"mop": 1, "coverage": 0},
         }
 
-    state = manager.cadence_editor_state(
+    state = manager.cadence.cadence_editor_state(
         "serial",
         "home",
         room,
@@ -1119,12 +1144,12 @@ async def test_cadence_editor_contains_invalid_persisted_policy(hass, shared) ->
 async def test_cadence_editor_contains_non_object_persisted_policy(hass) -> None:
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    manager._robot("serial")["plans"]["home"] = {
+    manager.repository.robot("serial")["plans"]["home"] = {
         "name": "Home",
         "rooms": [{"room_id": room.room_id, "cadence": "corrupt"}],
     }
 
-    state = manager.cadence_editor_state("serial", "home", room)
+    state = manager.cadence.cadence_editor_state("serial", "home", room)
 
     assert state == {
         "cadence": None,
@@ -1132,7 +1157,7 @@ async def test_cadence_editor_contains_non_object_persisted_policy(hass) -> None
         "cadence_reasons": ["invalid_cadence_policy"],
     }
     with pytest.raises(ValueError, match="room cadence must be an object"):
-        manager.resolve_cadence("serial", "home", [room])
+        manager.cadence.resolve_cadence("serial", "home", [room])
 
 
 @pytest.mark.parametrize("shared", [False, True], ids=["private", "shared"])
@@ -1147,7 +1172,7 @@ async def test_mop_only_vacuum_cadence_is_preserved_until_explicitly_repaired(
         "periodic_coverage_setting": "heavy_duty",
     }
     room = CleaningRoom("room-a", "Kitchen", "mop", "quick")
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plans"]["home"] = {
         "name": "Home",
         "rooms": [
@@ -1166,17 +1191,17 @@ async def test_mop_only_vacuum_cadence_is_preserved_until_explicitly_repaired(
         }
     robot["selected_plan"] = "home"
     original = deepcopy(robot)
-    state = manager.cadence_editor_state("serial", "home", room)
+    state = manager.cadence.cadence_editor_state("serial", "home", room)
     assert state["cadence"]["coverage_every_n"] == 3
     assert state["cadence"]["periodic_coverage_setting"] == "heavy_duty"
     assert state["cadence_reasons"] == ["coverage_requires_vacuum"]
     assert state["cadence_progress"] is None
-    assert manager.plans("serial")["home"] == original["plans"]["home"]
+    assert manager.catalog.plans("serial")["home"] == original["plans"]["home"]
     with pytest.raises(ValueError, match="coverage cadence requires vacuum"):
-        manager.resolve_cadence("serial", "home", [room])
+        manager.cadence.resolve_cadence("serial", "home", [room])
     # Even an edit omitting cadence cannot silently remove the inherited rule.
     with pytest.raises(ValueError, match="coverage cadence requires vacuum"):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             "serial",
             "home",
             {
@@ -1191,9 +1216,9 @@ async def test_mop_only_vacuum_cadence_is_preserved_until_explicitly_repaired(
             },
         )
     assert robot == original
-    manager._store.async_save.assert_not_awaited()
+    manager.repository.store.async_save.assert_not_awaited()
     # Leave shared participation before clearing this room's private rule.
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -1208,7 +1233,7 @@ async def test_mop_only_vacuum_cadence_is_preserved_until_explicitly_repaired(
             ],
         },
     )
-    effective, snapshots = manager.resolve_cadence("serial", "home", [room])
+    effective, snapshots = manager.cadence.resolve_cadence("serial", "home", [room])
     assert effective == [room]
     assert snapshots[room.room_id]["coverage_every_n"] is None
     assert robot["shared_room_cadence"] == original["shared_room_cadence"]
@@ -1217,7 +1242,7 @@ async def test_mop_only_vacuum_cadence_is_preserved_until_explicitly_repaired(
 async def test_changing_a_legacy_mop_plan_to_vacuum_retains_its_coverage_rule(hass):
     manager = _manager(hass)
     policy = {"coverage_every_n": 1, "periodic_coverage_setting": "heavy_duty"}
-    manager._robot("serial")["plans"]["home"] = {
+    manager.repository.robot("serial")["plans"]["home"] = {
         "name": "Home",
         "rooms": [
             {
@@ -1228,7 +1253,7 @@ async def test_changing_a_legacy_mop_plan_to_vacuum_retains_its_coverage_rule(ha
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -1242,7 +1267,7 @@ async def test_changing_a_legacy_mop_plan_to_vacuum_retains_its_coverage_rule(ha
             ],
         },
     )
-    effective, snapshots = manager.resolve_cadence(
+    effective, snapshots = manager.cadence.resolve_cadence(
         "serial", "home", [CleaningRoom("room-a", "Kitchen", "vacuum", "quick")]
     )
     assert effective[0].coverage_setting == "heavy_duty"
@@ -1255,7 +1280,7 @@ async def test_repairing_mop_mode_adopts_current_shared_policy_without_overwriti
     manager = _manager(hass)
     floor = _floor()
     identity = room_cadence_identity(floor, "room-a")
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plans"]["home"] = {
         "name": "Home",
         "rooms": [
@@ -1285,7 +1310,7 @@ async def test_repairing_mop_mode_adopts_current_shared_policy_without_overwriti
         "progress": {"mop": 0, "coverage": 0},
     }
     before = deepcopy(robot["shared_room_cadence"])
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -1302,7 +1327,7 @@ async def test_repairing_mop_mode_adopts_current_shared_policy_without_overwriti
         room_identities={"room-a": identity},
     )
     assert robot["shared_room_cadence"] == before
-    effective, _snapshots = manager.resolve_cadence(
+    effective, _snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [CleaningRoom("room-a", "Kitchen", "vacuum", "standard")],
@@ -1322,7 +1347,7 @@ async def test_late_native_completion_advances_shared_schedule_exactly_once(
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
     normal = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -1339,10 +1364,10 @@ async def test_late_native_completion_advances_shared_schedule_exactly_once(
         room_identities={normal.room_id: identity},
         floor_token=plan_floor_token(_floor()),
     )
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     schedule = robot["shared_room_cadence"][normal.room_id]
     schedule["progress"] = initial_progress.copy()
-    _rooms, snapshots = manager.resolve_cadence(
+    _rooms, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [normal],
@@ -1358,16 +1383,16 @@ async def test_late_native_completion_advances_shared_schedule_exactly_once(
         snapshot["effective_cleaning_mode"],
         snapshot["effective_coverage_setting"],
     )
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", "run-late", 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "run-late",
         {"cadence_by_room": {normal.room_id: snapshot}, "completed_room_ids": []},
     )
     dispatched_at = datetime.now(UTC)
-    await manager.async_mark_interrupted(
+    await manager.ledger.async_mark_interrupted(
         "serial",
         "home",
         due_room,
@@ -1382,7 +1407,7 @@ async def test_late_native_completion_advances_shared_schedule_exactly_once(
         },
     )
 
-    assert await manager.async_mark_native_completed(
+    assert await manager.ledger.async_mark_native_completed(
         "serial",
         "home",
         due_room,
@@ -1392,7 +1417,7 @@ async def test_late_native_completion_advances_shared_schedule_exactly_once(
         room_identity=identity,
     )
     assert schedule["progress"] == expected_progress
-    assert not await manager.async_mark_native_completed(
+    assert not await manager.ledger.async_mark_native_completed(
         "serial", "home", due_room, dispatched_at=dispatched_at
     )
     assert schedule["progress"] == expected_progress
@@ -1411,7 +1436,7 @@ async def test_startup_reconciliation_does_not_duplicate_committed_cadence(
     floor = _floor()
     identity = room_cadence_identity(floor, "room-a")
     normal = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -1428,10 +1453,10 @@ async def test_startup_reconciliation_does_not_duplicate_committed_cadence(
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(floor),
     )
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     schedule = robot["shared_room_cadence"]["room-a"]
     schedule["progress"] = initial_progress.copy()
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [normal],
@@ -1518,7 +1543,7 @@ async def test_older_room_completion_does_not_dedupe_a_new_dispatch(hass):
     floor = _floor()
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     now = dt_util.utcnow()
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     _record_native_completion(
         robot,
         "home",
@@ -1568,18 +1593,18 @@ async def test_joining_shared_schedule_adopts_its_policy_and_progress(hass):
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "first",
         first,
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(_floor()),
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 2, "coverage": 1}
     revision = schedule["revision"]
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "second",
         {
@@ -1597,7 +1622,10 @@ async def test_joining_shared_schedule_adopts_its_policy_and_progress(hass):
         floor_token=plan_floor_token(_floor()),
     )
 
-    assert manager.plan("serial", "second")["rooms"][0]["cadence"]["mop_every_n"] == 3
+    assert (
+        manager.catalog.plan("serial", "second")["rooms"][0]["cadence"]["mop_every_n"]
+        == 3
+    )
     assert schedule["policy"]["mop_every_n"] == 3
     assert schedule["progress"] == {"mop": 2, "coverage": 1}
     assert schedule["revision"] == revision
@@ -1640,16 +1668,16 @@ async def test_private_to_shared_uses_shared_state_not_private_progress(
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial", "home", private_plan, room_identities={"room-a": identity}
     )
-    manager._robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
         "identity": identity,
         "progress": {"mop": 1, "coverage": 0},
     }
-    assert manager.cadence_progress("serial", "home", "room-a")["mop"] == 1
+    assert manager.cadence.cadence_progress("serial", "home", "room-a")["mop"] == 1
     if join_existing:
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             "serial",
             "existing-shared",
             {
@@ -1671,12 +1699,14 @@ async def test_private_to_shared_uses_shared_state_not_private_progress(
             room_identities={"room-a": identity},
             floor_token=plan_floor_token(floor),
         )
-        manager._robot("serial")["shared_room_cadence"]["room-a"]["progress"] = {
+        manager.repository.robot("serial")["shared_room_cadence"]["room-a"][
+            "progress"
+        ] = {
             "mop": 2,
             "coverage": 1,
         }
     else:
-        assert "room-a" not in manager._robot("serial")["shared_room_cadence"]
+        assert "room-a" not in manager.repository.robot("serial")["shared_room_cadence"]
 
     shared_plan = {
         **private_plan,
@@ -1687,7 +1717,7 @@ async def test_private_to_shared_uses_shared_state_not_private_progress(
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         shared_plan,
@@ -1695,17 +1725,22 @@ async def test_private_to_shared_uses_shared_state_not_private_progress(
         floor_token=plan_floor_token(floor),
     )
 
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     assert schedule["identity"] == identity
     assert schedule["floor_token"] == plan_floor_token(floor)
     assert schedule["progress"] == expected_progress
-    assert manager.cadence_progress("serial", "home", "room-a") == expected_progress
     assert (
-        manager.plan("serial", "home")["rooms"][0]["cadence"]["mop_every_n"]
+        manager.cadence.cadence_progress("serial", "home", "room-a")
+        == expected_progress
+    )
+    assert (
+        manager.catalog.plan("serial", "home")["rooms"][0]["cadence"]["mop_every_n"]
         == expected_shared_policy["mop_every_n"]
     )
     assert (
-        manager.plan("serial", "home")["rooms"][0]["cadence"]["coverage_every_n"]
+        manager.catalog.plan("serial", "home")["rooms"][0]["cadence"][
+            "coverage_every_n"
+        ]
         == expected_shared_policy["coverage_every_n"]
     )
 
@@ -1736,7 +1771,7 @@ async def test_cadence_interval_edit_preserves_progress_and_next_clean_state(
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
@@ -1744,12 +1779,14 @@ async def test_cadence_interval_edit_preserves_progress_and_next_clean_state(
         floor_token=plan_floor_token(floor),
     )
     if scope == "shared":
-        manager._robot("serial")["shared_room_cadence"]["room-a"]["progress"] = {
+        manager.repository.robot("serial")["shared_room_cadence"]["room-a"][
+            "progress"
+        ] = {
             "mop": 2,
             "coverage": 3,
         }
     else:
-        manager._robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
+        manager.repository.robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
             "identity": identity,
             "progress": {"mop": 2, "coverage": 3},
         }
@@ -1767,7 +1804,7 @@ async def test_cadence_interval_edit_preserves_progress_and_next_clean_state(
         ],
     }
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         changed,
@@ -1776,14 +1813,14 @@ async def test_cadence_interval_edit_preserves_progress_and_next_clean_state(
     )
 
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [room],
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(floor),
     )
-    assert manager.cadence_progress("serial", "home", "room-a") == {
+    assert manager.cadence.cadence_progress("serial", "home", "room-a") == {
         "mop": 2,
         "coverage": 3,
     }
@@ -1821,7 +1858,7 @@ async def test_disable_and_reenable_cadence_pauses_and_resumes_progress(
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
@@ -1829,17 +1866,19 @@ async def test_disable_and_reenable_cadence_pauses_and_resumes_progress(
         floor_token=plan_floor_token(floor),
     )
     if scope == "shared":
-        manager._robot("serial")["shared_room_cadence"]["room-a"]["progress"] = {
+        manager.repository.robot("serial")["shared_room_cadence"]["room-a"][
+            "progress"
+        ] = {
             "mop": 1,
             "coverage": 1,
         }
     else:
-        manager._robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
+        manager.repository.robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
             "identity": identity,
             "progress": {"mop": 1, "coverage": 1},
         }
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    _effective, before = manager.resolve_cadence(
+    _effective, before = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [room],
@@ -1865,21 +1904,21 @@ async def test_disable_and_reenable_cadence_pauses_and_resumes_progress(
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         disabled,
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(floor),
     )
-    _effective, paused = manager.resolve_cadence(
+    _effective, paused = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [room],
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(floor),
     )
-    assert manager.cadence_progress("serial", "home", "room-a") == {
+    assert manager.cadence.cadence_progress("serial", "home", "room-a") == {
         "mop": 1,
         "coverage": 1,
     }
@@ -1887,21 +1926,21 @@ async def test_disable_and_reenable_cadence_pauses_and_resumes_progress(
     assert paused["room-a"]["mop_due"] is False
     assert paused["room-a"]["coverage_due"] is False
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(floor),
     )
-    _effective, resumed = manager.resolve_cadence(
+    _effective, resumed = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [room],
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(floor),
     )
-    assert manager.cadence_progress("serial", "home", "room-a") == {
+    assert manager.cadence.cadence_progress("serial", "home", "room-a") == {
         "mop": 1,
         "coverage": 1,
     }
@@ -1926,11 +1965,11 @@ async def test_pending_reconciliation_only_blocks_its_room_schedule_edit(hass):
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial", "home", plan, room_identities={room.room_id: identity}
     )
     dispatched_at = dt_util.utcnow() - timedelta(seconds=5)
-    await manager.async_mark_interrupted(
+    await manager.ledger.async_mark_interrupted(
         "serial",
         "home",
         room,
@@ -1944,14 +1983,14 @@ async def test_pending_reconciliation_only_blocks_its_room_schedule_edit(hass):
         },
     )
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {**plan, "name": "Home renamed"},
         room_identities={room.room_id: identity},
     )
     with pytest.raises(ValueError, match="completion is being verified"):
-        await manager.async_save_plan(
+        await manager.catalog.async_save_plan(
             "serial",
             "home",
             {
@@ -1972,7 +2011,7 @@ async def test_history_reset_preserves_cadence_and_explicit_reset_clears_it(
 ) -> None:
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -1992,22 +2031,24 @@ async def test_history_reset_preserves_cadence_and_explicit_reset_clears_it(
             ],
         },
     )
-    manager._robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
         "progress": {"mop": 2, "coverage": 3}
     }
 
-    await manager.async_reset_history("serial", "home")
-    assert manager.cadence_progress("serial", "home", room.room_id) == {
+    await manager.ledger.async_reset_history("serial", "home")
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id) == {
         "mop": 2,
         "coverage": 3,
     }
-    await manager.async_reset_cadence("serial", "home")
-    assert manager.cadence_progress("serial", "home", room.room_id) == {
+    await manager.cadence.async_reset_cadence("serial", "home")
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id) == {
         "mop": 0,
         "coverage": 0,
     }
     assert (
-        manager.plan("serial", "home")["rooms"][0]["cadence"]["do_coverage_next"]
+        manager.catalog.plan("serial", "home")["rooms"][0]["cadence"][
+            "do_coverage_next"
+        ]
         is False
     )
 
@@ -2015,7 +2056,7 @@ async def test_history_reset_preserves_cadence_and_explicit_reset_clears_it(
 async def test_rejected_active_scope_edit_does_not_erase_private_progress(hass) -> None:
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2030,21 +2071,21 @@ async def test_rejected_active_scope_edit_does_not_erase_private_progress(hass) 
             ],
         },
     )
-    manager._robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
         "progress": {"mop": 2, "coverage": 0}
     }
-    manager._robot("serial")["active_plan"] = {
+    manager.repository.robot("serial")["active_plan"] = {
         "plan_id": "home",
         "room_id": room.room_id,
     }
-    current = manager.plan("serial", "home")
+    current = manager.catalog.plan("serial", "home")
     current.pop("id")
     current["rooms"][0]["cadence"]["scope"] = "shared"
 
     with pytest.raises(ValueError, match="cannot change while"):
-        await manager.async_save_plan("serial", "home", current, select=False)
+        await manager.catalog.async_save_plan("serial", "home", current, select=False)
 
-    assert manager.cadence_progress("serial", "home", room.room_id) == {
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id) == {
         "mop": 2,
         "coverage": 0,
     }
@@ -2057,7 +2098,7 @@ async def test_cadence_resolution_fails_closed_on_stale_private_and_shared_ident
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     current_identity = room_cadence_identity(_floor(mission_id=8), "room-a")
     original_identity = room_cadence_identity(_floor(), "room-a")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2075,7 +2116,7 @@ async def test_cadence_resolution_fails_closed_on_stale_private_and_shared_ident
     )
 
     with pytest.raises(ValueError, match="different map"):
-        manager.resolve_cadence(
+        manager.cadence.resolve_cadence(
             "serial",
             "home",
             [room],
@@ -2084,31 +2125,33 @@ async def test_cadence_resolution_fails_closed_on_stale_private_and_shared_ident
 
     # Private progress is separately bound and must not be credited after a
     # room record has been rebound while retaining an old progress record.
-    manager._robot("serial")["plans"]["home"]["rooms"][0].pop("cadence_identity")
-    manager._robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
+    manager.repository.robot("serial")["plans"]["home"]["rooms"][0].pop(
+        "cadence_identity"
+    )
+    manager.repository.robot("serial")["plan_room_cadence"]["home"][room.room_id] = {
         "identity": original_identity,
         "progress": {"mop": 2, "coverage": 0},
     }
     with pytest.raises(ValueError, match="progress belongs to a different map"):
-        manager.resolve_cadence(
+        manager.cadence.resolve_cadence(
             "serial",
             "home",
             [room],
             room_identities={room.room_id: current_identity},
         )
 
-    manager._robot("serial")["plans"]["home"]["rooms"][0]["cadence"] = {
+    manager.repository.robot("serial")["plans"]["home"]["rooms"][0]["cadence"] = {
         "scope": "shared",
         "mop_every_n": 3,
     }
-    manager._robot("serial")["shared_room_cadence"][room.room_id] = {
+    manager.repository.robot("serial")["shared_room_cadence"][room.room_id] = {
         "identity": original_identity,
         "floor_token": plan_floor_token(_floor()),
         "policy": {"mop_every_n": 3},
         "progress": {"mop": 2, "coverage": 0},
     }
     with pytest.raises(ValueError, match="different map"):
-        manager.resolve_cadence(
+        manager.cadence.resolve_cadence(
             "serial",
             "home",
             [room],
@@ -2120,12 +2163,12 @@ async def test_shared_schedule_is_not_used_when_identity_or_floor_changes(hass) 
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     identity = room_cadence_identity(_floor(), room.room_id)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {"name": "Home", "rooms": [{"room_id": "room-a"}]},
     )
-    manager._robot("serial")["shared_room_cadence"][room.room_id] = {
+    manager.repository.robot("serial")["shared_room_cadence"][room.room_id] = {
         "identity": identity,
         "floor_token": plan_floor_token(_floor()),
         "policy": {"mop_every_n": 2},
@@ -2133,7 +2176,7 @@ async def test_shared_schedule_is_not_used_when_identity_or_floor_changes(hass) 
     }
 
     with pytest.raises(ValueError, match="different map"):
-        manager.resolve_cadence(
+        manager.cadence.resolve_cadence(
             "serial",
             "home",
             [room],
@@ -2141,7 +2184,7 @@ async def test_shared_schedule_is_not_used_when_identity_or_floor_changes(hass) 
             use_shared_schedule=True,
         )
     with pytest.raises(ValueError, match="different map"):
-        manager.resolve_cadence(
+        manager.cadence.resolve_cadence(
             "serial",
             "home",
             [room],
@@ -2157,7 +2200,7 @@ async def test_due_shared_policy_without_record_reports_unavailable(hass) -> Non
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     floor = _floor()
     identity = room_cadence_identity(floor, room.room_id)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2174,11 +2217,11 @@ async def test_due_shared_policy_without_record_reports_unavailable(hass) -> Non
         room_identities={room.room_id: identity},
         floor_token=plan_floor_token(floor),
     )
-    manager._robot("serial")["shared_room_cadence"].pop(room.room_id)
+    manager.repository.robot("serial")["shared_room_cadence"].pop(room.room_id)
 
     with pytest.raises(ValueError, match="shared room cadence is unavailable"):
-        manager.resolve_cadence("serial", "home", [room])
-    state = manager.cadence_editor_state("serial", "home", room)
+        manager.cadence.resolve_cadence("serial", "home", [room])
+    state = manager.cadence.cadence_editor_state("serial", "home", room)
     assert state["cadence_reasons"] == ["shared_schedule_unavailable"]
     assert state["cadence_progress"] is None
 
@@ -2188,23 +2231,23 @@ async def test_explicit_shared_schedule_editor_explains_missing_and_stale_scope(
 ) -> None:
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial", "home", {"name": "Home", "rooms": [{"room_id": "room-a"}]}
     )
-    missing = manager.cadence_editor_state(
+    missing = manager.cadence.cadence_editor_state(
         "serial", "home", room, use_shared_schedule=True
     )
     assert missing["cadence"] is None
     assert missing["cadence_progress"]["schedule_active"] is False
 
     identity = room_cadence_identity(_floor(), room.room_id)
-    manager._robot("serial")["shared_room_cadence"][room.room_id] = {
+    manager.repository.robot("serial")["shared_room_cadence"][room.room_id] = {
         "identity": identity,
         "floor_token": plan_floor_token(_floor()),
         "policy": {"mop_every_n": 2},
         "progress": {"mop": 1, "coverage": 0},
     }
-    stale = manager.cadence_editor_state(
+    stale = manager.cadence.cadence_editor_state(
         "serial",
         "home",
         room,
@@ -2222,7 +2265,7 @@ async def test_shared_cadence_reset_clears_room_progress_and_one_shot_flags(
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     floor = _floor()
     identity = room_cadence_identity(floor, room.room_id)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2243,13 +2286,13 @@ async def test_shared_cadence_reset_clears_room_progress_and_one_shot_flags(
         room_identities={room.room_id: identity},
         floor_token=plan_floor_token(floor),
     )
-    schedule = manager._robot("serial")["shared_room_cadence"][room.room_id]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"][room.room_id]
     schedule["progress"] = {"mop": 2, "coverage": 1}
     schedule["policy"]["do_coverage_next"] = True
 
-    await manager.async_reset_cadence("serial", "home", [room.room_id])
+    await manager.cadence.async_reset_cadence("serial", "home", [room.room_id])
 
-    assert manager.cadence_progress("serial", "home", room.room_id) == {
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id) == {
         "mop": 0,
         "coverage": 0,
     }
@@ -2261,7 +2304,7 @@ async def test_shared_cadence_reset_clears_room_progress_and_one_shot_flags(
 async def test_cadence_reset_is_blocked_during_room_ownership(hass, guard) -> None:
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2270,14 +2313,14 @@ async def test_cadence_reset_is_blocked_during_room_ownership(hass, guard) -> No
         },
     )
     if guard == "active":
-        manager._robot("serial")["active_plan"] = {
+        manager.repository.robot("serial")["active_plan"] = {
             "plan_id": "home",
             "room_id": room.room_id,
         }
         message = "while its plan is running"
     else:
         now = dt_util.utcnow()
-        manager._robot("serial")["pending_native_reconciliation"] = {
+        manager.repository.robot("serial")["pending_native_reconciliation"] = {
             "plan_id": "home",
             "room_id": room.room_id,
             "room": room.name,
@@ -2287,13 +2330,13 @@ async def test_cadence_reset_is_blocked_during_room_ownership(hass, guard) -> No
         message = "completion is being verified"
 
     with pytest.raises(ValueError, match=message):
-        await manager.async_reset_cadence("serial", "home", [room.room_id])
+        await manager.cadence.async_reset_cadence("serial", "home", [room.room_id])
 
 
 def test_verified_cadence_credit_rejects_stale_and_missing_owners(hass) -> None:
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum_and_mop", "quick")
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     snapshot = {
         "scope": "shared",
         "schedule_active": True,
@@ -2327,7 +2370,7 @@ def test_verified_cadence_credit_rejects_stale_and_missing_owners(hass) -> None:
 
 def test_cadence_credit_keeps_unproven_coverage_due(hass):
     manager = _manager(hass)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     room = CleaningRoom("room-a", "Kitchen", "vacuum_and_mop", "quick")
     identity = "a" * 64
     snapshot = {
@@ -2380,7 +2423,7 @@ def test_cadence_credit_keeps_unproven_coverage_due(hass):
 
 def test_reservation_only_checkpoint_cannot_credit_cadence(hass):
     manager = _manager(hass)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     identity = "a" * 64
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "quick")
     normalized = validated_cadence_snapshots(
@@ -2429,7 +2472,7 @@ def test_cadence_checkpoint_map_discards_unaddressable_values():
 
 def test_unversioned_native_readback_does_not_credit_due_coverage(hass):
     manager = _manager(hass)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "quick")
     identity = "a" * 64
     snapshot = {
@@ -2475,7 +2518,7 @@ def test_verified_cadence_credit_ignores_unsupported_scope(hass):
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     assert not _apply_verified_cadence(
-        manager._robot("serial"),
+        manager.repository.robot("serial"),
         "home",
         room,
         {"scope": "other", "schedule_active": True},
@@ -2497,19 +2540,19 @@ async def test_private_schedule_edit_clears_progress_on_map_rebind(hass) -> None
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial", "home", initial, room_identities={"room-a": original}
     )
-    manager._robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
         "identity": original,
         "progress": {"mop": 2, "coverage": 0},
     }
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial", "home", initial, room_identities={"room-a": replacement}
     )
 
-    assert manager.cadence_progress("serial", "home", "room-a") == {
+    assert manager.cadence.cadence_progress("serial", "home", "room-a") == {
         "mop": 0,
         "coverage": 0,
     }
@@ -2532,17 +2575,17 @@ async def test_shared_schedule_rebind_discards_progress_from_prior_floor(hass) -
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
         room_identities={"room-a": original_identity},
         floor_token=plan_floor_token(original_floor),
     )
-    schedule = manager._robot("serial")["shared_room_cadence"]["room-a"]
+    schedule = manager.repository.robot("serial")["shared_room_cadence"]["room-a"]
     schedule["progress"] = {"mop": 2, "coverage": 1}
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
@@ -2572,18 +2615,18 @@ async def test_leaving_shared_schedule_clears_private_progress_before_starting_f
             }
         ],
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         plan,
         room_identities={"room-a": identity},
         floor_token=plan_floor_token(floor),
     )
-    manager._robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
         "progress": {"mop": 2, "coverage": 1}
     }
 
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2597,7 +2640,7 @@ async def test_leaving_shared_schedule_clears_private_progress_before_starting_f
         },
     )
 
-    assert manager.cadence_progress("serial", "home", "room-a") == {
+    assert manager.cadence.cadence_progress("serial", "home", "room-a") == {
         "mop": 0,
         "coverage": 0,
     }
@@ -2609,7 +2652,7 @@ async def test_shared_schedule_floor_token_is_checked_even_when_room_matches(
     manager = _manager(hass)
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     floor = _floor()
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2628,7 +2671,7 @@ async def test_shared_schedule_floor_token_is_checked_even_when_room_matches(
     )
 
     with pytest.raises(ValueError, match="different map"):
-        manager.resolve_cadence(
+        manager.cadence.resolve_cadence(
             "serial",
             "home",
             [room],
@@ -2648,7 +2691,7 @@ async def test_late_native_reconciliation_credits_frozen_cadence_once(
     floor = _floor()
     identity = room_cadence_identity(floor, "room-a")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2664,11 +2707,11 @@ async def test_late_native_reconciliation_credits_frozen_cadence_once(
         },
         room_identities={"room-a": identity},
     )
-    manager._robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
+    manager.repository.robot("serial")["plan_room_cadence"]["home"]["room-a"] = {
         "identity": identity,
         "progress": initial_progress.copy(),
     }
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial", "home", [room], room_identities={"room-a": identity}
     )
     snapshot = {
@@ -2677,7 +2720,7 @@ async def test_late_native_reconciliation_credits_frozen_cadence_once(
     }
     now = dt_util.utcnow()
     dispatched_at = now - timedelta(seconds=30)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["pending_native_reconciliation"] = {
         "plan_id": "home",
         "room_id": "room-a",
@@ -2710,7 +2753,10 @@ async def test_late_native_reconciliation_credits_frozen_cadence_once(
     )
 
     assert _reconcile_pending_native_history(robot, floor, [record]) is True
-    assert manager.cadence_progress("serial", "home", "room-a") == expected_progress
+    assert (
+        manager.cadence.cadence_progress("serial", "home", "room-a")
+        == expected_progress
+    )
     assert robot["rotations"]["home"]["rooms"]["room-a"]["completed_runs"] == 1
     assert "pending_native_reconciliation" not in robot
 
@@ -2734,7 +2780,7 @@ async def test_manager_native_reconciliation_requires_checkpoint_identity(
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
     current_identity = room_cadence_identity(floor, room.room_id)
     policy = {"scope": scope, "mop_every_n": 2}
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2751,7 +2797,7 @@ async def test_manager_native_reconciliation_requires_checkpoint_identity(
         room_identities={room.room_id: current_identity},
         floor_token=plan_floor_token(floor),
     )
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     if scope == "shared":
         cadence_record = robot["shared_room_cadence"][room.room_id]
     else:
@@ -2761,7 +2807,7 @@ async def test_manager_native_reconciliation_requires_checkpoint_identity(
             .setdefault(room.room_id, {"identity": current_identity})
         )
     cadence_record["progress"] = {"mop": 1, "coverage": 0}
-    _effective_rooms, snapshots = manager.resolve_cadence(
+    _effective_rooms, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [room],
@@ -2783,10 +2829,10 @@ async def test_manager_native_reconciliation_requires_checkpoint_identity(
         cadence_state["effective_coverage_setting"],
     )
     run_id = f"identity-{scope}-{identity_case}"
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", run_id, 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         run_id,
         {
@@ -2796,7 +2842,7 @@ async def test_manager_native_reconciliation_requires_checkpoint_identity(
     )
     now = dt_util.utcnow()
     dispatched_at = now - timedelta(seconds=30)
-    await manager.async_mark_interrupted(
+    await manager.ledger.async_mark_interrupted(
         "serial",
         "home",
         effective_room,
@@ -2846,8 +2892,8 @@ async def test_manager_native_reconciliation_requires_checkpoint_identity(
         ),
     )
 
-    assert await manager.async_import_native_history("serial", floor, [record])
-    assert manager.cadence_progress("serial", "home", room.room_id)["mop"] == (
+    assert await manager.ledger.async_import_native_history("serial", floor, [record])
+    assert manager.cadence.cadence_progress("serial", "home", room.room_id)["mop"] == (
         expected_mop_progress
     )
     assert len(robot["native_completion_dedup"]) == 1
@@ -2861,7 +2907,7 @@ async def test_late_completion_is_saved_when_current_room_identity_is_unavailabl
     floor = _floor()
     identity = room_cadence_identity(floor, "room-a")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -2877,11 +2923,11 @@ async def test_late_completion_is_saved_when_current_room_identity_is_unavailabl
         },
         room_identities={"room-a": identity},
     )
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial", "home", [room], room_identities={"room-a": identity}
     )
     now = dt_util.utcnow()
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["pending_native_reconciliation"] = {
         "plan_id": "home",
         "room_id": "room-a",
@@ -2909,7 +2955,7 @@ async def test_late_completion_is_saved_when_current_room_identity_is_unavailabl
         raise ValueError("map identity unavailable")
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.plans.room_cadence_identity",
+        "custom_components.matic_robot.native_history.room_cadence_identity",
         unavailable_identity,
     )
 
@@ -2917,7 +2963,7 @@ async def test_late_completion_is_saved_when_current_room_identity_is_unavailabl
 
     assert robot["rotations"]["home"]["rooms"]["room-a"]["completed_runs"] == 1
     assert len(robot["native_completion_dedup"]) == 1
-    assert manager.cadence_progress("serial", "home", "room-a") == {
+    assert manager.cadence.cadence_progress("serial", "home", "room-a") == {
         "mop": 0,
         "coverage": 0,
     }

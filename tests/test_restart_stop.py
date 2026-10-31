@@ -24,9 +24,9 @@ async def recovery_state(hass):
 
 async def reload_manager(hass, entry, manager):
     restored = CleaningPlanManager(hass)
-    restored._store = SimpleNamespace(
+    restored.repository.store = SimpleNamespace(
         async_save=AsyncMock(),
-        async_load=AsyncMock(return_value=deepcopy(manager._data)),
+        async_load=AsyncMock(return_value=deepcopy(manager.repository.data)),
     )
     await restored.async_load()
     entry.runtime_data.cleaning_plans = restored
@@ -39,9 +39,9 @@ async def test_restored_stop_fence_keeps_run_and_native_guards(
     hass, recovery_state, finished, native_active
 ):
     manager, entry, checkpoint, _ = recovery_state
-    await manager.async_mark_stop_pending("serial", run_id="run")
+    await manager.control.async_mark_stop_pending("serial", run_id="run")
     if finished:
-        await manager.async_finish_run(
+        await manager.ledger.async_finish_run(
             "serial", "run", "unverified", "stopped_in_place", 0
         )
     manager = await reload_manager(hass, entry, manager)
@@ -59,13 +59,17 @@ async def test_restored_stop_fence_keeps_run_and_native_guards(
         "custom_components.matic_robot.stop_return.DOCK_SETTLE_TIMEOUT_SECONDS", 0
     ):
         await async_recover_managed_run(hass, entry, "serial")
-        await asyncio.gather(*tuple(manager._reconciliation_tasks.get("serial", ())))
+        await asyncio.gather(
+            *tuple(manager.control.reconciliation_tasks.get("serial", ()))
+        )
     if native_active is False:
         client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
-        assert manager.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+        assert (
+            manager.ledger.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+        )
     else:
         client.async_send_user_command.assert_not_awaited()
-    assert manager.snapshot("serial")["last_run"]["run_id"] == "run"
+    assert manager.ledger.snapshot("serial")["last_run"]["run_id"] == "run"
 
 
 @pytest.mark.parametrize(
@@ -75,50 +79,50 @@ async def test_stop_watcher_cannot_recover_without_owned_live_fence(
     hass, recovery_state, case
 ):
     manager, entry, checkpoint, _ = recovery_state
-    await manager.async_mark_stop_pending("serial", run_id="run")
-    await manager.async_finish_run("serial", "run", "unverified", "test", 0)
+    await manager.control.async_mark_stop_pending("serial", run_id="run")
+    await manager.ledger.async_finish_run("serial", "run", "unverified", "test", 0)
     if case == "expired":
-        manager._robot("serial")["stop_fence_expires_at"] = (
+        manager.repository.robot("serial")["stop_fence_expires_at"] = (
             dt_util.utcnow() - timedelta(seconds=1)
         ).isoformat()
     elif case == "wrong_owner":
-        manager._robot("serial")["stop_fence_run_id"] = "different-run"
+        manager.repository.robot("serial")["stop_fence_run_id"] = "different-run"
     elif case == "replaced":
-        await manager.async_replace_managed_motion("serial")
+        await manager.control.async_replace_managed_motion("serial")
     elif case == "cleared":
-        await manager.async_clear_stop_pending("serial")
+        await manager.control.async_clear_stop_pending("serial")
     else:
-        manager._robot("serial")["last_run"]["outcome"] = "stopped_docked"
+        manager.repository.robot("serial")["last_run"]["outcome"] = "stopped_docked"
     manager = await reload_manager(hass, entry, manager)
     hass.states.async_set(checkpoint["entity_id"], "idle")
     await async_recover_managed_run(hass, entry, "serial")
-    assert not manager._reconciliation_tasks
+    assert not manager.control.reconciliation_tasks
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
 async def test_stop_fence_rollback_is_scoped_to_its_run(hass, recovery_state):
     manager, _, _, _ = recovery_state
-    await manager.async_mark_stop_pending("serial", run_id="run-one")
+    await manager.control.async_mark_stop_pending("serial", run_id="run-one")
 
-    await manager.async_clear_stop_pending("serial", run_id="run-two")
-    assert manager.stop_pending("serial")
+    await manager.control.async_clear_stop_pending("serial", run_id="run-two")
+    assert manager.control.stop_pending("serial")
 
-    await manager.async_clear_stop_pending("serial", run_id="run-one")
-    assert not manager.stop_pending("serial")
+    await manager.control.async_clear_stop_pending("serial", run_id="run-one")
+    assert not manager.control.stop_pending("serial")
 
 
 async def test_second_shutdown_retains_settlement_owner(hass, recovery_state):
     manager, entry, checkpoint, _ = recovery_state
-    await manager.async_mark_stop_pending("serial", run_id="run")
+    await manager.control.async_mark_stop_pending("serial", run_id="run")
     manager = await reload_manager(hass, entry, manager)
     hass.states.async_set(checkpoint["entity_id"], "idle")
     entry.runtime_data.client.async_get_active_cleaning_session_state.return_value = (
         True
     )
     await async_recover_managed_run(hass, entry, "serial")
-    assert manager.dock_reconciliation_active("serial")
-    await manager.async_cancel_and_wait("serial", preserve_run=True)
-    assert manager.pending_stop_run_id("serial") == "run"
+    assert manager.control.dock_reconciliation_active("serial")
+    await manager.control.async_cancel_and_wait("serial", preserve_run=True)
+    assert manager.control.pending_stop_run_id("serial") == "run"
     manager = await reload_manager(hass, entry, manager)
     entry.runtime_data.client.async_get_active_cleaning_session_state.return_value = (
         False
@@ -132,8 +136,8 @@ async def test_second_shutdown_retains_settlement_owner(hass, recovery_state):
 
     entry.runtime_data.client.async_send_user_command.side_effect = dock
     await async_recover_managed_run(hass, entry, "serial")
-    await asyncio.gather(*tuple(manager._reconciliation_tasks.get("serial", ())))
+    await asyncio.gather(*tuple(manager.control.reconciliation_tasks.get("serial", ())))
     entry.runtime_data.client.async_send_user_command.assert_awaited_once_with(
         UserCommand.DOCK
     )
-    assert manager.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+    assert manager.ledger.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"

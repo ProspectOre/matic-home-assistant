@@ -26,7 +26,7 @@ for the owner's local testing and approval.
 - **Cleaning history.** Open **Cleaning history** to see recent cleans, newest
   first, with each room and custom area marked done, partly done, stopped or not
   started. Cleans started in the Matic app or by a robot schedule are listed
-  too.
+  too. Open history refreshes as delayed results arrive.
 - **Map of each clean.** A clean in Cleaning history shows the robot's own map
   picture of it, for the recent cleans the robot still keeps.
 - **How a clean ended.** A run says whether it finished, was stopped, ended
@@ -104,10 +104,10 @@ for the owner's local testing and approval.
 - **Robot camera photos.** **Take photo** asks the robot to take a picture,
   and **Latest photo** shows the newest one, including photos taken in the
   Matic app. Use it on a dashboard or attach it to a phone notification.
-- **Photo patrol.** Send the robot to one or more rooms and get back a photo
-  of each, ready to attach to a phone notification. The new **Matic:
-  Photograph room on alert** blueprint does this when a motion, leak or other
-  sensor turns on, so you can see what set it off.
+- **Photo patrol.** Opt in and set no-photo rooms, then request photos from
+  one or more rooms. Notifications use pixelated previews by default. The
+  **Matic: Photograph room on alert** blueprint uses the same privacy, battery,
+  schedule and cooldown checks. See [Photo patrol](photo-patrol.md).
 
 ## Working with the Matic app
 
@@ -134,8 +134,8 @@ for the owner's local testing and approval.
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room
   schedules and map history.
 - Keep a matching 0.5.0 backup before installing. The isolated
-  [upgrade and rollback drill](upgrade-drill.md) checks saved plans, schedules
-  and room history; custom areas and a restore on the owner's host remain
+  [upgrade and rollback drill](upgrade-drill.md) checks synthetic plans, areas,
+  schedules and history; the owner's snapshot and host restore remain
   unqualified. The [installed check](installed-check.md) needs the owner's go.
 
 ## Checks still needed

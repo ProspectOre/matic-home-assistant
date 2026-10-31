@@ -51,111 +51,28 @@ clean, or one started in the Matic app, when no plan is running.
 
 ## Sink refill
 
-`vacuum.send_command` with `command: sink_summon` sends the robot to the sink
-location saved in the Matic app for the current floor. It waits there for up to
-15 minutes for a water refill. Sent from the dock or while idle, it then docks.
-During a clean, including a plan run, the robot keeps its task: Resume continues
-the clean straight away, and otherwise it continues once the wait ends. A plan
-docked between rooms holds no task, so a summon then ends the plan like any
-other direct command. The floor must have a saved sink location.
-
-```yaml
-actions:
-  - action: vacuum.send_command
-    target:
-      entity_id: vacuum.matic
-    data:
-      command: sink_summon
-```
+See [sink refill](robot-command-actions.md#sink-refill).
 
 ## Go to room
 
-**Go to room** (`matic_robot.go_to_room`) sends the robot to one `room`, by name
-or room ID, without cleaning it. A name shared by two rooms is refused; use the
-room ID. The same `vacuum.send_command` command is `go_to_room` with
-`params: {room: Kitchen}`. In Matic Map, pick one room and press **Go to room**.
-
-Go to room follows the sink refill's rules: sent during a clean, the robot keeps
-its task and the plan driving it, and from the dock or while idle it ends a plan
-docked between rooms. It never marks a room as cleaned. Sent from the dock, the
-robot reaches the room and waits there for 10 minutes before heading back on
-its own; `stay_put` keeps it there.
-
-```yaml
-actions:
-  - action: matic_robot.go_to_room
-    target:
-      entity_id: vacuum.matic
-    data:
-      room: Kitchen
-```
+See [go to room](robot-command-actions.md#go-to-room).
 
 ## Stay put and emotes
 
-`vacuum.send_command` with `command: stay_put` tells the robot to stay where it
-is rather than return to the dock. The Matic app sends it when you cancel the
-robot's own countdown to dock after a task; on a real robot it cancelled that
-countdown and the robot stayed put. Home Assistant's Stop always docks,
-so stay put waits until that return has settled; use Pause to keep the robot
-where it is. `command: emote` with `params: {kind: snap}` takes
-a photo with the robot's camera, which then shows in the Matic app. The kinds
-`nod`, `shake` and `pirouette` are the app's other emotes. The robot accepts
-all of them; whether those three visibly move it is not confirmed yet.
-
-```yaml
-actions:
-  - action: vacuum.send_command
-    target:
-      entity_id: vacuum.matic
-    data:
-      command: emote
-      params:
-        kind: snap
-```
+See [stay put and emotes](robot-command-actions.md#stay-put-and-emotes).
 
 ## Photo patrol
 
 **Photo patrol** (`matic_robot.photo_patrol`) sends the robot to each of up to
-12 `rooms` in turn, waits until it has stopped there, takes a photo and then
-moves on. With `return_to_dock` (default `true`) it docks afterwards, also when
-a room fails, as long as it is still parked where the patrol left it. The action
-returns each photo's room, capture time and a `url` that serves the image to a
-signed-in Home Assistant user, so a notification can attach it with `image:`. Home Assistant keeps the 16 newest photos for these
-links, in memory, so a link stops working after newer photos or a restart.
-Each photo also fires a `matic_robot_photo_taken` event with the same fields.
-
-The robot must be docked or idle with at least 20% battery, and only one patrol
-runs at a time. If a clean starts during a patrol, the patrol stops before the
-next room and leaves the robot to it instead of docking it. The same goes for
-a robot moved by another Go to room. A room the robot doesn't reach within
-three minutes, or a photo that isn't saved within 40 seconds, stops the patrol
-with an error. The camera faces the way the robot stopped, which the robot
-chooses, and the bottom of each photo shows the robot itself. The
-[Matic: Photograph room on alert](automation.md#ready-to-import-blueprints)
-blueprint runs a patrol when a sensor turns on and sends the photo to a phone.
-
-```yaml
-actions:
-  - action: matic_robot.photo_patrol
-    target:
-      entity_id: vacuum.matic
-    data:
-      rooms: [Kitchen, Living room]
-    response_variable: patrol
-  - action: notify.mobile_app_my_phone
-    data:
-      message: Kitchen just now
-      data:
-        image: "{{ patrol.robots[0].photos[0].url }}"
-```
+12 `rooms` and returns a photo from each confirmed arrival. Enable patrols and
+configure no-photo rooms in the integration's privacy and safety settings first.
+Notification URLs use pixelated previews by default; `full_resolution: true`
+selects full photos. See [Photo patrol](photo-patrol.md) for the fields, example,
+battery and schedule checks, cooldown, and ownership-safe return to dock.
 
 ## Repeat the last clean
 
-`vacuum.send_command` with `command: redo_last_clean` cleans the robot's most
-recent finished clean again, like **Clean again** in the Matic app's history.
-It starts only while the robot is docked or idle and, like any direct clean,
-ends a plan docked between rooms. Tried on a real robot, it started the same
-rooms as the previous clean within 10 seconds.
+See [repeat the last clean](robot-command-actions.md#repeat-the-last-clean).
 
 ## Skip, clean next or clean again
 
@@ -164,71 +81,10 @@ that is running. See [Changing a running clean](queue-changes.md).
 
 ## Plans
 
-| Action | Fields and behavior |
-| --- | --- |
-| List cleaning plans (`list_plans`) | Returns saved plans with their rooms, custom areas, settings and IDs, and the default plan. |
-| Preview next plan run (`preview_plan`) | Returns `plan`'s next order and settings, its `entries` (rooms and custom areas in run order) and a `preview_token` for Run plan, without running it. |
-| Create or replace cleaning plan (`save_plan`) | Saves `name` and `rooms` (rooms and custom areas, in order). The ID comes from the name unless you pass `plan_id`; saving an existing ID replaces that plan. |
-| Set default cleaning plan (`select_plan`) | Makes `plan` the default. |
-| Delete cleaning plan (`delete_plan`) | Deletes `plan`; refused while it runs. |
-| Add or update plan room or area (`save_plan_room`) | Adds `room` (a room or an area entry) to the end of `plan`, or updates its settings where it is. |
-| Move room or area in plan (`move_plan_room`) | Moves `room` or `area` in `plan` to `new_position` (1 is the top). |
-| Remove room or area from plan (`delete_plan_room`) | Removes `room` or `area` from `plan`. |
-| Reset room cleaning history (`reset_plan_history`) | Clears which rooms `plan` has cleaned, or every plan with `all_plans: true`. |
-| Reset room schedule progress (`reset_room_cadence`) | Resets mopping, vacuum rotation or both (`modes`) for one `room_id`, or every scheduled room, in the required `plan`. |
-| Delete shared room schedule (`delete_room_schedule`) | Removes one room's shared schedule from every plan that uses it, given its `room_id` and current `expected_token` from Matic Map. Usual cleaning settings and cleaning history remain. |
+See [plan actions](plan-actions.md) for plan management, custom areas and settings.
 
-`save_plan` also accepts `enabled` (default `true`), `run_behavior`
-(`intelligent` for Smart Order, the default, or `ordered` for Saved order),
-`return_to_base` (**Return to the dock when finished**, default `true`),
-`finish_current_room` (**Smart Stop**, default `false`),
-`finish_current_room_threshold` (0 to 100%, default 50), `occupancy_aware`
-(**Hold occupied rooms**, default `false`), `occupancy_sensors` (room ID to
-`binary_sensor` overrides; see [occupied rooms](cleaning.md#occupied-rooms))
-and `select` (make it the default plan, default `true`). Room items default to
-`vacuum_and_mop` and `standard`.
-
-### Custom areas in plans
-
-Each item of `rooms` names either a `room` or a saved custom `area`, never
-both. An area item takes optional `cleaning_mode` and `coverage_setting`
-overrides, as Clean custom area does, and no room schedule: an area runs every
-time the plan runs. A plan can hold only areas. Saving checks that each area
-exists and was drawn on the current map.
-
-```yaml
-data:
-  name: Pet spots
-  rooms:
-    - room: Kitchen
-    - area: Food bowls
-      coverage_setting: heavy_duty
-```
-
-Smart Order ranks rooms and custom areas together by which have waited
-longest; Saved order keeps their saved positions. A run or preview is refused
-(`plan_area_missing`, `area_map_changed`) when one of its areas was deleted or
-drawn on another map. Deleting an area removes it from every plan; it is
-refused while it is a plan's only item, and Matic Map names those plans.
-
-A plan runs in one or more parts, and the robot may stop at the dock between
-parts ([how a plan runs](cleaning.md#how-a-plan-runs)):
-
-- Rooms next to each other in the run order share one part. The robot goes
-  from room to room without returning to the dock, apart from recharging or
-  refilling on its own, and each room keeps its own settings.
-- Each custom area is a part of its own. After an area, the robot usually
-  returns to the dock before the next room or area starts, so an area between
-  two rooms splits them into separate parts and adds dock trips. Put areas
-  together at the start or end of a plan to keep the rooms in one part.
-- With Smart Stop on, each room is a part of its own, so the next room starts
-  only after the previous one ends.
-
-Before an area starts, the run checks again that it is unchanged and on the
-current map. An area counts as finished when Home Assistant sees the robot end
-its part; the robot's own report for a drawn area carries no name and isn't
-used. Areas never change room schedules. The `area_started`, `area_finished`
-and `area_failed` [events](automation.md#events-and-observability) report each.
+<a id="custom-areas-in-plans"></a>
+See [custom areas in plans](plan-actions.md#custom-areas-in-plans).
 
 ## Advanced actions
 

@@ -32,12 +32,12 @@ from custom_components.matic_robot.coverage_accounting import (
     coverage_evidence_from_storage,
     verified_room_coverage,
 )
-from custom_components.matic_robot.plans import (
-    CleaningPlanManager,
+from custom_components.matic_robot.plan_model import (
     CleaningRoom,
     plan_floor_token,
     room_cadence_identity,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager
 from tests.test_coverage_receipts import history_key
 
 SESSION = UUID(int=72)
@@ -105,7 +105,7 @@ def _dispatch_checkpoint(
 
 def _manager(hass: object) -> CleaningPlanManager:
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     return manager
 
 
@@ -114,10 +114,10 @@ async def _begin_dispatch(
     run_id: str = "run-1",
     checkpoint: dict[str, object] | None = None,
 ) -> None:
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", run_id, 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial", run_id, checkpoint or _dispatch_checkpoint()
     )
 
@@ -224,11 +224,11 @@ async def test_manager_admits_receipt_only_for_owned_dispatch_leg(
 ):
     manager = _manager(hass)
     await _begin_dispatch(manager)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     checkpoint = robot["last_run"]["recovery_checkpoint"]
     checkpoint.update(checkpoint_change)
 
-    admitted = await manager.async_checkpoint_coverage_receipt(
+    admitted = await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -244,7 +244,7 @@ async def test_manager_admits_receipt_only_for_owned_dispatch_leg(
 async def test_manager_rejects_receipt_from_a_different_native_session(hass):
     manager = _manager(hass)
     await _begin_dispatch(manager)
-    assert not await manager.async_checkpoint_coverage_receipt(
+    assert not await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -272,7 +272,7 @@ async def test_receipt_checkpoint_rejects_incomplete_dispatch_evidence(hass, inv
             receipt, rooms=(replace(receipt.rooms[0], goals_hash="incomplete"),)
         )
     await _begin_dispatch(manager, checkpoint=checkpoint)
-    assert not await manager.async_checkpoint_coverage_receipt(
+    assert not await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         receipt,
@@ -280,7 +280,7 @@ async def test_receipt_checkpoint_rejects_incomplete_dispatch_evidence(hass, inv
         room_ids=room_ids,
         session_id=SESSION,
     )
-    assert manager.coverage_receipt("serial", "run-1") is None
+    assert manager.ledger.coverage_receipt("serial", "run-1") is None
 
 
 _AREA_ENTRY = {
@@ -313,7 +313,7 @@ async def test_receipt_checkpoint_binds_only_room_legs_of_a_plan_with_areas(
     await _begin_dispatch(manager, checkpoint=checkpoint)
 
     assert (
-        await manager.async_checkpoint_coverage_receipt(
+        await manager.ledger.async_checkpoint_coverage_receipt(
             "serial",
             "run-1",
             _receipt(),
@@ -323,7 +323,7 @@ async def test_receipt_checkpoint_binds_only_room_legs_of_a_plan_with_areas(
         )
         is admitted
     )
-    assert (manager.coverage_receipt("serial", "run-1") is not None) is admitted
+    assert (manager.ledger.coverage_receipt("serial", "run-1") is not None) is admitted
 
 
 async def test_mixed_dispatch_receipt_binds_only_its_vacuum_rooms(hass):
@@ -345,7 +345,7 @@ async def test_mixed_dispatch_receipt_binds_only_its_vacuum_rooms(hass):
     )
     await _begin_dispatch(manager, checkpoint=checkpoint)
     receipt = replace(_receipt(), floor_hash=coverage_floor_hash(floor))
-    assert await manager.async_checkpoint_coverage_receipt(
+    assert await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         receipt,
@@ -353,9 +353,11 @@ async def test_mixed_dispatch_receipt_binds_only_its_vacuum_rooms(hass):
         room_ids=[ROOM_ID, "room-b"],
         session_id=SESSION,
     )
-    stored = manager.recovery_run("serial")["recovery_checkpoint"]["coverage_evidence"]
+    stored = manager.control.recovery_run("serial")["recovery_checkpoint"][
+        "coverage_evidence"
+    ]
     assert stored["room_regions"] == {ROOM_ID: REGION_HASH}
-    assert manager.coverage_receipt("serial", "run-1") == receipt
+    assert manager.ledger.coverage_receipt("serial", "run-1") == receipt
 
 
 async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_evidence(
@@ -363,10 +365,10 @@ async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_e
 ):
     manager = _manager(hass)
     await _begin_dispatch(manager)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     run = robot["last_run"]
     run["recovery_checkpoint"].pop("phase")
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "run-1",
         {**_dispatch_checkpoint(), "coverage_evidence": _evidence().as_storage()},
@@ -374,10 +376,10 @@ async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_e
     assert "coverage_evidence" not in run["recovery_checkpoint"]
 
     # Restore the eligible dispatch and use the dedicated receipt writer.
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial", "run-1", _dispatch_checkpoint()
     )
-    assert await manager.async_checkpoint_coverage_receipt(
+    assert await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -393,7 +395,9 @@ async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_e
     ):
         checkpoint = _dispatch_checkpoint()
         checkpoint.update(update)
-        await manager.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
+        await manager.ledger.async_set_recovery_checkpoint(
+            "serial", "run-1", checkpoint
+        )
         assert run["recovery_checkpoint"]["coverage_evidence"] == evidence
 
     for update in (
@@ -403,7 +407,9 @@ async def test_checkpoint_writer_rejects_injection_and_preserves_only_same_leg_e
     ):
         checkpoint = _dispatch_checkpoint()
         checkpoint.update(update)
-        await manager.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
+        await manager.ledger.async_set_recovery_checkpoint(
+            "serial", "run-1", checkpoint
+        )
         assert "coverage_evidence" not in run["recovery_checkpoint"]
 
 
@@ -415,7 +421,7 @@ async def test_matching_confirmed_receipt_clears_due_periodic_coverage(
 ):
     room = replace(ROOM, coverage_setting=setting.value)
     manager = _manager(hass)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     identity = room_cadence_identity(FLOOR, ROOM_ID)
     cadence = {
         "scope": scope,
@@ -423,7 +429,7 @@ async def test_matching_confirmed_receipt_clears_due_periodic_coverage(
         "periodic_coverage_setting": setting.value,
         "do_coverage_next": True,
     }
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -440,7 +446,7 @@ async def test_matching_confirmed_receipt_clears_due_periodic_coverage(
         floor_token=plan_floor_token(FLOOR),
         room_identities={ROOM_ID: identity},
     )
-    manager.resolve_cadence(
+    manager.cadence.resolve_cadence(
         "serial",
         "home",
         [room],
@@ -465,7 +471,7 @@ async def test_matching_confirmed_receipt_clears_due_periodic_coverage(
             "identity": identity,
             "progress": {"mop": 0, "coverage": interval - 1},
         }
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [room],
@@ -476,7 +482,7 @@ async def test_matching_confirmed_receipt_clears_due_periodic_coverage(
     checkpoint = _dispatch_checkpoint(cadence_state)
     checkpoint["rooms"][0]["coverage_setting"] = setting.value
     await _begin_dispatch(manager, checkpoint=checkpoint)
-    assert await manager.async_checkpoint_coverage_receipt(
+    assert await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(setting),
@@ -485,7 +491,7 @@ async def test_matching_confirmed_receipt_clears_due_periodic_coverage(
         session_id=SESSION,
     )
 
-    await manager.async_mark_completed(
+    await manager.ledger.async_mark_completed(
         "serial",
         "home",
         room,
@@ -498,7 +504,9 @@ async def test_matching_confirmed_receipt_clears_due_periodic_coverage(
         assert table[ROOM_ID]["policy"]["do_coverage_next"] is False
     else:
         assert (
-            manager.plan("serial", "home")["rooms"][0]["cadence"]["do_coverage_next"]
+            manager.catalog.plan("serial", "home")["rooms"][0]["cadence"][
+                "do_coverage_next"
+            ]
             is False
         )
 
@@ -510,12 +518,12 @@ async def test_unproven_coverage_stays_due_but_ordinary_completion_counts(
     hass, failure
 ):
     manager = _manager(hass)
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     identity = room_cadence_identity(FLOOR, ROOM_ID)
     room = (
         ROOM if failure != "mop" else CleaningRoom(ROOM_ID, "Kitchen", "mop", "quick")
     )
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -537,7 +545,7 @@ async def test_unproven_coverage_stays_due_but_ordinary_completion_counts(
         floor_token=plan_floor_token(FLOOR),
         room_identities={ROOM_ID: identity},
     )
-    manager.resolve_cadence(
+    manager.cadence.resolve_cadence(
         "serial",
         "home",
         [ROOM],
@@ -546,7 +554,7 @@ async def test_unproven_coverage_stays_due_but_ordinary_completion_counts(
     )
     table = robot["plan_room_cadence"].setdefault("home", {})
     table[ROOM_ID] = {"identity": identity, "progress": {"mop": 0, "coverage": 3}}
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [ROOM],
@@ -560,7 +568,7 @@ async def test_unproven_coverage_stays_due_but_ordinary_completion_counts(
             "mop"
         )
     await _begin_dispatch(manager, checkpoint=checkpoint_for_run)
-    assert await manager.async_checkpoint_coverage_receipt(
+    assert await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -577,13 +585,15 @@ async def test_unproven_coverage_stays_due_but_ordinary_completion_counts(
     if failure == "session":
         receipt = CoverageReceipt("c" * 64, receipt.floor_hash, receipt.rooms)
 
-    await manager.async_mark_completed(
+    await manager.ledger.async_mark_completed(
         "serial", "home", room, run_id="run-1", verified_coverage_receipt=receipt
     )
 
-    assert manager.cadence_progress("serial", "home", ROOM_ID)["coverage"] == 3
+    assert manager.cadence.cadence_progress("serial", "home", ROOM_ID)["coverage"] == 3
     assert (
-        manager.plan("serial", "home")["rooms"][0]["cadence"]["do_coverage_next"]
+        manager.catalog.plan("serial", "home")["rooms"][0]["cadence"][
+            "do_coverage_next"
+        ]
         is True
     )
     assert robot["rooms"][ROOM_ID]["completed_runs"] == 1
@@ -592,7 +602,7 @@ async def test_unproven_coverage_stays_due_but_ordinary_completion_counts(
 async def test_duplicate_completed_room_does_not_credit_coverage_twice(hass):
     manager = _manager(hass)
     identity = room_cadence_identity(FLOOR, ROOM_ID)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -614,7 +624,7 @@ async def test_duplicate_completed_room_does_not_credit_coverage_twice(hass):
         room_identities={ROOM_ID: identity},
     )
     await _begin_dispatch(manager)
-    await manager.async_checkpoint_coverage_receipt(
+    await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -622,22 +632,22 @@ async def test_duplicate_completed_room_does_not_credit_coverage_twice(hass):
         room_ids=[ROOM_ID],
         session_id=SESSION,
     )
-    await manager.async_mark_completed(
+    await manager.ledger.async_mark_completed(
         "serial", "home", ROOM, run_id="run-1", verified_coverage_receipt=_receipt()
     )
-    await manager.async_mark_completed(
+    await manager.ledger.async_mark_completed(
         "serial", "home", ROOM, run_id="run-1", verified_coverage_receipt=_receipt()
     )
-    assert manager.cadence_progress("serial", "home", ROOM_ID)["coverage"] == 0
-    assert manager._robot("serial")["rooms"][ROOM_ID]["completed_runs"] == 1
+    assert manager.cadence.cadence_progress("serial", "home", ROOM_ID)["coverage"] == 0
+    assert manager.repository.robot("serial")["rooms"][ROOM_ID]["completed_runs"] == 1
 
 
 async def test_receipt_checkpoint_save_failure_rolls_back_and_can_retry(hass):
     manager = _manager(hass)
     await _begin_dispatch(manager)
-    manager._store.async_save.side_effect = OSError("disk unavailable")
+    manager.repository.store.async_save.side_effect = OSError("disk unavailable")
     with pytest.raises(OSError, match="disk unavailable"):
-        await manager.async_checkpoint_coverage_receipt(
+        await manager.ledger.async_checkpoint_coverage_receipt(
             "serial",
             "run-1",
             _receipt(),
@@ -647,10 +657,10 @@ async def test_receipt_checkpoint_save_failure_rolls_back_and_can_retry(hass):
         )
     assert (
         "coverage_evidence"
-        not in manager._robot("serial")["last_run"]["recovery_checkpoint"]
+        not in manager.repository.robot("serial")["last_run"]["recovery_checkpoint"]
     )
-    manager._store.async_save.side_effect = None
-    assert await manager.async_checkpoint_coverage_receipt(
+    manager.repository.store.async_save.side_effect = None
+    assert await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -663,9 +673,11 @@ async def test_receipt_checkpoint_save_failure_rolls_back_and_can_retry(hass):
 async def test_late_native_completion_keeps_coverage_due_without_canonical_proof(hass):
     # The canonical native import path is exercised in the dedicated integration tests;
     # this lower-level contract ensures unproven pending evidence cannot credit cadence.
-    from custom_components.matic_robot.plans import _apply_verified_cadence
+    from custom_components.matic_robot.cadence_accounting import (
+        apply_verified_cadence as _apply_verified_cadence,
+    )
 
-    robot = _manager(hass)._robot("serial")
+    robot = _manager(hass).repository.robot("serial")
     robot["plans"]["home"] = {
         "rooms": [
             {
@@ -712,7 +724,7 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
 ):
     manager = _manager(hass)
     identity = room_cadence_identity(FLOOR, ROOM_ID)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -734,12 +746,12 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
         floor_token=plan_floor_token(FLOOR),
         room_identities={ROOM_ID: identity},
     )
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plan_room_cadence"].setdefault("home", {})[ROOM_ID] = {
         "identity": identity,
         "progress": {"mop": 0, "coverage": 2},
     }
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [ROOM],
@@ -747,15 +759,15 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
         room_identities={ROOM_ID: identity},
     )
     cadence_state = {**snapshots[ROOM_ID], "identity": identity}
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", "late-run", 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "late-run",
         {**_dispatch_checkpoint(cadence_state), "completed_room_ids": []},
     )
-    assert await manager.async_checkpoint_coverage_receipt(
+    assert await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "late-run",
         _receipt(),
@@ -765,7 +777,7 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
     )
 
     dispatched_at = datetime.now(UTC) - timedelta(seconds=20)
-    await manager.async_mark_interrupted(
+    await manager.ledger.async_mark_interrupted(
         "serial",
         "home",
         ROOM,
@@ -780,7 +792,7 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
             "run_id": "late-run",
         },
     )
-    pending = manager.pending_native_reconciliation("serial")
+    pending = manager.ledger.pending_native_reconciliation("serial")
     assert pending is not None
     assert pending["coverage_evidence"] == _evidence().as_storage()
 
@@ -810,7 +822,7 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
         return verifier_result
 
     verifier = AsyncMock(side_effect=verify)
-    assert await manager.async_import_native_history(
+    assert await manager.ledger.async_import_native_history(
         "serial",
         FLOOR,
         [record],
@@ -821,7 +833,10 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
     )
 
     expected = 0 if verifier_result is True and floor_outcome == "current" else 2
-    assert manager.cadence_progress("serial", "home", ROOM_ID)["coverage"] == expected
+    assert (
+        manager.cadence.cadence_progress("serial", "home", ROOM_ID)["coverage"]
+        == expected
+    )
     assert robot["rotations"]["home"]["rooms"][ROOM_ID]["completed_runs"] == 1
     assert "pending_native_reconciliation" not in robot
     if verifier_result is not None:
@@ -831,7 +846,7 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
 async def test_late_native_verifier_cannot_credit_after_pending_marker_changes(hass):
     manager = _manager(hass)
     identity = room_cadence_identity(FLOOR, ROOM_ID)
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "serial",
         "home",
         {
@@ -852,27 +867,27 @@ async def test_late_native_verifier_cannot_credit_after_pending_marker_changes(h
         floor_token=plan_floor_token(FLOOR),
         room_identities={ROOM_ID: identity},
     )
-    robot = manager._robot("serial")
+    robot = manager.repository.robot("serial")
     robot["plan_room_cadence"].setdefault("home", {})[ROOM_ID] = {
         "identity": identity,
         "progress": {"mop": 0, "coverage": 2},
     }
-    _effective, snapshots = manager.resolve_cadence(
+    _effective, snapshots = manager.cadence.resolve_cadence(
         "serial",
         "home",
         [ROOM],
         floor_token=plan_floor_token(FLOOR),
         room_identities={ROOM_ID: identity},
     )
-    await manager.async_begin_run(
+    await manager.ledger.async_begin_run(
         "serial", "home", "late-run", 1, trigger="user", service="test"
     )
-    await manager.async_set_recovery_checkpoint(
+    await manager.ledger.async_set_recovery_checkpoint(
         "serial",
         "late-run",
         _dispatch_checkpoint({**snapshots[ROOM_ID], "identity": identity}),
     )
-    await manager.async_checkpoint_coverage_receipt(
+    await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "late-run",
         _receipt(),
@@ -881,7 +896,7 @@ async def test_late_native_verifier_cannot_credit_after_pending_marker_changes(h
         session_id=SESSION,
     )
     dispatched_at = datetime.now(UTC) - timedelta(seconds=20)
-    await manager.async_mark_interrupted(
+    await manager.ledger.async_mark_interrupted(
         "serial",
         "home",
         ROOM,
@@ -916,14 +931,14 @@ async def test_late_native_verifier_cannot_credit_after_pending_marker_changes(h
         robot["pending_native_reconciliation"]["coverage_setting"] = "standard"
         return True
 
-    assert await manager.async_import_native_history(
+    assert await manager.ledger.async_import_native_history(
         "serial",
         FLOOR,
         [record],
         coverage_verifier=change_pending,
         current_floor_plan=lambda: FLOOR,
     )
-    assert manager.cadence_progress("serial", "home", ROOM_ID)["coverage"] == 2
+    assert manager.cadence.cadence_progress("serial", "home", ROOM_ID)["coverage"] == 2
 
 
 @pytest.mark.parametrize(
@@ -934,7 +949,7 @@ async def test_receipt_is_retired_when_accepted_dispatch_evidence_changes(
 ):
     manager = _manager(hass)
     await _begin_dispatch(manager)
-    assert await manager.async_checkpoint_coverage_receipt(
+    assert await manager.ledger.async_checkpoint_coverage_receipt(
         "serial",
         "run-1",
         _receipt(),
@@ -949,9 +964,9 @@ async def test_receipt_is_retired_when_accepted_dispatch_evidence_changes(
         "native_identity_hash": "a" * 64,
         "history_baseline": ["b" * 64],
     }
-    await manager.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
-    assert manager.coverage_receipt("serial", "run-1") == _receipt()
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
+    assert manager.ledger.coverage_receipt("serial", "run-1") == _receipt()
     checkpoint["phase"] = "accepted"
     checkpoint[changed] = [] if changed == "history_baseline" else "replacement"
-    await manager.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
-    assert manager.coverage_receipt("serial", "run-1") is None
+    await manager.ledger.async_set_recovery_checkpoint("serial", "run-1", checkpoint)
+    assert manager.ledger.coverage_receipt("serial", "run-1") is None

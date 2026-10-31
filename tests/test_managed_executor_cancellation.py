@@ -9,23 +9,23 @@ from homeassistant.core import ServiceCall, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.util import dt as dt_util
 
+import custom_components.matic_robot.managed_observation as managed_observation_module
 from custom_components.matic_robot.client.commands import UserCommand
-from custom_components.matic_robot.managed_executor import (
-    _async_run_room,
-    _PreparedRoomDispatch,
-)
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
+from custom_components.matic_robot.managed_room import _async_run_room
+from custom_components.matic_robot.managed_run import _PreparedRoomDispatch
+from custom_components.matic_robot.plan_model import CleaningRoom
+from custom_components.matic_robot.plans import CleaningPlanManager
 
 
 async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monkeypatch):
     """A pending native-identity wait must unwind as a handled room timeout."""
-    from custom_components.matic_robot import managed_executor
+    from custom_components.matic_robot import managed_room
 
     room = CleaningRoom("room-office", "Office", "vacuum", "standard")
     identity = b"owned-native-session"
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["plans"]["synthetic-plan"] = {
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["plans"]["synthetic-plan"] = {
         "name": "Synthetic plan",
         "rooms": [
             {
@@ -36,7 +36,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
             }
         ],
     }
-    motion_token = manager.begin_managed_motion("serial")
+    motion_token = manager.control.begin_managed_motion("serial")
 
     hass.states.async_set("vacuum.matic", "cleaning", {"current_area": room.name})
     await hass.async_block_till_done()
@@ -46,14 +46,16 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     timeout_rescheduled = asyncio.Event()
     identity_read_cancelled = asyncio.Event()
 
-    original_wait_for_room_outcome = managed_executor._async_wait_for_room_outcome
+    original_wait_for_room_outcome = (
+        managed_observation_module._async_wait_for_room_outcome
+    )
 
     async def observe_room_waiter(*args, **kwargs):
         room_waiter_started.set()
         return await original_wait_for_room_outcome(*args, **kwargs)
 
     monkeypatch.setattr(
-        managed_executor, "_async_wait_for_room_outcome", observe_room_waiter
+        managed_observation_module, "_async_wait_for_room_outcome", observe_room_waiter
     )
 
     original_timeout = asyncio.timeout
@@ -71,7 +73,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
                 return capture_completion_timeout
             return getattr(asyncio, name)
 
-    monkeypatch.setattr(managed_executor, "asyncio", AsyncioProxy())
+    monkeypatch.setattr(managed_room, "asyncio", AsyncioProxy())
 
     async def read_identity():
         if (
@@ -119,7 +121,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     sender_calls = []
 
     async def send_managed_command(token, command):
-        async with manager.managed_command("serial", token):
+        async with manager.control.managed_command("serial", token):
             sender_calls.append(command)
 
     with pytest.raises(ServiceValidationError) as raised:
@@ -157,7 +159,7 @@ async def test_elapsed_room_timeout_cleans_up_nested_identity_waiter(hass, monke
     assert sender_calls == [UserCommand.STOP]
     assert len(events) == 1
     assert events[0].data["reason_code"] == "completion_timeout"
-    snapshot = manager.snapshot("serial")
+    snapshot = manager.ledger.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert snapshot["completed_runs"] == 0
     assert snapshot["failed_runs"] == 1

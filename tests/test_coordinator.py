@@ -1693,7 +1693,9 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
 ) -> None:
     from pytest_homeassistant_custom_component.common import async_capture_events
 
-    from custom_components.matic_robot.client.api import _decode_cleaning_session
+    from custom_components.matic_robot.client.telemetry import (
+        decode_cleaning_session,
+    )
     from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
     from custom_components.matic_robot.llm import MaticRobotStatusAPI
     from tests.wire_builders import _bfield, _vfield
@@ -1720,7 +1722,7 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
         )
         summary += _bfield(6, _bfield(1, _bfield(2, detail)))
     summary += _bfield(10, _bfield(8, _bfield(1, b"")))
-    session = _decode_cleaning_session(_bfield(5, summary))
+    session = decode_cleaning_session(_bfield(5, summary))
     assert session.completed_rooms == ("Study",)
     assert session.combined_completed_rooms == ()
     client.async_get_telemetry.return_value = RobotTelemetry(latest_session=session)

@@ -34,7 +34,8 @@ from .client.exceptions import (
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .entity import MaticEntity
-from .plans import (
+from .photo_patrol import ensure_current_room_allows_photo
+from .plan_model import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     PLAN_SESSION_ID,
@@ -168,7 +169,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         self, serial_number: str, generation: int | None
     ) -> None:
         """Reject an old request without clearing a newer Stop's fence."""
-        if self._plans.motion_generation(serial_number) != generation:
+        if self._plans.control.motion_generation(serial_number) != generation:
             raise _validation_error(
                 "The command was superseded before it could run", "command_superseded"
             )
@@ -177,14 +178,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         self, serial_number: str, generation: int
     ) -> None:
         """Reject a direct request queued before a newer Stop decision."""
-        if self._plans.stop_request_generation(serial_number) != generation:
+        if self._plans.control.stop_request_generation(serial_number) != generation:
             raise _validation_error(
                 "The command was superseded before it could run", "command_superseded"
             )
 
     def _require_no_pending_stop_dispatch(self, serial_number: str) -> None:
         """Keep RESUME out of the gap between Stop acceptance and dispatch."""
-        pending = getattr(self._plans, "stop_dispatch_pending", None)
+        pending = getattr(self._plans.control, "stop_dispatch_pending", None)
         if callable(pending) and pending(serial_number) is True:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
@@ -196,15 +197,17 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         serial_number = self.coordinator.data.info.serial_number
         if command is UserCommand.RESUME:
             self._require_no_pending_stop_dispatch(serial_number)
-        generation = self._plans.motion_generation(serial_number)
-        stop_request_generation = self._plans.stop_request_generation(serial_number)
-        admission_epoch = self._plans.command_admission_epoch(serial_number)
-        self._plans.require_command_admission(serial_number)
+        generation = self._plans.control.motion_generation(serial_number)
+        stop_request_generation = self._plans.control.stop_request_generation(
+            serial_number
+        )
+        admission_epoch = self._plans.control.command_admission_epoch(serial_number)
+        self._plans.control.require_command_admission(serial_number)
         await self._async_ensure_stop_settled(serial_number)
-        self._plans.require_command_admission(
+        self._plans.control.require_command_admission(
             serial_number, expected_epoch=admission_epoch
         )
-        async with self._plans.external_command(serial_number):
+        async with self._plans.control.external_command(serial_number):
             if command is UserCommand.RESUME:
                 self._require_no_pending_stop_dispatch(serial_number)
             await self._async_ensure_stop_settled(serial_number)
@@ -221,12 +224,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         serial_number = self.coordinator.data.info.serial_number
         await self.coordinator.client.async_send_user_command(command)
         if command is UserCommand.STOP:
-            await self._plans.async_mark_stop_pending(serial_number, run_id=run_id)
+            await self._plans.control.async_mark_stop_pending(
+                serial_number, run_id=run_id
+            )
         await self.coordinator.async_request_refresh()
 
     async def _async_ensure_stop_settled(self, serial_number: str) -> None:
         """Reject new motion while the firmware's graceful STOP is counting down."""
-        pending = getattr(self._plans, "stop_pending", None)
+        pending = getattr(self._plans.control, "stop_pending", None)
         if not callable(pending) or not pending(serial_number):
             return
         if self.entity_id is not None and await async_clear_ownerless_stop_if_settled(
@@ -295,22 +300,26 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         floor_plan = self._current_floor_plan(expected_floor_token)
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
-        request_generation = self._plans.motion_generation(serial_number)
-        request_stop_generation = self._plans.stop_request_generation(serial_number)
-        request_admission_epoch = self._plans.command_admission_epoch(serial_number)
+        request_generation = self._plans.control.motion_generation(serial_number)
+        request_stop_generation = self._plans.control.stop_request_generation(
+            serial_number
+        )
+        request_admission_epoch = self._plans.control.command_admission_epoch(
+            serial_number
+        )
         await self._async_ensure_stop_settled(serial_number)
         self._require_motion_generation(serial_number, request_generation)
         if motion_token is None:
             self._require_stop_request_generation(
                 serial_number, request_stop_generation
             )
-        self._plans.require_command_admission(
+        self._plans.control.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
         context = (
-            self._plans.managed_command(serial_number, motion_token)
+            self._plans.control.managed_command(serial_number, motion_token)
             if motion_token is not None
-            else self._plans.external_motion(
+            else self._plans.control.external_motion(
                 serial_number,
                 expected_generation=request_generation,
                 expected_stop_generation=request_stop_generation,
@@ -320,7 +329,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             if (
                 motion_token is None
                 and dispatch_generation is None
-                and self._plans.motion_generation(serial_number) == request_generation
+                and self._plans.control.motion_generation(serial_number)
+                == request_generation
             ):
                 self._require_stop_request_generation(
                     serial_number, request_stop_generation
@@ -347,7 +357,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 self._current_floor_plan(command_floor_token)
                 if (
                     motion_token is not None
-                    and self._plans.cancellation_event(serial_number).is_set()
+                    and self._plans.control.cancellation_event(serial_number).is_set()
                 ):
                     raise HomeAssistantError(
                         "Managed coverage was stopped before dispatch",
@@ -356,7 +366,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     )
 
             receipt = None
-            receipt_run_id = self._plans.active_run_id(serial_number)
+            receipt_run_id = self._plans.ledger.active_run_id(serial_number)
             if room_coverage is not None:
                 assert room_modes is not None
 
@@ -367,20 +377,20 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
 
                 async def prepare_stop() -> None:
                     nonlocal stop_fence_run_id
-                    run_id = self._plans.active_run_id(serial_number)
+                    run_id = self._plans.ledger.active_run_id(serial_number)
                     stop_fence_run_id = run_id
                     try:
-                        await self._plans.async_mark_stop_pending(
+                        await self._plans.control.async_mark_stop_pending(
                             serial_number, run_id=run_id
                         )
                     except BaseException:
-                        await self._plans.async_clear_stop_pending(
+                        await self._plans.control.async_clear_stop_pending(
                             serial_number, run_id=run_id
                         )
                         raise
 
                 async def rollback_stop() -> None:
-                    await self._plans.async_clear_stop_pending(
+                    await self._plans.control.async_clear_stop_pending(
                         serial_number, run_id=stop_fence_run_id
                     )
 
@@ -392,11 +402,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         serial_number, run_id=stop_fence_run_id
                     )
 
-                run_id = self._plans.active_run_id(serial_number)
+                run_id = self._plans.ledger.active_run_id(serial_number)
 
                 async def checkpoint_initial_session(identity_hash: str) -> None:
                     if run_id is not None:
-                        await self._plans.async_checkpoint_mixed_session(
+                        await self._plans.ledger.async_checkpoint_mixed_session(
                             serial_number, run_id, identity_hash
                         )
 
@@ -460,7 +470,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 and managed_session_id is not None
             ):
                 require_current_dispatch()
-                await self._plans.async_checkpoint_coverage_receipt(
+                await self._plans.ledger.async_checkpoint_coverage_receipt(
                     serial_number,
                     receipt_run_id,
                     receipt,
@@ -487,18 +497,20 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         still be the geometry the run was prepared with, on the current map.
         """
         serial_number = self.coordinator.data.info.serial_number
-        request_generation = self._plans.motion_generation(serial_number)
-        request_admission_epoch = self._plans.command_admission_epoch(serial_number)
+        request_generation = self._plans.control.motion_generation(serial_number)
+        request_admission_epoch = self._plans.control.command_admission_epoch(
+            serial_number
+        )
         await self._async_ensure_stop_settled(serial_number)
         self._require_motion_generation(serial_number, request_generation)
-        self._plans.require_command_admission(
+        self._plans.control.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
-        async with self._plans.managed_command(serial_number, motion_token):
+        async with self._plans.control.managed_command(serial_number, motion_token):
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, request_generation)
             floor_plan = self._current_floor_plan(expected_floor_token)
-            area = self._plans.areas(serial_number).get(area_id)
+            area = self._plans.catalog.areas(serial_number).get(area_id)
             if not isinstance(area, dict):
                 raise _validation_error(
                     "A custom area in this plan was deleted", "plan_area_missing"
@@ -525,7 +537,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             def require_current_dispatch() -> None:
                 self._require_motion_generation(serial_number, request_generation)
                 self._current_floor_plan(expected_floor_token)
-                if self._plans.cancellation_event(serial_number).is_set():
+                if self._plans.control.cancellation_event(serial_number).is_set():
                     raise HomeAssistantError(
                         "Managed coverage was stopped before dispatch",
                         translation_domain=DOMAIN,
@@ -570,25 +582,26 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         """Stop now or finish the active room according to the plan policy."""
         serial_number = self.coordinator.data.info.serial_number
         run_id: str | None = None
-        async with self._plans.external_command(serial_number):
-            active_run_id = getattr(self._plans, "active_run_id", None)
+        async with self._plans.control.external_command(serial_number):
+            active_run_id = getattr(self._plans.ledger, "active_run_id", None)
             run_id = active_run_id(serial_number) if callable(active_run_id) else None
-            decision = self._plans.request_stop(serial_number)
-            expected_generation = self._plans.motion_generation(serial_number)
-            expected_stop_generation = self._plans.stop_request_generation(
+            decision = self._plans.control.request_stop(serial_number)
+            expected_generation = self._plans.control.motion_generation(serial_number)
+            expected_stop_generation = self._plans.control.stop_request_generation(
                 serial_number
             )
-            await self._plans.async_checkpoint_stop_intent(
+            await self._plans.ledger.async_checkpoint_stop_intent(
                 serial_number, decision.behavior, run_id=run_id
             )
             if decision.behavior == "after_room" or (
-                self._plans.motion_generation(serial_number) != expected_generation
-                or self._plans.stop_request_generation(serial_number)
+                self._plans.control.motion_generation(serial_number)
+                != expected_generation
+                or self._plans.control.stop_request_generation(serial_number)
                 != expected_stop_generation
             ):
                 return
-            with self._plans.managed_stop_dispatch(serial_number):
-                generation = await self._plans.async_replace_managed_motion(
+            with self._plans.control.managed_stop_dispatch(serial_number):
+                generation = await self._plans.control.async_replace_managed_motion(
                     serial_number
                 )
             self._require_motion_generation(serial_number, generation)
@@ -602,13 +615,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     async def async_return_to_base(self, **kwargs: object) -> None:
         """Send the robot to its dock and end any task driving it."""
         serial_number = self.coordinator.data.info.serial_number
-        active_run_id = getattr(self._plans, "active_run_id", None)
+        active_run_id = getattr(self._plans.ledger, "active_run_id", None)
         run_id = active_run_id(serial_number) if callable(active_run_id) else None
         operational = self.coordinator.data.operational
         # Display activity gives charging precedence; native task flags still
         # require STOP so DOCK cannot resume retained cleaning or paused work.
         stop_before_dock = (
-            self._plans.has_managed_task(serial_number)
+            self._plans.control.has_managed_task(serial_number)
             or operational.cleaning
             or operational.paused
             or operational.returning
@@ -616,7 +629,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             or (operational.low_charge and operational.is_charging)
         )
         managed_stop_generations = getattr(
-            self._plans, "managed_stop_dispatch_generations", None
+            self._plans.control, "managed_stop_dispatch_generations", None
         )
         expected_generations = (
             managed_stop_generations(serial_number)
@@ -626,14 +639,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         expected_generation = (
             expected_generations[0]
             if expected_generations is not None
-            else self._plans.motion_generation(serial_number)
+            else self._plans.control.motion_generation(serial_number)
         )
         stop_request_generation = (
             expected_generations[1]
             if expected_generations is not None
-            else self._plans.stop_request_generation(serial_number)
+            else self._plans.control.stop_request_generation(serial_number)
         )
-        async with self._plans.external_motion(
+        async with self._plans.control.external_motion(
             serial_number,
             expected_generation=expected_generation,
             expected_stop_generation=stop_request_generation,
@@ -657,7 +670,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 # firmware's ten-minute countdown.
                 self.coordinator.async_discard_current_room()
                 await self.coordinator.client.async_send_user_command(UserCommand.STOP)
-                await self._plans.async_mark_stop_pending(serial_number, run_id=run_id)
+                await self._plans.control.async_mark_stop_pending(
+                    serial_number, run_id=run_id
+                )
                 await self.coordinator.async_request_refresh()
                 stopped = True
             else:
@@ -693,13 +708,17 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     async def async_redo_last_clean(self) -> None:
         """Clean the most recent finished clean again, as the Matic app does."""
         serial_number = self.coordinator.data.info.serial_number
-        request_generation = self._plans.motion_generation(serial_number)
-        request_stop_generation = self._plans.stop_request_generation(serial_number)
-        request_admission_epoch = self._plans.command_admission_epoch(serial_number)
+        request_generation = self._plans.control.motion_generation(serial_number)
+        request_stop_generation = self._plans.control.stop_request_generation(
+            serial_number
+        )
+        request_admission_epoch = self._plans.control.command_admission_epoch(
+            serial_number
+        )
         await self._async_ensure_stop_settled(serial_number)
         self._require_motion_generation(serial_number, request_generation)
         self._require_stop_request_generation(serial_number, request_stop_generation)
-        self._plans.require_command_admission(
+        self._plans.control.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
         if self._holds_task():
@@ -723,7 +742,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             )
         latest = max(finished, key=lambda item: item.session.ended_at or "")
         # Like any direct clean, the new clean takes ownership from a plan.
-        async with self._plans.external_motion(
+        async with self._plans.control.external_motion(
             serial_number,
             expected_generation=request_generation,
             expected_stop_generation=request_stop_generation,
@@ -776,7 +795,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if not self.coordinator.data.operational.cleaning:
             raise _queue_error("no_clean_running", target)
         # The robot keeps the task, so the plan run driving it keeps ownership.
-        async with self._plans.external_command(serial_number):
+        async with self._plans.control.external_command(serial_number):
             if not self.coordinator.data.operational.cleaning:
                 raise _queue_error("no_clean_running", target)
             try:
@@ -796,9 +815,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     translation_key="queue_change_failed",
                     translation_placeholders={"room": target.name},
                 ) from err
-        run_id = self._plans.active_run_id(serial_number)
+        run_id = self._plans.ledger.active_run_id(serial_number)
         if action is QueueAction.SKIP and run_id is not None:
-            await self._plans.async_note_room_skipped(serial_number, run_id, target.id)
+            await self._plans.ledger.async_note_room_skipped(
+                serial_number, run_id, target.id
+            )
         self.hass.bus.async_fire(
             f"{DOMAIN}_queue_changed",
             {
@@ -820,13 +841,17 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> None:
         """Send one navigation command under the sink summon's ownership rules."""
         serial_number = self.coordinator.data.info.serial_number
-        request_generation = self._plans.motion_generation(serial_number)
-        request_stop_generation = self._plans.stop_request_generation(serial_number)
-        request_admission_epoch = self._plans.command_admission_epoch(serial_number)
+        request_generation = self._plans.control.motion_generation(serial_number)
+        request_stop_generation = self._plans.control.stop_request_generation(
+            serial_number
+        )
+        request_admission_epoch = self._plans.control.command_admission_epoch(
+            serial_number
+        )
         await self._async_ensure_stop_settled(serial_number)
         self._require_motion_generation(serial_number, request_generation)
         self._require_stop_request_generation(serial_number, request_stop_generation)
-        self._plans.require_command_admission(
+        self._plans.control.require_command_admission(
             serial_number, expected_epoch=request_admission_epoch
         )
         # Resolve the destination before taking any lease, so a floor without a
@@ -840,9 +865,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         # starts new motion, which takes ownership like any other direct clean.
         joins_task = self._holds_task()
         lease = (
-            self._plans.external_command(serial_number)
+            self._plans.control.external_command(serial_number)
             if joins_task
-            else self._plans.external_motion(
+            else self._plans.control.external_motion(
                 serial_number,
                 expected_generation=request_generation,
                 expected_stop_generation=request_stop_generation,
@@ -880,7 +905,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             return
         on_docked: Callable[[], Awaitable[bool | None]] | None = None
         if run_id is not None:
-            stop_fence_token_reader = getattr(self._plans, "stop_fence_token", None)
+            stop_fence_token_reader = getattr(
+                self._plans.control, "stop_fence_token", None
+            )
             stop_fence_token = (
                 stop_fence_token_reader(serial_number)
                 if callable(stop_fence_token_reader)
@@ -888,7 +915,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             )
 
             async def mark_docked() -> bool:
-                return await self._plans.async_mark_run_docked(
+                return await self._plans.ledger.async_mark_run_docked(
                     serial_number,
                     run_id,
                     entity_id=self.entity_id,
@@ -1132,6 +1159,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     "emote requires params.kind as nod, shake, pirouette, or snap",
                     "emote_kind_required",
                 )
+            if emote is UserCommand.EMOTE_SNAP:
+                ensure_current_room_allows_photo(self._config_entry)
             await self._async_command(emote)
             return
         if normalized in _QUEUE_COMMANDS:

@@ -3,37 +3,20 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import secrets
 from collections import deque
-from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
 from http import HTTPStatus
 from time import monotonic, time
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
-import probatio
 from aiohttp import web
 from google.protobuf.message import DecodeError
 from homeassistant.components.http.decorators import require_admin
-from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
-from homeassistant.util import slugify
 
-from .area_binding import (
-    AREA_SCHEMA_VERSION,
-    AreaBindingStatus,
-    area_binding_allows_review,
-    area_binding_needs_geometry_index,
-    area_binding_status,
-    binding_for_area,
-)
-from .area_geometry import AreaGeometry, RoomGeometryIndex
-from .area_outline import validate_outline
-from .cadence import CoverageCadenceRequiresVacuumError
-from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
 from .client.floor_plan import (
     pose_observation_age_seconds,
@@ -44,33 +27,30 @@ from .client.models import (
     CleaningSessionRecord,
     FloorPlan,
     HermesCollectionEntry,
-    MapZone,
     RobotPose,
 )
 from .client.slam_map import decode_slam_tile, encode_slam_scene
-from .client.zones import zone_overlaps_circle, zone_overlaps_polygon
 from .const import DOMAIN
-from .occupancy import (
-    entry_vacuum_entity_id,
-    occupancy_holds,
-    plan_occupancy_sensors,
+from .http import (
+    CATALOG_API_URL,
+    DELTA_API_URL,
+    FLOOR_LAYERS_API_URL,
+    HISTORY_API_URL,
+    HISTORY_SCENE_API_URL,
+    POSE_API_URL,
+    PRIVATE_NO_STORE_HEADERS,
+    RUNS_API_URL,
+    SCENE_API_URL,
+    WIFI_HEATMAP_API_URL,
+    areas_api_url,
+    delta_api_url,
+    history_api_url,
+    history_scene_api_url,
+    plans_api_url,
+    pose_api_url,
+    runtime_for_entry,
+    scene_api_url,
 )
-from .plans import (
-    AreaFramePointLimitError,
-    AreaInUseError,
-    AreaSavePreconditionError,
-    CleaningRoom,
-    MetadataAdmissionClosedError,
-    PlanAreaMapChangedError,
-    PlanAreaMissingError,
-    PlanRoomsHeldError,
-    RoomSequenceLimitError,
-    entry_mission_boundaries,
-    plan_entries,
-    plan_floor_token,
-    room_cadence_identity,
-)
-from .room_sequence import saved_plan_preview_token
 from .run_history import RUN_HISTORY_LIMIT, RunTrails
 from .slam_delta import encode_slam_scene_delta
 from .slam_map_store import SlamMapIdentity
@@ -78,31 +58,15 @@ from .slam_map_store import SlamMapIdentity
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
-    from . import MaticConfigEntry, MaticRuntimeData
+    from . import MaticRuntimeData
     from .slam_history import SlamHistorySnapshot
 
-SCENE_API_URL = "/api/matic_robot/slam_scene/{entry_id}"
-POSE_API_URL = "/api/matic_robot/slam_pose/{entry_id}"
-CATALOG_API_URL = "/api/matic_robot/slam_entries"
-DELTA_API_URL = "/api/matic_robot/slam_delta/{entry_id}"
-HISTORY_API_URL = "/api/matic_robot/slam_history/{entry_id}"
-HISTORY_SCENE_API_URL = "/api/matic_robot/slam_history_scene/{entry_id}/{snapshot_id}"
-AREAS_API_URL = "/api/matic_robot/areas/{entry_id}"
-PLANS_API_URL = "/api/matic_robot/plans/{entry_id}"
-RUNS_API_URL = "/api/matic_robot/runs/{entry_id}"
 RUNS_NATIVE_READ_SECONDS = 15
-WIFI_HEATMAP_API_URL = "/api/matic_robot/wifi_heatmap/{entry_id}"
-FLOOR_LAYERS_API_URL = "/api/matic_robot/floor_layers/{entry_id}"
 POSE_CACHE_SECONDS = 1.0
 SCENE_ENCODE_ATTEMPTS = 2
 SCENE_CACHE_REVISIONS = 2
 DELTA_WAIT_SECONDS = 5
 
-PRIVATE_NO_STORE_HEADERS = {
-    "Cache-Control": "private, no-store, max-age=0",
-    "Pragma": "no-cache",
-    "X-Content-Type-Options": "nosniff",
-}
 
 _MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
 
@@ -135,7 +99,9 @@ def observe_run_trail(
         return
     data = runtime.coordinator.data
     trails.observe(
-        run_id=runtime.cleaning_plans.active_run_id(str(data.info.serial_number)),
+        run_id=runtime.cleaning_plans.ledger.active_run_id(
+            str(data.info.serial_number)
+        ),
         native_active=data.telemetry.active_cleaning_session,
         map_key=_map_session_key(runtime),
         point=position,
@@ -162,41 +128,6 @@ def _pose_frame_key(
         _map_session_key(runtime),
         getattr(runtime.coordinator, "floor_read_generation", 0),
     )
-
-
-def scene_api_url(entry_id: str) -> str:
-    """Return the authenticated scene URL for one config entry."""
-    return SCENE_API_URL.format(entry_id=entry_id)
-
-
-def pose_api_url(entry_id: str) -> str:
-    """Return the authenticated live-pose URL for one config entry."""
-    return POSE_API_URL.format(entry_id=entry_id)
-
-
-def delta_api_url(entry_id: str) -> str:
-    """Return the authenticated live-delta URL for one config entry."""
-    return DELTA_API_URL.format(entry_id=entry_id)
-
-
-def history_api_url(entry_id: str) -> str:
-    """Return the authenticated history catalog URL for one config entry."""
-    return HISTORY_API_URL.format(entry_id=entry_id)
-
-
-def history_scene_api_url(entry_id: str, snapshot_id: str) -> str:
-    """Return the authenticated URL for one retained scene."""
-    return HISTORY_SCENE_API_URL.format(entry_id=entry_id, snapshot_id=snapshot_id)
-
-
-def areas_api_url(entry_id: str) -> str:
-    """Return the authenticated custom-area workspace URL for one entry."""
-    return AREAS_API_URL.format(entry_id=entry_id)
-
-
-def plans_api_url(entry_id: str) -> str:
-    """Return the authenticated cleaning-plan workspace URL for one entry."""
-    return PLANS_API_URL.format(entry_id=entry_id)
 
 
 def catalog_entry_projection(
@@ -245,7 +176,7 @@ def catalog_entry_projection(
     else:
         map_block_reason = "floor_plan_mismatch"
     serial_number = runtime.coordinator.data.info.serial_number
-    plan_snapshot = runtime.cleaning_plans.snapshot(serial_number)
+    plan_snapshot = runtime.cleaning_plans.ledger.snapshot(serial_number)
     telemetry = getattr(runtime.coordinator.data, "telemetry", None)
     return {
         "entry_id": entry_id,
@@ -276,11 +207,13 @@ def catalog_entry_projection(
         "map_session_verified": session_verified,
         "map_session_key": _map_session_key(runtime) if session_verified else None,
         "map_block_reason": map_block_reason,
-        "runner_locked": runtime.cleaning_plans.lock(serial_number).locked(),
-        "stop_settle_pending": runtime.cleaning_plans.stop_pending(serial_number),
+        "runner_locked": runtime.cleaning_plans.control.lock(serial_number).locked(),
+        "stop_settle_pending": runtime.cleaning_plans.control.stop_pending(
+            serial_number
+        ),
         "active_plan": plan_snapshot.get("active_plan") is not None,
         "native_reconciliation_pending": (
-            runtime.cleaning_plans.pending_native_reconciliation(serial_number)
+            runtime.cleaning_plans.ledger.pending_native_reconciliation(serial_number)
             is not None
         ),
         "native_session_active": getattr(telemetry, "active_cleaning_session", None),
@@ -293,17 +226,6 @@ def catalog_entry_projection(
         "bootstrap_structure_seen": getattr(health, "bootstrap_structure_seen", False),
         "bootstrap_failures": getattr(health, "bootstrap_failures", 0),
     }
-
-
-def _runtime_for_entry(hass: HomeAssistant, entry_id: str) -> MaticRuntimeData | None:
-    entry = hass.config_entries.async_get_entry(entry_id)
-    if (
-        entry is None
-        or entry.domain != DOMAIN
-        or entry.state is not ConfigEntryState.LOADED
-    ):
-        return None
-    return cast("MaticConfigEntry", entry).runtime_data
 
 
 type _SceneKey = tuple[int, SlamMapIdentity | None, FloorPlan | None]
@@ -509,7 +431,7 @@ class MaticSlamSceneView(HomeAssistantView):
         async with lock:
             if (
                 self._epochs.get(entry_id, 0) != epoch
-                or _runtime_for_entry(hass, entry_id) is not runtime
+                or runtime_for_entry(hass, entry_id) is not runtime
             ):
                 return None
             # A concurrent encoder can populate this cache while this request
@@ -554,7 +476,7 @@ class MaticSlamSceneView(HomeAssistantView):
                     raise
                 if (
                     self._epochs.get(entry_id, 0) != epoch
-                    or _runtime_for_entry(hass, entry_id) is not runtime
+                    or runtime_for_entry(hass, entry_id) is not runtime
                 ):
                     return None
                 if not _scene_snapshot_is_publishable(
@@ -587,7 +509,7 @@ class MaticSlamSceneView(HomeAssistantView):
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return the current local scene, using an ETag for live refreshes."""
         hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
+        runtime = runtime_for_entry(hass, entry_id)
         if runtime is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -650,7 +572,7 @@ class MaticSlamDeltaView(HomeAssistantView):
                 status=HTTPStatus.BAD_REQUEST, headers=PRIVATE_NO_STORE_HEADERS
             )
         hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
+        runtime = runtime_for_entry(hass, entry_id)
         if runtime is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -692,7 +614,7 @@ class MaticSlamDeltaView(HomeAssistantView):
             finally:
                 for remove_listener in remove_listeners:
                     remove_listener()
-        if _runtime_for_entry(hass, entry_id) is not runtime:
+        if runtime_for_entry(hass, entry_id) is not runtime:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
@@ -727,7 +649,7 @@ class MaticSlamDeltaView(HomeAssistantView):
                     revision=current.revision,
                 )
             )
-        if _runtime_for_entry(
+        if runtime_for_entry(
             hass, entry_id
         ) is not runtime or not _scene_snapshot_is_publishable(
             runtime,
@@ -772,7 +694,7 @@ class MaticSlamHistoryView(HomeAssistantView):
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return content-free timeline metadata and authenticated scene URLs."""
-        runtime = _runtime_for_entry(request.app[KEY_HASS], entry_id)
+        runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
         if runtime is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -853,7 +775,7 @@ class MaticSlamHistorySceneView(HomeAssistantView):
     ) -> web.Response:
         """Return an immutable historical scene without public caching."""
         hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
+        runtime = runtime_for_entry(hass, entry_id)
         if runtime is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -877,7 +799,7 @@ class MaticSlamHistorySceneView(HomeAssistantView):
         )
         if (
             scene is None
-            or _runtime_for_entry(hass, entry_id) is not runtime
+            or runtime_for_entry(hass, entry_id) is not runtime
             or runtime.slam_history is not history
         ):
             return web.Response(
@@ -915,7 +837,7 @@ class MaticSlamPoseView(HomeAssistantView):
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return the current position without exposing it to Recorder."""
         hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
+        runtime = runtime_for_entry(hass, entry_id)
         if runtime is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -961,7 +883,7 @@ class MaticSlamPoseView(HomeAssistantView):
                         freshness = "coordinator_fallback"
                     if (
                         self._epochs.get(entry_id, 0) != epoch
-                        or _runtime_for_entry(hass, entry_id) is not runtime
+                        or runtime_for_entry(hass, entry_id) is not runtime
                     ):
                         return web.Response(
                             status=HTTPStatus.NOT_FOUND,
@@ -1101,7 +1023,7 @@ class MaticSlamCatalogView(HomeAssistantView):
         hass = request.app[KEY_HASS]
         entries = []
         for entry in hass.config_entries.async_entries(DOMAIN):
-            runtime = _runtime_for_entry(hass, entry.entry_id)
+            runtime = runtime_for_entry(hass, entry.entry_id)
             if runtime is None:
                 continue
             health = runtime.slam_map.health
@@ -1135,690 +1057,6 @@ class MaticSlamCatalogView(HomeAssistantView):
                 }
             )
         return self.json({"entries": entries}, headers=PRIVATE_NO_STORE_HEADERS)
-
-
-class MaticAreasView(HomeAssistantView):
-    """Manage map-bound custom areas inside the private map workspace."""
-
-    url = AREAS_API_URL
-    name = "api:matic_robot:areas"
-
-    @staticmethod
-    def _rooms(floor_plan: FloorPlan | None) -> list[dict[str, object]]:
-        """Project rooms from one explicit floor-plan snapshot."""
-        if floor_plan is None:
-            return []
-        return [
-            {
-                "room_id": room.id,
-                "name": room.name,
-                "boundary": [list(point) for point in room.boundary],
-            }
-            for room in floor_plan.rooms
-        ]
-
-    @staticmethod
-    def _zones(
-        zones: tuple[MapZone, ...],
-        floor_plan: FloorPlan,
-        areas: list[dict[str, Any]],
-    ) -> list[dict[str, object]]:
-        """Project the robot's zones on this map and what each one overlaps."""
-        return [
-            {
-                "kind": zone.kind,
-                "outline": [list(point) for point in zone.outline],
-                "holes": [[list(point) for point in hole] for hole in zone.holes],
-                "room_ids": [
-                    room.id
-                    for room in floor_plan.rooms
-                    if zone_overlaps_polygon(zone, room.boundary)
-                ],
-                "area_ids": [
-                    area["id"]
-                    for area in areas
-                    if any(
-                        zone_overlaps_circle(
-                            zone,
-                            (float(circle["x"]), float(circle["y"])),
-                            float(circle["radius"]),
-                        )
-                        for circle in area["circles"]
-                    )
-                ],
-            }
-            for zone in zones
-            if zone.mission_id == floor_plan.mission_id
-        ]
-
-    @require_admin
-    async def get(self, request: web.Request, entry_id: str) -> web.Response:
-        """Return the live map geometry and private saved-area definitions."""
-        hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
-        if runtime is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        floor_plan = runtime.coordinator.data.floor_plan
-        if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
-            return web.Response(
-                status=HTTPStatus.CONFLICT,
-                headers={
-                    **PRIVATE_NO_STORE_HEADERS,
-                    "X-Matic-Areas-Conflict": "map-rechecking",
-                },
-            )
-        if not floor_plan.rooms:
-            return web.Response(
-                status=HTTPStatus.CONFLICT,
-                headers={
-                    **PRIVATE_NO_STORE_HEADERS,
-                    "X-Matic-Areas-Conflict": "no-rooms",
-                },
-            )
-        serial_number = str(runtime.coordinator.data.info.serial_number)
-        areas = []
-        room_geometry = None
-        for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
-            uses_indexed_binding = area_binding_needs_geometry_index(area)
-            if uses_indexed_binding and room_geometry is None:
-                room_geometry = RoomGeometryIndex(self._rooms(floor_plan))
-            status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
-            if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
-                room_geometry = RoomGeometryIndex(self._rooms(floor_plan))
-            can_rebind = area_binding_allows_review(
-                area,
-                floor_plan,
-                status=status,
-                room_geometry=room_geometry,
-                circles_already_validated=uses_indexed_binding,
-            )
-            areas.append(
-                {
-                    "id": area_id,
-                    "name": str(area.get("name", area_id)),
-                    "circles": area.get("circles", [])
-                    if status is AreaBindingStatus.CURRENT or can_rebind
-                    else [],
-                    **(
-                        {"outline": area["outline"]}
-                        if area.get("outline") is not None
-                        and (status is AreaBindingStatus.CURRENT or can_rebind)
-                        else {}
-                    ),
-                    "cleaning_mode": area.get(
-                        "cleaning_mode", CleaningMode.VACUUM.value
-                    ),
-                    "coverage_setting": area.get(
-                        "coverage_setting", CoverageSetting.OPTIMAL.value
-                    ),
-                    "status": status.value,
-                    "can_rebind": can_rebind,
-                }
-            )
-        return self.json(
-            {
-                "scene_url": scene_api_url(entry_id),
-                "rooms": self._rooms(floor_plan),
-                "areas": areas,
-                "selected_area": runtime.cleaning_plans.selected_area(serial_number),
-                "zones": self._zones(
-                    runtime.coordinator.data.telemetry.zones, floor_plan, areas
-                ),
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
-
-    @require_admin
-    async def post(self, request: web.Request, entry_id: str) -> web.Response:
-        """Create or replace one validated area on the current map."""
-        if request.content_length is not None and request.content_length > 131_072:
-            return web.Response(
-                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                headers=PRIVATE_NO_STORE_HEADERS,
-            )
-        hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
-        if runtime is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        floor_plan = runtime.coordinator.data.floor_plan
-        map_identity = runtime.slam_map.mission_identity
-        if (
-            floor_plan is None
-            or not floor_plan.rooms
-            or map_identity is None
-            or not runtime.slam_map.floor_plan_is_current(floor_plan)
-        ):
-            return web.Response(
-                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        try:
-            body = await request.json(loads=json.loads)
-            if (
-                _runtime_for_entry(hass, entry_id) is not runtime
-                or runtime.coordinator.data.floor_plan != floor_plan
-                or runtime.slam_map.mission_identity != map_identity
-                or not runtime.slam_map.floor_plan_is_current(floor_plan)
-            ):
-                return web.Response(
-                    status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-                )
-            if not isinstance(body, dict):
-                raise ValueError
-            name = str(body["name"]).strip()
-            if not 1 <= len(name) <= 128:
-                raise ValueError
-            rooms = self._rooms(floor_plan)
-            circles = AreaGeometry(rooms).validate(body["circles"])
-            outline = validate_outline(body.get("outline"), circles)
-            cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
-            coverage_setting = CoverageSetting(str(body["coverage_setting"]))
-            binding = binding_for_area(floor_plan, circles)
-        except KeyError, TypeError, ValueError, probatio.Invalid:
-            return web.Response(
-                status=HTTPStatus.BAD_REQUEST, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        serial_number = str(runtime.coordinator.data.info.serial_number)
-        saved = runtime.cleaning_plans.areas(serial_number)
-        requested_id = body.get("area_id")
-        if requested_id is None:
-            area_id = slugify(name)
-            if not area_id or area_id in saved:
-                return web.Response(
-                    status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-                )
-        else:
-            area_id = str(requested_id)
-            if area_id not in saved:
-                return web.Response(
-                    status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-                )
-        if any(
-            key != area_id and str(value.get("name", key)).casefold() == name.casefold()
-            for key, value in saved.items()
-        ):
-            return web.Response(
-                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-            )
-
-        def validate_commit() -> None:
-            """Keep request identities valid through the area metadata commit."""
-            if (
-                _runtime_for_entry(hass, entry_id) is not runtime
-                or runtime.coordinator.data.floor_plan != floor_plan
-                or runtime.slam_map.mission_identity != map_identity
-                or not runtime.slam_map.floor_plan_is_current(floor_plan)
-            ):
-                raise AreaSavePreconditionError
-            current_areas = runtime.cleaning_plans.areas(serial_number)
-            if requested_id is None:
-                if area_id in current_areas:
-                    raise AreaSavePreconditionError
-            elif area_id not in current_areas:
-                raise AreaSavePreconditionError(not_found=True)
-            if any(
-                key != area_id
-                and str(value.get("name", key)).casefold() == name.casefold()
-                for key, value in current_areas.items()
-            ):
-                raise AreaSavePreconditionError
-
-        try:
-            await runtime.cleaning_plans.async_save_area(
-                serial_number,
-                area_id,
-                {
-                    "schema_version": AREA_SCHEMA_VERSION,
-                    "name": name,
-                    "circles": circles,
-                    **({"outline": outline} if outline is not None else {}),
-                    "cleaning_mode": cleaning_mode.value,
-                    "coverage_setting": coverage_setting.value,
-                    "map_binding": binding,
-                },
-                precondition=validate_commit,
-            )
-        except AreaSavePreconditionError as err:
-            return web.Response(
-                status=(HTTPStatus.NOT_FOUND if err.not_found else HTTPStatus.CONFLICT),
-                headers=PRIVATE_NO_STORE_HEADERS,
-            )
-        except MetadataAdmissionClosedError:
-            return web.Response(
-                status=HTTPStatus.SERVICE_UNAVAILABLE,
-                headers=PRIVATE_NO_STORE_HEADERS,
-            )
-        except AreaFramePointLimitError:
-            return self.json(
-                {"error": "area_boundary_point_limit"},
-                status_code=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                headers=PRIVATE_NO_STORE_HEADERS,
-            )
-        return self.json(
-            {"id": area_id},
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
-
-    @require_admin
-    async def delete(self, request: web.Request, entry_id: str) -> web.Response:
-        """Delete one saved custom area by its stable identifier."""
-        hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
-        if runtime is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        area_id = str(request.query.get("area_id", ""))
-        serial_number = str(runtime.coordinator.data.info.serial_number)
-        if area_id not in runtime.cleaning_plans.areas(serial_number):
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        try:
-            await runtime.cleaning_plans.async_delete_area(serial_number, area_id)
-        except MetadataAdmissionClosedError:
-            return web.Response(
-                status=HTTPStatus.SERVICE_UNAVAILABLE,
-                headers=PRIVATE_NO_STORE_HEADERS,
-            )
-        except AreaInUseError as err:
-            # Removing the area would leave these plans with nothing to clean.
-            return self.json(
-                {"plans": list(err.plan_names)},
-                status_code=HTTPStatus.CONFLICT,
-                headers={
-                    **PRIVATE_NO_STORE_HEADERS,
-                    "X-Matic-Areas-Conflict": "plan-would-be-empty",
-                },
-            )
-        return web.Response(
-            status=HTTPStatus.NO_CONTENT, headers=PRIVATE_NO_STORE_HEADERS
-        )
-
-
-class MaticPlansView(HomeAssistantView):
-    """Expose saved plans and current room choices to the private workspace."""
-
-    url = PLANS_API_URL
-    name = "api:matic_robot:plans"
-
-    @require_admin
-    async def get(self, request: web.Request, entry_id: str) -> web.Response:
-        """Return a bounded plan editor model for one loaded robot."""
-        hass = request.app[KEY_HASS]
-        runtime = _runtime_for_entry(hass, entry_id)
-        if runtime is None:
-            return web.Response(
-                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
-            )
-        floor_plan = runtime.coordinator.data.floor_plan
-        if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
-            headers = {
-                **PRIVATE_NO_STORE_HEADERS,
-                "X-Matic-Plans-Conflict": "map-rechecking",
-            }
-            return web.Response(status=HTTPStatus.CONFLICT, headers=headers)
-        if not floor_plan.rooms:
-            headers = {
-                **PRIVATE_NO_STORE_HEADERS,
-                "X-Matic-Plans-Conflict": "no-rooms",
-            }
-            return web.Response(status=HTTPStatus.CONFLICT, headers=headers)
-        serial_number = str(runtime.coordinator.data.info.serial_number)
-        floor_token = plan_floor_token(floor_plan)
-        current_rooms = {room.id: room for room in floor_plan.rooms}
-        room_map = {room.id: room.name for room in floor_plan.rooms}
-        room_identities: dict[str, str] = {}
-        identity_error = False
-        for room in floor_plan.rooms:
-            try:
-                room_identities[room.id] = room_cadence_identity(floor_plan, room.id)
-            except ValueError:
-                identity_error = True
-
-        def next_run_preview(
-            plan_id: str, plan: Mapping[str, object]
-        ) -> dict[str, object]:
-            """Project the authoritative next run without changing plan state."""
-            if identity_error:
-                return {
-                    "rooms": [],
-                    "mission_boundaries": [],
-                    "blocker": "cadence_identity_unavailable",
-                }
-            previewer = getattr(runtime.cleaning_plans, "preview", None)
-            if not callable(previewer):
-                return {
-                    "rooms": [],
-                    "mission_boundaries": [],
-                    "blocker": "preview_unavailable",
-                }
-            try:
-                vacuum_entity_id = (
-                    entry_vacuum_entity_id(hass, entry_id)
-                    if plan.get("occupancy_aware") is True
-                    else None
-                )
-                held_rooms = (
-                    occupancy_holds(hass, vacuum_entity_id, plan, room_map)
-                    if vacuum_entity_id is not None
-                    else {}
-                )
-                preview = previewer(
-                    serial_number,
-                    room_map,
-                    plan_id,
-                    floor_token=floor_token,
-                    room_identities=room_identities,
-                    floor_plan=floor_plan,
-                    **({"held_rooms": held_rooms} if held_rooms else {}),
-                )
-                preview_entries = preview.get("entries")
-                if not isinstance(preview_entries, list):
-                    preview_entries = [
-                        {"kind": "room", **room} for room in preview["rooms"]
-                    ]
-                if not preview_entries:
-                    raise ValueError("plan has no rooms")
-                projected_entries = [
-                    {
-                        "kind": "area",
-                        "area_id": str(entry["area_id"]),
-                        "name": str(entry["name"]),
-                        "cleaning_mode": str(entry["cleaning_mode"]),
-                        "coverage_setting": str(entry["coverage_setting"]),
-                        # Areas earn no cadence: they run every time.
-                        "cadence_reasons": [],
-                    }
-                    if entry.get("kind") == "area"
-                    else {
-                        "kind": "room",
-                        "room_id": str(entry["room_id"]),
-                        "name": str(entry["name"]),
-                        "cleaning_mode": str(entry["cleaning_mode"]),
-                        "coverage_setting": str(entry["coverage_setting"]),
-                        "cadence_reasons": [
-                            reason
-                            for reason, due_key in (
-                                ("mop_due", "mop_due"),
-                                ("coverage_due", "coverage_due"),
-                            )
-                            if entry.get("cadence", {}).get(due_key) is True
-                        ],
-                    }
-                    for entry in preview_entries
-                ]
-                projected_rooms = [
-                    {key: value for key, value in entry.items() if key != "kind"}
-                    for entry in projected_entries
-                    if entry["kind"] == "room"
-                ]
-                # Smart Stop runs each room in its own native mission so a
-                # room-boundary STOP cannot allow the next room to start.
-                # Custom areas remain separate missions either way.
-                boundaries = entry_mission_boundaries(
-                    projected_entries,
-                    single_room_missions=preview.get("finish_current_room") is True,
-                )
-            except RoomSequenceLimitError:
-                return {
-                    "rooms": [],
-                    "mission_boundaries": [],
-                    "blocker": "plan_room_limit",
-                }
-            except PlanAreaMissingError:
-                return {
-                    "rooms": [],
-                    "mission_boundaries": [],
-                    "blocker": "area_missing",
-                }
-            except PlanAreaMapChangedError:
-                return {
-                    "rooms": [],
-                    "mission_boundaries": [],
-                    "blocker": "area_map_changed",
-                }
-            except PlanRoomsHeldError:
-                return {
-                    "rooms": [],
-                    "mission_boundaries": [],
-                    "blocker": "plan_rooms_held",
-                    "held_rooms": [
-                        {"room_id": room_id, "name": room_map[room_id], **hold}
-                        for room_id, hold in held_rooms.items()
-                    ],
-                }
-            except (KeyError, TypeError, ValueError) as err:
-                message = str(err).casefold()
-                blocker = (
-                    "coverage_requires_vacuum"
-                    if isinstance(err, CoverageCadenceRequiresVacuumError)
-                    else "plan_disabled"
-                    if "disabled" in message
-                    else "plan_has_no_rooms"
-                    if "no rooms" in message
-                    else "cadence_identity_changed"
-                    if "different map" in message or "identity" in message
-                    else "shared_schedule_unavailable"
-                    if "shared room cadence" in message and "unavailable" in message
-                    else "cadence_progress_unverified"
-                    if "progress is unverified" in message
-                    else "invalid_cadence_policy"
-                    if "cadence" in message
-                    else "invalid_plan"
-                )
-                return {
-                    "rooms": [],
-                    "mission_boundaries": [],
-                    "blocker": blocker,
-                }
-            return {
-                "rooms": projected_rooms,
-                "entries": projected_entries,
-                "mission_boundaries": boundaries,
-                **(
-                    {"held_rooms": preview["held_rooms"]}
-                    if "held_rooms" in preview
-                    else {}
-                ),
-                "preview_token": saved_plan_preview_token(
-                    preview,
-                    entry_id=entry_id,
-                    floor_token=floor_token,
-                    room_identities=room_identities,
-                ),
-                "blocker": None,
-            }
-
-        def next_run_estimate(preview: dict[str, object]) -> int | None:
-            """Estimate the previewed run from the stored per-room durations."""
-            estimator = getattr(
-                runtime.cleaning_plans, "next_run_estimate_seconds", None
-            )
-            if preview["blocker"] is not None or not callable(estimator):
-                return None
-            entries = cast(list[dict[str, str]], preview["entries"])
-            if any(entry["kind"] == "area" for entry in entries):
-                # The robot keeps no duration history for a custom area.
-                return None
-            rooms = cast(list[dict[str, str]], preview["rooms"])
-            return cast(
-                int | None,
-                estimator(
-                    serial_number,
-                    [
-                        (
-                            room["room_id"],
-                            room["cleaning_mode"],
-                            room["coverage_setting"],
-                        )
-                        for room in rooms
-                    ],
-                ),
-            )
-
-        def cadence_state(
-            plan_id: str,
-            room_id: str,
-            name: str,
-            cleaning_mode: str,
-            coverage_setting: str,
-            *,
-            use_shared_schedule: bool = False,
-        ) -> dict[str, object]:
-            project = getattr(runtime.cleaning_plans, "cadence_editor_state", None)
-            if not callable(project):
-                return {"cadence": None}
-            try:
-                identity = room_cadence_identity(floor_plan, room_id)
-            except ValueError:
-                return {
-                    "cadence": None,
-                    "cadence_progress": None,
-                    "cadence_reasons": ["room_not_on_current_map"],
-                }
-            return cast(
-                dict[str, object],
-                project(
-                    serial_number,
-                    plan_id,
-                    CleaningRoom(room_id, name, cleaning_mode, coverage_setting),
-                    floor_token=floor_token,
-                    identity=identity,
-                    use_shared_schedule=use_shared_schedule,
-                ),
-            )
-
-        saved_areas: Mapping[str, object] | None = None
-
-        def area_entry_name(area_id: str) -> str:
-            """Name an area entry, falling back to its ID once it is gone."""
-            nonlocal saved_areas
-            if saved_areas is None:
-                saved_areas = runtime.cleaning_plans.areas(serial_number)
-            area = saved_areas.get(area_id)
-            name = area.get("name") if isinstance(area, Mapping) else None
-            return name if isinstance(name, str) else area_id
-
-        plans = []
-        for plan_id, plan in runtime.cleaning_plans.plans(serial_number).items():
-            raw_rooms = plan.get("rooms", [])
-            rooms = []
-            for room in raw_rooms:
-                if not isinstance(room, dict) or not room.get("room_id"):
-                    continue
-                room_id = str(room["room_id"])
-                cleaning_mode = str(
-                    room.get("cleaning_mode", CleaningMode.VACUUM.value)
-                )
-                coverage_setting = str(
-                    room.get("coverage_setting", CoverageSetting.OPTIMAL.value)
-                )
-                plan_room_projection: dict[str, object] = {
-                    "room_id": str(room.get("room_id", "")),
-                    "cleaning_mode": cleaning_mode,
-                    "coverage_setting": coverage_setting,
-                }
-                current = current_rooms.get(room_id)
-                if current is not None:
-                    cadence = cadence_state(
-                        plan_id,
-                        room_id,
-                        current.name,
-                        cleaning_mode,
-                        coverage_setting,
-                    )
-                    cadence_reasons = cadence.get("cadence_reasons", [])
-                    if cadence["cadence"] is not None or cadence_reasons:
-                        plan_room_projection.update(cadence)
-                rooms.append(plan_room_projection)
-            try:
-                entries = plan_entries(plan)
-            except ValueError:
-                # The preview names the problem; list the rooms that remain.
-                entries = plan_entries({"rooms": raw_rooms})
-            # Stored area entries carry only an ID; name them for the editor.
-            entries = [
-                {**entry, "name": area_entry_name(entry["area_id"])}
-                if entry["kind"] == "area"
-                else entry
-                for entry in entries
-            ]
-            preview = next_run_preview(plan_id, plan)
-            plans.append(
-                {
-                    "id": plan_id,
-                    "name": str(plan.get("name", plan_id)),
-                    "enabled": bool(plan.get("enabled", True)),
-                    "run_behavior": str(plan.get("run_behavior", "intelligent")),
-                    "rooms": rooms,
-                    "room_order": [
-                        str(room_id) for room_id in plan.get("room_order", [])
-                    ],
-                    "entries": entries,
-                    "return_to_base": bool(plan.get("return_to_base", True)),
-                    "finish_current_room": bool(plan.get("finish_current_room", False)),
-                    "finish_current_room_threshold": int(
-                        plan.get("finish_current_room_threshold", 50)
-                    ),
-                    "occupancy_aware": plan.get("occupancy_aware") is True,
-                    "occupancy_sensors": plan_occupancy_sensors(plan),
-                    "next_run_preview": preview,
-                    "next_run_estimate_seconds": next_run_estimate(preview),
-                }
-            )
-        selected_plan = runtime.cleaning_plans.snapshot(serial_number).get(
-            "selected_plan"
-        )
-        room_projections: list[dict[str, object]] = []
-        for room in floor_plan.rooms:
-            workspace_room_projection: dict[str, object] = {
-                "room_id": room.id,
-                "name": room.name,
-            }
-            delete_token = getattr(
-                runtime.cleaning_plans, "shared_cadence_delete_token", None
-            )
-            if callable(delete_token):
-                token = delete_token(serial_number, room.id)
-                if (
-                    isinstance(token, str)
-                    and len(token) == 64
-                    and all(char in "0123456789abcdef" for char in token)
-                ):
-                    workspace_room_projection["shared_cadence_delete_token"] = token
-            cadence = cadence_state(
-                "quick_clean",
-                room.id,
-                room.name,
-                CleaningMode.VACUUM.value,
-                CoverageSetting.OPTIMAL.value,
-                use_shared_schedule=True,
-            )
-            if cadence["cadence"] is not None:
-                workspace_room_projection.update(
-                    {
-                        "shared_cadence": cadence["cadence"],
-                        "shared_cadence_progress": cadence["cadence_progress"],
-                        "shared_cadence_reasons": cadence["cadence_reasons"],
-                    }
-                )
-            elif cadence.get("cadence_reasons"):
-                workspace_room_projection["shared_cadence_reasons"] = cadence[
-                    "cadence_reasons"
-                ]
-            room_projections.append(workspace_room_projection)
-        return self.json(
-            {
-                "rooms": room_projections,
-                "plans": plans[:256],
-                "selected_plan": selected_plan,
-            },
-            headers=PRIVATE_NO_STORE_HEADERS,
-        )
 
 
 def _encode_scene_entries(
@@ -1910,7 +1148,7 @@ class MaticRunHistoryView(HomeAssistantView):
     @require_admin
     async def get(self, request: web.Request, entry_id: str) -> web.Response:
         """Return the run list, or one trail when ``trail`` names it."""
-        runtime = _runtime_for_entry(request.app[KEY_HASS], entry_id)
+        runtime = runtime_for_entry(request.app[KEY_HASS], entry_id)
         trails: RunTrails | None = getattr(runtime, "run_trails", None)
         if runtime is None or trails is None:
             return web.Response(
@@ -1942,7 +1180,7 @@ class MaticRunHistoryView(HomeAssistantView):
         except MaticError, TimeoutError:
             robot_history = False
         serial_number = str(runtime.coordinator.data.info.serial_number)
-        runs = runtime.cleaning_plans.run_history(serial_number, native)
+        runs = runtime.cleaning_plans.ledger.run_history(serial_number, native)
         for run in runs:
             run["trail"] = (
                 trails.trail_id(map_key, run_id=run["id"])

@@ -11,7 +11,7 @@ without an integration-imposed dock visit between settings. The robot still
 handles battery, water, and other servicing as needed.
 
 Custom areas never share a mission with rooms. `plan_legs` and
-`entry_mission_boundaries` in `plans.py` close the current room mission at each
+`entry_mission_boundaries` in [`plan_model.py`](../custom_components/matic_robot/plan_model.py) close the current room mission at each
 area, run the area as its own mission, and start a new mission for the rooms
 after it. The robot heads back to its dock after each area, and it docked after
 every area of a three-area plan on 0.5.0rc44. Docking isn't a required
