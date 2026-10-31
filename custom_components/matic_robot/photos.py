@@ -23,8 +23,8 @@ PHOTO_COLLECTION = "instamatic_snaps"
 MAX_PHOTO_ENTRIES = 64
 # The robot counts down for about 9 s and stores the photo about 6 s after
 # the command, so the first read waits past both and a second read covers a
-# slow save.
-SNAP_READ_DELAYS_SECONDS = (12.0, 20.0)
+# slow save. Each delay follows the previous read: reads at +12 s and +20 s.
+SNAP_READ_DELAYS_SECONDS = (12.0, 8.0)
 
 
 class RobotPhotoStore:
