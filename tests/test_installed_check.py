@@ -109,6 +109,8 @@ class FakeHomeAssistant:
         self.backups: list[dict[str, Any]] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.served = dict(candidate.served)
+        self.sent: list[str] = []
+        self.clean_error: str | None = None
 
     def services_called(self) -> list[str]:
         return [
@@ -165,13 +167,16 @@ class FakeHomeAssistant:
 
     async def send(self, message_type: str, **data: Any) -> int:
         self.calls.append((message_type, data))
-        return 7
+        self.sent.append(message_type)
+        return len(self.sent)
 
     async def receive(self, message_id: int) -> dict[str, Any]:
-        return {
-            "id": message_id,
-            "event": {"manager_state": "create_backup", "state": "completed"},
-        }
+        if self.sent[message_id - 1] == "backup/subscribe_events":
+            event = {"manager_state": "create_backup", "state": "completed"}
+            return {"id": message_id, "event": event}
+        if self.clean_error is not None:
+            return {"id": message_id, "success": False, "error": self.clean_error}
+        return {"id": message_id, "success": True}
 
     async def get(self, path: str) -> tuple[int, bytes]:
         body = self.served.get(path)
@@ -410,3 +415,44 @@ async def test_client_authenticates_and_matches_replies_by_id(
 def test_physical_needs_a_room() -> None:
     with pytest.raises(SystemExit):
         main(["v0.6.0b1", "--url", "http://ha", "--receipts", "r", "--physical"])
+
+
+async def test_a_failed_clean_action_fails_the_physical_step() -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+    ha.robot_states = ["docked", "docked", "cleaning", "docked"]
+    ha.clean_error = "rooms held"
+    options = Options(install=False, room="Kitchen", confirm=lambda _: "Kitchen")
+    check = InstalledCheck(ha, candidate, options)  # type: ignore[arg-type]
+    receipt = (await check.run()).as_json()
+    assert receipt["steps"][-1]["error"] == "the clean action failed: rooms held"
+    assert ha.services_called() == ["matic_robot.clean"]
+
+
+async def test_a_robot_that_never_leaves_the_dock_times_out() -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+    options = Options(install=False, room="Kitchen", confirm=lambda _: "Kitchen")
+    check = InstalledCheck(ha, candidate, options)  # type: ignore[arg-type]
+    check.dock_timeout = 0.05
+    receipt = (await check.run()).as_json()
+    assert receipt["steps"][-1]["error"] == "the robot did not leave the dock in time"
+
+
+async def test_an_unexpected_error_is_still_recorded(tmp_path: Path) -> None:
+    candidate = _candidate()
+    ha = FakeHomeAssistant(candidate)
+
+    async def disconnected() -> tuple[int, bytes]:
+        raise ConnectionResetError("socket closed")
+
+    ha.get = lambda _: disconnected()  # type: ignore[method-assign]
+    check = InstalledCheck(ha, candidate, Options(install=False))  # type: ignore[arg-type]
+    receipt = await check.run()
+    written = json.loads(receipt.write(tmp_path).read_text())
+    assert written["result"] == "failed"
+    assert written["steps"][-1] == {
+        **written["steps"][-1],
+        "name": "served_assets",
+        "error": "ConnectionResetError('socket closed')",
+    }

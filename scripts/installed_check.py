@@ -313,9 +313,12 @@ class InstalledCheck:
                 continue
             try:
                 evidence = await step()
-            except CheckFailed as err:
+            except Exception as err:
+                # Record any failure, so a receipt always shows where the run
+                # stopped, even after the host was changed.
+                error = str(err) if isinstance(err, CheckFailed) else repr(err)
                 self.receipt.steps.append(
-                    Step(name, "failed", started, _now(), error=str(err))
+                    Step(name, "failed", started, _now(), error=error)
                 )
                 break
             self.receipt.steps.append(Step(name, "passed", started, _now(), evidence))
@@ -471,7 +474,9 @@ class InstalledCheck:
         if answer.strip() != room:
             raise CheckFailed("the owner did not confirm; nothing was sent")
         started = _now()
-        await self.ha.call(
+        # The clean action can block for the whole run, so watch the robot
+        # leave and return to the dock before reading the action's result.
+        clean = await self.ha.send(
             "call_service",
             domain=DOMAIN,
             service="clean",
@@ -482,7 +487,10 @@ class InstalledCheck:
                 "coverage_setting": "quick",
             },
         )
-        await self._wait_for_dock()
+        await self._wait_for(lambda state: state != "docked", "leave the dock")
+        await self._wait_for(lambda state: state == "docked", "dock")
+        if not (reply := await self.ha.receive(clean)).get("success", True):
+            raise CheckFailed(f"the clean action failed: {reply.get('error')}")
         cleaned = _now()
         await self.ha.call(
             "call_service",
@@ -495,7 +503,7 @@ class InstalledCheck:
             "The robot is going to the sink. Refill it, send it home, then press "
             "Enter: "
         )
-        await self._wait_for_dock()
+        await self._wait_for(lambda state: state == "docked", "dock")
         return {"room": room, "clean_started": started, "clean_docked": cleaned}
 
     async def _robot_state(self) -> str:
@@ -505,15 +513,15 @@ class InstalledCheck:
             state["state"] for state in states if state["entity_id"] == self.robot
         )
 
-    async def _wait_for_dock(self) -> None:
+    async def _wait_for(self, reached: Callable[[str], bool], what: str) -> None:
         try:
             async with asyncio.timeout(self.dock_timeout):
                 while True:
-                    if await self._robot_state() == "docked":
+                    if reached(await self._robot_state()):
                         return
                     await asyncio.sleep(self.ha.poll_interval)
         except TimeoutError:
-            raise CheckFailed("the robot did not dock in time") from None
+            raise CheckFailed(f"the robot did not {what} in time") from None
 
 
 def call_mcp_tools(command: list[str], names: tuple[str, ...]) -> dict[str, bool]:
