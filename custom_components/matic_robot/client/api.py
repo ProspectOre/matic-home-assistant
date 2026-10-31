@@ -47,6 +47,7 @@ from .commands import (
     encode_go_to_room_command,
     encode_mission_id,
     encode_mixed_coverage_commands,
+    encode_redo_coverage_command,
     encode_sink_summon_command,
     encode_user_command,
     encode_user_data,
@@ -1629,6 +1630,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 region_id=room.protocol_id,
             ),
             command_name="GO_TO_ROOM",
+        )
+
+    async def async_redo_clean(self, session_key: bytes) -> None:
+        """Clean a finished session again, keyed by its native history key."""
+        await self._async_send_user_payload(
+            encode_redo_coverage_command(session_key),
+            command_name="REDO_COVERAGE",
         )
 
     async def async_change_queue(

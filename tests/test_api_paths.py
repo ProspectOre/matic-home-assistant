@@ -34,6 +34,7 @@ from custom_components.matic_robot.client.commands import (
     CoverageSetting,
     UserCommand,
     encode_go_to_room_command,
+    encode_redo_coverage_command,
 )
 from custom_components.matic_robot.client.endpoints import (
     HERMES_ENDPOINT_MAP,
@@ -3130,4 +3131,16 @@ async def test_go_to_room_sends_the_room_goal_on_its_floor() -> None:
             region_id="11111111-1111-4111-8111-111111111111",
         ),
         command_name="GO_TO_ROOM",
+    )
+
+
+async def test_redo_clean_sends_the_session_key() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._async_send_user_payload = AsyncMock()
+    key = bytes.fromhex("1214121209" + "aa" * 8 + "11" + "bb" * 8)
+
+    await client.async_redo_clean(key)
+
+    client._async_send_user_payload.assert_awaited_once_with(
+        encode_redo_coverage_command(key), command_name="REDO_COVERAGE"
     )

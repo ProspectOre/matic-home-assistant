@@ -112,6 +112,13 @@ actions:
         kind: snap
 ```
 
+## Repeat the last clean
+
+`vacuum.send_command` with `command: redo_last_clean` cleans the robot's most
+recent finished clean again, like **Clean again** in the Matic app's history.
+It starts only while the robot is docked or idle and, like any direct clean,
+ends a plan docked between rooms. It has not been tried on a real robot yet.
+
 ## Skip, clean next or clean again
 
 **Skip room**, **Clean room next** and **Clean room again** change the clean
