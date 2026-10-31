@@ -1035,6 +1035,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     if session.mode_results
                 },
                 "room_durations": dict(session.room_durations),
+                "stop_reason": session.stop_reason,
                 "firmware_version": version,
             },
         )

@@ -212,6 +212,7 @@ _SAFE_EVENT_FIELDS = (
     "vacuum_completed_room_count",
     "mop_completed_room_count",
     "combined_completed_room_count",
+    "stop_reason",
 )
 # English text of each `llm_*` exception; strings.json holds the same words.
 _ERRORS = {
