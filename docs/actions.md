@@ -77,9 +77,9 @@ room ID. The same `vacuum.send_command` command is `go_to_room` with
 
 Go to room follows the sink refill's rules: sent during a clean, the robot keeps
 its task and the plan driving it, and from the dock or while idle it ends a plan
-docked between rooms. It never marks a room as cleaned. The command uses the
-robot's room goal, which the Matic app does not send itself, so how long the
-robot stays before docking has not been measured yet.
+docked between rooms. It never marks a room as cleaned. Sent from the dock, the
+robot reaches the room and waits there for 10 minutes before heading back on
+its own; `stay_put` keeps it there.
 
 ```yaml
 actions:
@@ -94,7 +94,8 @@ actions:
 
 `vacuum.send_command` with `command: stay_put` tells the robot to stay where it
 is rather than return to the dock. The Matic app sends it when you cancel the
-robot's own countdown to dock after a task. Home Assistant's Stop always docks,
+robot's own countdown to dock after a task; on a real robot it cancelled that
+countdown and the robot stayed put. Home Assistant's Stop always docks,
 so stay put waits until that return has settled; use Pause to keep the robot
 where it is. `command: emote` with `params: {kind: snap}` takes
 a photo with the robot's camera, which then shows in the Matic app. The kinds
@@ -111,6 +112,14 @@ actions:
       params:
         kind: snap
 ```
+
+## Repeat the last clean
+
+`vacuum.send_command` with `command: redo_last_clean` cleans the robot's most
+recent finished clean again, like **Clean again** in the Matic app's history.
+It starts only while the robot is docked or idle and, like any direct clean,
+ends a plan docked between rooms. Tried on a real robot, it started the same
+rooms as the previous clean within 10 seconds.
 
 ## Skip, clean next or clean again
 
