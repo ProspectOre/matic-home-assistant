@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from aiohttp import WSMsgType, web
@@ -20,6 +22,7 @@ from scripts.installed_check import (
     HomeAssistant,
     InstalledCheck,
     Options,
+    Receipt,
     call_mcp_tools,
     compare_files,
     main,
@@ -469,3 +472,18 @@ async def test_an_unexpected_error_is_still_recorded(tmp_path: Path) -> None:
         "name": "served_assets",
         "error": "ConnectionResetError('socket closed')",
     }
+
+
+def test_receipts_with_the_same_timestamp_do_not_overwrite(tmp_path: Path) -> None:
+    candidate = _candidate()
+    receipt = Receipt(candidate)
+    with patch("scripts.installed_check.datetime") as clock:
+        clock.now.return_value = datetime(2026, 10, 30, 12, 0, 0, tzinfo=UTC)
+        first = receipt.write(tmp_path)
+        first_contents = first.read_text()
+        second = receipt.write(tmp_path)
+
+    assert first.name == f"{candidate.tag}-20261030T120000Z.json"
+    assert second.name == f"{candidate.tag}-20261030T120000Z-1.json"
+    assert first.read_text() == first_contents
+    assert json.loads(second.read_text())["candidate"]["commit"] == candidate.commit

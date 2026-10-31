@@ -179,9 +179,18 @@ class Receipt:
         """Write the receipt next to earlier ones and return its path."""
         directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        path = directory / f"{self.candidate.tag}-{stamp}.json"
-        path.write_text(json.dumps(self.as_json(), indent=2) + "\n")
-        return path
+        contents = json.dumps(self.as_json(), indent=2) + "\n"
+        suffix = 0
+        while True:
+            collision = f"-{suffix}" if suffix else ""
+            path = directory / f"{self.candidate.tag}-{stamp}{collision}.json"
+            try:
+                with path.open("x", encoding="utf-8") as receipt_file:
+                    receipt_file.write(contents)
+            except FileExistsError:
+                suffix += 1
+            else:
+                return path
 
 
 class HomeAssistant:
