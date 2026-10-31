@@ -29,6 +29,7 @@ from custom_components.matic_robot.run_history import (
     history_entries,
     managed_entry,
     native_entry,
+    native_run_id,
     repair_run_history,
     run_areas,
     run_ending,
@@ -258,6 +259,7 @@ def test_managed_entry_projects_stored_and_live_runs() -> None:
         "ending": "unknown",
         "rooms": run_rooms(robot, _run()),
         "areas": run_areas(robot, _run()),
+        "thumbnail": None,
     }
     manual = managed_entry(robot, {**stored, "rooms": "bad"}, manual=True)
     assert manual["plan_name"] is None
@@ -322,6 +324,7 @@ def _session(**changes) -> CleaningSession:
 def test_native_entry_reports_robot_results_without_reasons() -> None:
     entry = native_entry(CleaningSessionRecord(b"key", _session()))
     assert entry["id"].startswith("robot-")
+    assert entry["thumbnail"] == entry["id"] == native_run_id(b"key")
     assert entry["source"] == "robot"
     assert entry["outcome"] == "unknown"
     assert entry["ending"] == "unknown"
@@ -369,6 +372,12 @@ def test_history_merges_newest_first_without_duplicate_missions() -> None:
         native_entry(native[1])["id"],
     ]
     assert entries[0]["outcome"] == "running"
+    # run-1 shows the map of its own mission, the record it hides.
+    assert [entry["thumbnail"] for entry in entries] == [
+        None,
+        native_run_id(b"a"),
+        native_run_id(b"b"),
+    ]
 
     # A later mission of the run in progress stays part of that run.
     later = CleaningSessionRecord(

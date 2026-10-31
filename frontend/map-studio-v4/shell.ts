@@ -173,9 +173,18 @@ const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateForm
     const area = roomKey(state.currentArea);
     const room = area && state.resources.scene.value?.metadata.rooms.find((candidate) => roomKey(candidate.name) === area || roomKey(candidate.id) === area)?.name;
     const progress = state.lastRun?.outcome === "running" ? state.lastRun : null;
-    const estimate = roomProgressEstimate();
+    const run = state.robotRun;
+    const minutes = run?.remainingSeconds == null ? null : Math.max(1, Math.round(run.remainingSeconds / 60));
+    // The robot's whole-run estimate stands in when no room estimate applies.
+    const estimate = roomProgressEstimate() ?? (run?.percent != null && minutes !== null
+      ? t("v4_run_time_left", "{percent}% done · about {minutes} min left", { percent: run.percent, minutes })
+      : undefined);
+    const title = run?.phase === "interior" ? t("v4_cleaning_interior", "Cleaning the interior")
+      : run?.phase === "edges" ? t("v4_cleaning_edges", "Cleaning edges")
+      : run?.phase === "toekicks" ? t("v4_cleaning_toekicks", "Cleaning toekicks")
+      : t("v4_cleaning", "Cleaning");
     return {
-      title: t("v4_cleaning", "Cleaning"),
+      title,
       estimate,
       detail: mapUnavailable ? t("v4_active_map_unavailable", "Live map unavailable") : progress
         ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: progress.completedRoomCount, total: progress.roomCount })

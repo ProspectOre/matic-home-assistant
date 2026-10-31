@@ -660,6 +660,12 @@ export class RendererController {
     return { yaw: camera.yaw, pitch: camera.pitch, zoom: home / camera.distance, targetX: camera.targetX, targetZ: camera.targetZ };
   }
 
+  /** Pans to a map point in metres, keeping zoom and angle; a pan the user did not make is not saved. */
+  centerOnMeters(x: number, y: number): void {
+    const world = this.#worldForMeters(x, y);
+    if (world) this.setCamera({ ...this.#camera, targetX: world[0], targetZ: world[1] }, false);
+  }
+
   /** The world position of a map point in metres (the overlay's coordinate space). */
   #worldForMeters(x: number, y: number): readonly [number, number] | null {
     const scene = this.#scene;

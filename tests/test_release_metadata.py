@@ -795,7 +795,7 @@ def test_documented_entity_surface_matches_release_contract() -> None:
     automation = " ".join((ROOT / "docs" / "automation.md").read_text().split())
     entities = " ".join((ROOT / "docs" / "entities.md").read_text().split())
     surface = (
-        "55 fixed entities — 24 sensors, 11 binary sensors, 5 buttons, "
+        "58 fixed entities — 27 sensors, 11 binary sensors, 5 buttons, "
         "4 switches, 4 selects, 1 number, 2 cameras, 1 calendar, 1 event, "
         "1 update, and 1 vacuum"
     )

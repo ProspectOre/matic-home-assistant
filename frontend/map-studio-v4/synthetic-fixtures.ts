@@ -249,18 +249,18 @@ export const syntheticRuns = (): RunHistory => ({
       id: "run-3", source: "home_assistant", startedAt: "2026-10-29T16:05:00+00:00", endedAt: "2026-10-29T16:41:00+00:00",
       planName: "Daily clean", outcome: "not_finished", ending: "low_battery",
       rooms: [{ name: "Kitchen", result: "completed" }, { name: "Living room", result: "interrupted" }, { name: "Office", result: "not_started" }],
-      areas: [], trail: "trail-3",
+      areas: [], trail: "trail-3", thumbnail: null,
     },
     {
       id: "run-2", source: "home_assistant", startedAt: "2026-10-28T16:00:00+00:00", endedAt: "2026-10-28T16:52:00+00:00",
       planName: "Daily clean", outcome: "finished", ending: "finished",
       rooms: [{ name: "Kitchen", result: "completed" }, { name: "Living room", result: "completed" }, { name: "Office", result: "skipped" }],
-      areas: [], trail: null,
+      areas: [], trail: null, thumbnail: null,
     },
     {
       id: "robot-1", source: "robot", startedAt: "2026-10-27T09:12:00+00:00", endedAt: "2026-10-27T09:30:00+00:00",
       planName: null, outcome: "unknown", ending: "unknown",
-      rooms: [{ name: "Bedroom", result: "partial" }], areas: [], trail: null,
+      rooms: [{ name: "Bedroom", result: "partial" }], areas: [], trail: null, thumbnail: "robot-1",
     },
   ],
 });

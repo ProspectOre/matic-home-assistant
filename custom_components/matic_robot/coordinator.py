@@ -41,6 +41,7 @@ from .client.models import (
     RobotPose,
     RobotState,
     RobotTelemetry,
+    RunProgress,
 )
 from .const import (
     CUES_EVENT_TYPES,
@@ -416,9 +417,13 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             floor_plan, pose = map_state
             # Task evidence belongs to this raw snapshot, before presentation
             # confirms/suppresses transient problem codes.
+            active = operational.native_session_activity()
             telemetry = replace(
                 telemetry,
-                active_cleaning_session=operational.native_session_activity(),
+                active_cleaning_session=active,
+                run_progress=await self._async_optional_run_progress()
+                if active
+                else None,
             )
             operational = self._async_resolve_bag_capability(operational)
             operational = self._async_confirm_robot_errors(operational)
@@ -883,6 +888,14 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             )
         except MaticError as err:
             _LOGGER.debug("Optional Hermes pose unavailable: %s", err)
+            return None
+
+    async def _async_optional_run_progress(self) -> RunProgress | None:
+        """Read the running clean's time without hiding core state."""
+        try:
+            return await self.client.async_get_run_progress()
+        except MaticError as err:
+            _LOGGER.debug("Optional Hermes run progress unavailable: %s", err)
             return None
 
     async def _async_optional_telemetry(self) -> RobotTelemetry:

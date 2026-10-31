@@ -36,6 +36,7 @@ export class MaticRunHistoryV4 extends LitElement {
 .items [data-done] { color: inherit; }
 .list { display: grid; gap: var(--ms-space-2); }
 .list .run { padding: 0; border: 0; }
+.thumbnail { display: block; inline-size: 100%; max-block-size: 12rem; object-fit: contain; border-radius: var(--ms-radius-sm); background: var(--ms-surface-sunken); }
 .next p { white-space: pre-line; }
 `];
 
@@ -46,6 +47,22 @@ export class MaticRunHistoryV4 extends LitElement {
   emit: (intent: WorkspaceIntent) => void = () => {};
   /** The earlier run whose details are open; one at a time. */
   _open: string | null = null;
+
+  // Cleaning history asks for the pictures of the runs it shows: the last one
+  // and the earlier one open.
+  protected override updated(): void {
+    const runs = this.#history()?.runs ?? [];
+    for (const run of [runs[0], runs.find((candidate) => candidate.id === this._open)]) {
+      if (run?.thumbnail && !(run.thumbnail in this.state.runThumbnails)) {
+        this.emit({ type: "load-run-thumbnail", id: run.thumbnail });
+      }
+    }
+  }
+
+  #history() {
+    const resource = this.state.resources.runs;
+    return resource.value?.entryId === this.state.resources.entry?.entryId ? resource.value : null;
+  }
 
   #t(key: string, fallback: string, placeholders?: NoticePlaceholders): string {
     return translate(this.localize, key, fallback, placeholders, this.dates);
@@ -116,7 +133,9 @@ export class MaticRunHistoryV4 extends LitElement {
   #details(run: RunRecord, outcome: boolean) {
     const shown = this.state.trail?.id === run.trail && run.trail !== null;
     const next = this.#nextStep(run);
+    const picture = run.thumbnail ? this.state.runThumbnails[run.thumbnail] : undefined;
     return html`
+      ${picture ? html`<img class="thumbnail" src=${picture} alt=${this.#t("v4_run_map_picture", "The robot's map of this clean")}>` : nothing}
       ${outcome ? html`<p><strong>${this.#outcome(run)}</strong></p>` : nothing}
       ${run.source === "robot" ? html`<p class="subtle">${this.#t("v4_run_from_robot", "Started from the Matic app or the robot")}</p>` : nothing}
       ${run.rooms.length || run.areas.length ? this.#items([...run.rooms, ...run.areas])
@@ -145,7 +164,7 @@ export class MaticRunHistoryV4 extends LitElement {
 
   protected override render() {
     const resource = this.state.resources.runs;
-    const history = resource.value?.entryId === this.state.resources.entry?.entryId ? resource.value : null;
+    const history = this.#history();
     if (!history) {
       return html`<div class="stack">${this.#next()}${resource.status === "error"
         ? html`<p>${this.#t("v4_runs_unavailable", "Cleaning history isn't available right now.")}</p>
