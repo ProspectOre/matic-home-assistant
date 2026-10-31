@@ -35,6 +35,25 @@ class RobotActivity(StrEnum):
     READY = "ready"
 
 
+class CleaningPhase(StrEnum):
+    """Part of a room the robot is cleaning, as the Matic app names it."""
+
+    INTERIOR = "interior"
+    EDGES = "edges"
+    TOEKICKS = "toekicks"
+
+
+# ``kabuki_state`` reports the current goal's behavior as 130 plus the goal's
+# behavior number. Live runs paired 132 with the app's toekicks text and both
+# 131 and 133 with edge text; 130 is the remaining interior pass.
+CLEANING_PHASE_CODES: dict[int, CleaningPhase] = {
+    130: CleaningPhase.INTERIOR,
+    131: CleaningPhase.EDGES,
+    132: CleaningPhase.TOEKICKS,
+    133: CleaningPhase.EDGES,
+}
+
+
 class CuesVoiceStatus(StrEnum):
     """Privacy-safe Matic Cues voice lifecycle reported by the robot."""
 
@@ -185,12 +204,44 @@ class RobotOperationalState:
         return tuple(ROBOT_ALERTS.get(code, "unknown") for code in self.error_codes)
 
     @property
+    def cleaning_phase(self) -> CleaningPhase | None:
+        """Return the phase of the current goal while a clean is under way."""
+        if not self.cleaning:
+            return None
+        return next(
+            (
+                CLEANING_PHASE_CODES[code]
+                for code in self.state_codes
+                if code in CLEANING_PHASE_CODES
+            ),
+            None,
+        )
+
+    @property
     def alert(self) -> str:
         """Return the first named alert, ``unknown``, or ``none``."""
         return next(
             (name for name in self.alerts if name != "unknown"),
             "unknown" if self.error_codes else "none",
         )
+
+
+@dataclass(frozen=True, slots=True)
+class RunProgress:
+    """The robot's own time accounting for the clean under way."""
+
+    elapsed_seconds: int
+    remaining_seconds: int
+
+    @property
+    def percent(self) -> int:
+        """Return elapsed time as a share of elapsed plus remaining time.
+
+        The robot re-estimates the remaining time when the queue changes, so
+        this can step down after rooms are added.
+        """
+        total = self.elapsed_seconds + self.remaining_seconds
+        return round(100 * self.elapsed_seconds / total) if total else 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,6 +287,7 @@ class RobotTelemetry:
     sink_summon_locations: int | None = None
     zones: tuple[MapZone, ...] = ()
     coverage_time_seconds: int | None = None
+    run_progress: RunProgress | None = None
     # Raw part codes from the newest monthly recap. None when it could not be
     # read; empty when it suggests nothing.
     maintenance_suggestions: tuple[int, ...] | None = None

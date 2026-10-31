@@ -33,6 +33,8 @@ export interface RunRecord {
   readonly areas: readonly RunItem[];
   /** A trail recorded on the map shown now; null when none matches it. */
   readonly trail: string | null;
+  /** The robot history id of this clean's map picture; the robot may have none. */
+  readonly thumbnail: string | null;
 }
 
 export interface RunHistory {
@@ -112,6 +114,7 @@ export const parseRunHistory = (value: unknown): RunHistory => {
         rooms: items(run.rooms),
         areas: items(run.areas),
         trail: optionalText(run.trail, 64, "invalid-run"),
+        thumbnail: optionalText(run.thumbnail, 64, "invalid-run"),
       } satisfies RunRecord;
     }),
   };

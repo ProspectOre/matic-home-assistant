@@ -5,7 +5,7 @@
 Build dashboards, adjust settings, and use cleaning results in automations.
 Enable per-room statistics to track each room’s last clean and successful duration.
 
-Each robot has 55 fixed entities — 24 sensors, 11 binary sensors, 5 buttons,
+Each robot has 58 fixed entities — 27 sensors, 11 binary sensors, 5 buttons,
 4 switches, 4 selects, 1 number, 2 cameras, 1 calendar, 1 event, 1 update, and
 1 vacuum,
 plus two opt-in statistics sensors per mapped room.
@@ -43,6 +43,7 @@ are disabled by default; enable them from the device's entity list.
 | Current room expected duration | `sensor.matic_current_room_expected_duration` | on |
 | Current room estimated progress | `sensor.matic_current_room_estimated_progress` | on |
 | Last clean duration | `sensor.matic_last_run_duration` | on |
+| Cleaning phase · Run progress · Time remaining | `sensor.matic_cleaning_phase` · `sensor.matic_run_progress` · `sensor.matic_time_remaining` | on |
 | Firmware check status · Update status | `sensor.matic_firmware_compatibility` · `sensor.matic_update_state` | on |
 | Cues voice status · Cues gesture status | `sensor.matic_cues_voice_status` · `sensor.matic_cues_gesture_status` | on |
 | Wi-Fi status · Wi-Fi signal | `sensor.matic_wifi_state` · `sensor.matic_wifi_signal` | off |
@@ -68,8 +69,8 @@ during the scan, which takes about seven seconds. Clear Wi-Fi survey deletes
 the readings, for example after you move your router.
 
 Paused, Returning to dock and Fully charged repeat **Activity**, so they start
-disabled. The status sensors (Activity, Firmware check status, Update status,
-Wi-Fi status, both Cues statuses) offer their states as a pick list in the
+disabled. The status sensors (Activity, Cleaning phase, Firmware check status, Update
+status, Wi-Fi status, both Cues statuses) offer their states as a pick list in the
 automation editor. Duration sensors store seconds: room timing and coverage time
 suggest minutes, Last clean duration suggests hours, and you can choose another
 unit. Existing unit choices stay, and fields ending in `_seconds` stay seconds.
@@ -86,6 +87,14 @@ and percentage stay unknown. Matic Map and Smart Stop use the same estimate,
 which can be up to five seconds behind. Even **Estimated 100%** does not prove
 completion, so use confirmed room results for completion automations. A custom
 area, or a run Home Assistant can't match to the current room, has no estimate.
+
+Cleaning phase, Run progress and Time remaining come from the robot and cover
+any clean, including one started in the Matic app or by a robot schedule. They
+are unknown when no clean is under way. Cleaning phase names the part of the
+room being cleaned: interior, edges or toekicks. Time remaining is the robot's
+own estimate for the whole clean, read every 30 seconds; Run progress is the
+time spent so far as a share of that time plus the time remaining. Adding rooms
+to a running clean raises the estimate, so Run progress can step back.
 
 ## Controls
 

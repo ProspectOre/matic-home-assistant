@@ -19,6 +19,7 @@ from custom_components.matic_robot.client.api import (
     _decode_deep_mop_state,
     _decode_nested_timestamp,
     _decode_presence_state,
+    _decode_run_progress,
     _decode_schedule,
     _decode_text_field,
     _decode_timezone,
@@ -28,7 +29,12 @@ from custom_components.matic_robot.client.api import (
     _decode_wifi_status,
 )
 from custom_components.matic_robot.client.commands import CleaningMode, _coverage_specs
-from custom_components.matic_robot.client.models import HermesCollectionEntry
+from custom_components.matic_robot.client.models import (
+    CleaningPhase,
+    HermesCollectionEntry,
+    RobotOperationalState,
+    RunProgress,
+)
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -533,6 +539,52 @@ def test_decode_auxiliary_states() -> None:
     assert _decode_uploader_state(b"tombstone-value!") is False
     assert _decode_coverage_time(_bfield(3, _vfield(1, 321))) == 321
     assert _decode_coverage_time(b"tombstone-value!") is None
+
+
+def test_decode_run_progress_from_a_running_clean() -> None:
+    running = _bfield(
+        4,
+        _bfield(1, b"session")
+        + _bfield(2, _vfield(1, 2231))
+        + _bfield(3, _bfield(1, _bfield(1, _vfield(1, 3607)))),
+    )
+    progress = _decode_run_progress(running)
+    assert progress == RunProgress(2231, 3607)
+    assert progress is not None and progress.percent == 38
+    assert RunProgress(0, 0).percent == 0
+    # Idle firmware sends a 16-byte value without field 4.
+    assert _decode_run_progress(b"tombstone-value!") is None
+    assert _decode_run_progress(_bfield(3, _vfield(1, 321))) is None
+    assert _decode_run_progress(_bfield(4, _bfield(2, _vfield(1, 5)))) is None
+    assert _decode_run_progress(_vfield(4, 1)) is None
+    assert _decode_run_progress(b"\xff") is None
+
+
+async def test_client_reads_run_progress_from_coverage_time() -> None:
+    client = MaticHermesClient("192.0.2.1", 16320)
+    client.async_get_property = AsyncMock(return_value=b"tombstone-value!")
+    assert await client.async_get_run_progress() is None
+    client.async_get_property.assert_awaited_once_with("coverage_time")
+
+
+@pytest.mark.parametrize(
+    ("codes", "phase"),
+    [
+        ((119, 101, 130), CleaningPhase.INTERIOR),
+        ((119, 101, 131), CleaningPhase.EDGES),
+        ((119, 102, 132), CleaningPhase.TOEKICKS),
+        ((119, 101, 133), CleaningPhase.EDGES),
+        ((119, 101), None),
+        ((107, 132), None),
+    ],
+)
+def test_cleaning_phase_follows_the_goal_behavior_code(
+    codes: tuple[int, ...], phase: CleaningPhase | None
+) -> None:
+    state = RobotOperationalState(
+        50, codes, (), False, False, False, False, 119 in codes, False
+    )
+    assert state.cleaning_phase is phase
 
 
 def test_decoders_fail_closed_and_use_safe_defaults() -> None:

@@ -8,6 +8,7 @@ import { base, tokens } from "./tokens";
 import type { PropertyValues, TemplateResult } from "lit";
 
 import type { ColorScheme, DateFormat, Localize, NoticePlaceholders, WorkspaceIntent, WorkspaceState } from "./contracts";
+import type { PoseModel } from "./backend-contracts";
 import type { OutlineEditor } from "./outline-editor";
 import { MAP_CANVAS_TAG } from "./element-tags";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
@@ -360,6 +361,9 @@ export class MaticMapCanvasV4 extends LitElement {
       }),
       onCirclePreview: (circles, coordinateEdit) => this.#renderer?.setCirclePreview(circles, coordinateEdit),
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
+      onCameraGesture: () => {
+        if (this.state.followRobot) this.#intent({ type: "set-follow-robot", value: false });
+      },
     });
     this.#renderer.setState(this.state);
     this.#schedulePalette();
@@ -393,6 +397,22 @@ export class MaticMapCanvasV4 extends LitElement {
     this.#gestures?.observeState(this.state);
     this.outlineEditor?.observeState(this.state);
     this.#renderer?.setState(this.state);
+    this.#follow();
+  }
+
+  #followed: PoseModel["position"] = null;
+
+  // Recentre on each new pose while following, and once when it turns on.
+  #follow(): void {
+    const position = this.state.followRobot && canShowExactPose(this.state)
+      ? this.state.resources.pose.value?.position : undefined;
+    if (!position) {
+      this.#followed = null;
+      return;
+    }
+    if (position === this.#followed) return;
+    this.#followed = position;
+    this.#renderer?.centerOnMeters(position[0], position[1]);
   }
 
   // Canvas 2D cannot read CSS custom properties, so the renderer is handed a

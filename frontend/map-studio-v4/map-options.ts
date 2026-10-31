@@ -135,6 +135,17 @@ export class MapOptions {
             @click=${() => intent({ type: "toggle-floor-types" })}
           ><span>${t("v4_floor_types", "Carpet and vents")}${floorTypesNote(state.floorTypes, t)}</span><span class="ms-switch" aria-checked=${String(Boolean(state.floorTypes))} aria-hidden="true"></span></button>
         ` : nothing}
+        ${state.dataMode === "live" ? html`
+          <button
+            class="ms-row ms-row--menu"
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked=${String(state.followRobot)}
+            tabindex="-1"
+            data-follow-robot
+            @click=${() => intent({ type: "set-follow-robot", value: !state.followRobot })}
+          ><span>${t("v4_follow_robot", "Follow the robot")}</span><span class="ms-switch" aria-checked=${String(state.followRobot)} aria-hidden="true"></span></button>
+        ` : nothing}
         <div role="group" aria-labelledby="menu-detail">
           <p class="menu-heading" id="menu-detail" role="presentation">${t("map_quality_label", "Map detail")}</p>
           ${detail("auto", t("map_quality_auto", "Auto detail"))}

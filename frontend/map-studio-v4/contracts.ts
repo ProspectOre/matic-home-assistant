@@ -346,6 +346,8 @@ export interface WorkspaceState {
   readonly smartStop: SmartStopStatus | null;
   /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
   readonly trail: RunTrail | null;
+  /** Object URLs of robot map pictures by history id; `failed` when the robot has none to give. */
+  readonly runThumbnails: Readonly<Record<string, string>>;
   readonly pageActive: boolean;
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;
   readonly draftFloorOrdinal: number | null;
@@ -381,6 +383,8 @@ export interface WorkspaceState {
   readonly wifiSignal: WifiSignalLayer | null;
   /** The carpet and vent layer; null while hidden. */
   readonly floorTypes: FloorTypesLayer | null;
+  /** Keep the live robot centred; a pan or orbit by the user turns it off. */
+  readonly followRobot: boolean;
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   /** Only preferences belonging to the verified live map can be restored. */
@@ -390,6 +394,7 @@ export interface WorkspaceState {
   readonly batteryPercent: number | null;
   /** The vacuum's `current_area`: the room phrase the robot reports, if any. */
   readonly currentArea: string | null;
+  readonly robotRun: RobotRunStatus | null;
   readonly floor: FloorPresentation;
   readonly map: MapSafetyState;
   readonly host: HostState;
@@ -436,6 +441,7 @@ export type WorkspaceIntent =
   | { readonly type: "toggle-labels" }
   | { readonly type: "toggle-wifi-signal" }
   | { readonly type: "toggle-floor-types" }
+  | { readonly type: "set-follow-robot"; readonly value: boolean }
   | { readonly type: "open-workflow"; readonly workflow: Workflow }
   | { readonly type: "enter-full-map" }
   | { readonly type: "exit-full-map" }
@@ -501,7 +507,8 @@ export type WorkspaceIntent =
   | { readonly type: "move-home-pin"; readonly pin: HomePin; readonly direction: -1 | 1 }
   | { readonly type: "reload-home-pins" }
   /** Draws a trail on the map, `live` for the run in progress; null hides it. */
-  | { readonly type: "show-trail"; readonly trail: string | null };
+  | { readonly type: "show-trail"; readonly trail: string | null }
+  | { readonly type: "load-run-thumbnail"; readonly id: string };
 
 /** A saved plan or custom area shown on home as a one-tap shortcut. */
 export interface HomePin {
@@ -604,6 +611,15 @@ export interface DateFormat {
   readonly timeZone: string | undefined;
 }
 
+export type CleaningPhase = "interior" | "edges" | "toekicks";
+
+/** The robot's own report on the clean under way, from the vacuum's attributes. */
+export interface RobotRunStatus {
+  readonly phase: CleaningPhase | null;
+  readonly percent: number | null;
+  readonly remainingSeconds: number | null;
+}
+
 export interface HassProjection {
   readonly deepMop: RobotSetting | null;
   readonly host: HostState;
@@ -611,6 +627,7 @@ export interface HassProjection {
   readonly batteryPercent: number | null;
   /** The vacuum's `current_area`: the room phrase the robot reports, if any. */
   readonly currentArea: string | null;
+  readonly robotRun: RobotRunStatus | null;
   readonly language: string;
   readonly dates: DateFormat;
   readonly userKey: string;
@@ -663,6 +680,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "toggle-labels": true,
   "toggle-wifi-signal": true,
   "toggle-floor-types": true,
+  "set-follow-robot": true,
   "open-workflow": true,
   "enter-full-map": true,
   "exit-full-map": true,
@@ -703,6 +721,7 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "move-home-pin": true,
   "reload-home-pins": true,
   "show-trail": true,
+  "load-run-thumbnail": true,
 };
 
 export const isWorkspaceIntent = (value: unknown): value is WorkspaceIntent => {

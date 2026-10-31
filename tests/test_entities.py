@@ -45,6 +45,7 @@ from custom_components.matic_robot.client.exceptions import (
     SinkLocationUnavailableError,
 )
 from custom_components.matic_robot.client.models import (
+    CleaningPhase,
     CleaningSchedule,
     CleaningSession,
     FloorPlan,
@@ -55,6 +56,7 @@ from custom_components.matic_robot.client.models import (
     RobotState,
     RobotTelemetry,
     Room,
+    RunProgress,
     WifiNetwork,
 )
 from custom_components.matic_robot.const import DOMAIN
@@ -372,13 +374,13 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
         "event": 1,
         "number": 1,
         "select": 4,
-        "sensor": 30,
+        "sensor": 33,
         "switch": 5,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 66
-    assert len({entity.unique_id for entity in entities}) == 66
+    assert len(entities) == 69
+    assert len({entity.unique_id for entity in entities}) == 69
     assert all(
         entity.device_info["manufacturer"] == "Matic"
         and entity.device_info["model"] == "Robot"
@@ -1339,6 +1341,9 @@ def test_sensor_and_binary_sensor_values() -> None:
         4,
         1,
         600,
+        None,
+        None,
+        None,
         600,
         -45,
         None,
@@ -2537,13 +2542,31 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
         "problem": False,
         "current_area": None,
         "previous_area": None,
+        "cleaning_phase": None,
+        "run_progress": None,
+        "time_remaining": None,
         "rooms": {"room-1": "Kitchen", "room-2": "Study"},
     }
     assert vacuum.MaticVacuum._unrecorded_attributes == frozenset(
-        {"matic_entry_id", "rooms", "current_area", "previous_area"}
+        {
+            "matic_entry_id",
+            "rooms",
+            "current_area",
+            "previous_area",
+            "cleaning_phase",
+            "run_progress",
+            "time_remaining",
+        }
     )
 
-    bare = vacuum.MaticVacuum(_entry(with_floor_plan=False))
+    bare_entry = _entry(with_floor_plan=False)
+    data = bare_entry.runtime_data.coordinator.data
+    bare_entry.runtime_data.coordinator.data = replace(
+        data,
+        operational=replace(data.operational, state_codes=(119, 131), cleaning=True),
+        telemetry=replace(data.telemetry, run_progress=RunProgress(900, 300)),
+    )
+    bare = vacuum.MaticVacuum(bare_entry)
     assert bare.extra_state_attributes == {
         "matic_entry_id": "entry",
         "low_charge": False,
@@ -2552,6 +2575,9 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
         "problem": False,
         "current_area": None,
         "previous_area": None,
+        "cleaning_phase": CleaningPhase.EDGES,
+        "run_progress": 75,
+        "time_remaining": 300,
         "rooms": {},
     }
     assert await bare.async_get_segments() == []
@@ -2985,6 +3011,7 @@ def test_enum_sensors_list_every_translated_state() -> None:
         "firmware_compatibility": 5,
         "cues_voice_status": 6,
         "cues_gesture_status": 6,
+        "cleaning_phase": 3,
     }
     enums = {
         key: description
@@ -2994,7 +3021,9 @@ def test_enum_sensors_list_every_translated_state() -> None:
     assert {key: len(value.options or ()) for key, value in enums.items()} == expected
     for key, description in enums.items():
         assert list(strings["sensor"][key]["state"]) == list(description.options or ())
-        expected_category = None if key == "activity" else "diagnostic"
+        expected_category = (
+            None if key in {"activity", "cleaning_phase"} else "diagnostic"
+        )
         assert description.entity_category == expected_category
     assert descriptions["coverage_time"].device_class == "duration"
     assert descriptions["coverage_time"].native_unit_of_measurement == "s"

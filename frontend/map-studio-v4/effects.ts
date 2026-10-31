@@ -142,6 +142,7 @@ const POSE_POLL_INTERVAL_MS = 1_000;
 const WIFI_SIGNAL_REFRESH_MS = 30_000;
 // The integration keeps a floor's outlines for ten minutes, or 30 s while none are known.
 const FLOOR_TYPES_REFRESH_MS = 60_000;
+const RUN_THUMBNAILS_KEPT = 12;
 const SPATIAL_READ_RECOVERY_INTERVAL_MS = 5_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "areas", "draw", "areaReview"];
 const MUTATION_RESOURCES = ["plan-mutation", "area-mutation", "setting-mutation"] as const;
@@ -493,6 +494,7 @@ export class EffectController {
       activity: projection.activity,
       batteryPercent: projection.batteryPercent,
       currentArea: projection.currentArea,
+      robotRun: projection.robotRun,
       deepMop: projection.deepMop,
       lastRun: projection.lastRun ?? null,
       smartStop: projection.smartStop ?? null,
@@ -2228,6 +2230,32 @@ export class EffectController {
     await this.#runRead("runs", null);
   }
 
+  /** Fetch one clean's map picture for Cleaning history, keeping the newest few. */
+  async loadRunThumbnail(id: string): Promise<void> {
+    const entry = this.#store.value.resources.entry;
+    if (!entry || id in this.#store.value.runThumbnails || this.#thumbnailReads.has(id)) return;
+    this.#thumbnailReads.add(id);
+    let url = "failed";
+    try {
+      url = URL.createObjectURL(await this.#backend.runThumbnail(entry.entryId, id));
+    } catch {
+      // The robot keeps pictures for recent cleans only; the run shows without one.
+    } finally {
+      this.#thumbnailReads.delete(id);
+    }
+    if (this.#disposed) {
+      if (url !== "failed") URL.revokeObjectURL(url);
+      return;
+    }
+    const kept = Object.entries(this.#store.value.runThumbnails);
+    for (const [, old] of kept.slice(0, Math.max(0, kept.length - RUN_THUMBNAILS_KEPT + 1))) {
+      if (old !== "failed") URL.revokeObjectURL(old);
+    }
+    this.#store.patch({ runThumbnails: Object.fromEntries([...kept.slice(-RUN_THUMBNAILS_KEPT + 1), [id, url]]) });
+  }
+
+  #thumbnailReads = new Set<string>();
+
   async showTrail(trail: string | null): Promise<void> {
     await this.#runRead("trail", trail);
   }
@@ -2975,6 +3003,10 @@ export class EffectController {
     this.#stopPolling();
     this.#stopWifiSignal();
     this.#stopFloorTypes();
+    for (const url of Object.values(this.#store.value.runThumbnails)) {
+      if (url !== "failed") URL.revokeObjectURL(url);
+    }
+    this.#store.patch({ runThumbnails: {} });
     this.#clearPoseExpiry();
     this.#abortResources();
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);

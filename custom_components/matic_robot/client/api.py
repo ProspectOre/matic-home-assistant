@@ -108,6 +108,7 @@ from .models import (
     RobotTelemetry,
     RobotTrajectory,
     Room,
+    RunProgress,
     WifiNetwork,
 )
 from .observations import ActivityJournal, ObservationCallback
@@ -825,6 +826,10 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             return state
         except DecodeError as err:
             raise CannotConnectError("Hermes returned malformed robot state") from err
+
+    async def async_get_run_progress(self) -> RunProgress | None:
+        """Read elapsed and remaining time for the clean under way, if any."""
+        return _decode_run_progress(await self.async_get_property("coverage_time"))
 
     async def async_subscribe_state(self) -> AsyncIterator[RobotOperationalState]:
         """Yield live snapshots from the local ``kabuki_state`` property."""
@@ -3062,6 +3067,25 @@ def _decode_coverage_time(payload: object) -> int | None:
     except DecodeError:
         pass
     return None
+
+
+def _decode_run_progress(payload: bytes) -> RunProgress | None:
+    """Decode a running clean's time from ``coverage_time`` field 4.
+
+    Live runs report ``4{1: session, 2{1: elapsed s}, 3{1{1{1: remaining s}}}}``.
+    Without field 4 no clean is under way.
+    """
+    try:
+        if not any(field.number == 4 for field in _telemetry_fields(payload)):
+            return None
+        run = _telemetry_bytes(payload, 4)
+        elapsed = _telemetry_varint(_telemetry_bytes(run, 2), 1)
+        remaining = _telemetry_bytes(run, 3)
+        for _ in range(2):
+            remaining = _telemetry_bytes(remaining, 1)
+        return RunProgress(elapsed, _telemetry_varint(remaining, 1))
+    except DecodeError:
+        return None
 
 
 def _decode_schedule(payload: bytes) -> CleaningSchedule | None:

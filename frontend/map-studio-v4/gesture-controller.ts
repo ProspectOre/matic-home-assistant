@@ -18,6 +18,8 @@ interface GestureCallbacks {
   readonly onCirclePreview: (circles: readonly AreaCircle[] | null, coordinateEdit?: CoordinateEditCapture) => void;
   readonly onRoom: (roomId: string) => void;
   readonly onOutlinePoint?: (point: MapPoint, coordinateEdit: CoordinateEditCapture) => void;
+  /** The user moved the camera by hand. */
+  readonly onCameraGesture?: () => void;
 }
 
 interface PointerRecord {
@@ -290,12 +292,14 @@ export class GestureController {
     if (this.#mode === "paint" || this.#mode === "erase") {
       this.#applyBrush(event.clientX, event.clientY);
     } else if (this.#mode === "pan") {
+      this.#callbacks.onCameraGesture?.();
       if (this.#dragCamera) this.#renderer.setCamera(this.#renderer.cameraAfterPan(
         this.#dragCamera,
         sample.clientX - pointer.startX,
         sample.clientY - pointer.startY,
       ));
     } else if (this.#mode === "orbit") {
+      this.#callbacks.onCameraGesture?.();
       if (this.#dragCamera) this.#renderer.setCamera({
         ...this.#dragCamera,
         yaw: this.#dragCamera.yaw + (sample.clientX - pointer.startX) * 0.0045,
@@ -363,6 +367,7 @@ export class GestureController {
     // combined native transform: pinch scale, twist rotation, and centroid
     // translation may all change together. A stationary anchor is valid.
     if (!this.#twoFingerTilt) this.#twoFingerTransform = true;
+    this.#callbacks.onCameraGesture?.();
     this.#renderer.setCamera(this.#twoFingerTilt
       ? { ...start, pitch: start.pitch - deltaY * 0.004 }
       : this.#renderer.cameraAfterPan({
