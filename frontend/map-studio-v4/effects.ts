@@ -140,6 +140,8 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
 const POSE_POLL_INTERVAL_MS = 1_000;
 // Matches the backend's sampling pace, so new cells appear during a clean.
 const WIFI_SIGNAL_REFRESH_MS = 30_000;
+// The integration keeps a floor's outlines for ten minutes, or 30 s while none are known.
+const FLOOR_TYPES_REFRESH_MS = 60_000;
 const SPATIAL_READ_RECOVERY_INTERVAL_MS = 5_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "areas", "draw", "areaReview"];
 const MUTATION_RESOURCES = ["plan-mutation", "area-mutation", "setting-mutation"] as const;
@@ -198,6 +200,7 @@ export class EffectController {
   #catalogTimer: number | null = null;
   #poseTimer: number | null = null;
   #wifiSignalTimer: number | null = null;
+  #floorTypesTimer: number | null = null;
   #poseExpiryTimer: number | null = null;
   #settleTimer: number | null = null;
   #motionRevision = 0;
@@ -851,6 +854,7 @@ export class EffectController {
     this.#clearSpatialReadRecovery();
     this.#invalidateSpatialFence();
     this.#reloadWifiSignalForNewFloor();
+    this.#reloadFloorTypesForNewFloor();
     void this.refreshCatalog(true, true).then(() => {
       if (this.#disposed || this.#projection?.entryKey !== entryId
         || !this.#projection.host.administrator || !this.#projection.host.connected) return;
@@ -913,6 +917,10 @@ export class EffectController {
     if (this.#store.value.wifiSignal && this.#wifiSignalTimer === null) {
       this.#startWifiSignal();
       void this.#loadWifiSignal();
+    }
+    if (this.#store.value.floorTypes && this.#floorTypesTimer === null) {
+      this.#startFloorTypes();
+      void this.#loadFloorTypes();
     }
     if (this.#catalogTimer === null) {
       this.#catalogTimer = window.setInterval(() => {
@@ -1112,9 +1120,9 @@ export class EffectController {
   #abortResources(except: readonly string[] = []): void {
     let mutationCancelled = false;
     for (const [name, controller] of this.#controllers) {
-      // The Wi-Fi layer owns its read: a new read, turning it off or dispose
-      // aborts it, and a frame change starts a fresh one.
-      if (except.includes(name) || name === "wifi-signal") continue;
+      // The Wi-Fi and floor type layers own their reads: a new read, turning
+      // the layer off or dispose aborts it, and a frame change starts a fresh one.
+      if (except.includes(name) || name === "wifi-signal" || name === "floor-types") continue;
       mutationCancelled ||= name === "plan-mutation" || name === "area-mutation" || name === "setting-mutation" || name === "plan-preflight";
       controller.abort();
       this.#controllers.delete(name);
@@ -1429,7 +1437,7 @@ export class EffectController {
       && previousDraftSession === entry.mapSessionKey;
     const preserve = ["catalog"];
     if (previousEntry?.entryId === entry.entryId) preserve.push("setting-mutation");
-    // Survey cells are drawn in one floor's map frame.
+    // Survey cells and floor type outlines are drawn in one floor's map frame.
     const sameWifiFrame = sameResourceBoundary
       && previousEntry?.mapSessionKey === entry.mapSessionKey;
     if (sameResourceBoundary && !resetDrafts) preserve.push("plans", "areas");
@@ -1521,7 +1529,10 @@ export class EffectController {
       void this.loadPlans();
     }
     this.#resumeAreaCatalog();
-    if (!sameWifiFrame) this.#reloadWifiSignalForNewFloor();
+    if (!sameWifiFrame) {
+      this.#reloadWifiSignalForNewFloor();
+      this.#reloadFloorTypesForNewFloor();
+    }
     if (coherent) {
       void this.#loadLiveScene(entry, stamp);
       void this.#loadPose(entry, stamp);
@@ -2060,6 +2071,55 @@ export class EffectController {
       if (!isAbort(error) && current() && shown) this.#store.patch({ wifiSignal: { ...shown, status: "failed" } });
     } finally {
       this.#release("wifi-signal", controller);
+    }
+  }
+
+  /** Show or hide carpet and vents; showing reads the current floor's outlines. */
+  async toggleFloorTypes(): Promise<void> {
+    this.#store.dispatch({ type: "toggle-floor-types" });
+    this.#startFloorTypes();
+    await this.#loadFloorTypes();
+  }
+
+  #startFloorTypes(): void {
+    this.#floorTypesTimer ??= window.setInterval(() => {
+      if (this.#pageLifecycle.active) void this.#loadFloorTypes();
+    }, FLOOR_TYPES_REFRESH_MS);
+  }
+
+  #reloadFloorTypesForNewFloor(): void {
+    const floorTypes = this.#store.value.floorTypes;
+    if (!floorTypes) return;
+    this.#store.patch({ floorTypes: { status: "loading", carpet: [], vent: [] } });
+    void this.#loadFloorTypes();
+  }
+
+  #stopFloorTypes(): void {
+    this.#controllers.get("floor-types")?.abort();
+    if (this.#floorTypesTimer !== null) window.clearInterval(this.#floorTypesTimer);
+    this.#floorTypesTimer = null;
+  }
+
+  async #loadFloorTypes(): Promise<void> {
+    const entry = this.#store.value.resources.entry;
+    if (!this.#store.value.floorTypes || !entry?.floorTypesUrl) {
+      this.#stopFloorTypes();
+      return;
+    }
+    const controller = this.#controller("floor-types");
+    const current = (): boolean => !controller.signal.aborted && !this.#disposed
+      && Boolean(this.#store.value.floorTypes) && this.#store.value.resources.entry?.entryId === entry.entryId;
+    try {
+      const layer = await this.#backend.floorTypes(entry.floorTypesUrl, controller.signal);
+      if (current()) this.#store.patch({ floorTypes: layer });
+    } catch (error) {
+      const shown = this.#store.value.floorTypes;
+      // A failed refresh keeps outlines already shown; only a first read reports failure.
+      if (!isAbort(error) && current() && shown?.status === "loading") {
+        this.#store.patch({ floorTypes: { ...shown, status: "failed" } });
+      }
+    } finally {
+      this.#release("floor-types", controller);
     }
   }
 
@@ -2914,6 +2974,7 @@ export class EffectController {
     this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false, queuePending: false });
     this.#stopPolling();
     this.#stopWifiSignal();
+    this.#stopFloorTypes();
     this.#clearPoseExpiry();
     this.#abortResources();
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);

@@ -19,6 +19,16 @@ const wifiNote = (layer: WorkspaceState["wifiSignal"], t: MapOptionsContext["t"]
   return html`<small class="menu-note">${note}</small>`;
 };
 
+const floorTypesNote = (layer: WorkspaceState["floorTypes"], t: MapOptionsContext["t"]) => {
+  if (!layer || layer.status === "loading") return nothing;
+  const note = layer.status === "failed"
+    ? t("v4_floor_types_failed", "Couldn't load carpet and vents")
+    : layer.carpet.length || layer.vent.length
+      ? t("v4_floor_types_legend", "Brown is carpet, blue is a vent")
+      : t("v4_floor_types_empty", "None mapped yet · the robot finds them while cleaning");
+  return html`<small class="menu-note">${note}</small>`;
+};
+
 type Host = ReactiveControllerHost & HTMLElement & { readonly renderRoot: ParentNode };
 
 export type MapOptionsContext = {
@@ -80,7 +90,7 @@ export class MapOptions {
     .overflow-menu [role="menuitemcheckbox"] { justify-content: space-between; gap: var(--ms-space-3); }
     .overflow-menu [role="group"] { display: grid; gap: var(--ms-space-1); }
     .overflow-menu [role="group"] + * { border-block-start: 1px solid var(--ms-line); padding-block-start: var(--ms-space-1); }
-    .overflow-menu [data-wifi-signal] > span:first-child { display: grid; text-align: start; }
+    .overflow-menu :is([data-wifi-signal], [data-floor-types]) > span:first-child { display: grid; text-align: start; }
     .menu-note { color: var(--ms-text-quiet); font-size: var(--ms-t-sm); }
     .menu-heading { margin: 0; padding: var(--ms-space-2) var(--ms-space-3) var(--ms-space-1); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
 
@@ -113,6 +123,17 @@ export class MapOptions {
             data-wifi-signal
             @click=${() => intent({ type: "toggle-wifi-signal" })}
           ><span>${t("v4_wifi_signal", "Wi-Fi signal")}${wifiNote(state.wifiSignal, t)}</span><span class="ms-switch" aria-checked=${String(Boolean(state.wifiSignal))} aria-hidden="true"></span></button>
+        ` : nothing}
+        ${state.resources.entry?.floorTypesUrl ? html`
+          <button
+            class="ms-row ms-row--menu"
+            type="button"
+            role="menuitemcheckbox"
+            aria-checked=${String(Boolean(state.floorTypes))}
+            tabindex="-1"
+            data-floor-types
+            @click=${() => intent({ type: "toggle-floor-types" })}
+          ><span>${t("v4_floor_types", "Carpet and vents")}${floorTypesNote(state.floorTypes, t)}</span><span class="ms-switch" aria-checked=${String(Boolean(state.floorTypes))} aria-hidden="true"></span></button>
         ` : nothing}
         <div role="group" aria-labelledby="menu-detail">
           <p class="menu-heading" id="menu-detail" role="presentation">${t("map_quality_label", "Map detail")}</p>

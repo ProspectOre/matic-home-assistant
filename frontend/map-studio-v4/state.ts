@@ -87,6 +87,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   appearance: "photo",
   labelsVisible: true,
   wifiSignal: null,
+  floorTypes: null,
   quality: "auto",
   cameras: {},
   cameraKey: null,
@@ -377,6 +378,8 @@ export const reduceWorkspace = (
       return { ...state, labelsVisible: !state.labelsVisible };
     case "toggle-wifi-signal":
       return { ...state, wifiSignal: state.wifiSignal ? null : { status: "loading", surveying: false, cellSize: 0, cells: [] } };
+    case "toggle-floor-types":
+      return { ...state, floorTypes: state.floorTypes ? null : { status: "loading", carpet: [], vent: [] } };
     case "open-workflow":
       if (isReadOnlyWorkspace(state) && readOnlyWorkflows.has(intent.workflow)) return state;
       return {
@@ -645,7 +648,7 @@ export const reduceWorkspace = (
       return (state.selection.entryId === intent.entryId && state.selection.entrySource === "user")
         || !state.robots.some((robot) => robot.entryId === intent.entryId)
         ? state
-        : { ...state, wifiSignal: null, selection: { ...state.selection, entryId: intent.entryId, entrySource: "user" } };
+        : { ...state, wifiSignal: null, floorTypes: null, selection: { ...state.selection, entryId: intent.entryId, entrySource: "user" } };
     case "set-history":
       return {
         ...state,
