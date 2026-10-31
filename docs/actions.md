@@ -94,10 +94,12 @@ actions:
 
 `vacuum.send_command` with `command: stay_put` tells the robot to stay where it
 is rather than return to the dock. The Matic app sends it when you cancel the
-offer to dock after a task. `command: emote` with `params: {kind: nod}` plays a
-gesture: `nod`, `shake`, `pirouette` or `snap`. Both match what the Matic
-app sends, as read from its code. The robot accepts all five; nobody has yet
-watched which gesture each name plays.
+robot's own countdown to dock after a task. Home Assistant's Stop always docks,
+so stay put waits until that return has settled; use Pause to keep the robot
+where it is. `command: emote` with `params: {kind: snap}` takes
+a photo with the robot's camera, which then shows in the Matic app. The kinds
+`nod`, `shake` and `pirouette` are the app's other emotes. The robot accepts
+all of them; whether those three visibly move it is not confirmed yet.
 
 ```yaml
 actions:
@@ -107,7 +109,7 @@ actions:
     data:
       command: emote
       params:
-        kind: pirouette
+        kind: snap
 ```
 
 ## Skip, clean next or clean again

@@ -29,7 +29,7 @@ from enum import StrEnum
 from pathlib import Path
 from secrets import token_bytes
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -67,11 +67,15 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
 from .sim_mission import (
     IDLE_SESSION_KEY,
     CoverageSession,
+    Navigation,
     SimFloor,
+    Visit,
     bytes_field,
     earlier_session,
+    fixed32_int,
     map_pages,
     parse_coverage_command,
+    parse_navigation,
     uuid_wire,
 )
 
@@ -249,6 +253,8 @@ class SimulatedRobot:
         self.reads: Counter[str] = Counter()
         self.floor: SimFloor | None = None
         self.session: CoverageSession | None = None
+        self.destination: UUID | None = None
+        self.waiting_at_sink = False
         self.unsupported: set[str] = set()
         self._properties: dict[str, bytes] = {}
         self._collections: dict[str, list[tuple[bytes, bytes]]] = {}
@@ -280,9 +286,7 @@ class SimulatedRobot:
     def finish_room(self) -> None:
         """Complete the session's current room and move on to the next."""
         assert self.session is not None
-        current = self.session.current_room
-        assert current is not None
-        self.session.finished[current] = _now()
+        self.session.finish_current(_now())
         upcoming = self.session.current_room
         self.current_area = (
             self.floor.room(upcoming).name
@@ -304,13 +308,26 @@ class SimulatedRobot:
         self.session = CoverageSession(
             session_wire=bytes_field(2, uuid_wire(uuid4())),
             mission_wire=session.mission_wire,
-            goals=[],
-            rooms=list(session.rooms),
-            modes=session.modes,
+            visits=[
+                Visit(visit.room, [], list(visit.passes)) for visit in session.visits
+            ],
             started_at=_now(),
         )
         self.set_property("active_session_key", self.session.active_key)
         self._refresh_plan()
+
+    def save_sink(self, posture: bytes) -> None:
+        """Save a sink location for the mapped floor, as the app does."""
+        assert self.floor is not None
+        self.set_collection(
+            "sink_summon_locations", [(fixed32_int(2, self.floor.mission_id), posture)]
+        )
+
+    def refilled(self) -> None:
+        """Finish a sink refill; the robot heads back to the dock."""
+        assert self.waiting_at_sink
+        self.waiting_at_sink = False
+        self._set_phase(Phase.RETURNING)
 
     def arrive_at_dock(self) -> None:
         """Finish a return trip and start charging, or idle when full."""
@@ -407,6 +424,10 @@ class SimulatedRobot:
         if coverage is not None:
             self._start_coverage(coverage)
             return
+        navigation = parse_navigation(payload)
+        if navigation is not None:
+            self._navigate(navigation)
+            return
         if payload == PAUSE_PAYLOAD and self.phase is Phase.CLEANING:
             self._set_phase(Phase.PAUSED)
         elif payload == RESUME_PAYLOAD and self.phase is Phase.PAUSED:
@@ -443,9 +464,10 @@ class SimulatedRobot:
     def _start_coverage(self, coverage: CoverageSession) -> None:
         previous = self.session
         if previous is not None and previous.session_wire == coverage.session_wire:
-            # An UPDATE keeps the task and its progress; only goals change.
-            coverage.finished = previous.finished
-            coverage.started_at = previous.started_at
+            # An UPDATE keeps the task and its finished rooms; the goals from
+            # the current room onward are replaced.
+            previous.update(coverage)
+            coverage = previous
         self.session = coverage
         self.set_property("active_session_key", coverage.active_key)
         self._refresh_plan()
@@ -456,6 +478,25 @@ class SimulatedRobot:
             else None
         )
         self._set_phase(Phase.CLEANING)
+
+    def _navigate(self, navigation: Navigation) -> None:
+        # The robot's state codes while it drives somewhere are not recorded,
+        # so it arrives at once. Without a task it stands ready there; a task
+        # it holds stays held, paused until Resume.
+        assert self.floor is not None
+        if navigation.mission_wire != fixed32_int(2, self.floor.mission_id):
+            return
+        if navigation.room is not None:
+            self.destination = navigation.room
+            self.current_area = self.floor.room(navigation.room).name
+        else:
+            self.waiting_at_sink = navigation.waits
+        if self.phase is Phase.CLEANING:
+            self._set_phase(Phase.PAUSED)
+        elif self.session is None:
+            self._set_phase(Phase.STOPPED)
+        else:
+            self._refresh_state()
 
     def _end_session(self, *, completed: bool) -> None:
         session = self.session

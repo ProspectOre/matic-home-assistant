@@ -8,7 +8,6 @@ simulated.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
 
 import pytest
 from homeassistant.components.vacuum import (
@@ -44,20 +43,6 @@ CURRENT_AREA = "sensor.simulated_matic_current_area"
 PROBLEM = "binary_sensor.simulated_matic_problem"
 LOW_CHARGE = "binary_sensor.simulated_matic_low_charge"
 CHARGING = "binary_sensor.simulated_matic_charging"
-
-
-@pytest.fixture
-async def loaded_entry(
-    hass: HomeAssistant, config_entry: MockConfigEntry
-) -> AsyncIterator[MockConfigEntry]:
-    config_entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(config_entry.entry_id)
-    await hass.async_block_till_done()
-    assert config_entry.state is ConfigEntryState.LOADED
-    yield config_entry
-    if config_entry.state is ConfigEntryState.LOADED:
-        assert await hass.config_entries.async_unload(config_entry.entry_id)
-        await hass.async_block_till_done()
 
 
 async def _poll(hass: HomeAssistant, entry: MockConfigEntry) -> None:

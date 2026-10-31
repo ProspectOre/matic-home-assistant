@@ -63,8 +63,8 @@ to try new features before 0.6.0.
   `go_to_room` command send the robot to one room, by name or ID, without
   marking it cleaned. In Matic Map, pick one room and press **Go to room**.
 - **Stay put and emotes.** The `stay_put` command keeps the robot where it is
-  instead of returning to the dock, and `emote` plays a nod, shake, pirouette
-  or snap.
+  instead of returning to the dock, and `emote` with `kind: snap` takes a photo
+  with the robot's camera that shows in the Matic app.
 - **Robot camera photos.** **Take photo** asks the robot to take a picture,
   and **Latest photo** shows the newest one, including photos taken in the
   Matic app. Use it on a dashboard or attach it to a phone notification.
