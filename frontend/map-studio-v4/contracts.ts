@@ -95,10 +95,19 @@ export interface DeleteSharedCadenceAction {
   readonly expectedToken: string;
 }
 
+/** A change to the running clean's room queue (docs/queue-changes.md). */
+export interface QueueChangeAction {
+  readonly id: "change-queue";
+  readonly change: "skip_room" | "clean_room_next" | "clean_room_again";
+  readonly roomId: string;
+  /** The room's name, for the result notice. */
+  readonly room: string;
+}
+
 /** Told once whether this save was acknowledged, so Discard changes? settles on its own save. */
 export type SaveSettled = (saved: boolean) => void;
 
-export type WorkspaceAction = { readonly id: string; readonly settled?: SaveSettled } | ResetCadenceAction | DeleteSharedCadenceAction;
+export type WorkspaceAction = { readonly id: string; readonly settled?: SaveSettled } | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction;
 
 export interface ResourceStamp {
   readonly entryKey: string;
@@ -342,6 +351,8 @@ export interface WorkspaceState {
   readonly planWriteBlock: "pending" | "refresh" | null;
   /** True while a recheck the user asked for ("Try again") reads the catalog. */
   readonly rechecking: boolean;
+  /** A queue change Home Assistant is still confirming with the robot. */
+  readonly queuePending: boolean;
   readonly fullMap: boolean;
   readonly precisionOpen: boolean;
   readonly dialog: DialogKind | null;

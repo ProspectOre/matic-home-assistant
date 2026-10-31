@@ -68,6 +68,7 @@ async function setupEffects(page, { initialPreview = null, previewProvider } = {
         const h = window.manualPreviewHarness;
         h.calls.push(args);
         h.previewCountAtService.push(h.previews.length);
+        if (h.serviceError) throw h.serviceError;
       },
       dispose() {},
     });
@@ -626,6 +627,44 @@ test("go to room is offered for one room and sends only that room, with no previ
     busy: null,
     previews: 0,
     calls: [["matic_robot", "go_to_room", { room: "room-a" }, "vacuum.synthetic"]],
+  });
+});
+
+test("a queue change is sent only while the robot cleans, and its notice says what happened", async ({ page }) => {
+  await setupEffects(page);
+  const result = await page.evaluate(async () => {
+    const h = window.manualPreviewHarness;
+    const skip = { id: "change-queue", change: "skip_room", roomId: "room-a", room: "Kitchen" };
+    await h.effects.executeAction(skip);
+    const idle = h.calls.length;
+    h.store.patch({ activity: "cleaning" });
+    const sent = h.effects.executeAction(skip);
+    const pending = h.store.value.queuePending;
+    // A second tap while the first is unconfirmed sends nothing.
+    await h.effects.executeAction({ ...skip, change: "clean_room_next" });
+    await sent;
+    const done = { notice: h.store.value.notice, pending: h.store.value.queuePending };
+    h.serviceError = Object.assign(new Error("refused"), { translation_domain: "matic_robot", translation_key: "queue_last_room" });
+    await h.effects.executeAction(skip);
+    const refused = h.store.value.notice;
+    h.serviceError = new Error("timeout");
+    await h.effects.executeAction({ ...skip, change: "clean_room_again" });
+    const unconfirmed = h.store.value.notice;
+    h.effects.dispose();
+    return { idle, pending, done, refused, unconfirmed,
+      calls: h.calls.map(([domain, service, data, entityId]) => [domain, service, data, entityId]) };
+  });
+  expect(result).toEqual({
+    idle: 0,
+    pending: true,
+    done: { notice: { tone: "success", key: "v4_notice_queue_skipped", fallback: "{room} skipped.", placeholders: { room: "Kitchen" } }, pending: false },
+    refused: { tone: "error", key: "v4_notice_queue_last_room", fallback: "That's the only room left. Stop the clean instead." },
+    unconfirmed: { tone: "error", key: "v4_notice_queue_unconfirmed", fallback: "The robot didn't confirm the change to {room}. Check the queue in the Matic app.", placeholders: { room: "Kitchen" } },
+    calls: [
+      ["matic_robot", "skip_room", { room: "room-a" }, "vacuum.synthetic"],
+      ["matic_robot", "skip_room", { room: "room-a" }, "vacuum.synthetic"],
+      ["matic_robot", "clean_room_again", { room: "room-a" }, "vacuum.synthetic"],
+    ],
   });
 });
 

@@ -1840,3 +1840,38 @@ test.describe("cleaning history", () => {
     await expect(menu.getByRole("menuitemcheckbox", { name: "Robot trail" })).toHaveCount(0);
   });
 });
+
+// ---- Changing a running clean (PRO-77, docs/queue-changes.md) -------------
+
+test.describe("change this clean", () => {
+  test("offers skip, clean next and clean again for the room the robot is in, or one picked", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "cleaning" });
+    await page.evaluate(() => {
+      window.__queueActions = [];
+      document.addEventListener("matic-workspace-action", (event) => window.__queueActions.push(event.detail));
+    });
+    const queue = gallery.getByRole("region", { name: "Change this clean" });
+    const room = queue.getByRole("combobox", { name: "Room" });
+    await expect(room.locator("option:checked")).toHaveText("Kitchen");
+    const actions = queue.getByRole("group", { name: "Change Kitchen" }).getByRole("button");
+    await expect(actions).toHaveText(["Skip", "Clean next", "Clean again"]);
+    await actions.nth(0).click();
+    await room.selectOption({ label: "Office" });
+    await queue.getByRole("group", { name: "Change Office" }).getByRole("button", { name: "Clean again" }).click();
+    expect(await page.evaluate(() => window.__queueActions.map(({ id, change, room }) => ({ id, change, room })))).toEqual([
+      { id: "change-queue", change: "skip_room", room: "Kitchen" },
+      { id: "change-queue", change: "clean_room_again", room: "Office" },
+    ]);
+
+    // While the robot confirms a change, the buttons hold and say so.
+    await patchState(gallery, { queuePending: true });
+    await expect(queue.getByRole("status")).toHaveText("Waiting for the robot to confirm…");
+    await expect(queue.getByRole("button", { name: "Skip" })).toHaveAttribute("aria-disabled", "true");
+    await queue.getByRole("button", { name: "Skip" }).click({ force: true });
+    expect(await page.evaluate(() => window.__queueActions.length)).toBe(2);
+
+    // Only a robot cleaning a room can take a change.
+    await patchState(gallery, { queuePending: false, activity: "paused" });
+    await expect(queue).toHaveCount(0);
+  });
+});

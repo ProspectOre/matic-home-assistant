@@ -7,6 +7,7 @@ import {
   type ResourceState,
   type ResetCadenceAction,
   type DeleteSharedCadenceAction,
+  type QueueChangeAction,
   type SaveSettled,
   type WorkspaceNotice,
   type WorkspaceState,
@@ -33,6 +34,7 @@ import {
   canResumeMotion,
   canStartMotion,
   canStopMotion,
+  canChangeQueue,
   admittedManualRoomPreview,
   CoherenceMachine,
   initialWorkspaceState,
@@ -2573,8 +2575,8 @@ export class EffectController {
   }
 
   executeAction(id: string, settled?: SaveSettled): Promise<void>;
-  executeAction(action: ResetCadenceAction | DeleteSharedCadenceAction): Promise<void>;
-  async executeAction(idOrAction: string | ResetCadenceAction | DeleteSharedCadenceAction, settled?: SaveSettled): Promise<void> {
+  executeAction(action: ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction): Promise<void>;
+  async executeAction(idOrAction: string | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction, settled?: SaveSettled): Promise<void> {
     const id = typeof idOrAction === "string" ? idOrAction : idOrAction.id;
     switch (id) {
       case "toggle-deep-mop":
@@ -2727,6 +2729,9 @@ export class EffectController {
           (writes, context) => writes.resetRoomCadence(context, idOrAction),
         );
         return;
+      case "change-queue":
+        if (typeof idOrAction !== "string" && idOrAction.id === "change-queue") await this.#changeQueue(idOrAction);
+        return;
       case "delete-schedule":
         if (typeof idOrAction === "string" || idOrAction.id !== "delete-schedule") return;
         await this.#write(
@@ -2806,6 +2811,27 @@ export class EffectController {
     }
   }
 
+  // The integration waits for the robot's own plan to show the change, so the
+  // reply can take up to 45 seconds; Stop stays available meanwhile.
+  async #changeQueue(action: QueueChangeAction): Promise<void> {
+    const entityId = this.#projection?.vacuumEntityId;
+    const entryKey = this.#projection?.entryKey;
+    const state = this.#store.value;
+    if (!entityId || state.selection.entryId !== entryKey || !canChangeQueue(state)) return;
+    this.#store.patch({ queuePending: true, notice: null });
+    let failure: unknown;
+    try {
+      await this.#backend.service("matic_robot", action.change, { room: action.roomId }, entityId);
+    } catch (error) {
+      failure = error ?? new Error("queue-change-failed");
+    }
+    const writes = await this.#catalogWritesModule();
+    if (this.#disposed) return;
+    const result = writes?.queueChangeNotice(CATALOG_WRITE_HELPERS.notice, action, failure)
+      ?? (failure === undefined ? null : NOTICES.actionUnconfirmed);
+    this.#store.patch(entryKey === this.#projection?.entryKey ? { queuePending: false, notice: result } : { queuePending: false });
+  }
+
   async #motion(domain: string, service: string, data: Readonly<Record<string, unknown>>): Promise<void> {
     const state = this.#store.value;
     const entityId = this.#projection?.vacuumEntityId;
@@ -2880,7 +2906,7 @@ export class EffectController {
     this.#storeUnsubscribe = null;
     this.#unwatchRuns?.();
     this.#unwatchRuns = null;
-    this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false });
+    this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false, queuePending: false });
     this.#stopPolling();
     this.#stopWifiSignal();
     this.#clearPoseExpiry();
