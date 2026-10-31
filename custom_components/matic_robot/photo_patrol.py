@@ -20,8 +20,10 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
 from .client.exceptions import MaticError
+from .client.floor_plan import room_name_key
 from .client.models import RobotOperationalState
 from .const import DOMAIN
+from .plans import resolve_room_reference
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -80,7 +82,7 @@ async def async_photo_patrol(
             raise _error("photo_patrol_low_battery", battery=str(battery))
         results: list[dict[str, str]] = []
         # The area the robot reported at each room it reached.
-        arrivals: list[str | None] = []
+        arrivals: list[str] = []
         try:
             for room in rooms:
                 photo = await _async_photograph(
@@ -120,7 +122,7 @@ async def _async_photograph(
     entity_id: str,
     room: str,
     context: Context | None,
-    arrivals: list[str | None],
+    arrivals: list[str],
 ) -> RobotPhoto:
     client = entry.runtime_data.client
     photos = entry.runtime_data.photos
@@ -131,15 +133,18 @@ async def _async_photograph(
         raise _error("photo_patrol_robot_busy")
     was_parked = _parked(state)
     await _async_command(hass, entity_id, "go_to_room", {"room": room}, context)
+    room_area = _room_area_name(entry, room)
     if was_parked:
         await _async_wait_for(client, lambda state: not _parked(state), None)
     arrived = await _async_wait_for(
         client,
-        _parked,
+        lambda candidate: _arrived_at(candidate, room_area),
         _error("photo_patrol_no_arrival", room=room),
         within=ARRIVAL_TIMEOUT_SECONDS,
     )
-    arrivals.append(arrived.current_area if arrived is not None else None)
+    # _async_wait_for returns only after a known, matching room is reported.
+    assert arrived is not None and arrived.current_area is not None
+    arrivals.append(arrived.current_area)
     # Read the collection first so an older photo the store hasn't seen yet
     # can't pass for the new one.
     try:
@@ -163,6 +168,10 @@ async def _async_photograph(
             and latest.captured_at >= earliest
             and (previous is None or latest.captured_at > previous.captured_at)
         ):
+            # The robot can be redirected while its photo is being saved.
+            # Check the room again before returning a label for that image.
+            if not _left_parked(await _async_state(client), arrivals[-1]):
+                raise _error("photo_patrol_robot_busy")
             return latest
     raise _error("photo_patrol_no_photo", room=room)
 
@@ -210,7 +219,34 @@ def _busy(state: RobotOperationalState) -> bool:
     return state.cleaning or state.paused or (state.returning and not _parked(state))
 
 
-def _left_parked(state: RobotOperationalState, area: str | None) -> bool:
+def _arrived_at(state: RobotOperationalState, room: str) -> bool:
+    """Require a parked state whose reported area names the requested room."""
+    return (
+        _parked(state)
+        and not (state.cleaning or state.paused)
+        and _same_area(state.current_area, room)
+    )
+
+
+def _room_area_name(entry: MaticConfigEntry, identifier: str) -> str:
+    """Resolve a room ID to the mapped name that robot state reports."""
+    state = entry.runtime_data.coordinator.data
+    floor_plan = state.floor_plan if state is not None else None
+    if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
+        floor_plan
+    ):
+        return identifier
+    try:
+        _room_id, name = resolve_room_reference(
+            identifier, {room.id: room.name for room in floor_plan.rooms}
+        )
+    except ValueError:
+        # Let go_to_room return its established unknown/ambiguous-room error.
+        return identifier
+    return name
+
+
+def _left_parked(state: RobotOperationalState, area: str) -> bool:
     """Return whether the robot still waits, with no task, where it arrived.
 
     A clean paused near a room can also report 109, and so does a Go to room
@@ -219,11 +255,24 @@ def _left_parked(state: RobotOperationalState, area: str | None) -> bool:
     return (
         _parked(state)
         and not (state.cleaning or state.paused)
-        and state.current_area == area
+        and _same_area(state.current_area, area)
     )
 
 
-async def _async_still_parked(entry: MaticConfigEntry, area: str | None) -> bool:
+def _same_area(first: str | None, second: str | None) -> bool:
+    """Compare known room names using the firmware's canonical area rules."""
+    first_key = room_name_key(first)
+    second_key = room_name_key(second)
+    return (
+        first_key is not None
+        and second_key is not None
+        and first_key not in {"unknown", "unavailable"}
+        and second_key not in {"unknown", "unavailable"}
+        and first_key == second_key
+    )
+
+
+async def _async_still_parked(entry: MaticConfigEntry, area: str) -> bool:
     """Return whether the robot is still where the patrol left it.
 
     Only then is docking safe: a robot that moved, or can't be read, may have
