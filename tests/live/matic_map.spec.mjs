@@ -55,3 +55,32 @@ test("Go to room sends the docked robot to one room", async ({ page, request }) 
   // A visit starts no task, so no coverage command follows the first test's.
   expect(state.commands.filter(({ channel }) => channel === "user_command")).toHaveLength(2);
 });
+
+test("Skip in Change this clean drops a room from a running clean", async ({ page, request }) => {
+  await page.goto("/matic-map");
+  await expect(page.getByText("Docked").first()).toBeVisible();
+  // Started as an automation would. A clean started from Matic Map keeps its
+  // queue buttons disabled until the run ends; that is reported separately.
+  await page.evaluate(() => {
+    const hass = document.querySelector("home-assistant").hass;
+    void hass.callService("matic_robot", "clean_room_sequence", {
+      entity_id: "vacuum.simulated_matic",
+      rooms: [{ room: "Kitchen" }, { room: "Study" }],
+    });
+  });
+  await expect.poll(async () => (await robotState(request)).phase).toBe("cleaning");
+  expect((await robotState(request)).plan).toEqual(["Kitchen", "Study"]);
+
+  const queue = page.getByRole("region", { name: "Change this clean" });
+  await queue.getByLabel("Room").selectOption({ label: "Study" });
+  await queue.getByRole("button", { name: "Skip" }).click();
+  await expect(page.getByLabel("Cleaning panel").getByText("Study skipped.")).toBeVisible({
+    timeout: 30_000,
+  });
+  expect((await robotState(request)).plan).toEqual(["Kitchen"]);
+
+  await step(request, "finish_room");
+  await step(request, "finish_session");
+  await step(request, "arrive_at_dock");
+  await expect(page.getByText("Docked").first()).toBeVisible({ timeout: 30_000 });
+});
