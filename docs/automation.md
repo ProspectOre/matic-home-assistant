@@ -15,6 +15,7 @@ shown on your robot's device page.
 | Matic: Clean after pets leave | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Fpet_aware.yaml) |
 | Matic: Clean on a schedule | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Froom_rotation.yaml) |
 | Matic: Send firmware alerts | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Ffirmware_intelligence.yaml) |
+| Matic: Photograph room on alert | [![Import blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2FProspectOre%2Fmatic-home-assistant%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fmatic_robot%2Fphoto_on_alert.yaml) |
 
 - Every cleaning blueprint starts only when the robot is docked or idle, and
   uses Run Smart Order, so the longest-waiting rooms and custom areas go first
@@ -25,6 +26,10 @@ shown on your robot's device page.
 - Clean after pets leave runs at most once a day. Clean during quiet hours
   checks the battery only when you choose a sensor.
 - Send firmware alerts finds the robot from the Firmware check status sensor.
+- Photograph room on alert runs a [photo patrol](actions.md#photo-patrol) of one
+  room when any chosen sensor turns on and the robot is docked or idle, then
+  sends the photo to your phone, or a message if the robot couldn't take it.
+  Alerts during the cooldown are ignored.
 
 ## Clean action
 

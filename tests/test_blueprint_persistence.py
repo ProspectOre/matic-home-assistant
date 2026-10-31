@@ -11,7 +11,12 @@ from typing import Any
 
 import pytest
 from homeassistant.components.config import automation as automation_config
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceCall,
+    ServiceResponse,
+    SupportsResponse,
+)
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.loader import DATA_CUSTOM_COMPONENTS
@@ -30,6 +35,8 @@ VACUUM = "vacuum.matic_test"
 FIRMWARE = "sensor.matic_test_firmware"
 PERSON = "person.blueprint_test"
 PET = "binary_sensor.blueprint_test_pet"
+LEAK = "binary_sensor.blueprint_test_leak"
+PHOTO_URL = "/api/matic_robot/photo/entry/photo"
 
 
 async def prepare_api(hass: HomeAssistant, tmp_path: Path) -> list[ServiceCall]:
@@ -65,9 +72,22 @@ async def prepare_api(hass: HomeAssistant, tmp_path: Path) -> list[ServiceCall]:
         ("test", "marker"),
     ):
         hass.services.async_register(domain, service, record)
+
+    async def photo_patrol(call: ServiceCall) -> ServiceResponse:
+        calls.append(call)
+        photos = [{"room": room, "url": PHOTO_URL} for room in call.data["rooms"]]
+        return {"robots": [{"entity_id": VACUUM, "photos": photos}]}
+
+    hass.services.async_register(
+        "matic_robot",
+        "photo_patrol",
+        photo_patrol,
+        supports_response=SupportsResponse.OPTIONAL,
+    )
     hass.states.async_set(VACUUM, "docked")
     hass.states.async_set(PERSON, "home")
     hass.states.async_set(PET, "on")
+    hass.states.async_set(LEAK, "off", {"friendly_name": "Sink leak"})
     return calls
 
 
@@ -105,6 +125,14 @@ def inputs_for(filename: str) -> dict[str, Any]:
             "firmware_sensor": FIRMWARE,
             "notify_service": "notify.blueprint_test_phone",
         }
+    if filename == "photo_on_alert.yaml":
+        return {
+            "vacuum": VACUUM,
+            "sensors": [LEAK],
+            "room": " Kitchen ",
+            "notify_service": "notify.blueprint_test_phone",
+            "cooldown": {"seconds": 0},
+        }
     inputs: dict[str, Any] = {"vacuum": VACUUM, "plan": "Saved test plan"}
     if filename == "clean_when_away.yaml":
         inputs.update(household=[PERSON], settle_time={"seconds": 0})
@@ -123,6 +151,8 @@ async def fire_source_trigger(hass: HomeAssistant, filename: str) -> None:
         hass.states.async_set(PERSON, "Work")
     elif filename == "pet_aware.yaml":
         hass.states.async_set(PET, "off")
+    elif filename == "photo_on_alert.yaml":
+        hass.states.async_set(LEAK, "on", {"friendly_name": "Sink leak"})
     elif filename == "firmware_intelligence.yaml":
         report = {
             "id": "0123456789abcdef01234567",
@@ -217,6 +247,20 @@ async def test_import_save_reload_and_source_trigger(
             ("matic_robot", "firmware_notification"),
         ]
         assert calls[-1].data["action"] == "delivered"
+    elif filename == "photo_on_alert.yaml":
+        assert [(call.domain, call.service) for call in calls] == [
+            ("matic_robot", "photo_patrol"),
+            ("notify", "blueprint_test_phone"),
+        ]
+        assert calls[0].data == {"entity_id": [VACUUM], "rooms": ["Kitchen"]}
+        assert calls[1].data == {
+            "title": "Sink leak",
+            "message": "The robot took this photo in Kitchen.",
+            "data": {
+                "image": PHOTO_URL,
+                "tag": "matic_photo_automation.saved_matic_blueprint_test",
+            },
+        }
     else:
         assert len(calls) == 1
         assert (

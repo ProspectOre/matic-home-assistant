@@ -94,6 +94,10 @@ to try new features before 0.6.0.
 - **Robot camera photos.** **Take photo** asks the robot to take a picture,
   and **Latest photo** shows the newest one, including photos taken in the
   Matic app. Use it on a dashboard or attach it to a phone notification.
+- **Photo patrol.** Send the robot to one or more rooms and get back a photo
+  of each, ready to attach to a phone notification. The new **Matic:
+  Photograph room on alert** blueprint does this when a motion, leak or other
+  sensor turns on, so you can see what set it off.
 
 ## Working with the Matic app
 

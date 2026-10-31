@@ -9,7 +9,7 @@ from collections.abc import (
     Sequence,
 )
 from functools import partial, wraps
-from typing import Any
+from typing import Any, cast
 
 import probatio
 from homeassistant.auth.permissions.const import POLICY_CONTROL
@@ -27,6 +27,7 @@ from homeassistant.const import (
 from homeassistant.core import (
     HomeAssistant,
     ServiceCall,
+    ServiceResponse,
     SupportsResponse,
     callback,
 )
@@ -39,6 +40,7 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import target
 from homeassistant.util import slugify
+from homeassistant.util.json import JsonValueType
 
 from .area_binding import AreaBindingStatus, area_binding_status
 from .cadence import MAX_CADENCE_INTERVAL, validate_cadence_interval
@@ -66,6 +68,7 @@ from .managed_executor import (
     _validation_error,
 )
 from .occupancy import occupancy_holds
+from .photo_patrol import async_photo_patrol
 from .plans import (
     CadenceBindingError,
     CleaningPlanManager,
@@ -98,6 +101,7 @@ SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
 SERVICE_CLEAN_AREA = "clean_area"
 SERVICE_GO_TO_ROOM = "go_to_room"
+SERVICE_PHOTO_PATROL = "photo_patrol"
 SERVICE_SKIP_ROOM = "skip_room"
 SERVICE_CLEAN_ROOM_NEXT = "clean_room_next"
 SERVICE_CLEAN_ROOM_AGAIN = "clean_room_again"
@@ -147,6 +151,17 @@ GO_TO_ROOM_SERVICE_SCHEMA = cv.make_entity_service_schema(
         probatio.Required("room"): probatio.All(
             cv.string, probatio.Length(min=1, max=128)
         )
+    }
+)
+
+PHOTO_PATROL_SERVICE_SCHEMA = cv.make_entity_service_schema(
+    {
+        probatio.Required("rooms"): probatio.All(
+            cv.ensure_list,
+            [probatio.All(cv.string, probatio.Length(min=1, max=128))],
+            probatio.Length(min=1, max=12),
+        ),
+        probatio.Optional("return_to_dock", default=True): cv.boolean,
     }
 )
 
@@ -659,6 +674,31 @@ async def async_register_services(hass: HomeAssistant) -> None:
         SERVICE_GO_TO_ROOM,
         _require_matic_control(hass, async_go_to_room),
         schema=GO_TO_ROOM_SERVICE_SCHEMA,
+    )
+
+    async def async_photo_patrol_call(call: ServiceCall) -> ServiceResponse:
+        """Photograph each room in turn with every selected robot."""
+        robots: list[JsonValueType] = []
+        for entity_id in _resolve_loaded_matic_vacuums(hass, call):
+            photos = await async_photo_patrol(
+                hass,
+                _entry_for_entity(hass, entity_id),
+                entity_id,
+                call.data["rooms"],
+                return_to_dock=call.data["return_to_dock"],
+                context=call.context,
+            )
+            robots.append(
+                {"entity_id": entity_id, "photos": cast(list[JsonValueType], photos)}
+            )
+        return {"robots": robots}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_PHOTO_PATROL,
+        _require_matic_control(hass, async_photo_patrol_call),
+        schema=PHOTO_PATROL_SERVICE_SCHEMA,
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     def queue_handler(

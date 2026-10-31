@@ -1,0 +1,102 @@
+blueprint:
+  name: "Matic: Photograph room on alert"
+  description: >-
+    When one of your sensors turns on, sends the robot to a room, takes a photo
+    there and sends it to your phone, then docks the robot. It starts only when
+    the robot is docked or idle, and not again until the cooldown has passed.
+    If the robot can't get there or take the photo, for example because its
+    battery is below 20%, the notification says so instead.
+  domain: automation
+  source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/photo_on_alert.yaml
+  input:
+    vacuum:
+      name: Robot
+      description: The robot that takes the photo, for example vacuum.matic.
+      selector:
+        entity:
+          integration: matic_robot
+          domain: vacuum
+    sensors:
+      name: Alert sensors
+      description: >-
+        Sensors that start a check when they turn on, for example a motion
+        sensor, a water leak sensor or a smoke alarm.
+      selector:
+        entity:
+          domain: binary_sensor
+          multiple: true
+    room:
+      name: Room
+      description: >-
+        The room to photograph, by its name in Matic Map, for example Kitchen.
+      selector:
+        text:
+    notify_service:
+      name: Mobile notification action
+      description: >-
+        Your Companion app notification action, for example
+        notify.mobile_app_my_phone. The photo is attached to the notification.
+      selector:
+        text:
+    cooldown:
+      name: Cooldown
+      description: >-
+        How long to wait after a check before another can start. Default 15
+        minutes; for example 1 hour for a busy motion sensor.
+      default:
+        minutes: 15
+      selector:
+        duration:
+
+mode: single
+max_exceeded: silent
+
+variables:
+  room_name: !input room
+  notify_service: !input notify_service
+
+triggers:
+  - trigger: state
+    entity_id: !input sensors
+    to: "on"
+
+conditions:
+  - condition: state
+    entity_id: !input vacuum
+    state: [docked, idle]
+
+actions:
+  - variables:
+      sensor_name: "{{ trigger.to_state.name }}"
+      room: "{{ room_name | trim }}"
+  - action: matic_robot.photo_patrol
+    target:
+      entity_id: !input vacuum
+    data:
+      rooms: ["{{ room }}"]
+    response_variable: patrol
+    continue_on_error: true
+  - variables:
+      photos: >-
+        {{ patrol.robots[0].photos
+           if patrol is defined and patrol.robots | default([]) | length > 0
+           else [] }}
+  - if: "{{ photos | length > 0 }}"
+    then:
+      - action: "{{ notify_service }}"
+        data:
+          title: "{{ sensor_name }}"
+          message: "The robot took this photo in {{ room }}."
+          data:
+            image: "{{ photos[0].url }}"
+            tag: "{{ 'matic_photo_' ~ this.entity_id }}"
+    else:
+      - action: "{{ notify_service }}"
+        data:
+          title: "{{ sensor_name }}"
+          message: >-
+            The robot couldn't take a photo in {{ room }}. Check the robot in
+            Home Assistant.
+          data:
+            tag: "{{ 'matic_photo_' ~ this.entity_id }}"
+  - delay: !input cooldown

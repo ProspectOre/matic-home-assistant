@@ -33,6 +33,20 @@ go_to_room:
       selector:
         text:
 
+photo_patrol:
+  target: *vacuum_target
+  fields:
+    rooms:
+      required: true
+      example: [Kitchen, Living room]
+      selector:
+        text:
+          multiple: true
+    return_to_dock:
+      default: true
+      selector:
+        boolean:
+
 skip_room:
   target: *vacuum_target
   fields:
