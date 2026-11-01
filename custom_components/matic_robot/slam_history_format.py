@@ -154,10 +154,14 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
             frame = item.get("frame")
             archive_group = item.get("archive_group")
             deleted_until = (
-                datetime.fromisoformat(deleted_until_value).astimezone(UTC)
+                datetime.fromisoformat(deleted_until_value)
                 if isinstance(deleted_until_value, str)
                 else None
             )
+            if deleted_until is not None:
+                if deleted_until.tzinfo is None:
+                    raise ValueError
+                deleted_until = deleted_until.astimezone(UTC)
             encoded_scene = item["scene"]
             if (
                 not isinstance(encoded_scene, str)
@@ -205,6 +209,7 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
                 )
             ):
                 raise ValueError
+            created_at_utc = created_at.astimezone(UTC)
             if record_id is None or comparison_group is None or frame is None:
                 dirty = True
             scene = _decompress_scene(compressed)
@@ -214,13 +219,13 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
                 or header.point_count != point_count
             ):
                 raise ValueError
-        except DecodeError, KeyError, TypeError, ValueError, zlib.error:
+        except DecodeError, KeyError, TypeError, ValueError, OverflowError, zlib.error:
             dirty = True
             continue
         snapshots.append(
             SlamHistorySnapshot(
                 snapshot_id,
-                created_at.astimezone(UTC),
+                created_at_utc,
                 revision,
                 point_count,
                 compressed,

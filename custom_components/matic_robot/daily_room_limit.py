@@ -19,7 +19,7 @@ def _time(value: object) -> datetime | None:
     try:
         parsed = datetime.fromisoformat(value)
         return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
-    except (ValueError, OverflowError):
+    except ValueError, OverflowError:
         return None
 
 
@@ -416,7 +416,12 @@ def daily_state(
         if stamp > now:
             ambiguous = True
             continue
-        if stamp.astimezone(timezone).date() != today:
+        try:
+            completed_day = stamp.astimezone(timezone).date()
+        except OverflowError:
+            ambiguous = True
+            continue
+        if completed_day != today:
             continue
         recorded_times.add(stamp)
         if receipt.get("identity") is None:
@@ -442,14 +447,16 @@ def daily_state(
         if isinstance(global_room, Mapping)
         else None
     )
-    if (
-        last_completed is not None
-        and last_completed.astimezone(timezone).date() == today
-        and last_completed not in recorded_times
-    ):
-        # Old installations may have recorded only the most recent clean;
-        # do not invent a complete daily count for that local day.
-        ambiguous = True
+    if last_completed is not None:
+        try:
+            last_completed_day = last_completed.astimezone(timezone).date()
+        except OverflowError:
+            ambiguous = True
+        else:
+            if last_completed_day == today and last_completed not in recorded_times:
+                # Old installations may have recorded only the most recent clean;
+                # do not invent a complete daily count for that local day.
+                ambiguous = True
     reason = (
         "completion_history_unverified"
         if ambiguous or (overflow is not None and overflow > now)

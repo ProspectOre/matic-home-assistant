@@ -192,6 +192,32 @@ def test_utc_overflow_in_stored_history_fails_closed(timestamp, field):
     assert state["completed_today"] == 0
 
 
+@pytest.mark.parametrize(
+    "timestamp, zone",
+    [
+        ("0001-01-01T00:00:00+00:00", "America/Los_Angeles"),
+        ("9999-12-31T23:59:59+00:00", "Asia/Tokyo"),
+    ],
+)
+@pytest.mark.parametrize("field", ["receipt", "last_completed"])
+def test_local_day_overflow_in_stored_history_fails_closed(timestamp, zone, field):
+    identity = "d" * 64
+    now = datetime(2026, 7, 1, 18, tzinfo=UTC)
+    robot = {"daily_room_limits": {ROOM_ID: {"identity": identity, "limit": 2}}}
+    if field == "receipt":
+        robot["daily_room_completions"] = {
+            ROOM_ID: {"receipts": [{"at": timestamp, "identity": identity}]}
+        }
+    else:
+        robot["rooms"] = {ROOM_ID: {"last_completed": timestamp}}
+
+    state = _state(robot, identity, now, zone)
+
+    assert state["reason"] == "completion_history_unverified"
+    assert state["reached"] is True
+    assert state["completed_today"] == 0
+
+
 def test_missing_timezone_and_ambiguous_receipt_fail_closed():
     identity = "d" * 64
     now = datetime(2026, 7, 1, 18, tzinfo=UTC)

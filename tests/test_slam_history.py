@@ -614,6 +614,40 @@ async def test_history_load_repairs_corrupt_storage(hass) -> None:
     assert store.catalog() == ()
 
 
+@pytest.mark.parametrize("field", ["created_at", "deleted_until"])
+@pytest.mark.parametrize(
+    "timestamp",
+    [
+        "0001-01-01T00:00:00+23:59",
+        "9999-12-31T23:59:59-23:59",
+        "2026-07-26T12:00:00",
+    ],
+)
+async def test_history_load_discards_invalid_time_and_preserves_valid_record(
+    hass, field, timestamp
+) -> None:
+    scene = _scene()
+    valid = {
+        "id": hashlib.sha256(scene).hexdigest()[:24],
+        "created_at": "2026-07-26T12:00:00+00:00",
+        "revision": 1,
+        "point_count": 1025,
+        "scene": base64.b64encode(zlib.compress(scene)).decode(),
+    }
+    store = SlamHistoryStore(hass, "overflow-history-entry")
+    store._store.async_load = AsyncMock(
+        return_value={"snapshots": [{**valid, field: timestamp}, valid]}
+    )
+    store._store.async_delay_save = MagicMock()
+
+    await store.async_load()
+
+    assert len(store.catalog()) == 1
+    assert store.catalog()[0].created_at == datetime(2026, 7, 26, 12, tzinfo=UTC)
+    assert store._store.async_delay_save.called
+    await store.async_shutdown()
+
+
 async def test_history_load_migrates_legacy_and_pauses_oversized_state(hass) -> None:
     scene = _scene_with_structure()
     identity = _identity()
