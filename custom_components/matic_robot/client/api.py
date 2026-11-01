@@ -185,6 +185,9 @@ _WIFI_NETWORK_MAX_COUNT = 256
 _SCHEDULE_MAX_BYTES = 64 * 1024
 _SCHEDULE_MAX_FIELDS = 1024
 _SCHEDULE_MAX_UUIDS = 256
+# Inside one per-room schedule block: target (7) > region (3) > region ID (3),
+# where the ID has the coverage plan's nested UUID form (``Room.id_wire``).
+_SCHEDULE_BLOCK_ROOM_PATH = (7, 3, 3)
 _SCHEDULE_MAX_DEPTH = 4
 _CLEANING_SESSION_MAX_BYTES = 256 * 1024
 _CLEANING_SESSION_MAX_FIELDS = 1024
@@ -2854,7 +2857,14 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
 
 
 def _schedule_room_ids(payload: bytes) -> tuple[str, ...]:
-    """Read floor-plan room IDs from the schedule's per-room blocks."""
+    """Return floor-plan room IDs from a schedule's per-room blocks.
+
+    Field 7 holds repeated blocks (field 1), several per scheduled room, each
+    carrying its room's floor-plan ID at ``_SCHEDULE_BLOCK_ROOM_PATH`` relative
+    to the block. That is deeper than the generic scan in ``_uuid_candidates``
+    reaches. Layout observed on firmware v181.10 (protocol 28). IDs keep their
+    first-seen order; blocks that do not decode are skipped.
+    """
     found: list[str] = []
     field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
     for container in bytes_fields(payload, 7, field_budget=field_budget):
@@ -2867,16 +2877,14 @@ def _schedule_room_ids(payload: bytes) -> tuple[str, ...]:
         for block in blocks:
             try:
                 room = block
-                for number in (7, 3, 3):
+                for number in _SCHEDULE_BLOCK_ROOM_PATH:
                     room = first_bytes(room, number, field_budget=field_budget)
-                room_id = uuid_string(room, field_budget=field_budget)
+                found.append(uuid_string(room, field_budget=field_budget))
             except WireFieldBudgetExceeded, WireFieldLimitExceeded:
                 raise
             except DecodeError:
                 continue
-            if room_id not in found:
-                found.append(room_id)
-    return tuple(found)
+    return tuple(dict.fromkeys(found))
 
 
 def _uuid_candidates(payload: bytes) -> tuple[str, ...]:

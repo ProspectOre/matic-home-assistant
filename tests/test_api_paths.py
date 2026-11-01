@@ -2115,6 +2115,8 @@ def test_uuid_candidates_bound_recursion_depth() -> None:
 
 
 def _schedule_block(room: int, other: int) -> bytes:
+    """Build one per-room schedule block shaped like a robot's."""
+
     def nested_uuid(high: int, low: int) -> bytes:
         return _bfield(2, _bfield(2, _fixed64(1, high) + _fixed64(2, low)))
 
@@ -2131,6 +2133,8 @@ def test_decode_schedule_reads_room_ids_from_per_room_blocks() -> None:
         _bfield(1, _schedule_block(room, other))
         for room, other in ((1, 11), (1, 12), (2, 13), (2, 14))
     )
+    # A block without a room target and a container that is not a message are
+    # skipped rather than discarding the schedule.
     blocks += _bfield(1, _bfield(6, b""))
     weekly = _bfield(1, _vfield(2, 1)) + _bfield(3, _vfield(1, 510))
     payload = _bfield(1, weekly) + _bfield(7, b"\xff") + _bfield(7, blocks)
@@ -2139,7 +2143,23 @@ def test_decode_schedule_reads_room_ids_from_per_room_blocks() -> None:
 
     assert schedule is not None
     assert schedule.room_ids == (str(UUID(int=1)), str(UUID(int=2)))
+    # The generic scan stops before the depth these IDs sit at.
     assert _uuid_candidates(payload) == ()
+
+
+def test_schedule_room_ids_fit_a_whole_floor_of_room_blocks() -> None:
+    # Eight blocks per room, as observed, for seven rooms; the last block's
+    # room ID is malformed and is skipped.
+    blocks = b"".join(
+        _bfield(1, _schedule_block(index // 8 + 1, index)) for index in range(56)
+    )
+    blocks += _bfield(1, _bfield(7, _bfield(3, _bfield(3, b"\x09"))))
+    weekly = _bfield(1, _vfield(2, 1)) + _bfield(3, _vfield(1, 510))
+
+    schedule = _decode_schedule(_bfield(1, weekly) + _bfield(7, blocks))
+
+    assert schedule is not None
+    assert schedule.room_ids == tuple(str(UUID(int=room)) for room in range(1, 8))
 
 
 def test_schedule_room_ids_share_the_schedule_field_budget() -> None:
