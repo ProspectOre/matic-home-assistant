@@ -21,7 +21,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .client.api import MaticHermesClient
+from .client.api import _BAG_FULL_ERROR, _BAG_MISSING_ERROR, MaticHermesClient
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import (
     AuthenticationRequiredError,
@@ -146,8 +146,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._finished_observation_started_at = dt_util.utcnow()
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
-        self._pending_error_codes: tuple[int, ...] = ()
-        self._pending_error_polls = 0
+        self._error_code_polls: dict[int, int] = {}
         self._bag_previous_full: bool | None = None
         self._bag_errors_observed = False
         self._bag_pending_clear = False
@@ -562,27 +561,36 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     def _async_confirm_robot_errors(
         self, state: RobotOperationalState
     ) -> RobotOperationalState:
-        """Suppress one-poll firmware error pulses while preserving real faults."""
+        """Suppress one-poll firmware error pulses while preserving real faults.
+
+        Each code is confirmed on its own: a code already exposed stays exposed
+        while it is still reported, and only a newly reported code waits for
+        its confirmation polls. A code missing from one poll starts over.
+        """
         codes = state.error_codes
-        if not codes:
-            self._pending_error_codes = ()
-            self._pending_error_polls = 0
+        polls = {code: self._error_code_polls.get(code, 0) + 1 for code in codes}
+        self._error_code_polls = polls
+        exposed = tuple(
+            code for code in codes if polls[code] >= ERROR_CONFIRMATION_POLLS
+        )
+        if exposed == codes:
             return state
-        if codes != self._pending_error_codes:
-            self._pending_error_codes = codes
-            self._pending_error_polls = 1
-        else:
-            self._pending_error_polls += 1
-        if self._pending_error_polls < ERROR_CONFIRMATION_POLLS:
-            _LOGGER.debug(
-                "Waiting for a second poll before exposing robot error codes %s",
-                codes,
-            )
-            # Bag flags are derived from the same error list and must obey the
-            # same confirmation window; otherwise a one-poll firmware pulse
-            # could create a false full-bag statistic.
+        _LOGGER.debug(
+            "Waiting for a second poll before exposing robot error codes %s",
+            tuple(code for code in codes if code not in exposed),
+        )
+        # Bag flags are derived from the same error list and must obey the
+        # same confirmation window; otherwise a one-poll firmware pulse could
+        # create a false full-bag statistic. With nothing confirmed yet the
+        # bag stays unknown rather than claiming it is fine.
+        if not exposed:
             return replace(state, error_codes=(), bag_full=None, bag_missing=None)
-        return state
+        return replace(
+            state,
+            error_codes=exposed,
+            bag_full=_BAG_FULL_ERROR in exposed,
+            bag_missing=_BAG_MISSING_ERROR in exposed,
+        )
 
     async def _async_track_cleaning_session(self, state: RobotState) -> RobotState:
         """Merge fresh HA-side run tracking with robot-native session history."""

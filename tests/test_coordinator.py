@@ -1296,6 +1296,93 @@ async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> Non
     assert repeated_once.operational.error_codes == ()
 
 
+def _error_poller(hass):
+    """Return a coordinator and a poll that reports errors like the decoder."""
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def poll(*error_codes: int) -> RobotOperationalState:
+        reported = bool(error_codes)
+        client.async_get_state.return_value = replace(
+            client.async_get_state.return_value,
+            error_codes=error_codes,
+            bag_full=(206 in error_codes) if reported else None,
+            bag_missing=(205 in error_codes) if reported else None,
+        )
+        coordinator.async_set_updated_data(await coordinator._async_update_data())
+        return coordinator.data.operational
+
+    return coordinator, poll
+
+
+async def test_confirmed_robot_error_stays_exposed_while_a_new_one_confirms(
+    hass,
+) -> None:
+    """A changed error set only delays the codes that are new in it."""
+    _, poll = _error_poller(hass)
+
+    assert (await poll(207)).error_codes == ()
+    assert (await poll(207)).error_codes == (207,)
+
+    added = await poll(205, 207)
+    assert added.error_codes == (207,)
+    assert added.bag_missing is False
+    assert added.bag_full is False
+
+    confirmed = await poll(205, 207)
+    assert confirmed.error_codes == (205, 207)
+    assert confirmed.bag_missing is True
+
+    removed = await poll(207)
+    assert removed.error_codes == (207,)
+    assert removed.bag_missing is False
+
+
+async def test_one_poll_error_beside_a_confirmed_one_is_never_exposed(hass) -> None:
+    """A pulse cannot reach the error list or the bag statistics."""
+    coordinator, poll = _error_poller(hass)
+    await poll(207)
+    await poll(207)
+
+    pulse = await poll(206, 207)
+    after = await poll(207)
+
+    assert pulse.error_codes == (207,)
+    assert pulse.bag_full is False
+    assert after.error_codes == (207,)
+    assert after.bag_full is False
+    assert coordinator.bag_observation["full_events_observed"] == 0
+
+
+async def test_error_missing_for_one_poll_confirms_again(hass) -> None:
+    """A code that drops out starts its confirmation over when it returns."""
+    _, poll = _error_poller(hass)
+    await poll(207)
+    await poll(207)
+
+    replaced = await poll(205)
+    assert replaced.error_codes == ()
+    assert replaced.bag_full is None
+    assert replaced.bag_missing is None
+
+    returned = await poll(207)
+    assert returned.error_codes == ()
+
+    assert (await poll(207)).error_codes == (207,)
+
+
+async def test_cleared_robot_errors_clear_immediately(hass) -> None:
+    _, poll = _error_poller(hass)
+    await poll(205, 207)
+    await poll(205, 207)
+
+    cleared = await poll()
+
+    assert cleared.error_codes == ()
+    assert cleared.bag_missing is False
+    assert cleared.bag_full is False
+
+
 async def test_rejected_credential_starts_home_assistant_reauthentication(hass) -> None:
     client = _client()
     client.async_get_state.side_effect = AuthenticationRequiredError("expired")

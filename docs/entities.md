@@ -115,8 +115,9 @@ the software and hardware versions.
 If **Problem** turns on, `sensor.matic_activity` names the reported conditions
 in `errors` and `primary_error` and keeps their numeric codes in
 `hermes_error_codes`; a code with no known meaning appears as `error_code_<n>`.
-An error must persist across two normal polls before it appears, which filters
-brief firmware pulses. Recorded activity can help diagnose an error after it clears.
+Each new error must persist across two normal polls before it appears, which
+filters brief firmware pulses; errors already shown stay listed meanwhile.
+Recorded activity can help diagnose an error after it clears.
 
 ## Room statistics and the recorder
 
