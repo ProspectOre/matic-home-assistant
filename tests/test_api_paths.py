@@ -2147,6 +2147,21 @@ def test_decode_schedule_reads_room_ids_from_per_room_blocks() -> None:
     assert _uuid_candidates(payload) == ()
 
 
+def test_schedule_room_ids_fit_a_whole_floor_of_room_blocks() -> None:
+    # Eight blocks per room, as observed, for seven rooms; the last block's
+    # room ID is malformed and is skipped.
+    blocks = b"".join(
+        _bfield(1, _schedule_block(index // 8 + 1, index)) for index in range(56)
+    )
+    blocks += _bfield(1, _bfield(7, _bfield(3, _bfield(3, b"\x09"))))
+    weekly = _bfield(1, _vfield(2, 1)) + _bfield(3, _vfield(1, 510))
+
+    schedule = _decode_schedule(_bfield(1, weekly) + _bfield(7, blocks))
+
+    assert schedule is not None
+    assert schedule.room_ids == tuple(str(UUID(int=room)) for room in range(1, 8))
+
+
 def test_schedule_room_ids_share_the_schedule_field_budget() -> None:
     too_many_blocks = _bfield(7, _bfield(1, b"") * 1100)
     with pytest.raises(WireFieldBudgetExceeded):
