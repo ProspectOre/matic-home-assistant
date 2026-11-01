@@ -46,6 +46,7 @@ soak and tablet run do not establish retention or supported-phone acceptance.
 | History | Floor/date identity, no live pose, no movement/editing, Return to live, bounded cache; incompatible map comparison refused. |
 | Comparison | Shifted origins, sampling differences, partial coverage, identical/changed content, legacy metadata, incompatible frames, pair cancellation/eviction; no false removal from missing observations; bounded two-endpoint memory. |
 | Persistence | Disk full, truncated/corrupt page, interrupted durable boundaries, retry, upgrade/downgrade refusal and matching-backup restore. |
+| Saved-map lifecycle | Keep/name, auto-prune protection, full quota from kept/trash, pause/resume capture; exact bulk delete preview, undo/expiry, permanent-delete readback and measured reclaim; compare invalidation; multi-entry/two-user races; delayed writes cannot resurrect; bounded validated archive import. See [storage contract](design-map-storage.md). |
 | Privacy/camera | No-photo areas, opt-in, role/account changes, current camera-card rendering, expiry/restart errors, retained robot photos, explicit AI disclosure, no capture from map viewing. |
 
 Map/list selection and backend preview must agree on room/area IDs, inclusion, order
@@ -84,6 +85,7 @@ recover from stale data and distinguish map imagery from camera photos without c
 | Release qualification | [PRO-74](https://linear.app/prospectore/issue/PRO-74), [PRO-75](https://linear.app/prospectore/issue/PRO-75): reviewed installed hashes, restart/readback, real backup/restore and separately authorized physical results. |
 | Completion policy | [PRO-128](https://linear.app/prospectore/issue/PRO-128): count verified completions exactly once across restart/local-day boundaries; shared preview and dispatch policy. |
 | Host efficiency | [PRO-71](https://linear.app/prospectore/issue/PRO-71): actual-host baseline decides binary migration timing; migration and rollback proof follow. |
+| Saved-map management | [PRO-146](https://linear.app/prospectore/issue/PRO-146): durable Keep/delete/undo, bounded storage, archive validation and independent working-map/run-record boundaries. |
 | Live status | [PRO-130](https://linear.app/prospectore/issue/PRO-130): beta-2 robot stream ordering/coalescing/reconciliation. Browser push remains after 0.6 under [PRO-131](https://linear.app/prospectore/issue/PRO-131). |
 | Camera trust | [PRO-117](https://linear.app/prospectore/issue/PRO-117), [PRO-122](https://linear.app/prospectore/issue/PRO-122): privacy refusals, access/retention behavior, robot deletion readback before unattended expansion. |
 | Useful investigations | [PRO-115](https://linear.app/prospectore/issue/PRO-115), [PRO-116](https://linear.app/prospectore/issue/PRO-116), [PRO-125](https://linear.app/prospectore/issue/PRO-125): aimed supported navigation, explicit optional analysis and Assist; preserve unsupported-interface investigations. |

@@ -6,6 +6,7 @@ This proposal does not change shipped behavior or assign a release. Implementati
 order and status belong in Linear. [Architecture](design-map-architecture.md) and
 [qualification](qualification-map-experience.md) define the supporting contracts.
 [Live, launch, history and comparison](design-map-live-history.md) define their distinct experiences.
+[Storage and deletion](design-map-storage.md) defines keeping, exporting and removing maps.
 
 ## Product principles
 

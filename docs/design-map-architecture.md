@@ -116,7 +116,8 @@ coalescing, loss/reconnect and polling reconciliation; a late poll cannot replac
 For [PRO-71](https://linear.app/prospectore/issue/PRO-71), measure actual-host memory
 before choosing migration timing. Follow the [binary store design](design-binary-tile-store.md)
 if justified, with interrupted writes, disk-full, corruption, restart and matching-backup
-restore tests. Keep bounded dated snapshots; never turn map comparison into unbounded history.
+restore tests. The [storage lifecycle](design-map-storage.md) defines quota, immutable kept maps,
+serialized deletion/undo, dependency invalidation and truthful disk reclamation.
 
 Authorization, local transport identity and photo privacy remain backend responsibilities.
 Apply capabilities consistently to HTTP, HA actions, Assist and UI. Clear protected pixels,

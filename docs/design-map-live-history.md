@@ -82,12 +82,13 @@ text. Preserve orientation when scrubbing compatible snapshots. Changing floor r
 only the incompatible camera. Keep the selected date visible; no silent jump to Live.
 Return to live restores the appropriate live camera and fresh admission.
 
-Current retention is at most 12 snapshots and 48 MiB compressed globally. Changed
+Current retention is at most 12 snapshots and 48 MiB compressed per entry across floors. Changed
 same-mission scenes within five minutes can replace the newest sample; this is not a
 continuous recording, fixed time span or guaranteed snapshot per floor. Show retained
 versions and label missing periods as unknown: current APIs do not record why a sample
 is absent. Proposed live comparison must pin one admitted immutable scene revision;
-until that contract exists, offer retained snapshots only.
+until that contract exists, offer retained snapshots only. [Storage and deletion](design-map-storage.md)
+defines kept maps, quota accounting, export, trash, pruning and comparison invalidation.
 
 ## Historical changes as a comparison workflow
 
