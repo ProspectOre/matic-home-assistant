@@ -27,6 +27,8 @@ class NativeRoomStatistic:
     session_hash: str
     mode_durations: dict[str, int]
     conflicting_modes: frozenset[str]
+    invalidated_modes: frozenset[str]
+    reported_completed_modes: frozenset[str]
 
 
 def completed_native_room_statistics(
@@ -38,6 +40,36 @@ def completed_native_room_statistics(
     multiple_floors_known: bool = False,
     minimum_timestamp: float | None = None,
 ) -> dict[str, NativeRoomStatistic]:
+    """Return the latest positive completion for each unambiguous room."""
+    candidates = native_room_statistics_by_session(
+        records,
+        rooms,
+        now=now,
+        future_tolerance_seconds=future_tolerance_seconds,
+        multiple_floors_known=multiple_floors_known,
+        minimum_timestamp=minimum_timestamp,
+    )
+    return {
+        room_id: statistic
+        for room_id, room_history in candidates.items()
+        if (
+            statistic := next(
+                (item for item in room_history if item.mode_durations), None
+            )
+        )
+        is not None
+    }
+
+
+def native_room_statistics_by_session(
+    records: Iterable[CleaningSessionRecord],
+    rooms: Iterable[Room],
+    *,
+    now: datetime,
+    future_tolerance_seconds: int,
+    multiple_floors_known: bool = False,
+    minimum_timestamp: float | None = None,
+) -> dict[str, tuple[NativeRoomStatistic, ...]]:
     """Map explicit completed mode results to unambiguous active room names.
 
     The native history does not include a floor identity. This function only
@@ -53,10 +85,8 @@ def completed_native_room_statistics(
         key = _room_key(room.name)
         room_by_name[key] = None if key in room_by_name else (room.id, room.name)
 
-    latest: dict[str, NativeRoomStatistic] = {}
-    conflicted_modes_by_session: dict[tuple[str, str, float, str | None], set[str]] = (
-        defaultdict(set)
-    )
+    statistics_by_session: dict[tuple[str, str], NativeRoomStatistic] = {}
+    conflicted_modes_by_session: dict[tuple[str, str], set[str]] = defaultdict(set)
     future_limit = now.timestamp() + future_tolerance_seconds
     for record in records:
         session = record.session
@@ -90,7 +120,14 @@ def completed_native_room_statistics(
             duplicate_modes = {
                 mode for mode, mode_results in modes.items() if len(mode_results) != 1
             }
+            invalidated_modes = {
+                mode
+                for mode, mode_results in modes.items()
+                if len(mode_results) == 1
+                and mode_results[0].status in {"partial", "unattempted"}
+            }
             mode_durations: dict[str, int] = {}
+            reported_completed_modes: set[str] = set()
             for mode_results in modes.values():
                 if len(mode_results) != 1:
                     continue
@@ -103,16 +140,20 @@ def completed_native_room_statistics(
                     and duration > 0
                 ):
                     mode_durations[result.cleaning_mode] = duration
-            if not mode_durations and not duplicate_modes:
+                    reported_completed_modes.add(result.cleaning_mode)
+            if not mode_durations and not duplicate_modes and not invalidated_modes:
                 continue
             room_id, display_name = mapped
-            session_identity = (room_id, session_hash, timestamp, session.started_at)
+            # The opaque native record key identifies the session. End/start
+            # timestamps can be revised by the provider after an initial
+            # completion, so they must not split one session into two rows.
+            session_identity = (room_id, session_hash)
             tombstones = conflicted_modes_by_session[session_identity]
             tombstones.update(duplicate_modes)
             mode_durations = {
                 mode: duration
                 for mode, duration in mode_durations.items()
-                if mode not in tombstones
+                if mode not in tombstones and mode not in invalidated_modes
             }
             candidate = NativeRoomStatistic(
                 room_id=room_id,
@@ -124,15 +165,13 @@ def completed_native_room_statistics(
                 session_hash=session_hash,
                 mode_durations=mode_durations,
                 conflicting_modes=frozenset(tombstones),
+                invalidated_modes=frozenset(invalidated_modes),
+                reported_completed_modes=frozenset(reported_completed_modes),
             )
-            current = latest.get(room_id)
-            if current is None or candidate.timestamp > current.timestamp:
-                latest[room_id] = candidate
-            elif (
-                candidate.timestamp == current.timestamp
-                and candidate.session_hash == current.session_hash
-                and candidate.started_at == current.started_at
-            ):
+            current = statistics_by_session.get(session_identity)
+            if current is None:
+                statistics_by_session[session_identity] = candidate
+            else:
                 conflicting_modes = (
                     current.conflicting_modes | candidate.conflicting_modes
                 )
@@ -143,6 +182,13 @@ def completed_native_room_statistics(
                     and current.mode_durations[mode] != duration
                 )
                 tombstones.update(conflicting_modes)
+                invalidated_modes = set(
+                    current.invalidated_modes | candidate.invalidated_modes
+                )
+                reported_completed_modes = set(
+                    current.reported_completed_modes
+                    | candidate.reported_completed_modes
+                )
                 merged_modes = {
                     **current.mode_durations,
                     **candidate.mode_durations,
@@ -150,25 +196,41 @@ def completed_native_room_statistics(
                 merged_modes = {
                     mode: duration
                     for mode, duration in merged_modes.items()
-                    if mode not in conflicting_modes
+                    if mode not in conflicting_modes and mode not in invalidated_modes
                 }
                 merged_modes = {
                     mode: duration
                     for mode, duration in merged_modes.items()
-                    if mode not in tombstones
+                    if mode not in tombstones and mode not in invalidated_modes
                 }
-                latest[room_id] = NativeRoomStatistic(
+                statistics_by_session[session_identity] = NativeRoomStatistic(
                     room_id=room_id,
                     room_name=display_name,
-                    ended_at=ended_at,
+                    ended_at=(
+                        candidate.ended_at
+                        if candidate.timestamp >= current.timestamp
+                        else current.ended_at
+                    ),
                     duration_seconds=sum(merged_modes.values()),
-                    timestamp=timestamp,
-                    started_at=session.started_at,
+                    timestamp=max(timestamp, current.timestamp),
+                    started_at=(
+                        candidate.started_at
+                        if candidate.timestamp >= current.timestamp
+                        else current.started_at
+                    ),
                     session_hash=session_hash,
                     mode_durations=merged_modes,
                     conflicting_modes=frozenset(tombstones),
+                    invalidated_modes=frozenset(invalidated_modes),
+                    reported_completed_modes=frozenset(reported_completed_modes),
                 )
-    return latest
+    by_room: dict[str, list[NativeRoomStatistic]] = defaultdict(list)
+    for (room_id, _session_hash), statistic in statistics_by_session.items():
+        by_room[room_id].append(statistic)
+    return {
+        room_id: tuple(sorted(history, key=lambda item: item.timestamp, reverse=True))
+        for room_id, history in by_room.items()
+    }
 
 
 def _room_key(value: str) -> str:

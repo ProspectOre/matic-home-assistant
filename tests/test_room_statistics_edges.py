@@ -1,5 +1,6 @@
 """Boundary cases for native room-statistics evidence and sensor projection."""
 
+import hashlib
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
@@ -62,6 +63,10 @@ async def _manager(hass):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     return manager
+
+
+def _stored_room(manager: CleaningPlanManager, serial_number: str) -> dict:
+    return manager._robot(serial_number)["rooms"]["living"]
 
 
 def test_native_statistics_reject_bad_time_and_malformed_completion_evidence():
@@ -171,6 +176,220 @@ async def test_native_equal_time_different_session_does_not_replace_existing(has
     assert not await manager.async_import_native_history("robot", floor, [collision])
     record = manager.snapshot("robot")["robot_reported_completed_by_room"]["living"]
     assert record["duration_seconds"] == 240
+
+
+@pytest.mark.asyncio
+async def test_newer_partial_only_history_does_not_hide_older_completion(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living"))
+    now = dt_util.utcnow()
+    older = _record(
+        (now - timedelta(minutes=10)).isoformat(),
+        CleaningModeResult("Living", "vacuum", "completed", 240),
+        key=b"older-success",
+    )
+    newer_partial = _record(
+        (now - timedelta(minutes=2)).isoformat(),
+        CleaningModeResult("Living", "vacuum", "partial", 100),
+        key=b"newer-partial",
+    )
+
+    assert await manager.async_import_native_history(
+        "cold", floor, [newer_partial, older]
+    )
+    room = _stored_room(manager, "cold")
+    assert room["robot_last_completed"] == older.session.ended_at
+    assert room["robot_last_duration_seconds"] == 240
+
+    assert await manager.async_import_native_history("stored", floor, [older])
+    await manager.async_import_native_history("stored", floor, [newer_partial])
+    stored = _stored_room(manager, "stored")
+    assert stored["robot_last_completed"] == older.session.ended_at
+    assert stored["robot_last_duration_seconds"] == 240
+
+
+@pytest.mark.asyncio
+async def test_same_session_partial_retracts_only_its_mode_and_stays_retracted(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living"))
+    ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
+    completed = _record(
+        ended_at,
+        CleaningModeResult("Living", "vacuum", "completed", 240),
+        CleaningModeResult("Living", "mop", "completed", 90),
+        key=b"revised-session",
+        started_at="2026-11-01T08:00:00+00:00",
+    )
+    revised = _record(
+        ended_at,
+        CleaningModeResult("Living", "vacuum", "partial", 110),
+        CleaningModeResult("Living", "mop", "completed", 90),
+        key=b"revised-session",
+        started_at="2026-11-01T08:00:00+00:00",
+    )
+
+    assert await manager.async_import_native_history("robot", floor, [completed])
+    assert await manager.async_import_native_history("robot", floor, [revised])
+    room = _stored_room(manager, "robot")
+    assert room["robot_last_completed_mode_durations"] == {"mop": 90}
+    assert room["robot_last_duration_seconds"] == 90
+    assert room["robot_native_mode_tombstones"][0]["modes"] == ["vacuum"]
+
+    # Repeated refresh and a cold manager loaded from the saved shape retain
+    # the negative mode evidence and do not restore the old vacuum duration.
+    refreshed = CleaningPlanManager(hass)
+    refreshed._store = SimpleNamespace(async_save=AsyncMock())
+    refreshed._data = {"robots": {"robot": {"rooms": {"living": room}}}}
+    assert await refreshed.async_import_native_history("robot", floor, [completed])
+    after_reload = _stored_room(refreshed, "robot")
+    assert after_reload["robot_last_completed_mode_durations"] == {"mop": 90}
+    assert after_reload["robot_last_duration_seconds"] == 90
+
+
+@pytest.mark.asyncio
+async def test_first_seen_partial_allows_late_completion_for_same_session(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living"))
+    ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
+    partial = _record(
+        ended_at,
+        CleaningModeResult("Living", "vacuum", "partial", 110),
+        key=b"late-completion",
+    )
+    completed = _record(
+        ended_at,
+        CleaningModeResult("Living", "vacuum", "completed", 240),
+        key=b"late-completion",
+    )
+
+    await manager.async_import_native_history("robot", floor, [partial])
+    assert await manager.async_import_native_history("robot", floor, [completed])
+    room = _stored_room(manager, "robot")
+    assert room["robot_last_completed_mode_durations"] == {"vacuum": 240}
+    assert room["robot_last_duration_seconds"] == 240
+
+
+@pytest.mark.asyncio
+async def test_retraction_tombstone_matches_session_when_timestamp_is_refined(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living"))
+    now = dt_util.utcnow()
+    completed = _record(
+        (now - timedelta(minutes=3)).isoformat(),
+        CleaningModeResult("Living", "vacuum", "completed", 240),
+        key=b"refined-session",
+        started_at=(now - timedelta(minutes=4)).isoformat(),
+    )
+    revised_partial = _record(
+        (now - timedelta(minutes=2)).isoformat(),
+        CleaningModeResult("Living", "vacuum", "partial", 110),
+        key=b"refined-session",
+        started_at=(now - timedelta(minutes=5)).isoformat(),
+    )
+
+    assert await manager.async_import_native_history("robot", floor, [completed])
+    assert await manager.async_import_native_history("robot", floor, [revised_partial])
+    room = _stored_room(manager, "robot")
+    assert "robot_last_duration_seconds" not in room
+    assert room["robot_native_mode_tombstones"][0]["modes"] == ["vacuum"]
+    assert not await manager.async_import_native_history("robot", floor, [completed])
+    room = _stored_room(manager, "robot")
+    assert "robot_last_duration_seconds" not in room
+
+
+@pytest.mark.asyncio
+async def test_legacy_invalid_modes_migrate_to_persistent_tombstone(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living"))
+    ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
+    stale_completed = _record(
+        ended_at,
+        CleaningModeResult("Living", "vacuum", "completed", 240),
+        key=b"legacy-retraction",
+    )
+    manager._data = {
+        "robots": {
+            "robot": {
+                "robot_room_statistics_floor_id": floor.mission_id,
+                "rooms": {
+                    "living": {
+                        "robot_last_invalidated_at": ended_at,
+                        "robot_last_invalid_session_hash": hashlib.sha256(
+                            b"legacy-retraction"
+                        ).hexdigest(),
+                        "robot_last_invalid_session_started_at": None,
+                        "robot_last_invalid_floor_id": floor.mission_id,
+                        "robot_last_invalid_modes": ["vacuum"],
+                        "robot_last_invalid_source": "mode_retracted",
+                    }
+                },
+            }
+        }
+    }
+
+    assert await manager.async_import_native_history("robot", floor, [stale_completed])
+    room = _stored_room(manager, "robot")
+    assert "robot_last_duration_seconds" not in room
+    assert room["robot_native_mode_tombstones"][0]["modes"] == ["vacuum"]
+
+
+@pytest.mark.asyncio
+async def test_new_positive_session_is_not_blocked_by_later_negative_timestamp(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living"))
+    now = dt_util.utcnow()
+    older_at = (now - timedelta(minutes=4)).isoformat()
+    retracted_at = (now - timedelta(minutes=2)).isoformat()
+    improved_at = (now - timedelta(minutes=3)).isoformat()
+    improved = _record(
+        improved_at,
+        CleaningModeResult("Living", "vacuum", "completed", 240),
+        key=b"middle-success",
+    )
+    manager._data = {
+        "robots": {
+            "robot": {
+                "robot_room_statistics_floor_id": floor.mission_id,
+                "rooms": {
+                    "living": {
+                        "robot_last_completed": older_at,
+                        "robot_last_duration_seconds": 120,
+                        "robot_last_completed_mode_durations": {"vacuum": 120},
+                        "robot_last_session_hash": hashlib.sha256(
+                            b"old-success"
+                        ).hexdigest(),
+                        "robot_last_session_started_at": None,
+                        "robot_last_floor_id": floor.mission_id,
+                        "robot_last_invalidated_at": retracted_at,
+                        "robot_last_invalid_session_hash": hashlib.sha256(
+                            b"later-retraction"
+                        ).hexdigest(),
+                        "robot_last_invalid_session_started_at": None,
+                        "robot_last_invalid_floor_id": floor.mission_id,
+                        "robot_last_invalid_modes": ["vacuum"],
+                        "robot_last_invalid_source": "mode_retracted",
+                        "robot_native_mode_tombstones": [
+                            {
+                                "session_hash": hashlib.sha256(
+                                    b"later-retraction"
+                                ).hexdigest(),
+                                "started_at": None,
+                                "ended_at": retracted_at,
+                                "floor_id": floor.mission_id,
+                                "modes": ["vacuum"],
+                            }
+                        ],
+                    }
+                },
+            }
+        }
+    }
+
+    assert await manager.async_import_native_history("robot", floor, [improved])
+    room = _stored_room(manager, "robot")
+    assert room["robot_last_completed"] == improved_at
+    assert room["robot_last_duration_seconds"] == 240
+    assert room["robot_last_invalidated_at"] == retracted_at
 
 
 def test_sensor_helpers_reject_timezone_less_records_and_classify_restored_values():

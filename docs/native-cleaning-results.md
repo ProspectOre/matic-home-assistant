@@ -49,7 +49,10 @@ known, and cleared when the active floor changes. If the robot reports only one
 floor, a name match still cannot prove an older result belonged to that floor.
 The `statistics_source` attribute distinguishes robot room-name matching from
 managed results and restored values. Repeated reads do not double-count work;
-later results for the same session can add a newly completed mode.
+later results for the same session can add a newly completed mode. A correction
+from completed to partial or unattempted retracts that mode's native completion,
+while an independently completed mode remains usable. A newer partial run does
+not erase an older successful clean.
 
 For a managed result, **Last clean duration** uses native per-room work time
 when supplied by completion, otherwise tracked active room time. The room
