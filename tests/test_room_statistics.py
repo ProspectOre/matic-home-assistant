@@ -1,5 +1,6 @@
 """Native room statistics remain separate from managed completion credit."""
 
+import asyncio
 from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
@@ -344,6 +345,171 @@ async def test_conflicted_mode_tombstone_cannot_reappear_later_in_same_history(h
     statistic = manager._robot("robot")["rooms"]["living"]
     assert statistic["robot_last_completed_mode_durations"] == {"mop": 647}
     assert statistic["robot_last_duration_seconds"] == 647
+
+
+@pytest.mark.asyncio
+async def test_managed_session_excludes_incidental_other_room_after_reload(hass):
+    manager = await _manager(hass)
+    floor = _floor(("room-a", "Room A"), ("room-b", "Room B"))
+    now = dt_util.utcnow()
+    managed_start = (now - timedelta(minutes=45)).isoformat()
+    old_start = (now - timedelta(minutes=50)).isoformat()
+    old_end = (now - timedelta(minutes=40)).isoformat()
+    incidental = _record(
+        old_end,
+        CleaningModeResult("Room A", "vacuum", "completed", 1200),
+        key=b"managed-mission",
+        started_at=old_start,
+    )
+    manager._robot("robot")["rotations"] = {
+        "whole-home": {
+            "rooms": {
+                "room-b": {
+                    "room_id": "room-b",
+                    "last_started": managed_start,
+                    "last_result": "completed",
+                }
+            }
+        }
+    }
+
+    assert await manager.async_import_native_history("robot", floor, [incidental])
+    first_snapshot = manager.snapshot("robot")
+    assert (
+        first_snapshot["robot_reported_completed_by_room"]["room-a"]["source"]
+        == "robot_native_mode_result_managed_session"
+    )
+
+    # A later robot session replaces the history window, then a new manager
+    # loads the durable marker and imports that newer history.
+    later_start = (now - timedelta(minutes=10)).isoformat()
+    later_end = (now - timedelta(minutes=5)).isoformat()
+    later = _record(
+        later_end,
+        CleaningModeResult("Room B", "vacuum", "completed", 180),
+        key=b"later-mission",
+        started_at=later_start,
+    )
+    restored = await _manager(hass)
+    restored._data = deepcopy(manager._data)
+    await restored.async_import_native_history("robot", floor, [later])
+    snapshot = restored.snapshot("robot")
+    assert (
+        snapshot["robot_reported_completed_by_room"]["room-a"]["source"]
+        == "robot_native_mode_result_managed_session"
+    )
+
+    entry = entity_entry()
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        floor_plan=floor,
+        telemetry=replace(
+            coordinator.data.telemetry,
+            latest_session=CleaningSession(
+                started_at=later_start,
+                ended_at=later_end,
+                duration_seconds=300,
+                rooms=("Room B",),
+                room_durations=(),
+                completed=True,
+                mode_results=(),
+            ),
+        ),
+    )
+    entry.runtime_data.cleaning_plans.snapshot.return_value = snapshot
+    duration = sensor.MaticRoomDurationSensor(entry, floor.rooms[0])
+    assert duration._room_session_result() == (True, None)
+
+
+@pytest.mark.asyncio
+async def test_mode_duration_conflict_persists_across_imports_and_reload(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living Room"))
+    ended_at = (dt_util.utcnow() - timedelta(minutes=1)).isoformat()
+    started_at = (dt_util.utcnow() - timedelta(minutes=6)).isoformat()
+    key = b"duration-conflict"
+
+    def record(vacuum_duration):
+        return _record(
+            ended_at,
+            CleaningModeResult("Living Room", "vacuum", "completed", vacuum_duration),
+            CleaningModeResult("Living Room", "mop", "completed", 500),
+            key=key,
+            started_at=started_at,
+        )
+
+    assert await manager.async_import_native_history("robot", floor, [record(900)])
+    assert await manager.async_import_native_history("robot", floor, [record(800)])
+    room = manager._robot("robot")["rooms"]["living"]
+    assert room["robot_last_completed_mode_durations"] == {"mop": 500}
+    assert room["robot_last_conflicted_modes"] == ["vacuum"]
+    assert room["robot_last_duration_seconds"] == 500
+
+    restored = await _manager(hass)
+    restored._data = deepcopy(manager._data)
+    assert not await restored.async_import_native_history("robot", floor, [record(900)])
+    room = restored._robot("robot")["rooms"]["living"]
+    assert room["robot_last_completed_mode_durations"] == {"mop": 500}
+    assert room["robot_last_conflicted_modes"] == ["vacuum"]
+    projected = restored.snapshot("robot")["robot_reported_completed_by_room"]["living"]
+    assert projected["duration_seconds"] == 500
+    assert projected["excluded_modes"] == ["vacuum"]
+
+
+@pytest.mark.asyncio
+async def test_stale_floor_native_history_is_discarded_after_lock_wait(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living Room"))
+    new_floor = FloorPlan(
+        8,
+        "replacement-floor",
+        b"replacement-floor",
+        floor.rooms,
+    )
+    current_floor = [floor]
+    before = deepcopy(manager._robot("robot"))
+    lock = manager.native_history_lock("robot")
+    await lock.acquire()
+    now = dt_util.utcnow()
+    record = _record(
+        (now - timedelta(minutes=1)).isoformat(),
+        CleaningModeResult("Living Room", "vacuum", "completed", 300),
+        key=b"stale-floor-history",
+        started_at=(now - timedelta(minutes=5)).isoformat(),
+    )
+    importing = asyncio.create_task(
+        manager.async_process_native_history(
+            "robot",
+            floor,
+            [record],
+            current_floor_plan=lambda: current_floor[0],
+        )
+    )
+    await asyncio.sleep(0)
+    assert not importing.done()
+    current_floor[0] = new_floor
+    lock.release()
+
+    assert await importing is None
+    assert manager._robot("robot") == before
+    manager._store.async_save.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_native_history_processing_distinguishes_rejection_from_noop(hass):
+    manager = await _manager(hass)
+    floor = _floor(("living", "Living Room"))
+    assert await manager.async_process_native_history("robot", floor, []) is True
+
+    manager._metadata_admission_closed.add("robot")
+    assert await manager.async_process_native_history("robot", floor, []) is None
+    # Existing callers retain the old bool contract during closed admission.
+    assert await manager.async_import_native_history("robot", floor, []) is False
+
+    manager.reopen_metadata_admission("robot")
+    # A no-op is still a completed processing attempt and can be acknowledged.
+    assert await manager.async_process_native_history("robot", floor, []) is False
 
 
 @pytest.mark.asyncio

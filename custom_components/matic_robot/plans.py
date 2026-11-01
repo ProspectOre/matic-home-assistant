@@ -2342,9 +2342,31 @@ class CleaningPlanManager:
         coverage_verifier: CoverageVerifier | None = None,
         current_floor_plan: Callable[[], FloorPlan | None] | None = None,
     ) -> bool:
-        """Import native activity and reconcile only the matching pending room."""
+        """Import history through the legacy boolean result interface."""
+        return bool(
+            await self.async_process_native_history(
+                serial_number,
+                floor_plan,
+                records,
+                generation=generation,
+                coverage_verifier=coverage_verifier,
+                current_floor_plan=current_floor_plan,
+            )
+        )
+
+    async def async_process_native_history(
+        self,
+        serial_number: str,
+        floor_plan: FloorPlan | None,
+        records: Iterable[CleaningSessionRecord],
+        *,
+        generation: int | None = None,
+        coverage_verifier: CoverageVerifier | None = None,
+        current_floor_plan: Callable[[], FloorPlan | None] | None = None,
+    ) -> bool | None:
+        """Process history; return None when admission or floor identity rejects it."""
         if floor_plan is None:
-            return False
+            return None
         entry_generation = self.robot_generation(serial_number)
         proof_generation = self.motion_generation(serial_number)
         records = tuple(records)
@@ -2373,7 +2395,7 @@ class CleaningPlanManager:
                     )
         reconciled: list[dict[str, Any]] = []
 
-        async def commit(lease: _MetadataLockLease) -> bool:
+        async def commit(lease: _MetadataLockLease) -> bool | None:
             motion_generation = self.motion_generation(serial_number)
             lease.release(self.command_lock(serial_number))
             async with self._store_lock:
@@ -2386,7 +2408,13 @@ class CleaningPlanManager:
                         and generation != self.robot_generation(serial_number)
                     )
                 ):
-                    return False
+                    return None
+                if current_floor_plan is not None:
+                    current_floor = current_floor_plan()
+                    if current_floor is None or plan_floor_token(
+                        current_floor
+                    ) != plan_floor_token(floor_plan):
+                        return None
                 return await self._async_import_native_history(
                     serial_number,
                     floor_plan,
@@ -2403,7 +2431,7 @@ class CleaningPlanManager:
                     else None,
                 )
 
-        def after_commit(changed: bool) -> None:
+        def after_commit(changed: bool | None) -> None:
             if not changed:
                 return
             self._notify_listeners(serial_number)
@@ -2437,7 +2465,7 @@ class CleaningPlanManager:
             ),
             after_commit=after_commit,
         )
-        return bool(result)
+        return result
 
     async def _async_import_native_history(
         self,
@@ -7257,7 +7285,7 @@ def _import_native_room_activity(
         )
         managed_session = (
             previously_managed
-            or _native_room_statistic_matches_managed_history(robot, room_id, statistic)
+            or _native_room_statistic_matches_managed_history(robot, statistic)
         )
         if managed_session:
             managed_exclusion: dict[str, Any] = {
@@ -7311,6 +7339,16 @@ def _import_native_room_activity(
         if same_session:
             prior_modes = global_room.get("robot_last_completed_mode_durations")
             if isinstance(prior_modes, dict):
+                conflicted_modes.update(
+                    mode
+                    for mode, duration in statistic.mode_durations.items()
+                    if mode in prior_modes and prior_modes[mode] != duration
+                )
+                mode_durations = {
+                    mode: duration
+                    for mode, duration in mode_durations.items()
+                    if mode not in conflicted_modes
+                }
                 mode_durations = {
                     **{
                         mode: duration
@@ -7381,9 +7419,9 @@ def _import_native_room_activity(
 
 
 def _native_room_statistic_matches_managed_history(
-    robot: Mapping[str, Any], room_id: str, statistic: NativeRoomStatistic
+    robot: Mapping[str, Any], statistic: NativeRoomStatistic
 ) -> bool:
-    """Match a native robot session to a recorded managed room start."""
+    """Match a native session to any room start recorded for a managed run."""
     native_start = (
         dt_util.parse_datetime(statistic.started_at)
         if isinstance(statistic.started_at, str)
@@ -7406,23 +7444,23 @@ def _native_room_statistic_matches_managed_history(
         rooms = rotation.get("rooms")
         if not isinstance(rooms, Mapping):
             continue
-        record = rooms.get(room_id)
-        if not isinstance(record, Mapping):
-            continue
-        raw_managed_start = record.get("last_started")
-        managed_start = (
-            dt_util.parse_datetime(raw_managed_start)
-            if isinstance(raw_managed_start, str)
-            else None
-        )
-        if managed_start is None or managed_start.tzinfo is None:
-            continue
-        if (
-            native_start - timedelta(seconds=120)
-            <= managed_start
-            <= native_end + timedelta(seconds=120)
-        ):
-            return True
+        for record in rooms.values():
+            if not isinstance(record, Mapping):
+                continue
+            raw_managed_start = record.get("last_started")
+            managed_start = (
+                dt_util.parse_datetime(raw_managed_start)
+                if isinstance(raw_managed_start, str)
+                else None
+            )
+            if managed_start is None or managed_start.tzinfo is None:
+                continue
+            if (
+                native_start - timedelta(seconds=120)
+                <= managed_start
+                <= native_end + timedelta(seconds=120)
+            ):
+                return True
     return False
 
 

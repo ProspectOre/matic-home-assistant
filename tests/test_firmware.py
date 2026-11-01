@@ -947,7 +947,7 @@ def test_schedule_shapes_do_not_create_firmware_capability_candidates() -> None:
     assert comparison["new_wire_shapes"] == {}
 
 
-def test_schedule_fingerprint_stops_when_nested_field_budget_is_exceeded(
+def test_schedule_fingerprint_keeps_root_when_nested_field_budget_is_exceeded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from custom_components.matic_robot.client import wire
@@ -959,7 +959,33 @@ def test_schedule_fingerprint_stops_when_nested_field_budget_is_exceeded(
         HermesCollectionEntry(b"", payload), endpoint_name="schedule_events"
     )
 
-    assert fingerprint["wire_shape"] is None
+    assert fingerprint["wire_shape"] == ["1:2"]
+    assert fingerprint["wire_shape_root_only"] is True
+
+
+def test_large_schedule_fingerprint_keeps_root_markers_without_contents() -> None:
+    from custom_components.matic_robot.client import wire
+
+    block = b"".join(_vfield(number, 1) for number in range(1, 7))
+    block += _bfield(7, _bfield(3, _bfield(3, b"private-room-id")))
+    payload = (
+        _bfield(2, b"private-schedule-name")
+        + _bfield(7, _bfield(1, block) * 32)
+        + _bfield(9, b"")
+    )
+    fingerprint = fingerprint_entry(
+        HermesCollectionEntry(b"", payload), endpoint_name="schedule_events"
+    )
+    assert fingerprint["wire_shape"] == ["2:2", "7:2", "9:2"]
+    assert fingerprint["wire_shape_root_only"] is True
+    assert "private" not in repr(fingerprint)
+
+    oversized = fingerprint_entry(
+        HermesCollectionEntry(b"", b"x" * (wire.MAX_WIRE_SHAPE_BYTES + 1)),
+        endpoint_name="schedule_events",
+    )
+    assert oversized["wire_shape"] is None
+    assert "wire_shape_root_only" not in oversized
 
 
 def test_snapshot_timestamp_uses_home_assistant_utc_clock() -> None:

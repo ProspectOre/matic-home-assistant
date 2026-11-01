@@ -795,13 +795,22 @@ def fingerprint_entry(
         value.value,
         nested_message_paths=WIRE_SHAPE_NESTED_PATHS.get(endpoint_name or "", ()),
     )
-    return {
+    root_only = False
+    if endpoint_name == "schedule_events" and shape is None:
+        # A schedule can contain hundreds of per-room blocks. Retain bounded
+        # outer fields when nested inspection exhausts its separate budget.
+        shape = wire_shape(value.value)
+        root_only = shape is not None
+    fingerprint = {
         "key_size": len(value.key),
         "value_size": len(value.value),
         "key_sha256": hashlib.sha256(value.key).hexdigest(),
         "value_sha256": hashlib.sha256(value.value).hexdigest(),
         "wire_shape": list(shape) if shape is not None else None,
     }
+    if root_only:
+        fingerprint["wire_shape_root_only"] = True
+    return fingerprint
 
 
 async def _async_snapshot_endpoint(

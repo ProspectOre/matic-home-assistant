@@ -957,6 +957,17 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         strict: bool = False,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
+        records, _revision = await self.async_get_cleaning_session_snapshot(
+            strict=strict
+        )
+        return records
+
+    async def async_get_cleaning_session_snapshot(
+        self,
+        *,
+        strict: bool = False,
+    ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
+        """Return decoded records and their opaque revision from one collection read."""
         entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
@@ -968,7 +979,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
         if strict and len(records) != len(entries):
             raise MaticError("Native history is incomplete or undecodable")
-        return records
+        return records, _native_history_collection_revision(entries)
 
     async def async_get_cleaning_session_images(
         self,
@@ -1061,6 +1072,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 sessions,
                 key=lambda item: item.started_at or "",
                 default=None,
+            ),
+            native_history_revision=(
+                _native_history_collection_revision(session_entries)
+                if isinstance(session_entries, tuple)
+                else None
             ),
             child_lock_enabled=_decode_binary_state(values["child_lock_enabled_state"]),
             pet_waste_enabled=_decode_binary_state(values["petwaste_enabled_state"]),
@@ -2894,6 +2910,22 @@ def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
 
     walk(payload, 0)
     return tuple(found)
+
+
+def _native_history_collection_revision(
+    entries: tuple[HermesCollectionEntry, ...],
+) -> str:
+    """Hash ended records in a complete history snapshot without exposing them."""
+    digest = hashlib.sha256(b"matic-native-history-v1\0")
+    for entry in sorted(entries, key=lambda item: item.key):
+        session = _decode_cleaning_session(entry.value)
+        if session is None or session.ended_at is None:
+            continue
+        digest.update(len(entry.key).to_bytes(4, "big"))
+        digest.update(entry.key)
+        digest.update(len(entry.value).to_bytes(8, "big"))
+        digest.update(entry.value)
+    return digest.hexdigest()
 
 
 def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:

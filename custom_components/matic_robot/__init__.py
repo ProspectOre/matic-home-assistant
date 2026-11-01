@@ -47,7 +47,7 @@ from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .managed_executor import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .migrations import async_migrate_entry
-from .plans import CleaningPlanManager, async_get_plan_manager
+from .plans import CleaningPlanManager, async_get_plan_manager, plan_floor_token
 from .restart import async_recover_managed_run
 from .services import async_register_services
 from .slam_history import (
@@ -207,8 +207,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         area_binding_upgrade_pending = area_binding_upgrade.pending
         area_binding_upgrade_in_progress = False
         area_binding_upgrade_last_floor_plan = coordinator.data.floor_plan
+        initial_floor_plan = coordinator.data.floor_plan
+        initial_floor_token = (
+            plan_floor_token(initial_floor_plan)
+            if initial_floor_plan is not None
+            else None
+        )
         try:
-            native_history = await client.async_get_cleaning_session_records()
+            (
+                native_history,
+                native_history_revision,
+            ) = await client.async_get_cleaning_session_snapshot()
         except MaticError as err:
             _LOGGER.debug("Native cleaning history recovery is unavailable: %s", err)
         else:
@@ -217,9 +226,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 if isinstance(robot_generation, int)
                 else {}
             )
-            await plans.async_import_native_history(
+            processed = await plans.async_process_native_history(
                 serial_number,
-                coordinator.data.floor_plan,
+                initial_floor_plan,
                 native_history,
                 coverage_verifier=getattr(
                     client, "async_confirm_coverage_receipt", None
@@ -227,6 +236,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 current_floor_plan=lambda: coordinator.data.floor_plan,
                 **kwargs,
             )
+            if (
+                processed is not None
+                and coordinator.data.floor_plan is not None
+                and initial_floor_token is not None
+                and plan_floor_token(coordinator.data.floor_plan) == initial_floor_token
+                and native_history_revision
+                == coordinator.data.telemetry.native_history_revision
+                and (
+                    not isinstance(robot_generation, int)
+                    or plans.robot_generation(serial_number) == robot_generation
+                )
+            ):
+                coordinator.async_ack_native_history_revision(native_history_revision)
         slam_map = SlamMapStore(hass, entry.entry_id)
         await slam_map.async_load()
         slam_map.set_expected_mission_id(
@@ -547,28 +569,85 @@ def _register_native_history_sync(
         if hasattr(plans, "robot_generation")
         else None
     )
+    refresh_lock = asyncio.Lock()
+    active = True
 
     async def _async_sync(event: Event) -> None:
         if event.data.get("entry_id") != entry.entry_id:
             return
-        try:
-            records = await client.async_get_cleaning_session_records()
-        except MaticError as err:
-            _LOGGER.debug("Native cleaning history sync is unavailable: %s", err)
+        revision = event.data.get("revision")
+        if not isinstance(revision, str):
             return
-        kwargs = {} if generation is None else {"generation": generation}
-        await plans.async_import_native_history(
-            serial_number,
-            coordinator.data.floor_plan,
-            records,
-            coverage_verifier=getattr(client, "async_confirm_coverage_receipt", None),
-            current_floor_plan=lambda: coordinator.data.floor_plan,
-            **kwargs,
-        )
+        if refresh_lock.locked():
+            # The coordinator keeps emitting the latest unacknowledged revision
+            # on later polls; dropping this notification avoids a task backlog.
+            return
+        async with refresh_lock:
+            if (
+                not active
+                or coordinator.native_history_revision_acknowledged(revision)
+                or not coordinator.native_history_revision_is_current(revision)
+                or (
+                    generation is not None
+                    and plans.robot_generation(serial_number) != generation
+                )
+            ):
+                return
+            try:
+                (
+                    records,
+                    fetched_revision,
+                ) = await client.async_get_cleaning_session_snapshot()
+            except MaticError as err:
+                _LOGGER.debug("Native cleaning history sync is unavailable: %s", err)
+                return
+            if (
+                not active
+                or fetched_revision != revision
+                or not coordinator.native_history_revision_is_current(revision)
+                or (
+                    generation is not None
+                    and plans.robot_generation(serial_number) != generation
+                )
+            ):
+                return
+            floor_plan = coordinator.data.floor_plan
+            if floor_plan is None:
+                return
+            floor_token = plan_floor_token(floor_plan)
+            kwargs = {} if generation is None else {"generation": generation}
+            processed = await plans.async_process_native_history(
+                serial_number,
+                floor_plan,
+                records,
+                coverage_verifier=getattr(
+                    client, "async_confirm_coverage_receipt", None
+                ),
+                current_floor_plan=lambda: coordinator.data.floor_plan,
+                **kwargs,
+            )
+            if (
+                processed is None
+                or not active
+                or coordinator.data.floor_plan is None
+                or plan_floor_token(coordinator.data.floor_plan) != floor_token
+                or not coordinator.native_history_revision_is_current(revision)
+                or (
+                    generation is not None
+                    and plans.robot_generation(serial_number) != generation
+                )
+            ):
+                return
+            coordinator.async_ack_native_history_revision(revision)
+
+    def _async_deactivate() -> None:
+        nonlocal active
+        active = False
 
     entry.async_on_unload(
         hass.bus.async_listen(EVENT_NATIVE_HISTORY_UPDATED, _async_sync)
     )
+    entry.async_on_unload(_async_deactivate)
 
 
 def _schedule_native_reconciliation_recovery(

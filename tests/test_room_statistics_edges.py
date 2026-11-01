@@ -259,19 +259,17 @@ def test_managed_history_matcher_skips_malformed_history_containers():
     )["living"]
 
     assert not _native_room_statistic_matches_managed_history(
-        {"rotations": "malformed"}, "living", statistic
+        {"rotations": "malformed"}, statistic
     )
     assert not _native_room_statistic_matches_managed_history(
-        {"rotations": {"broken": "not-a-mapping"}}, "living", statistic
+        {"rotations": {"broken": "not-a-mapping"}}, statistic
     )
     assert not _native_room_statistic_matches_managed_history(
         {"rotations": {"broken": {"rooms": "not-a-mapping"}}},
-        "living",
         statistic,
     )
     assert not _native_room_statistic_matches_managed_history(
         {"rotations": {"broken": {"rooms": {"living": None}}}},
-        "living",
         statistic,
     )
     for invalid_start in ("bad-time", "2026-11-01T09:30:00"):
@@ -281,7 +279,6 @@ def test_managed_history_matcher_skips_malformed_history_containers():
                     "bad-start": {"rooms": {"living": {"last_started": invalid_start}}}
                 }
             },
-            "living",
             statistic,
         )
 

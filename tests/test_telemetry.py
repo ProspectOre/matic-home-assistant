@@ -225,7 +225,10 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     assert records[0].key == b"opaque-synthetic-key"
     assert records[0].session.completed is True
     assert records[0].session.completed_rooms == ("Kitchen",)
-    client.async_get_tracked_collection_entries.assert_awaited_once_with(
+    snapshot_records, revision = await client.async_get_cleaning_session_snapshot()
+    assert snapshot_records == records
+    assert len(revision) == 64
+    client.async_get_tracked_collection_entries.assert_awaited_with(
         "coverage_session_history", limit=64
     )
     with pytest.raises(api_module.MaticError, match="incomplete or undecodable"):
@@ -274,6 +277,7 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
     assert telemetry.scheduled_cleanings == 0
     assert telemetry.local_cleaning_sessions == 0
     assert telemetry.wifi_ssid == "private-ssid"
+    assert isinstance(telemetry.native_history_revision, str)
 
 
 async def test_verified_setting_payloads_and_bounds() -> None:

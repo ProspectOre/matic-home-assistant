@@ -203,6 +203,7 @@ class RobotTelemetry:
     schedules: tuple[CleaningSchedule, ...] = ()
     local_cleaning_sessions: int | None = None
     latest_session: CleaningSession | None = None
+    native_history_revision: str | None = None
     child_lock_enabled: bool | None = None
     pet_waste_enabled: bool | None = None
     voice_enabled: bool | None = None

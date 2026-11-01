@@ -25,7 +25,9 @@ Replace the example entity with your vacuum. The response reports the entry
 count and each entry's sizes, checksums and `wire_shape`: field numbers and
 wire types, including known nested schedule containers. It does not return
 schedule names, times, room names, room identifiers or raw contents. Inspection
-is bounded; an empty shape can mean the message exceeded the inspection limit.
+is bounded. If nested inspection reaches its limit, outer field markers are
+retained with `wire_shape_root_only: true`. A null shape means even the bounded
+outer structure could not be inspected.
 
 Compare the entry count with the app's schedule count. Record whether the app
 shows each schedule enabled, but keep names, times and home details private.
