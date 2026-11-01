@@ -5,6 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+# Reporter observations, not a firmware-wide protocol specification. Keep raw
+# Hermes codes alongside these readable names in the activity sensor.
+# https://github.com/ProspectOre/matic-home-assistant/issues/382
+_OBSERVED_ERROR_NAMES = {
+    207: "Lid open (observed with code 207)",
+    220: "Waiting for mopping water (observed with code 220)",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class RobotInfo:
@@ -163,13 +171,17 @@ class RobotOperationalState:
 
     @property
     def error_names(self) -> tuple[str, ...]:
-        """Return truthful automation-safe labels for raw robot error codes.
+        """Return readable labels for observed codes and raw labels otherwise.
 
         The app's public enum ordering is not the numeric Hermes wire mapping;
-        live firmware uses values such as 207 and 304. Preserve those values
-        without guessing a human meaning until a numeric mapping is verified.
+        live firmware uses values such as 207 and 304. The meanings for 207
+        and 220 are reporter observations on one robot. Unknown codes retain
+        their numeric labels; the activity sensor always exposes raw codes too.
         """
-        return tuple(f"error_code_{code}" for code in self.error_codes)
+        return tuple(
+            _OBSERVED_ERROR_NAMES.get(code, f"error_code_{code}")
+            for code in self.error_codes
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +203,7 @@ class RobotTelemetry:
     schedules: tuple[CleaningSchedule, ...] = ()
     local_cleaning_sessions: int | None = None
     latest_session: CleaningSession | None = None
+    native_history_revision: str | None = None
     child_lock_enabled: bool | None = None
     pet_waste_enabled: bool | None = None
     voice_enabled: bool | None = None
@@ -223,7 +236,7 @@ class CleaningSchedule:
     weekdays: tuple[str, ...]
     minute_of_day: int | None
     timezone: str | None
-    ordered: bool
+    ordered: bool | None
     enabled: bool | None
     room_ids: tuple[str, ...]
 

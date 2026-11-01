@@ -287,20 +287,25 @@ async def test_robot_activation_clears_removal_tombstone(hass) -> None:
 
 async def test_native_history_rechecks_removal_after_waiting_for_lock(hass) -> None:
     manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
     manager._data = {"robots": {"serial": {}}}
-
-    class MarkRemoved:
-        async def __aenter__(self):
-            manager._removed_robots.add("serial")
-
-        async def __aexit__(self, *args):
-            return None
-
-    manager.lock = lambda _serial: MarkRemoved()
-
+    manager.async_cancel_and_wait = AsyncMock()
     floor_plan = FloorPlan(1, "partition", b"partition", ())
+    native_history_lock = manager.native_history_lock("serial")
+    await native_history_lock.acquire()
+    importing = asyncio.create_task(
+        manager.async_import_native_history("serial", floor_plan, ())
+    )
+    await asyncio.sleep(0)
+    removing = asyncio.create_task(manager.async_remove_robot("serial"))
+    await asyncio.sleep(0)
 
-    assert await manager.async_import_native_history("serial", floor_plan, ()) is False
+    assert "serial" in manager._removed_robots
+    native_history_lock.release()
+
+    assert await importing is False
+    await removing
+    assert "serial" not in manager._data["robots"]
 
 
 async def test_native_history_lock_does_not_claim_managed_plan(hass) -> None:

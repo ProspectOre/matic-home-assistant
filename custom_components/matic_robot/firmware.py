@@ -35,9 +35,9 @@ FIRMWARE_REPAIR_LEARN_MORE_URL = (
 # Length-delimited values are opaque unless their message nesting has direct
 # protocol evidence. Root fields are safe to fingerprint on every bounded
 # value; these are the only approved recursive paths. They cover Kabuki's
-# repeated state envelopes plus the privacy-safe Cues voice and gesture
-# lifecycle. It deliberately stops before classified intent, rejection detail,
-# target data, coordinates, media, and every other nested opaque value.
+# repeated state envelopes, the privacy-safe Cues lifecycle, and the observed
+# schedule containers needed to diagnose schedule decoding. Schedule shapes
+# vary with user configuration and do not establish firmware capabilities.
 WIRE_SHAPE_NESTED_PATHS: dict[str, tuple[tuple[int, ...], ...]] = {
     "kabuki_state": ((18,), (18, 17), (18, 21)),
     "latest_pose": (
@@ -48,6 +48,15 @@ WIRE_SHAPE_NESTED_PATHS: dict[str, tuple[tuple[int, ...], ...]] = {
         (5,),
         (5, 1),
     ),
+    "schedule_events": (
+        (1,),
+        (1, 1),
+        (1, 3),
+        (7,),
+        (7, 1),
+        (7, 1, 7),
+        (7, 1, 7, 3),
+    ),
 }
 
 # Pose envelopes are deliberately decoded only far enough to correlate a live
@@ -55,7 +64,7 @@ WIRE_SHAPE_NESTED_PATHS: dict[str, tuple[tuple[int, ...], ...]] = {
 # robot's localization state, so a one-value firmware sweep cannot treat added
 # pose paths as durable release capabilities. Transport availability still
 # participates in compatibility drift below.
-WIRE_SHAPE_CANDIDATE_EXCLUDED_ENDPOINTS = frozenset({"latest_pose"})
+WIRE_SHAPE_CANDIDATE_EXCLUDED_ENDPOINTS = frozenset({"latest_pose", "schedule_events"})
 
 
 class FirmwareTracker:
@@ -786,13 +795,22 @@ def fingerprint_entry(
         value.value,
         nested_message_paths=WIRE_SHAPE_NESTED_PATHS.get(endpoint_name or "", ()),
     )
-    return {
+    root_only = False
+    if endpoint_name == "schedule_events" and shape is None:
+        # A schedule can contain hundreds of per-room blocks. Retain bounded
+        # outer fields when nested inspection exhausts its separate budget.
+        shape = wire_shape(value.value)
+        root_only = shape is not None
+    fingerprint = {
         "key_size": len(value.key),
         "value_size": len(value.value),
         "key_sha256": hashlib.sha256(value.key).hexdigest(),
         "value_sha256": hashlib.sha256(value.value).hexdigest(),
         "wire_shape": list(shape) if shape is not None else None,
     }
+    if root_only:
+        fingerprint["wire_shape_root_only"] = True
+    return fingerprint
 
 
 async def _async_snapshot_endpoint(
