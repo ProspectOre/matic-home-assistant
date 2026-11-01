@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 from collections.abc import (
+    Callable,
     Iterable,
     Mapping,
     MutableMapping,
@@ -13,12 +14,14 @@ from collections.abc import (
 )
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, cast
 
 from homeassistant.core import callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
-from . import native_history, plan_timing
+from . import daily_room_limit, native_history, plan_timing
 from .cadence import (
     CoverageCadenceRequiresVacuumError,
     cadence_snapshot,
@@ -86,6 +89,97 @@ class PlanCadence:
         self.repository = repository
         self.prepared_runs: dict[str, _PreparedRunReservation] = {}
         self.pending_cadence_mutations: dict[str, dict[object, _CadenceMutation]] = {}
+
+    def daily_limit_state(
+        self,
+        serial_number: str,
+        room_id: str,
+        room_identity: str | None,
+        *,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Read a room's verified local-day allowance without writing state."""
+        config = getattr(self.repository.hass, "config", None)
+        zone_name = getattr(config, "time_zone", None)
+        zone = (
+            dt_util.get_time_zone(zone_name)
+            if isinstance(zone_name, str)
+            else dt_util.DEFAULT_TIME_ZONE
+        )
+        return daily_room_limit.daily_state(
+            self.repository.robot(serial_number),
+            room_id,
+            room_identity,
+            now=now or dt_util.utcnow(),
+            timezone=zone,
+        )
+
+    def has_daily_limit(self, serial_number: str, room_id: str) -> bool:
+        """Return whether a stored policy must guard this room's dispatch."""
+        limits = self.repository.robot(serial_number).get("daily_room_limits")
+        return limits is not None and (
+            not isinstance(limits, Mapping) or room_id in limits
+        )
+
+    def has_any_daily_limit(self, serial_number: str) -> bool:
+        """Fail closed for malformed policy storage when scope is unknown."""
+        limits = self.repository.robot(serial_number).get("daily_room_limits")
+        return limits is not None and (not isinstance(limits, Mapping) or bool(limits))
+
+    async def async_set_daily_limit(
+        self,
+        serial_number: str,
+        room_id: str,
+        *,
+        room_identity: str,
+        limit: int | None,
+        require_current: Callable[[], bool],
+    ) -> dict[str, Any]:
+        """Save a current-map room's shared daily allowance atomically."""
+        if (
+            not isinstance(room_id, str)
+            or not room_id
+            or not isinstance(room_identity, str)
+            or len(room_identity) != 64
+            or any(char not in "0123456789abcdef" for char in room_identity)
+        ):
+            raise ValueError("current room identity is required")
+        if limit is not None and (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= daily_room_limit.MAX_DAILY_ROOM_LIMIT
+        ):
+            raise ValueError("daily room limit must be between 1 and 100")
+
+        async def commit(_lease: _MetadataLockLease) -> dict[str, Any]:
+            async with self.repository.user_metadata_store_transaction(serial_number):
+                if not require_current():
+                    raise ValueError("room map changed")
+                robot = self.repository.robot(serial_number)
+                reservation = self.prepared_runs.get(serial_number)
+                if reservation is not None and room_id in reservation.rooms:
+                    raise SharedRoomScheduleLockedError(
+                        "room is reserved by a cleaning run"
+                    )
+                before = deepcopy(robot)
+                limits = robot.setdefault("daily_room_limits", {})
+                if not isinstance(limits, dict):
+                    raise ValueError("daily room limits are invalid")
+                if limit is None:
+                    limits.pop(room_id, None)
+                else:
+                    limits[room_id] = {"identity": room_identity, "limit": limit}
+                await self.repository.async_save_with_rollback(serial_number, before)
+                return self.daily_limit_state(serial_number, room_id, room_identity)
+
+        result = await self.repository.async_run_owned_metadata(
+            serial_number,
+            commit,
+            domain_locks=(self.repository.plan_write_lock(serial_number),),
+            notify=True,
+            reject_on_admission_close=True,
+        )
+        return cast(dict[str, Any], result)
 
     @callback
     def reserve_prepared_run(

@@ -1,10 +1,17 @@
 import { SpatialScene } from "./spatial-scene";
 import { SpatialPose } from "./spatial-pose";
-import { SpatialHistory } from "./spatial-history";
 import { notice, type HassProjection, type ResourceStamp, type WorkspaceState } from "./contracts";
 import { entryFloorKey, entryMissionKey, type MapEntry } from "./backend-contracts";
 import type { MaticBackend } from "./backend";
-import { type CoherenceMachine, type WorkspaceStore, initialWorkspaceState } from "./state";
+import {
+  type CoherenceMachine,
+  type WorkspaceStore,
+  initialWorkspaceState,
+  floorSelectionAllowed,
+  historySelectionAllowed,
+  needsHistoryCatalog,
+  needsPlanCatalog,
+} from "./state";
 import type { ResourceRequests } from "./resource-requests";
 import { resource, isAbort } from "./resource-state";
 import { entryBoundaryKey, entryCoherenceIdentity, entryManagedLock, entryIdentity } from "./workspace-projection";
@@ -18,6 +25,8 @@ interface SpatialResourceCallbacks {
   readonly cancelCatalogRecovery: (lease: CatalogRecoveryLease) => void;
   readonly abortResources: (except: readonly string[]) => void;
   readonly invalidateMotion: () => void;
+  readonly invalidateUnsentWrites: () => void;
+  readonly sentWriteResources: () => readonly string[];
   readonly loadPlans: () => void;
   readonly resumeAreaCatalog: () => void;
   readonly extendLiveTrail: (pose: NonNullable<WorkspaceState["resources"]["pose"]["value"]>) => void;
@@ -56,7 +65,8 @@ export class SpatialResources {
   readonly #callbacks: SpatialResourceCallbacks;
   readonly #scene: SpatialScene;
   readonly #pose: SpatialPose;
-  readonly #history: SpatialHistory;
+  #history: InstanceType<typeof import("./spatial-history").SpatialHistory> | null = null;
+  #historyLoad: Promise<InstanceType<typeof import("./spatial-history").SpatialHistory> | null> | null = null;
   #wifiSignalTimer: number | null = null;
   #floorTypesTimer: number | null = null;
   #entryIdentity = "";
@@ -85,16 +95,11 @@ export class SpatialResources {
       recovered: (entry) => this.#resolveSpatialReadFailure("delta", entry),
       failed: (entry) => this.#recordSpatialReadFailure("delta", entry),
       loadPose: (entry, stamp) => this.#pose.load(entry, stamp),
-      loadPlans: callbacks.loadPlans,
+      loadFallback: (entry, stamp) => this.loadHistory(entry, stamp),
+      loadPlans: () => {
+        if (needsPlanCatalog(this.#store.value)) callbacks.loadPlans();
+      },
       resumeAreaCatalog: callbacks.resumeAreaCatalog,
-    });
-    this.#history = new SpatialHistory(store, backend, coherence, requests, {
-      disposed: callbacks.disposed,
-      pageActive: callbacks.pageActive,
-      clearRecovery: () => this.clearRecovery(),
-      resetIdentity: () => this.resetIdentity(),
-      abortResources: callbacks.abortResources,
-      refreshCatalog: callbacks.refreshCatalog,
     });
   }
 
@@ -103,10 +108,86 @@ export class SpatialResources {
   refreshPose(): Promise<void> { return this.#pose.refreshPose(); }
   stopDeltaStream(): void { this.#scene.stop(); }
   ownsLiveDelta(entry: MapEntry): boolean { return this.#scene.owns(entry); }
-  loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> { return this.#history.loadHistory(entry, stamp); }
-  selectFloor(floorId: string): Promise<void> { return this.#history.selectFloor(floorId); }
-  selectHistory(snapshotId: string | null): Promise<void> { return this.#history.selectHistory(snapshotId); }
-  resumeHistory(suspended: WorkspaceState): Promise<void> { return this.#history.resume(suspended); }
+  async loadHistory(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
+    if (!this.#callbacks.pageActive() || !this.#coherence.accepts(stamp)) return;
+    const history = await this.#spatialHistory();
+    if (!history) {
+      this.#historyUnavailable(entry, stamp);
+      return;
+    }
+    if (this.#callbacks.pageActive() && !this.#callbacks.disposed() && this.#coherence.accepts(stamp)) {
+      await history.loadHistory(entry, stamp);
+    }
+  }
+
+  async selectFloor(floorId: string): Promise<void> {
+    const before = this.#store.value;
+    if (!floorSelectionAllowed(before, floorId)) return;
+    this.#callbacks.invalidateUnsentWrites();
+    const history = await this.#spatialHistory();
+    const current = this.#store.value;
+    if (!history || this.#callbacks.disposed() || !this.#callbacks.pageActive()
+      || current.generation !== before.generation || current.selection.entryId !== before.selection.entryId
+      || current.selection.floorId !== before.selection.floorId) return;
+    await history.selectFloor(floorId);
+  }
+
+  async selectHistory(snapshotId: string | null): Promise<void> {
+    const before = this.#store.value;
+    if (!historySelectionAllowed(before, snapshotId)) return;
+    this.#callbacks.invalidateUnsentWrites();
+    const history = await this.#spatialHistory();
+    const current = this.#store.value;
+    if (!history || this.#callbacks.disposed() || !this.#callbacks.pageActive()
+      || current.generation !== before.generation || current.selection.entryId !== before.selection.entryId
+      || current.selection.floorId !== before.selection.floorId || current.selection.historyId !== before.selection.historyId) return;
+    await history.selectHistory(snapshotId);
+  }
+
+  async resumeHistory(suspended: WorkspaceState): Promise<void> {
+    if (this.#callbacks.disposed() || !this.#callbacks.pageActive()
+      || this.#store.value.generation !== suspended.generation
+      || this.#store.value.selection.entryId !== suspended.selection.entryId
+      || this.#store.value.selection.floorId !== suspended.selection.floorId
+      || this.#store.value.selection.historyId !== suspended.selection.historyId) return;
+    const history = await this.#spatialHistory();
+    const current = this.#store.value;
+    if (history && !this.#callbacks.disposed() && this.#callbacks.pageActive()
+      && current.generation === suspended.generation
+      && current.selection.entryId === suspended.selection.entryId
+      && current.selection.floorId === suspended.selection.floorId
+      && current.selection.historyId === suspended.selection.historyId) await history.resume(suspended);
+  }
+
+  #spatialHistory(): Promise<InstanceType<typeof import("./spatial-history").SpatialHistory> | null> {
+    if (this.#history) return Promise.resolve(this.#history);
+    if (this.#callbacks.disposed()) return Promise.resolve(null);
+    this.#historyLoad ??= import("./spatial-history").then(({ SpatialHistory }) => {
+      if (this.#callbacks.disposed()) return null;
+      this.#history ??= new SpatialHistory(this.#store, this.#backend, this.#coherence, this.#requests, {
+        disposed: this.#callbacks.disposed,
+        pageActive: this.#callbacks.pageActive,
+        clearRecovery: () => this.clearRecovery(),
+        resetIdentity: () => this.resetIdentity(),
+        abortResources: (except) => this.#callbacks.abortResources([...except, ...this.#callbacks.sentWriteResources()]),
+        refreshCatalog: this.#callbacks.refreshCatalog,
+      });
+      return this.#history;
+    }).catch(() => {
+      this.#historyLoad = null;
+      return null;
+    });
+    return this.#historyLoad;
+  }
+
+  #historyUnavailable(entry: MapEntry, stamp: ResourceStamp): void {
+    const state = this.#store.value;
+    if (this.#callbacks.disposed() || !this.#callbacks.pageActive()
+      || state.resources.entry?.entryId !== entry.entryId || !this.#coherence.accepts(stamp)) return;
+    this.#store.patch({
+      resources: { ...state.resources, history: resource("error", state.resources.history.value, "history-unavailable") },
+    });
+  }
 
   recoveryPending(entry: MapEntry, requireRevalidation = false): boolean {
     const recovery = this.#spatialRecovery;
@@ -156,12 +237,12 @@ export class SpatialResources {
     this.#entryIdentity = "";
   }
 
-  refreshBoundary(entryId: string, invalidated: readonly string[] = []): void {
+  refreshBoundary(entryId: string, invalidated: readonly string[] = []): Promise<void> {
     this.clearRecovery();
     this.invalidateFence();
     this.#reloadWifiSignalForNewFloor();
     this.#reloadFloorTypesForNewFloor();
-    void this.#callbacks.refreshCatalog(true, true).then(() => {
+    return this.#callbacks.refreshCatalog(true, true).then(() => {
       if (this.#callbacks.disposed() || this.#callbacks.projection()?.entryKey !== entryId
         || !this.#callbacks.projection()?.host.administrator || !this.#callbacks.projection()?.host.connected) return;
       const entry = this.#store.value.resources.entry;
@@ -400,6 +481,8 @@ export class SpatialResources {
     const empty = initialWorkspaceState();
     const degraded = entry.health === "problem" || entry.health === "limited";
     const state = this.#store.value;
+    const loadHistory = needsHistoryCatalog(state)
+      || (!coherent && !retainedScene && state.resources.scene.problem !== "history-source-missing");
     this.#store.patch({
       ...(resetDrafts ? {
         command: state.pendingAction === "set-deep-mop" ? state.command : "idle" as const,
@@ -423,7 +506,9 @@ export class SpatialResources {
         entry,
         scene: resource(coherent ? "loading" : "idle", retainedScene),
         pose: resource(coherent ? "loading" : "idle", retainedPose),
-        history: resource("loading", state.resources.history.value),
+        history: loadHistory
+          ? resource("loading", state.resources.history.value)
+          : resource("idle", null),
         plans: sameResourceBoundary && !resetDrafts ? state.resources.plans : resource("idle", null),
         areas: sameResourceBoundary && !resetDrafts ? state.resources.areas : resource("idle", null),
       },
@@ -452,8 +537,9 @@ export class SpatialResources {
         areaId: resetDrafts ? null : state.selection.areaId,
       },
     });
-    void this.#history.loadHistory(entry, stamp);
-    if (coherent && this.#store.value.resources.plans.status === "idle") {
+    if (loadHistory) void this.loadHistory(entry, stamp);
+    if (coherent && needsPlanCatalog(this.#store.value)
+      && this.#store.value.resources.plans.status === "idle") {
       void this.#callbacks.loadPlans();
     }
     this.#callbacks.resumeAreaCatalog();
@@ -519,10 +605,12 @@ export class SpatialResources {
         }
       }
       if (stamp && !state.resources.scene.value
+        && (needsHistoryCatalog(state) || !coherent || state.resources.scene.status === "error")
+        && state.resources.scene.problem !== "history-source-missing"
         && !this.#requests.has("history")) {
         // Saved scene reads can fail independently of a healthy catalog.
         // Retry on the next poll while there is still no map to display.
-        void this.#history.loadHistory(selected, stamp);
+        void this.loadHistory(selected, stamp);
       }
       if (coherent && stamp
         && (state.resources.scene.status === "error" || state.floor.readOnly)

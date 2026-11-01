@@ -2,7 +2,7 @@ import { html, nothing, type ReactiveControllerHost } from "lit";
 import type { WorkspaceIntent, WorkspaceState } from "./contracts";
 import { icon, iconDone } from "./icons";
 import { MenuController } from "./menu-controller";
-import { topView } from "./state";
+import { canFollowRobot, topView } from "./state";
 import { switchStyles } from "./switch-styles";
 import { MapZoom } from "./map-zoom";
 
@@ -65,6 +65,8 @@ export class MapOptions {
   }
 
   render({ state, narrow, t, intent, diagnostics }: MapOptionsContext) {
+    const followReady = canFollowRobot(state, "follow");
+    const rideReady = canFollowRobot(state, "ride");
     const radio = (checked: boolean, label: string, select: () => void) => html`
       <button class="ms-row ms-row--menu" type="button" role="menuitemradio" aria-checked=${String(checked)} data-selected=${checked ? "true" : nothing} tabindex="-1" @click=${select}><span>${label}</span>${checked ? icon(iconDone) : nothing}</button>
     `;
@@ -140,11 +142,18 @@ export class MapOptions {
             class="ms-row ms-row--menu"
             type="button"
             role="menuitemcheckbox"
-            aria-checked=${String(state.followRobot)}
+            aria-checked=${String(state.followMode === "follow")}
             tabindex="-1"
             data-follow-robot
-            @click=${() => intent({ type: "set-follow-robot", value: !state.followRobot })}
-          ><span>${t("v4_follow_robot", "Follow the robot")}</span><span class="ms-switch" aria-checked=${String(state.followRobot)} aria-hidden="true"></span></button>
+            aria-disabled=${String(!followReady && state.followMode !== "follow")}
+            @click=${() => intent({ type: "set-follow-mode", mode: state.followMode === "follow" ? "off" : "follow" })}
+          ><span>${t("v4_follow_robot", "Follow the robot")}</span><span class="ms-switch" aria-checked=${String(state.followMode === "follow")} aria-hidden="true"></span></button>
+          <button class="ms-row ms-row--menu" type="button" role="menuitemcheckbox"
+            aria-checked=${String(state.followMode === "ride")} tabindex="-1" data-ride-along
+            aria-disabled=${String(!rideReady && state.followMode !== "ride")}
+            @click=${() => intent({ type: "set-follow-mode", mode: state.followMode === "ride" ? "off" : "ride" })}
+          ><span>${t("v4_ride_along", "Ride along in 3D")}</span><span class="ms-switch" aria-checked=${String(state.followMode === "ride")} aria-hidden="true"></span></button>
+          ${!followReady || !rideReady ? html`<small class="menu-note">${t("v4_follow_needs_live_pose", "Following needs a live position; Ride along also needs the robot's heading.")}</small>` : nothing}
         ` : nothing}
         <div role="group" aria-labelledby="menu-detail">
           <p class="menu-heading" id="menu-detail" role="presentation">${t("map_quality_label", "Map detail")}</p>

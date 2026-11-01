@@ -109,6 +109,15 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
                     "The saved-plan preview is stale; refresh it before starting",
                     "plan_preview_changed",
                 )
+            if (
+                preview.get("daily_limit_held_rooms")
+                and not preview.get("rooms")
+                and not _preview_has_area(preview)
+            ):
+                raise _validation_error(
+                    "Every selected room has reached its daily cleaning limit",
+                    "daily_room_limit_reached",
+                )
             plan, rooms, cadence_by_room = _saved_plan_execution(
                 manager, serial_number, execution_floor_plan, preview
             )
@@ -237,6 +246,11 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
         except ValueError as err:
             raise _plan_request_error(err) from err
         preview_token = call.data.get("preview_token")
+        if resolved.get("blocker") == "daily_limit_reached":
+            raise _validation_error(
+                "Every selected room has reached its daily cleaning limit",
+                "daily_room_limit_reached",
+            )
         if preview_token is not None and preview_token != resolved["preview_token"]:
             raise _validation_error(
                 "The room-sequence preview is stale; refresh it before starting",
@@ -398,6 +412,7 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             "rooms": resolved["rooms"],
             "mission_boundaries": resolved["mission_boundaries"],
             "blocker": resolved["blocker"],
+            "daily_limit_held_rooms": resolved.get("daily_limit_held_rooms", []),
         }
 
     hass.services.async_register(
@@ -472,7 +487,14 @@ def register_execution_services(runtime: ServiceRuntime) -> None:
             ) from err
         except ValueError as err:
             raise _plan_request_error(err) from err
-        return {"entity_id": entity_id, **preview, "preview_token": preview_token}
+        result = {"entity_id": entity_id, **preview, "preview_token": preview_token}
+        if (
+            preview.get("daily_limit_held_rooms")
+            and not preview.get("rooms")
+            and not _preview_has_area(preview)
+        ):
+            result["blocker"] = "daily_limit_reached"
+        return result
 
     hass.services.async_register(
         DOMAIN,

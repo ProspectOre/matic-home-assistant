@@ -135,9 +135,9 @@ def catalog_entry_projection(
     telemetry = getattr(runtime.coordinator.data, "telemetry", None)
     return {
         "entry_id": entry_id,
-        # Workspace push is withheld pending installed reliability and resource
-        # qualification. Map deltas, pose updates and catalog polling remain live.
-        "live_workspace_transport_enabled": False,
+        # The workspace push is the default transport when this capability is
+        # present. Keep legacy saved opt-in values from changing the projection.
+        "live_workspace_transport_enabled": True,
         "scene_url": scene_api_url(entry_id),
         "delta_url": delta_api_url(entry_id),
         "pose_url": pose_api_url(entry_id),

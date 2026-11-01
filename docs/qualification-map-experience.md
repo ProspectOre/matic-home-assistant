@@ -19,11 +19,14 @@ p95, p99 and maximum, sample count, failures and missing instrumentation.
 | Selection feedback | p95 input-to-visible-selection below 100 ms; p99 below 200 ms; no unexplained stall above 250 ms across repeated runs. |
 | Pan/zoom | p95 frame time below 16.7 ms on reference desktop and 33.3 ms on minimum mobile; no task change, missed release or accidental selection. |
 | Main-thread work | Split controllable decode/upload work into bounded slices; no recurring map-owned task over 50 ms during steady interaction. Attribute exceptions. |
-| Startup bytes | Preserve the existing 98,304-byte gzip gate; measure current output and leave headroom. Lazy-load optional work, never raise the limit to fit a feature. |
+| Startup bytes | Preserve the existing 98,304-byte gzip gate; measure current output and leave headroom. Measure actual first-map network bytes with automatic push on a supporting backend and polling fallback on an older backend; include continued reconciliation polling and any added push requests. Never raise the limit to fit a feature. |
 | Idle/hidden work | Stable idle produces no unnecessary map frames; hidden state has no map render loop, pose polling or queued decode growth. |
 | Memory retention | After warm-up, 20 replace/remount cycles and a 30-minute soak: final post-GC heap within max(8 MiB, 10%) of the equivalent warm baseline, with no continuing upward trend. |
 | GPU/resources | Owned buffers/textures return to expected baseline after each teardown; no retained worker, listener, timer, request or object URL. Profile driver memory separately where measurable. |
-| Capacity | Exercise existing supported maximum bounds, 1.2M/1.5M-point fixtures, sparse/degenerate geometry and many rooms; no silent truncation or skipped evidence. |
+| Household scale | End-to-end exercise a large home with at least 17 rooms, multiple floors and three robots. Cover floor switching, each robot's map/status, and concurrent activity without crossing robot or floor identity. |
+| Capacity | Exercise supported maximum bounds, 1.2M/1.5M-point fixtures, sparse/degenerate geometry and 17+ rooms; no silent truncation or skipped evidence. Existing gallery results use a small synthetic room catalog and are preliminary only. |
+| Host and network load | On the actual supported host, record process CPU and memory through startup, concurrent three-robot activity and save/recovery. Capture overlapping network traffic, reconnect/loss behavior and polling fallback; synthetic desktop data cannot qualify these. |
+| Physical multi-floor acceptance | On a real multi-floor map, verify floor identity, map framing, room assignment and robot association on supported physical devices. Simulated floors, browser fixtures and single-scene screenshots are not acceptance. |
 | Recovery | No stale result changes current identity, draft or command state; one bounded resync after loss; usable structural/list fallback when permitted. |
 
 Post-GC comparisons require controlled lab tooling and cannot be inferred from mobile
@@ -46,6 +49,7 @@ soak and tablet run do not establish retention or supported-phone acceptance.
 | History | Floor/date identity, no live pose, no movement/editing, Return to live, bounded cache; incompatible map comparison refused. |
 | Comparison | Shifted origins, sampling differences, partial coverage, identical/changed content, legacy metadata, incompatible frames, pair cancellation/eviction; no false removal from missing observations; bounded two-endpoint memory. |
 | Persistence | Disk full, truncated/corrupt page, interrupted durable boundaries, retry, upgrade/downgrade refusal and matching-backup restore. |
+| Large-home end to end | At least 17 rooms across multiple floors and at least three robots; concurrent map/status updates, floor changes, disconnect/reconnect and recovery, with host resource and network traces. |
 | Saved-map lifecycle | Keep/name, auto-prune protection, full quota from kept/trash, pause/resume capture; exact bulk delete preview, undo/expiry, permanent-delete readback and measured reclaim; compare invalidation; multi-entry/two-user races; delayed writes cannot resurrect; bounded validated archive import. See [storage contract](design-map-storage.md). |
 | Privacy/camera | No-photo areas, opt-in, role/account changes, current camera-card rendering, expiry/restart errors, retained robot photos, explicit AI disclosure, no capture from map viewing. |
 
@@ -86,11 +90,23 @@ recover from stale data and distinguish map imagery from camera photos without c
 | Completion policy | [PRO-128](https://linear.app/prospectore/issue/PRO-128): count verified completions exactly once across restart/local-day boundaries; shared preview and dispatch policy. |
 | Host efficiency | [PRO-71](https://linear.app/prospectore/issue/PRO-71): actual-host baseline decides binary migration timing; migration and rollback proof follow. |
 | Saved-map management | [PRO-146](https://linear.app/prospectore/issue/PRO-146): durable Keep/delete/undo, bounded storage, archive validation and independent working-map/run-record boundaries. |
-| Live status | [PRO-130](https://linear.app/prospectore/issue/PRO-130): beta-2 robot stream ordering/coalescing/reconciliation. Browser push remains after 0.6 under [PRO-131](https://linear.app/prospectore/issue/PRO-131). |
+| Live status | Beta 1 is blocked on [PRO-130](https://linear.app/prospectore/issue/PRO-130) robot streaming and [PRO-131](https://linear.app/prospectore/issue/PRO-131) browser workspace push. The target user experience enables push automatically when supported, with no user-facing toggle; older backends fall back to polling. Periodic polling remains for reconciliation. Qualify ordering, reconnect, loss, fallback, administrator authorization changes and resource bounds before shipping this default. |
 | Camera trust | [PRO-117](https://linear.app/prospectore/issue/PRO-117), [PRO-122](https://linear.app/prospectore/issue/PRO-122): privacy refusals, access/retention behavior, robot deletion readback before unattended expansion. |
 | Useful investigations | [PRO-115](https://linear.app/prospectore/issue/PRO-115), [PRO-116](https://linear.app/prospectore/issue/PRO-116), [PRO-125](https://linear.app/prospectore/issue/PRO-125): aimed supported navigation, explicit optional analysis and Assist; preserve unsupported-interface investigations. |
 | App parity | [PRO-107](https://linear.app/prospectore/issue/PRO-107), [PRO-109](https://linear.app/prospectore/issue/PRO-109), [PRO-110](https://linear.app/prospectore/issue/PRO-110): reconcile promised scope, captures and runtime evidence individually. |
 | Open-source maintenance | [PRO-133](https://linear.app/prospectore/issue/PRO-133): verified fresh-checkout browser bootstrap, meaningful import-boundary guards, concise canonical docs and no duplicate implementation paths. |
+
+Verify fresh snapshot admission after reconnect, ordered delivery, bounded retry
+and overflow recovery, and polling continuity during push outages. The intended
+experience enables push automatically when the backend supports it, offers no
+user-facing toggle, and falls back to polling for older backends. Periodic polling
+continues for reconciliation, so push may increase request load and CPU. Retire
+subscriptions on authorization loss or administrator access changes, preserve
+Stop independently of the map, and test fallback, reconnect and outage recovery
+under load on supported physical devices. The proposed 70% request reduction has
+not been demonstrated; do not reduce reconciliation polling based on assumption.
+Beta 1 remains blocked on qualified reconnect, loss/order, authorization,
+installed-host and device evidence. Synthetic results do not replace these gates.
 
 New map slices proceed through identity contracts → task defaults → preview/editing →
 responsive recovery → performance/device acceptance. Optional layer/investigation work

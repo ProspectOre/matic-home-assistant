@@ -103,6 +103,7 @@ async def _async_run_room(
         hass.bus.async_fire(f"{DOMAIN}_room_started", event_data, context=call.context)
     completion_verified = False
     completion_sessions: list[str] = []
+    completion_evidence: list[tuple[str, int]] = []
     dispatch_attempted = False
     room_started = False
     dispatch: _PreparedRoomDispatch | None = prepared_dispatch
@@ -265,6 +266,9 @@ async def _async_run_room(
                                     entity_id=entity_id,
                                     cancel_event=cancel_event,
                                     on_verified_session=completion_sessions.append,
+                                    on_verified_completion=lambda ended_at, duration: (
+                                        completion_evidence.append((ended_at, duration))
+                                    ),
                                 )
                             )
                             break
@@ -573,7 +577,14 @@ async def _async_run_room(
             call.data["plan_id"],
             room,
             run_id=run_id,
+            completed_at=completion_evidence[-1][0] if completion_evidence else None,
+            duration_seconds=completion_evidence[-1][1]
+            if completion_evidence
+            else None,
             verified_coverage_receipt=verified_coverage,
+            completion_session_hash=completion_sessions[-1]
+            if completion_sessions
+            else None,
             completion_is_current=lambda: (
                 (cancel_event is None or not cancel_event.is_set())
                 and (

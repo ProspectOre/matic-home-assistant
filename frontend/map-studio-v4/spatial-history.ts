@@ -1,7 +1,7 @@
 import type { MapEntry, HistoryFloor, HistorySnapshot } from "./backend-contracts";
 import { notice, type ResourceStamp, type WorkspaceState, type WorkspaceNotice } from "./contracts";
 import type { MaticBackend } from "./backend";
-import type { CoherenceMachine, WorkspaceStore } from "./state";
+import { floorSelectionAllowed, historySelectionAllowed, type CoherenceMachine, type WorkspaceStore } from "./state";
 import type { ResourceRequests } from "./resource-requests";
 import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./resource-state";
 
@@ -66,7 +66,12 @@ export class SpatialHistory {
           ...(activeFloor && !(state.dataMode === "live" && state.floor.readOnly) ? { displayName: safeFloorName(activeFloor, 1) } : {}),
         },
       });
-      if (state.dataMode === "live" && !state.resources.scene.value) {
+      const fallbackScene = state.dataMode === "live" && state.resources.scene.value?.source === "history"
+        ? state.resources.scene.value : null;
+      const fallbackMissing = fallbackScene !== null && (!fallbackScene.historyRecordId
+        || !history.floors.some((floor) => floor.snapshots.some((snapshot) => snapshot.id === fallbackScene.historyRecordId)));
+      if (state.dataMode === "live" && !state.resources.scene.value
+        && state.resources.scene.problem !== "history-source-missing") {
         const snapshots = history.floors.flatMap((floor) => floor.snapshots.map((snapshot) => ({ floor, snapshot })))
           .sort((a, b) => Date.parse(b.snapshot.createdAt) - Date.parse(a.snapshot.createdAt));
         for (const saved of snapshots) {
@@ -84,20 +89,23 @@ export class SpatialHistory {
           const currentState = this.#store.value;
           this.#store.patch({
             floor: { ...currentState.floor, readOnly: true, displayName: safeFloorName(saved.floor, 1) },
-            resources: { ...currentState.resources, scene: resource("ready", response.scene), pose: resource("idle", null) },
+            resources: { ...currentState.resources, scene: resource("ready", { ...response.scene, historyRecordId: saved.snapshot.id }), pose: resource("idle", null) },
             map: { ...currentState.map, available: true, exactPose: false },
             notice: savedMapNotice(saved.snapshot.createdAt),
           });
           break;
         }
       }
-      if (state.dataMode === "history" && (!selectedFloor || !selectedSnapshotExists)) {
-        const fallback = selectedFloor || history.floors.find((floor) => floor.active) || history.floors[0];
-        const selection = this.selectFloor(fallback?.id || "current");
-        if (!this.#callbacks.disposed() && state.workflow === "history") {
-          this.#store.dispatch({ type: "open-workflow", workflow: "history" });
-        }
-        await selection;
+      if (fallbackMissing || (state.dataMode === "history" && (!selectedFloor || !selectedSnapshotExists))) {
+        // A removed source must never silently become a different observation.
+        this.#callbacks.abortResources(["catalog", "history", "setting-mutation"]);
+        const latest = this.#store.value;
+        this.#store.patch({
+          resources: { ...latest.resources, scene: resource("error", null, "history-source-missing"), pose: resource("idle", null) },
+          map: { ...latest.map, available: false, exactPose: false },
+          historyCameras: {},
+          notice: notice("warning", "v4_history_source_missing", "This saved map is no longer available. Choose another map or return to Live."),
+        });
       }
     } catch (error) {
       const current = this.#coherence.current();
@@ -115,15 +123,12 @@ export class SpatialHistory {
   }
 
   async selectFloor(floorId: string): Promise<void> {
+    if (!floorSelectionAllowed(this.#store.value, floorId)) return;
     const history = this.#store.value.resources.history.value;
     const entry = this.#store.value.resources.entry;
     if (!history || !entry) return;
     const floor = history.floors.find((candidate) => candidate.id === floorId);
-    if (!floor && floorId !== "current") return;
     const currentState = this.#store.value;
-    if ((currentState.workflow === "draw" && (currentState.draw.dirty || currentState.areaDraft.dirty))
-      || (currentState.workflow === "areaReview"
-        && (currentState.draw.dirty || currentState.areaDraft.dirty))) return;
     if (!floor || floor.active) {
       this.#callbacks.clearRecovery();
       this.#callbacks.resetIdentity();
@@ -192,6 +197,7 @@ export class SpatialHistory {
   }
 
   async selectHistory(snapshotId: string | null): Promise<void> {
+    if (!historySelectionAllowed(this.#store.value, snapshotId)) return;
     const history = this.#store.value.resources.history.value;
     const entry = this.#store.value.resources.entry;
     if (!history || !entry) return;
@@ -245,7 +251,7 @@ export class SpatialHistory {
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
-          scene: resource("ready", response.scene),
+          scene: resource("ready", { ...response.scene, historyRecordId: snapshot.id }),
         },
         map: { ...this.#store.value.map, available: true, exactPose: false },
       });

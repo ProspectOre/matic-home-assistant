@@ -230,7 +230,7 @@ export const shellStyles = [tokens, base, controls, css`
     .action-reason { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); text-align: center; }
     .paired { grid-template-columns: 1fr 1fr; align-items: center; }
     .paired .action-reason { grid-column: 1 / -1; order: 1; }
-    .ms-btn--primary[aria-disabled="true"] { --ms-local: var(--ms-surface-sunken); background: var(--ms-local); border-color: transparent; }
+    .ms-btn--primary[aria-disabled="true"] { --ms-local: var(--ms-surface-sunken); color: var(--ms-text); background: var(--ms-local); border-color: transparent; }
 
     .full-map-hud {
       --ms-local: var(--ms-surface-card);
@@ -350,31 +350,6 @@ export const shellStyles = [tokens, base, controls, css`
     }
     .narrow .sheet-tools { display: block; padding-block: var(--ms-space-1) var(--ms-space-2); }
     .sheet-tools > :is(.loading, .problem) { margin-block-end: var(--ms-space-2); }
-    /* Two rows: Points to Move map, Undo to Brush; the last column takes its
-       content so "Brush · 60 cm" never wraps. Points has no Brush, so its
-       second row splits three ways (map-surfaces.md §5 collapse rule). */
-    .narrow .draw-tools--grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: var(--ms-space-1); padding: 0; }
-    .narrow .draw-tools--grid[data-zone="true"] { grid-template-columns: repeat(12, minmax(0, 1fr)); }
-    .narrow .draw-tools--grid .ms-btn {
-      flex-direction: column;
-      gap: var(--ms-space-1);
-      min-inline-size: var(--ms-control);
-      min-block-size: var(--ms-control);
-      padding: var(--ms-space-1);
-      border-color: var(--ms-line);
-      font-size: var(--ms-t-xs);
-    }
-    .narrow .draw-tools--grid[data-zone="true"] .ms-btn { grid-column: span 4; }
-    .narrow .draw-tools--grid[data-zone="true"] .ms-btn[data-tool] { grid-column: span 3; }
-    /* Labels drop first (under 360 px), rows second (a landscape phone keeps
-       one 44 px row that scrolls sideways when the sheet is narrower). */
-    @media (max-width: 359px), (max-height: 479px) {
-      .narrow .draw-tools--grid .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; clip-path: inset(50%); }
-    }
-    @media (max-height: 479px) {
-      .narrow .draw-tools--grid, .narrow .draw-tools--grid[data-zone="true"] { display: flex; overflow-x: auto; }
-      .narrow .draw-tools--grid .ms-btn { flex: none; inline-size: var(--ms-control); padding-inline: 0; }
-    }
     .sr-only { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; clip-path: inset(50%); white-space: nowrap; }
     .narrow .sheet-panel { display: flex; flex: 1; flex-direction: column; min-block-size: 0; }
     /* On a short sheet the pinned heading and notice give the body at least half. */
@@ -419,9 +394,6 @@ export const shellStyles = [tokens, base, controls, css`
     .compact .sheet-grip .ms-btn--block { inline-size: auto; min-block-size: var(--ms-control); }
     .compact .sheet-grip .action-reason { flex-basis: 100%; order: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .compact .action-summary { display: none; }
-    /* In Draw, Cancel beside the primary is the way back, so the grip drops Back. */
-    .compact [data-workflow="draw"] .sheet-grip:has(.paired) .sheet-back { display: none; }
     /* Draw at peek: the grip row and one 44 px tool row (map-surfaces.md §5). */
     .compact .sheet-tools { padding-block: var(--ms-space-1) 0; }
-    .compact [data-detent="peek"] .sheet-hint { display: none; }
   `];

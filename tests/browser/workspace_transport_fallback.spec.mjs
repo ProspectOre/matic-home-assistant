@@ -80,8 +80,10 @@ async function setup(page, failureMode) {
     const subscriptions = new Set();
     const connection = {
       sendMessagePromise: async message => {
+        if (message.type?.startsWith("frontend/")) throw new Error("no user data in this harness");
         stats.snapshotCalls += 1;
         if (mode === "snapshot-unsupported") throw Object.assign(new Error("unsupported command"), { code: "unknown_command" });
+        if (mode === "snapshot-pending") return await new Promise(() => {});
         return {
           schema: 1, capabilities: { snapshot: 1 }, epoch: "synthetic-epoch", sequence: 0,
           coherence_generation: 1, revisions: { workspace: 0, status: 0, scene: 7, plans: 0, areas: 0, history: 0 },
@@ -94,6 +96,7 @@ async function setup(page, failureMode) {
       subscribeMessage: async () => {
         stats.subscribeCalls += 1;
         if (mode === "subscription-unsupported") throw Object.assign(new Error("unsupported subscription"), { code: "unknown_command" });
+        if (mode === "subscription-pending") return await new Promise(() => {});
         stats.activeSubscriptions += 1;
         const marker = {};
         subscriptions.add(marker);
@@ -144,6 +147,34 @@ async function setup(page, failureMode) {
   await expect.poll(() => page.evaluate(() => window.fallbackHarness.store.value.resources.entry?.entryId)).toBe("synthetic-entry");
 }
 
+for (const held of ["snapshot-pending", "subscription-pending"]) {
+  test(`${held} leaves authenticated polling active after its deadline`, async ({ page }) => {
+    await page.clock.install();
+    await setup(page, held);
+    const before = await page.evaluate(() => ({ guards: window.fallbackHarness.guards(),
+      restCalls: window.fallbackHarness.stats.hassFetchWithAuthCalls }));
+    await page.clock.fastForward(10_001);
+    await page.clock.fastForward(35_000);
+    await page.evaluate(() => {
+      const h = window.fallbackHarness;
+      const poll = [...h.intervals.values()].find(item => item.delay === 5000);
+      poll.callback();
+    });
+    await expect.poll(() => page.evaluate(() => window.fallbackHarness.stats.hassFetchWithAuthCalls)).toBeGreaterThan(before.restCalls);
+    const after = await page.evaluate(() => {
+      const h = window.fallbackHarness;
+      return { guards: h.guards(), intervals: h.intervals.size, rawFetchCalls: h.stats.rawFetchCalls,
+        snapshotCalls: h.stats.snapshotCalls, subscribeCalls: h.stats.subscribeCalls };
+    });
+    expect(after.guards).toEqual(before.guards);
+    expect(after.intervals).toBe(2);
+    expect(after.rawFetchCalls).toBe(0);
+    expect(held === "snapshot-pending" ? after.snapshotCalls : after.subscribeCalls).toBe(1);
+    await page.evaluate(() => window.fallbackHarness.dispose());
+    expect(await page.evaluate(() => window.fallbackHarness.intervals.size)).toBe(0);
+  });
+}
+
 for (const failureMode of ["snapshot-unsupported", "subscription-unsupported"]) {
   test(`${failureMode} keeps authenticated REST polling and command locks intact`, async ({ page }) => {
     await setup(page, failureMode);
@@ -191,6 +222,7 @@ for (const failureMode of ["snapshot-unsupported", "subscription-unsupported"]) 
 for (const failureMode of ["snapshot-unsupported", "subscription-unsupported"]) {
   test(`${failureMode} polls saved plan cadence while preserving a dirty editor`, async ({ page }) => {
     await setup(page, failureMode);
+    await page.evaluate(() => window.fallbackHarness.controller.openWorkflow("plans"));
     await expect.poll(() => page.evaluate(() => window.fallbackHarness.store.value.resources.plans.status)).toBe("ready");
     await page.evaluate(() => {
       const h = window.fallbackHarness;

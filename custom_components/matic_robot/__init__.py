@@ -48,6 +48,7 @@ from .frontend import async_register_frontend, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .maintenance import async_delete_maintenance_issues
 from .managed_reconciliation import OEM_STOP_RECONCILIATION_POLL_SECONDS
+from .media_source import DATA_PHOTO_ATTACHMENT_SOURCE
 from .migrations import async_migrate_entry
 from .photos import RobotPhotoStore
 from .plans import CleaningPlanManager, async_get_plan_manager
@@ -55,10 +56,8 @@ from .restart import async_recover_managed_run
 from .robot_health import async_delete_robot_alert_issues
 from .run_history import RunTrails
 from .services import async_register_services
-from .slam_history import (
-    SlamHistoryStore,
-    async_collect_slam_history,
-)
+from .slam_history import SlamHistoryStore
+from .slam_history_collector import async_collect_slam_history
 from .slam_map_store import SlamMapIdentity, SlamMapStore
 from .slam_view_data import observe_coordinator_trail
 from .wifi_survey import WifiSurveyStore
@@ -248,6 +247,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await slam_map.async_prime(client)
         slam_history = SlamHistoryStore(hass, entry.entry_id)
         await slam_history.async_load()
+        entry.async_create_background_task(
+            hass,
+            slam_history.async_expire_trash_until_closed(),
+            f"{DOMAIN} saved map trash expiry",
+        )
         run_trails = RunTrails(hass, entry.entry_id)
         await run_trails.async_load()
         wifi_survey = WifiSurveyStore(hass, entry.entry_id)
@@ -285,8 +289,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             )
         entry.async_create_background_task(
             hass,
-            coordinator.async_watch_cues(),
-            f"{DOMAIN} Cues state collector",
+            coordinator.async_watch_state(),
+            f"{DOMAIN} operational state collector",
         )
         entry.async_create_background_task(
             hass,
@@ -403,6 +407,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             await slam_map.async_shutdown()
         client.close()
         raise
+    photo_source = hass.data.get(DOMAIN, {}).get(DATA_PHOTO_ATTACHMENT_SOURCE)
+    activate_photo_entry = getattr(photo_source, "activate_entry", None)
+    if callable(activate_photo_entry):
+        activate_photo_entry(entry.entry_id)
     return True
 
 
@@ -751,6 +759,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
                 f"{DOMAIN} managed run recovery after unload failure",
             )
     if unload_ok:
+        photo_source = hass.data.get(DOMAIN, {}).get(DATA_PHOTO_ATTACHMENT_SOURCE)
+        release_photo_entry = getattr(photo_source, "async_release_entry", None)
+        if callable(release_photo_entry):
+            await release_photo_entry(entry.entry_id)
         await entry.runtime_data.run_trails.async_shutdown()
         await entry.runtime_data.wifi_survey.async_shutdown()
         await entry.runtime_data.slam_history.async_shutdown()

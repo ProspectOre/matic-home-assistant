@@ -44,6 +44,10 @@ PHOTO_PATROL_SERVICE_SCHEMA = cv.make_entity_service_schema(
             probatio.Length(min=1, max=12),
         ),
         probatio.Optional("full_resolution", default=False): cv.boolean,
+        probatio.Optional("question"): probatio.All(
+            cv.string, probatio.Length(min=1, max=500)
+        ),
+        probatio.Optional("ai_task_entity_id"): cv.entity_id,
     }
 )
 

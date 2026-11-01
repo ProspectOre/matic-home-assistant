@@ -88,12 +88,12 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
     const panel = document.querySelector("[data-cadence-roundtrip='true']");
     return panel?.getWorkspaceSnapshot().resources.scene.status;
   })).toBe("ready");
+  await expectNoSeriousAccessibilityViolations(page, "ready workspace");
+  await openPlanPicker(panel);
   await expect.poll(() => page.evaluate(() => {
     const resource = document.querySelector("[data-cadence-roundtrip='true']").getWorkspaceSnapshot().resources.plans;
     return { status: resource.status, problem: resource.problem };
   })).toEqual({ status: "ready", problem: null });
-  await expectNoSeriousAccessibilityViolations(page, "ready workspace");
-  await openPlanPicker(panel);
   const editPlan = panel.getByRole("button", { name: /^Daily clean/ });
   await expect(editPlan).toBeVisible();
   await editPlan.click();

@@ -1,10 +1,10 @@
-import { notice, type HassProjection, type ResourceStamp } from "./contracts";
+import type { HassProjection } from "./contracts";
 import type { MapEntry, PlansCatalog, AreasCatalog } from "./backend-contracts";
 import { BackendError, type MaticBackend } from "./backend";
-import { type CoherenceMachine, type WorkspaceStore, canReadFloorResources, initialWorkspaceState, draftForPlan, areaSelection } from "./state";
+import { canReadFloorResources, type CoherenceMachine, type WorkspaceStore, needsPlanCatalog } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, cancelLoading, isAbort, problemCode, sameCoherenceGeneration } from "./resource-state";
-import { entryBoundaryKey, entryCoherenceIdentity, entryManagedLock } from "./workspace-projection";
+import { resource, isAbort, problemCode } from "./resource-state";
+import { entryCoherenceIdentity, entryManagedLock } from "./workspace-projection";
 import type { CatalogRecoveryLease } from "./catalog-recovery-lease";
 
 interface CatalogResourceCallbacks {
@@ -17,10 +17,8 @@ interface CatalogResourceCallbacks {
   readonly syncWorkspace: () => void;
   readonly clearPrivate: (problem: string, entryId: string | null) => void;
   readonly resumePins: () => void;
+  readonly loadPlanResources?: () => Promise<typeof import("./plan-catalog-resources")>;
 }
-
-const planRemovedNotice = notice("warning", "v4_notice_plan_removed", "This plan was removed elsewhere, so nothing was changed.");
-const areaRemovedNotice = notice("warning", "v4_notice_area_removed", "This saved area was removed elsewhere. Your edits are kept as a new draft; saving will create a new area.");
 
 /** Owns catalog request admission, coalescing and saved-resource refreshes. */
 export class CatalogResources {
@@ -32,9 +30,16 @@ export class CatalogResources {
   #catalogTimer: number | null = null;
   #catalogLoading = false;
   #catalogForceInFlight = false;
+  #catalogRequestGeneration = 0;
+  #catalogSuccessfulGeneration = 0;
   #queued: { preserveGeneration: boolean; recovery: CatalogRecoveryLease | null } | null = null;
   #catalogSettled: Promise<void> = Promise.resolve();
-  #areasRecoveryAttempt: ResourceStamp | null = null;
+  #areaResources: InstanceType<typeof import("./area-resources").AreaResources> | null = null;
+  #areaResourcesLoad: Promise<InstanceType<typeof import("./area-resources").AreaResources>> | null = null;
+  #areaResourcesFailureContext: string | null = null;
+  #planResources: InstanceType<typeof import("./plan-catalog-resources").PlanCatalogResources> | null = null;
+  #planResourcesLoad: Promise<InstanceType<typeof import("./plan-catalog-resources").PlanCatalogResources> | null> | null = null;
+  #planResourcesFailureScope: string | null = null;
 
   constructor(store: WorkspaceStore, backend: MaticBackend, coherence: CoherenceMachine, requests: ResourceRequests, callbacks: CatalogResourceCallbacks) {
     this.#store = store;
@@ -43,6 +48,9 @@ export class CatalogResources {
     this.#requests = requests;
     this.#callbacks = callbacks;
   }
+
+  get catalogRequestGeneration(): number { return this.#catalogRequestGeneration; }
+  get catalogSuccessfulGeneration(): number { return this.#catalogSuccessfulGeneration; }
 
   cancelQueued(): void {
     this.#queued = null;
@@ -61,7 +69,7 @@ export class CatalogResources {
     if (!this.#callbacks.pageActive() || this.#catalogTimer !== null) return;
     this.#catalogTimer = window.setInterval(() => {
       void this.refreshCatalog();
-      void this.loadPlans({ inPlace: true });
+      if (needsPlanCatalog(this.#store.value)) void this.loadPlans({ inPlace: true });
     }, 5_000);
   }
 
@@ -97,6 +105,7 @@ export class CatalogResources {
     }
     this.#catalogLoading = true;
     this.#catalogForceInFlight = force;
+    const requestGeneration = ++this.#catalogRequestGeneration;
     let settleCatalog!: () => void;
     this.#catalogSettled = new Promise<void>((resolve) => { settleCatalog = resolve; });
     const controller = this.#requests.begin("catalog");
@@ -112,6 +121,7 @@ export class CatalogResources {
       const entries = await this.#backend.catalog(controller.signal);
       if (controller.signal.aborted || this.#callbacks.disposed()) return;
       if (spatialRecoveryOwner && !spatialRecoveryOwner.isCurrent()) return;
+      this.#catalogSuccessfulGeneration = requestGeneration;
       const requestedEntryId = this.#callbacks.projection()?.entryKey;
       let selected = requestedEntryId
         ? entries.find((entry) => entry.entryId === requestedEntryId) ?? null
@@ -168,6 +178,10 @@ export class CatalogResources {
     } catch (error) {
       if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed()) return;
       if (spatialRecoveryOwner) spatialRecoveryOwner.finish();
+      if (error instanceof BackendError && (error.status === 401 || error.status === 403)) {
+        this.#callbacks.clearPrivate("access-required", this.#callbacks.projection()?.entryKey ?? null);
+        return;
+      }
       this.#store.patch({
         coherence: this.#store.value.resources.scene.value ? "degraded" : "unavailable",
         resources: {
@@ -193,205 +207,150 @@ export class CatalogResources {
   }
 
   async loadPlans({ force = false, inPlace = false, onError }: { force?: boolean; inPlace?: boolean; onError?: () => void } = {}): Promise<PlansCatalog | null> {
-    const shown = !inPlace || this.#store.value.resources.plans.status !== "ready";
-    if (!this.#callbacks.pageActive()) {
-      this.#requests.current("plans")?.abort();
-      const resources = this.#store.value.resources;
-      if (shown) this.#store.patch({ resources: { ...resources, plans: resource("idle", resources.plans.value) } });
+    const state = this.#store.value;
+    if (!canReadFloorResources(state)) return null;
+    const scope = `${state.generation}:${state.owner?.userKey ?? ""}:${state.selection.entryId ?? ""}`;
+    const isCurrentScope = (): boolean => {
+      const current = this.#store.value;
+      return !this.#callbacks.disposed() && this.#callbacks.pageActive()
+        && `${current.generation}:${current.owner?.userKey ?? ""}:${current.selection.entryId ?? ""}` === scope;
+    };
+    if (this.#planResourcesFailureScope === scope) {
+      if (!force) { if (isCurrentScope()) onError?.(); return null; }
+      this.#planResourcesFailureScope = null;
+    }
+    const shown = !inPlace || state.resources.plans.status !== "ready";
+    if (shown && this.#callbacks.pageActive()) {
+      this.#store.patch({ resources: { ...state.resources, plans: resource("loading", state.resources.plans.value) } });
+    }
+    let resources = await this.#loadPlanResources();
+    if (!resources && scope === this.#planResourcesFailureScope) {
+      if (isCurrentScope()) onError?.();
       return null;
     }
-    const entry = this.#store.value.resources.entry;
-    if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return null;
-    if (!force && this.#requests.has("plans")) return null;
-    const boundary = entryBoundaryKey(entry);
-    const controller = this.#requests.begin("plans");
-    if (shown) this.#store.patch({
-      resources: { ...this.#store.value.resources, plans: resource("loading", this.#store.value.resources.plans.value) },
-    });
-    const releaseWriteFence = this.#store.value.planWriteBlock === "refresh";
-    try {
-      const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
-      const currentEntry = this.#store.value.resources.entry;
-      if (controller.signal.aborted || this.#callbacks.disposed() || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return null;
-      // Only a read begun after the original write settled releases its fence.
-      // Lifecycle changes and ordinary polling cannot release a pending wire.
-      if (releaseWriteFence && this.#store.value.planWriteBlock === "refresh") this.#store.patch({ planWriteBlock: null });
-      const state = this.#store.value;
-      // A fresh read can update an unchanged saved editor. Pending writes and
-      // preflight retain their draft identity; unsaved and dirty drafts remain
-      // private until their own save acknowledgement.
-      // A clean saved plan that a read no longer holds was deleted elsewhere.
-      // There is nothing to show or keep, so the plan workflow leaves for Your
-      // plans as a delete here would, even under a pending switch or
-      // preflight: both see the workflow change and stop without sending.
-      if (state.workflow === "plan" && state.planDraft.id && !state.planDraft.dirty
-        && !plans.plans.some((candidate) => candidate.id === state.planDraft.id)) {
-        this.#store.patch({
-          resources: { ...this.#store.value.resources, plans: resource("ready", plans) },
-          workflow: "plans",
-          precisionOpen: false,
-          selection: { ...this.#store.value.selection, planId: null },
-          planDraft: initialWorkspaceState().planDraft,
-          notice: planRemovedNotice,
+    const current = this.#store.value;
+    if (!resources && this.#callbacks.pageActive() && current.generation === state.generation
+      && current.owner?.userKey === state.owner?.userKey && current.selection.entryId === state.selection.entryId) {
+      resources = await this.#loadPlanResources();
+    }
+    if (!resources) { if (isCurrentScope()) onError?.(); return null; }
+    if (this.#store.value.generation !== state.generation
+      || this.#store.value.owner?.userKey !== state.owner?.userKey
+      || this.#store.value.selection.entryId !== state.selection.entryId) return null;
+    return resources?.loadPlans({ force, inPlace, ...(onError ? { onError } : {}) }) ?? null;
+  }
+
+  #loadPlanResources(): Promise<InstanceType<typeof import("./plan-catalog-resources").PlanCatalogResources> | null> {
+    if (this.#planResources) return Promise.resolve(this.#planResources);
+    if (!this.#planResourcesLoad) {
+      const { generation, owner, selection: { entryId } } = this.#store.value;
+      const userKey = owner?.userKey ?? "";
+      const loader = this.#callbacks.loadPlanResources ?? (() => import("./plan-catalog-resources"));
+      const loading = loader().then(({ PlanCatalogResources }) => {
+        if (this.#callbacks.disposed() || this.#store.value.generation !== generation
+          || this.#store.value.owner?.userKey !== owner?.userKey
+          || this.#store.value.selection.entryId !== entryId) {
+          if (this.#planResourcesLoad === loading) this.#planResourcesLoad = null;
+          return null;
+        }
+        this.#planResources ??= new PlanCatalogResources(this.#store, this.#backend, this.#coherence, this.#requests, {
+          disposed: this.#callbacks.disposed,
+          pageActive: this.#callbacks.pageActive,
+          resumePins: this.#callbacks.resumePins,
         });
-        return plans;
-      }
-      if (state.planDraft.dirty || (state.workflow === "plan"
-        && (!state.planDraft.id || state.command === "pending"))) {
-        this.#store.patch({ resources: { ...this.#store.value.resources, plans: resource("ready", plans) } });
-        return plans;
-      }
-      const planId = state.workflow === "plan"
-        ? state.selection.planId : plans.selectedPlan || plans.plans[0]?.id || null;
-      const plan = plans.plans.find((candidate) => candidate.id === planId);
-      this.#store.patch({
-        resources: { ...this.#store.value.resources, plans: resource("ready", plans) },
-        selection: {
-          ...this.#store.value.selection,
-          planId,
-        },
-        planDraft: plan ? draftForPlan(plan) : {
-          ...this.#store.value.planDraft,
-          id: null,
-          name: "",
-          rooms: [],
-          parkedRooms: [],
-          areas: [],
-          dirty: false,
-        },
+        return this.#planResources;
+      }).catch(() => {
+        if (this.#planResourcesLoad === loading) this.#planResourcesLoad = null;
+        if (!this.#callbacks.disposed() && this.#callbacks.pageActive()
+          && this.#store.value.generation === generation
+          && this.#store.value.owner?.userKey === owner?.userKey
+          && this.#store.value.selection.entryId === entryId) {
+          this.#planResourcesFailureScope = `${generation}:${userKey}:${entryId ?? ""}`;
+          const resources = this.#store.value.resources;
+          this.#store.patch({ resources: { ...resources, plans: resource("error", resources.plans.value, "plan-module-unavailable") } });
+        }
+        return null;
       });
-      return plans;
-    } catch (error) {
-      const currentEntry = this.#store.value.resources.entry;
-      if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed() || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return null;
-      // The backend labels only floor revalidation conflicts as recoverable.
-      // Other conflicts (for example, a valid floor with no rooms) remain
-      // actionable errors and must not trigger an unbounded retry loop.
-      const problem = error instanceof BackendError && error.code === "map-rechecking"
-        ? "map-rechecking"
-        : problemCode(error, "plans-unavailable");
-      // A failed read proves nothing about the saved plans, so it keeps the
-      // last catalog as a reload does; an open delete dialog still names its
-      // plan (WorkspaceStore.replace).
-      if (shown) this.#store.patch({
-        resources: {
-          ...this.#store.value.resources,
-          plans: resource("error", this.#store.value.resources.plans.value, problem),
-        },
-      });
-      onError?.();
-      return null;
-    } finally {
-      this.#requests.release("plans", controller);
+      this.#planResourcesLoad = loading;
     }
+    return this.#planResourcesLoad;
   }
 
   resumeAreas(): void {
-    let state = this.#store.value;
-    const readable = canReadFloorResources(state);
-    if (!readable) {
-      // A response begun before floor revalidation cannot restore old area
-      // geometry, even if its fetch wrapper ignores cancellation.
-      this.#areasRecoveryAttempt = null;
-      this.#requests.current("areas")?.abort();
-      if (state.resources.areas.status === "loading") {
-        this.#store.patch({ resources: { ...state.resources, areas: cancelLoading(state.resources.areas) } });
-        state = this.#store.value;
-      }
-    }
-    const stamp = this.#coherence.current();
-    const retry = Boolean(readable && stamp && state.resources.areas.status === "error"
-      && state.resources.areas.problem === "map-rechecking"
-      && (!this.#areasRecoveryAttempt || !sameCoherenceGeneration(this.#areasRecoveryAttempt, stamp)));
-    if ((state.workflow === "areas" || state.workflow === "draw" || state.workflow === "areaReview" || state.workflow === "plan"
-      || state.homePins.status === "ready"
-      || state.homePins.pins.some((pin) => pin.kind === "area"))
-      && readable && (state.resources.areas.status === "idle" || retry)) {
-      // Bound automatic retries to one per verified recovery episode. Scene
-      // tile revisions alone must not create an endless conflict retry loop.
-      if (retry) this.#areasRecoveryAttempt = stamp;
-      void this.loadAreas();
+    if (this.#callbacks.disposed()) return;
+    const needed = this.#areasNeeded();
+    const context = this.#areaContext();
+    if (this.#areaResources) this.#areaResources.resumeAreas(needed);
+    else if (needed && this.#areaResourcesFailureContext !== context) {
+      void this.#loadAreaResources().then((areas) => {
+        if (!this.#callbacks.disposed()) areas.resumeAreas(this.#areasNeeded());
+      }).catch(() => this.#areaResourcesUnavailable(context, true, "area-module-unavailable"));
     }
     this.#callbacks.resumePins();
   }
 
-  async loadAreas({ reconcileDraft = true }: { reconcileDraft?: boolean } = {}): Promise<AreasCatalog | null> {
-    if (!this.#callbacks.pageActive()) {
-      this.#requests.current("areas")?.abort();
-      const resources = this.#store.value.resources;
-      this.#store.patch({ resources: { ...resources, areas: resource("idle", resources.areas.value) } });
-      return null;
-    }
-    const entry = this.#store.value.resources.entry;
-    const stamp = this.#coherence.current();
-    if (!entry || !stamp || !canReadFloorResources(this.#store.value)) return null;
-    const boundary = entryBoundaryKey(entry);
-    const controller = this.#requests.begin("areas");
-    const readStillCurrent = (): boolean => {
-      const state = this.#store.value;
-      const currentEntry = state.resources.entry;
-      const currentStamp = this.#coherence.current();
-      return !controller.signal.aborted && !this.#callbacks.disposed() && Boolean(currentEntry && currentStamp
-        && entryBoundaryKey(currentEntry) === boundary && sameCoherenceGeneration(stamp, currentStamp)
-        && canReadFloorResources(state));
-    };
-    let discarded = false;
-    this.#store.patch({
-      resources: { ...this.#store.value.resources, areas: resource("loading", this.#store.value.resources.areas.value) },
-    });
+  #areasNeeded(): boolean {
+    const state = this.#store.value;
+    return state.workflow === "areas" || state.workflow === "draw" || state.workflow === "areaReview" || state.workflow === "plan"
+      || (state.homePins.status === "ready" && state.homePins.pins.some((pin) => pin.kind === "area"));
+  }
+
+  async loadAreas(options: { reconcileDraft?: boolean } = {}): Promise<AreasCatalog | null> {
+    if (this.#callbacks.disposed()) return null;
+    const context = this.#areaContext();
     try {
-      const areas = await this.#backend.areas(entry.areasUrl, controller.signal);
-      const currentEntry = this.#store.value.resources.entry;
-      if (!readStillCurrent() || !currentEntry) { discarded = true; return null; }
-      if (areas.sceneUrl !== currentEntry.sceneUrl) throw new BackendError("areas-unavailable");
-      this.#areasRecoveryAttempt = null;
-      this.#store.patch({
-        resources: { ...this.#store.value.resources, areas: resource("ready", areas) },
-      });
-      const selectedId = this.#store.value.selection.areaId;
-      const current = this.#store.value;
-      // A blank Draw draft is editable while the area catalog is loading. Do
-      // not replace that draft when the response arrives, or an early stroke
-      // would be silently discarded. If a selected saved Area was deleted
-      // elsewhere, preserve its edits but detach the stale ID so a later save
-      // creates a new Area instead of updating a missing target.
-      const selectedExists = areas.areas.some((area) => area.id === selectedId);
-      if (reconcileDraft && selectedId !== null && !selectedExists
-        && (current.draw.dirty || current.areaDraft.dirty)) {
-        this.#store.patch({
-          selection: { ...current.selection, areaId: null },
-          areaDraft: {
-            ...current.areaDraft,
-            id: null,
-            status: "new",
-            canRebind: false,
-            dirty: true,
-          },
-          notice: areaRemovedNotice,
-        });
-      } else if (reconcileDraft && !current.draw.dirty && !current.areaDraft.dirty) {
-        this.#store.patch(areaSelection(this.#store.value, selectedExists ? selectedId : null));
-      }
-      return areas;
-    } catch (error) {
-      if (isAbort(error) || controller.signal.aborted || this.#callbacks.disposed()) return null;
-      if (!readStillCurrent()) { discarded = true; return null; }
-      // Like plans, a failed read keeps the last catalog.
-      this.#store.patch({
-        resources: {
-          ...this.#store.value.resources,
-          areas: resource("error", this.#store.value.resources.areas.value, problemCode(error, "areas-unavailable")),
-        },
-      });
+      this.#areaResourcesFailureContext = null;
+      const areas = await this.#loadAreaResources();
+      if (this.#callbacks.disposed() || context !== this.#areaContext()) return null;
+      return await areas.loadAreas(options, context);
+    } catch {
+      this.#areaResourcesUnavailable(context, false, "area-module-unavailable");
       return null;
-    } finally {
-      const stillOwner = this.#requests.current("areas") === controller;
-      this.#requests.release("areas", controller);
-      if (discarded && stillOwner && this.#store.value.resources.areas.status === "loading") {
-        const resources = this.#store.value.resources;
-        this.#store.patch({ resources: { ...resources, areas: cancelLoading(resources.areas) } });
-        this.resumeAreas();
-      }
     }
+  }
+
+  #areaResourcesUnavailable(context: string, onlyIfNeeded = false, problem = "areas-unavailable"): void {
+    if (this.#callbacks.disposed() || context !== this.#areaContext() || (onlyIfNeeded && !this.#areasNeeded())) return;
+    this.#areaResourcesFailureContext = context;
+    const resources = this.#store.value.resources;
+    this.#store.patch({ resources: { ...resources, areas: resource("error", resources.areas.value, problem) } });
+  }
+
+  #areaContext(): string {
+    const state = this.#store.value;
+    return JSON.stringify([
+      state.owner?.userKey ?? null,
+      state.owner?.entryKey ?? null,
+      state.generation,
+      state.selection.entryId,
+      state.selection.floorId,
+      state.dataMode,
+      state.workflow,
+      state.selection.planId,
+      state.selection.areaId,
+      state.planDraft.id,
+      state.planDraft.dirty,
+      state.areaDraft.id,
+      state.areaDraft.dirty,
+      state.homePins.pins.filter((pin) => pin.kind === "area").map((pin) => pin.id),
+    ]);
+  }
+
+  #loadAreaResources(): Promise<InstanceType<typeof import("./area-resources").AreaResources>> {
+    this.#areaResourcesLoad ??= import("./area-resources").then(({ AreaResources }) => {
+      if (this.#callbacks.disposed()) throw new DOMException("Aborted", "AbortError");
+      this.#areaResources ??= new AreaResources(this.#store, this.#backend, this.#coherence, this.#requests, {
+        disposed: this.#callbacks.disposed,
+        pageActive: this.#callbacks.pageActive,
+        resumePins: this.#callbacks.resumePins,
+        context: () => this.#areaContext(),
+        needed: () => this.#areasNeeded(),
+      });
+      return this.#areaResources;
+    }).catch((error: unknown) => {
+      this.#areaResourcesLoad = null;
+      throw error;
+    });
+    return this.#areaResourcesLoad;
   }
 }

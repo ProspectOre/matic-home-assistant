@@ -239,42 +239,10 @@ const homeCopy = (kind: HomeKind, state: WorkspaceState, t: (key: string, fallba
   }
 };
 
-export const workflowCopy = (state: WorkspaceState, localize?: Localize): {
+export const homeWorkflowCopy = (state: WorkspaceState, localize?: Localize): {
   readonly title: string;
   readonly description: string;
 } => {
   const t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string => translate(localize, key, fallback, placeholders);
-  switch (state.workflow) {
-    case "rooms":
-      // The view renders its own description, so the rows can be described by it (R6).
-      return { title: t("v4_choose_rooms", "Choose rooms"), description: "" };
-    case "draw":
-      return { title: t("v4_draw_area", "Draw an area"), description: t("v4_draw_area_detail", "Outline or paint the area, then review it before saving.") };
-    case "plans":
-      // An empty picker is its card alone (plan.md §3).
-      return { title: t("v4_your_plans", "Your plans"), description: state.resources.plans.value?.plans.length === 0 ? "" : t("v4_choose_plan_detail", "Tap a plan to see its next run.") };
-    case "areas":
-      // The view renders its description, as Rooms does (R6).
-      return { title: t("v4_your_areas", "Your areas"), description: "" };
-    case "plan":
-      // Run is titled with the plan's saved name: Run never shows a dirty draft.
-      return {
-        title: state.planView === "run" ? state.planDraft.name : state.planDraft.id ? t("v4_edit_plan", "Edit plan") : t("v4_new_plan", "New plan"),
-        description: "",
-      };
-    case "areaReview": {
-      // New: a name to give. Saved: its name; after a map change, a check (map-surfaces.md §4).
-      const draft = state.areaDraft;
-      if (draft.id === null) return { title: t("v4_name_this_area", "Name this area"), description: t("area_details_hint", "Name the area and choose cleaning settings.") };
-      return { title: draft.canRebind || draft.status === "review" ? t("v4_check_area", "Check {name}", { name: draft.name }) : draft.name, description: "" };
-    }
-    case "history":
-      return { title: t("v4_map_history", "Map history"), description: t("v4_map_history_detail", "Saved maps show one floor each. They can't be edited and never show where the robot is now.") };
-    case "support":
-      return { title: t("v4_map_diagnostics", "Map diagnostics"), description: t("v4_map_support_detail", "Details to share with support") };
-    case "runs":
-      return { title: t("v4_cleaning_history", "Cleaning history"), description: "" };
-    case "none":
-      return homeCopy(homeState(state), state, t);
-  }
+  return homeCopy(homeState(state), state, t);
 };

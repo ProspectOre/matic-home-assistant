@@ -7,6 +7,7 @@ import type { PropertyValues } from "lit";
 
 import type {
   DateFormat,
+  AcknowledgeQueueUncertainAction,
   DeleteSharedCadenceAction,
   HomePin,
   Localize,
@@ -31,8 +32,9 @@ import {
   WORKFLOW_TAG,
 } from "./element-tags";
 
-import { LazyChunk, chunkStatus, reloadInto, takeResume, type ChunkStatus } from "./lazy-chunk";
+import { LazyChunk, chunkStatus, reloadInto, takeResume, type ChunkStatus, type ChunkStatusCopy } from "./lazy-chunk";
 import type { MapOptions } from "./map-options";
+import type { MaticBackend } from "./backend";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
 import { opaque, readColors, resolveFill, resolveTone, rgba, watchTheme, type Channel } from "./theme-probe";
@@ -62,9 +64,10 @@ import {
 } from "./map-canvas";
 import "./map-canvas";
 import { translate } from "./localize";
+import type { RendererModuleStatus } from "./renderer-controller";
+
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
-  canChangeQueue,
   canShowLiveMap,
   deleteSubject,
   hasStoppableWork,
@@ -73,10 +76,21 @@ import {
   isSelectedRobotUnavailable,
   selectGoToRoomAction,
   selectStopSecondaryAction,
-  selectPrimaryAction,
+  selectGlobalPrimaryAction,
 } from "./state";
 import type { DialogPresentation } from "./dialog-copy";
-import { homeState, readyPlans, statusCopy, workflowCopy, type StatusPresentation } from "./shell-presentation";
+import { homeState, homeWorkflowCopy, readyPlans, statusCopy, type StatusPresentation } from "./shell-presentation";
+
+type LoadedWorkflowModule = typeof import("./workflow-panel") & typeof import("./workflow-actions");
+
+const DRAW_OVERLAY_STATUS_COPY: ChunkStatusCopy = {
+  loading: { key: "v4_draw_overlay_loading", fallback: "Loading map drawing…" },
+  failed: { key: "v4_draw_overlay_failed", fallback: "Map drawing isn't available, so edits are paused. Reload the page to try again." },
+};
+const AREA_PREVIEW_STATUS_COPY: ChunkStatusCopy = {
+  loading: { key: "v4_area_preview_loading", fallback: "Loading the area preview…" },
+  failed: { key: "v4_area_preview_failed", fallback: "The map preview isn't available, so you can't review or save this area. Reload the page to try again." },
+};
 
 const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
@@ -105,6 +119,7 @@ const isVisible = (element: HTMLElement | null | undefined): element is HTMLElem
 export class MaticMapShellV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
+    backend: { attribute: false },
     localize: { attribute: false },
     dates: { attribute: false },
     scheme: { attribute: false },
@@ -118,6 +133,7 @@ export class MaticMapShellV4 extends LitElement {
   static override styles = shellStyles;
 
   state: WorkspaceState = initialWorkspaceState();
+  backend: MaticBackend | null = null;
   localize?: Localize;
   /** How the panel shows timestamps; set by the panel, not part of the snapshot. */
   dates?: DateFormat;
@@ -161,6 +177,7 @@ export class MaticMapShellV4 extends LitElement {
   protected _polite = "";
   protected _alert = "";
   #statusRow: string | null = null;
+  #drawOverlayStatus: ChunkStatus = "idle";
   #announced = new Set<"_polite" | "_alert">();
   protected _toast: WorkspaceNotice | null = null;
   // The room the Change this clean controls act on; "" follows the robot.
@@ -170,6 +187,13 @@ export class MaticMapShellV4 extends LitElement {
   // editor and hands it to the canvas, so the sheet is the one place a failure
   // of either, building included, is said.
   readonly #views = new LazyChunk(this, () => this.#workflowModule());
+  readonly #planViews = new LazyChunk(this, () => import("./plan-views"));
+  readonly #candidates = new LazyChunk(this, async () => {
+    const module = await import("./room-candidates");
+    const root = this.renderRoot as ShadowRoot;
+    adoptStyles(root, [...root.adoptedStyleSheets, module.roomCandidateStyles]);
+    return module;
+  });
   readonly #drawTools = new LazyChunk(this, () => import("./draw-tools"));
   readonly #mapHelpView = new LazyChunk(this, async () => {
     const help = await import("./map-help");
@@ -219,16 +243,27 @@ export class MaticMapShellV4 extends LitElement {
   #editingHomeShortcuts = false;
   #shortcutsOwner: string | null = null;
   #workflowStyled = false;
+  #candidateFocusPending = false;
+
+  #focusRoomCandidates(): void {
+    const picker = this.#candidateFocusPending && this.state.roomCandidates.length
+      ? this.renderRoot.querySelector<HTMLElement>("[data-room-candidate-picker]") : null;
+    if (picker) { picker.focus(); this.#candidateFocusPending = false; }
+  }
 
   // Workflow views bring their shell and form rules. The independent Map
   // options module renders its own menu and shared switch rules.
-  async #workflowModule(): Promise<typeof import("./workflow-panel")> {
-    const views = await import("./workflow-panel");
+  async #workflowModule(): Promise<LoadedWorkflowModule> {
+    const [views, actions] = await Promise.all([
+      import("./workflow-panel"),
+      import("./workflow-actions"),
+    ]);
     if (!this.#workflowStyled) {
       this.#workflowStyled = true;
-      adoptStyles(this.renderRoot as ShadowRoot, [...shellStyles, views.shellWorkflowStyles, views.formControls]);
+      adoptStyles(this.renderRoot as ShadowRoot, [...shellStyles, views.shellWorkflowStyles, views.formControls,
+        ...(this.#candidates.value ? [this.#candidates.value.roomCandidateStyles] : [])]);
     }
-    return views;
+    return { ...views, ...actions };
   }
 
   // D3 (map-surfaces.md §10): Full map asks the browser for full screen
@@ -411,6 +446,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    this.#focusRoomCandidates();
     if (changed.has("scheme") && changed.get("scheme") !== undefined) this.#resolveTheme();
     this.#sheet.afterRender();
     if (this.#optionsPending && this.#options.status !== "loading") {
@@ -418,8 +454,18 @@ export class MaticMapShellV4 extends LitElement {
       this.#options.value?.menu.toggle();
     }
     if (changed.has("state")) {
+      // The home rows populate #launchers during render, so consume a reload
+      // resume only after the current state has produced its eligible rows.
       this.#resumeWorkflow();
       const previous = changed.get("state") as WorkspaceState | undefined;
+      if (this.state.comparisonActive && !previous?.comparisonActive) this.#sheet.setDetent("full");
+      if (this.state.roomCandidates.length && !previous?.roomCandidates.length) {
+        this.#candidateFocusPending = true;
+        this.#focusRoomCandidates();
+      } else if (!this.state.roomCandidates.length && previous?.roomCandidates.length) {
+        this.#candidateFocusPending = false;
+        this.renderRoot.querySelector(MAP_CANVAS_TAG)?.shadowRoot?.querySelector<HTMLElement>(".map-root")?.focus();
+      }
       // A shortcut's run returns home once it starts; one that is idle (its
       // check was refused, or nothing took the action) shows its Run view
       // with the reason, and a later Run plan there no longer jumps home.
@@ -578,6 +624,8 @@ export class MaticMapShellV4 extends LitElement {
 
   #action(action: PrimaryAction): void {
     if (!action.enabled) return;
+    if (this.state.map.available && this.#drawOverlayStatus !== "ready"
+      && (action.id === "review-area" || action.id === "save-area")) return;
     if (action.id === "return-live") {
       this.#intent({ type: "set-history", historyId: null });
       return;
@@ -593,6 +641,7 @@ export class MaticMapShellV4 extends LitElement {
   // launcher, so Back lands on the heading (home-rooms.md R18). Back does
   // not come through here.
   #workflow(workflow: Workflow, launcher?: EventTarget | null): void {
+    this.#resume = null;
     this.#homeLauncher = null;
     this.#leave({ type: "open-workflow", workflow }, launcher);
   }
@@ -613,11 +662,15 @@ export class MaticMapShellV4 extends LitElement {
     const workflow = this.#resume;
     const { coherence, workflow: open } = this.state;
     if (!workflow || (open === "none" && (coherence === "booting" || coherence === "verifying"))) return;
-    this.#resume = null;
-    if (open !== "none") return;
+    if (open !== "none") {
+      this.#resume = null;
+      return;
+    }
     if (this.#launchers.has(workflow)) {
+      this.#resume = null;
       this.#workflow(workflow as Workflow);
     } else if (workflow === "draw" && this.#launchers.has("areas")) {
+      this.#resume = null;
       // A new drawing opens from Your areas' New area (UX9), so it resumes
       // the same road: Your areas, then Draw, with Back stepping through both.
       this.#workflow("areas");
@@ -638,14 +691,38 @@ export class MaticMapShellV4 extends LitElement {
     this.#intent({ type: "open-dialog", dialog: "discardDraft" });
   };
 
+  readonly #drawOverlayStatusChanged = (status: RendererModuleStatus): void => {
+    if (this.#drawOverlayStatus === status) return;
+    this.#drawOverlayStatus = status;
+    this.requestUpdate();
+  };
+
   // The worst of the chunks `workflow` needs, each requested as it opens.
   #tools(workflow: Workflow): ChunkStatus {
     this.#views.request();
-    if (workflow !== "draw") return this.#views.status;
-    this.#outline.request();
-    this.#drawTools.request();
-    const statuses = [this.#views.status, this.#outline.status, this.#drawTools.status];
+    const statuses = [this.#views.status];
+    if (workflow === "plans" || workflow === "plan") {
+      this.#planViews.request();
+      statuses.push(this.#planViews.status);
+    }
+    if (workflow === "draw") {
+      this.#outline.request();
+      this.#drawTools.request();
+      statuses.push(this.#outline.status, this.#drawTools.status);
+    }
+    if ((workflow === "draw" || workflow === "areaReview") && this.state.map.available) {
+      statuses.push(this.#drawOverlayStatus);
+    }
     return statuses.includes("failed") ? "failed" : statuses.every((status) => status === "ready") ? "ready" : "loading";
+  }
+
+  #workflowStatusCopy(workflow: Workflow): ChunkStatusCopy | undefined {
+    const copy = workflow === "draw" ? DRAW_OVERLAY_STATUS_COPY
+      : workflow === "areaReview" ? AREA_PREVIEW_STATUS_COPY : undefined;
+    if (!copy) return undefined;
+    if (this.#drawOverlayStatus === "failed") return copy.failed ? { failed: copy.failed } : undefined;
+    if (this.#drawOverlayStatus !== "ready") return copy.loading ? { loading: copy.loading } : undefined;
+    return undefined;
   }
 
   #discardAndContinue(): void {
@@ -712,7 +789,7 @@ export class MaticMapShellV4 extends LitElement {
     if (launcher) requestAnimationFrame(() => launcher.focus({ preventScroll: true }));
   }
 
-  #dispatchAction(action: string | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction, settled?: SaveSettled): void {
+  #dispatchAction(action: string | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction | AcknowledgeQueueUncertainAction, settled?: SaveSettled): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
       detail: typeof action === "string" ? { id: action, settled } : action,
       bubbles: true,
@@ -1021,34 +1098,44 @@ export class MaticMapShellV4 extends LitElement {
   // change the robot's queue can't take, and the notice says why.
   #queueControls(state: WorkspaceState) {
     const rooms = readyPlans(state)?.rooms ?? [];
-    if (state.activity !== "cleaning" || state.smartStop || rooms.length === 0) return nothing;
-    const t = this.#t;
-    const current = state.currentArea?.trim().toLocaleLowerCase();
-    const room = rooms.find((candidate) => candidate.roomId === this._queueRoom)
-      ?? rooms.find((candidate) => candidate.roomId === state.lastRun?.estimate?.roomId
-        || candidate.name.toLocaleLowerCase() === current)
-      ?? rooms[0]!;
-    const held = !canChangeQueue(state);
-    const button = (change: QueueChangeAction["change"], label: string) => html`
-      <button class="ms-btn ms-btn--secondary" type="button" aria-disabled=${held ? "true" : nothing}
-        @click=${() => { if (canChangeQueue(this.state)) this.#dispatchAction({ id: "change-queue", change, roomId: room.roomId, room: room.name }); }}
-      >${label}</button>`;
-    return html`
-      <section class="queue" aria-labelledby="queue-heading">
-        <h3 class="ms-section-heading" id="queue-heading">${t("v4_queue_heading", "Change this clean")}</h3>
-        <label class="ms-field">${t("v4_queue_room", "Room")}
-          <select name="queue-room" .value=${room.roomId}
-            @change=${(event: Event) => { this._queueRoom = (event.currentTarget as HTMLSelectElement).value; }}
-          >${rooms.map((candidate) => html`<option value=${candidate.roomId} ?selected=${candidate.roomId === room.roomId}>${candidate.name}</option>`)}</select>
-        </label>
-        <div class="queue-actions" role="group" aria-label=${t("v4_queue_actions", "Change {room}", { room: room.name })}>
-          ${button("skip_room", t("v4_queue_skip", "Skip"))}
-          ${button("clean_room_next", t("v4_queue_next", "Clean next"))}
-          ${button("clean_room_again", t("v4_queue_again", "Clean again"))}
-        </div>
-        ${state.queuePending ? html`<p class="queue-status" role="status">${t("v4_queue_pending", "Waiting for the robot to confirm…")}</p>` : nothing}
-      </section>
-    `;
+    const plansReady = state.resources.plans.status === "ready";
+    if (state.activity !== "cleaning" || state.smartStop || (plansReady && rooms.length === 0)) {
+      return nothing;
+    }
+    if (!state.optionalUiReady) {
+      return state.host.administrator && state.host.connected && state.pageActive
+        ? this.#queueLoading() : nothing;
+    }
+    if (!state.map.available && state.resources.plans.status !== "error") return this.#queueHeld();
+    const render = this.#views.value?.queueControls;
+    if (render) {
+      if (plansReady && state.queueControllerStatus !== "ready") {
+        if (state.queueControllerStatus === "error") return this.#queueLoading(chunkStatus("failed", this.localize, this.#retry));
+        if (state.queueControllerStatus === "loading") return this.#queueLoading();
+        return this.#queueHeld();
+      }
+      return render({ state, roomId: this._queueRoom,
+        ...(this.localize === undefined ? {} : { localize: this.localize }),
+        ...(this.dates === undefined ? {} : { dates: this.dates }),
+        setRoom: (roomId) => { this._queueRoom = roomId; }, currentState: () => this.state,
+        dispatch: (action) => this.#dispatchAction(action), retry: this.#retry });
+    }
+    if (this.#views.status === "failed") {
+      return chunkStatus(this.#views.status, this.localize, this.#retry);
+    }
+    if (this.#views.status === "idle") this.#views.request();
+    return this.#queueLoading();
+  }
+
+  #queueLoading(status: unknown = chunkStatus("loading", this.localize, this.#retry)) {
+    return html`<section class="queue" aria-labelledby="queue-heading">
+      <h3 class="ms-section-heading" id="queue-heading">${this.#t("v4_queue_heading", "Change this clean")}</h3>
+      ${status}
+    </section>`;
+  }
+
+  #queueHeld() {
+    return this.#queueLoading(html`<p class="loading" role="status">${this.#t("v4_queue_catalog_held", "Queue changes are unavailable until the current map and room list are ready.")}</p>`);
   }
 
   // Home (home-rooms.md §3): the heading and description come from homeCopy;
@@ -1155,7 +1242,8 @@ export class MaticMapShellV4 extends LitElement {
       t: this.#t,
       held,
       editing: this.#editingHomeShortcuts,
-      canReorder: state.resources.plans.status === "ready" && state.resources.areas.status === "ready",
+      canReorder: pins.every((pin) => (pin.kind === "plan"
+        ? state.resources.plans : state.resources.areas).status === "ready"),
       toggleEditing: () => { this.#editingHomeShortcuts = !this.#editingHomeShortcuts; this.requestUpdate(); },
       move: (pin, direction) => {
         this.#intent({ type: "move-home-pin", pin, direction });
@@ -1184,10 +1272,11 @@ export class MaticMapShellV4 extends LitElement {
       // so they stay put when it goes.
       return narrow && state.workflow === "draw"
         ? nothing
-        : chunkStatus(tools, this.localize, this.#retry);
+        : chunkStatus(tools, this.localize, this.#retry, this.#workflowStatusCopy(state.workflow));
     }
     return html`<${workflowTag}
       .state=${state}
+      .backend=${this.backend}
       .localize=${this.localize}
       .dates=${this.dates}
       .retry=${this.#retry}
@@ -1232,7 +1321,7 @@ export class MaticMapShellV4 extends LitElement {
 
   #panelTop(state: WorkspaceState) {
     const plan = state.workflow === "plan";
-    const title = workflowCopy(state, this.localize).title;
+    const title = this.#workflowCopy(state).title;
     return html`
       <div class="panel-top">
         <div class="panel-heading">
@@ -1246,7 +1335,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #panel(state: WorkspaceState, narrow: boolean) {
-    const { description } = workflowCopy(state, this.localize);
+    const { description } = this.#workflowCopy(state);
     // Home's demoted cards need a reason even when its visible copy is concise.
     const heldReason = state.workflow === "none" && !description && state.smartStop
       ? homeState(state) === "read-only"
@@ -1271,7 +1360,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #sheetStatus(state: WorkspaceState, status: StatusPresentation): string {
-    const workflow = workflowCopy(state, this.localize);
+    const workflow = this.#workflowCopy(state);
     const line = (state.workflow === "rooms" ? this.#views.value?.roomsGripLine(this.#t, state) : null) ?? workflow.title;
     // With the body open the h2 already names the workflow, so the grip line
     // carries the robot instead of repeating the title directly above it.
@@ -1284,6 +1373,24 @@ export class MaticMapShellV4 extends LitElement {
       return status.detail ? `${status.title} · ${status.detail}` : status.title;
     }
     return status.notable ? `${status.title} · ${line}` : line;
+  }
+
+  #workflowCopy(state: WorkspaceState): { readonly title: string; readonly description: string } {
+    if (state.workflow === "none") return homeWorkflowCopy(state, this.localize);
+    const copy = this.#views.value?.workflowCopy(state, this.localize);
+    if (copy) return copy;
+    const title = state.workflow === "plan"
+      ? state.planView === "run" ? state.planDraft.name
+        : state.planDraft.id ? this.#t("v4_edit_plan", "Edit plan") : this.#t("v4_new_plan", "New plan")
+      : state.workflow === "rooms" ? this.#t("v4_choose_rooms", "Choose rooms")
+        : state.workflow === "draw" ? this.#t("v4_draw_area", "Draw an area")
+          : state.workflow === "plans" ? this.#t("v4_your_plans", "Your plans")
+            : state.workflow === "areas" ? this.#t("v4_your_areas", "Your areas")
+              : state.workflow === "areaReview" ? this.#t("v4_name_this_area", "Name this area")
+                : state.workflow === "history" ? this.#t("v4_map_history", "Map history")
+                  : state.workflow === "support" ? this.#t("v4_map_diagnostics", "Map diagnostics")
+                    : this.#t("v4_cleaning_history", "Cleaning history");
+    return { title, description: "" };
   }
 
   // Keep a single workflow panel: the same element is a wide grid column or
@@ -1303,7 +1410,15 @@ export class MaticMapShellV4 extends LitElement {
       : status.detail;
     const roomEstimate = status.estimate ? html`<small class="room-estimate">${status.estimate}</small>` : nothing;
     const selectedRobotUnavailable = isSelectedRobotUnavailable(state);
-    const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
+    const selectedPrimary: PrimaryAction | NoButtonAction = selectGlobalPrimaryAction(state)
+      ?? this.#views.value?.selectPrimaryAction(state)
+      ?? { id: "workflow-loading", enabled: false };
+    const drawOverlayReady = !state.map.available || this.#drawOverlayStatus === "ready";
+    const primary: typeof selectedPrimary = !drawOverlayReady && (selectedPrimary.id === "review-area" || selectedPrimary.id === "save-area")
+      ? { ...selectedPrimary, enabled: false,
+        reason: "Wait for map drawing to load before reviewing or saving this area.",
+        reasonKey: "v4_draw_overlay_action_unavailable" } as typeof selectedPrimary
+      : selectedPrimary;
     // Stop takes the bar when work is stoppable (shell.md §3) and Redraw moves
     // into the body; else the area review pairs Redraw with its primary, held
     // with the R12 reason (map-surfaces.md §4).
@@ -1358,7 +1473,8 @@ export class MaticMapShellV4 extends LitElement {
       ? this.#mapHelpView.value.renderMapHelp({ state, coarse: window.matchMedia("(any-pointer: coarse)").matches, t: this.#t, close: () => this.#closeHelp(true) })
       : chunkStatus(this.#mapHelpView.status, this.localize, this.#retry);
     const drawReady = this.#views.status === "ready" && this.#outline.status === "ready"
-      && this.#drawTools.status === "ready";
+      && this.#drawTools.status === "ready"
+      && (!state.map.available || this.#drawOverlayStatus === "ready");
     const precisionOpen = drawReady && state.precisionOpen && state.workflow === "draw";
     // Success and error always toast; info and warning only while the slot is
     // off-screen (sheet at peek, or Full map).
@@ -1426,7 +1542,7 @@ export class MaticMapShellV4 extends LitElement {
             </div>
           </header>
 
-          <main class=${`workspace ${state.fullMap ? "full-map" : ""}`} style=${sheetOffset}>
+          <main class=${`workspace ${state.fullMap ? "full-map" : ""} ${state.comparisonActive ? "comparison" : ""}`} style=${sheetOffset}>
             <div class="canvas">
               <${mapCanvasTag}
                 class="map-canvas"
@@ -1440,6 +1556,8 @@ export class MaticMapShellV4 extends LitElement {
                 .outlineEditor=${this.#outline.value}
                 .renderDrawTools=${this.#drawTools.value?.renderDrawTools}
                 .drawReady=${drawReady}
+                .onDrawOverlayStatus=${this.#drawOverlayStatusChanged}
+                .retry=${this.#retry}
                 .narrow=${narrow}
                 ?data-short=${compact && !state.fullMap && this.#sheet.detent === "full"}
                 .help=${help}
@@ -1456,6 +1574,9 @@ export class MaticMapShellV4 extends LitElement {
                   ></button>
                 ` : nothing}
               </${mapCanvasTag}>
+              ${state.roomCandidates.length ? html`<div style="position:absolute;inset-block-start:4rem;inset-inline-start:.75rem;max-inline-size:calc(100% - 1.5rem);z-index:6"
+                @keydown=${(event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); this.#intent({ type: "show-room-candidates", roomIds: [] }); } }}
+              >${(this.#candidates.request(), this.#candidates.value?.renderRoomCandidates(state, this.#intent, this.#t)) ?? nothing}</div>` : nothing}
             </div>
 
             <aside
@@ -1488,7 +1609,7 @@ export class MaticMapShellV4 extends LitElement {
                 </div>
                 ${showDrawTools ? html`
                   <div class="sheet-tools">
-                    ${chunkStatus(this.#tools("draw"), this.localize, this.#retry)}
+                    ${chunkStatus(this.#tools("draw"), this.localize, this.#retry, this.#workflowStatusCopy("draw"))}
                     ${sheetHint ? html`<p class="draw-hint sheet-hint">${sheetHint}</p>` : nothing}
                     ${precisionOpen ? html`<${precisionControlsTag} class="sheet-precision" .state=${state} .localize=${this.localize}></${precisionControlsTag}>` : nothing}
                     ${drawReady ? this.#drawTools.value?.renderDrawTools(state, { intent: this.#intent, openBrush: () => this.#intent({ type: "set-precision-open", value: !this.state.precisionOpen }), t: this.#t }, "grid") : nothing}

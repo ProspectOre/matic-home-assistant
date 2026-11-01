@@ -4,7 +4,8 @@ Supporting [experience design](design-map-experience.md) for
 [PRO-138](https://linear.app/prospectore/issue/PRO-138), based on `46036213`.
 [Launch/live/history/compare](design-map-live-history.md) supplies camera and snapshot contracts.
 This is a proposed target, not a claim that implementation or qualification is complete.
-The [current architecture](architecture.md) describes shipped-source ownership.
+The [architecture guide](architecture.md) describes existing ownership; see the
+[working implementation status](map-experience-implementation.md) for this candidate.
 
 ## Preserve authority, simplify composition
 
@@ -31,10 +32,9 @@ framework. Keep product rules outside rendering and presentation outside transpo
 
 ## Spatial identity before pixels
 
-The current renderer owns forward/inverse projection and polygon picking. Its
-`roomAt` resolves geometry to the selectable catalog through case-insensitive names
-in `#roomId` ([source](../frontend/map-studio-v4/renderer-controller.ts)). Duplicate
-or changed names are an ambiguity risk, not a demonstrated supported-device defect.
+At baseline `46036213`, the renderer resolved picked rooms by case-insensitive
+name. Duplicate or changed names were an ambiguity risk, not a demonstrated
+supported-device defect. The candidate uses [spatial identity](../frontend/map-studio-v4/spatial-identity.ts).
 
 Build one admitted spatial projection from the scene and catalog. It contains the
 robot/floor/session identity, independent geometry revision, coordinate transform,
@@ -62,8 +62,8 @@ capabilities with a typed reason from admitted state; avoid independently mainta
 booleans in panels, layers and gesture handlers.
 
 Task entry selects a presentation preset. Selection/editing uses top view and readable
-room colors; Home/live and Inspect use their own overview cameras. Saved view is currently
-user-level while camera restoration is map-bound; define first-visit policy explicitly.
+room colors; Home/live and Inspect use their own overview cameras. At that baseline, saved view was
+user-level while camera restoration was map-bound; define first-visit policy explicitly.
 Keep live/task/history camera ownership distinct and pair comparison in a shared frame.
 Transitions preserve semantic state and do not dispatch motion. Back/Cancel and dirty
 draft decisions are reducer transitions with a single focus/navigation owner.
@@ -110,8 +110,13 @@ point counts alone. Driver allocations need separate profiling; counters are par
 
 Robot state streaming under [PRO-130](https://linear.app/prospectore/issue/PRO-130)
 and browser workspace push under [PRO-131](https://linear.app/prospectore/issue/PRO-131)
-are distinct. Preserve beta-2 and after-0.6 scope respectively. Both need ordering,
-coalescing, loss/reconnect and polling reconciliation; a late poll cannot replace newer truth.
+are distinct and both block beta 1. The approved user experience enables push
+automatically when supported, has no user-facing toggle, and falls back to
+polling for older backends. Periodic polling continues for reconciliation, so
+push may increase request load and CPU. Both streams need ordering, coalescing,
+loss/reconnect and authorization retirement; a late poll cannot replace newer
+truth. The proposed 70% request reduction has not been demonstrated. Any reduction
+in reconciliation polling needs its own qualified design and evidence.
 
 For [PRO-71](https://linear.app/prospectore/issue/PRO-71), measure actual-host memory
 before choosing migration timing. Follow the [binary store design](design-binary-tile-store.md)

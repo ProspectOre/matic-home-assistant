@@ -22,7 +22,7 @@ for (const [width, height, count, expected, mobile] of [
     await page.goto("/", { waitUntil: "domcontentloaded" });
     const result = await page.evaluate(async ({ width, height, count }) => {
       const { RendererController, createGalleryState } = await import("/label-layout.js");
-      const base = createGalleryState("ready");
+      const base = { ...createGalleryState("ready"), optionalUiReady: true };
       // Neighbouring small rooms converge in a fitted, shallow phone map.
       // Start with the important rooms last to exercise placement priority.
       const rooms = Array.from({ length: count }, (_, i) => {
@@ -75,7 +75,8 @@ for (const [width, height, count, expected, mobile] of [
         if (this.canvas === overlay && text.startsWith("Room")) labels.push({ text, x, y, plate: plates.at(-1) });
         return original.fillText.call(this, text, x, y, ...args);
       };
-      const renderer = new RendererController(...canvases);
+      const statuses = [];
+      const renderer = new RendererController(...canvases, { onModuleStatus: (module, status) => statuses.push(`${module}:${status}`) });
       const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       try {
         for (const appearance of ["photo", "rooms"]) {
@@ -91,11 +92,24 @@ for (const [width, height, count, expected, mobile] of [
             },
           });
           await frame();
+          for (let attempt = 0; attempt < 10 && !statuses.includes("renderer-layers:ready") && !statuses.includes("renderer-layers:failed"); attempt += 1) await frame();
+          if (statuses.includes("renderer-layers:ready")) await frame();
           captures.push({ appearance, labels: structuredClone(labels), leaders: structuredClone(leaders), anchors: structuredClone(anchors), png: overlay.toDataURL() });
+          // The 24 px candidate rows leave only a 4 px gutter. A one-pixel
+          // pan must retain cached label slots instead of swapping near-tied
+          // rows; the margin is still enforced for newly placed labels.
           for (let step = 0; step < (width === 900 ? 20 : 60); step += 1) {
             renderer.panBy(0, 1);
             await frame();
             captures.push({ appearance: `${appearance}-pan-${step}`, labels: structuredClone(labels),
+              leaders: structuredClone(leaders), anchors: structuredClone(anchors) });
+          }
+          if (width === 900 && appearance === "photo") {
+            // A substantial zoom-out can make cached plates physically
+            // overlap; they must repack while staying within the viewport.
+            renderer.zoomAt(0.05);
+            await frame();
+            captures.push({ appearance: "photo-zoom-out", labels: structuredClone(labels),
               leaders: structuredClone(leaders), anchors: structuredClone(anchors) });
           }
         }
@@ -116,6 +130,24 @@ for (const [width, height, count, expected, mobile] of [
 
     let previous = null;
     if (result.expandedNames) expect(result.expandedNames).toHaveLength(count);
+    if (width === 900) {
+      const beforeZoom = result.captures.find((capture) => capture.appearance === "photo-pan-19");
+      const afterZoom = result.captures.find((capture) => capture.appearance === "photo-zoom-out");
+      expect(beforeZoom).toBeTruthy();
+      expect(afterZoom).toBeTruthy();
+      const repacked = afterZoom.labels.some((label) => {
+        const index = Number(label.text.slice(5));
+        const previous = beforeZoom.labels.find((item) => item.text === label.text);
+        const previousAnchor = beforeZoom.anchors[index];
+        const nextAnchor = afterZoom.anchors[index];
+        return previous && previousAnchor && nextAnchor
+          && Math.hypot(
+            (label.x - nextAnchor.x) - (previous.x - previousAnchor.x),
+            (label.y - nextAnchor.y) - (previous.y - previousAnchor.y),
+          ) > 3;
+      });
+      expect(repacked, "a zoom-out that crowds cached labels repacks at least one slot").toBe(true);
+    }
     for (const capture of result.captures) {
       if (capture.png) {
         const path = test.info().outputPath(`${capture.appearance}-${width}x${height}.png`);
@@ -126,7 +158,8 @@ for (const [width, height, count, expected, mobile] of [
         if (width === 390 && !["Room 10", "Room 11"].includes(label.text)) continue;
         const last = previous.labels.find((item) => item.text === label.text);
         expect(last).toBeTruthy();
-        expect(Math.hypot(label.x - last.x, label.y - last.y), `${label.text} follows a small pan ${capture.appearance}`).toBeLessThan(3);
+        const movement = Math.hypot(label.x - last.x, label.y - last.y);
+        expect(movement, `${label.text} follows a small pan ${capture.appearance}`).toBeLessThan(3);
       }
       previous = capture;
       const names = capture.labels.map((label) => label.text);
@@ -163,9 +196,9 @@ for (const [width, height, count, expected, mobile] of [
         expect(label.x).toBeLessThan(a.x + a.width);
         for (const other of capture.labels.slice(i + 1)) {
           const b = other.plate;
-          const overlaps = a.x < b.x + b.width + 8 && a.x + a.width + 8 > b.x
-            && a.y < b.y + b.height + 4 && a.y + a.height + 4 > b.y;
-          expect(overlaps, `${label.text} and ${other.text} keep readable plates`).toBe(false);
+          const overlaps = a.x < b.x + b.width && a.x + a.width > b.x
+            && a.y < b.y + b.height && a.y + a.height > b.y;
+          expect(overlaps, `${label.text} and ${other.text} never overlap`).toBe(false);
         }
       }
     }
@@ -186,7 +219,7 @@ test("room labels move continuously with small map pans", async ({ page }) => {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   const positions = await page.evaluate(async () => {
     const { RendererController, createGalleryState } = await import("/label-pan.js");
-    const base = createGalleryState("ready");
+    const base = { ...createGalleryState("ready"), optionalUiReady: true };
     const scene = base.resources.scene.value;
     const room = { id: "pan-room", roomId: "pan-room", name: "Pan room",
       center: [50, 50], boundary: [[40, 40], [60, 40], [60, 60], [40, 60]] };
@@ -195,7 +228,10 @@ test("room labels move continuously with small map pans", async ({ page }) => {
       Object.assign(canvas.style, { position: "absolute", width: "700px", height: "500px" });
       document.body.append(canvas);
     });
-    const renderer = new RendererController(...canvases);
+    let layerStatus = "idle";
+    const renderer = new RendererController(...canvases, {
+      onModuleStatus: (module, status) => { if (module === "renderer-layers") layerStatus = status; },
+    });
     const overlay = canvases[1];
     const original = CanvasRenderingContext2D.prototype.fillText;
     let latest = null;
@@ -208,8 +244,8 @@ test("room labels move continuously with small map pans", async ({ page }) => {
       renderer.setState({ ...base, view: "top", appearance: "photo", labelsVisible: true,
         resources: { ...base.resources, scene: { status: "ready", problem: null,
           value: { ...scene, metadata: { ...scene.metadata, origin: [0, 0], span: [100, 100], rooms: [room] } } } } });
-      await frame();
-      await frame();
+      for (let attempt = 0; attempt < 20 && layerStatus !== "ready" && layerStatus !== "failed"; attempt += 1) await frame();
+      if (layerStatus === "ready") await frame();
       const samples = [];
       for (let step = 0; step < 60; step += 1) {
         renderer.panBy(0, 1);
@@ -229,4 +265,126 @@ test("room labels move continuously with small map pans", async ({ page }) => {
   ));
   expect(Math.abs(positions.at(-1).y - positions[0].y)).toBeGreaterThan(20);
   expect(Math.max(...steps)).toBeLessThan(3);
+});
+
+test("room names wait for first-map admission, retain live/history comparison labels, and report failure", async ({ page }) => {
+  const bundle = await build({
+    stdin: {
+      contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { scheduleAfterMapAdmission } from "./frontend/map-studio-v4/map-admission-gate";',
+      resolveDir: process.cwd(),
+    },
+    bundle: true, format: "esm", write: false,
+  });
+  await page.route("**/label-admission.js", route => route.fulfill({
+    contentType: "text/javascript", body: bundle.outputFiles[0].text,
+  }));
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  const outcome = await page.evaluate(async () => {
+    const { RendererController, createGalleryState, WorkspaceStore, scheduleAfterMapAdmission } = await import("/label-admission.js");
+    const base = createGalleryState("ready");
+    const room = { id: "label-room", roomId: "label-room", name: "Label room",
+      center: [50, 50], boundary: [[40, 40], [60, 40], [60, 60], [40, 60]] };
+    const stateFor = (patch = {}) => ({ ...base, ...patch,
+      resources: { ...base.resources, scene: { ...base.resources.scene, value: {
+        ...base.resources.scene.value, metadata: { ...base.resources.scene.value.metadata, rooms: [room] },
+      } } },
+    });
+    const makeCanvases = () => Array.from({ length: 2 }, () => {
+      const canvas = document.createElement("canvas");
+      Object.assign(canvas.style, { position: "absolute", width: "700px", height: "500px" });
+      document.body.append(canvas);
+      return canvas;
+    });
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const canvases = makeCanvases(), overlay = canvases[1], statuses = [], names = [];
+    let loads = 0, resolveLoad;
+    const original = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (text, ...args) {
+      if (this.canvas === overlay && text === room.name) names.push(text);
+      return original.call(this, text, ...args);
+    };
+    const renderer = new RendererController(...canvases, {
+      loadRendererLayers: () => { loads += 1; return new Promise(resolve => { resolveLoad = resolve; }); },
+      onModuleStatus: (module, status) => { if (module === "renderer-layers") statuses.push(status); },
+    });
+    try {
+      renderer.setState(stateFor({ optionalUiReady: false, labelsVisible: true, view: "top" }));
+      await frame();
+      const beforeAdmission = { loads, names: names.length, statuses: [...statuses] };
+      renderer.setState(stateFor({ optionalUiReady: true, labelsVisible: true, view: "top" }));
+      await frame();
+      const whileLoading = { loads, names: names.length, statuses: [...statuses], mode: renderer.diagnostics().mode };
+      resolveLoad({
+        drawMapLayers() {}, drawRunTrail() {},
+        drawRoomNames(context, rooms, _palette, _bounds, _area, _selected, _positions, _previous) {
+          for (const label of rooms) context.fillText(label.name, 80, 80);
+          return { offsets: new Map(), retryWithoutHistory: false };
+        },
+      });
+      await frame();
+      const liveLabels = names.length;
+      renderer.setState(stateFor({ optionalUiReady: true, labelsVisible: true, view: "top",
+        dataMode: "history", comparisonActive: true }));
+      await frame();
+      const comparisonLabels = names.length;
+      renderer.dispose();
+
+      const failedCanvases = makeCanvases(), failedStatuses = [];
+      const failed = new RendererController(...failedCanvases, {
+        loadRendererLayers: async () => { throw new Error("injected-layer-load-failure"); },
+        onModuleStatus: (module, status) => { if (module === "renderer-layers") failedStatuses.push(status); },
+      });
+      failed.setState(stateFor({ optionalUiReady: true, labelsVisible: true, view: "top" }));
+      for (let attempt = 0; attempt < 20 && !failedStatuses.includes("failed"); attempt += 1) await frame();
+      const failure = { statuses: failedStatuses, mode: failed.diagnostics().mode,
+        mapPoints: failed.diagnostics().renderedPoints };
+      failed.dispose();
+      failedCanvases.forEach(canvas => canvas.remove());
+
+      const lateCanvases = makeCanvases();
+      let lateLoads = 0, lateFirstFrame = false, importAfterFirstFrame = false;
+      const late = new RendererController(...lateCanvases, {
+        loadRendererLayers: async () => {
+          lateLoads += 1;
+          importAfterFirstFrame = lateFirstFrame;
+          return { drawMapLayers() {}, drawRunTrail() {}, drawRoomNames: () => ({ offsets: new Map(), retryWithoutHistory: false }) };
+        },
+      });
+      const noMap = stateFor({ optionalUiReady: true, labelsVisible: true, view: "top",
+        map: { ...base.map, available: false } });
+      noMap.resources.scene = { status: "idle", value: null, problem: null };
+      late.setState(noMap);
+      const store = new WorkspaceStore({ ...noMap, optionalUiReady: false });
+      const unsubscribe = store.subscribe((state) => late.setState(state));
+      const cancelAdmission = scheduleAfterMapAdmission(store, (state) => state.pageActive,
+        () => store.patch({ optionalUiReady: true }), 2_000);
+      await new Promise(resolve => window.setTimeout(resolve, 2_100));
+      await frame();
+      const noMapLoads = lateLoads;
+      const fallbackReady = store.value.optionalUiReady;
+      const lateState = stateFor({ optionalUiReady: true, labelsVisible: true, view: "top",
+        map: { ...base.map, available: true } });
+      store.patch({ map: lateState.map, resources: lateState.resources });
+      requestAnimationFrame(() => { lateFirstFrame = true; });
+      for (let attempt = 0; attempt < 20 && !lateLoads; attempt += 1) await frame();
+      const lateAdmission = { fallbackReady, noMapLoads, lateLoads, importAfterFirstFrame };
+      cancelAdmission();
+      unsubscribe();
+      late.dispose();
+      lateCanvases.forEach(canvas => canvas.remove());
+      return { beforeAdmission, whileLoading, statuses, liveLabels, comparisonLabels, failure, lateAdmission };
+    } finally {
+      renderer.dispose();
+      canvases.forEach(canvas => canvas.remove());
+      CanvasRenderingContext2D.prototype.fillText = original;
+    }
+  });
+  expect(outcome.beforeAdmission).toEqual({ loads: 0, names: 0, statuses: [] });
+  expect(outcome.whileLoading).toMatchObject({ loads: 1, names: 0, statuses: ["loading"], mode: expect.not.stringMatching(/^unavailable$/) });
+  expect(outcome.liveLabels).toBeGreaterThan(0);
+  expect(outcome.comparisonLabels).toBeGreaterThan(outcome.liveLabels);
+  expect(outcome.statuses).toEqual(["loading", "ready"]);
+  expect(outcome.failure.statuses).toEqual(["loading", "failed"]);
+  expect(outcome.failure.mode).not.toBe("unavailable");
+  expect(outcome.lateAdmission).toEqual({ fallbackReady: true, noMapLoads: 0, lateLoads: 1, importAfterFirstFrame: true });
 });

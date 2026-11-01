@@ -8,6 +8,7 @@
  */
 
 import { parseCatalog, type MapEntry } from "./backend-contracts";
+import { isAccessDeniedError } from "./backend";
 import {
   BoundedRequestMetric,
   type BackendRequestOperationDiagnostics,
@@ -24,6 +25,7 @@ const MAX_SNAPSHOT_PROJECTION_BYTES = 16 * 1024;
 const SNAPSHOT_RETRY_BASE_MS = 250;
 const SNAPSHOT_RETRY_MAX_MS = 4_000;
 const SNAPSHOT_RETRY_STEADY_INTERVAL_MS = 30_000;
+const REQUEST_TIMEOUT_MS = 10_000;
 
 export interface WorkspaceConnection {
   sendMessagePromise<T>(message: Record<string, unknown>): Promise<T>;
@@ -76,7 +78,7 @@ export type WorkspaceInvalidationEnvelope =
 export type WorkspaceTransportEvent =
   | { readonly type: "snapshot"; readonly snapshot: WorkspaceSnapshot }
   | { readonly type: "invalidation"; readonly invalidation: WorkspaceInvalidation }
-  | { readonly type: "resync"; readonly reason: WorkspaceResyncReason };
+  | { readonly type: "resync"; readonly reason: WorkspaceResyncReason; readonly accessDenied?: boolean };
 
 export type WorkspaceResyncReason =
   | "gap"
@@ -114,7 +116,7 @@ function finiteInteger(value: unknown, max: number): value is number {
 
 function revisions(value: unknown): Readonly<Record<string, number>> | null {
   const source = record(value);
-  if (!source) return null;
+  if (!source || Object.keys(source).length > 128) return null;
   const result: Record<string, number> = {};
   for (const [key, revision] of Object.entries(source)) {
     if (key.length === 0 || key.length > 128 || !finiteInteger(revision, MAX_REVISION)) return null;
@@ -266,6 +268,9 @@ export class WorkspaceTransport {
   #flushScheduled = false;
   #started = false;
   #subscriptionTask: Promise<void> | null = null;
+  #subscriptionWait: Promise<void> | null = null;
+  #snapshotTask: Promise<unknown> | null = null;
+  readonly #requestWaits = new Set<() => void>();
   #buffer: WorkspaceInvalidation[] = [];
   readonly #snapshotAttempts = new BoundedRequestMetric();
   readonly #recoveryEpisodes = createRecoveryMetrics();
@@ -340,6 +345,8 @@ export class WorkspaceTransport {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    for (const cancel of this.#requestWaits) cancel();
+    this.#requestWaits.clear();
     if (this.#retryTimer !== null) window.clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
     this.#recovering = false;
@@ -581,16 +588,27 @@ export class WorkspaceTransport {
       // initial startup deliberately snapshots first and then replays.
       if (recovering) await this.#ensureSubscription();
       if (this.#disposed || (this.#authorizationBlocked && !authorizationProbe) || generation !== this.#recoveryGeneration) return;
+      // HA's promise interface cannot cancel a wire RPC. After a deadline,
+      // keep its owner until it settles instead of accumulating more requests.
+      if (this.#snapshotTask) throw new Error("workspace-snapshot-pending");
       const attempt: SnapshotAttempt = { startedAt: performance.now(), generation };
       this.#activeSnapshotAttempt = attempt;
       let attemptOutcome: BackendRequestOutcome = "completed";
       let value: unknown;
       try {
-        value = await this.#connection.sendMessagePromise<unknown>({
+        let expired = false;
+        const task = this.#connection.sendMessagePromise<unknown>({
           type: "matic_robot/workspace_snapshot",
           version: WORKSPACE_PROTOCOL_VERSION,
           entry_id: this.#options.entryId,
         });
+        this.#snapshotTask = task;
+        const release = (): void => { if (this.#snapshotTask === task) this.#snapshotTask = null; };
+        void task.then(release, (error) => {
+          if (expired && this.#snapshotTask === task) this.#lateAccessDenial(error, generation);
+          release();
+        });
+        value = await this.#boundedRequest(task, () => { expired = true; });
       } catch (error) {
         attemptOutcome = requestOutcome(error);
         throw error;
@@ -646,9 +664,11 @@ export class WorkspaceTransport {
     } catch (error) {
       if (this.#disposed || (this.#authorizationBlocked && !authorizationProbe) || generation !== this.#recoveryGeneration) return;
       this.#report(error);
-      if (this.#isAuthorizationError(error)) {
+      if (isAccessDeniedError(error)) {
         this.#stopRecoveryForAuthorization();
-        this.#options.onEvent({ type: "resync", reason: "authorization" });
+        // An RPC denial is loss of HA access. Server authorization statuses
+        // instead describe robot credentials inside an authorized HA session.
+        this.#options.onEvent({ type: "resync", reason: "authorization", accessDenied: true });
       } else if (!authorizationProbe) {
         if (!recovering) this.#beginRecoveryEpisode("reconnect");
         const retryImmediately = this.#immediateRetryAfterRead;
@@ -672,21 +692,62 @@ export class WorkspaceTransport {
 
   async #ensureSubscription(): Promise<void> {
     if (this.#disposed || this.#unsubscribe) return;
-    if (this.#subscriptionTask) return this.#subscriptionTask;
+    if (this.#subscriptionWait) return this.#subscriptionWait;
+    if (this.#subscriptionTask) throw new Error("workspace-subscription-pending");
+    let retired = false;
+    const generation = this.#recoveryGeneration;
     const task = (async () => {
       const unsubscribe = await this.#connection.subscribeMessage<unknown>(
-        (message) => this.#onMessage(message),
+        (message) => { if (!retired) this.#onMessage(message); },
         { type: "matic_robot/workspace_subscribe", version: WORKSPACE_PROTOCOL_VERSION, entry_id: this.#options.entryId },
       );
-      if (this.#disposed) unsubscribe();
+      if (this.#disposed || retired) unsubscribe();
       else this.#unsubscribe = unsubscribe;
     })();
     this.#subscriptionTask = task;
+    const release = (): void => { if (this.#subscriptionTask === task) this.#subscriptionTask = null; };
+    void task.then(release, (error) => {
+      if (retired && this.#subscriptionTask === task) this.#lateAccessDenial(error, generation);
+      release();
+    });
+    const wait = this.#boundedRequest(task, () => { retired = true; });
+    this.#subscriptionWait = wait;
     try {
-      await task;
+      await wait;
     } finally {
-      if (this.#subscriptionTask === task) this.#subscriptionTask = null;
+      if (this.#subscriptionWait === wait) this.#subscriptionWait = null;
     }
+  }
+
+  #boundedRequest<T>(request: Promise<T>, retire: () => void = () => {}): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (action: () => void): void => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        this.#requestWaits.delete(cancel);
+        action();
+      };
+      const cancel = (): void => finish(() => {
+        retire();
+        reject(new DOMException("Aborted", "AbortError"));
+      });
+      const timer = window.setTimeout(() => finish(() => {
+        retire();
+        reject(new DOMException("Workspace request timed out", "TimeoutError"));
+      }), REQUEST_TIMEOUT_MS);
+      this.#requestWaits.add(cancel);
+      void request.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
+    });
+  }
+
+  #lateAccessDenial(error: unknown, generation: number): void {
+    if (this.#disposed || generation !== this.#recoveryGeneration || !isAccessDeniedError(error)) return;
+    // A deadline retires the result's data authority, not a confirmed access
+    // refusal from the still-owned wire. Replaced/disposed owners stay inert.
+    this.#stopRecoveryForAuthorization();
+    this.#options.onEvent({ type: "resync", reason: "authorization", accessDenied: true });
   }
 
   #acceptRecoveredSnapshot(snapshot: WorkspaceSnapshot): void {
@@ -712,14 +773,6 @@ export class WorkspaceTransport {
       this.#acceptInvalidation(invalidation);
       expected += 1;
     }
-  }
-
-  #isAuthorizationError(error: unknown): boolean {
-    const candidate = record(error);
-    const code = candidate?.code;
-    const status = candidate?.status ?? candidate?.statusCode;
-    return code === "unauthorized" || code === "not_authorized" || code === "auth_invalid"
-      || status === 401 || status === 403;
   }
 
   #beginRecoveryEpisode(reason: WorkspaceResyncReason): void {

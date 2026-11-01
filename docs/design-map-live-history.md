@@ -20,13 +20,15 @@ This refines the earlier proposal to make all Home views structural 2D. Preserve
 photographic map as a useful live overview; make 2D a task rule, not a product-wide
 restriction. Launch framing and history comparison are first-class design scope.
 
+For the evolving source candidate, see [implementation status](map-experience-implementation.md).
+
 ## Launch framing and returning users
 
-The source initializer selects top view, but the first HA sync restores per-user
+At baseline `46036213`, the source initializer selected top view, but the first HA sync restored per-user
 preferences, including `view: three` and legacy preference formats. A map-bound
-camera is restored only when its identity is admitted. Otherwise the renderer fits
-the scene. The current fit uses the full metadata span and viewport aspect ratio;
-saved `home / zoom`, large/elongated spans and narrow viewports can all make it distant.
+camera was restored only when its identity was admitted. Otherwise the renderer fit
+the scene. That fit used the full metadata span and viewport aspect ratio;
+saved `home / zoom`, large/elongated spans and narrow viewports could all make it distant.
 See [preferences](../frontend/map-studio-v4/preferences.ts),
 [effects](../frontend/map-studio-v4/effects.ts) and
 [renderer fitting](../frontend/map-studio-v4/renderer-controller.ts).
@@ -43,7 +45,7 @@ empty scene extents when available; fall back to validated scene bounds. Do not 
 legitimate disconnected rooms or hide outlying geometry silently. Offer Fit entire map
 and a visible indication when the current inspection view omits mapped content.
 
-The current view choice is per-user; camera restore requires the exact admitted user,
+At that baseline, view choice was per-user; camera restore required the exact admitted user,
 robot, floor and session identity. Proposed: separate Home, task, Follow and history
 cameras so task editing never overwrites launch framing. Retain an intentional live
 overview when compatible; otherwise safely fit and offer Reset view. Preserve manually
@@ -82,11 +84,11 @@ text. Preserve orientation when scrubbing compatible snapshots. Changing floor r
 only the incompatible camera. Keep the selected date visible; no silent jump to Live.
 Return to live restores the appropriate live camera and fresh admission.
 
-Current retention is at most 12 snapshots and 48 MiB compressed per entry across floors. Changed
-same-mission scenes within five minutes can replace the newest sample; this is not a
+The baseline retained at most 12 snapshots and 48 MiB compressed per entry across floors. Changed
+same-mission scenes within five minutes could replace the newest sample; this is not a
 continuous recording, fixed time span or guaranteed snapshot per floor. Show retained
-versions and label missing periods as unknown: current APIs do not record why a sample
-is absent. Proposed live comparison must pin one admitted immutable scene revision;
+versions and label missing periods as unknown: the baseline APIs did not record why a sample
+was absent. Proposed live comparison must pin one admitted immutable scene revision;
 until that contract exists, offer retained snapshots only. [Storage and deletion](design-map-storage.md)
 defines kept maps, quota accounting, export, trash, pruning and comparison invalidation.
 
@@ -114,8 +116,8 @@ later, is exploratory and cannot upgrade its result to verified change evidence.
 
 ## Data and resource contract
 
-The current catalog exposes timestamps/revisions and private whole-scene URLs, but no
-comparison metadata; saved floor IDs are catalog ordinals. Add a privacy-safe stable
+At baseline, the catalog exposed timestamps/revisions and private whole-scene URLs, but no
+comparison metadata; saved floor IDs were catalog ordinals. Add a privacy-safe stable
 comparison-group key, scene/coordinate version, origin/scale, capture-time valid spatial
 support/masks, truncation and sampling metadata; counts alone cannot prove overlap.
 Do not expose the private mission token as a public ID.

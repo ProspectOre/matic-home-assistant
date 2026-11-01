@@ -193,9 +193,17 @@ for (const context of ["disposed", "robot", "user", "floor", "pagehide"]) {
         service: async (...args) => { calls.push(args); }, dispose() {} });
       const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
       effects.sync(projection);
+      if (context === "floor") {
+        // History is lazy; simulate its already-admitted catalog so this test
+        // exercises a real floor transition while the write module loads.
+        store.patch({ resources: { ...store.value.resources, history: initial.resources.history } });
+      }
       const pending = effects.savePlan();
       if (context === "disposed") effects.dispose();
-      else if (context === "floor") void effects.selectFloor("saved-1");
+      else if (context === "floor") {
+        await effects.selectFloor("saved-1");
+        if (store.value.selection.floorId !== "saved-1") throw new Error("floor transition was not admitted");
+      }
       else if (context === "pagehide") window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
       else effects.sync({ ...projection, ...(context === "robot" ? { entryKey: "other-entry", vacuumEntityId: "vacuum.other" } : { userKey: "two" }) });
       await pending;
@@ -206,6 +214,100 @@ for (const context of ["disposed", "robot", "user", "floor", "pagehide"]) {
     expect(result).toEqual({ calls: 0, command: "idle", saving: false });
   });
 }
+
+// Navigation must invalidate only admitted transitions and only writes that
+// have not yet been transmitted. These fixtures keep the history catalog ready.
+for (const navigation of ["invalid-floor", "dirty-floor", "invalid-history", "dirty-history", "saved-history", "return-live"]) {
+  test(`navigation ${navigation} preserves the correct pending-write ownership`, async ({ page }) => {
+    await loadQualityModules(page);
+    const result = await page.evaluate(async (navigation) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+      const initial = createGalleryState("ready"), calls = [];
+      const store = new WorkspaceStore({ ...initial, planDraft: { ...initial.planDraft, dirty: true } });
+      const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+      const effects = new EffectController(store, { catalog: async () => [initial.resources.entry], scene: aborted,
+        pose: aborted, history: aborted, plans: async () => initial.resources.plans.value,
+        service: async (...args) => { calls.push(args); }, dispose() {} });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic",
+        robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      store.patch({ resources: { ...store.value.resources, history: initial.resources.history },
+        ...(navigation.startsWith("dirty") ? { workflow: "draw", draw: { ...store.value.draw, dirty: true } } : {}) });
+      const pending = effects.savePlan();
+      if (navigation.endsWith("floor")) await effects.selectFloor(navigation === "invalid-floor" ? "missing-floor" : "saved-1");
+      else await effects.selectHistory(navigation === "invalid-history" ? "missing-snapshot" : navigation === "return-live" ? null : "saved-one");
+      await pending;
+      const value = { calls: calls.length, floor: store.value.selection.floorId, historyId: store.value.selection.historyId };
+      effects.dispose();
+      return value;
+    }, navigation);
+    if (navigation === "saved-history") expect(result).toEqual({ calls: 0, floor: "saved-1", historyId: "saved-one" });
+    else if (navigation === "return-live") expect(result).toEqual({ calls: 0, floor: "current", historyId: null });
+    else expect(result).toEqual({ calls: 1, floor: "current", historyId: null });
+  });
+}
+
+for (const navigation of ["floor", "history"]) {
+  test(`a transmitted plan save retains its acknowledgement across a valid ${navigation} change`, async ({ page }) => {
+  await loadQualityModules(page);
+  const result = await page.evaluate(async (navigation) => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const initial = createGalleryState("ready");
+    const store = new WorkspaceStore({ ...initial, planDraft: { ...initial.planDraft, dirty: true } });
+    let finish, calls = 0, settled = null;
+    const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+    const effects = new EffectController(store, { catalog: async () => [initial.resources.entry], scene: aborted,
+      pose: aborted, history: aborted, plans: async () => initial.resources.plans.value,
+      service: () => { calls += 1; return new Promise((resolve) => { finish = resolve; }); }, dispose() {} });
+    effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic",
+      robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+    store.patch({ resources: { ...store.value.resources, history: initial.resources.history } });
+    const pending = effects.savePlan((saved) => { settled = saved; });
+    for (let i = 0; i < 50 && !finish; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    if (!finish) throw new Error("plan save was not transmitted");
+    if (navigation === "floor") await effects.selectFloor("saved-1");
+    else await effects.selectHistory("saved-one");
+    if (store.value.selection.floorId !== "saved-1") throw new Error("floor transition was not admitted");
+    finish(undefined);
+    await pending;
+    const value = { calls, settled, floor: store.value.selection.floorId };
+    effects.dispose();
+    return value;
+  }, navigation);
+  expect(result).toEqual({ calls: 1, settled: true, floor: "saved-1" });
+  });
+}
+
+test("floor change cancels a plan toggle while its catalog preflight is held", async ({ page }) => {
+  await loadQualityModules(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const initial = createGalleryState("ready"), calls = [];
+    const store = new WorkspaceStore();
+    let finishRead, readSignal, holdRead = false;
+    const effects = new EffectController(store, { catalog: async () => [initial.resources.entry],
+      scene: async (_url, revision) => ({ revision, floorCoherent: true, scene: initial.resources.scene.value }),
+      pose: async () => initial.resources.pose.value, history: async () => initial.resources.history.value,
+      plans: (_url, signal) => holdRead ? new Promise((resolve) => { finishRead = resolve; readSignal = signal; }) : Promise.resolve(initial.resources.plans.value),
+      service: async (...args) => { calls.push(args); }, dispose() {} });
+    effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic",
+      robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+    await effects.refreshCatalog(true);
+    store.patch({ workflow: "plan", planView: "run", planDraft: { ...initial.planDraft, dirty: false },
+      resources: { ...store.value.resources, history: initial.resources.history, plans: initial.resources.plans } });
+    holdRead = true;
+    const pending = effects.setPlanEnabled(false);
+    for (let i = 0; i < 50 && !finishRead; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    if (!finishRead) throw new Error("plan preflight did not begin");
+    await effects.selectFloor("saved-1");
+    if (store.value.selection.floorId !== "saved-1") throw new Error("floor transition was not admitted");
+    finishRead(initial.resources.plans.value);
+    await pending;
+    const value = { calls: calls.length, floor: store.value.selection.floorId, readAborted: readSignal.aborted, command: store.value.command };
+    effects.dispose();
+    return value;
+  });
+  expect(result).toEqual({ calls: 0, floor: "saved-1", readAborted: true, command: "idle" });
+});
 
 // A plan write gives back its resource once Home Assistant answers, so the
 // next plan write can start while the first one reloads the catalog.
@@ -514,29 +616,35 @@ for (const sameOwner of [true, false]) {
 }
 
 for (const rejected of [false, true]) {
-  test(`floor navigation clears a cancelled plan mutation before late ${rejected ? "failure" : "success"}`, async ({ page }) => {
+  test(`floor navigation retains a transmitted plan mutation until late ${rejected ? "failure" : "success"}`, async ({ page }) => {
     await loadQualityModules(page);
     const result = await page.evaluate(async (rejected) => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
       const initial = createGalleryState("ready");
       const store = new WorkspaceStore(initial);
-      let finish;
+      let finish, calls = 0;
       const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
       const effects = new EffectController(store, { catalog: async () => [initial.resources.entry], scene: aborted, pose: aborted, history: aborted, plans: aborted,
-        service: () => new Promise((resolve, reject) => { finish = () => rejected ? reject(new Error("Late failure")) : resolve(); }), dispose() {} });
+        service: () => { calls += 1; return new Promise((resolve, reject) => { finish = () => rejected ? reject(new Error("Late failure")) : resolve(); }); }, dispose() {} });
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      store.patch({ resources: { ...store.value.resources, history: initial.resources.history } });
       const pending = effects.savePlan();
       for (let i = 0; i < 20 && !finish; i++) await new Promise((resolve) => setTimeout(resolve, 0));
       await effects.selectFloor("saved-1");
+      if (store.value.selection.floorId !== "saved-1") throw new Error("floor transition was not admitted");
       const saved = { command: store.value.command, notice: store.value.notice };
       await effects.selectFloor("current");
+      if (store.value.selection.floorId !== "current") throw new Error("live floor transition was not admitted");
       const live = { command: store.value.command, notice: store.value.notice };
       finish(); await pending;
       const final = { command: store.value.command, notice: store.value.notice };
       effects.dispose();
-      return { saved, live, final };
+      return { saved, live, final, calls };
     }, rejected);
-    expect(result).toEqual({ saved: { command: "idle", notice: null }, live: { command: "idle", notice: null }, final: { command: "idle", notice: null } });
+    expect(result.calls).toBe(1);
+    expect(result.saved).toMatchObject({ command: "pending", notice: { key: "v4_notice_saving" } });
+    expect(result.live).toMatchObject({ command: "pending", notice: { key: "v4_notice_saving" } });
+    expect(result.final).toMatchObject({ command: "idle", notice: { key: rejected ? "v4_notice_plan_save_failed" : "v4_notice_plan_saved" } });
   });
 }
 

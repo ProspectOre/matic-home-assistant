@@ -46,7 +46,7 @@ test("Home waits for deferred pins and catalogs before publishing stable wrapped
     const state = window.__pinPanel.getWorkspaceSnapshot();
     return state.resources.scene.status === "ready" && state.map.exactPose;
   })).toBe(true);
-  await expect(panel.getByRole("status")).toContainText("Loading your saved home choices");
+  await expect(panel.getByRole("complementary", { name: "Cleaning panel" }).getByRole("status")).toContainText("Loading your saved home choices");
   await expect(panel.locator("button.shortcut")).toHaveCount(0);
   await expect(panel.locator('[aria-label="Cleaning choices"]')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__panelFixture.pendingUserDataReadCount())).toBe(1);
@@ -89,22 +89,24 @@ test("failed optional pinned catalog leaves other Home choices usable with recov
 
 for (const kind of ["plan", "area"]) {
   test(`a failed ${kind} catalog keeps recovery visible when no shortcut metadata survives`, async ({ page }) => {
-    const fixture = await installPanelFixture(page, { initialPlanCatalog: PLAN_CATALOG, initialAreasCatalog: AREA_CATALOG });
-    await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
-    const panel = page.locator(fixture.panelTag), shell = panel.locator("matic-map-shell-v4");
-    await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
-    await shell.evaluate((element, kind) => {
-      const state = element.state;
-      const resource = kind === "plan" ? "plans" : "areas";
-      element.state = { ...state,
-        homePins: { status: "ready", pins: [{ kind, id: "unavailable" }] },
-        resources: { ...state.resources, [resource]: { status: "error", value: null, problem: "synthetic" } },
-      };
+    const fixture = await installPanelFixture(page, { moduleSource: "typescript", initialPlanCatalog: PLAN_CATALOG,
+      initialAreasCatalog: AREA_CATALOG, userData: { [KEY]: { version: 2, pins: [{ kind, id: "unavailable" }], excluded: [] } } });
+    await page.evaluate((kind) => {
+      if (kind === "plan") window.__panelFixture.failNextPlansRead();
+      else window.__panelFixture.failNextAreasRead();
+      document.body.append(window.__panelFixture.createPanel());
     }, kind);
+    const panel = page.locator(fixture.panelTag), shell = panel.locator("matic-map-shell-v4");
+    await expect.poll(() => panel.evaluate((element, kind) => {
+      const state = element.getWorkspaceSnapshot();
+      return state.homePins.status === "ready" && state.resources[kind === "plan" ? "plans" : "areas"].status === "error";
+    }, kind)).toBe(true);
     await expect(shell.locator(".home-shortcuts .pins-error")).toContainText(
       kind === "plan" ? "Saved plan shortcuts couldn't be loaded." : "Saved area shortcuts couldn't be loaded.");
-    await expect(shell.getByRole("button", { name: kind === "plan" ? "Open Plans" : "Open Areas", exact: true })).toBeVisible();
     await expect(shell.getByRole("group", { name: "Cleaning choices" })).toBeVisible();
+    await shell.getByRole("button", { name: kind === "plan" ? "Open Plans" : "Open Areas", exact: true }).click();
+    await expect.poll(() => panel.evaluate((element, kind) =>
+      element.getWorkspaceSnapshot().resources[kind === "plan" ? "plans" : "areas"].status, kind)).toBe("ready");
   });
 }
 

@@ -15,12 +15,19 @@ from homeassistant.components.http import (  # type: ignore[attr-defined,unused-
 from homeassistant.core import HomeAssistant
 
 from .area_views import MaticAreasView
+from .daily_limit_view import MaticDailyLimitView
 from .floor_layers import MaticFloorLayersView
 from .photos import MaticRobotPhotoPreviewView, MaticRobotPhotoView
 from .plan_views import MaticPlansView
 from .run_thumbnails import MaticRunThumbnailView
 from .slam_catalog_view import MaticSlamCatalogView
-from .slam_history_view import MaticSlamHistorySceneView, MaticSlamHistoryView
+from .slam_history_view import (
+    MaticSlamHistoryExportView,
+    MaticSlamHistoryImportView,
+    MaticSlamHistoryManageView,
+    MaticSlamHistorySceneView,
+    MaticSlamHistoryView,
+)
 from .slam_pose_view import MaticSlamPoseView
 from .slam_run_history_view import MaticRunHistoryView
 from .slam_scene import MaticSlamDeltaView, MaticSlamSceneView
@@ -118,9 +125,13 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(pose_view)
     hass.http.register_view(MaticSlamHistoryView)
     hass.http.register_view(MaticSlamHistorySceneView)
+    hass.http.register_view(MaticSlamHistoryManageView)
+    hass.http.register_view(MaticSlamHistoryExportView)
+    hass.http.register_view(MaticSlamHistoryImportView)
     hass.http.register_view(MaticSlamCatalogView(scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
+    hass.http.register_view(MaticDailyLimitView)
     hass.http.register_view(MaticRunHistoryView)
     hass.http.register_view(MaticWifiHeatmapView)
     hass.http.register_view(floor_layers_view)

@@ -2,10 +2,12 @@ blueprint:
   name: "Matic: Photograph room on alert"
   description: >-
     When one of your sensors turns on, sends the robot to a room, takes a photo
-    there and sends it to your phone, then docks the robot. It starts only when
-    the robot is docked or idle, and not again until the cooldown has passed.
-    If the robot can't get there or take the photo, for example because its
-    battery is below 20%, the notification says so instead.
+    there and asks the selected Home Assistant AI Task entity whether there is
+    a problem, then docks the robot. The full photo and question go to that
+    entity, whose provider may be cloud-based according to your Home Assistant
+    setup. The automation notifies only when the answer reports a problem. It
+    starts only when the robot is docked or idle, and not again until the
+    cooldown has passed.
   domain: automation
   source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/photo_on_alert.yaml
   input:
@@ -31,6 +33,24 @@ blueprint:
         The room to photograph, by its name in Matic Map, for example Kitchen.
       selector:
         text:
+    ai_task_entity_id:
+      name: AI Task entity
+      description: >-
+        The selected entity receives the full photo and question. Matic does not
+        choose an AI provider automatically.
+      selector:
+        entity:
+          domain: ai_task
+    question:
+      name: Question
+      description: >-
+        Ask about visible details in the photo. The selected AI Task entity
+        receives the full photo and this question.
+      default: >-
+        Is there a safety problem visible, such as water, smoke or an open door?
+      selector:
+        text:
+          multiline: true
     notify_service:
       name: Mobile notification action
       description: >-
@@ -61,6 +81,8 @@ max_exceeded: silent
 
 variables:
   room_name: !input room
+  ai_task_entity_id: !input ai_task_entity_id
+  question: !input question
   notify_service: !input notify_service
   full_resolution_notification: !input full_resolution_notification
 
@@ -84,6 +106,8 @@ actions:
     data:
       rooms: ["{{ room }}"]
       full_resolution: "{{ full_resolution_notification }}"
+      question: "{{ question }}"
+      ai_task_entity_id: "{{ ai_task_entity_id }}"
     response_variable: patrol
     continue_on_error: true
   - variables:
@@ -91,16 +115,21 @@ actions:
         {{ patrol.robots[0].photos
            if patrol is defined and patrol.robots | default([]) | length > 0
            else [] }}
-  - if: "{{ photos | length > 0 }}"
+  - if: >-
+      {{ photos | length > 0
+         and photos[0].analysis is defined
+         and photos[0].analysis.problem | default(false) }}
     then:
       - action: "{{ notify_service }}"
         data:
           title: "{{ sensor_name }}"
-          message: "The robot took this photo in {{ room }}."
+          message: >-
+            {{ photos[0].analysis.summary }}
           data:
             image: "{{ photos[0].url }}"
             tag: "{{ 'matic_photo_' ~ this.entity_id }}"
-    else:
+  - if: "{{ photos | length == 0 }}"
+    then:
       - action: "{{ notify_service }}"
         data:
           title: "{{ sensor_name }}"

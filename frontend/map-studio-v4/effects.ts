@@ -1,6 +1,4 @@
 import type { RoomPreviewController, RoomPreviewHelpers } from "./room-preview-controller";
-import { HomePinResources } from "./home-pin-resources";
-import { RunHistoryResources } from "./run-history-resources";
 import { CatalogResources } from "./catalog-resources";
 import { resource, cancelLoading, isAbort, problemCode } from "./resource-state";
 import {
@@ -11,6 +9,7 @@ import {
   type ResourceStamp,
   type ResetCadenceAction,
   type DeleteSharedCadenceAction,
+  type AcknowledgeQueueUncertainAction,
   type QueueChangeAction,
   type SaveSettled,
   type WorkspaceNotice,
@@ -25,7 +24,7 @@ import {
   type AreasCatalog,
   type PlansCatalog,
 } from "./backend-contracts";
-import { BackendError, MaticBackend } from "./backend";
+import { BackendError, MaticBackend, isAccessDeniedError } from "./backend";
 import type { CatalogWriteContext, CatalogWriteHelpers } from "./catalog-writes";
 import {
   admittedManualRoomPreview,
@@ -33,7 +32,7 @@ import {
   canEditCoordinates,
   canChangeRobotSetting,
   canStartMotion,
-  canChangeQueue,
+  canReadFloorResources,
   CoherenceMachine,
   initialWorkspaceState,
   draftForPlan,
@@ -42,9 +41,12 @@ import {
   planSelection,
   WorkspaceStore,
   areaSelection,
+  needsHistoryCatalog,
+  needsPlanCatalog,
 } from "./state";
 import { PreferenceStore, type MapPreferences } from "./preferences";
 import type { WorkspaceConnection } from "./workspace-transport";
+import { scheduleAfterMapAdmission } from "./map-admission-gate";
 import { PageLifecycle } from "./page-lifecycle";
 import { WorkspaceSynchronizer } from "./workspace-synchronizer";
 import { RobotMotionController } from "./robot-motion-controller";
@@ -52,6 +54,7 @@ import { ResourceRequests } from "./resource-requests";
 import { SpatialResources } from "./spatial-resources";
 
 type CatalogWrites = typeof import("./catalog-writes");
+type QueueActions = InstanceType<typeof import("./queue-action-controller").QueueActionController>;
 
 const CATALOG_WRITE_HELPERS: CatalogWriteHelpers = {
   notice, parseSavedPlanId, BackendError, isAbort, canEditCoordinates, initialWorkspaceState, draftForPlan, hasStoppableWork,
@@ -83,16 +86,20 @@ export class EffectController {
   readonly #store: WorkspaceStore;
   readonly #coherence: CoherenceMachine;
   readonly #backend: MaticBackend;
+  readonly #workspaceConnection: WorkspaceConnection | null;
   readonly #pageLifecycle: PageLifecycle;
   readonly #preferences = new PreferenceStore();
   #preferenceSnapshot: MapPreferences | null = null;
   readonly #requests = new ResourceRequests();
+  readonly #unsentWrites = new Map<string, AbortController>();
   #projection: HassProjection | null = null;
-  // A robot or access change ends the pending queue change's claim on the UI.
-  #queueRevision = 0;
+  #queueActions: QueueActions | null = null;
+  #queueActionsLoad: Promise<void> | null = null;
+  #historyViewRevision = 0;
   #preferenceUser = "";
   #disposed = false;
   #hostConnected = true;
+  #accessDenied = false;
   #storeUnsubscribe: (() => void) | null = null;
   #catalogWrites: Promise<CatalogWrites | null> | null = null;
 
@@ -103,8 +110,13 @@ export class EffectController {
   #roomPreview: RoomPreviewController | null = null;
   #roomPreviewLoad: Promise<RoomPreviewController | null> | null = null;
   #roomPreviewFailureRevision = -1;
-  readonly #pins: HomePinResources;
-  readonly #runs: RunHistoryResources;
+  #pins: InstanceType<typeof import("./home-pin-resources").HomePinResources> | null = null;
+  #pinsLoad: Promise<InstanceType<typeof import("./home-pin-resources").HomePinResources> | null> | null = null;
+  #pinImportFailureScope: string | null = null;
+  #cancelPinsAdmission: (() => void) | null = null;
+  #optionalScope = "";
+  #runs: InstanceType<typeof import("./run-history-resources").RunHistoryResources> | null = null;
+  #runsLoad: Promise<InstanceType<typeof import("./run-history-resources").RunHistoryResources> | null> | null = null;
 
   refreshCatalog(force = false, queueForcedFollowup = false, preserveGeneration = false): Promise<void> {
     return this.#catalog.refreshCatalog(force, queueForcedFollowup, preserveGeneration);
@@ -124,11 +136,30 @@ export class EffectController {
 
   selectHistory(snapshotId: string | null): Promise<void> { return this.#spatialResources.selectHistory(snapshotId); }
 
-  loadRunThumbnail(id: string): Promise<void> { return this.#runs.loadRunThumbnail(id); }
-  showTrail(trail: string | null): Promise<void> { return this.#runs.showTrail(trail); }
-  loadHomePins(): Promise<void> { return this.#pins.loadHomePins(); }
-  saveHomePin(pin: HomePin, pinned: boolean, previous: readonly HomePin[]): void { this.#pins.saveHomePin(pin, pinned, previous); }
-  moveHomePin(pin: HomePin, direction: -1 | 1): void { this.#pins.moveHomePin(pin, direction); }
+  async loadRunThumbnail(id: string): Promise<void> { await (await this.#runResources())?.loadRunThumbnail(id); }
+  async showTrail(trail: string | null): Promise<void> { await (await this.#runResources())?.showTrail(trail); }
+  async loadHomePins(): Promise<void> {
+    this.#pinImportFailureScope = null;
+    const pins = await this.#pinResources(true);
+    if (pins) {
+      await pins.loadHomePins();
+    }
+  }
+  saveHomePin(pin: HomePin, pinned: boolean, previous: readonly HomePin[]): boolean {
+    if (!this.#pins || this.#store.value.homePins.status !== "ready") {
+      this.#store.patch({ notice: notice("warning", "v4_pins_unavailable", "Home shortcuts are still loading. Try again shortly.") });
+      return false;
+    }
+    this.#pins.saveHomePin(pin, pinned, previous);
+    return true;
+  }
+  moveHomePin(pin: HomePin, direction: -1 | 1): void {
+    if (!this.#pins || this.#store.value.homePins.status !== "ready") {
+      this.#store.patch({ notice: notice("warning", "v4_pins_unavailable", "Home shortcuts are still loading. Try again shortly.") });
+      return;
+    }
+    this.#pins.moveHomePin(pin, direction);
+  }
 
   workspaceDiagnostics() {
     return this.#workspace.diagnostics;
@@ -141,19 +172,17 @@ export class EffectController {
     workspaceTransportOverride?: boolean,
   ) {
     this.#store = store;
+    // A retained ready projection belongs to the prior controller's persistence
+    // helper. Keep controls unavailable until this controller reloads it.
+    if (store.value.homePins.status === "ready") {
+      store.patch({ homePins: { status: "loading", pins: [] } });
+    }
     // A remounted controller continues the store's existing public generation
     // sequence while keeping the coherence machine as the sole authority.
     this.#coherence = new CoherenceMachine(store.value.generation);
     this.#backend = backend;
-    this.#pins = new HomePinResources(store, workspaceConnection, {
-      disposed: () => this.#disposed,
-      loadAreas: () => this.#catalog.loadAreas(),
-      resumeAreas: () => this.#catalog.resumeAreas(),
-    });
-    this.#runs = new RunHistoryResources(store, backend, this.#requests, {
-      disposed: () => this.#disposed,
-      pageActive: () => this.#pageLifecycle.active,
-    });
+    this.#workspaceConnection = workspaceConnection;
+    this.#bindBackendAccess();
     this.#workspace = new WorkspaceSynchronizer(
       store,
       this.#coherence,
@@ -161,7 +190,10 @@ export class EffectController {
       workspaceTransportOverride,
       {
         projection: () => this.#projection,
+        accessDenied: () => this.#denyWorkspaceAccess(),
         refreshSpatialBoundary: (entryId, invalidated) => this.#spatialResources.refreshBoundary(entryId, invalidated),
+        catalogRequestGeneration: () => this.#catalog?.catalogRequestGeneration ?? 0,
+        catalogSuccessfulGeneration: () => this.#catalog?.catalogSuccessfulGeneration ?? 0,
         loadResources: (entry, stamp, resources, refreshCatalogProjection) =>
           this.#loadWorkspaceResources(entry, stamp, resources, refreshCatalogProjection),
         spatialRecoveryBlocks: (entry) => this.#spatialResources.recoveryPending(entry, true),
@@ -169,15 +201,26 @@ export class EffectController {
     );
     this.#spatialResources = new SpatialResources(store, backend, this.#coherence, this.#requests, {
       disposed: () => this.#disposed,
-      pageActive: () => this.#pageLifecycle.active,
+      pageActive: () => this.#pageLifecycle.active && !this.#store.value.comparisonActive,
       projection: () => this.#projection,
       refreshCatalog: (force, queue, preserve, lease) => this.#catalog.refreshCatalog(force, queue, preserve, lease),
       cancelCatalogRecovery: (lease) => this.#catalog.cancelRecovery(lease),
       abortResources: (except) => this.#abortResources(except),
       invalidateMotion: () => this.#motion.invalidate(),
+      invalidateUnsentWrites: () => {
+        for (const [name, controller] of this.#unsentWrites) {
+          if (name !== "setting-mutation") controller.abort();
+        }
+        if (this.#store.value.command === "pending" && this.#store.value.pendingAction === "save-plan"
+          && this.#unsentWrites.has("plan-mutation")) {
+          this.#store.patch({ command: "idle", notice: null });
+        }
+      },
+      sentWriteResources: () => MUTATION_RESOURCES.filter((name) =>
+        this.#requests.has(name) && !this.#unsentWrites.has(name)),
       loadPlans: () => this.#catalog.loadPlans(),
       resumeAreaCatalog: () => this.#catalog.resumeAreas(),
-      extendLiveTrail: (pose) => this.#runs.extendLiveTrail(pose),
+      extendLiveTrail: (pose) => this.#runs?.extendLiveTrail(pose),
       loadWorkspaceResources: (entry, stamp, resources, refresh) => this.#loadWorkspaceResources(entry, stamp, resources, refresh),
     });
     this.#catalog = new CatalogResources(store, backend, this.#coherence, this.#requests, {
@@ -186,10 +229,13 @@ export class EffectController {
       projection: () => this.#projection,
       recoveryPending: (entry) => this.#spatialResources.recoveryPending(entry),
       ownsLiveDelta: (entry) => this.#spatialResources.ownsLiveDelta(entry),
-      admitSpatial: (entry, previous, force, preserve, recovering) => this.#spatialResources.admitCatalog(entry, previous, force, preserve, recovering),
-      syncWorkspace: () => { if (this.#projection) this.#workspace.sync(this.#projection); },
-      clearPrivate: (problem, entryId) => this.#clearPrivate(problem, entryId),
-      resumePins: () => this.#pins.resume(),
+      admitSpatial: (entry, previous, force, preserve, recovering) => {
+        if (!this.#store.value.comparisonActive) this.#spatialResources.admitCatalog(entry, previous, force, preserve, recovering);
+      },
+      syncWorkspace: () => { if (!this.#accessDenied && this.#projection) this.#workspace.sync(this.#projection); },
+      clearPrivate: (problem, entryId) => problem === "access-required"
+        ? this.#denyWorkspaceAccess() : this.#clearPrivate(problem, entryId),
+      resumePins: () => { void this.#resumePins(); },
     });
     this.#pageLifecycle = new PageLifecycle({
       onSuspend: () => this.#suspendPage(),
@@ -206,12 +252,119 @@ export class EffectController {
       },
     });
     this.#store.patch({ pageActive: this.#pageLifecycle.active });
+    this.#optionalScope = this.#pinScope(store.value) + `:${store.value.selection.floorId}`;
     this.#storeUnsubscribe = store.subscribe((state) => {
       this.#observePreferences(state);
+      const optionalScope = this.#pinScope(state) + `:${state.selection.floorId}`;
+      if (optionalScope !== this.#optionalScope) {
+        this.#optionalScope = optionalScope;
+        this.#startPinsAdmission();
+      }
+      if (state.map.available && !this.#accessDenied && this.#projection) {
+        this.#workspace.sync(this.#projection);
+      }
+      if (state.activity === "cleaning" && state.optionalUiReady
+        && state.resources.plans.status === "idle" && canReadFloorResources(state)) void this.loadPlans();
+      this.#ensureQueueActions(state);
       if (this.#roomPreview) this.#roomPreview.reconcile();
       else if (this.#projection && state.workflow === "rooms") void this.#loadRoomPreview();
     });
+    this.#startPinsAdmission();
     this.#pageLifecycle.start();
+  }
+
+  #pinContextActive(state: WorkspaceState): boolean {
+    return !this.#disposed && !this.#accessDenied && state.pageActive && state.host.connected
+      && state.host.administrator;
+  }
+
+  #startPinsAdmission(): void {
+    this.#cancelPinsAdmission?.();
+    this.#store.patch({ optionalUiReady: false });
+    this.#cancelPinsAdmission = scheduleAfterMapAdmission(
+      this.#store,
+      (state) => this.#pinContextActive(state),
+      () => {
+        this.#store.patch({ optionalUiReady: true });
+        void this.#pinResources(false, true);
+        if (this.#store.value.activity === "cleaning" && this.#store.value.resources.plans.status === "idle"
+          && canReadFloorResources(this.#store.value)) {
+          void this.loadPlans();
+        }
+        if (this.#store.value.trail?.id === "live") void this.#restoreLiveTrail();
+      },
+    );
+  }
+
+  #pinScope(state: WorkspaceState): string {
+    return `${state.generation}:${state.owner?.entryKey ?? ""}:${state.owner?.userKey ?? ""}`;
+  }
+
+  #pinResources(immediate: boolean, allowWithoutMap = false): Promise<InstanceType<typeof import("./home-pin-resources").HomePinResources> | null> {
+    if (this.#pins) return Promise.resolve(this.#pins);
+    if (this.#disposed) return Promise.resolve(null);
+    const scope = this.#pinScope(this.#store.value);
+    if (!immediate && this.#pinImportFailureScope === scope) return Promise.resolve(null);
+    if (!immediate && (!this.#pinContextActive(this.#store.value) || (!allowWithoutMap && !this.#store.value.map.available))) {
+      return Promise.resolve(null);
+    }
+    if (!this.#pinsLoad) {
+      const loading = import("./home-pin-resources").then(({ HomePinResources }) => {
+        if (this.#disposed || scope !== this.#pinScope(this.#store.value) || !this.#pinContextActive(this.#store.value)) {
+          this.#pinsLoad = null;
+          if (!this.#disposed && this.#pinContextActive(this.#store.value)) this.#startPinsAdmission();
+          return null;
+        }
+        this.#pins ??= new HomePinResources(this.#store, this.#workspaceConnection, {
+          disposed: () => this.#disposed,
+          requestFailed: (error) => { if (isAccessDeniedError(error)) this.#denyWorkspaceAccess(); },
+          loadAreas: () => this.#catalog.loadAreas(),
+          loadPlans: () => this.#catalog.loadPlans(),
+          resumeAreas: () => this.#catalog.resumeAreas(),
+        });
+        if (!immediate && this.#pinContextActive(this.#store.value)) this.#pins.resume();
+        return this.#pins;
+      }).catch(() => {
+        this.#pinsLoad = null;
+        const current = this.#store.value;
+        if (!this.#disposed && scope === this.#pinScope(current) && this.#pinContextActive(current)) {
+          this.#pinImportFailureScope = scope;
+          this.#store.patch({ homePins: { status: "error", pins: [] },
+            notice: notice("warning", "v4_shortcuts_unavailable", "Home Assistant couldn't load your home shortcuts.") });
+        }
+        return null;
+      });
+      this.#pinsLoad = loading;
+    }
+    return this.#pinsLoad;
+  }
+
+  async #resumePins(): Promise<void> {
+    const state = this.#store.value;
+    if (!this.#pinContextActive(state) || !state.map.available) return;
+    this.#pins?.resume();
+  }
+
+  async #restoreLiveTrail(): Promise<void> {
+    if (this.#store.value.trail?.id !== "live") return;
+    const runs = await this.#runResources();
+    if (!runs || this.#disposed || this.#store.value.trail?.id !== "live") return;
+    await this.#spatialResources.refreshPose();
+    if (!this.#disposed && this.#store.value.trail?.id === "live") await runs.restoreLiveTrail();
+  }
+
+  #runResources(): Promise<InstanceType<typeof import("./run-history-resources").RunHistoryResources> | null> {
+    if (this.#runs) return Promise.resolve(this.#runs);
+    if (this.#disposed) return Promise.resolve(null);
+    this.#runsLoad ??= import("./run-history-resources").then(({ RunHistoryResources }) => {
+      if (this.#disposed) return null;
+      this.#runs ??= new RunHistoryResources(this.#store, this.#backend, this.#requests, {
+        disposed: () => this.#disposed,
+        pageActive: () => this.#pageLifecycle.active,
+      });
+      return this.#runs;
+    }).catch(() => null);
+    return this.#runsLoad;
   }
 
   #suspendPage(): void {
@@ -244,8 +397,9 @@ export class EffectController {
   async #resumePage(): Promise<void> {
     if (this.#disposed || !this.#pageLifecycle.active) return;
     this.#store.patch({ pageActive: true });
+    this.#startPinsAdmission();
     const projection = this.#projection;
-    if (this.#disposed || !this.#pageLifecycle.active || !projection?.host.connected || !projection.host.administrator
+    if (this.#disposed || this.#accessDenied || !this.#pageLifecycle.active || !projection?.host.connected || !projection.host.administrator
       || !projection.host.robotConnected || projection.host.robotCount === 0) return;
     const suspended = this.#store.value;
     this.#startPolling();
@@ -290,8 +444,8 @@ export class EffectController {
     if (!state.owner) return;
     const next: MapPreferences = {
       version: 4,
-      view: state.view,
-      appearance: state.appearance,
+      view: state.homePresentation?.view ?? state.view,
+      appearance: state.homePresentation?.appearance ?? state.appearance,
       labels: state.labelsVisible,
       quality: state.quality,
       cameras: state.cameras,
@@ -314,6 +468,22 @@ export class EffectController {
     const owner = this.#store.value.owner;
     const contextChanged = owner !== null && (owner.entryKey !== projection.entryKey
       || owner.userKey !== projection.userKey);
+    if (contextChanged || this.#projection?.host.connected !== projection.host.connected
+      || this.#projection?.host.administrator !== projection.host.administrator) {
+      this.#bindBackendAccess();
+      this.#pins?.invalidate();
+    }
+    if (this.#accessDenied && !contextChanged) {
+      // Routine HA entity updates do not override an authenticated denial.
+      const revalidate = authorizationRestored || (!this.#hostConnected && projection.host.connected);
+      this.#projection = projection;
+      this.#hostConnected = projection.host.connected;
+      this.#store.patch({ host: projection.host });
+      if (revalidate && projection.host.administrator && projection.host.connected
+        && this.#store.value.pageActive) void this.executeAction("recheck-status");
+      return;
+    }
+    this.#accessDenied = false;
     if (contextChanged) {
       this.#clearPrivate("context-changed", projection.entryKey);
       this.#catalog.ownerChanged();
@@ -357,7 +527,8 @@ export class EffectController {
     });
     // A new user or robot owns its own home shortcuts from this moment: the
     // last owner's are cleared and its queued writes cut off.
-    this.#pins.syncOwner();
+    this.#pins?.syncOwner();
+    if (contextChanged) this.#startPinsAdmission();
     if (!projection.host.administrator) {
       this.#stopPolling();
       this.#clearPrivate("access-required", projection.entryKey);
@@ -450,9 +621,12 @@ export class EffectController {
     resources: ReadonlySet<string>,
     refreshCatalogProjection = true,
   ): void {
-    if (resources.has("plans") || resources.has("plan_state")) void this.loadPlans();
+    if ((resources.has("plans") || resources.has("plan_state"))
+      && needsPlanCatalog(this.#store.value)) void this.loadPlans();
     if (resources.has("areas")) void this.loadAreas();
-    if (resources.has("history")) void this.#spatialResources.loadHistory(entry, stamp);
+    if (resources.has("history") && needsHistoryCatalog(this.#store.value)) {
+      void this.#spatialResources.loadHistory(entry, stamp);
+    }
     if (refreshCatalogProjection
       && ["status", "robot_state", "activity", "plan_state"].some((resourceName) => resources.has(resourceName))) {
       // These lightweight catalog fields own runner locks and verified
@@ -482,7 +656,6 @@ export class EffectController {
   #clearPrivate(problem: string, selectedEntryId: string | null = null): void {
     this.#spatialResources.clearRecovery();
     this.#motion.invalidate();
-    this.#queueRevision += 1;
     const generation = this.#coherence.invalidate();
     this.#spatialResources.stopDeltaStream();
     this.#spatialResources.resetIdentity();
@@ -492,6 +665,12 @@ export class EffectController {
     this.#store.patch({
       command: "idle",
       queuePending: false,
+      followMode: "off",
+      comparisonActive: false,
+      roomCandidates: [],
+      homePresentation: null,
+      taskCameras: {},
+      taskCameraKey: null,
       ...(problem === "context-changed" ? { historyCameras: {} } : {}),
       dataMode: empty.dataMode,
       deepMop: null,
@@ -520,9 +699,90 @@ export class EffectController {
     });
   }
 
+  #denyWorkspaceAccess(): void {
+    this.#bindBackendAccess();
+    this.#accessDenied = true;
+    this.#workspace.pause();
+    this.#stopPolling();
+    this.#catalog.cancelQueued();
+    this.#pins?.invalidate();
+    this.#clearPrivate("access-required", this.#store.value.selection.entryId);
+    // Do not advertise Stop from the old session's operational projection.
+    // A fresh authenticated read or HA identity change restores that owner.
+    this.#store.patch({ activity: "idle", smartStop: null, robotRun: null,
+      lastRun: null, homePins: initialWorkspaceState().homePins });
+  }
+
+  #bindBackendAccess(): void {
+    this.#backend.setAccessDeniedHandler?.(() => {
+      if (!this.#disposed) this.#denyWorkspaceAccess();
+    });
+  }
+
   toggleWifiSignal(): Promise<void> { return this.#spatialResources.toggleWifiSignal(); }
 
   toggleFloorTypes(): Promise<void> { return this.#spatialResources.toggleFloorTypes(); }
+
+  async refreshHistory(historyId?: string): Promise<void> {
+    const state = this.#store.value;
+    const entry = state.resources.entry;
+    const stamp = this.#coherence.current();
+    if (!entry || !stamp || !state.host.administrator || !state.host.connected) return;
+    const revision = ++this.#historyViewRevision;
+    await this.#spatialResources.loadHistory(entry, stamp);
+    const current = this.#store.value;
+    if (historyId && !this.#disposed && revision === this.#historyViewRevision
+      && current.pageActive && current.host.administrator && current.host.connected && !current.comparisonActive
+      && current.workflow === state.workflow && current.workflow === "history"
+      && current.generation === state.generation && current.resources.history.status === "ready"
+      && current.owner?.entryKey === state.owner?.entryKey && current.owner?.userKey === state.owner?.userKey
+      && current.selection.entryId === state.selection.entryId
+      && current.selection.floorId === state.selection.floorId
+      && current.selection.historyId === state.selection.historyId) await this.selectHistory(historyId);
+  }
+
+  invalidateHistory(historyIds: readonly string[]): void {
+    const state = this.#store.value;
+    const fallback = state.dataMode === "live" && state.resources.scene.value?.source === "history"
+      ? state.resources.scene.value : null;
+    if (!historyIds.includes(state.selection.historyId ?? "")
+      && !(fallback && (!fallback.historyRecordId || historyIds.includes(fallback.historyRecordId)))) return;
+    this.#requests.cancel("history-scene");
+    this.#requests.cancel("history");
+    this.#store.patch({
+      resources: { ...state.resources, scene: resource("error", null, "history-source-missing"), pose: resource("idle", null) },
+      map: { ...state.map, available: false, exactPose: false },
+      historyCameras: {},
+      notice: notice("warning", "v4_history_source_missing", "This saved map is no longer available. Choose another map or return to Live."),
+    });
+  }
+
+  archiveAccessDenied(): void {
+    this.#denyWorkspaceAccess();
+  }
+
+  async setComparisonActive(value: boolean): Promise<void> {
+    const state = this.#store.value;
+    if (state.comparisonActive === value) return;
+    if (value) {
+      if (!state.host.administrator || !state.host.connected || state.workflow !== "history") return;
+      this.#store.patch({ comparisonActive: true, followMode: "off", fullMap: false });
+      this.#spatialResources.stopPolling();
+      this.#spatialResources.invalidateFence(state.pageActive, MUTATION_RESOURCES);
+      this.#store.patch({
+        resources: { ...this.#store.value.resources, scene: resource("idle", null), pose: resource("idle", null) },
+        map: { ...this.#store.value.map, available: false, exactPose: false },
+      });
+      return;
+    }
+    this.#store.patch({ comparisonActive: false });
+    if (this.#disposed || !this.#store.value.pageActive || !this.#store.value.host.administrator) return;
+    await this.refreshCatalog(true);
+    if (this.#store.value.dataMode === "history" && this.#store.value.selection.historyId) {
+      await this.selectHistory(this.#store.value.selection.historyId);
+    }
+    this.#spatialResources.startPolling();
+  }
 
   async openWorkflow(workflow: Workflow): Promise<void> {
     const state = this.#store.value;
@@ -544,7 +804,7 @@ export class EffectController {
         await this.#spatialResources.loadHistory(entry, stamp);
       }
     }
-    if (workflow === "runs") await this.#runs.loadRuns();
+    if (workflow === "runs") await (await this.#runResources())?.loadRuns();
     if (workflow === "plans" || workflow === "plan" || workflow === "rooms") await this.loadPlans();
     if (workflow === "areas" || workflow === "draw" || workflow === "areaReview" || workflow === "plan") await this.loadAreas();
   }
@@ -558,6 +818,11 @@ export class EffectController {
 
   setPlanEnabled(enabled: boolean): Promise<void> {
     return this.#write("plan-mutation", planSaveFailedNotice, (writes, context) => writes.setPlanEnabled(context, enabled));
+  }
+
+  setDailyRoomLimit(roomId: string, limit: number | null): Promise<void> {
+    const failure = notice("error", "v4_daily_limit_save_failed", "The daily limit wasn't confirmed. Reload the rooms and try again.");
+    return this.#write("plan-mutation", failure, (writes, context) => writes.setDailyRoomLimit(context, roomId, limit));
   }
 
   selectArea(areaId: string | null): void {
@@ -612,6 +877,7 @@ export class EffectController {
     // holds its resource, so taking the resource never cancels a write.
     if (state.command === "pending" || this.#requests.has(resource)) return settle(false);
     const controller = this.#requests.begin(resource);
+    this.#unsentWrites.set(resource, controller);
     // A cancelled write is not saved, even while its request still waits.
     controller.signal.addEventListener("abort", () => settle(false), { once: true });
     try {
@@ -633,19 +899,24 @@ export class EffectController {
         failure,
         projection: () => this.#projection,
         disposed: () => this.#disposed,
+        markSent: () => {
+          if (this.#unsentWrites.get(resource) === controller) this.#unsentWrites.delete(resource);
+        },
         release: () => this.#requests.release(resource, controller),
         settled: settle,
       });
     } finally {
+      if (this.#unsentWrites.get(resource) === controller) this.#unsentWrites.delete(resource);
       this.#requests.release(resource, controller);
       settle(false);
     }
   }
 
   executeAction(id: string, settled?: SaveSettled): Promise<void>;
-  executeAction(action: ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction): Promise<void>;
-  async executeAction(idOrAction: string | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction, settled?: SaveSettled): Promise<void> {
+  executeAction(action: ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction | AcknowledgeQueueUncertainAction): Promise<void>;
+  async executeAction(idOrAction: string | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction | AcknowledgeQueueUncertainAction, settled?: SaveSettled): Promise<void> {
     const id = typeof idOrAction === "string" ? idOrAction : idOrAction.id;
+    if (this.#accessDenied && id !== "recheck-status") return;
     switch (id) {
       case "toggle-deep-mop":
         await this.#write("setting-mutation", deepMopFailedNotice, (writes, context) => writes.setDeepMop(context));
@@ -660,6 +931,16 @@ export class EffectController {
           if (!this.#disposed) this.#store.patch({ rechecking: false });
         }
         const state = this.#store.value;
+        if (this.#accessDenied && !this.#disposed && state.selection.entryId === entryId
+          && state.resources.catalog.status === "ready" && this.#projection?.host.administrator
+          && this.#projection.host.connected) {
+          this.#accessDenied = false;
+          this.#pinImportFailureScope = null;
+          this.#startPinsAdmission();
+          this.sync(this.#projection);
+          void this.loadHomePins();
+        }
+        if (!this.#accessDenied && state.resources.catalog.status === "ready") this.#workspace.retry();
         if (!this.#disposed && state.selection.entryId === entryId
           && state.resources.catalog.status === "ready"
           && state.host.connected && state.host.robotConnected
@@ -687,7 +968,7 @@ export class EffectController {
         const plan = initial.selection.planId || initial.resources.plans.value?.selectedPlan;
         if (!plan || initial.workflow !== "plan" || !initial.planDraft.enabled
           || initial.resources.plans.status !== "ready" || initial.command !== "idle"
-          || !canStartMotion(initial)) return;
+          || !canStartMotion(initial) || !initial.selection.entryId) return;
         const entryId = initial.selection.entryId;
         const generation = initial.generation;
         const displayedPreview = initial.resources.plans.value?.plans
@@ -701,44 +982,41 @@ export class EffectController {
         // Page/floor invalidation cancels it without abandoning a running job.
         // The read is fresh and in place, so Run plan keeps its view and reason.
         const preflight = this.#requests.begin("plan-preflight");
-        const current = (): boolean => {
-          const latest = this.#store.value;
-          return !preflight.signal.aborted && !this.#disposed
-            && latest.selection.entryId === entryId && latest.generation === generation
-            && latest.workflow === "plan" && latest.selection.planId === initial.selection.planId
-            && (latest.selection.planId || latest.resources.plans.value?.selectedPlan) === plan
-            && latest.planDraft === initial.planDraft;
-        };
-        let pendingOwned = true;
-        const releasePending = (): void => {
-          if (!pendingOwned) return;
-          pendingOwned = false;
-          const latest = this.#store.value;
-          if (!this.#disposed && latest.selection.entryId === entryId
-            && latest.generation === generation && latest.command === "pending"
-            && latest.pendingAction === "run-plan") {
-            this.#store.patch({ command: "idle" });
-          }
-        };
         try {
           const writes = await this.#catalogWritesModule();
           if (!writes) {
-            if (current()) {
-              this.#store.patch({ notice: planPreviewRefreshFailedNotice });
-            }
+            const latest = this.#store.value;
+            if (!preflight.signal.aborted && !this.#disposed && latest.selection.entryId === entryId
+              && latest.generation === generation && latest.workflow === "plan"
+              && latest.selection.planId === initial.selection.planId
+              && (latest.selection.planId || latest.resources.plans.value?.selectedPlan) === plan
+              && latest.planDraft === initial.planDraft) this.#store.patch({ notice: planPreviewRefreshFailedNotice });
             return;
           }
           await writes.runPlanPreflight({
-            plan, displayedPreview, current, store: this.#store,
+            plan, displayedPreview, entryId, generation,
+            selectedPlanId: initial.selection.planId,
+            planDraft: initial.planDraft,
+            signal: preflight.signal,
+            disposed: () => this.#disposed,
+            store: this.#store,
             loadPlans: () => this.loadPlans({ force: true, inPlace: true }),
             releaseRead: () => this.#requests.release("plan-preflight", preflight),
-            releasePending, failure: planPreviewRefreshFailedNotice,
+            failure: planPreviewRefreshFailedNotice,
             notice: CATALOG_WRITE_HELPERS.notice,
             start: (token) => this.#motion.dispatch("matic_robot", "run_selected_plan", { plan, preview_token: token }),
           });
+        } catch {
+          const latest = this.#store.value;
+          if (!this.#disposed && latest.selection.entryId === entryId && latest.generation === generation
+            && latest.command === "pending" && latest.pendingAction === "run-plan") {
+            this.#store.patch({ command: "idle", notice: planPreviewRefreshFailedNotice });
+          }
         } finally {
           this.#requests.release("plan-preflight", preflight);
-          releasePending();
+          const latest = this.#store.value;
+          if (!this.#disposed && latest.selection.entryId === entryId && latest.generation === generation
+            && latest.command === "pending" && latest.pendingAction === "run-plan") this.#store.patch({ command: "idle" });
         }
         return;
       }
@@ -814,6 +1092,11 @@ export class EffectController {
       case "change-queue":
         if (typeof idOrAction !== "string" && idOrAction.id === "change-queue") await this.#changeQueue(idOrAction);
         return;
+      case "acknowledge-queue-uncertain":
+        if (typeof idOrAction !== "string" && idOrAction.id === "acknowledge-queue-uncertain") {
+          this.#queueActions?.recoverUncertain(idOrAction);
+        }
+        return;
       case "delete-schedule":
         if (typeof idOrAction === "string" || idOrAction.id !== "delete-schedule") return;
         await this.#write(
@@ -825,26 +1108,55 @@ export class EffectController {
     }
   }
 
-  // The integration waits for the robot's own plan to show the change, so the
-  // reply can take up to 45 seconds; Stop stays available meanwhile.
-  async #changeQueue(action: QueueChangeAction): Promise<void> {
-    const entityId = this.#projection?.vacuumEntityId;
-    const entryKey = this.#projection?.entryKey;
-    const state = this.#store.value;
-    if (!entityId || state.selection.entryId !== entryKey || !canChangeQueue(state)) return;
-    const revision = this.#queueRevision;
-    this.#store.patch({ queuePending: true, notice: null });
-    let failure: unknown;
-    try {
-      await this.#backend.service("matic_robot", action.change, { room: action.roomId }, entityId);
-    } catch (error) {
-      failure = error ?? new Error("queue-change-failed");
-    }
-    const writes = await this.#catalogWritesModule();
-    if (this.#disposed || revision !== this.#queueRevision) return;
-    const result = writes?.queueChangeNotice(CATALOG_WRITE_HELPERS.notice, action, failure)
-      ?? (failure === undefined ? null : actionUnconfirmedNotice);
-    this.#store.patch({ queuePending: false, notice: result });
+  #queueEligible(state: WorkspaceState): boolean {
+    return !this.#disposed && !this.#accessDenied && this.#projection !== null
+      && state.optionalUiReady && state.activity === "cleaning" && state.resources.plans.status === "ready"
+      && canReadFloorResources(state) && state.host.connected && state.host.administrator
+      && state.host.robotConnected && state.pageActive;
+  }
+
+  #ensureQueueActions(state: WorkspaceState): void {
+    if (!this.#queueEligible(state) || this.#queueActions || this.#queueActionsLoad
+      || state.queueControllerStatus === "error") return;
+    // Keep a sentinel assigned before patching: subscribers run synchronously.
+    this.#queueActionsLoad = Promise.resolve();
+    this.#store.patch({ queueControllerStatus: "loading" });
+    this.#queueActionsLoad = (async (): Promise<void> => {
+      const writes = await this.#catalogWritesModule();
+      if (this.#disposed) return;
+      if (!writes) {
+        this.#store.patch({ queueControllerStatus: "error" });
+        return;
+      }
+      const latest = this.#store.value;
+      if (!this.#queueEligible(latest)) {
+        this.#store.patch({ queueControllerStatus: "idle" });
+        return;
+      }
+      const controller = writes.createQueueActionController({
+        store: this.#store,
+        backend: this.#backend,
+        helpers: CATALOG_WRITE_HELPERS,
+        projection: () => {
+          const current = this.#projection;
+          return current ? { entityId: current.vacuumEntityId, entryKey: current.entryKey } : null;
+        },
+        allowed: () => !this.#accessDenied,
+        disposed: () => this.#disposed,
+      });
+      if (this.#disposed) {
+        controller.dispose();
+        return;
+      }
+      this.#queueActions = controller;
+      this.#store.patch({ queueControllerStatus: "ready" });
+    })().catch(() => {
+      if (!this.#disposed) this.#store.patch({ queueControllerStatus: "error" });
+    }).finally(() => { this.#queueActionsLoad = null; });
+  }
+
+  #changeQueue(action: QueueChangeAction): Promise<void> {
+    return this.#queueActions?.changeQueue(action) ?? Promise.resolve();
   }
 
   dispose(): void {
@@ -858,10 +1170,15 @@ export class EffectController {
     this.#spatialResources.invalidateFence(false);
     this.#storeUnsubscribe?.();
     this.#storeUnsubscribe = null;
-    this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false, queuePending: false });
+    this.#queueActions?.dispose();
+    this.#queueActions = null;
+    this.#store.patch({ manualRoomPreview: resource("idle", null), rechecking: false, queueControllerStatus: "idle" });
     this.#catalog.stopPolling();
     this.#spatialResources.dispose();
-    this.#runs.dispose();
+    this.#cancelPinsAdmission?.();
+    this.#cancelPinsAdmission = null;
+    this.#pins?.dispose();
+    this.#runs?.dispose();
     this.#abortResources();
     this.#motion.dispose();
     this.#preferences.dispose();

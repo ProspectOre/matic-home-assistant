@@ -118,6 +118,14 @@ class MaticPlansView(HomeAssistantView):
                     preview_entries = [
                         {"kind": "room", **room} for room in preview["rooms"]
                     ]
+                if not preview_entries and preview.get("daily_limit_held_rooms"):
+                    return {
+                        "rooms": [],
+                        "entries": [],
+                        "mission_boundaries": [],
+                        "blocker": "daily_limit_reached",
+                        "daily_limit_held_rooms": preview["daily_limit_held_rooms"],
+                    }
                 if not preview_entries:
                     raise ValueError("plan has no rooms")
                 projected_entries = [
@@ -145,6 +153,11 @@ class MaticPlansView(HomeAssistantView):
                             )
                             if entry.get("cadence", {}).get(due_key) is True
                         ],
+                        **(
+                            {"daily_limit": entry["daily_limit"]}
+                            if "daily_limit" in entry
+                            else {}
+                        ),
                     }
                     for entry in preview_entries
                 ]
@@ -216,6 +229,11 @@ class MaticPlansView(HomeAssistantView):
                 "rooms": projected_rooms,
                 "entries": projected_entries,
                 "mission_boundaries": boundaries,
+                **(
+                    {"daily_limit_held_rooms": preview["daily_limit_held_rooms"]}
+                    if "daily_limit_held_rooms" in preview
+                    else {}
+                ),
                 **(
                     {"held_rooms": preview["held_rooms"]}
                     if "held_rooms" in preview
@@ -291,6 +309,17 @@ class MaticPlansView(HomeAssistantView):
                 ),
             )
 
+        def daily_limit_state(room_id: str) -> dict[str, object] | None:
+            """Project a room's global daily cap against the current map."""
+            project = getattr(runtime.cleaning_plans.cadence, "daily_limit_state", None)
+            if not callable(project):
+                return None
+            try:
+                identity = room_cadence_identity(floor_plan, room_id)
+            except ValueError:
+                identity = None
+            return cast(dict[str, object], project(serial_number, room_id, identity))
+
         saved_areas: Mapping[str, object] | None = None
 
         def area_entry_name(area_id: str) -> str:
@@ -323,6 +352,12 @@ class MaticPlansView(HomeAssistantView):
                     "cleaning_mode": cleaning_mode,
                     "coverage_setting": coverage_setting,
                 }
+                daily_limit = daily_limit_state(room_id)
+                if daily_limit is not None and (
+                    daily_limit.get("limit") is not None
+                    or daily_limit.get("reached") is True
+                ):
+                    plan_room_projection["daily_limit"] = daily_limit
                 current = current_rooms.get(room_id)
                 if current is not None:
                     cadence = cadence_state(
@@ -380,6 +415,12 @@ class MaticPlansView(HomeAssistantView):
                 "room_id": room.id,
                 "name": room.name,
             }
+            daily_limit = daily_limit_state(room.id)
+            if daily_limit is not None and (
+                daily_limit.get("limit") is not None
+                or daily_limit.get("reached") is True
+            ):
+                workspace_room_projection["daily_limit"] = daily_limit
             delete_token = getattr(
                 runtime.cleaning_plans.cadence, "shared_cadence_delete_token", None
             )
@@ -414,6 +455,8 @@ class MaticPlansView(HomeAssistantView):
             room_projections.append(workspace_room_projection)
         return self.json(
             {
+                "entry_id": entry_id,
+                "floor_token": floor_token,
                 "rooms": room_projections,
                 "plans": plans[:256],
                 "selected_plan": selected_plan,

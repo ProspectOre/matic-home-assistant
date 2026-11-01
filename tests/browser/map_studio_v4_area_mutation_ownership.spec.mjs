@@ -6,7 +6,7 @@ async function loadAreaMutationHarness(page) {
     stdin: {
       contents: `
         export { EffectController } from "./frontend/map-studio-v4/effects";
-        export { WorkspaceStore, selectPrimaryAction } from "./frontend/map-studio-v4/state";
+        export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions";
         export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
       `,
       resolveDir: process.cwd(),
@@ -176,6 +176,8 @@ test.describe("area save ownership across map transitions", () => {
 
   test("unverified same-floor transition keeps floor-scoped plans read in flight", async ({ page }) => {
     await createPendingAreaSave(page, { holdPlans: true });
+    // Plans are lazy: explicitly start the read whose ownership this test exercises.
+    await page.evaluate(() => { void window.__areaMutationOwnership.effects.loadPlans(); });
     await expect.poll(() => page.evaluate(() => Boolean(window.__areaMutationOwnership.pendingPlans))).toBe(true);
 
     await replaceEntry(page, { mapSessionVerified: false, mapSessionKey: null });

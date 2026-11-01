@@ -21,6 +21,7 @@ from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.util import dt as dt_util
 
+from .camera_ai import async_answer_about_photo, validate_ai_task_entity
 from .client.exceptions import MaticError
 from .client.floor_plan import room_name_key
 from .client.models import RobotOperationalState
@@ -30,6 +31,7 @@ from .const import (
     CONF_PHOTO_PATROL_NO_PHOTO_ROOMS,
     DOMAIN,
 )
+from .media_source import PhotoAttachmentUnavailable, photo_attachment_source
 from .native_schedules import schedule_occurrences
 from .plan_model import resolve_room_reference
 
@@ -82,8 +84,10 @@ async def async_photo_patrol(
     rooms: list[str],
     *,
     full_resolution: bool = False,
+    question: str | None = None,
+    ai_task_entity_id: str | None = None,
     context: Context | None = None,
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     """Visit each room in turn, photograph it, then dock.
 
     Each photo is returned with its room as soon as the robot has saved it,
@@ -94,6 +98,23 @@ async def async_photo_patrol(
     lock = _patrols.setdefault(entry.entry_id, asyncio.Lock())
     if lock.locked():
         raise _error("photo_patrol_running")
+    if (question is None) != (ai_task_entity_id is None):
+        raise _error("photo_patrol_ai_question_required")
+    if question is not None and ai_task_entity_id is not None:
+        if not question.strip() or len(question) > 500:
+            raise _error("photo_patrol_ai_question_invalid")
+        try:
+            validate_ai_task_entity(hass, ai_task_entity_id)
+        except HomeAssistantError:
+            raise _error("photo_patrol_ai_unavailable") from None
+        try:
+            attachment_generation = photo_attachment_source(
+                hass
+            ).capture_entry_generation(entry.entry_id)
+        except PhotoAttachmentUnavailable:
+            raise _error("photo_patrol_ai_unavailable") from None
+    else:
+        attachment_generation = None
     async with lock:
         _assert_patrol_allowed(entry, rooms)
         room_ids = _resolve_patrol_rooms(entry, rooms)
@@ -134,7 +155,7 @@ async def async_photo_patrol(
         except TimeoutError as err:
             raise _error("photo_patrol_timeout") from err
         _last_patrol_started[entry.entry_id] = monotonic()
-        results: list[dict[str, str]] = []
+        results: list[dict[str, Any]] = []
         # The area the robot reported at each room it reached.
         arrivals: list[str] = []
         try:
@@ -148,9 +169,22 @@ async def async_photo_patrol(
                         photo = await _async_photograph(
                             hass, entry, entity_id, room, context, arrivals
                         )
+                        analysis = (
+                            await async_answer_about_photo(
+                                hass,
+                                entry,
+                                photo,
+                                question,
+                                ai_task_entity_id,
+                                context,
+                                attachment_generation=attachment_generation,
+                            )
+                            if question is not None and ai_task_entity_id is not None
+                            else None
+                        )
                 except TimeoutError as err:
                     raise _error("photo_patrol_timeout") from err
-                result = {
+                result: dict[str, Any] = {
                     "room": room,
                     "photo_id": photo.photo_id,
                     "captured_at": photo.captured_at.isoformat(),
@@ -161,10 +195,15 @@ async def async_photo_patrol(
                     ),
                     "preview_url": photo_preview_url(entry.entry_id, photo.photo_id),
                 }
+                if analysis is not None:
+                    result["analysis"] = analysis
                 results.append(result)
+                event_result = {
+                    key: value for key, value in result.items() if key != "analysis"
+                }
                 hass.bus.async_fire(
                     PHOTO_TAKEN_EVENT,
-                    {ATTR_ENTITY_ID: entity_id, **result},
+                    {ATTR_ENTITY_ID: entity_id, **event_result},
                     context=context,
                 )
         finally:

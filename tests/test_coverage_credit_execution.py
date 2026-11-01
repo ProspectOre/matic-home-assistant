@@ -310,6 +310,10 @@ async def test_single_room_executor_uses_matching_native_history_for_credit(
         == expected_coverage
     )
     assert manager.history.snapshot("serial")["completed_runs"] == 1
+    daily_receipt = manager.repository.robot("serial")["daily_room_completions"][
+        room.room_id
+    ]["receipts"][0]
+    assert daily_receipt["at"] == record.session.ended_at
     if history_key_kind == "matching":
         verifier.assert_awaited_once_with(receipt, receipt.session_hash)
     else:

@@ -5,6 +5,7 @@ const bundle = await build({
   stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects";
     export { WorkspaceStore } from "./frontend/map-studio-v4/state";
     export { canEditCoordinates, canStartMotion } from "./frontend/map-studio-v4/state";
+    export { BackendError } from "./frontend/map-studio-v4/backend";
     export { syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } from "./frontend/map-studio-v4/synthetic-fixtures";`, resolveDir: process.cwd() },
   bundle: true, format: "esm", write: false,
 });
@@ -17,7 +18,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
   await page.route("**/adapter.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   await page.evaluate(async (deferInitialSnapshot) => {
-    const { EffectController, WorkspaceStore, canEditCoordinates, canStartMotion, syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } = await import("/adapter.js");
+    const { EffectController, WorkspaceStore, canEditCoordinates, canStartMotion, BackendError, syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } = await import("/adapter.js");
     const callbacks = [];
     const wireCatalogEntry = entry => ({ entry_id: entry.entryId, scene_url: entry.sceneUrl,
       delta_url: entry.deltaUrl, pose_url: entry.poseUrl, history_url: entry.historyUrl,
@@ -48,6 +49,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
       revisions: { ...revisionState }, resources };
     };
     let initialSnapshotResolve = null;
+    let initialSnapshotReject = null;
     let snapshotCalls = 0;
     const connection = { subscribeMessage: async callback => { callbacks.push(callback); return () => {}; },
       sendMessagePromise: async message => {
@@ -56,7 +58,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
         if (message.type?.startsWith("frontend/")) throw new Error("no user data in this harness");
         snapshotCalls += 1;
         return deferInitialSnapshot
-          ? await new Promise(resolve => { initialSnapshotResolve = resolve; })
+          ? await new Promise((resolve, reject) => { initialSnapshotResolve = resolve; initialSnapshotReject = reject; })
           : snapshotFor(message.entry_id);
       } };
     const counts = { catalog: 0, plans: 0, areas: 0, history: 0, scene: 0 };
@@ -71,7 +73,8 @@ const setup = async (page, deferInitialSnapshot = false) => {
       scene: async () => { counts.scene += 1; return ({ scene: { revision: 7, source: "live", buffer: new ArrayBuffer(0), pointOffset: 0,
         floorCount: 0, surfaceCount: 0, total: 0, etag: null,
         metadata: { metersPerCell: 0.05, origin: [0, 0], span: [1, 1], sampleStep: 1, rooms: [] } },
-        revision: 7, floorCoherent: true }); }, pose: async () => null, dispose() {} };
+        revision: 7, floorCoherent: true }); }, pose: async () => null, dispose() {},
+      setAccessDeniedHandler(handler) { this.accessDenied = handler; } };
     const projection = entryKey => ({ host: { connected: true, administrator: true, robotConnected: true, robotCount: 1 },
       activity: "idle", batteryPercent: 50, language: "en", userKey: "u", vacuumEntityId: "vacuum.x", entryKey,
       robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
@@ -82,7 +85,8 @@ const setup = async (page, deferInitialSnapshot = false) => {
       get snapshotCalls() { return snapshotCalls; },
       initialSnapshotPending: () => initialSnapshotResolve !== null,
       resolveInitialSnapshot: value => { if (!initialSnapshotResolve) return false; initialSnapshotResolve(value); return true; },
-      canEditCoordinates, canStartMotion,
+      rejectInitialSnapshot: error => initialSnapshotReject?.(error),
+      canEditCoordinates, canStartMotion, BackendError,
       setCatalogEntry: value => { catalogEntry = value; } };
   }, deferInitialSnapshot);
   await expect.poll(() => page.evaluate(() => window.adapterHarness.counts.catalog)).toBeGreaterThan(0);
@@ -102,6 +106,10 @@ const setup = async (page, deferInitialSnapshot = false) => {
       floor: h.store.value.floor, plansStatus: h.store.value.resources.plans.status };
     await h.controller.openWorkflow("plans");
     await h.controller.openWorkflow("draw");
+    // Exercise visible history and a pinned plan: hidden resources deliberately
+    // no longer reload on every workspace invalidation.
+    await h.controller.openWorkflow("history");
+    h.store.patch({ homePins: { status: "ready", pins: [{ kind: "plan", id: "synthetic-plan" }] } });
   });
 }
 
@@ -128,6 +136,24 @@ test("routes independent resource invalidations after an active-entry snapshot",
   expect(result.after.areas).toBe(result.before.areas + 1);
   expect(result.after.history).toBe(result.before.history + 1);
   expect(result.generation).toBe(1);
+});
+
+test("a ready-looking shortcut state cannot mutate before its persistence loader is initialized", async ({ page }) => {
+  await setup(page);
+  const result = await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.controller.dispose();
+    h.controller = new h.controller.constructor(h.store, h.backend, null, true);
+    h.controller.sync(h.projection("synthetic-entry"));
+    // Simulate a stale ready projection arriving before the new lazy module.
+    h.store.patch({ homePins: { status: "ready", pins: [{ kind: "plan", id: "retained" }] } });
+    const before = structuredClone(h.store.value.homePins);
+    const accepted = h.controller.saveHomePin({ kind: "plan", id: "retained" }, false, before.pins);
+    return { accepted, before, after: h.store.value.homePins, notice: h.store.value.notice?.key };
+  });
+  expect(result.accepted).toBe(false);
+  expect(result.before).toEqual(result.after);
+  expect(result.notice).toBe("v4_pins_unavailable");
 });
 
 test("queues one catalog follow-up when spatial invalidations arrive during a forced read", async ({ page }) => {
@@ -364,6 +390,134 @@ test("an authorization snapshot invalidates spatial caches even when its floor i
   await page.evaluate(() => window.adapterHarness.controller.dispose());
 });
 
+  test("robot authorization notification revokes motion admission while Stop remains independent", async ({ page }) => {
+    await setup(page);
+    const before = await page.evaluate(() => {
+      const h = window.adapterHarness;
+      return { generation: h.store.value.generation, edit: h.canEditCoordinates(h.store.value),
+        motion: h.canStartMotion(h.store.value) };
+    });
+    expect(before).toMatchObject({ edit: true, motion: true });
+    const after = await page.evaluate(async () => {
+      const h = window.adapterHarness;
+      h.backend.catalog = async () => {
+        h.counts.catalog += 1;
+        return await new Promise(resolve => { h.catalogResolve = resolve; });
+      };
+      h.callbacks[0]({ type: "resync", reason: "authorization" });
+      const fenced = { generation: h.store.value.generation, coherence: h.store.value.coherence,
+        edit: h.canEditCoordinates(h.store.value), motion: h.canStartMotion(h.store.value) };
+      const services = [];
+      h.backend.service = async (...args) => { services.push(args); };
+      h.store.patch({ activity: "cleaning" });
+      await h.controller.executeAction("stop");
+      const catalogStillPending = Boolean(h.catalogResolve);
+      h.controller.dispose();
+      return { fenced, services, catalogStillPending };
+    });
+    expect(after.fenced).toEqual({ generation: before.generation + 1, coherence: "verifying",
+      edit: false, motion: false });
+    expect(after.catalogStillPending).toBe(true);
+    expect(after.services).toEqual([["matic_robot", "stop_intelligent_cleaning",
+      { include_unmanaged: true }, "vacuum.x"]]);
+  });
+
+for (const recovery of ["explicit retry", "HA reconnect"]) {
+test(`HA RPC denial clears protected data until ${recovery} authenticates`, async ({ page }) => {
+  await setup(page, true);
+  await page.evaluate(async () => {
+    const h = window.adapterHarness;
+    h.originalCatalog = h.backend.catalog;
+    h.services = [];
+    h.backend.service = async (...args) => { h.services.push(args); };
+    h.rejectInitialSnapshot({ code: "unauthorized" });
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+    h.controller.sync({ ...h.projection("synthetic-entry"), activity: "cleaning" });
+    await h.controller.executeAction("stop");
+    h.backend.catalog = async () => await new Promise((_resolve, reject) => { h.rejectCatalog = reject; });
+    h.retry = h.controller.executeAction("recheck-status");
+  });
+  const protectedState = () => page.evaluate(() => {
+    const h = window.adapterHarness;
+    return { scene: h.store.value.resources.scene.value, plans: h.store.value.resources.plans.value,
+      areas: h.store.value.resources.areas.value, history: h.store.value.resources.history.value,
+      edit: h.canEditCoordinates(h.store.value), motion: h.canStartMotion(h.store.value),
+      services: h.services, callbacks: h.callbacks.length };
+  });
+  await expect.poll(() => page.evaluate(() => Boolean(window.adapterHarness.rejectCatalog))).toBe(true);
+  expect(await protectedState()).toEqual({ scene: null, plans: null, areas: null, history: null,
+    edit: false, motion: false, services: [], callbacks: 0 });
+  await page.evaluate(async () => {
+    const h = window.adapterHarness;
+    h.rejectCatalog(new h.BackendError("request-failed", 403));
+    await h.retry;
+  });
+  expect(await protectedState()).toEqual({ scene: null, plans: null, areas: null, history: null,
+    edit: false, motion: false, services: [], callbacks: 0 });
+  await page.evaluate(async recovery => {
+    const h = window.adapterHarness;
+    h.backend.catalog = async () => await new Promise(resolve => { h.resolveRecovery = resolve; });
+    if (recovery === "explicit retry") h.retry = h.controller.executeAction("recheck-status");
+    else {
+      const projection = { ...h.projection("synthetic-entry"), activity: "cleaning" };
+      h.controller.sync({ ...projection, host: { ...projection.host, connected: false } });
+      h.controller.sync(projection);
+    }
+    await h.controller.executeAction("stop");
+  }, recovery);
+  await expect.poll(() => page.evaluate(() => Boolean(window.adapterHarness.resolveRecovery))).toBe(true);
+  expect(await protectedState()).toEqual({ scene: null, plans: null, areas: null, history: null,
+    edit: false, motion: false, services: [], callbacks: 0 });
+  await page.evaluate(async () => {
+    const h = window.adapterHarness;
+    h.resolveRecovery(await h.originalCatalog());
+  });
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.resources.scene.status)).toBe("ready");
+  await page.evaluate(async () => {
+    const h = window.adapterHarness;
+    await h.controller.executeAction("stop");
+    h.controller.dispose();
+  });
+  expect(await page.evaluate(() => window.adapterHarness.services)).toEqual([
+    ["matic_robot", "stop_intelligent_cleaning", { include_unmanaged: true }, "vacuum.x"],
+  ]);
+});
+}
+
+for (const source of ["archive", "backend"]) {
+test(`${source} access denial rejects old stream callbacks and late protected reads`, async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.previousPlans = h.store.value.resources.plans.value;
+    h.backend.plans = async () => await new Promise(resolve => { h.releasePlans = resolve; });
+    h.callbacks[0](h.invalidation(1, ["plans"], { plans: 1 }));
+  });
+  await expect.poll(() => page.evaluate(() => Boolean(window.adapterHarness.releasePlans))).toBe(true);
+  await page.evaluate(async source => {
+    const h = window.adapterHarness;
+    if (source === "archive") h.controller.archiveAccessDenied();
+    else h.backend.accessDenied();
+    h.controller.sync({ ...h.projection("synthetic-entry"), activity: "cleaning" });
+    const stale = h.snapshotFor("synthetic-entry");
+    stale.sequence = 2;
+    h.callbacks[0]({ type: "snapshot", snapshot: stale });
+    h.callbacks[0](h.invalidation(3, ["plans", "areas", "history"], { plans: 2, areas: 1, history: 1 }));
+    h.releasePlans(h.previousPlans);
+    for (let tick = 0; tick < 10; tick += 1) await Promise.resolve();
+  }, source);
+  expect(await page.evaluate(() => {
+    const h = window.adapterHarness;
+    return { scene: h.store.value.resources.scene.value, plans: h.store.value.resources.plans.value,
+      areas: h.store.value.resources.areas.value, history: h.store.value.resources.history.value,
+      catalog: h.store.value.resources.catalog.value, activity: h.store.value.activity,
+      edit: h.canEditCoordinates(h.store.value), motion: h.canStartMotion(h.store.value) };
+  })).toEqual({ scene: null, plans: null, areas: null, history: null, catalog: null,
+    activity: "idle", edit: false, motion: false });
+  await page.evaluate(() => window.adapterHarness.controller.dispose());
+});
+}
+
 test("robot reauthentication immediately resumes an authorization-blocked workspace snapshot stream", async ({ page }) => {
   await setup(page);
   const initialSnapshots = await page.evaluate(() => window.adapterHarness.snapshotCalls);
@@ -440,4 +594,75 @@ test("rejects delayed old-stream events after an entry switch", async ({ page })
   await expect.poll(() => page.evaluate(() => window.adapterHarness.result?.selected)).toBe("other-entry");
   const result = await page.evaluate(() => window.adapterHarness.result);
   expect(result.after).toEqual(result.before);
+});
+
+test("entry removal waits through a pre-event catalog and failed forced successor", async ({ page }) => {
+  await setup(page);
+  const result = await page.evaluate(async () => {
+    const h = window.adapterHarness;
+    const entry = h.store.value.resources.entry;
+    const pendingCatalog = [];
+    let holdNext = true;
+    let failNext = false;
+    h.backend.catalog = async () => {
+      h.counts.catalog += 1;
+      if (holdNext) {
+        holdNext = false;
+        return await new Promise(resolve => pendingCatalog.push(resolve));
+      }
+      if (failNext) {
+        failNext = false;
+        throw new h.BackendError("catalog-unavailable", 503);
+      }
+      return [entry];
+    };
+
+    const preEventRead = h.controller.refreshCatalog(true);
+    for (let tick = 0; tick < 20 && pendingCatalog.length === 0; tick += 1) await Promise.resolve();
+    if (pendingCatalog.length !== 1) throw new Error("pre-event catalog request did not start");
+    h.callbacks[0]({ type: "resync", reason: "entry_removed" });
+    failNext = true;
+    pendingCatalog.shift()([entry]); // stale request succeeds after removal
+    await preEventRead; // includes the forced successor queued by refreshBoundary
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const afterStaleAndFailedSuccessor = {
+      subscriptions: h.callbacks.length,
+      catalogStatus: h.store.value.resources.catalog.status,
+    };
+
+    await h.controller.refreshCatalog(true); // later successful poll is a fresh proof
+    for (let tick = 0; tick < 40 && h.callbacks.length < 2; tick += 1) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    const afterFreshProof = { subscriptions: h.callbacks.length, status: h.store.value.resources.catalog.status };
+
+    holdNext = true;
+    const disconnectedRead = h.controller.refreshCatalog(true);
+    for (let tick = 0; tick < 20 && pendingCatalog.length === 0; tick += 1) await Promise.resolve();
+    if (pendingCatalog.length !== 1) throw new Error("second pre-event catalog request did not start");
+    h.callbacks[1]({ type: "resync", reason: "entry_removed" });
+    const disconnected = h.projection("synthetic-entry");
+    h.controller.sync({ ...disconnected, host: { ...disconnected.host, connected: false } });
+    pendingCatalog.shift()([entry]);
+    await disconnectedRead; // disconnect aborts the predecessor and cancels its queued successor
+    holdNext = true;
+    h.controller.sync(h.projection("synthetic-entry")); // reconnect starts a fresh proof request
+    for (let tick = 0; tick < 20 && pendingCatalog.length === 0; tick += 1) await Promise.resolve();
+    if (pendingCatalog.length !== 1) throw new Error("reconnect catalog request did not start");
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const afterReconnectBeforeFreshProof = h.callbacks.length;
+    pendingCatalog.shift()([entry]);
+    for (let tick = 0; tick < 40 && h.callbacks.length < 3; tick += 1) {
+      await new Promise(resolve => requestAnimationFrame(resolve));
+    }
+    const afterReconnectFreshProof = h.callbacks.length;
+    h.controller.dispose();
+    return { afterStaleAndFailedSuccessor, afterFreshProof, afterReconnectBeforeFreshProof, afterReconnectFreshProof };
+  });
+  expect(result).toEqual({
+    afterStaleAndFailedSuccessor: { subscriptions: 1, catalogStatus: "error" },
+    afterFreshProof: { subscriptions: 2, status: "ready" },
+    afterReconnectBeforeFreshProof: 2,
+    afterReconnectFreshProof: 3,
+  });
 });

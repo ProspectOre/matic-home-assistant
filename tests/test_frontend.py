@@ -125,6 +125,24 @@ def _startup_source() -> str:
     )
 
 
+def _workflow_static_source() -> str:
+    """Read the workflow and its shared static dependencies, excluding imports()."""
+    imports = re.compile(
+        r"(?:^|[;}\n])\s*(?:import|export)\s*"
+        r'(?:[\w$\s,{}*]*?from\s*)?"(\.[^"]+)"'
+    )
+    pending = list(_STUDIO_V4_WORKFLOW_CHUNK_PATHS)
+    sources: dict[Path, str] = {}
+    while pending:
+        path = pending.pop().resolve()
+        if path in sources:
+            continue
+        source = path.read_text(encoding="utf-8")
+        sources[path] = source
+        pending.extend(path.parent / name for name in imports.findall(source))
+    return "\n".join(sources.values())
+
+
 def test_dialog_copy_ships_in_the_lazy_workflow_chunk() -> None:
     """Only workflow controls open delete and reset dialogs, so their copy is lazy."""
     startup = _startup_source()
@@ -169,7 +187,7 @@ def test_plan_focus_after_leaving_a_view_ships_in_the_lazy_workflow_chunk() -> N
 
 def test_the_stepper_ships_with_the_plan_views() -> None:
     """design-system.md §4 size gate: only room schedules use ``ms-stepper``."""
-    workflow = _STUDIO_V4_WORKFLOW_CHUNK_PATHS[0].read_text(encoding="utf-8")
+    workflow = _workflow_static_source()
     assert ".ms-stepper" not in _startup_source()
     assert ".ms-stepper" in workflow
 
@@ -307,7 +325,7 @@ def test_plan_row_lines_ship_without_schedule_lines() -> None:
     pinned shortcuts, so neither the row lines nor the schedules ship at startup.
     """
     startup = _startup_source()
-    workflow = _STUDIO_V4_WORKFLOW_CHUNK_PATHS[0].read_text(encoding="utf-8")
+    workflow = _workflow_static_source()
     assert "v4_plan_row_rotation" not in startup
     assert "v4_plan_row_rotation" in workflow
     assert "v4_room_schedules_mop" not in startup

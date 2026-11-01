@@ -184,6 +184,12 @@ async def test_patrol_photo_crosses_the_real_client_and_private_http_view(
     missing = await client.get(f"/api/{DOMAIN}/photo/{loaded_entry.entry_id}/{uuid4()}")
     assert missing.status == 404
 
+    # The patrol asked the robot to dock, but the simulator is still returning.
+    # Let it arrive so this retry isolates the cooldown guard from the busy guard.
+    robot.arrive_at_dock()
+    await loaded_entry.runtime_data.coordinator.async_refresh()
+    assert loaded_entry.runtime_data.coordinator.data.operational.returning is False
+
     previous_commands = robot.received()
     with pytest.raises(HomeAssistantError) as raised:
         await _patrol(hass, "Study")

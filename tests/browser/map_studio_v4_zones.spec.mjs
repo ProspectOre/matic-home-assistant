@@ -50,19 +50,7 @@ test("Your areas notes a saved area that reaches into a no-go zone", async ({ pa
   }, panelTag);
   const panel = page.locator(`${panelTag}[data-test-panel=true]`);
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
-  await panel.evaluate((element) => {
-    const find = (root) => {
-      for (const button of root.querySelectorAll("button")) {
-        if (button.innerText.replace(/\s+/gu, " ").trim().startsWith("Clean custom area")) return button;
-      }
-      for (const child of root.querySelectorAll("*")) {
-        const match = child.shadowRoot && find(child.shadowRoot);
-        if (match) return match;
-      }
-      return null;
-    };
-    find(element.shadowRoot).click();
-  });
+  await panel.getByRole("button", { name: "Clean custom area Draw or choose a custom area", exact: true }).click();
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().workflow)).toBe("areas");
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.areas.value?.zones.length)).toBe(2);
   // Only the no-go zone counts; a robot-made zone of unknown kind does not.

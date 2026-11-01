@@ -19,7 +19,7 @@ from homeassistant.core import Context, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
-from . import native_history, plan_storage, plan_timing
+from . import daily_room_limit, native_history, plan_storage, plan_timing
 from .cadence_accounting import apply_verified_cadence as _apply_verified_cadence
 from .client.coverage_receipts import (
     CoverageReceipt,
@@ -345,6 +345,10 @@ class PlanLedger:
                 on_reconciled=reconciled.append,
                 verified_coverage_receipt=verified_coverage_receipt,
             )
+            or changed
+        )
+        changed = (
+            native_history._import_daily_native_uncertainty(robot, floor_plan, records)
             or changed
         )
         if (
@@ -996,6 +1000,7 @@ class PlanLedger:
         completed_at: str | None = None,
         duration_seconds: int | None = None,
         verified_coverage_receipt: CoverageReceipt | None = None,
+        completion_session_hash: str | None = None,
         completion_is_current: Callable[[], bool] | None = None,
     ) -> bool:
         """Advance room history only after the room finishes.
@@ -1017,6 +1022,7 @@ class PlanLedger:
                     completed_at=completed_at,
                     duration_seconds=duration_seconds,
                     verified_coverage_receipt=verified_coverage_receipt,
+                    completion_session_hash=completion_session_hash,
                 )
 
         def notify_if_changed(changed: bool) -> None:
@@ -1041,6 +1047,7 @@ class PlanLedger:
         completed_at: str | None = None,
         duration_seconds: int | None = None,
         verified_coverage_receipt: CoverageReceipt | None = None,
+        completion_session_hash: str | None = None,
     ) -> bool:
         """Credit verified completion while owning the plan-write transaction."""
         now_value = dt_util.utcnow()
@@ -1072,6 +1079,22 @@ class PlanLedger:
             if completed_at is not None
             and plan_timing._latest_timestamp(completed_at, now=now_value) is not None
             else now_value.isoformat()
+        )
+        snapshots = (
+            checkpoint.get("cadence_by_room") if isinstance(checkpoint, dict) else None
+        )
+        snapshot = (
+            snapshots.get(room.room_id) if isinstance(snapshots, Mapping) else None
+        )
+        identity = snapshot.get("identity") if isinstance(snapshot, Mapping) else None
+        daily_room_limit.record_completion(
+            robot,
+            room.room_id,
+            identity if isinstance(identity, str) else None,
+            now,
+            now=now_value,
+            run_id=run_id,
+            session_hash=completion_session_hash,
         )
         record = self.room(serial_number, plan_id, room)
         active = self.repository.robot(serial_number).get("active_plan")
@@ -1329,6 +1352,9 @@ class PlanLedger:
             completed_at=completed_value,
             duration_seconds=duration_seconds,
             room_settings=room_settings,
+            room_identity=room_identity,
+            run_id=pending.get("run_id"),
+            session_hash=pending.get("session_hash"),
         )
         native_history._remember_native_reconciliation(robot, pending)
         if room_settings is not None:

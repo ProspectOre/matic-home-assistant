@@ -358,7 +358,7 @@ _DISABLED = re.compile(
     + r")?\s*,?\s*\)"
 )
 _NOTICE = re.compile(
-    r'(?<![\w$])notice\(\s*"[^"]*"\s*,\s*'
+    r'(?<![\w$])(?:notice|makeNotice)\(\s*"[^"]*"\s*,\s*'
     + _KEY
     + r"\s*,\s*"
     + _FALLBACK

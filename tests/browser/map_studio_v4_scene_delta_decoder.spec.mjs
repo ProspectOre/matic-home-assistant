@@ -1,10 +1,12 @@
 import { expect, test } from "@playwright/test";
 import { build } from "esbuild";
 import { deflateSync } from "node:zlib";
+import { createHash } from "node:crypto";
+import { compactJavaScript } from "../../scripts/compact_javascript.mjs";
 
 const parserModule = "scene-delta-decoder.js";
 
-async function loadModule(page, { fallback = false, backend = false, effects = false } = {}) {
+async function loadModule(page, { fallback = false, backend = false, effects = false, productionCompact = false } = {}) {
   if (fallback) await page.addInitScript(() => { window.Worker = undefined; });
   const contents = effects
     ? `export { MaticBackend } from "./frontend/map-studio-v4/backend";
@@ -21,20 +23,24 @@ async function loadModule(page, { fallback = false, backend = false, effects = f
     minify: true,
     write: false,
   });
+  const source = productionCompact
+    ? await compactJavaScript(bundle.outputFiles[0].text)
+    : bundle.outputFiles[0].text;
   await page.route(`**/${parserModule}`, (route) => route.fulfill({
     contentType: "text/javascript",
-    body: bundle.outputFiles[0].text,
+    body: source,
   }));
   await page.goto("/");
 }
 
-function sceneBuffer({ pointCount = 8, floorCount = pointCount, surfaceCount = 0, origin = [10, 10] } = {}) {
+function sceneBuffer({ pointCount = 8, floorCount = pointCount, surfaceCount = 0, origin = [10, 10], coverage } = {}) {
   const metadata = Buffer.from(JSON.stringify({
     meters_per_cell: 0.015,
     span_cells: [100, 80],
     origin_cells: origin,
     sample_step: 1,
     rooms: [],
+    ...(coverage ? { coverage } : {}),
   }));
   const buffer = Buffer.alloc(24 + metadata.byteLength + pointCount * 8);
   buffer.write("MATIC3D\0", 0, "binary");
@@ -71,6 +77,49 @@ function deltaBuffer(base, target, baseRevision = 10, revision = 11, overrides =
 
 const toBase64 = (buffer) => buffer.toString("base64");
 
+test("@safety minified real Worker parses spatial data without retaining optional comparison coverage", async ({ page }) => {
+  const mask = Buffer.alloc(1000);
+  mask[0] = 1;
+  const compressed = deflateSync(mask);
+  const coverage = {
+    version: 1, status: "verified", encoding: "zlib-bitset-little-v1", origin_cells: [10, 10],
+    meters_per_cell: 0.015, span_cells: [100, 80], observed_cells: 1,
+    mask_sha256: createHash("sha256").update(compressed).digest("hex"),
+    mask_zlib_base64: compressed.toString("base64"), diff_eligible: true,
+  };
+  await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    window.codecWorkerReplies = [];
+    window.Worker = class extends NativeWorker {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener("message", (event) => window.codecWorkerReplies.push(event.data.ok));
+      }
+    };
+  });
+  await loadModule(page, { productionCompact: true });
+  const result = await page.evaluate(async ({ module, samples }) => {
+    const { SceneParser } = await import(module);
+    const parser = new SceneParser();
+    const results = [];
+    try {
+      for (const sample of samples) {
+        const input = Uint8Array.from(atob(sample), (value) => value.charCodeAt(0)).buffer;
+        const parsed = await parser.parse(input);
+        results.push({ transferred: input.byteLength === 0, total: parsed.total, coverage: parsed.metadata.coverage ?? null });
+      }
+      return { results, workerReplies: window.codecWorkerReplies };
+    } finally { parser.dispose(); }
+  }, { module: `/${parserModule}`, samples: [
+    toBase64(sceneBuffer()), toBase64(sceneBuffer({ coverage })),
+    toBase64(sceneBuffer({ coverage: { ...coverage, origin_cells: [11, 10] } })),
+  ] });
+  expect(result.workerReplies).toEqual([true, true, true]);
+  expect(result.results.map(({ transferred }) => transferred)).toEqual([true, true, true]);
+  expect(result.results.map(({ total }) => total)).toEqual([8, 8, 8]);
+  expect(result.results.map(({ coverage }) => coverage)).toEqual([null, null, null]);
+});
+
 test("@safety minified worker and unavailable-worker fallback decode identical dirty blocks without detaching the base", async ({ page }) => {
   const baseBytes = sceneBuffer({ pointCount: 20_000 });
   const targetBytes = Buffer.from(baseBytes);
@@ -88,7 +137,7 @@ test("@safety minified worker and unavailable-worker fallback decode identical d
   const delta = deltaBuffer(baseBytes, targetBytes);
 
   const run = async (targetPage, fallback) => {
-    await loadModule(targetPage, { fallback });
+    await loadModule(targetPage, { fallback, productionCompact: true });
     return targetPage.evaluate(async ({ module, base64, target64, delta64 }) => {
       const { SceneParser } = await import(module);
       const fromBase64 = (value) => Uint8Array.from(atob(value), (char) => char.charCodeAt(0)).buffer;
@@ -774,7 +823,7 @@ test("@safety dispose settles both active and queued worker operations", async (
   });
 });
 
-test("@safety EffectController startup serializes live/history scenes and drops the replaced generation", async ({ page }) => {
+test("@safety EffectController serializes requested history/live scenes and drops the replaced generation", async ({ page }) => {
   await page.addInitScript(() => {
     window.workerInstances = [];
     window.sceneCalls = [];
@@ -918,6 +967,11 @@ test("@safety EffectController startup serializes live/history scenes and drops 
     })),
   }));
 
+  await expect.poll(async () => (await readCounts()).scenePaths.filter((path) => path === "/api/matic_robot/slam_scene/old").length).toBe(1);
+  // History is a user-requested resource, not a first-map startup read. Start
+  // it while the live scene is still pending so this test still exercises the
+  // request and parser ordering when both reads overlap.
+  await page.evaluate(() => { void window.effectsHarness.controller.refreshHistory(); });
   await expect.poll(async () => (await readCounts()).scenePaths.filter((path) => path.includes("slam_scene/")).length).toBe(2);
   await releaseScene("/api/matic_robot/slam_scene/history", toBase64(oldScene), 6);
   await expect.poll(async () => (await readCounts()).workerMessages[0]).toBe(1);
@@ -925,29 +979,41 @@ test("@safety EffectController startup serializes live/history scenes and drops 
   await page.waitForTimeout(0);
   expect(await readCounts()).toMatchObject({ workerMessages: [1] });
 
-  await page.evaluate(() => window.effectsHarness.controller.refreshCatalog(true));
-  await expect.poll(async () => (await readCounts()).scenePaths.filter((path) => path === "/api/matic_robot/slam_scene/history").length).toBe(2);
+  await page.evaluate(async () => {
+    await window.effectsHarness.controller.refreshCatalog(true);
+  });
   await expect.poll(async () => (await readCounts()).scenePaths.includes("/api/matic_robot/slam_scene/new")).toBe(true);
+  // The replacement generation also needs an explicit History read; the
+  // first-map path intentionally leaves this catalog deferred.
+  await page.evaluate(() => { void window.effectsHarness.controller.refreshHistory(); });
+  await expect.poll(async () => (await readCounts()).scenePaths.filter((path) => path === "/api/matic_robot/slam_scene/history").length).toBe(2);
   const replacedGenerationWorkers = await readCounts();
   expect(replacedGenerationWorkers).toMatchObject({
-    workerCount: 2,
-    workerMessages: [1, 1],
+    workerCount: 1,
+    workerMessages: [1],
   });
   const oldHistoryWorkerIndex = replacedGenerationWorkers.workerInputs.findIndex((messages) =>
     messages.some((origin) => Array.isArray(origin) && origin[0] === 6 && origin[1] === 6));
   const oldLiveWorkerIndex = replacedGenerationWorkers.workerInputs.findIndex((messages) =>
     messages.some((origin) => Array.isArray(origin) && origin[0] === 7 && origin[1] === 7));
   expect(oldHistoryWorkerIndex).toBeGreaterThanOrEqual(0);
-  expect(oldLiveWorkerIndex).toBeGreaterThanOrEqual(0);
-  expect(oldHistoryWorkerIndex).not.toBe(oldLiveWorkerIndex);
+  // The parser has one active worker and one queued slot. Replacing the
+  // generation can cancel queued live bytes before they need a Worker; only
+  // Workers actually created for the retired generation must be terminated.
+  expect(oldLiveWorkerIndex).toBe(-1);
   const oldGeneration = await page.evaluate((indices) => ({
-    retiredWorkersTerminated: [
-      window.workerInstances[indices[0]],
-      window.workerInstances[indices[1]],
-    ].every((worker) => worker.terminated),
+    retiredWorkersTerminated: indices.every((index) => window.workerInstances[index].terminated),
     stateGeneration: window.effectsHarness.store.value.generation,
-  }), [oldHistoryWorkerIndex, oldLiveWorkerIndex]);
+    oldLiveInputAdmitted: window.workerInstances.some((worker) => worker.messages.some(({ data }) => {
+      if (data.kind !== "parse" || !(data.buffer instanceof ArrayBuffer) || data.buffer.byteLength < 24) return false;
+      const view = new DataView(data.buffer);
+      const metadataBytes = view.getUint32(12, true);
+      const origin = JSON.parse(new TextDecoder().decode(new Uint8Array(data.buffer, 24, metadataBytes))).origin_cells;
+      return origin[0] === 7 && origin[1] === 7;
+    })),
+  }), [oldHistoryWorkerIndex]);
   expect(oldGeneration.retiredWorkersTerminated).toBe(true);
+  expect(oldGeneration.oldLiveInputAdmitted).toBe(false);
   expect(oldGeneration.stateGeneration).toBe(2);
 
   const beforeRetiredMessages = await page.evaluate(() => {
@@ -991,7 +1057,7 @@ test("@safety EffectController startup serializes live/history scenes and drops 
       retired.onmessageerror(new Error("late retired worker message"));
       retired.onerror(new Error("late retired worker error"));
     }
-  }, [oldHistoryWorkerIndex, oldLiveWorkerIndex]);
+  }, [oldHistoryWorkerIndex]);
   const afterRetiredMessages = await page.evaluate(() => {
     const state = window.effectsHarness.store.value;
     return {
@@ -1017,7 +1083,7 @@ test("@safety EffectController startup serializes live/history scenes and drops 
   expect(afterRetiredMessages).toEqual(beforeRetiredMessages);
 
   await releaseScene("/api/matic_robot/slam_scene/history", toBase64(nextHistoryScene), 6);
-  await expect.poll(async () => (await readCounts()).workerCount).toBe(3);
+  await expect.poll(async () => (await readCounts()).workerCount).toBe(2);
   await expect.poll(async () => (await readCounts()).workerInputs.flat().some((origin) =>
     Array.isArray(origin) && origin[0] === 9 && origin[1] === 9)).toBe(true);
   const newHistoryWorkerIndex = (await readCounts()).workerInputs.findIndex((messages) =>

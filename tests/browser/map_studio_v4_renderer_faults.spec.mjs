@@ -100,9 +100,6 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
   await expect.poll(() => page.evaluate(() =>
     window.__rendererFaultPanel.getWorkspaceSnapshot().resources.scene.status,
   )).toBe("ready");
-  await expect.poll(() => page.evaluate(() =>
-    window.__rendererFaultPanel.getWorkspaceSnapshot().resources.plans.status,
-  )).toBe("ready");
   const map = panel.locator("matic-map-shell-v4").locator("matic-map-canvas-v4");
   const sceneCanvas = map.locator("canvas.scene-canvas");
 
@@ -121,11 +118,17 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
   await expect.poll(() => map.evaluate((element) => element.rendererDiagnostics()?.mode)).toBe("webgl2");
 
   await panel.getByRole("button", { name: /Clean rooms/ }).click();
+  await expect.poll(() => page.evaluate(() =>
+    window.__rendererFaultPanel.getWorkspaceSnapshot().resources.plans.status,
+  )).toBe("ready");
   const kitchen = panel.getByRole("checkbox", { name: "Kitchen", exact: true });
   await kitchen.check();
   await expect.poll(() => page.evaluate(() =>
     window.__rendererFaultPanel.getWorkspaceSnapshot().selection.roomIds,
   )).toEqual(["kitchen"]);
+  // Room selection deliberately forces the task map to top view; return Home
+  // before rotating so the renderer is exercised in the launch camera mode.
+  await panel.getByRole("button", { name: "Back to all tasks", exact: true }).click();
   await panel.getByRole("button", { name: "3D", exact: true }).click();
   await panel.getByRole("button", { name: "Rotate left", exact: true }).click();
   await expect.poll(() => page.evaluate(() =>

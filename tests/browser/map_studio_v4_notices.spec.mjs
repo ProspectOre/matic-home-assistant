@@ -131,9 +131,10 @@ test("@safety a Stop the robot rejects reports that Home Assistant can't confirm
 
 test("a coverage guard rejection maps to its notice key", async ({ page }) => {
   const panel = await mountPanel(page, { initialPlanCatalog: PLAN_CATALOG });
+  await sendIntent(page, { type: "open-workflow", workflow: "plans" });
   await expect.poll(() => page.evaluate(() =>
     window.__noticePanel.getWorkspaceSnapshot().resources.plans.status)).toBe("ready");
-  await sendIntent(page, { type: "open-workflow", workflow: "plan" });
+  await panel.locator('[data-plan-row="daily"]').click();
   await expect.poll(async () => (await snapshot(page)).workflow).toBe("plan");
   await page.evaluate(() => window.__panelFixture.failNextService("run_selected_plan", {
     translation_domain: "matic_robot",
@@ -718,9 +719,10 @@ test("a repeated workspace notice toasts and announces again", async ({ page }) 
   const catalog = structuredClone(PLAN_CATALOG);
   catalog.plans[0].next_run_preview = null;
   const panel = await mountPanel(page, { initialPlanCatalog: catalog });
+  await sendIntent(page, { type: "open-workflow", workflow: "plans" });
   await expect.poll(() => page.evaluate(() =>
     window.__noticePanel.getWorkspaceSnapshot().resources.plans.status)).toBe("ready");
-  await sendIntent(page, { type: "open-workflow", workflow: "plan" });
+  await panel.locator('[data-plan-row="daily"]').click();
   await expect.poll(async () => (await snapshot(page)).workflow).toBe("plan");
   // Full map hides the slot, so a warning toasts (shell.md §4 rule 3).
   await sendIntent(page, { type: "enter-full-map" });

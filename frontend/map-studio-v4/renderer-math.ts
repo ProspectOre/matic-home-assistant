@@ -1,10 +1,103 @@
 export const PERSPECTIVE_FIELD_OF_VIEW = Math.PI / 3.15;
-const FIT_PADDING = 1.08;
 
-export const perspectiveFitDistance = (radius: number, aspect: number): number => {
-  const halfVertical = PERSPECTIVE_FIELD_OF_VIEW / 2;
-  const halfHorizontal = Math.atan(Math.tan(halfVertical) * Math.max(0.2, aspect));
-  return radius / Math.sin(Math.min(halfVertical, halfHorizontal)) * FIT_PADDING;
+export interface SceneGeometryBounds {
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minY: number;
+  readonly maxY: number;
+  readonly minHeight: number;
+  readonly maxHeight: number;
+}
+
+export interface PerspectiveFitBounds {
+  /** World-space bounds relative to the camera target. */
+  readonly minX: number;
+  readonly maxX: number;
+  readonly minZ: number;
+  readonly maxZ: number;
+  readonly minHeight: number;
+  readonly maxHeight: number;
+}
+
+export interface SceneFitBounds {
+  readonly floor: SceneGeometryBounds;
+  readonly all: SceneGeometryBounds;
+}
+
+/** Floor and full-scene bounds from one scan of admitted map points. */
+export const sceneGeometryBounds = (
+  buffer: ArrayBuffer,
+  pointOffset: number,
+  floorCount: number,
+  totalCount: number,
+  fallbackSpan: readonly [number, number],
+): SceneFitBounds => {
+  type MutableBounds = { minX: number; maxX: number; minY: number; maxY: number; minHeight: number; maxHeight: number };
+  const empty = (): MutableBounds => ({ minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity,
+    minHeight: Infinity, maxHeight: -Infinity });
+  const floor = empty();
+  const all = empty();
+  const safeTotal = pointOffset < 0 ? 0 : Math.max(0, Math.min(Math.trunc(totalCount), Math.floor((buffer.byteLength - pointOffset) / 8)));
+  const safeFloor = Math.max(0, Math.min(Math.trunc(floorCount), safeTotal));
+  const include = (bounds: MutableBounds, x: number, y: number, height: number): void => {
+    bounds.minX = Math.min(bounds.minX, x); bounds.maxX = Math.max(bounds.maxX, x);
+    bounds.minY = Math.min(bounds.minY, y); bounds.maxY = Math.max(bounds.maxY, y);
+    bounds.minHeight = Math.min(bounds.minHeight, height); bounds.maxHeight = Math.max(bounds.maxHeight, height);
+  };
+  if (safeTotal > 0) {
+    const points = new DataView(buffer, pointOffset, safeTotal * 8);
+    for (let index = 0; index < safeTotal; index += 1) {
+      const offset = index * 8;
+      const x = points.getUint16(offset, true);
+      const y = points.getUint16(offset + 2, true);
+      const height = points.getUint8(offset + 4);
+      include(all, x, y, height);
+      if (index < safeFloor) include(floor, x, y, height);
+    }
+  }
+  const fallback = (): SceneGeometryBounds => ({ minX: 0, maxX: Math.max(0, fallbackSpan[0] - 1), minY: 0,
+    maxY: Math.max(0, fallbackSpan[1] - 1), minHeight: 0, maxHeight: 0 });
+  const finish = (bounds: MutableBounds): SceneGeometryBounds =>
+    Number.isFinite(bounds.minX) ? bounds : fallback();
+  return { floor: finish(floor), all: finish(all) };
+};
+
+/**
+ * Fits the complete world-space box inside a perspective view. The eight box
+ * corners are evaluated against the actual view frustum, avoiding the extra
+ * room required by a sphere around a flat rectangular floor. Edge padding is
+ * expressed as a fraction of each viewport dimension.
+ */
+export const perspectiveBoundsFitDistance = (
+  bounds: PerspectiveFitBounds,
+  aspect: number,
+  pitch: number,
+  yaw = -Math.PI / 4,
+  edgePadding = 0.05,
+): number => {
+  const safeAspect = Math.max(0.2, aspect);
+  const safeEdge = Math.max(0.5, 1 - 2 * edgePadding);
+  const focal = 1 / Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2);
+  const sinPitch = Math.sin(pitch);
+  const cosPitch = Math.cos(pitch);
+  const sinYaw = Math.sin(yaw);
+  const cosYaw = Math.cos(yaw);
+  let distance = 0;
+  for (const x of [bounds.minX, bounds.maxX]) {
+    for (const z of [bounds.minZ, bounds.maxZ]) {
+      for (const height of [bounds.minHeight, bounds.maxHeight]) {
+        const cameraRight = x * cosYaw - z * sinYaw;
+        const cameraUp = -x * sinYaw * sinPitch + height * cosPitch - z * cosYaw * sinPitch;
+        const towardCamera = x * sinYaw * cosPitch + height * sinPitch + z * cosYaw * cosPitch;
+        distance = Math.max(
+          distance,
+          towardCamera + Math.abs(focal * cameraRight / safeAspect) / safeEdge,
+          towardCamera + Math.abs(focal * cameraUp) / safeEdge,
+        );
+      }
+    }
+  }
+  return Math.max(0.1, distance);
 };
 
 export const multiply = (left: Float32Array, right: Float32Array): Float32Array => {

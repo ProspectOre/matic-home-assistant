@@ -502,6 +502,7 @@ async def _async_verify_room_completion(
     attempts: int = SESSION_HISTORY_ATTEMPTS,
     allow_active_cleaning: bool = False,
     on_verified_session: Callable[[str], None] | None = None,
+    on_verified_completion: Callable[[str, int], None] | None = None,
 ) -> bool:
     """Require one new, completed, overlapping native single-room record."""
     if reader is None or baseline is None:
@@ -539,6 +540,10 @@ async def _async_verify_room_completion(
                     now=now,
                 )
                 if len(matches) == 1:
+                    if on_verified_completion is not None:
+                        on_verified_completion(
+                            matches[0].ended_at, matches[0].duration_seconds
+                        )
                     if on_verified_session is not None:
                         if session_hash := native_session_hash(matches[0].record.key):
                             on_verified_session(session_hash)

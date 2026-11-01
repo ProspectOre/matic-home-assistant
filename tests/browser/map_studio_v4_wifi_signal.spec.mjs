@@ -196,7 +196,7 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     const painted = [];
     const fill = context.fill.bind(context);
     context.fill = (...args) => { painted.push(String(context.fillStyle)); return fill(...args); };
-    renderer.setState({ ...initial, wifiSignal, appearance: "rooms" });
+    renderer.setState({ ...initial, wifiSignal, view: "top", appearance: "rooms" });
     await frame();
     renderer.dispose();
     const lastRoomFill = painted.findLastIndex((value) => / 0\.94\)$/u.test(value));

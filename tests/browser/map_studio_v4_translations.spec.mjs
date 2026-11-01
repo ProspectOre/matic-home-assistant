@@ -52,7 +52,7 @@ async function mountPanel(page, fixtureOptions = {}) {
   const panel = page.locator(fixture.panelTag);
   await expect.poll(() => page.evaluate(() => {
     const state = window.__translationPanel.getWorkspaceSnapshot();
-    return state.resources.scene.status === "ready" && state.resources.plans.status === "ready";
+    return state.resources.scene.status === "ready";
   })).toBe(true);
   return panel;
 }
@@ -92,6 +92,7 @@ const localizeCalls = (page, key) => page.evaluate(
 test("counted labels take their numbers from placeholders", async ({ page }) => {
   const panel = await mountPanel(page);
   await sendIntent(page, { type: "open-workflow", workflow: "rooms" });
+  await expect.poll(() => page.evaluate(() => window.__translationPanel.getWorkspaceSnapshot().resources.plans.status)).toBe("ready");
   await sendIntent(page, { type: "toggle-room", roomId: "room-a" });
   await sendIntent(page, { type: "toggle-room", roomId: "room-b" });
 

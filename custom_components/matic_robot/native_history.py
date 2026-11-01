@@ -12,6 +12,7 @@ from typing import Any, cast
 
 from homeassistant.util import dt as dt_util
 
+from . import daily_room_limit
 from .cadence_accounting import apply_verified_cadence as _apply_verified_cadence
 from .cadence_accounting import (
     validated_cadence_snapshot as _validated_cadence_snapshot,
@@ -38,6 +39,73 @@ from .plan_timing import (
 from .run_history import repair_run_history
 
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = max(64, MAX_ROOM_SEQUENCE_SIZE)
+
+
+def _daily_session_hash(key: bytes) -> str:
+    """Keep a bounded session reference without persisting the native key."""
+    return (
+        native_session_hash(key)
+        or hashlib.sha256(b"matic-daily-native-session\0" + key).hexdigest()
+    )
+
+
+def _import_daily_native_uncertainty(
+    robot: dict[str, Any],
+    floor_plan: FloorPlan,
+    records: Iterable[CleaningSessionRecord],
+) -> bool:
+    """Hold ambiguous native completions instead of inventing daily credit."""
+    now = dt_util.utcnow()
+    changed = False
+    rooms_by_name: dict[str, list[Room]] = {}
+    for room in floor_plan.rooms:
+        rooms_by_name.setdefault(_native_room_key(room.name), []).append(room)
+    for record in records:
+        session = record.session
+        names = (
+            {
+                result.room
+                for result in session.mode_results
+                if result.status == "completed"
+            }
+            if session.mode_results
+            else set(session.completed_rooms)
+        )
+        for name in names:
+            for room in rooms_by_name.get(_native_room_key(name), ()):
+                if daily_room_limit._time(session.ended_at) is None:
+                    changed = (
+                        daily_room_limit.record_unknown_completion_time(
+                            robot, room.id, now=now
+                        )
+                        or changed
+                    )
+                    continue
+                assert isinstance(session.ended_at, str)
+                try:
+                    identity = room_cadence_identity(floor_plan, room.id)
+                except ValueError:
+                    identity = None
+                changed = (
+                    daily_room_limit.record_completion(
+                        robot,
+                        room.id,
+                        identity,
+                        session.ended_at,
+                        now=now,
+                        session_hash=(
+                            _daily_session_hash(record.key)
+                            if record.key
+                            else hashlib.sha256(
+                                f"matic-empty-native-key\0{session.ended_at}\0{room.id}".encode()
+                            ).hexdigest()
+                        ),
+                        unverified=True,
+                    )
+                    or changed
+                )
+    return changed
+
 
 OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
 
@@ -348,6 +416,10 @@ def _reconcile_native_room_history(
             on_reconciled(pending)
         return True
     room_settings = _native_completion_settings(pending, room)
+    try:
+        completion_identity = room_cadence_identity(floor_plan, room.id)
+    except ValueError:
+        completion_identity = None
     _record_native_completion(
         robot,
         pending["plan_id"],
@@ -355,6 +427,9 @@ def _reconcile_native_room_history(
         completed_at=matches[0].ended_at,
         duration_seconds=matches[0].duration_seconds,
         room_settings=room_settings,
+        room_identity=completion_identity,
+        run_id=pending.get("run_id"),
+        session_hash=_daily_session_hash(matches[0].record.key),
     )
     _remember_native_reconciliation(robot, pending)
     if "session_hash" in pending:
@@ -448,11 +523,23 @@ def _record_native_completion(
     completed_at: str,
     duration_seconds: int | None,
     room_settings: CleaningRoom | None,
+    room_identity: str | None = None,
+    run_id: str | None = None,
+    session_hash: str | None = None,
 ) -> None:
     """Commit one verified native completion into plan and global history."""
     rotation = robot["rotations"].setdefault(plan_id, {"rooms": {}})
     room_records = rotation.setdefault("rooms", {})
     room_id = room.room_id if isinstance(room, CleaningRoom) else room.id
+    daily_room_limit.record_completion(
+        robot,
+        room_id,
+        room_identity,
+        completed_at,
+        now=dt_util.utcnow(),
+        run_id=run_id,
+        session_hash=session_hash,
+    )
     record = room_records.setdefault(room_id, {})
     record["room_id"] = room_id
     record["name"] = room.name

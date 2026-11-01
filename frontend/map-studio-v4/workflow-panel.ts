@@ -7,24 +7,28 @@ import { mopControl } from "./mop-control";
 import { base, tokens } from "./tokens";
 
 import type { CleaningMode, CoverageSetting } from "./backend-contracts";
+import type { MaticBackend } from "./backend";
 import {
   type DateFormat,
+  type AcknowledgeQueueUncertainAction,
   type Localize,
+  type NoticePlaceholders,
+  type QueueChangeAction,
   type ResourceState,
   type WorkspaceIntent,
   type WorkspaceState,
 } from "./contracts";
-import { PLAN_VIEWS_TAG, PRECISION_CONTROLS_TAG, ROOMS_VIEW_TAG, WORKFLOW_TAG } from "./element-tags";
+import { ARCHIVE_WORKSPACE_TAG, PLAN_VIEWS_TAG, PRECISION_CONTROLS_TAG, ROOMS_VIEW_TAG, WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
-import { deleteSubject, hasStoppableWork, heldReasonKey, initialWorkspaceState } from "./state";
+import { canReadFloorResources, deleteSubject, hasStoppableWork, heldReasonKey, initialWorkspaceState } from "./state";
+import { canChangeQueue } from "./queue-policy";
 import { formatDateTime, formatList, translate } from "./localize";
 import { LazyChunk, chunkStatus } from "./lazy-chunk";
 import { COVERAGES, MODES, coverageLabel, modeLabel, settingLabel } from "./plan-cadence";
 import { homePinSwitch } from "./home-shortcuts";
 import { icon, iconChevronRight, iconNoticeWarning, iconPlus } from "./icons";
 import { formatNumber, plansWithArea, type Translate } from "./plan-copy";
-// The plan picker, Run and Edit, and the Rooms view.
-import "./plan-views";
+// The Rooms view; the plan picker, Run and Edit load when opened.
 import "./rooms-view";
 // Draw's precision controls load with the other workflow tools; the shell
 // renders them only in the draw workflow.
@@ -63,15 +67,99 @@ export const drawHint = (t: Translate, state: WorkspaceState): string | null => 
 };
 export { formControls } from "./form-controls";
 
+export const queueControls = ({ state, roomId, localize, dates, setRoom, currentState, dispatch, retry }: {
+  state: WorkspaceState;
+  roomId: string;
+  localize?: Localize;
+  dates?: DateFormat;
+  setRoom: (roomId: string) => void;
+  currentState: () => WorkspaceState;
+  dispatch: (action: QueueChangeAction | AcknowledgeQueueUncertainAction) => void;
+  retry: (event: Event) => void;
+}) => {
+  const catalog = state.resources.plans.status === "ready" ? state.resources.plans.value : null;
+  const rooms = catalog?.rooms ?? [];
+  if (state.activity !== "cleaning" || state.smartStop) return nothing;
+  const t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
+    translate(localize, key, fallback, placeholders, dates);
+  const heading = t("v4_queue_heading", "Change this clean");
+  if (!catalog) {
+    const content = state.resources.plans.status === "error"
+      ? html`<div class="problem" role="alert"><p>${t("v4_queue_catalog_failed", "The rooms for this clean couldn't be read. Check the map and reload to try again.")}</p><button class="ms-btn ms-btn--secondary" type="button" data-dialog-launcher="discardDraft" @click=${retry}>${t("v4_retry", "Try again")}</button></div>`
+      : canReadFloorResources(state)
+        ? html`<p class="loading" role="status">${t("v4_workflow_loading", "Loading…")}</p>`
+        : html`<p class="loading" role="status">${t("v4_queue_catalog_held", "Queue changes are unavailable until the current map and room list are ready.")}</p>`;
+    return html`<section class="queue" aria-labelledby="queue-heading"><h3 class="ms-section-heading" id="queue-heading">${heading}</h3>${content}</section>`;
+  }
+  if (rooms.length === 0) return nothing;
+  const current = state.currentArea?.trim().toLocaleLowerCase();
+  const room = rooms.find((candidate) => candidate.roomId === roomId)
+    ?? rooms.find((candidate) => candidate.roomId === state.lastRun?.estimate?.roomId
+      || candidate.name.toLocaleLowerCase() === current)
+    ?? rooms[0]!;
+  const held = !canChangeQueue(state);
+  // Capture the scope at render time. A detached button can still receive a
+  // click before Lit replaces it after an owner, floor, or catalog change.
+  const scope = {
+    ownerUserKey: state.owner?.userKey ?? null,
+    ownerEntryKey: state.owner?.entryKey ?? null,
+    entryId: state.selection.entryId,
+    floorId: state.selection.floorId,
+    generation: state.generation,
+    catalog,
+    revision: state.queueScopeRevision,
+  };
+  const selectedRoomId = room.roomId;
+  const selectedRoomName = room.name;
+  const button = (change: QueueChangeAction["change"], label: string) => html`
+    <button class="ms-btn ms-btn--secondary" type="button" aria-disabled=${held ? "true" : nothing}
+      @click=${() => {
+        const current = currentState();
+        const currentCatalog = current.resources.plans.status === "ready" ? current.resources.plans.value : null;
+        const currentRoom = currentCatalog?.rooms.find((candidate) => candidate.roomId === selectedRoomId);
+        if (!canChangeQueue(current) || current.generation !== scope.generation
+          || (current.owner?.userKey ?? null) !== scope.ownerUserKey || (current.owner?.entryKey ?? null) !== scope.ownerEntryKey
+          || current.selection.entryId !== scope.entryId || current.selection.floorId !== scope.floorId
+          || currentCatalog !== catalog || !currentRoom || currentRoom.name !== selectedRoomName) return;
+        dispatch({ id: "change-queue", change, roomId: currentRoom.roomId, room: currentRoom.name,
+          scope });
+      }}
+    >${label}</button>`;
+  return html`
+    <section class="queue" aria-labelledby="queue-heading">
+      <h3 class="ms-section-heading" id="queue-heading">${heading}</h3>
+      <label class="ms-field">${t("v4_queue_room", "Room")}
+        <select name="queue-room" .value=${room.roomId}
+          @change=${(event: Event) => setRoom((event.currentTarget as HTMLSelectElement).value)}
+        >${rooms.map((candidate) => html`<option value=${candidate.roomId} ?selected=${candidate.roomId === room.roomId}>${candidate.name}</option>`)}</select>
+      </label>
+      <div class="queue-actions" role="group" aria-label=${t("v4_queue_actions", "Change {room}", { room: room.name })}>
+        ${button("skip_room", t("v4_queue_skip", "Skip"))}
+        ${button("clean_room_next", t("v4_queue_next", "Clean next"))}
+        ${button("clean_room_again", t("v4_queue_again", "Clean again"))}
+      </div>
+      ${state.queuePending ? html`<p class="queue-status" role="status">${t("v4_queue_pending", "Waiting for the robot to confirm…")}</p>` : nothing}
+      ${state.queueUncertainToken ? html`<div class="problem" role="alert">
+        <p>${t("v4_queue_unconfirmed", "The earlier change may still take effect after you check. Another change could repeat it. Check the queue in the Matic app before continuing.")}</p>
+        <button class="ms-btn ms-btn--secondary" type="button" @click=${() => dispatch({
+          id: "acknowledge-queue-uncertain", token: state.queueUncertainToken!, scope,
+        })}>${t("v4_queue_checked", "I checked the queue")}</button>
+      </div>` : nothing}
+    </section>
+  `;
+};
+
 const planViewsTag = unsafeStatic(PLAN_VIEWS_TAG);
 const roomsViewTag = unsafeStatic(ROOMS_VIEW_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
+const archiveWorkspaceTag = unsafeStatic(ARCHIVE_WORKSPACE_TAG);
 
 const eventValue = (event: Event): string => (event.currentTarget as HTMLInputElement).value;
 
 export class MaticMapWorkflowV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
+    backend: { attribute: false },
     localize: { attribute: false },
     dates: { attribute: false },
     _historyPreviewPosition: { state: true },
@@ -128,6 +216,7 @@ line-height: var(--ms-lh-snug);
 `];
 
   state: WorkspaceState = initialWorkspaceState();
+  backend: MaticBackend | null = null;
   localize?: Localize;
   // The phone sheet holds the brush settings itself, above the tool row.
   narrow = false;
@@ -137,6 +226,7 @@ line-height: var(--ms-lh-snug);
   _historyPreviewPosition: number | null = null;
   readonly #diagnostics = new LazyChunk(this, () => import("./diagnostics-panel"));
   readonly #runHistory = new LazyChunk(this, () => import("./run-history"));
+  readonly #archive = new LazyChunk(this, () => import("./archive-workspace"));
   #historySelectionKey = "";
 
   protected override willUpdate(changed: PropertyValues<this>): void {
@@ -231,7 +321,8 @@ line-height: var(--ms-lh-snug);
   }
 
   // A reload keeps showing what is already loaded; only an empty load waits.
-  #resource({ status, value }: ResourceState<unknown>, body: unknown, workflow: "rooms" | "plans" | "plan" | "draw" | "areaReview" | "history") {
+  #resource(resource: ResourceState<unknown>, body: unknown, workflow: "rooms" | "plans" | "plan" | "draw" | "areaReview" | "history") {
+    const { status, value, problem } = resource;
     const copy = this.#resourceCopy(workflow);
     if (value === null && (status === "idle" || status === "loading")) return html`<div class="loading" role="status">${copy.loading}</div>`;
     if (status === "error") {
@@ -239,7 +330,10 @@ line-height: var(--ms-lh-snug);
         <div class="stack">
           <div class="problem" role="alert">${copy.unavailable}</div>
           <div class="toolbar">
-            <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow })}>${this.#t("v4_retry", "Try again")}</button>
+            <button class="ms-btn ms-btn--secondary" type="button" @click=${(event: Event) => {
+              if (problem === "plan-module-unavailable") this.retry(event);
+              else this.#intent({ type: "open-workflow", workflow });
+            }}>${this.#t("v4_retry", "Try again")}</button>
           </div>
         </div>
       `;
@@ -293,7 +387,10 @@ line-height: var(--ms-lh-snug);
     const newArea = this.#t("area_new", "New area");
     const problem = status === "error" ? html`
       <div class="problem" role="alert">${copy.unavailable}</div>
-      <div class="toolbar"><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "areas" })}>${this.#t("v4_retry", "Try again")}</button></div>
+      <div class="toolbar"><button class="ms-btn ms-btn--secondary" type="button" @click=${(event: Event) => {
+        if (this.state.resources.areas.problem === "area-module-unavailable") this.retry(event);
+        else this.#intent({ type: "open-workflow", workflow: "areas" });
+      }}>${this.#t("v4_retry", "Try again")}</button></div>
     ` : nothing;
     const areas = value?.areas ?? [];
     if (!areas.length) {
@@ -371,7 +468,10 @@ line-height: var(--ms-lh-snug);
         ${areas.status === "error" ? html`
           <div class="stack">
             <div class="problem" role="alert">${this.#resourceCopy("areaReview").unavailable}</div>
-            <div class="toolbar"><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "areaReview" })}>${this.#t("v4_retry", "Try again")}</button></div>
+            <div class="toolbar"><button class="ms-btn ms-btn--secondary" type="button" @click=${(event: Event) => {
+              if (areas.problem === "area-module-unavailable") this.retry(event);
+              else this.#intent({ type: "open-workflow", workflow: "areaReview" });
+            }}>${this.#t("v4_retry", "Try again")}</button></div>
           </div>
         ` : nothing}
         <label class="field ms-field">${this.#t("area_name", "Area name")}
@@ -415,11 +515,12 @@ line-height: var(--ms-lh-snug);
   }
 
   #history() {
+    this.#archive.request();
     const resource = this.state.resources.history;
     const catalog = resource.value;
-    const floor = catalog?.floors.find((candidate) => candidate.id === this.state.selection.floorId)
-      || catalog?.floors.find((candidate) => candidate.active)
-      || catalog?.floors[0];
+    const floor = this.state.dataMode === "history"
+      ? catalog?.floors.find((candidate) => candidate.id === this.state.selection.floorId)
+      : catalog?.floors.find((candidate) => candidate.active) || catalog?.floors[0];
     const snapshots = floor?.snapshots || [];
     const position = this.state.selection.historyId
       ? Math.max(0, snapshots.findIndex((snapshot) => snapshot.id === this.state.selection.historyId))
@@ -438,7 +539,7 @@ line-height: var(--ms-lh-snug);
     // The live map could not be shown, so the last saved one is: the selectors
     // leave history without a branch, so the body carries the reason once.
     const readOnlyLive = this.state.dataMode === "live" && this.state.floor.readOnly;
-    return this.#resource(resource, html`
+    return html`${this.state.comparisonActive ? nothing : this.#resource(resource, html`
       <div class="stack">
         ${readOnlyLive ? html`<p class="subtle">${this.#t("v4_reason_live_map_required", "Can't edit until you show the live map.")}</p>` : nothing}
         ${(catalog?.floors.length || 0) > 1 ? html`
@@ -500,7 +601,10 @@ line-height: var(--ms-lh-snug);
         </div>
         ${held ? html`<p class="sr-only" id="history-held-reason">${held}</p>` : nothing}
       </div>
-    `, "history");
+    `, "history")}
+      ${this.#archive.status === "ready" ? staticHtml`<${archiveWorkspaceTag} .state=${this.state}
+        .backend=${this.backend} .localize=${this.localize} .dates=${this.dates} .emit=${this.#intent}
+      ></${archiveWorkspaceTag}>` : chunkStatus(this.#archive.status, this.localize, this.retry)}`;
   }
 
   #support() {

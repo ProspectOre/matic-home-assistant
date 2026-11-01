@@ -24,6 +24,7 @@ from .const import (
     EVENT_PLAN_DOCKED,
     EVENT_PLAN_FINISHED,
 )
+from .llm_camera import MaticInvestigateTool, MaticTakePhotoTool
 from .llm_common import (
     _READ_ONLY,
     _AdministratorAPI,
@@ -203,6 +204,8 @@ class MaticRobotStatusAPI(_AdministratorAPI):
             MaticResetScheduleTool(exposed_only=exposed_only),
             MaticGoToRoomTool(exposed_only=exposed_only),
             MaticSendToSinkTool(exposed_only=exposed_only),
+            MaticTakePhotoTool(exposed_only=exposed_only),
+            MaticInvestigateTool(exposed_only=exposed_only),
         ]
 
     @callback

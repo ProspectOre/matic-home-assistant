@@ -1,12 +1,10 @@
-// Plan, area and robot-setting writes. They run only from a control inside a workflow, so
-// effects.ts loads this module on the first write instead of at startup.
-// Runtime imports are deliberately absent: an import edge into the startup
-// modules makes esbuild split them into more chunks, which costs the startup
-// graph more than this module saves. Startup helpers arrive in the context.
-import type { DeleteSharedCadenceAction, HassProjection, PlanDraft, PlanOrigin, QueueChangeAction, ResetCadenceAction, WorkspaceNotice, WorkspaceState } from "./contracts";
+// Plan, area, robot-setting and queue writes. effects.ts loads this module
+// only when one of those controls is used, keeping it out of startup.
+import type { DeleteSharedCadenceAction, HassProjection, PlanDraft, PlanOrigin, ResetCadenceAction, WorkspaceNotice, WorkspaceState } from "./contracts";
 import type { AreasCatalog, PlansCatalog, NextRunPreview } from "./backend-contracts";
 import type { MaticBackend } from "./backend";
 import type { WorkspaceStore } from "./state";
+import { QueueActionController } from "./queue-action-controller";
 
 export interface CatalogWorkflowActions {
   loadPlans(options?: { force?: boolean; inPlace?: boolean; onError?: () => void }): Promise<PlansCatalog | null>;
@@ -14,6 +12,11 @@ export interface CatalogWorkflowActions {
   selectPlan(planId: string | null, preserveNotice?: boolean, origin?: PlanOrigin): void;
   selectArea(areaId: string | null): void;
 }
+
+/** Construct the queue controller after this deferred module has loaded. */
+export const createQueueActionController = (
+  options: import("./queue-action-controller").QueueActionControllerOptions,
+): import("./queue-action-controller").QueueActionController => new QueueActionController(options);
 
 /** The startup functions the writes use; effects.ts passes the same ones it imports. */
 export interface CatalogWriteHelpers {
@@ -46,41 +49,6 @@ export const coverageGuardNotice = (
   return copy ? makeNotice("error", copy[0], copy[1]) : null;
 };
 
-// The integration's refusals (docs/queue-changes.md, Limits), keyed by its
-// exception translation keys.
-const QUEUE_REFUSED: Readonly<Record<string, readonly [string, string]>> = {
-  queue_no_clean_running: ["v4_notice_queue_not_cleaning", "Rooms can only be changed while the robot is cleaning."],
-  queue_current_room_unknown: ["v4_notice_queue_between_rooms", "The robot isn't in a room on this map right now. Try again once it's cleaning a room."],
-  queue_plan_unreadable: ["v4_notice_queue_unreadable", "This clean includes a custom area, so its rooms can't be changed here. Use the Matic app."],
-  queue_room_not_queued: ["v4_notice_queue_not_queued", "That room isn't waiting in this clean."],
-  queue_last_room: ["v4_notice_queue_last_room", "That's the only room left. Stop the clean instead."],
-  queue_already_next: ["v4_notice_queue_already_next", "That room is already being cleaned or is next."],
-  queue_room_settings_unknown: ["v4_notice_queue_not_in_plan", "That room isn't in this clean anymore. Clean it once this clean ends."],
-};
-
-/** The result of a queue change: what changed, the integration's refusal, or that the robot didn't confirm it. */
-export const queueChangeNotice = (
-  notice: CatalogWriteHelpers["notice"],
-  action: QueueChangeAction,
-  error?: unknown,
-): WorkspaceNotice => {
-  if (error === undefined) {
-    switch (action.change) {
-      case "skip_room":
-        return notice("success", "v4_notice_queue_skipped", "{room} skipped.", { room: action.room });
-      case "clean_room_next":
-        return notice("success", "v4_notice_queue_next", "{room} is next.", { room: action.room });
-      case "clean_room_again":
-        return notice("success", "v4_notice_queue_again", "{room} will be cleaned again.", { room: action.room });
-    }
-  }
-  const { translation_domain: domain, translation_key: key } = (error ?? {}) as Record<string, unknown>;
-  const copy = domain === "matic_robot" && typeof key === "string" && Object.hasOwn(QUEUE_REFUSED, key) ? QUEUE_REFUSED[key] : undefined;
-  return copy
-    ? notice("error", copy[0], copy[1])
-    : notice("error", "v4_notice_queue_unconfirmed", "The robot didn't confirm the change to {room}. Check the queue in the Matic app.", { room: action.room });
-};
-
 /**
  * One write, as EffectController started it. The write belongs to the moment
  * it was asked for: `state` is the workspace then, and `signal` is its
@@ -99,6 +67,8 @@ export interface CatalogWriteContext {
   /** The live projection; a completion for an older entry or user changes nothing. */
   projection(): HassProjection | null;
   disposed(): boolean;
+  /** Cross the outbound mutation boundary; acknowledgement keeps its owner. */
+  markSent(): void;
   /** Gives back the mutation resource before the write's own follow-up reads finish. */
   release(): void;
   /** Says once that the write was saved; effects.ts says "not saved" for any other end. */
@@ -112,6 +82,29 @@ export interface CatalogWriteContext {
 const draftIsLive = (captured: WorkspaceState, live: WorkspaceState): boolean => live.workflow === captured.workflow
   && live.planDraft === captured.planDraft && live.areaDraft === captured.areaDraft
   && live.draw.circles === captured.draw.circles && live.draw.outline === captured.draw.outline;
+
+export const setDailyRoomLimit = async (context: CatalogWriteContext, roomId: string, limit: number | null): Promise<void> => {
+  const { state, store, signal, backend } = context;
+  const catalog = state.resources.plans.value;
+  const owner = state.owner;
+  const current = (): boolean => !context.disposed() && !signal.aborted
+    && store.value.owner?.entryKey === owner?.entryKey && store.value.owner?.userKey === owner?.userKey
+    && store.value.resources.plans.value?.floorToken === catalog?.floorToken;
+  if (!catalog?.entryId || !catalog.floorToken || !catalog.rooms.some((room) => room.roomId === roomId) || !current()
+    || !context.helpers.canEditCoordinates(store.value)) return;
+  store.patch({ command: "pending", notice: null });
+  try {
+    context.markSent();
+    await backend.setDailyRoomLimit(catalog.entryId, catalog.floorToken, roomId, limit, signal);
+    if (!current()) return;
+    store.patch({ command: "idle", manualRoomPreview: { status: "idle", value: null, problem: null } });
+    context.release();
+    await context.effects.loadPlans({ force: true, inPlace: true });
+    context.settled(current());
+  } catch (error) {
+    if (!context.helpers.isAbort(error) && current()) store.patch({ command: "idle", notice: context.failure });
+  }
+};
 
 /** Change the existing robot setting; never store it in a room or plan draft. */
 export const setDeepMop = async (context: CatalogWriteContext): Promise<void> => {
@@ -128,6 +121,7 @@ export const setDeepMop = async (context: CatalogWriteContext): Promise<void> =>
   const enabled = !setting.enabled;
   store.patch({ command: "pending", pendingAction: "set-deep-mop", notice: null });
   try {
+    context.markSent();
     await backend.service("switch", enabled ? "turn_on" : "turn_off", {}, setting.entityId, { acknowledgementTimeout: "mutation" });
     if (!current()) return;
     // HA's service acknowledgement can precede its state_changed delivery.
@@ -170,6 +164,7 @@ export const saveArea = async (context: CatalogWriteContext): Promise<void> => {
   const current = (): boolean => !context.disposed() && !signal.aborted;
   store.patch({ command: "pending", notice: notice("info", "v4_notice_area_saving", "Saving area…") });
   try {
+    context.markSent();
     const id = await backend.saveArea(entry.areasUrl, {
       areaId: draft.id,
       name: draft.name.trim(),
@@ -231,6 +226,7 @@ export const deleteArea = async (context: CatalogWriteContext): Promise<void> =>
   const current = (): boolean => !context.disposed() && !signal.aborted;
   store.patch({ command: "pending", notice: null });
   try {
+    context.markSent();
     const conflict = await context.backend.deleteArea(entry.areasUrl, areaId, signal);
     if (!current()) return;
     if (conflict !== undefined) {
@@ -627,7 +623,9 @@ const planWriter = (context: CatalogWriteContext) => {
     onAcknowledged?: (response: unknown) => void,
     onFailure?: (error: unknown) => void,
   ): Promise<boolean | null> => {
+    if (!current()) return null;
     try {
+      context.markSent();
       const response = await context.backend.service("matic_robot", service, data, entityId, {
         acknowledgementTimeout: "mutation",
         ...(onAcknowledged ? { returnResponse: true } : {}),
@@ -650,11 +648,15 @@ const planWriter = (context: CatalogWriteContext) => {
 interface PlanPreflightContext {
   readonly plan: string;
   readonly displayedPreview: NextRunPreview;
+  readonly entryId: string;
+  readonly generation: number;
+  readonly selectedPlanId: string | null;
+  readonly planDraft: PlanDraft;
+  readonly signal: AbortSignal;
+  readonly disposed: () => boolean;
   readonly store: WorkspaceStore;
-  readonly current: () => boolean;
   readonly loadPlans: () => Promise<PlansCatalog | null>;
   readonly releaseRead: () => void;
-  readonly releasePending: () => void;
   readonly failure: WorkspaceNotice;
   readonly notice: CatalogWriteHelpers["notice"];
   readonly start: (previewToken: string) => Promise<void>;
@@ -662,17 +664,34 @@ interface PlanPreflightContext {
 
 /** Recheck the captured plan before crossing the robot command boundary. */
 export const runPlanPreflight = async (context: PlanPreflightContext): Promise<void> => {
-  const { plan, store, displayedPreview, notice, current } = context;
+  const { plan, store, displayedPreview, notice } = context;
+  const current = (): boolean => {
+    const latest = store.value;
+    return !context.signal.aborted && !context.disposed()
+      && latest.selection.entryId === context.entryId && latest.generation === context.generation
+      && latest.workflow === "plan" && latest.selection.planId === context.selectedPlanId
+      && (latest.selection.planId || latest.resources.plans.value?.selectedPlan) === plan
+      && latest.planDraft === context.planDraft;
+  };
+  let pendingOwned = true;
+  const releasePending = (): void => {
+    if (!pendingOwned) return;
+    pendingOwned = false;
+    const latest = store.value;
+    if (!context.disposed() && latest.selection.entryId === context.entryId
+      && latest.generation === context.generation && latest.command === "pending"
+      && latest.pendingAction === "run-plan") store.patch({ command: "idle" });
+  };
   // The module itself can finish loading after a floor, plan or owner change.
   if (!current()) return;
   let catalog: PlansCatalog | null;
   try {
     catalog = await context.loadPlans();
   } finally {
-    context.releaseRead();
+      context.releaseRead();
   }
   if (!current()) return;
-  context.releasePending();
+  releasePending();
   if (!catalog) {
     store.patch({ notice: context.failure });
     return;

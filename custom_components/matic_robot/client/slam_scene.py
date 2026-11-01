@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import math
 import struct
+import zlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -18,6 +21,7 @@ from .slam_tiles import (
     TILE_HEIGHT,
     TILE_SIDE,
     VOXEL_SCALE_METERS,
+    SlamStructureTile,
     SlamTile,
 )
 
@@ -28,6 +32,7 @@ MAX_SCENE_POINTS = 1_500_000
 MAX_SCENE_SPAN = 65_536
 MAX_SCENE_RASTER_CELLS = 4 * 1024 * 1024
 MAX_SCENE_METADATA_BYTES = 1024 * 1024
+MAX_COVERAGE_MASK_BYTES = 384 * 1024
 _SCENE_HEADER = struct.Struct("<8sHHIII")
 
 
@@ -97,6 +102,7 @@ def encode_slam_scene(
     *,
     floor_plan: FloorPlan | None = None,
     max_points: int = MAX_SCENE_POINTS,
+    structure_tiles: tuple[SlamStructureTile, ...] | None = None,
 ) -> bytes:
     """Encode the private color point cloud for the local WebGL studio.
 
@@ -246,14 +252,21 @@ def encode_slam_scene(
                     "center": center,
                 }
             )
+    metadata_value: dict[str, object] = {
+        "meters_per_cell": VOXEL_SCALE_METERS,
+        "origin_cells": [min_cell_x, min_cell_y],
+        "span_cells": [span_x, span_y],
+        "sample_step": sample_step,
+        "rooms": rooms,
+    }
+    if structure_tiles is not None:
+        coverage = _coverage_metadata(
+            structure_tiles, min_cell_x, min_cell_y, span_x, span_y
+        )
+        if coverage is not None:
+            metadata_value["coverage"] = coverage
     metadata = json.dumps(
-        {
-            "meters_per_cell": VOXEL_SCALE_METERS,
-            "origin_cells": [min_cell_x, min_cell_y],
-            "span_cells": [span_x, span_y],
-            "sample_step": sample_step,
-            "rooms": rooms,
-        },
+        metadata_value,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode()
@@ -262,7 +275,26 @@ def encode_slam_scene(
     # reject an unrepresentable scene rather than silently omitting rooms or
     # identities and producing a payload that the renderer will discard.
     if len(metadata) > MAX_SCENE_METADATA_BYTES:
-        raise DecodeError("photorealistic SLAM scene metadata exceeds its byte limit")
+        # Coverage is optional for display but required for validated compare.
+        # Keep the scene usable and make omitted support explicitly unknown.
+        metadata_value.pop("coverage", None)
+        metadata_value["coverage"] = {
+            "version": 1,
+            "status": "too_large",
+            "diff_eligible": False,
+        }
+        metadata = json.dumps(
+            metadata_value, ensure_ascii=False, separators=(",", ":")
+        ).encode()
+        if len(metadata) > MAX_SCENE_METADATA_BYTES:
+            metadata_value.pop("coverage", None)
+            metadata = json.dumps(
+                metadata_value, ensure_ascii=False, separators=(",", ":")
+            ).encode()
+        if len(metadata) > MAX_SCENE_METADATA_BYTES:
+            raise DecodeError(
+                "photorealistic SLAM scene metadata exceeds its byte limit"
+            )
     header = _SCENE_HEADER.pack(
         SCENE_MAGIC,
         SCENE_VERSION,
@@ -272,6 +304,50 @@ def encode_slam_scene(
         surface_point_count,
     )
     return b"".join((header, metadata, *floor_chunks, *surface_chunks))
+
+
+def _coverage_metadata(
+    tiles: tuple[SlamStructureTile, ...],
+    origin_x: int,
+    origin_y: int,
+    span_x: int,
+    span_y: int,
+) -> dict[str, object] | None:
+    """Encode exact structurally observed cells, or explicitly mark unknown."""
+    if not tiles:
+        return {"version": 1, "status": "unavailable", "diff_eligible": False}
+    observed = np.zeros((span_y, span_x), dtype=np.bool_)
+    for tile in tiles:
+        if len(tile.occupancy) != TILE_SIDE * TILE_SIDE:
+            return {"version": 1, "status": "invalid", "diff_eligible": False}
+        left = tile.page_x * TILE_SIDE - origin_x
+        top = tile.page_y * TILE_SIDE - origin_y
+        x0, y0 = max(0, left), max(0, top)
+        x1, y1 = min(span_x, left + TILE_SIDE), min(span_y, top + TILE_SIDE)
+        if x0 >= x1 or y0 >= y1:
+            continue
+        occupancy = np.frombuffer(tile.occupancy, dtype=np.uint8).reshape(
+            TILE_SIDE, TILE_SIDE
+        )
+        observed[y0:y1, x0:x1] |= (
+            occupancy[y0 - top : y1 - top, x0 - left : x1 - left] != 1
+        )
+    packed = np.packbits(observed.reshape(-1), bitorder="little").tobytes()
+    compressed = zlib.compress(packed, level=6)
+    if len(compressed) > MAX_COVERAGE_MASK_BYTES:
+        return {"version": 1, "status": "too_large", "diff_eligible": False}
+    return {
+        "version": 1,
+        "status": "verified",
+        "encoding": "zlib-bitset-little-v1",
+        "origin_cells": [origin_x, origin_y],
+        "meters_per_cell": VOXEL_SCALE_METERS,
+        "span_cells": [span_x, span_y],
+        "observed_cells": int(np.count_nonzero(observed)),
+        "mask_sha256": hashlib.sha256(compressed).hexdigest(),
+        "mask_zlib_base64": base64.b64encode(compressed).decode("ascii"),
+        "diff_eligible": True,
+    }
 
 
 def parse_slam_scene_header(payload: bytes) -> SlamSceneHeader:

@@ -1,12 +1,25 @@
-import { PERSPECTIVE_FIELD_OF_VIEW, perspectiveFitDistance, multiply, perspective, orthographic, lookAt, pointInPolygon } from "./renderer-math";
+import { PERSPECTIVE_FIELD_OF_VIEW, sceneGeometryBounds, perspectiveBoundsFitDistance, multiply, perspective, orthographic, lookAt, pointInPolygon } from "./renderer-math";
 import { clamp } from "./numeric";
 import { liveCameraKey, cameraPreferences, mapCameraIdentity } from "./camera-preferences";
-import type { AreaCircle, MapZoneOverlay, SceneModel, SceneRoom } from "./backend-contracts";
+import type { AreaCircle, MapZoneOverlay, PoseModel, SceneModel } from "./backend-contracts";
 import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";
-import type { CameraPreference, CoordinateEditCapture, FloorTypeOutline, MapQuality, MapView, WifiSignalCell, WorkspaceState } from "./contracts";
+import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
+import type { RoomIdentityResult } from "./spatial-identity";
 import { canShowExactPose, hasCoordinateEditAdmission, forcesTop, topView } from "./state";
 import { rgba, type CanvasPalette, type Channel } from "./theme-probe";
 import type { drawRobot as DrawRobot } from "./robot-model";
+import type { ChunkStatus } from "./lazy-chunk";
+
+export type RendererModuleName = "renderer-layers" | "draw-overlays" | "camera-follow" | "surface-geometry";
+export type RendererModuleStatus = ChunkStatus;
+export type RendererSurfaceDetail = "limited" | "sampled" | null;
+const OPTIONAL_MODULE_TIMEOUT_MS = 20_000;
+
+interface OptionalModuleLoad {
+  timer: number | null;
+  settled: boolean;
+  reject: (error: Error) => void;
+}
 
 export interface MapPoint {
   readonly x: number;
@@ -57,9 +70,15 @@ interface RendererCallbacks {
   readonly onCameraPreferences?: (
     cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
   ) => void;
-  readonly onRoom?: (roomId: string) => void;
   readonly onViewport?: () => void;
   readonly onProblem?: (problem: string) => void;
+  readonly onMode?: (mode: RendererDiagnostics["mode"]) => void;
+  readonly onModuleStatus?: (module: RendererModuleName, status: RendererModuleStatus) => void;
+  readonly onSurfaceDetail?: (detail: RendererSurfaceDetail) => void;
+  readonly loadRendererLayers?: () => Promise<typeof import("./renderer-layers")>;
+  readonly loadDrawOverlays?: () => Promise<typeof import("./draw-overlays")>;
+  readonly loadCameraFollow?: () => Promise<typeof import("./camera-follow")>;
+  readonly loadSurfaceGeometry?: () => Promise<typeof import("./surface-geometry")>;
 }
 
 const angle = (value: number): number => {
@@ -139,8 +158,19 @@ const cameraPreferenceIsFit = (view: MapView, preference: CameraPreference | und
     && Math.abs(preference.targetX) < 0.001
     && Math.abs(preference.targetZ) < 0.001
     && Math.abs(angle(preference.yaw - (top ? 0 : -Math.PI / 4))) < 0.001
-    && (top || Math.abs(preference.pitch - 0.82) < 0.001);
+    && (top || Math.abs(preference.pitch - 1.12) < 0.001);
 };
+
+const cameraPreferenceIsHomeFit = (
+  view: MapView,
+  preference: CameraPreference | undefined,
+  homeTargetX: number,
+  homeTargetZ: number,
+): boolean => Boolean(preference
+  && (Math.abs(preference.targetX - homeTargetX) < 0.001
+    && Math.abs(preference.targetZ - homeTargetZ) < 0.001
+    || cameraPreferenceIsFit(view, preference))
+  && cameraPreferenceIsFit(view, { ...preference, targetX: 0, targetZ: 0 }));
 
 const rebaseCameraPreferences = (
   cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
@@ -148,12 +178,27 @@ const rebaseCameraPreferences = (
   nextScene: SceneModel,
   previousHome: Readonly<Record<MapView, number>>,
   nextHome: Readonly<Record<MapView, number>>,
+  previousHomeTarget: Readonly<{ x: number; z: number }>,
+  nextHomeTarget: Readonly<{ x: number; z: number }>,
 ): Partial<Record<MapView, CameraPreference>> => Object.fromEntries(
   Object.entries(cameras).map(([view, camera]) => {
-    if (!camera || cameraPreferenceIsFit(view as MapView, camera)) return [view, camera];
+    const mapView = view as MapView;
+    if (!camera) return [view, camera];
+    // A fitted camera follows the geometry center and remains fitted when the
+    // admitted floor's actual bounds move. Legacy fit preferences use (0, 0);
+    // current ones store the prior geometry-centered home target.
+    if (cameraPreferenceIsFit(mapView, camera)
+      || cameraPreferenceIsHomeFit(mapView, camera, previousHomeTarget.x, previousHomeTarget.z)) {
+      return [view, {
+        ...camera,
+        zoom: 1,
+        targetX: nextHomeTarget.x,
+        targetZ: nextHomeTarget.z,
+      }];
+    }
     const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
-    const oldHome = previousHome[view as MapView];
-    const newHome = nextHome[view as MapView];
+    const oldHome = previousHome[mapView];
+    const newHome = nextHome[mapView];
     const zoom = oldHome > 0 && newHome > 0
       ? camera.zoom * newHome / oldHome
       : camera.zoom;
@@ -181,6 +226,13 @@ const GPU_DELTA_MAX_BLOCKS = 256;
 // at full density, 74 ms within this budget), each canvas's backing store.
 const AUTO_TOUCH_POINT_LIMIT = 350_000;
 const AUTO_TOUCH_CANVAS_PIXELS = 1_100_000;
+const AUTO_QUALITY_SLOW_FRAME_MS = 18;
+const AUTO_QUALITY_FAST_FRAME_MS = 12;
+const AUTO_QUALITY_SLOW_FRAMES_TO_REDUCE = 3;
+const AUTO_QUALITY_FAST_FRAMES_TO_RECOVER = 120;
+const AUTO_QUALITY_REDUCTION_RATIO = 0.75;
+const AUTO_QUALITY_RECOVERY_STEP = 0.25;
+const AUTO_QUALITY_MIN_SCALE = 0.25;
 
 const sameSceneTransform = (left: SceneModel, right: SceneModel): boolean =>
   left.metadata.metersPerCell === right.metadata.metersPerCell
@@ -211,6 +263,30 @@ const validDeltaBlocks = (scene: SceneModel, baseRevision: number): readonly num
   return hint.dirtyBlocks;
 };
 
+const insertSortedUniqueBlock = (blocks: number[], value: number): void => {
+  let low = 0;
+  let high = blocks.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const current = blocks[middle]!;
+    if (current === value) return;
+    if (current < value) low = middle + 1;
+    else high = middle;
+  }
+  blocks.splice(low, 0, value);
+};
+
+const hasEligibleDirtyBlock = (
+  blocks: readonly number[],
+  totalBytes: number,
+  frontierBytes: number,
+): boolean => {
+  const first = blocks[0];
+  if (first === undefined) return false;
+  // Blocks are kept ascending, so eligibility is determined by the first one.
+  return Math.min(totalBytes, (first + 1) * GPU_DELTA_BLOCK_BYTES) <= frontierBytes;
+};
+
 // Matches the literal colours the overlay shipped with, so nothing changes
 // until a host wires `readCanvasPalette()` through `setPalette()`.
 const DEFAULT_PALETTE: CanvasPalette = {
@@ -235,7 +311,8 @@ interface GpuUpload {
   seed: "scene" | "copy";
   readonly previousScene: SceneModel | null;
   frontierBytes: number;
-  readonly dirtyBlocks: Set<number>;
+  /** Unique pending blocks kept in ascending offset order. */
+  readonly dirtyBlocks: number[];
   readonly transitionBlocks: Set<number>;
 }
 
@@ -245,8 +322,8 @@ export class RendererController {
   readonly #callbacks: RendererCallbacks;
   #gl: WebGL2RenderingContext | null = null;
   #overlay: CanvasRenderingContext2D | null = null;
-  #fallback: CanvasRenderingContext2D | null = null;
   #fallbackCanvas: HTMLCanvasElement | null = null;
+  #fallback: CanvasRenderingContext2D | null = null;
   #program: WebGLProgram | null = null;
   #buffer: WebGLBuffer | null = null;
   #stagingBuffer: WebGLBuffer | null = null;
@@ -254,8 +331,9 @@ export class RendererController {
   #vertexArray: WebGLVertexArrayObject | null = null;
   #viewProjection: WebGLUniformLocation | null = null;
   #center: WebGLUniformLocation | null = null;
+  #viewportPixels: WebGLUniformLocation | null = null;
   #meters: WebGLUniformLocation | null = null;
-  #pointPixels: WebGLUniformLocation | null = null;
+  #sampleStep: WebGLUniformLocation | null = null;
   #maxPointPixels: WebGLUniformLocation | null = null;
   #state: WorkspaceState | null = null;
   #circlePreview: { readonly circles: readonly AreaCircle[]; readonly capture: CoordinateEditCapture } | null = null;
@@ -265,13 +343,14 @@ export class RendererController {
   #admittedContext: string | null = null;
   #upload: GpuUpload | null = null;
   #frame: number | null = null;
-  #fallbackFrame: number | null = null;
+  #roomNameAdmissionFrame: number | null = null;
   #fallbackProjection: {
     readonly scene: SceneModel;
     readonly matrix: Float32Array;
     readonly width: number;
     readonly height: number;
   } | null = null;
+  #fallbackFrame: number | null = null;
   #resizeObserver: ResizeObserver;
   #camera: CameraState = {
     yaw: -Math.PI / 4,
@@ -283,25 +362,46 @@ export class RendererController {
   };
   #homeThree = 12;
   #homeTop = 8;
+  #homeTargetX = 0;
+  #homeTargetZ = 0;
   #radius = 4;
+  readonly #geometryBoundsCache = new WeakMap<SceneModel, ReturnType<typeof sceneGeometryBounds>>();
   #matrix: Float32Array<ArrayBufferLike> = new Float32Array(16);
   #cursor: MapPoint | null = null;
   #mode: RendererDiagnostics["mode"] = "unavailable";
+  #modeReported = false;
   #contextGeneration = 0;
   #initializedPoints = 0;
   #renderedPoints = 0;
   #lastFrameMs = 0;
   #slowFrames = 0;
+  #fastFrames = 0;
   #qualityScale = 1;
   readonly #touch = window.matchMedia("(any-pointer: coarse)").matches;
   #viewport = { width: 1, height: 1, left: 0, top: 0 };
   #fitActive = true;
   #disposed = false;
+  #rendererLayers: typeof import("./renderer-layers") | null = null;
+  #rendererLayersStatus: RendererModuleStatus = "idle";
+  #drawOverlays: typeof import("./draw-overlays") | null = null;
+  #drawOverlaysStatus: RendererModuleStatus = "idle";
+  #cameraFollow: import("./camera-follow").CameraFollowController | null = null;
+  #cameraFollowStatus: RendererModuleStatus = "idle";
+  #surfaceModule: typeof import("./surface-geometry") | null = null;
+  #surfaceGeometry: import("./surface-geometry").SurfaceGeometry | null = null;
+  #surfaceStatus: RendererModuleStatus = "idle";
+  #surfaceNeeded = false;
+  #surfaceSupported = true;
+  #moduleTimeouts = new Map<RendererModuleName, OptionalModuleLoad>();
+  #pendingFollow: {
+    readonly pose: PoseModel | null;
+    readonly mode: "off" | "follow" | "ride";
+    readonly reducedMotion: boolean;
+  } | null = null;
+  #reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   /** undefined until a heading needs it, null while loading or after a failed load. */
   #robotModel: typeof DrawRobot | null | undefined;
   #palette: CanvasPalette = DEFAULT_PALETTE;
-  // Saved-order numbers are drawn every frame; one formatter per locale.
-  #positionFormat: { readonly locale: string; readonly format: Intl.NumberFormat } | null = null;
   #labelOffsets = new Map<string, readonly [x: number, y: number]>();
 
   constructor(
@@ -317,7 +417,6 @@ export class RendererController {
     this.#sceneCanvas.addEventListener("webglcontextrestored", this.#contextRestored);
     this.#initWebGl();
     this.#resizeObserver = new ResizeObserver(() => {
-      this.#labelOffsets.clear();
       const previousThree = this.#homeThree;
       const previousTop = this.#homeTop;
       this.#updateHomeDistances();
@@ -371,23 +470,37 @@ export class RendererController {
     if (notify) this.#notifyCamera();
   }
 
-  cameraAfterPan(camera: CameraState, deltaX: number, deltaY: number): CameraState {
+  cameraAfterPan(
+    camera: CameraState,
+    deltaX: number,
+    deltaY: number,
+    anchorX?: number,
+    anchorY?: number,
+  ): CameraState {
     const bounds = this.#measureViewport();
-    const worldPerPixel = camera.distance * 1.75 / Math.max(200, bounds.height);
-    const rightX = Math.cos(camera.yaw);
-    const rightZ = -Math.sin(camera.yaw);
-    const forwardX = -Math.sin(camera.yaw);
-    const forwardZ = -Math.cos(camera.yaw);
+    const startX = anchorX ?? bounds.left + bounds.width / 2;
+    const startY = anchorY ?? bounds.top + bounds.height / 2;
+    const start = this.#screenToMapForPan(startX, startY, camera);
+    const end = this.#screenToMapForPan(startX + deltaX, startY + deltaY, camera);
     const target = this.#targetBounds();
+    // Unproject both ends of the gesture onto the floor plane. This accounts
+    // for perspective and pitch, where a fixed world-per-pixel scale can vary
+    // dramatically between the foreground and horizon. Bound the result so
+    // near-horizon drags cannot fling the camera across an entire map.
+    const maxPan = Math.max(0.5, this.#radius * 2);
+    const rawX = start && end ? end.x - start.x : 0;
+    const rawZ = start && end ? start.y - end.y : 0;
+    const length = Math.hypot(rawX, rawZ);
+    const scale = length > maxPan ? maxPan / length : 1;
     return {
       ...camera,
       targetX: clamp(
-        camera.targetX - deltaX * worldPerPixel * rightX + deltaY * worldPerPixel * forwardX,
+        camera.targetX + rawX * scale,
         -target.x,
         target.x,
       ),
       targetZ: clamp(
-        camera.targetZ - deltaX * worldPerPixel * rightZ + deltaY * worldPerPixel * forwardZ,
+        camera.targetZ + rawZ * scale,
         -target.z,
         target.z,
       ),
@@ -402,6 +515,7 @@ export class RendererController {
     const admittedBefore = this.#admittedScene;
     const admittedContextBefore = this.#admittedContext;
     this.#state = state;
+    if (!state.pageActive || !state.labelsVisible) this.#cancelRoomNameAdmission();
     if (!state.pageActive && this.#frame !== null) {
       window.cancelAnimationFrame(this.#frame);
       this.#frame = null;
@@ -410,6 +524,8 @@ export class RendererController {
     const holdingScene = state.dataMode === "live" && state.floor.readOnly && scene !== null && scene === this.#scene
       && state.owner?.userKey === previous?.owner?.userKey && state.selection.entryId === previous?.selection.entryId;
     const context = holdingScene ? this.#sceneContext : scene ? sceneContext(state) : null;
+    const ownerChanged = Boolean(previous && (state.owner?.userKey !== previous.owner?.userKey
+      || state.selection.entryId !== previous.selection.entryId));
     const cameraContextChanged = !holdingScene && context !== this.#sceneContext;
     if (cameraContextChanged || (previous && topView(previous) !== view)) this.#labelOffsets.clear();
     const liveKey = liveCameraKey(state);
@@ -419,8 +535,11 @@ export class RendererController {
     let rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null;
     const uploadMatches = Boolean(this.#upload && this.#uploadIsCurrent(this.#upload));
     if (!state.pageActive) {
-      this.#cancelGpuUpload(true);
-      this.#cancelFallback();
+      if (scene === null || context !== this.#sceneContext || ownerChanged) this.#clearSceneOwnership();
+      else {
+        this.#cancelGpuUpload(true);
+        this.#cancelFallback();
+      }
     } else if (scene !== null && context !== null) {
       // A held scene keeps its admitted context. Let its upload finish (or
       // materialize it again) while verification waits for live geometry.
@@ -491,18 +610,13 @@ export class RendererController {
           );
         }
       }
-    } else if (this.#scene !== null || this.#upload !== null) {
-      this.#cancelGpuUpload(true);
-      this.#cancelFallback();
-      this.#deleteFrontBuffer();
-      this.#scene = null;
-      this.#sceneContext = null;
-      this.#renderedPoints = 0;
-      this.#initializedPoints = 0;
+    } else if (this.#scene !== null || this.#upload !== null || this.#stagingBuffer !== null) {
+      this.#clearSceneOwnership();
     }
     if (!previous || previous.quality !== state.quality) {
       this.#qualityScale = qualityScale(state.quality);
       this.#slowFrames = 0;
+      this.#fastFrames = 0;
     }
     // Leaving the area review gives back the camera the user had before it
     // framed the area (map-surfaces.md §5): live when Draw follows, else as
@@ -518,6 +632,11 @@ export class RendererController {
       if (view === "top") {
         this.#camera = camera;
         this.#fitActive = fit;
+        // The review can change the canvas size (especially on phones). Its
+        // resize lands while framing has disabled fit, so a saved fit camera
+        // may carry the old viewport's distance. Refit against the current
+        // viewport; manual cameras keep their exact saved distance.
+        if (fit) this.fit(false, view);
         this.#notifyCamera();
         published = true;
       } else {
@@ -547,8 +666,8 @@ export class RendererController {
         distance: this.#homeTop * 100 / state.draw.zoomPercent,
       };
       this.#fitActive = state.draw.zoomPercent === 100
-        && Math.abs(this.#camera.targetX) < 0.001
-        && Math.abs(this.#camera.targetZ) < 0.001
+        && Math.abs(this.#camera.targetX - this.#homeTargetX) < 0.001
+        && Math.abs(this.#camera.targetZ - this.#homeTargetZ) < 0.001
         && Math.abs(angle(this.#camera.yaw)) < 0.001;
     }
     // Publish only the final effective camera. Its percentage also updates the
@@ -560,14 +679,58 @@ export class RendererController {
   #beforeReview: { readonly camera: CameraState; readonly fit: boolean } | null = null;
 
   #preferenceOf(camera: CameraState, fit: boolean, home = this.#homeTop): CameraPreference {
-    if (fit) return { yaw: 0, pitch: Math.PI / 2 - 0.018, zoom: 1, targetX: 0, targetZ: 0 };
+    if (fit) return { yaw: camera.orthographic ? 0 : -Math.PI / 4,
+      pitch: camera.orthographic ? Math.PI / 2 - 0.018 : 1.12, zoom: 1,
+      targetX: this.#homeTargetX, targetZ: this.#homeTargetZ };
     return { yaw: camera.yaw, pitch: camera.pitch, zoom: home / camera.distance, targetX: camera.targetX, targetZ: camera.targetZ };
   }
 
-  /** Pans to a map point in metres, keeping zoom and angle; a pan the user did not make is not saved. */
-  centerOnMeters(x: number, y: number): void {
-    const world = this.#worldForMeters(x, y);
-    if (world) this.setCamera({ ...this.#camera, targetX: world[0], targetZ: world[1] }, false);
+  #preferenceIsHomeFit(view: MapView, preference: CameraPreference): boolean {
+    return cameraPreferenceIsHomeFit(view, preference, this.#homeTargetX, this.#homeTargetZ);
+  }
+
+  /** Follow loads its camera animation controller only after the user enables it. */
+  updateFollow(pose: PoseModel | null, mode: "off" | "follow" | "ride", reducedMotion = this.#reducedMotion): void {
+    if (mode === "off") {
+      this.#pendingFollow = null;
+      this.#cameraFollow?.cancel(true);
+      return;
+    }
+    this.#pendingFollow = { pose, mode, reducedMotion };
+    if (this.#cameraFollow) {
+      this.#cameraFollow.update(pose, mode, reducedMotion);
+      return;
+    }
+    if (this.#cameraFollowStatus !== "idle") return;
+    this.#setModuleStatus("camera-follow", "loading");
+    void this.#loadOptionalModule("camera-follow", this.#callbacks.loadCameraFollow ?? (() => import("./camera-follow"))).then(({ CameraFollowController }) => {
+      if (this.#disposed) return;
+      this.#setModuleStatus("camera-follow", "ready");
+      this.#cameraFollow = new CameraFollowController({
+        state: () => this.#state,
+        camera: () => this.#camera,
+        setCamera: (camera) => { this.#camera = camera; },
+        fitActive: () => this.#fitActive,
+        worldForMeters: (x, y) => this.#worldForMeters(x, y),
+        radius: () => this.#radius,
+        setFitActive: (active) => { this.#fitActive = active; },
+        requestRender: () => this.requestRender(),
+        notifyCamera: () => this.#notifyCamera(),
+        disposed: () => this.#disposed,
+      });
+      const pending = this.#pendingFollow;
+      if (pending) this.#cameraFollow.update(pending.pose, pending.mode, pending.reducedMotion);
+    }).catch(() => {
+      if (this.#disposed) return;
+      this.#pendingFollow = null;
+      this.#setModuleStatus("camera-follow", "failed");
+    });
+  }
+
+  /** Gesture cancellation keeps the camera where the user took control. */
+  cancelFollow(restore: boolean): void {
+    this.#pendingFollow = null;
+    this.#cameraFollow?.cancel(restore);
   }
 
   /** The world position of a map point in metres (the overlay's coordinate space). */
@@ -590,8 +753,8 @@ export class RendererController {
       }
     }
     if (!Number.isFinite(minX)) return;
-    const bounds = this.#measureViewport();
-    const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
+    const viewport = this.#measureViewport();
+    const aspect = Math.max(0.2, viewport.width / Math.max(1, viewport.height));
     const distance = Math.max((maxZ - minZ) / 2, (maxX - minX) / (2 * aspect)) * 1.12;
     this.setCamera({
       yaw: 0,
@@ -620,13 +783,14 @@ export class RendererController {
       this.fit(false, view);
       return;
     }
-    this.#fitActive = cameraPreferenceIsFit(view, preference);
+    const target = this.#targetBounds();
+    this.#fitActive = this.#preferenceIsHomeFit(view, preference);
     this.#camera = {
       yaw: preference.yaw,
       pitch: top ? Math.PI / 2 - 0.018 : preference.pitch,
       distance: this.#clampDistance(home / clamp(preference.zoom, 0.01, 100), top),
-      targetX: clamp(preference.targetX, -this.#radius, this.#radius),
-      targetZ: clamp(preference.targetZ, -this.#radius, this.#radius),
+      targetX: clamp(preference.targetX, -target.x, target.x),
+      targetZ: clamp(preference.targetZ, -target.z, target.z),
       orthographic: top,
     };
   }
@@ -655,6 +819,9 @@ export class RendererController {
       });
       const gl = this.#gl;
       if (!gl) throw new Error("webgl2-unavailable");
+      // Near-plane points have no stable projected footprint, so keep their
+      // sprites finite. Otherwise use the projected cell diagonal to cover
+      // adjacent samples without changing their map-space area.
       const vertex = this.#compile(gl.VERTEX_SHADER, `#version 300 es
         precision highp float;
         precision highp int;
@@ -663,8 +830,9 @@ export class RendererController {
         layout(location = 2) in vec3 aColor;
         uniform mat4 uViewProjection;
         uniform vec2 uCenter;
+        uniform vec2 uViewportSize;
         uniform float uMetersPerCell;
-        uniform float uPointPixels;
+        uniform float uSampleStep;
         uniform float uMaxPointPixels;
         out vec3 vColor;
         void main() {
@@ -675,7 +843,19 @@ export class RendererController {
           );
           vec4 clip = uViewProjection * vec4(world, 1.0);
           gl_Position = clip;
-          gl_PointSize = clamp(uPointPixels / max(0.18, clip.w), 1.1, uMaxPointPixels);
+          float cellMeters = uMetersPerCell * uSampleStep;
+          vec4 clipX = uViewProjection * vec4(world + vec3(cellMeters, 0.0, 0.0), 1.0);
+          vec4 clipZ = uViewProjection * vec4(world + vec3(0.0, 0.0, cellMeters), 1.0);
+          float cellDiameter = 1.0;
+          if (clip.w > 0.02 && clipX.w > 0.02 && clipZ.w > 0.02) {
+            vec2 cellX = (clipX.xy / clipX.w - clip.xy / clip.w) * uViewportSize * 0.5;
+            vec2 cellZ = (clipZ.xy / clipZ.w - clip.xy / clip.w) * uViewportSize * 0.5;
+            float projectedDiameter = max(length(cellX + cellZ), length(cellX - cellZ));
+            if (!isnan(projectedDiameter) && !isinf(projectedDiameter)) {
+              cellDiameter = projectedDiameter;
+            }
+          }
+          gl_PointSize = clamp(cellDiameter, 1.0, uMaxPointPixels);
           vColor = aColor;
         }
       `);
@@ -685,8 +865,10 @@ export class RendererController {
         out vec4 outColor;
         void main() {
           vec2 point = gl_PointCoord * 2.0 - 1.0;
-          if (dot(point, point) > 1.0) discard;
-          float edge = smoothstep(1.0, 0.72, dot(point, point));
+          float radius = length(point);
+          float edgeWidth = max(fwidth(radius), 0.001);
+          float edge = 1.0 - smoothstep(1.0 - edgeWidth * 0.5, 1.0 + edgeWidth * 0.5, radius);
+          if (edge <= 0.0) discard;
           outColor = vec4(pow(vColor, vec3(0.94)), edge);
         }
       `);
@@ -701,8 +883,9 @@ export class RendererController {
       this.#program = program;
       this.#viewProjection = gl.getUniformLocation(program, "uViewProjection");
       this.#center = gl.getUniformLocation(program, "uCenter");
+      this.#viewportPixels = gl.getUniformLocation(program, "uViewportSize");
       this.#meters = gl.getUniformLocation(program, "uMetersPerCell");
-      this.#pointPixels = gl.getUniformLocation(program, "uPointPixels");
+      this.#sampleStep = gl.getUniformLocation(program, "uSampleStep");
       this.#maxPointPixels = gl.getUniformLocation(program, "uMaxPointPixels");
       this.#buffer = gl.createBuffer();
       this.#vertexArray = gl.createVertexArray();
@@ -713,8 +896,8 @@ export class RendererController {
       gl.enable(gl.DEPTH_TEST);
       gl.depthFunc(gl.LEQUAL);
       gl.enable(gl.BLEND);
-      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-      this.#mode = "webgl2";
+      gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+      this.#setMode("webgl2");
       this.#contextGeneration += 1;
     } catch {
       this.#releaseWebGl();
@@ -736,11 +919,14 @@ export class RendererController {
       this.requestRender();
       return null;
     }
-    const [spanX, spanY] = scene.metadata.span;
     const meters = scene.metadata.metersPerCell;
-    const width = spanX * meters;
-    const depth = spanY * meters;
+    const bounds = this.#sceneGeometryBounds(scene).floor;
+    const width = Math.max(1, bounds.maxX - bounds.minX + 1) * meters;
+    const depth = Math.max(1, bounds.maxY - bounds.minY + 1) * meters;
+    const previousHomeTarget = { x: this.#homeTargetX, z: this.#homeTargetZ };
     this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
+    this.#homeTargetX = -((bounds.minX + bounds.maxX) / 2 - (scene.metadata.span[0] - 1) / 2) * meters;
+    this.#homeTargetZ = ((bounds.minY + bounds.maxY) / 2 - (scene.metadata.span[1] - 1) / 2) * meters;
     const previousHome = { three: this.#homeThree, top: this.#homeTop } as const;
     this.#updateHomeDistances();
     if (preserveCamera && previousScene) {
@@ -756,6 +942,8 @@ export class RendererController {
         scene,
         previousHome,
         nextHome,
+        previousHomeTarget,
+        { x: this.#homeTargetX, z: this.#homeTargetZ },
       );
       const effectiveView = preferenceView
         ?? (topView(state));
@@ -770,14 +958,50 @@ export class RendererController {
   #updateHomeDistances(): void {
     const scene = this.#scene;
     if (!scene) return;
-    const [spanX, spanY] = scene.metadata.span;
+    const { floor: bounds, all: sceneBounds } = this.#sceneGeometryBounds(scene);
     const meters = scene.metadata.metersPerCell;
-    const width = spanX * meters;
-    const depth = spanY * meters;
-    const bounds = this.#measureViewport();
-    const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
-    this.#homeThree = perspectiveFitDistance(this.#radius, aspect);
+    const width = Math.max(1, bounds.maxX - bounds.minX + 1) * meters;
+    const depth = Math.max(1, bounds.maxY - bounds.minY + 1) * meters;
+    const viewport = this.#measureViewport();
+    const aspect = Math.max(0.2, viewport.width / Math.max(1, viewport.height));
+    // A high three-quarter angle keeps a recognisable floor overview while
+    // preserving the complete admitted scene footprint on first launch.
+    const centerX = (bounds.minX + bounds.maxX) / 2;
+    const centerZ = (bounds.minY + bounds.maxY) / 2;
+    this.#homeThree = perspectiveBoundsFitDistance({
+      minX: -(sceneBounds.maxX - centerX) * meters,
+      maxX: -(sceneBounds.minX - centerX) * meters,
+      minZ: (sceneBounds.minY - centerZ) * meters,
+      maxZ: (sceneBounds.maxY - centerZ) * meters,
+      minHeight: sceneBounds.minHeight * meters,
+      maxHeight: sceneBounds.maxHeight * meters,
+    }, aspect, 1.12, -Math.PI / 4, 0.05);
     this.#homeTop = Math.max(depth / 2, width / (2 * aspect)) * 1.12;
+  }
+
+  #sceneGeometryBounds(scene: SceneModel): ReturnType<typeof sceneGeometryBounds> {
+    let bounds = this.#geometryBoundsCache.get(scene);
+    if (!bounds) {
+      bounds = sceneGeometryBounds(
+        scene.buffer, scene.pointOffset, scene.floorCount, scene.total, scene.metadata.span,
+      );
+      this.#geometryBoundsCache.set(scene, bounds);
+    }
+    return bounds;
+  }
+
+  #clearSceneOwnership(): void {
+    this.#cancelGpuUpload(true);
+    this.#cancelFallback();
+    this.#deleteFrontBuffer();
+    if (this.#stagingBuffer && this.#gl) this.#gl.deleteBuffer(this.#stagingBuffer);
+    this.#stagingBuffer = null;
+    this.#scene = null;
+    this.#sceneContext = null;
+    this.#renderedPoints = 0;
+    this.#initializedPoints = 0;
+    this.#labelOffsets.clear();
+    this.#surfaceGeometry?.clearDetail();
   }
 
 
@@ -860,7 +1084,7 @@ export class RendererController {
       seed,
       previousScene,
       frontierBytes: 0,
-      dirtyBlocks: new Set(dirtyBlocks),
+      dirtyBlocks: [...dirtyBlocks],
       transitionBlocks: new Set(dirtyBlocks),
     };
     if (!staging) {
@@ -889,11 +1113,13 @@ export class RendererController {
     upload.transitionBlocks.clear();
     for (const block of combined) upload.transitionBlocks.add(block);
     if (upload.seed === "copy") {
-      for (const block of dirtyBlocks) upload.dirtyBlocks.add(block);
+      for (const block of dirtyBlocks) {
+        insertSortedUniqueBlock(upload.dirtyBlocks, block);
+      }
     } else {
       const uploadedBlocks = Math.ceil(upload.frontierBytes / GPU_DELTA_BLOCK_BYTES);
       for (const block of dirtyBlocks) {
-        if (block < uploadedBlocks) upload.dirtyBlocks.add(block);
+        if (block < uploadedBlocks) insertSortedUniqueBlock(upload.dirtyBlocks, block);
       }
     }
     this.requestRender();
@@ -982,18 +1208,22 @@ export class RendererController {
     const gl = this.#gl;
     if (!gl || maximumBytes <= 0) return 0;
     const totalBytes = upload.scene.total * 8;
-    const eligible = [...upload.dirtyBlocks].sort((left, right) => left - right);
     let uploaded = 0;
-    for (const block of eligible) {
+    for (let index = 0; index < upload.dirtyBlocks.length;) {
+      const block = upload.dirtyBlocks[index]!;
       const start = block * GPU_DELTA_BLOCK_BYTES;
       const end = Math.min(totalBytes, start + GPU_DELTA_BLOCK_BYTES);
       const length = end - start;
-      if (end > upload.frontierBytes || uploaded + length > maximumBytes) continue;
+      if (end > upload.frontierBytes) break;
+      if (uploaded + length > maximumBytes) {
+        index += 1;
+        continue;
+      }
       const bytes = new Uint8Array(upload.scene.buffer, upload.scene.pointOffset + start, length);
       gl.bindBuffer(gl.ARRAY_BUFFER, upload.buffer);
       gl.bufferSubData(gl.ARRAY_BUFFER, start, bytes);
       if (this.#hasGlError()) return -1;
-      upload.dirtyBlocks.delete(block);
+      upload.dirtyBlocks.splice(index, 1);
       uploaded += length;
     }
     return uploaded;
@@ -1011,15 +1241,18 @@ export class RendererController {
     const pendingFrontier = upload.frontierBytes < byteLength;
     let remainingBudget = GPU_UPLOAD_CHUNK_BYTES;
     try {
-      const frontierLimit = pendingFrontier && upload.dirtyBlocks.size > 0
+      const frontierLimit = pendingFrontier && upload.dirtyBlocks.length > 0
         ? GPU_UPLOAD_FAIR_SHARE_BYTES
         : GPU_UPLOAD_CHUNK_BYTES;
       const frontierBytes = this.#uploadFrontier(upload, frontierLimit);
       if (frontierBytes < 0) return this.#transitionToFallback();
       remainingBudget -= frontierBytes;
 
-      const canPatch = [...upload.dirtyBlocks].some((block) =>
-        Math.min(byteLength, (block + 1) * GPU_DELTA_BLOCK_BYTES) <= upload.frontierBytes);
+      const canPatch = hasEligibleDirtyBlock(
+        upload.dirtyBlocks,
+        byteLength,
+        upload.frontierBytes,
+      );
       const patchLimit = pendingFrontier && canPatch
         ? Math.min(GPU_UPLOAD_FAIR_SHARE_BYTES, remainingBudget)
         : canPatch ? remainingBudget : 0;
@@ -1027,8 +1260,11 @@ export class RendererController {
       if (patchBytes < 0) return this.#transitionToFallback();
       remainingBudget -= patchBytes;
 
-      const hasEligiblePatch = [...upload.dirtyBlocks].some((block) =>
-        Math.min(byteLength, (block + 1) * GPU_DELTA_BLOCK_BYTES) <= upload.frontierBytes);
+      const hasEligiblePatch = hasEligibleDirtyBlock(
+        upload.dirtyBlocks,
+        byteLength,
+        upload.frontierBytes,
+      );
       if (pendingFrontier && remainingBudget > 0 && !hasEligiblePatch) {
         if (this.#uploadFrontier(upload, remainingBudget) < 0) return this.#transitionToFallback();
       }
@@ -1042,7 +1278,7 @@ export class RendererController {
       this.#cancelGpuUpload(true);
       return;
     }
-    if (upload.frontierBytes < byteLength || upload.dirtyBlocks.size > 0) {
+    if (upload.frontierBytes < byteLength || upload.dirtyBlocks.length > 0) {
       this.requestRender();
       return;
     }
@@ -1096,13 +1332,20 @@ export class RendererController {
 
   #initFallback(): void {
     this.#cancelFallback();
-    this.#mode = "canvas2d";
+    this.#setMode("canvas2d");
     this.#fallbackCanvas = document.createElement("canvas");
     this.#fallback = this.#fallbackCanvas.getContext("2d", { alpha: true });
     if (!this.#fallback) {
-      this.#mode = "unavailable";
+      this.#setMode("unavailable");
       this.#callbacks.onProblem?.("renderer-unavailable");
     }
+  }
+
+  #setMode(mode: RendererDiagnostics["mode"]): void {
+    if (this.#modeReported && this.#mode === mode) return;
+    this.#mode = mode;
+    this.#modeReported = true;
+    this.#callbacks.onMode?.(mode);
   }
 
   #buildFallback(scene: SceneModel): void {
@@ -1197,23 +1440,23 @@ export class RendererController {
     if (resized) this.#callbacks.onViewport?.();
   }
 
-  #cameraMatrix(): Float32Array {
+  #cameraMatrix(camera: CameraState = this.#camera): Float32Array {
     const bounds = this.#viewport;
     const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
-    const horizontal = Math.cos(this.#camera.pitch) * this.#camera.distance;
+    const horizontal = Math.cos(camera.pitch) * camera.distance;
     const eye = [
-      this.#camera.targetX + Math.sin(this.#camera.yaw) * horizontal,
-      Math.sin(this.#camera.pitch) * this.#camera.distance,
-      this.#camera.targetZ + Math.cos(this.#camera.yaw) * horizontal,
+      camera.targetX + Math.sin(camera.yaw) * horizontal,
+      Math.sin(camera.pitch) * camera.distance,
+      camera.targetZ + Math.cos(camera.yaw) * horizontal,
     ];
-    const target = [this.#camera.targetX, 0, this.#camera.targetZ];
+    const target = [camera.targetX, 0, camera.targetZ];
     const view = lookAt(eye, target);
-    const projection = this.#camera.orthographic
+    const projection = camera.orthographic
       ? orthographic(
-        -this.#camera.distance * aspect,
-        this.#camera.distance * aspect,
-        -this.#camera.distance,
-        this.#camera.distance,
+        -camera.distance * aspect,
+        camera.distance * aspect,
+        -camera.distance,
+        camera.distance,
         -this.#radius * 4,
         this.#radius * 4,
       )
@@ -1239,14 +1482,40 @@ export class RendererController {
     else this.#renderFallback();
     this.#renderOverlay();
     this.#lastFrameMs = performance.now() - started;
-    if (this.#lastFrameMs > 18) {
+    this.#updateAdaptiveQuality(this.#lastFrameMs);
+  }
+
+  #updateAdaptiveQuality(frameMs: number): void {
+    if (this.#state?.quality !== "auto" || this.#mode !== "webgl2") {
+      this.#slowFrames = 0;
+      this.#fastFrames = 0;
+      return;
+    }
+    const previousScale = this.#qualityScale;
+    if (frameMs > AUTO_QUALITY_SLOW_FRAME_MS) {
       this.#slowFrames += 1;
-      if (this.#slowFrames >= 3 && this.#state?.quality === "auto") {
-        this.#qualityScale = Math.max(0.25, this.#qualityScale * 0.75);
+      this.#fastFrames = 0;
+      if (this.#slowFrames >= AUTO_QUALITY_SLOW_FRAMES_TO_REDUCE) {
+        this.#qualityScale = Math.max(
+          AUTO_QUALITY_MIN_SCALE,
+          this.#qualityScale * AUTO_QUALITY_REDUCTION_RATIO,
+        );
+        this.#slowFrames = 0;
+      }
+    } else if (frameMs < AUTO_QUALITY_FAST_FRAME_MS) {
+      this.#fastFrames += 1;
+      this.#slowFrames = 0;
+      if (this.#fastFrames >= AUTO_QUALITY_FAST_FRAMES_TO_RECOVER) {
+        this.#qualityScale = Math.min(1, this.#qualityScale + AUTO_QUALITY_RECOVERY_STEP);
+        this.#fastFrames = 0;
       }
     } else {
-      this.#slowFrames = Math.max(0, this.#slowFrames - 1);
+      // The 12–18 ms band is inconclusive; break both consecutive-frame runs
+      // instead of letting noisy boundary measurements flap the detail tier.
+      this.#slowFrames = 0;
+      this.#fastFrames = 0;
     }
+    if (this.#qualityScale !== previousScale) this.requestRender();
   }
 
   #renderWebGl(): void {
@@ -1256,26 +1525,59 @@ export class RendererController {
     gl.viewport(0, 0, this.#sceneCanvas.width, this.#sceneCanvas.height);
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-    if (!scene || !this.#program || !this.#vertexArray || !this.#buffer) return;
+    if (!scene || !this.#program || !this.#vertexArray || !this.#buffer) {
+      this.#setSurfaceNeeded(false);
+      return;
+    }
     if (roomColours(this.#state)) {
+      this.#setSurfaceNeeded(false);
       this.#renderedPoints = 0;
       return;
     }
-    gl.useProgram(this.#program);
-    gl.bindVertexArray(this.#vertexArray);
-    gl.uniformMatrix4fv(this.#viewProjection, false, this.#matrix);
-    gl.uniform2f(this.#center, (scene.metadata.span[0] - 1) / 2, (scene.metadata.span[1] - 1) / 2);
-    gl.uniform1f(this.#meters, scene.metadata.metersPerCell);
-    const ratio = this.#pixelRatio();
-    // The producer groups points by tile and then by floor/surface. Drawing
-    // a prefix would crop later tiles and starve surfaces at lower quality.
-    // Stride each range instead, using only its initialized upload frontier.
     const initializedPoints = Math.min(scene.total, this.#initializedPoints);
+    const cellPixels = scene.metadata.metersPerCell * this.#viewport.height
+      / (2 * this.#camera.distance * (this.#camera.orthographic ? 1 : Math.tan(PERSPECTIVE_FIELD_OF_VIEW / 2)));
+    const surfaceNeeded = this.#state?.optionalUiReady === true && cellPixels > 2.5;
+    const surfaceSupported = Boolean(scene.tileIndex || scene.total <= AUTO_TOUCH_POINT_LIMIT);
+    this.#setSurfaceNeeded(surfaceNeeded, surfaceSupported);
+    if (surfaceNeeded && surfaceSupported && this.#surfaceStatus === "idle") this.#loadSurfaceGeometry();
+    if (surfaceNeeded && surfaceSupported && this.#surfaceModule && this.#surfaceStatus === "ready") {
+      try {
+        this.#surfaceGeometry ??= new this.#surfaceModule.SurfaceGeometry(gl, this.#callbacks.onSurfaceDetail);
+        this.#renderedPoints = this.#surfaceGeometry.draw({ scene, matrix: this.#matrix,
+          buffer: this.#buffer, vertexArray: this.#vertexArray, initializedPoints,
+          qualityScale: this.#qualityScale,
+          adaptiveQuality: this.#state?.quality === "auto",
+          maxVisiblePoints: this.#touch && this.#state?.quality === "auto" ? AUTO_TOUCH_POINT_LIMIT : null,
+          camera: this.#camera });
+        return;
+      } catch {
+        this.#surfaceGeometry?.clearDetail();
+        this.#surfaceGeometry?.dispose();
+        this.#surfaceGeometry = null;
+        this.#setModuleStatus("surface-geometry", "failed");
+      }
+    }
     const step = Math.max(
       Math.ceil(1 / this.#qualityScale),
       this.#touch && this.#state?.quality === "auto"
         ? Math.ceil(initializedPoints / AUTO_TOUCH_POINT_LIMIT) : 1,
     );
+    gl.useProgram(this.#program);
+    gl.bindVertexArray(this.#vertexArray);
+    gl.uniformMatrix4fv(this.#viewProjection, false, this.#matrix);
+    gl.uniform2f(this.#center, (scene.metadata.span[0] - 1) / 2, (scene.metadata.span[1] - 1) / 2);
+    gl.uniform2f(this.#viewportPixels, this.#sceneCanvas.width, this.#sceneCanvas.height);
+    gl.uniform1f(this.#meters, scene.metadata.metersPerCell);
+    // Strided points represent a lower-density sample of the packed scene.
+    // Grow splats by the square root of the stride to recover some coverage
+    // without treating packed order as a regular 2D grid; the existing point
+    // caps bound overlap where nearby samples are clustered.
+    gl.uniform1f(this.#sampleStep, scene.metadata.sampleStep * Math.sqrt(step));
+    const ratio = this.#pixelRatio();
+    // The producer groups points by tile and then by floor/surface. Drawing
+    // a prefix would crop later tiles and starve surfaces at lower quality.
+    // Stride each range instead, using only its initialized upload frontier.
     const floorAvailable = Math.min(scene.floorCount, initializedPoints);
     const surfaceAvailable = Math.min(
       scene.surfaceCount,
@@ -1286,14 +1588,12 @@ export class RendererController {
     if (floorCount > 0) {
       this.#bindVertexBuffer(this.#buffer, step);
       gl.bindVertexArray(this.#vertexArray);
-      gl.uniform1f(this.#pointPixels, this.#sceneCanvas.height * 0.038);
       gl.uniform1f(this.#maxPointPixels, 4.5 * ratio);
       gl.drawArrays(gl.POINTS, 0, floorCount);
     }
     if (surfaceCount > 0) {
       this.#bindVertexBuffer(this.#buffer, step, scene.floorCount);
       gl.bindVertexArray(this.#vertexArray);
-      gl.uniform1f(this.#pointPixels, this.#sceneCanvas.height * 0.05);
       gl.uniform1f(this.#maxPointPixels, 7 * ratio);
       gl.drawArrays(gl.POINTS, 0, surfaceCount);
     }
@@ -1365,7 +1665,19 @@ export class RendererController {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, bounds.width, bounds.height);
     if (!scene || !state) return;
-    const labelOffsets = new Map<string, readonly [x: number, y: number]>();
+    if (state.workflow === "draw" || state.workflow === "areaReview") this.#loadDrawOverlays();
+    const currentFloor = state.dataMode === "live" && !state.floor.readOnly
+      && state.selection.floorId === "current";
+    const trail = state.trail;
+    const trailVisible = Boolean(trail && state.dataMode === "live"
+      && (trail.id === "live" || state.workflow === "runs")
+      && trail.mapSessionKey === state.resources.entry?.mapSessionKey);
+    if ((currentFloor && (state.wifiSignal || state.floorTypes)) || trailVisible) {
+      this.#loadRendererLayers();
+    }
+    if (state.optionalUiReady && state.map.available && state.labelsVisible && scene.metadata.rooms.length > 0) {
+      this.#scheduleRoomNameLayers();
+    }
     const palette = this.#palette;
     const colours = roomColours(state);
     if (this.#mode === "canvas2d" && this.#fallbackCanvas
@@ -1373,30 +1685,19 @@ export class RendererController {
       // A WebGL canvas cannot acquire a 2D context after context loss.
       context.drawImage(this.#fallbackCanvas, 0, 0, bounds.width, bounds.height);
     }
-    const wifi = state.wifiSignal;
-    const floorTypes = state.floorTypes;
     // Drawn above the room fills, which are nearly opaque in Room colors, and
     // below the room names. A retained scene stays read-only until the live
     // one is admitted, so its geometry may belong to another floor or frame.
-    let layersPending = state.dataMode === "live" && !state.floor.readOnly && state.selection.floorId === "current";
+    let layersPending = currentFloor;
     const drawLayers = (): void => {
-      if (layersPending && floorTypes?.status === "ready") {
-        this.#drawFloorType(context, floorTypes.carpet, "hsl(28 55% 42%)");
-        this.#drawFloorType(context, floorTypes.vent, "hsl(205 80% 50%)");
-      }
-      if (layersPending && wifi?.status === "ready") this.#drawWifiSignal(context, wifi.cells, wifi.cellSize / 2);
+      if (!layersPending) return;
       layersPending = false;
+      if (this.#rendererLayers) {
+        this.#rendererLayers.drawMapLayers(context, state, (x, y, height, clip) =>
+          this.#projectMeters(x, y, height, clip));
+      }
     };
     const selectedNames = this.#selectedRoomNames(state);
-    const selectedPositions = state.workflow === "plan" && state.planDraft.runBehavior === "ordered"
-      ? (() => {
-        if (this.#positionFormat?.locale !== state.locale) {
-          this.#positionFormat = { locale: state.locale, format: new Intl.NumberFormat(state.locale) };
-        }
-        const { format } = this.#positionFormat;
-        return new Map(state.planDraft.rooms.map((room, index) => [room.roomId, format.format(index + 1)]));
-      })()
-      : null;
     // Every room draws with Room names on or in Room colors; otherwise only
     // the selected ones (home-rooms.md §5 Parity, R9).
     const allRooms = state.labelsVisible || colours;
@@ -1405,11 +1706,6 @@ export class RendererController {
       const roomIndexes = new Map(scene.metadata.rooms.map((room) => room.id).sort()
         .map((id, index) => [id, index]));
       context.lineWidth = 1.5;
-      context.font = "600 12px system-ui, sans-serif";
-      context.textAlign = "center";
-      context.textBaseline = "middle";
-      const occupied: (readonly [number, number, number])[] = [];
-      const labels: (() => void)[] = [];
       for (const room of scene.metadata.rooms) {
         const selected = selectedNames.has(room.name.toLocaleLowerCase());
         if (!allRooms && !selected) continue;
@@ -1441,179 +1737,46 @@ export class RendererController {
         }
       }
       drawLayers();
-      // Labels draw after all fills. Place selected/current rooms first so a
-      // crowded viewport keeps the names that explain the user's current work.
-      const currentName = state.currentArea?.toLocaleLowerCase();
-      const priority = (room: SceneRoom): number => {
-        const name = room.name.toLocaleLowerCase();
-        return +selectedNames.has(name) * 2 + +(name === currentName);
-      };
-      if (state.labelsVisible) for (const room of [...scene.metadata.rooms].sort((a, b) => priority(b) - priority(a))) {
-        const center = this.#projectCell(room.center[0], room.center[1], 1);
-        if (!center) continue;
-        const position = selectedPositions?.get(room.id);
-        const badgeWidth = position ? Math.max(16, context.measureText(position).width + 10) : 0;
-        const badgeSpace = position ? badgeWidth + 4 : 0;
-        // Search nearby slots in both axes, keeping each complete plate on
-        // screen. Never paint a colliding fallback when the viewport is full.
-        const width = badgeSpace + context.measureText(room.name).width + 12;
-        if (width > bounds.width || bounds.height < 20) continue;
-        // A shallow landscape map cannot usefully show distant callouts for
-        // every room. Keep names near their rooms and favor the active choice;
-        // names return automatically as the map regains space.
-        const maxDisplacement = bounds.height < 160 ? (priority(room) ? 56 : 32) : Infinity;
-        let placement: readonly [number, number] | undefined;
-        const fits = (x: number, y: number) => !occupied.some(([left, top, otherWidth]) => x < left + otherWidth + 8
-          && x + width + 8 > left && y < top + 24 && y + 24 > top);
-        let previous = this.#labelOffsets.get(room.id);
-        if (previous) {
-          const x = clamp(center.x + previous[0] - width / 2, 0, bounds.width - width);
-          const y = clamp(center.y + previous[1] - 10, 0, bounds.height - 20);
-          // Retain a little extra room for an existing placement so a small
-          // pan across the cutoff does not make the label jump to a new slot.
-          if (Math.hypot(x + width / 2 - center.x, y + 10 - center.y) <= maxDisplacement + 24 && fits(x, y)) placement = [x, y];
-          else {
-            // When a plate meets a viewport edge, a one-pixel adjustment can
-            // maintain spacing without snapping to a distant grid slot.
-            if (bounds.height < 160) for (const [dx, dy] of [[0, -1], [0, 1], [-1, 0], [1, 0], [-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-              const nextX = x + dx;
-              const nextY = y + dy;
-              if (nextX < 0 || nextY < 0 || nextX + width > bounds.width || nextY + 20 > bounds.height) continue;
-              if (Math.hypot(nextX + width / 2 - center.x, nextY + 10 - center.y) > maxDisplacement + 24 || !fits(nextX, nextY)) continue;
-              placement = [nextX, nextY];
-              break;
-            }
-            previous = undefined;
-          }
+      if (state.labelsVisible && state.optionalUiReady && this.#rendererLayers) {
+        const result = this.#rendererLayers.drawRoomNames(
+          context,
+          scene.metadata.rooms,
+          palette,
+          { width: bounds.width, height: bounds.height },
+          state,
+          selectedNames,
+          this.#labelOffsets,
+          (x, y, height, clip) => this.#projectCell(x, y, height, clip),
+        );
+        this.#labelOffsets = result.offsets;
+        if (result.retryWithoutHistory) {
+          this.#labelOffsets.clear();
+          this.#renderOverlay();
+          return;
         }
-        let nearest = Infinity;
-        if (!placement) for (let row = -4; row <= 4; row++) for (let column = -2; column <= 2; column++) {
-          const x = clamp(center.x - width / 2 + column * (width + 8), 0, bounds.width - width);
-          const y = clamp((Math.round((center.y - 10) / 24) + row) * 24, 0, Math.floor((bounds.height - 20) / 24) * 24);
-          const distance = Math.hypot(x + width / 2 - center.x, y + 10 - center.y);
-          if (distance > maxDisplacement || distance >= nearest || !fits(x, y)) continue;
-          placement = [x, y];
-          nearest = distance;
-        }
-        if (!placement) {
-          // Repack a roomy viewport when retained offsets fragment it. In a
-          // shallow map labels are deliberately omitted; clearing offsets on
-          // every frame would make the remaining labels jump while panning.
-          if (bounds.height >= 160 && this.#labelOffsets.size) {
-            this.#labelOffsets.clear();
-            this.#renderOverlay();
-            return;
-          }
-          continue;
-        }
-        const [left, top] = placement;
-        labelOffsets.set(room.id, previous ?? [left + width / 2 - center.x, top + 10 - center.y]);
-        occupied.push([left, top, width]);
-        const edgeX = clamp(center.x, left, left + width);
-        const edgeY = clamp(center.y, top, top + 20);
-        if (edgeX !== center.x || edgeY !== center.y) {
-          context.beginPath();
-          context.moveTo(center.x, center.y);
-          context.lineTo(edgeX, edgeY);
-          context.lineWidth = 1;
-          context.strokeStyle = rgba(palette.text, .7);
-          context.stroke();
-        }
-        // Queue every plate above all connectors, including later labels'.
-        labels.push(() => {
-          const y = top + 10;
-          context.fillStyle = rgba(palette.plate, .88);
-          context.fillRect(left, top, width, 20);
-          if (position) {
-            const badgeX = left + 6 + badgeWidth / 2;
-            context.beginPath();
-            context.roundRect(badgeX - badgeWidth / 2, y - 8, badgeWidth, 16, 8);
-            context.fillStyle = rgba(palette.accent, 1);
-            context.fill();
-            context.fillStyle = rgba(palette.onAccent, 1);
-            context.fillText(position, badgeX, y);
-          }
-          context.fillStyle = rgba(palette.text, 1);
-          context.fillText(room.name, left + width / 2 + badgeSpace / 2, y);
-        });
       }
-      for (const paint of labels) paint();
     }
+    if (!state.labelsVisible) this.#labelOffsets.clear();
     drawLayers();
-    this.#labelOffsets = labelOffsets;
     const preview = this.#circlePreview;
     const circles = preview && hasCoordinateEditAdmission(state, preview.capture)
       ? preview.circles
       : state.draw.circles;
-    if (state.workflow === "areaReview" && circles.length && !palette.forced) {
-      // The review dims everything but the area (map-surfaces.md §5).
-      context.fillStyle = "rgba(0, 0, 0, 0.45)";
-      context.fillRect(0, 0, bounds.width, bounds.height);
-      context.save();
-      context.globalCompositeOperation = "destination-out";
-      context.fillStyle = "#000";
-      context.beginPath();
-      for (const circle of circles) this.#drawCircle(context, circle, false);
-      context.fill();
-      context.restore();
-    }
-    if ((state.workflow === "draw" || state.workflow === "areaReview") && circles.length) {
-      context.fillStyle = rgba(palette.accent, .22);
-      context.strokeStyle = rgba(palette.accent, .92);
-      context.lineWidth = 1.5;
-      if (state.draw.outline?.closed) {
-        context.beginPath();
-        for (const circle of circles) this.#drawCircle(context, circle, false);
-        context.fill();
-      } else {
-        for (const circle of circles) this.#drawCircle(context, circle);
-      }
-    }
+    this.#drawOverlays?.drawTaskOverlays(context, state, circles, this.#cursor, palette,
+      bounds.width, bounds.height,
+      (x, y, height, clip) => this.#projectMeters(x, y, height, clip));
     // Zones describe the robot's current map, so a saved history map leaves them out.
     if (state.dataMode === "live" && state.selection.floorId === "current") {
       this.#drawZones(context, state.resources.areas.value?.zones ?? [], palette);
     }
-    const outline = state.draw.outline;
-    if (outline && (state.workflow === "draw" || state.workflow === "areaReview")
-      && !(state.workflow === "draw" && state.draw.tool === "outline")) {
-      context.beginPath();
-      outline.points.forEach((point, i) => {
-        const p = this.#projectMeters(point.x, point.y, 0, false);
-        if (p) { if (i === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }
-      });
-      if (outline.closed) context.closePath();
-      context.strokeStyle = rgba(palette.accent, 1);
-      context.lineWidth = 2;
-      context.stroke();
-    }
-    if (this.#cursor && state.workflow === "draw" && (state.draw.tool === "paint" || state.draw.tool === "erase")) {
-      const center = this.#projectMeters(this.#cursor.x, this.#cursor.y);
-      const edge = this.#projectMeters(this.#cursor.x + state.draw.brushMeters / 2, this.#cursor.y, 0, false);
-      if (center && edge) {
-        context.beginPath();
-        context.arc(center.x, center.y, Math.max(2, Math.hypot(edge.x - center.x, edge.y - center.y)), 0, Math.PI * 2);
-        context.strokeStyle = rgba(palette.accent, 1);
-        context.lineWidth = 2;
-        context.stroke();
-      }
-    }
     // A trail is drawn only over the map session it was recorded on
     // (run_history.py); a past run's trail only while Cleaning history is open.
-    const trail = state.trail;
-    if (trail && state.dataMode === "live" && (trail.id === "live" || state.workflow === "runs")
-      && trail.mapSessionKey === state.resources.entry?.mapSessionKey) {
-      context.beginPath();
-      for (const segment of trail.segments) {
-        segment.forEach(([x, y], i) => {
-          const p = this.#projectMeters(x, y, 0, false);
-          if (p) { if (i === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }
-        });
-      }
-      context.lineJoin = context.lineCap = "round";
-      context.strokeStyle = rgba(palette.accent, .7);
-      context.lineWidth = 3;
-      context.stroke();
-    }
+    if (trailVisible) this.#rendererLayers?.drawRunTrail(
+      context,
+      state,
+      palette,
+      (x, y, height, clip) => this.#projectMeters(x, y, height, clip),
+    );
     const pose = state.resources.pose.value;
     if (canShowExactPose(state) && pose?.position) {
       // Pose coordinates share the floor-plan's meter space. Scene geometry is
@@ -1689,58 +1852,100 @@ export class RendererController {
     return selectedNames;
   }
 
-  // Strong signal (-50 dBm or better) is green, weak (-85 or worse) is red.
-  #drawWifiSignal(context: CanvasRenderingContext2D, cells: readonly WifiSignalCell[], half: number): void {
-    context.save();
-    for (const cell of cells) {
-      const corners = ([[-half, -half], [half, -half], [half, half], [-half, half]] as const)
-        .map(([dx, dy]) => this.#projectMeters(cell.x + dx, cell.y + dy, 0.1, false));
-      if (corners.some((corner) => !corner)) continue;
-      const strength = Math.min(1, Math.max(0, (cell.dbm + 85) / 35));
-      context.fillStyle = `hsl(${Math.round(strength * 120)} 75% 45% / .45)`;
-      context.beginPath();
-      corners.forEach((corner, index) => index ? context.lineTo(corner!.x, corner!.y) : context.moveTo(corner!.x, corner!.y));
-      context.closePath();
-      context.fill();
-    }
-    context.restore();
+  #loadRendererLayers(): void {
+    if (this.#rendererLayersStatus !== "idle" || this.#disposed) return;
+    this.#loadRenderModule("renderer-layers", this.#callbacks.loadRendererLayers ?? (() => import("./renderer-layers")),
+      (layers) => { this.#rendererLayers = layers; });
   }
 
-  // Even-odd fill keeps the holes the integration traces inside a rug.
-  #drawFloorType(context: CanvasRenderingContext2D, outlines: readonly FloorTypeOutline[], colour: string): void {
-    if (!outlines.length) return;
-    context.save();
-    context.beginPath();
-    for (const outline of outlines) {
-      let started = false;
-      for (const [x, y] of outline) {
-        const point = this.#projectMeters(x, y, 0.05, false);
-        if (!point) continue;
-        if (started) context.lineTo(point.x, point.y);
-        else context.moveTo(point.x, point.y);
-        started = true;
-      }
-      if (started) context.closePath();
-    }
-    context.globalAlpha = 0.35;
-    context.fillStyle = colour;
-    context.fill("evenodd");
-    context.globalAlpha = 0.8;
-    context.strokeStyle = colour;
-    context.lineWidth = 1.25;
-    context.stroke();
-    context.restore();
+  #scheduleRoomNameLayers(): void {
+    if (this.#rendererLayersStatus !== "idle" || this.#roomNameAdmissionFrame !== null || this.#disposed) return;
+    // Let the late-admitted map get one paint opportunity before requesting
+    // its optional label code (the bounded no-map UI fallback may have fired).
+    this.#roomNameAdmissionFrame = window.requestAnimationFrame(() => {
+      this.#roomNameAdmissionFrame = null;
+      const state = this.#state;
+      if (this.#disposed || !state?.pageActive || !state.map.available || !state.optionalUiReady
+        || !state.labelsVisible || !this.#scene?.metadata.rooms.length) return;
+      this.#loadRendererLayers();
+    });
   }
 
-  #drawCircle(context: CanvasRenderingContext2D, circle: AreaCircle, paint = true): void {
-    const center = this.#projectMeters(circle.x, circle.y);
-    const edge = this.#projectMeters(circle.x + circle.radius, circle.y);
-    if (!center || !edge) return;
-    const radius = Math.max(1, Math.hypot(edge.x - center.x, edge.y - center.y));
-    if (paint) context.beginPath();
-    context.moveTo(center.x + radius, center.y);
-    context.arc(center.x, center.y, radius, 0, Math.PI * 2);
-    if (paint) { context.fill(); context.stroke(); }
+  #cancelRoomNameAdmission(): void {
+    if (this.#roomNameAdmissionFrame !== null) window.cancelAnimationFrame(this.#roomNameAdmissionFrame);
+    this.#roomNameAdmissionFrame = null;
+  }
+
+  #loadDrawOverlays(): void {
+    if (this.#drawOverlaysStatus !== "idle" || this.#disposed) return;
+    this.#loadRenderModule("draw-overlays", this.#callbacks.loadDrawOverlays ?? (() => import("./draw-overlays")),
+      (overlays) => { this.#drawOverlays = overlays; });
+  }
+
+  #setModuleStatus(module: RendererModuleName, status: RendererModuleStatus): void {
+    if (module === "renderer-layers") this.#rendererLayersStatus = status;
+    else if (module === "draw-overlays") this.#drawOverlaysStatus = status;
+    else if (module === "camera-follow") this.#cameraFollowStatus = status;
+    else this.#surfaceStatus = status;
+    this.#callbacks.onModuleStatus?.(module, module === "surface-geometry"
+      ? !this.#surfaceNeeded ? "idle" : this.#surfaceSupported ? status : "failed" : status);
+  }
+
+  #setSurfaceNeeded(needed: boolean, supported = true): void {
+    if (!needed || !supported) this.#surfaceGeometry?.clearDetail();
+    if (this.#surfaceNeeded === needed && this.#surfaceSupported === supported) return;
+    this.#surfaceNeeded = needed;
+    this.#surfaceSupported = supported;
+    this.#callbacks.onModuleStatus?.("surface-geometry", !needed ? "idle" : supported ? this.#surfaceStatus : "failed");
+  }
+
+  #loadSurfaceGeometry(): void {
+    if (this.#surfaceStatus !== "idle" || this.#disposed) return;
+    this.#loadRenderModule("surface-geometry", this.#callbacks.loadSurfaceGeometry ?? (() => import("./surface-geometry")),
+      (module) => { this.#surfaceModule = module; });
+  }
+
+  #loadRenderModule<T>(module: RendererModuleName, load: () => Promise<T>, accept: (value: T) => void): void {
+    this.#setModuleStatus(module, "loading");
+    void this.#loadOptionalModule(module, load).then((value) => {
+      if (this.#disposed) return;
+      accept(value);
+      this.#setModuleStatus(module, "ready");
+      this.requestRender();
+    }, () => {
+      if (!this.#disposed) this.#setModuleStatus(module, "failed");
+    });
+  }
+
+  #loadOptionalModule<T>(module: RendererModuleName, load: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      // Native import completion callbacks retain this small record and the
+      // timer map, never the renderer controller. Disposal settles the outer
+      // promise even if the browser keeps a failed/hung module fetch pending.
+      const activeLoads = this.#moduleTimeouts;
+      const record: OptionalModuleLoad = {
+        timer: null,
+        settled: false,
+        reject: (error) => reject(error),
+      };
+      const settle = (error: unknown, value?: T): void => {
+        if (record.settled) return;
+        record.settled = true;
+        if (record.timer !== null) window.clearTimeout(record.timer);
+        if (activeLoads.get(module) === record) activeLoads.delete(module);
+        if (error !== null) reject(error);
+        else resolve(value as T);
+      };
+      record.reject = (error) => settle(error);
+      activeLoads.set(module, record);
+      record.timer = window.setTimeout(() => {
+        settle(new Error("renderer-module-timeout"));
+      }, OPTIONAL_MODULE_TIMEOUT_MS);
+      Promise.resolve().then(load).then(
+        (value) => settle(null, value),
+        (error: unknown) => settle(error),
+      );
+    });
   }
 
   setPalette(palette: CanvasPalette): void {
@@ -1772,12 +1977,16 @@ export class RendererController {
   }
 
   screenToMap(clientX: number, clientY: number): MapPoint | null {
+    return this.#screenToMap(clientX, clientY, this.#camera);
+  }
+
+  #screenToMap(clientX: number, clientY: number, camera: CameraState): MapPoint | null {
     const scene = this.#scene;
     if (!scene) return null;
     const bounds = this.#measureViewport();
     if (!bounds.width || !bounds.height) return null;
     // Invert the floor-plane homography, including perspective division in 3D.
-    const matrix = this.#cameraMatrix();
+    const matrix = this.#cameraMatrix(camera);
     const x = (clientX - bounds.left) / bounds.width * 2 - 1;
     const y = 1 - (clientY - bounds.top) / bounds.height * 2;
     const a = matrix[0]! - x * matrix[3]!;
@@ -1799,6 +2008,37 @@ export class RendererController {
     };
   }
 
+  #screenToMapForPan(clientX: number, clientY: number, camera: CameraState): MapPoint | null {
+    const bounds = this.#measureViewport();
+    const centerY = bounds.top + bounds.height / 2;
+    const center = this.#screenToMap(clientX, centerY, camera);
+    if (!center) return this.#screenToMap(clientX, clientY, camera);
+    const maxOffset = Math.max(0.5, Math.min(this.#radius * 2, camera.distance * 4));
+    const isSafe = (point: MapPoint | null): point is MapPoint => Boolean(point
+      && Math.hypot(point.x - center.x, point.y - center.y) <= maxOffset);
+    const direct = this.#screenToMap(clientX, clientY, camera);
+    if (isSafe(direct)) return direct;
+
+    // A drag can begin above the floor-plane horizon, where no ground point
+    // exists. Clamp that endpoint to the nearest safe point toward the view
+    // center; this lets the same drag start moving once it crosses the horizon
+    // without feeding an unbounded near-horizon intersection into the camera.
+    let safeY = centerY;
+    let unsafeY = clientY;
+    let safePoint = center;
+    for (let attempt = 0; attempt < 16; attempt += 1) {
+      const candidateY = (safeY + unsafeY) / 2;
+      const candidate = this.#screenToMap(clientX, candidateY, camera);
+      if (isSafe(candidate)) {
+        safeY = candidateY;
+        safePoint = candidate;
+      } else {
+        unsafeY = candidateY;
+      }
+    }
+    return safePoint;
+  }
+
   roomAt(clientX: number, clientY: number): string | null {
     const map = this.screenToMap(clientX, clientY);
     const scene = this.#scene;
@@ -1806,9 +2046,28 @@ export class RendererController {
     if (!map || !scene || !state) return null;
     const cellX = map.x / scene.metadata.metersPerCell - scene.metadata.origin[0];
     const cellY = map.y / scene.metadata.metersPerCell - scene.metadata.origin[1];
-    const room = scene.metadata.rooms.find((candidate) => pointInPolygon(cellX, cellY, candidate.boundary));
-    if (!room) return null;
-    return this.#roomId(room, state);
+    const hits = scene.metadata.rooms.filter((room) => pointInPolygon(cellX, cellY, room.boundary));
+    if (hits.length !== 1) return null;
+    const hit = hits[0]!;
+    const catalogRooms = this.#catalogRoomIdentities(state);
+    const exact = catalogRooms.filter((item) => item.roomId === hit.id);
+    if (/^room_[a-f0-9]{16}$/u.test(hit.id) && exact.length === 1) return hit.id;
+    const key = hit.name.normalize("NFKC").trim().toLocaleLowerCase();
+    if (!key) return null;
+    const candidates = [...new Set(catalogRooms.filter((item) => item.name.normalize("NFKC").trim().toLocaleLowerCase() === key).map((item) => item.roomId))];
+    return candidates.length === 1 ? candidates[0]! : null;
+  }
+
+  async roomCandidatesAt(clientX: number, clientY: number): Promise<RoomIdentityResult> {
+    const map = this.screenToMap(clientX, clientY);
+    const scene = this.#scene;
+    const state = this.#state;
+    if (!map || !scene || !state) return { status: "unmatched" };
+    const cellX = map.x / scene.metadata.metersPerCell - scene.metadata.origin[0];
+    const cellY = map.y / scene.metadata.metersPerCell - scene.metadata.origin[1];
+    const { resolveSceneRoomHits } = await import("./spatial-identity");
+    return resolveSceneRoomHits(scene.metadata.rooms,
+      (room) => pointInPolygon(cellX, cellY, room.boundary), this.#catalogRoomIdentities(state));
   }
 
   containsMapPoint(point: MapPoint): boolean {
@@ -1819,16 +2078,12 @@ export class RendererController {
     return scene.metadata.rooms.some((room) => pointInPolygon(cellX, cellY, room.boundary));
   }
 
-  // A scene room with no catalog entry has no id to select (R9).
-  #roomId(room: SceneRoom, state: WorkspaceState): string | null {
-    const candidates = state.resources.plans.value?.rooms || state.resources.areas.value?.rooms || [];
-    return candidates.find((candidate) => candidate.name.localeCompare(room.name, undefined, { sensitivity: "base" }) === 0)?.roomId
-      ?? null;
-  }
-
-  selectRoomAt(clientX: number, clientY: number): void {
-    const roomId = this.roomAt(clientX, clientY);
-    if (roomId) this.#callbacks.onRoom?.(roomId);
+  #catalogRoomIdentities(state: WorkspaceState): readonly { readonly roomId: string; readonly name: string }[] {
+    const rooms = [
+      ...(state.resources.plans.value?.rooms ?? []),
+      ...(state.resources.areas.value?.rooms ?? []),
+    ];
+    return [...new Map(rooms.map((room) => [room.roomId, { roomId: room.roomId, name: room.name }])).values()];
   }
 
   fit(
@@ -1838,10 +2093,10 @@ export class RendererController {
     const top = view === "top";
     this.#camera = {
       yaw: top ? 0 : -Math.PI / 4,
-      pitch: top ? Math.PI / 2 - 0.018 : 0.82,
+      pitch: top ? Math.PI / 2 - 0.018 : 1.12,
       distance: top ? this.#homeTop : this.#homeThree,
-      targetX: 0,
-      targetZ: 0,
+      targetX: this.#homeTargetX,
+      targetZ: this.#homeTargetZ,
       orthographic: top,
     };
     this.#fitActive = true;
@@ -1883,16 +2138,6 @@ export class RendererController {
       ...this.#camera,
       yaw: angle(this.#camera.yaw + deltaX * 0.006),
       pitch: clamp(this.#camera.pitch - deltaY * 0.004, 0.18, 1.38),
-    };
-    this.#fitActive = false;
-    this.requestRender();
-    this.#notifyCamera();
-  }
-
-  rotateBy(deltaRadians: number): void {
-    this.#camera = {
-      ...this.#camera,
-      yaw: angle(this.#camera.yaw + deltaRadians),
     };
     this.#fitActive = false;
     this.requestRender();
@@ -1975,6 +2220,11 @@ export class RendererController {
   #releaseWebGl(): void {
     this.#cancelGpuUpload(false);
     const gl = this.#gl;
+    if (!this.#disposed) this.#surfaceGeometry?.clearDetail();
+    this.#surfaceGeometry?.dispose();
+    this.#surfaceGeometry = null;
+    this.#setSurfaceNeeded(false);
+    if (this.#surfaceModule && this.#surfaceStatus === "failed") this.#surfaceStatus = "ready";
     if (gl) {
       if (this.#buffer) gl.deleteBuffer(this.#buffer);
       if (this.#stagingBuffer) gl.deleteBuffer(this.#stagingBuffer);
@@ -1998,6 +2248,15 @@ export class RendererController {
     this.#sceneCanvas.removeEventListener("webglcontextrestored", this.#contextRestored);
     if (this.#frame !== null) window.cancelAnimationFrame(this.#frame);
     this.#frame = null;
+    this.#pendingFollow = null;
+    for (const [module, record] of this.#moduleTimeouts) {
+      if (record.timer !== null) window.clearTimeout(record.timer);
+      record.timer = null;
+      if (this.#moduleTimeouts.get(module) === record) this.#moduleTimeouts.delete(module);
+      record.reject(new Error("renderer-module-disposed"));
+    }
+    this.#cameraFollow?.dispose();
+    this.#cancelRoomNameAdmission();
     this.#cancelFallback();
     this.#releaseWebGl();
     this.#fallbackCanvas = null;

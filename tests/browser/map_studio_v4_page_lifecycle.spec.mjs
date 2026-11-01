@@ -198,6 +198,9 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
   })).toBe(true);
   const beforeSuspend = await panel.evaluate((element) => element.getWorkspaceSnapshot());
   const generation = beforeSuspend.generation;
+  // This scenario checks retention of the top-view camera; Home now starts in 3D.
+  await panel.getByRole("button", { name: "2D", exact: true }).click();
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().view)).toBe("top");
   const mapRoot = panel.locator("matic-map-shell-v4").locator("matic-map-canvas-v4").locator(".map-root");
   await mapRoot.focus();
   for (let index = 0; index < 4; index += 1) await page.keyboard.press("ArrowRight");
@@ -276,6 +279,13 @@ test("@safety synthetic page lifecycle revokes late live reads and revalidates b
   expect(resumed.cameras.top).toEqual(retainedCamera);
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);
 
+  // History is loaded on entry; select the saved floor only after admission.
+  await panel.evaluate((element) => {
+    element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: { type: "open-workflow", workflow: "history" }, bubbles: true, composed: true,
+    }));
+  });
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().resources.history.status)).toBe("ready");
   const pendingHistorySceneIndex = await page.evaluate(() => window.__panelFixture.pendingHistoryScenes.length);
   await panel.evaluate((element) => {
     element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-intent", {
@@ -380,8 +390,7 @@ test("@safety page suspension aborts saved-plan preflight and preserves its draf
   const panel = page.locator(fixture.panelTag);
   await expect.poll(() => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
-    return state.resources.scene.status === "ready" && state.map.exactPose
-      && state.resources.plans.status === "ready";
+    return state.resources.scene.status === "ready" && state.map.exactPose;
   })).toBe(true);
   await panel.evaluate((element) => {
     const shell = element.shadowRoot.querySelector("matic-map-shell-v4");

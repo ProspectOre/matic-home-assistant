@@ -160,6 +160,11 @@ _SITE_FORMS = {
         [("notice", "v4_n", "N", set())],
         [],
     ),
+    "notice through the typed factory": (
+        'makeNotice("success", "v4_n", "Done.")',
+        [("notice", "v4_n", "Done.", set())],
+        [],
+    ),
     "notice object with placeholders": (
         '{ tone: "info", key: "v4_n", fallback: "N {x}", placeholders: { x: 1 } }',
         [("notice", "v4_n", "N {x}", {"x"})],

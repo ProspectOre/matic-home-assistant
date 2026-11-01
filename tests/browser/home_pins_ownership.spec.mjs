@@ -31,7 +31,7 @@ async function setup(page, stores) {
     const data = structuredClone(stores);
     const held = [];
     const log = [];
-    const h = { user: "u1", hold: new Set(), held, log, data, failSetAt: 0, failSetAlso: 0, sets: 0, plansFail: 0 };
+    const h = { user: "u1", hold: new Set(), held, log, data, failSetAt: 0, failSetAlso: 0, sets: 0, plansFail: 0, denied: new Set() };
     // Every plan id these tests pin exists, unless a test narrows the catalog.
     h.planIds = ["daily", "weekend", "u1-plan", "u2-plan", "fresh", "stale", "b-plan", "b-weekend"];
     h.selectedPlan = "daily";
@@ -47,6 +47,7 @@ async function setup(page, stores) {
         const user = h.user;
         log.push({ user, type: message.type, value: structuredClone(message.value ?? null) });
         const answer = () => {
+          if (h.denied.has(message.type)) throw Object.assign(new Error("access denied"), { code: "unauthorized" });
           if (message.type === "frontend/get_user_data") return { value: structuredClone(data[user]?.[message.key] ?? null) };
           if (message.type === "frontend/set_user_data") {
             h.sets += 1;
@@ -58,7 +59,8 @@ async function setup(page, stores) {
         };
         if (h.hold.has(message.type) || (h.holdAll && message.type === "frontend/get_user_data")) {
           h.hold.delete(message.type);
-          return new Promise((resolve, reject) => held.push({ user, type: message.type, release: (value) => {
+          return new Promise((resolve, reject) => held.push({ user, type: message.type,
+            deny: () => reject(Object.assign(new Error("access denied"), { code: "unauthorized" })), release: (value) => {
             try { resolve(value ?? answer()); } catch (error) { reject(error); }
           } }));
         }
@@ -84,9 +86,9 @@ async function setup(page, stores) {
     const make = () => {
       const store = new WorkspaceStore();
       const controller = new EffectController(store, backend, connection, false);
-      const sync = (user, entryKey) => {
+      const sync = (user, entryKey, connected = true) => {
         h.user = user;
-        controller.sync({ host: { connected: true, administrator: true, robotConnected: true, robotCount: 2 },
+        controller.sync({ host: { connected, administrator: true, robotConnected: true, robotCount: 2 },
         activity: "idle", batteryPercent: 50, language: "en", userKey: user, vacuumEntityId: "vacuum.x", entryKey,
         robotLabel: "Matic", robots: [{ entryId: "synthetic-entry", label: "A" }, { entryId: "entry-b", label: "B" }] });
       };
@@ -629,3 +631,89 @@ test("a pin whose area was deleted leaves home and the record once the areas loa
   await expect.poll(() => storedPins(page, "u1", "synthetic-entry")).toEqual([area("entryway"), plan("daily")]);
   await expect.poll(() => pins(page)).toMatchObject({ status: "ready", pins: [area("entryway"), plan("daily")] });
 });
+
+for (const operation of ["frontend/get_user_data", "frontend/set_user_data"]) {
+  test(`current ${operation} denial clears private state until an explicit authenticated retry`, async ({ page }) => {
+    await setup(page, { u1: record([plan("daily")]) });
+    if (operation === "frontend/get_user_data") {
+      await page.evaluate(type => window.pinsHarness.denied.add(type), operation);
+    }
+    await sync(page, "u1", "synthetic-entry");
+    if (operation === "frontend/set_user_data") {
+      await expect.poll(() => pins(page)).toMatchObject({ status: "ready" });
+      await page.evaluate(type => {
+        const h = window.pinsHarness;
+        h.denied.add(type);
+        h.controller.saveHomePin({ kind: "plan", id: "weekend" }, true, h.store.value.homePins.pins);
+        h.controller.saveHomePin({ kind: "plan", id: "fresh" }, true, h.store.value.homePins.pins);
+      }, operation);
+    }
+    await expect.poll(() => page.evaluate(() => window.pinsHarness.store.value.resources.catalog.problem)).toBe("access-required");
+    expect(await page.evaluate(() => {
+      const s = window.pinsHarness.store.value;
+      return [s.resources.scene.value, s.resources.plans.value, s.resources.areas.value, s.resources.history.value];
+    })).toEqual([null, null, null, null]);
+    const calls = await page.evaluate(() => window.pinsHarness.log.length);
+    await sync(page, "u1", "synthetic-entry");
+    await page.waitForTimeout(50);
+    expect(await page.evaluate(() => window.pinsHarness.log.length)).toBe(calls);
+    expect(await page.evaluate(() => window.pinsHarness.store.value.resources.catalog.problem)).toBe("access-required");
+    await page.evaluate(async () => {
+      const h = window.pinsHarness;
+      h.denied.clear();
+      await h.controller.executeAction("recheck-status");
+    });
+    await expect.poll(() => page.evaluate(() => window.pinsHarness.store.value.resources.catalog.status)).toBe("ready");
+    await expect.poll(() => pins(page)).toMatchObject({ status: "ready", pins: [plan("daily")] });
+    if (operation === "frontend/set_user_data") {
+      expect(await page.evaluate(() => window.pinsHarness.log.filter(call => call.type === "frontend/set_user_data").length)).toBe(1);
+    }
+  });
+}
+
+for (const operation of ["frontend/get_user_data", "frontend/set_user_data"]) {
+  test(`retired ${operation} denial cannot clear another user's workspace`, async ({ page }) => {
+    await setup(page, { u1: record([plan("daily")]), u2: record([plan("u2-plan")]) });
+    if (operation === "frontend/get_user_data") await hold(page, operation);
+    await sync(page, "u1", "synthetic-entry");
+    if (operation === "frontend/set_user_data") {
+      await expect.poll(() => pins(page)).toMatchObject({ status: "ready" });
+      await hold(page, operation);
+      await page.evaluate(() => {
+        const h = window.pinsHarness;
+        h.controller.saveHomePin({ kind: "plan", id: "weekend" }, true, h.store.value.homePins.pins);
+      });
+    }
+    await expect.poll(() => heldCount(page)).toBe(1);
+    await sync(page, "u2", "synthetic-entry");
+    await expect.poll(() => pins(page)).toMatchObject({ status: "ready", pins: [plan("u2-plan")] });
+    await page.evaluate(() => window.pinsHarness.held[0].deny());
+    await page.waitForTimeout(50);
+    expect(await pins(page)).toMatchObject({ status: "ready", pins: [plan("u2-plan")] });
+    expect(await page.evaluate(() => window.pinsHarness.store.value.resources.catalog.status)).toBe("ready");
+  });
+}
+
+for (const operation of ["frontend/get_user_data", "frontend/set_user_data"]) {
+  test(`a ${operation} denial from before HA reconnect cannot revoke the new session`, async ({ page }) => {
+    await setup(page, { u1: record([plan("daily")]) });
+    if (operation === "frontend/get_user_data") await hold(page, operation);
+    await sync(page, "u1", "synthetic-entry");
+    if (operation === "frontend/set_user_data") {
+      await expect.poll(() => pins(page)).toMatchObject({ status: "ready" });
+      await hold(page, operation);
+      await page.evaluate(() => {
+        const h = window.pinsHarness;
+        h.controller.saveHomePin({ kind: "plan", id: "weekend" }, true, h.store.value.homePins.pins);
+      });
+    }
+    await expect.poll(() => heldCount(page)).toBe(1);
+    await page.evaluate(() => window.pinsHarness.sync("u1", "synthetic-entry", false));
+    await sync(page, "u1", "synthetic-entry");
+    await expect.poll(() => pins(page)).toMatchObject({ status: "ready", pins: [plan("daily")] });
+    await page.evaluate(() => window.pinsHarness.held[0].deny());
+    await page.waitForTimeout(50);
+    expect(await page.evaluate(() => window.pinsHarness.store.value.resources.catalog.status)).toBe("ready");
+    expect(await pins(page)).toMatchObject({ status: "ready", pins: [plan("daily")] });
+  });
+}

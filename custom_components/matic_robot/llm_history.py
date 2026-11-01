@@ -364,14 +364,17 @@ class MaticGetRunHistoryTool(_MaticTool):
                 "robot": _entry_name(entry),
                 "robot_history": robot_history,
                 "ending_meaning": (
-                    "finished: every room was cleaned. stopped: someone stopped it. "
+                    "finished: the run ended normally; outcome and room results "
+                    "report verified completion. stopped: the run was stopped; "
+                    "the actor is not identified. "
                     "smart_stop: it stopped after a room as asked. replaced: "
-                    "another plan or a robot schedule took over. low_battery: it "
+                    "another Home Assistant command replaced it. low_battery: it "
                     "docked to recharge. robot_problem: the robot reported an "
-                    "error. taken_over: a task started in the Matic app took "
-                    "over. home_assistant: Home Assistant restarted or reloaded. "
+                    "error. taken_over: another task took over; its source is "
+                    "unknown. home_assistant: Home Assistant restarted or reloaded. "
                     "interrupted: it stopped for another reason. Robot-history "
-                    "runs only show finished or unknown. robot_history false "
+                    "runs show finished, stopped or unknown without actor "
+                    "attribution. robot_history false "
                     "means the robot's own history could not be read, so runs "
                     "started outside Home Assistant are missing."
                 ),

@@ -281,6 +281,22 @@ export class MaticMapPanelV4 extends LitElement {
       void this.#effects?.selectHistory(intent.historyId);
       return;
     }
+    if (intent.type === "refresh-history") {
+      void this.#effects?.refreshHistory(intent.historyId);
+      return;
+    }
+    if (intent.type === "invalidate-history") {
+      this.#effects?.invalidateHistory(intent.historyIds);
+      return;
+    }
+    if (intent.type === "archive-access-denied") {
+      this.#effects?.archiveAccessDenied();
+      return;
+    }
+    if (intent.type === "set-comparison-active") {
+      void this.#effects?.setComparisonActive(intent.value);
+      return;
+    }
     if (intent.type === "select-plan") {
       this.#effects?.selectPlan(intent.planId, false, intent.origin);
       return;
@@ -289,14 +305,19 @@ export class MaticMapPanelV4 extends LitElement {
       void this.#effects?.setPlanEnabled(intent.enabled);
       return;
     }
+    if (intent.type === "set-room-daily-limit") {
+      void this.#effects?.setDailyRoomLimit(intent.roomId, intent.limit);
+      return;
+    }
     if (intent.type === "set-home-pin") {
       const before = this.#store.value;
       if (before.homePins.status === "ready"
         && before.homePins.pins.some((pin) => pin.kind === intent.pin.kind && pin.id === intent.pin.id) !== intent.pinned) {
         // Update the follower's exclusions before dispatch notifies it; otherwise
         // its synchronous catalog reconciliation can undo this explicit choice.
-        this.#effects?.saveHomePin(intent.pin, intent.pinned, before.homePins.pins);
-        this.#store.dispatch(intent);
+        if (this.#effects?.saveHomePin(intent.pin, intent.pinned, before.homePins.pins)) {
+          this.#store.dispatch(intent);
+        }
       }
       return;
     }
@@ -327,7 +348,7 @@ export class MaticMapPanelV4 extends LitElement {
   #action(event: CustomEvent<WorkspaceAction>): void {
     event.stopPropagation();
     if (typeof event.detail?.id !== "string") return;
-    if ("roomId" in event.detail) {
+    if ("roomId" in event.detail || "token" in event.detail) {
       void this.#effects?.executeAction(event.detail);
     } else {
       void this.#effects?.executeAction(event.detail.id, "settled" in event.detail ? event.detail.settled : undefined);
@@ -355,6 +376,7 @@ export class MaticMapPanelV4 extends LitElement {
     return html`
       <${shellTag}
         .state=${this._workspace}
+        .backend=${this.#backend}
         .localize=${this.hass?.localize}
         .dates=${this.#projection?.dates}
         .scheme=${this.#scheme}

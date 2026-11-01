@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import zlib
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -12,19 +14,36 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from google.protobuf.message import DecodeError
 
+from custom_components.matic_robot import slam_delta
+from custom_components.matic_robot import slam_history_collector as history_collector
+from custom_components.matic_robot import slam_history_format as history_format
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.client.slam_scene import encode_slam_scene
-from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
+from custom_components.matic_robot.client.slam_scene import (
+    encode_slam_scene,
+)
+from custom_components.matic_robot.client.slam_tiles import (
+    decode_slam_structure_tile,
+    decode_slam_tile,
+)
+from custom_components.matic_robot.slam_delta import MAX_SCENE_BYTES
 from custom_components.matic_robot.slam_history import (
+    MAX_ACTIVE_HISTORY_READ_BYTES,
+    MAX_ACTIVE_HISTORY_READS,
     MIN_HISTORY_INTERVAL_SECONDS,
+    HistoryReadCapacityError,
     SlamHistoryStore,
+)
+from custom_components.matic_robot.slam_history_collector import (
+    async_collect_slam_history,
+)
+from custom_components.matic_robot.slam_history_format import (
+    _build_snapshot,
     _decode_history,
     _decompress_scene,
     _enforce_history_bounds,
-    async_collect_slam_history,
 )
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from tests.test_slam_map import synthetic_slam_entry
+from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
 def _scene(*, page_x: int = 0, mission_id: int = 0x1234ABCD) -> bytes:
@@ -33,11 +52,16 @@ def _scene(*, page_x: int = 0, mission_id: int = 0x1234ABCD) -> bytes:
     )
 
 
+def _scene_with_structure() -> bytes:
+    return encode_slam_scene(
+        (decode_slam_tile(synthetic_slam_entry()),),
+        structure_tiles=(decode_slam_structure_tile(synthetic_structure_entry()),),
+    )
+
+
 @pytest.mark.parametrize("value", ["A" * 16, b"AAAA"])
 def test_stored_history_admission_precedes_base64_allocation(monkeypatch, value):
-    monkeypatch.setattr(
-        "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES", 3
-    )
+    monkeypatch.setattr(history_format, "MAX_HISTORY_COMPRESSED_BYTES", 3)
     item = {
         "id": "0" * 24,
         "created_at": "2026-07-26T00:00:00+00:00",
@@ -45,7 +69,7 @@ def test_stored_history_admission_precedes_base64_allocation(monkeypatch, value)
         "point_count": 1,
         "scene": value,
     }
-    with patch("custom_components.matic_robot.slam_history.base64.b64decode") as decode:
+    with patch.object(history_format.base64, "b64decode") as decode:
         assert _decode_history({"snapshots": [item]}) == ([], True)
     decode.assert_not_called()
 
@@ -189,6 +213,322 @@ async def test_history_round_trips_replaces_recent_and_removes(hass) -> None:
     assert empty.catalog() == ()
 
 
+async def test_history_capture_persists_verified_structural_support(hass) -> None:
+    store = SlamHistoryStore(hass, "coverage-entry")
+    await store.async_load()
+    scene = _scene_with_structure()
+    assert await store.async_add(scene, 1, mission_token=_identity().mission_token)
+    snapshot = store.catalog()[0]
+    assert snapshot.record_id != snapshot.snapshot_id
+    assert snapshot.comparison_group == store.public_group(_identity().mission_token)
+    assert snapshot.frame is not None
+    assert snapshot.frame["coverage"]["status"] == "verified"
+    assert snapshot.frame["diff_eligible"] is True
+    assert await store.async_scene(snapshot.record_id) == scene
+    await store.async_shutdown()
+
+
+async def test_history_keep_trash_restore_and_idempotent_generation(hass) -> None:
+    store = SlamHistoryStore(hass, "lifecycle-entry")
+    await store.async_load()
+    assert await store.async_add(_scene(), 1, mission_token=_identity().mission_token)
+    record_id = store.catalog()[0].record_id
+    kept = await store.async_mutate(
+        "keep",
+        [record_id],
+        expected_generation=store.generation,
+        request_id="keep-once",
+        name="Kitchen before remodel",
+    )
+    assert store.catalog()[0].retention == "kept"
+    assert store.catalog()[0].name == "Kitchen before remodel"
+    assert (
+        await store.async_mutate(
+            "keep",
+            [record_id],
+            expected_generation=0,
+            request_id="keep-once",
+            name="Kitchen before remodel",
+        )
+        == kept
+    )
+    with pytest.raises(ValueError, match="generation-conflict"):
+        await store.async_mutate(
+            "rename",
+            [record_id],
+            expected_generation=0,
+            request_id="stale",
+            name="Old name",
+        )
+    deleted = await store.async_mutate(
+        "delete",
+        [record_id],
+        expected_generation=store.generation,
+        request_id="delete-once",
+        allow_kept=True,
+    )
+    assert store.catalog()[0].retention == "trash"
+    assert await store.async_scene(record_id) is None
+    assert (
+        await store.async_mutate(
+            "delete",
+            [record_id],
+            expected_generation=0,
+            request_id="delete-once",
+            allow_kept=True,
+        )
+        == deleted
+    )
+    restored = await store.async_mutate(
+        "restore",
+        [record_id],
+        expected_generation=store.generation,
+        request_id="restore-once",
+    )
+    assert restored["generation"] == store.generation
+    assert store.catalog()[0].retention == "kept"
+    await store.async_shutdown()
+
+
+async def test_history_expired_trash_and_bounded_archive_import(hass) -> None:
+    store = SlamHistoryStore(hass, "archive-entry")
+    await store.async_load()
+    assert await store.async_add(_scene(), 1, mission_token=_identity().mission_token)
+    original = store.catalog()[0]
+    archive = await store.async_export(
+        [original.record_id], expected_generation=store.generation
+    )
+    response = await store.async_import(
+        archive, expected_generation=store.generation, request_id="import-once"
+    )
+    assert (
+        await store.async_import(
+            archive, expected_generation=0, request_id="import-once"
+        )
+        == response
+    )
+    imported = next(
+        item for item in store.catalog() if item.record_id == response["record_ids"][0]
+    )
+    assert imported.imported is True
+    assert imported.record_id != original.record_id
+    assert imported.source_id == original.record_id
+    assert imported.mission_token is None
+    assert imported.comparison_group is None
+    assert imported.frame is not None and imported.frame["diff_eligible"] is False
+    await store.async_mutate(
+        "delete",
+        [imported.record_id],
+        expected_generation=store.generation,
+        request_id="trash-import",
+        allow_kept=True,
+    )
+    expired = datetime.now(UTC) + timedelta(hours=25)
+    assert await store.async_expire_trash(now=expired) == 1
+    assert all(item.record_id != imported.record_id for item in store.catalog())
+    await store.async_shutdown()
+
+
+async def test_history_mutation_rolls_back_after_disk_error(hass) -> None:
+    store = SlamHistoryStore(hass, "history-save-rollback-entry")
+    await store.async_load()
+    assert await store.async_add(_scene(), 1)
+    record_id = store.catalog()[0].record_id
+    generation = store.generation
+    store._store.async_save = AsyncMock(side_effect=OSError("disk full"))
+
+    with pytest.raises(OSError, match="disk full"):
+        await store.async_mutate(
+            "keep",
+            [record_id],
+            expected_generation=generation,
+            request_id="keep-after-retry",
+            name="Preserved",
+        )
+
+    assert store.generation == generation
+    assert store.catalog()[0].retention == "automatic"
+    assert store.catalog()[0].name is None
+    store._store.async_save = AsyncMock()
+    saved = await store.async_mutate(
+        "keep",
+        [record_id],
+        expected_generation=generation,
+        request_id="keep-after-retry",
+        name="Preserved",
+    )
+    assert saved["generation"] == generation + 1
+    assert store.catalog()[0].retention == "kept"
+    await store.async_shutdown()
+
+
+async def test_capture_in_flight_cannot_commit_after_record_delete(hass) -> None:
+    store = SlamHistoryStore(hass, "history-delete-capture-race-entry")
+    await store.async_load()
+    assert await store.async_add(_scene(), 1)
+    record_id = store.catalog()[0].record_id
+    started = asyncio.Event()
+    release = asyncio.Event()
+    executor = hass.async_add_executor_job
+
+    async def delayed_encoding(function, *args):
+        if function.__name__ == "_build_snapshot":
+            started.set()
+            await release.wait()
+        return await executor(function, *args)
+
+    with (
+        patch.object(hass, "async_add_executor_job", delayed_encoding),
+        patch.object(history_format, "MAX_HISTORY_ITEMS", 1),
+    ):
+        addition = asyncio.create_task(store.async_add(_scene(page_x=1), 2))
+        await started.wait()
+        await store.async_mutate(
+            "delete",
+            [record_id],
+            expected_generation=store.generation,
+            request_id="delete-during-capture",
+        )
+        release.set()
+        assert await addition is False
+
+    assert [item.record_id for item in store.trash_catalog()] == [record_id]
+    assert store.usage()["reserved_bytes"] == 0
+    assert store.usage()["reserved_count"] == 0
+    await store.async_shutdown()
+
+
+async def test_capture_quota_respects_active_scene_read_lease(hass) -> None:
+    store = SlamHistoryStore(hass, "history-read-lease-entry")
+    await store.async_load()
+    started_at = datetime.now(UTC)
+    assert await store.async_add(_scene(), 1, created_at=started_at)
+    record_id = store.catalog()[0].record_id
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+    executor = hass.async_add_executor_job
+
+    async def delayed_decompression(function, *args):
+        if function.__name__ == "_decompress_scene":
+            read_started.set()
+            await release_read.wait()
+        return await executor(function, *args)
+
+    with (
+        patch.object(hass, "async_add_executor_job", delayed_decompression),
+        patch.object(history_format, "MAX_HISTORY_ITEMS", 1),
+    ):
+        reading = asyncio.create_task(store.async_scene(record_id))
+        await read_started.wait()
+        assert store._active_reads[record_id] == 1
+        assert (
+            await store.async_add(
+                _scene(page_x=1),
+                2,
+                created_at=started_at + timedelta(minutes=6),
+            )
+            is False
+        )
+        assert [item.record_id for item in store.catalog()] == [record_id]
+        release_read.set()
+        assert await reading == _scene()
+        assert record_id not in store._active_reads
+        assert await store.async_add(
+            _scene(page_x=1),
+            2,
+            created_at=started_at + timedelta(minutes=6),
+        )
+
+    assert [item.revision for item in store.catalog()] == [2]
+    await store.async_shutdown()
+
+
+async def test_scene_read_cannot_lease_a_reserved_capture_victim(hass) -> None:
+    store = SlamHistoryStore(hass, "history-reserved-victim-entry")
+    await store.async_load()
+    started_at = datetime.now(UTC)
+    assert await store.async_add(_scene(), 1, created_at=started_at)
+    record_id = store.catalog()[0].record_id
+    encoding_started = asyncio.Event()
+    release_encoding = asyncio.Event()
+    executor = hass.async_add_executor_job
+
+    async def delayed_encoding(function, *args):
+        if function.__name__ == "_build_snapshot":
+            encoding_started.set()
+            await release_encoding.wait()
+        return await executor(function, *args)
+
+    with (
+        patch.object(hass, "async_add_executor_job", delayed_encoding),
+        patch.object(history_format, "MAX_HISTORY_ITEMS", 1),
+    ):
+        addition = asyncio.create_task(
+            store.async_add(
+                _scene(page_x=1),
+                2,
+                created_at=started_at + timedelta(minutes=6),
+            )
+        )
+        await encoding_started.wait()
+        assert record_id in store._reserved_victims
+        with pytest.raises(HistoryReadCapacityError):
+            await store.async_scene(record_id)
+        release_encoding.set()
+        assert await addition
+
+    assert [snapshot.revision for snapshot in store.catalog()] == [2]
+    await store.async_shutdown()
+
+
+async def test_scene_read_budget_holds_until_cancelled_decode_finishes(hass) -> None:
+    store = SlamHistoryStore(hass, "history-read-budget-entry")
+    await store.async_load()
+    assert await store.async_add(_scene(), 1)
+    record_id = store.catalog()[0].record_id
+    started_count = 0
+    first_started = asyncio.Event()
+    all_started = asyncio.Event()
+    release_decode = asyncio.Event()
+    executor = hass.async_add_executor_job
+
+    async def delayed_decompression(function, *args):
+        nonlocal started_count
+        if function.__name__ == "_decompress_scene":
+            started_count += 1
+            first_started.set()
+            if started_count == MAX_ACTIVE_HISTORY_READS:
+                all_started.set()
+            await release_decode.wait()
+        return await executor(function, *args)
+
+    with patch.object(hass, "async_add_executor_job", delayed_decompression):
+        cancelled = asyncio.create_task(store.async_scene(record_id))
+        await first_started.wait()
+        assert store.usage()["active_read_count"] == 1
+        assert store.usage()["active_read_bytes"] == MAX_SCENE_BYTES
+        cancelled.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+
+        # The coroutine is gone, but the executor decode still owns its lease.
+        assert store.usage()["active_read_count"] == 1
+        read = asyncio.create_task(store.async_scene(record_id))
+        await all_started.wait()
+        assert store.usage()["active_read_count"] == MAX_ACTIVE_HISTORY_READS
+        assert store.usage()["active_read_bytes"] == MAX_ACTIVE_HISTORY_READ_BYTES
+        with pytest.raises(HistoryReadCapacityError):
+            await store.async_scene(record_id)
+
+        release_decode.set()
+        assert await read == _scene()
+        await asyncio.sleep(0)
+
+    assert store.usage()["active_read_count"] == 0
+    assert store.usage()["active_read_bytes"] == 0
+    await store.async_shutdown()
+
+
 async def test_history_listener_only_notifies_catalog_mutations(hass) -> None:
     store = SlamHistoryStore(hass, "listener-entry")
     await store.async_load()
@@ -234,13 +574,34 @@ async def test_history_rejects_add_after_shutdown_and_invalid_revision(hass) -> 
     with pytest.raises(DecodeError, match="mission token"):
         await active.async_add(_scene(), 1, mission_token="z" * 64)
     with (
-        patch(
-            "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES",
+        patch.object(
+            history_format,
+            "MAX_HISTORY_COMPRESSED_BYTES",
             1,
         ),
         pytest.raises(DecodeError, match="storage bounds"),
     ):
         await active.async_add(_scene(), 1)
+
+
+async def test_paused_capture_is_rechecked_after_waiting_for_mutation_lock(
+    hass,
+) -> None:
+    store = SlamHistoryStore(hass, "paused-history-entry")
+    await store.async_load()
+    store._capture_paused = True
+    assert await store.async_add(_scene(), 1) is False
+    store._capture_paused = False
+
+    await store._mutation_lock.acquire()
+    addition = asyncio.create_task(store.async_add(_scene(), 2))
+    await asyncio.sleep(0)
+    store._capture_paused = True
+    store._mutation_lock.release()
+
+    assert await addition is False
+    assert store.catalog() == ()
+    await store.async_shutdown()
 
 
 async def test_history_load_repairs_corrupt_storage(hass) -> None:
@@ -253,11 +614,68 @@ async def test_history_load_repairs_corrupt_storage(hass) -> None:
     assert store.catalog() == ()
 
 
+async def test_history_load_migrates_legacy_and_pauses_oversized_state(hass) -> None:
+    scene = _scene_with_structure()
+    identity = _identity()
+    compressed = zlib.compress(scene)
+    legacy = {
+        "snapshots": [
+            {
+                "id": hashlib.sha256(scene).hexdigest()[:24],
+                "created_at": "2026-07-26T12:00:00+00:00",
+                "revision": 1,
+                "point_count": 1025,
+                "mission_token": identity.mission_token,
+                "scene": base64.b64encode(compressed).decode("ascii"),
+            }
+        ]
+    }
+    migrated = SlamHistoryStore(hass, "legacy-history-entry")
+    migrated._store.async_load = AsyncMock(return_value=legacy)
+    migrated._store.async_delay_save = MagicMock()
+
+    await migrated.async_load()
+
+    snapshot = migrated.catalog()[0]
+    assert snapshot.record_id != snapshot.snapshot_id
+    assert snapshot.comparison_group == migrated.public_group(identity.mission_token)
+    assert snapshot.frame is not None and snapshot.frame["diff_eligible"] is True
+    assert migrated._store.async_delay_save.called
+    await migrated.async_shutdown()
+
+    now = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+    oversized = [
+        _build_snapshot(
+            _scene(mission_id=mission),
+            mission,
+            now + timedelta(minutes=mission),
+            _identity(mission).mission_token,
+            b"s" * 32,
+        )
+        for mission in (1, 2)
+    ]
+    paused = SlamHistoryStore(hass, "oversized-history-entry")
+    paused._store.async_load = AsyncMock(return_value={"snapshots": []})
+    with (
+        patch.object(
+            history_format,
+            "_decode_history",
+            return_value=(oversized, False),
+        ),
+        patch.object(history_format, "MAX_HISTORY_ITEMS", 1),
+    ):
+        await paused.async_load()
+    assert paused.capture_paused is False
+    assert paused.capacity_blocked is True
+    assert len(paused.catalog()) == 2
+    await paused.async_shutdown()
+
+
 async def test_history_bounds_items_and_total_bytes(hass) -> None:
     store = SlamHistoryStore(hass, "bounds-entry")
     await store.async_load()
     started = datetime(2026, 7, 26, tzinfo=UTC)
-    with patch("custom_components.matic_robot.slam_history.MAX_HISTORY_ITEMS", 2):
+    with patch.object(history_format, "MAX_HISTORY_ITEMS", 2):
         for index in range(3):
             await store.async_add(
                 _scene(page_x=index),
@@ -267,9 +685,16 @@ async def test_history_bounds_items_and_total_bytes(hass) -> None:
     assert [snapshot.revision for snapshot in store.catalog()] == [1, 2]
 
     latest_size = len(store.catalog()[-1].compressed)
-    with patch(
-        "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES",
-        latest_size * 2,
+    with (
+        patch.object(
+            history_format,
+            "MAX_HISTORY_COMPRESSED_BYTES",
+            latest_size * 2,
+        ),
+        patch(
+            "custom_components.matic_robot.slam_history._reservation_bytes",
+            return_value=1,
+        ),
     ):
         await store.async_add(
             _scene(page_x=4),
@@ -286,7 +711,7 @@ async def test_history_bounds_preserve_each_classified_floor(hass) -> None:
     house = _identity(1)
     shed = _identity(2)
 
-    with patch("custom_components.matic_robot.slam_history.MAX_HISTORY_ITEMS", 3):
+    with patch.object(history_format, "MAX_HISTORY_ITEMS", 3):
         await store.async_add(
             _scene(page_x=1, mission_id=1),
             1,
@@ -335,8 +760,9 @@ async def test_history_byte_bound_preserves_each_classified_floor(hass) -> None:
         for snapshot in store.catalog()
         if snapshot.revision in {2, 3}
     )
-    with patch(
-        "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES",
+    with patch.object(
+        history_format,
+        "MAX_HISTORY_COMPRESSED_BYTES",
         retained_floor_bytes,
     ):
         _enforce_history_bounds(store._snapshots)
@@ -351,7 +777,7 @@ async def test_history_bound_keeps_newest_set_when_distinct_floors_exceed_it(
     await store.async_load()
     started = datetime(2026, 7, 26, tzinfo=UTC)
 
-    with patch("custom_components.matic_robot.slam_history.MAX_HISTORY_ITEMS", 2):
+    with patch.object(history_format, "MAX_HISTORY_ITEMS", 2):
         for revision in range(1, 4):
             await store.async_add(
                 _scene(page_x=revision, mission_id=revision),
@@ -398,7 +824,8 @@ def test_history_load_trims_between_scene_decodes(monkeypatch) -> None:
     compressed = __import__("zlib").compress(scene)
     snapshot_id = __import__("hashlib").sha256(scene).hexdigest()[:24]
     monkeypatch.setattr(
-        "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES",
+        history_format,
+        "MAX_HISTORY_COMPRESSED_BYTES",
         len(compressed),
     )
     items = [
@@ -417,9 +844,7 @@ def test_history_load_trims_between_scene_decodes(monkeypatch) -> None:
         peaks.append(sum(len(snapshot.compressed) for snapshot in snapshots))
         _enforce_history_bounds(snapshots)
 
-    with patch(
-        "custom_components.matic_robot.slam_history._enforce_history_bounds", enforce
-    ):
+    with patch.object(history_format, "_enforce_history_bounds", enforce):
         snapshots, dirty = _decode_history({"snapshots": items})
     assert dirty is True
     assert [snapshot.revision for snapshot in snapshots] == [5]
@@ -430,8 +855,9 @@ def test_history_load_trims_between_scene_decodes(monkeypatch) -> None:
 def test_history_decompression_is_bounded() -> None:
     scene = _scene()
     compressed = __import__("zlib").compress(scene)
-    with patch(
-        "custom_components.matic_robot.slam_history.MAX_SCENE_BYTES",
+    with patch.object(
+        slam_delta,
+        "MAX_SCENE_BYTES",
         len(scene) - 1,
     ):
         with pytest.raises(DecodeError, match="bounds"):
@@ -462,7 +888,7 @@ async def test_history_collector_captures_stable_complete_revision(hass) -> None
         async_collect_slam_history(hass, slam_map, history, _floor_plan)
     )
     try:
-        with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
+        with patch.object(history_collector, "MAP_SETTLE_SECONDS", 0):
             await asyncio.wait_for(history_added.wait(), timeout=1)
         history.async_add.assert_awaited_once()
     finally:
@@ -504,7 +930,7 @@ async def test_history_collector_waits_for_matching_floor_identity(hass) -> None
         )
     )
     try:
-        with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
+        with patch.object(history_collector, "MAP_SETTLE_SECONDS", 0):
             for _index in range(5):
                 await asyncio.sleep(0)
             history.async_add.assert_not_awaited()
@@ -558,7 +984,7 @@ async def test_history_collector_retries_churn_and_skips_incomplete(hass) -> Non
     task = asyncio.create_task(
         async_collect_slam_history(hass, slam_map, history, _floor_plan)
     )
-    with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
+    with patch.object(history_collector, "MAP_SETTLE_SECONDS", 0):
         await asyncio.sleep(0)
         assert listener is not None
         slam_map.map_complete = True
@@ -598,7 +1024,7 @@ async def test_history_collector_skips_incomplete_or_undecodable_scene(
         async_collect_slam_history(fake_hass, slam_map, history, _floor_plan)
     )
     try:
-        with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
+        with patch.object(history_collector, "MAP_SETTLE_SECONDS", 0):
             for _index in range(5):
                 await asyncio.sleep(0)
         history.async_add.assert_not_awaited()
@@ -630,7 +1056,7 @@ async def test_history_collector_discards_scene_after_revision_change() -> None:
         async_collect_slam_history(fake_hass, slam_map, history, _floor_plan)
     )
     try:
-        with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
+        with patch.object(history_collector, "MAP_SETTLE_SECONDS", 0):
             for _index in range(10):
                 if slam_map.revision == 2:
                     break

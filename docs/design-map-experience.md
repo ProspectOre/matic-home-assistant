@@ -2,7 +2,8 @@
 
 Proposed product contract for [PRO-138](https://linear.app/prospectore/issue/PRO-138).
 Design baseline: `460362131bb1691e032995915c9e605f525c6e8a`, October 31, 2026.
-This proposal does not change shipped behavior or assign a release. Implementation
+This proposal does not itself establish shipped behavior or assign a release. [Working
+implementation status](map-experience-implementation.md) tracks the candidate. Implementation
 order and status belong in Linear. [Architecture](design-map-architecture.md) and
 [qualification](qualification-map-experience.md) define the supporting contracts.
 [Live, launch, history and comparison](design-map-live-history.md) define their distinct experiences.
@@ -23,9 +24,9 @@ inspection helps. Every map operation has a usable list or form equivalent.
 6. Reveal complexity when needed. Preserve useful capability without displaying every control.
 7. Make setup and recovery as deliberate as the successful path.
 
-The current [controls](map-controls.md) already support top/3D views and map/list
-selection. The initializer uses top/photo, but saved preferences can restore 3D at launch;
-drawing and area review force top view. This proposal changes task defaults, not the existence
+The baseline [controls](map-controls.md) already supported top/3D views and map/list
+selection. At `46036213`, the initializer used top/photo, but saved preferences could restore 3D at launch;
+drawing and area review forced top view. This proposal changes task defaults, not the existence
 of 2D. Existing [authority](architecture-0.5.md) and safety boundaries continue to apply.
 
 ## From first open to a familiar workspace
@@ -64,8 +65,8 @@ architecture proposal; until then, protect in-session drafts and warn before lea
 | Camera viewpoints | 2D position/heading, optional 3D inspection | Review a supported saved viewpoint and privacy constraints before an explicit action. |
 
 The schedule overview and viewpoint rows are optional expansions, not prerequisites
-for the map redesign. Today schedule editing lives in plan rows and camera controls
-use separate HA surfaces. Viewpoints remain [PRO-115](https://linear.app/prospectore/issue/PRO-115);
+for the map redesign. At baseline `46036213`, schedule editing lived in plan rows and camera controls
+used separate HA surfaces. Viewpoints remain [PRO-115](https://linear.app/prospectore/issue/PRO-115);
 a cross-plan schedule overview needs separate scoping before implementation.
 
 Selecting or editing uses 2D throughout. Entering Inspect preserves the draft but
@@ -142,5 +143,7 @@ Broader opportunities remain linked to their existing owners: daily limits PRO-1
 live status PRO-130; store efficiency PRO-71; installed/rollback proof PRO-74/75;
 camera privacy/retention PRO-117/122 before aimed investigations PRO-115/116/125;
 app parity PRO-107/109/110; hazards PRO-118, map comparison PRO-121 and dashboard
-integration/translations PRO-89. Workspace push stays after 0.6 under PRO-131.
+integration/translations PRO-89. Beta 1 is blocked on PRO-130/131. Workspace push is automatic when supported (no user toggle), with older-backend polling fallback.
+Reconciliation polling continues and may add traffic/CPU. Reconnect, loss/order and authorization gates remain.
+Installed-host, device and resource qualification remain required; the proposed 70% reduction is unproven.
 The qualification contract covers the remaining reliability and contributor gaps.

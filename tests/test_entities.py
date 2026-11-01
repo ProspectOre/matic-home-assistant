@@ -233,6 +233,10 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         repository=SimpleNamespace(
             async_add_listener=MagicMock(return_value=MagicMock())
         ),
+        cadence=SimpleNamespace(
+            has_daily_limit=MagicMock(return_value=False),
+            has_any_daily_limit=MagicMock(return_value=False),
+        ),
         ledger=SimpleNamespace(active_run_id=MagicMock(return_value=None)),
         catalog=SimpleNamespace(
             plans=MagicMock(

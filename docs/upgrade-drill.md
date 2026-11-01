@@ -12,21 +12,23 @@ git fetch origin tag v0.5.0
 
 | Phase | Code | What it does |
 | --- | --- | --- |
-| seed | older | Saves "Evening" (Kitchen with mop every 3rd clean, then Study) and finishes one run. It then starts a second run and stops Home Assistant mid-clean. The stores are copied as the pre-upgrade backup. |
-| upgrade | this checkout | Loads the older stores, settles the interrupted run, then runs the plan to a verified finish. |
-| downgrade | older | Runs the plan on the stores the newer code wrote, with no restore. |
-| restore | older | Runs the plan on the pre-upgrade backup. |
+| seed | older | Saves plans and a version-1 map-history sample, finishes a run, then stops Home Assistant mid-clean. The stores are copied as the pre-upgrade backup. |
+| upgrade | this checkout | Migrates map history to v2, creates automatic, kept and trash records, settles the interrupted run and finishes the plan. |
+| downgrade | older | Checks the version-1 map-history reader refuses v2 and leaves its bytes unchanged; reads the newer plan store without starting a run. |
+| restore | older | Runs the plan on the matching pre-upgrade version-1 backup. |
 
-The drill also saves and executes a separate custom-area plan. Every phase checks the area's ID,
-name, circle geometry and map binding, both saved plans, and plan-specific and global area history.
-It fails if any phase fails, a saved definition changes, or a room or area loses completed runs.
+The drill also saves and executes a separate custom-area plan. It checks area identity,
+geometry and binding, saved plans and completion history across phases, plus the map-history
+migration, refusal and restored backup. No run starts during the refused downgrade phase.
 
 ## 0.5.0 to 0.6 (October 31, 2026)
 
-All four phases passed against release/0.6 at `d357cdc`.
+All four phases passed against release/0.6 at `d357cdc`. This is a historical
+receipt: the later [map candidate](map-experience-implementation.md) migrates
+history storage to v2 and requires a fresh drill and matching-backup restore proof.
 
-- The plan store stays at version 1.12 in both releases, so the upgrade runs no store migration. 0.6 only
-  adds keys, such as `run_history` and the per-run `skipped_room_ids` and `held_rooms`.
+- The plan store stays at version 1.12 in both releases, so the upgrade runs no store migration. That build only
+  added plan-store keys, such as `run_history` and the per-run `skipped_room_ids` and `held_rooms`.
 - 0.6 settles the run that 0.5.0 left cleaning as unverified (`restart_native_mission_changed_or_ended`)
   and then runs the plan normally.
 - 0.5.0 runs normally on stores 0.6 wrote. It keeps 0.6's `run_history` but does not add to it, so runs made
@@ -39,6 +41,6 @@ All four phases passed against release/0.6 at `d357cdc`.
 
 - The stores are synthetic. This does not qualify the owner's existing areas or map history, or an
   interleaved room-and-area plan; the latter is a separate managed-run scenario.
-- The binary tile store (PRO-71) is not in 0.6. If it lands, it brings the first real migration, and the
-  drill needs an interrupted-migration phase.
+- The binary tile store (PRO-71) was not in that build. If it lands, its separate migration
+  needs an interrupted-migration phase; the current candidate already migrates history storage.
 - This is an isolated run. A restore on the owner's host is a separate step and needs the owner's go.

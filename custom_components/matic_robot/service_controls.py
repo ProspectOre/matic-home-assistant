@@ -132,6 +132,8 @@ def register_controls_services(runtime: ServiceRuntime) -> None:
                 entity_id,
                 call.data["rooms"],
                 full_resolution=call.data["full_resolution"],
+                question=call.data.get("question"),
+                ai_task_entity_id=call.data.get("ai_task_entity_id"),
                 context=call.context,
             )
             robots.append(

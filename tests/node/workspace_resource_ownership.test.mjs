@@ -3,6 +3,25 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 
+// Effects use browser frame scheduling to admit optional UI after the map has
+// rendered. Model each frame as a cancellable macrotask for Node tests.
+let nextAnimationFrame = 0;
+const animationFrames = new Map();
+globalThis.requestAnimationFrame = (callback) => {
+  const id = ++nextAnimationFrame;
+  const handle = setImmediate(() => {
+    animationFrames.delete(id);
+    callback(Date.now());
+  });
+  animationFrames.set(id, handle);
+  return id;
+};
+globalThis.cancelAnimationFrame = (id) => {
+  const handle = animationFrames.get(id);
+  if (handle !== undefined) clearImmediate(handle);
+  animationFrames.delete(id);
+};
+
 // Compile only these resource owners in memory. This does not build or load the
 // production bundle; the tests exercise real stores and coherence admission.
 const { outputFiles } = await build({
@@ -264,9 +283,11 @@ test("home shortcut reads cannot survive an owner loss and return to the same us
   const identity = { userKey: "owner", entryKey: f.entry.entryId };
   f.store.patch({ owner: identity });
   const reads = [];
+  let planLoads = 0;
+  let areaLoads = 0;
   const owner = new HomePinResources(f.store, { sendMessagePromise: () => {
     const read = deferred(); reads.push(read); return read.promise;
-  } }, { disposed: () => false, loadAreas() {}, resumeAreas() {} });
+  } }, { disposed: () => false, loadAreas() { areaLoads += 1; }, loadPlans() { planLoads += 1; }, resumeAreas() {}, requestFailed() {} });
   const first = owner.loadHomePins();
   await flush();
   assert.equal(reads.length, 1);
@@ -283,6 +304,115 @@ test("home shortcut reads cannot survive an owner loss and return to the same us
   await second;
   assert.equal(f.store.value.homePins.status, "ready");
   assert.deepEqual(f.store.value.homePins.pins, [{ kind: "plan", id: "current" }]);
+  assert.equal(planLoads, 1);
+  assert.equal(areaLoads, 0);
+});
+
+test("home shortcut reads retain area catalogs only for actual area pins", async () => {
+  const f = fixture();
+  f.store.patch({ owner: { userKey: "owner", entryKey: f.entry.entryId } });
+  let areaLoads = 0;
+  const owner = new HomePinResources(f.store, {
+    sendMessagePromise: async () => ({ value: { version: 2, pins: [{ kind: "area", id: "area-1" }], excluded: [] } }),
+    subscribeMessage: async () => () => undefined,
+  }, { disposed: () => false, loadAreas() { areaLoads += 1; }, loadPlans() {}, resumeAreas() {}, requestFailed() {} });
+  await owner.loadHomePins();
+  assert.equal(f.store.value.homePins.status, "ready");
+  assert.equal(areaLoads, 1);
+});
+
+test("catalog area reads wait for an area workflow or an area pin", async () => {
+  const f = fixture();
+  let areaReads = 0;
+  const owner = new CatalogResources(f.store, {
+    areas: async () => {
+      areaReads += 1;
+      return { sceneUrl: f.entry.sceneUrl, areas: [], selectedArea: null };
+    },
+  }, f.coherence, f.requests, {
+    ...f.callbacks,
+    recoveryPending: () => false,
+    ownsLiveDelta: () => false,
+    admitSpatial() {},
+    syncWorkspace() {},
+    clearPrivate() {},
+    resumePins() {},
+  });
+  f.store.patch({ homePins: { status: "ready", pins: [{ kind: "plan", id: "plan-1" }] } });
+  owner.resumeAreas();
+  await flush();
+  assert.equal(areaReads, 0);
+
+  f.store.patch({ homePins: { status: "ready", pins: [{ kind: "area", id: "area-1" }] } });
+  owner.resumeAreas();
+  await flush();
+  assert.equal(areaReads, 1);
+  assert.equal(f.store.value.resources.areas.status, "ready");
+});
+
+test("a held plan-module import retries for the new user and drops the retired error callback", async () => {
+  const f = fixture();
+  const held = deferred();
+  const loads = [];
+  let imports = 0;
+  class PlanModule {
+    constructor(store) { this.store = store; }
+    async loadPlans() { loads.push(this.store.value.owner.userKey); return null; }
+  }
+  const { owner } = catalogOwner(f, async () => [], {
+    loadPlanResources: () => ++imports === 1 ? held.promise : Promise.resolve({ PlanCatalogResources: PlanModule }),
+  });
+  f.store.patch({ owner: { entryKey: "robot-a", userKey: "user-a" } });
+  let retiredError = 0;
+  const oldRequest = owner.loadPlans({ onError: () => { retiredError += 1; } });
+  await flush();
+  f.store.patch({ generation: f.store.value.generation + 1, owner: { entryKey: "robot-a", userKey: "user-b" } });
+  const currentRequest = owner.loadPlans();
+  held.resolve({ PlanCatalogResources: PlanModule });
+  await Promise.all([oldRequest, currentRequest]);
+  assert.deepEqual(loads, ["user-b"]);
+  assert.equal(retiredError, 0);
+  assert.equal(imports, 2);
+});
+
+test("plan-module import failure reports readback failure once and permits explicit retry", async () => {
+  const f = fixture();
+  let imports = 0;
+  let reported = 0;
+  class PlanModule { async loadPlans() { return null; } }
+  const { owner } = catalogOwner(f, async () => [], {
+    loadPlanResources: () => ++imports === 1
+      ? Promise.reject(new Error("chunk unavailable")) : Promise.resolve({ PlanCatalogResources: PlanModule }),
+  });
+  f.store.patch({ owner: { entryKey: "robot-a", userKey: "user-a" } });
+  assert.equal(await owner.loadPlans({ onError: () => { reported += 1; } }), null);
+  assert.equal(f.store.value.resources.plans.status, "error");
+  assert.equal(reported, 1);
+  assert.equal(await owner.loadPlans({ onError: () => { reported += 1; } }), null);
+  assert.equal(imports, 1);
+  assert.equal(await owner.loadPlans({ force: true }), null);
+  assert.equal(imports, 2);
+});
+
+test("a plan-module rejection after page suspension does not publish a stale readback error", async () => {
+  const f = fixture();
+  const held = deferred();
+  let active = true;
+  let reported = 0;
+  const { owner } = catalogOwner(f, async () => [], {
+    pageActive: () => active,
+    loadPlanResources: () => held.promise,
+  });
+  f.store.patch({ owner: { entryKey: "robot-a", userKey: "user-a" } });
+  const request = owner.loadPlans({ onError: () => { reported += 1; } });
+  assert.equal(f.store.value.resources.plans.status, "loading");
+  active = false;
+  f.store.patch({ resources: { ...f.store.value.resources,
+    plans: { status: "idle", value: null, problem: null } } });
+  held.reject(new Error("page suspended"));
+  assert.equal(await request, null);
+  assert.equal(f.store.value.resources.plans.status, "idle");
+  assert.equal(reported, 0);
 });
 
 test("disposing while run-history code loads cannot start a request or resurrect loading state", async () => {
@@ -356,6 +486,25 @@ test("a replacement observation keeps its own deadline when the retained pose wo
   assert.equal(f.store.value.resources.pose.value, current);
   t.mock.timers.tick(1_000);
   assert.equal(f.store.value.map.exactPose, false);
+});
+
+test("live trail restore backfills the latest verified pose and rejects owner changes", async () => {
+  const f = fixture();
+  f.store.patch({ activity: "cleaning", owner: { entryKey: "robot-a", userKey: "user-a" },
+    trail: { id: "live", mapSessionKey: "session-a", segments: [[[0, 0]]], },
+    resources: { ...f.store.value.resources, pose: { status: "ready", problem: null, value: livePose({ position: [1, 1] }) } } });
+  const owner = new RunHistoryResources(f.store, {}, f.requests, { disposed: () => false, pageActive: () => true });
+  const restore = owner.restoreLiveTrail();
+  f.store.patch({ resources: { ...f.store.value.resources,
+    pose: { status: "ready", problem: null, value: livePose({ position: [2, 2] }) } } });
+  await restore;
+  assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
+
+  const staleRestore = owner.restoreLiveTrail();
+  f.store.patch({ generation: f.store.value.generation + 1, owner: { entryKey: "robot-b", userKey: "other" } });
+  await staleRestore;
+  assert.deepEqual(f.store.value.trail.segments.at(-1).at(-1), [2, 2]);
+  owner.dispose();
 });
 
 test("a forced catalog refresh cannot promote fallback, unknown-age or stale poses to exact", async () => {

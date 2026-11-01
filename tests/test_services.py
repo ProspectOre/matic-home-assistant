@@ -21,6 +21,7 @@ from homeassistant.exceptions import (
 from homeassistant.util import dt as dt_util
 
 import custom_components.matic_robot.plan_model as plan_model_module
+from custom_components.matic_robot import daily_room_limit
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
     binding_for_floor_plan,
@@ -80,6 +81,7 @@ from custom_components.matic_robot.plan_model import (
     PlanDisabledError,
     RoomSequenceLimitError,
     plan_floor_token,
+    room_cadence_identity,
 )
 from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
 from custom_components.matic_robot.plans import CleaningPlanManager
@@ -2999,6 +3001,112 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
     assert str(raised.value.__cause__) == message
 
     assert raised.value.translation_key == "invalid_plan"
+    execute.assert_not_awaited()
+
+
+async def test_all_daily_limited_rooms_block_saved_and_manual_dispatch(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    room = floor_plan.rooms[0]
+    identity = room_cadence_identity(floor_plan, room.id)
+    await manager.catalog.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+        },
+    )
+    await manager.cadence.async_set_daily_limit(
+        "serial",
+        room.id,
+        room_identity=identity,
+        limit=1,
+        require_current=lambda: True,
+    )
+    now = dt_util.utcnow()
+    daily_room_limit.record_completion(
+        manager.repository.robot("serial"),
+        room.id,
+        identity,
+        now.isoformat(),
+        now=now,
+    )
+    services = await _registered_services(hass, manager)
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_refresh=AsyncMock(),
+    )
+    client = SimpleNamespace(
+        async_get_active_cleaning_session_state=AsyncMock(return_value=False),
+        async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
+    )
+    entry = SimpleNamespace(
+        entry_id="entry-daily-limit",
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            client=client,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        ),
+    )
+    context = ("vacuum.test", entry, "serial", {room.id: room.name})
+    saved = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Home"}),
+    )
+    manual = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        CLEAN_ROOM_SEQUENCE_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "rooms": [
+                    {
+                        "room": room.id,
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "standard",
+                    }
+                ],
+            }
+        ),
+    )
+    execute = AsyncMock()
+    with (
+        patch(
+            "custom_components.matic_robot.service_context._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.service_execution._async_execute_rooms",
+            execute,
+        ),
+    ):
+        preview = await _registered_handler(services, "preview_plan")(
+            ServiceCall(hass, DOMAIN, "preview_plan", {"plan": "Home"})
+        )
+        assert preview["blocker"] == "daily_limit_reached"
+        assert preview["daily_limit_held_rooms"][0]["room_id"] == room.id
+        for service, call in (
+            ("run_selected_plan", saved),
+            ("clean_room_sequence", manual),
+        ):
+            with pytest.raises(ServiceValidationError) as raised:
+                await _registered_handler(services, service)(call)
+            assert raised.value.translation_key == "daily_room_limit_reached"
+
     execute.assert_not_awaited()
 
 

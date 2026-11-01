@@ -25,8 +25,10 @@ CONF_CLEANING_MODE: Final = "cleaning_mode"
 CONF_COVERAGE_SETTING: Final = "coverage_setting"
 CONF_HERMES_CREDENTIAL: Final = "hermes_credential"
 CONF_HOSTNAME: Final = "hostname"
-# Legacy saved preference; ignored while workspace push is withheld.
+# Legacy saved preferences; retained when editing options but ignored by the
+# default workspace transport.
 CONF_LIVE_WORKSPACE_TRANSPORT: Final = "live_workspace_transport"
+CONF_WORKSPACE_PUSH: Final = "workspace_push"
 # How the saved credential was obtained: paired here over Bluetooth, or
 # imported from a pairing made on another device. Entries saved before this
 # was recorded were all paired over Bluetooth.

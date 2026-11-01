@@ -17,3 +17,6 @@ export const PLAN_VIEWS_TAG = `matic-map-plan-views-v4${suffix}`;
 export const ROOMS_VIEW_TAG = `matic-map-rooms-v4${suffix}`;
 export const SHELL_TAG = `matic-map-shell-v4${suffix}`;
 export const PANEL_TAG = `matic-map-panel-v0-4-0${suffix}`;
+export const ARCHIVE_PANEL_TAG = `matic-archive-panel-v4${suffix}`;
+export const ARCHIVE_WORKSPACE_TAG = `matic-archive-workspace-v4${suffix}`;
+export const MAP_COMPARISON_TAG = `matic-map-comparison-v4${suffix}`;

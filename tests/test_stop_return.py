@@ -805,7 +805,12 @@ async def test_final_dock_does_not_close_run_without_docked_state(
     hass, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An accepted DOCK command alone does not create dock evidence."""
-    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    # Keep the first confirmation inside the deadline, then advance beyond it
+    # after a second refresh regardless of scheduler latency.
+    monkeypatch.setattr(
+        stop_return, "monotonic", MagicMock(side_effect=[0, 0, 0, 0, 2])
+    )
     hass.states.async_set(ENTITY, "idle", {})
     client = _client(session=False)
     on_docked = AsyncMock()
@@ -823,6 +828,7 @@ async def test_final_dock_does_not_close_run_without_docked_state(
         )
         is True
     )
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
     on_docked.assert_not_awaited()
     assert refresh.await_count >= 2
 

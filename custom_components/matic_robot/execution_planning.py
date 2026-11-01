@@ -35,6 +35,7 @@ from .plan_model import (
     plan_area_fingerprint,
     plan_entries,
     resolve_rooms,
+    room_cadence_identity,
 )
 from .plan_repository import (
     PlanRepository,
@@ -127,6 +128,39 @@ class ExecutionPlanner:
             else room_by_id[entry["room_id"]]
             for entry in entries
         ]
+        if room_identities is None and floor_plan is not None:
+            room_identities = {
+                room.id: room_cadence_identity(floor_plan, room.id)
+                for room in floor_plan.rooms
+            }
+        now = dt_util.utcnow()
+        daily_by_room = {
+            target.room_id: self.cadence.daily_limit_state(
+                serial_number,
+                target.room_id,
+                room_identities.get(target.room_id) if room_identities else None,
+                now=now,
+            )
+            for target in targets
+            if isinstance(target, CleaningRoom)
+        }
+        daily_held = [
+            {
+                "room_id": target.room_id,
+                "name": target.name,
+                **daily_by_room[target.room_id],
+            }
+            for target in targets
+            if isinstance(target, CleaningRoom)
+            and daily_by_room[target.room_id]["reached"]
+        ]
+        if daily_held:
+            targets = [
+                target
+                for target in targets
+                if not isinstance(target, CleaningRoom)
+                or not daily_by_room[target.room_id]["reached"]
+            ]
         held = [
             {
                 "room_id": target.room_id,
@@ -166,7 +200,16 @@ class ExecutionPlanner:
             room_identities=room_identities,
         )
         preview_rooms = [
-            {**asdict(room), "cadence": cadence[room.room_id]} for room in effective
+            {
+                **asdict(room),
+                "cadence": cadence[room.room_id],
+                **(
+                    {"daily_limit": daily_by_room[room.room_id]}
+                    if daily_by_room[room.room_id]["limit"] is not None
+                    else {}
+                ),
+            }
+            for room in effective
         ]
         effective_by_id = {room["room_id"]: room for room in preview_rooms}
         preview_entries = [
@@ -192,6 +235,7 @@ class ExecutionPlanner:
             ),
             "room_count": len(effective),
             **({"held_rooms": held} if held else {}),
+            **({"daily_limit_held_rooms": daily_held} if daily_held else {}),
             "return_to_base": bool(plan.get("return_to_base", True)),
             "finish_current_room": bool(plan.get("finish_current_room", False)),
             "finish_current_room_threshold": int(

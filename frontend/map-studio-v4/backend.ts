@@ -1,7 +1,6 @@
 import type { AreaOutline } from "./area-outline";
 import { MAX_ROOM_SEQUENCE_SIZE, type FloorTypesLayer, type HassLike, type WifiSignalLayer } from "./contracts";
 import {
-  areaCatalogHelpers,
   CATALOG_URL,
   ContractError,
   DELTA_HEADER_BYTES,
@@ -9,9 +8,6 @@ import {
   SCENE_MAX_BYTES,
   isPrivatePath,
   parseCatalog,
-  parseHistoryCatalog,
-  roomPreviewHelpers,
-  parsePlansCatalog,
   parsePose,
   type AreaCircle,
   type AreasCatalog,
@@ -24,7 +20,7 @@ import {
   type PoseModel,
   type SceneModel,
 } from "./backend-contracts";
-import { SceneParser } from "./scene-parser";
+import { SceneParser as SceneParserImplementation, type SceneParser } from "./scene-parser";
 import {
   BackendRequestDiagnosticsStore,
   type BackendRequestDiagnostics,
@@ -33,8 +29,6 @@ import {
 } from "./request-diagnostics";
 
 // The integration rejects robot pictures over 8 MB (client/history.py).
-const THUMBNAIL_MAX_BYTES = 8 * 1024 * 1024;
-
 const REQUEST_TIMEOUTS = {
   catalog: 10_000,
   scene: 60_000,
@@ -61,6 +55,14 @@ export class BackendError extends Error {
   }
 }
 
+export const isAccessDeniedError = (error: unknown): boolean => {
+  if (!error || typeof error !== "object") return false;
+  const value = error as { code?: unknown; status?: unknown; statusCode?: unknown };
+  const status = value.status ?? value.statusCode;
+  return status === 401 || status === 403 || value.code === "unauthorized"
+    || value.code === "not_authorized" || value.code === "auth_invalid";
+};
+
 interface SceneResponse {
   readonly scene: SceneModel | null;
   readonly floorCoherent: boolean;
@@ -86,14 +88,43 @@ const floorHeader = (response: Response, fallback: boolean): boolean => {
 
 export class MaticBackend {
   readonly #getHass: () => HassLike | undefined;
-  readonly #parser = new SceneParser();
+  readonly #parser: SceneParser = new SceneParserImplementation();
   readonly #roomPreviewWireInFlight = new WeakMap<object, Promise<void>>();
   readonly #serviceWaits = new Set<() => void>();
   readonly #requestDiagnostics = new BackendRequestDiagnosticsStore();
+  #accessDeniedHandler: (() => void) | null = null;
+  #accessDeniedRegistration = 0;
   #disposed = false;
 
   constructor(getHass: () => HassLike | undefined) {
     this.#getHass = getHass;
+  }
+
+  setAccessDeniedHandler(handler: () => void): void {
+    this.#accessDeniedHandler = handler;
+    this.#accessDeniedRegistration += 1;
+  }
+
+  #accessFailureHandler(): (error: unknown) => void {
+    const backend = new WeakRef(this);
+    const registration = this.#accessDeniedRegistration;
+    const hass = this.#getHass();
+    const userId = hass?.user?.id;
+    const connection = hass?.connection;
+    return (error) => {
+      const owner = backend.deref();
+      if (!owner || !isAccessDeniedError(error) || owner.#disposed
+        || owner.#accessDeniedRegistration !== registration) return;
+      const current = owner.#getHass();
+      if (owner.#accessDeniedHandler && current?.user?.id === userId && current?.connection === connection) {
+        owner.#accessDeniedHandler();
+      }
+    };
+  }
+
+  #sceneParser(): Promise<SceneParser> {
+    if (this.#disposed) return Promise.reject(new DOMException("Aborted", "AbortError"));
+    return Promise.resolve(this.#parser);
   }
 
   /**
@@ -166,6 +197,8 @@ export class MaticBackend {
     };
     signal?.addEventListener("abort", abort, { once: true });
     let timedOut = false;
+    const requestFailed = this.#accessFailureHandler();
+    let receivedResponse = false;
     const timeout = window.setTimeout(() => {
       timedOut = true;
       abort();
@@ -195,6 +228,9 @@ export class MaticBackend {
           response = await fetch(url, { ...requestInit, headers });
         }
         try {
+          receivedResponse = true;
+          if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+          requestFailed(response);
           if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
           return await consume(response, controller.signal);
         } finally {
@@ -217,6 +253,7 @@ export class MaticBackend {
         outcome = "aborted";
         throw new DOMException("Aborted", "AbortError");
       }
+      if (!receivedResponse) requestFailed(error);
       throw error;
     } finally {
       window.clearTimeout(timeout);
@@ -268,6 +305,8 @@ export class MaticBackend {
     signal?: AbortSignal,
     etag?: string | null,
   ): Promise<SceneResponse> {
+    const parser = this.#sceneParser();
+    void parser.catch(() => {});
     const headers = new Headers({ Accept: "application/vnd.matic.slam-scene" });
     if (source === "live") headers.set("X-Matic-Prefer-Cached", "1");
     if (etag) headers.set("If-None-Match", etag);
@@ -282,7 +321,7 @@ export class MaticBackend {
       if (contentType !== "application/vnd.matic.slam-scene") {
         throw new ContractError("invalid-scene-content-type");
       }
-      const parsed = await this.#parser.parse(
+      const parsed = await (await parser).parse(
         await this.#readBody(response, operationSignal, SCENE_MAX_BYTES, "invalid-scene-size"),
         operationSignal,
       );
@@ -306,6 +345,8 @@ export class MaticBackend {
     expectedFloorCoherent: boolean,
     signal?: AbortSignal,
   ): Promise<SceneResponse> {
+    const parser = this.#sceneParser();
+    void parser.catch(() => {});
     const separator = path.includes("?") ? "&" : "?";
     return this.#request(
       "sceneDelta",
@@ -344,7 +385,7 @@ export class MaticBackend {
           if (!Number.isSafeInteger(baseHeader) || baseHeader !== base.revision) {
             throw new ContractError("invalid-scene-delta-base");
           }
-          const decoded = await this.#parser.decodeDelta(payload, base, operationSignal);
+          const decoded = await (await parser).decodeDelta(payload, base, operationSignal);
           if (decoded.revision !== revision) throw new ContractError("invalid-scene-delta-revision");
           return {
             scene: {
@@ -359,7 +400,7 @@ export class MaticBackend {
             notModified: false,
           };
         }
-        const parsed = await this.#parser.parse(payload, operationSignal);
+        const parsed = await (await parser).parse(payload, operationSignal);
         return {
           scene: {
             ...parsed,
@@ -380,7 +421,32 @@ export class MaticBackend {
   }
 
   async history(path: string, signal?: AbortSignal): Promise<HistoryCatalog> {
-    return parseHistoryCatalog(await this.#json("history", path, REQUEST_TIMEOUTS.history, signal));
+    const [{ parseHistoryCatalog }, value] = await Promise.all([
+      import("./history-catalog"),
+      this.#json("history", path, REQUEST_TIMEOUTS.history, signal),
+    ]);
+    return parseHistoryCatalog(value);
+  }
+
+  async archiveRequest(entryId: string, operation: "manage" | "export" | "import", body?: unknown, signal?: AbortSignal): Promise<unknown> {
+    const { decodeArchiveResponse } = await import("./archive-request");
+    const path = `/api/matic_robot/slam_history/${encodeURIComponent(entryId)}/${operation}`;
+    return this.#request("history", path, {
+      method: body === undefined ? "GET" : "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }, 60_000, signal, (response, operationSignal) => decodeArchiveResponse(
+      response, operationSignal,
+      (target, activeSignal, maxBytes, invalidCode) => this.#readBody(target, activeSignal, maxBytes, invalidCode),
+      (code, status) => new BackendError(code, status),
+    ));
+  }
+
+  async setDailyRoomLimit(entryId: string, floorToken: string, roomId: string, limit: number | null, signal?: AbortSignal): Promise<void> {
+    const { dailyLimitRequest } = await import("./daily-limit-request");
+    const { path, init } = dailyLimitRequest(entryId, floorToken, roomId, limit,
+      () => new ContractError("invalid-daily-limit"));
+    await this.#json("plans", path, REQUEST_TIMEOUTS.mutation, signal, init);
   }
 
   /** Cleaning history, or one trail; run-history-data.ts decodes it. */
@@ -391,21 +457,26 @@ export class MaticBackend {
 
   /** The robot's WebP map of one clean, named by its robot history id. */
   async runThumbnail(entryId: string, id: string, signal?: AbortSignal): Promise<Blob> {
+    const { runThumbnailResponse } = await import("./run-history-transport");
     const path = `/api/matic_robot/run_thumbnail/${encodeURIComponent(entryId)}/${encodeURIComponent(id)}`;
-    return this.#request("runs", path, { headers: { Accept: "image/webp" } }, REQUEST_TIMEOUTS.runs, signal, async (response, operationSignal) => {
-      if (!response.ok) throw new BackendError("request-failed", response.status);
-      if (response.headers.get("Content-Type")?.split(";", 1)[0] !== "image/webp") throw new ContractError("invalid-thumbnail");
-      return new Blob([await this.#readBody(response, operationSignal, THUMBNAIL_MAX_BYTES, "invalid-thumbnail")], { type: "image/webp" });
-    });
+    return this.#request("runs", path, { headers: { Accept: "image/webp" } }, REQUEST_TIMEOUTS.runs, signal,
+      (response, operationSignal) => runThumbnailResponse(response, operationSignal,
+        (target, activeSignal, maxBytes, invalidCode) => this.#readBody(target, activeSignal, maxBytes, invalidCode),
+        (code, status) => new BackendError(code, status), (code) => new ContractError(code)));
   }
 
   async plans(path: string, signal?: AbortSignal): Promise<PlansCatalog> {
-    return parsePlansCatalog(await this.#json("plans", path, REQUEST_TIMEOUTS.workflow, signal));
+    const [{ parsePlansCatalog }, value] = await Promise.all([
+      import("./plan-catalog"),
+      this.#json("plans", path, REQUEST_TIMEOUTS.workflow, signal),
+    ]);
+    return parsePlansCatalog(value);
   }
 
   async areas(path: string, signal?: AbortSignal): Promise<AreasCatalog> {
-    const [{ parseAreasCatalog }, geometry, value] = await Promise.all([
+    const [{ parseAreasCatalog }, { areaCatalogHelpers }, geometry, value] = await Promise.all([
       import("./area-catalog"),
+      import("./plan-catalog"),
       import("./area-outline"),
       this.#json("areas", path, REQUEST_TIMEOUTS.workflow, signal),
     ]);
@@ -443,12 +514,16 @@ export class MaticBackend {
     }
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const connection = this.#getHass()?.connection;
+    const requestFailed = this.#accessFailureHandler();
     if (!connection?.sendMessagePromise) throw new BackendError("preview-unavailable");
 
-    const { requestRoomPreview } = await import("./room-preview");
+    const [{ requestRoomPreview }, { roomPreviewHelpers }] = await Promise.all([
+      import("./room-preview"),
+      import("./plan-catalog"),
+    ]);
     if (this.#disposed || signal?.aborted) throw new DOMException("Aborted", "AbortError");
     return requestRoomPreview(connection, this.#roomPreviewWireInFlight, entityId, rooms, overrideRoomSchedule, signal,
-      { BackendError, ...roomPreviewHelpers });
+      { BackendError, requestFailed, ...roomPreviewHelpers });
   }
 
   async saveArea(
@@ -509,13 +584,23 @@ export class MaticBackend {
   ): Promise<unknown> {
     const hass = this.#getHass();
     if (this.#disposed || typeof hass?.callService !== "function") throw new BackendError("service-unavailable");
+    const requestFailed = this.#accessFailureHandler();
+    let denialReported = false;
+    const reportDenial = (error: unknown): void => {
+      if (denialReported || !isAccessDeniedError(error)) return;
+      denialReported = true;
+      requestFailed(error);
+    };
     let timeout: number | null = null;
     let cancelWait: (() => void) | null = null;
     try {
       const request = options.returnResponse
         ? hass.callService(domain, service, data, { entity_id: entityId }, true, true)
         : hass.callService(domain, service, data, { entity_id: entityId });
-      if (!options.returnResponse && !options.acknowledgementTimeout) return await request;
+      // An acknowledgement deadline cannot cancel HA's RPC; keep its access
+      // refusal bound to this request owner even after the caller times out.
+      void request.catch(reportDenial);
+      if (!options.returnResponse && !options.acknowledgementTimeout) return request;
       return await Promise.race([
         request,
         new Promise<never>((_resolve, reject) => {
@@ -528,6 +613,9 @@ export class MaticBackend {
           timeout = window.setTimeout(() => reject(Object.assign(new BackendError("mutation-timeout"), { completion: request })), REQUEST_TIMEOUTS.mutation);
         }),
       ]);
+    } catch (error) {
+      reportDenial(error);
+      throw error;
     } finally {
       if (timeout !== null) window.clearTimeout(timeout);
       if (cancelWait) this.#serviceWaits.delete(cancelWait);
@@ -537,6 +625,8 @@ export class MaticBackend {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#accessDeniedHandler = null;
+    this.#accessDeniedRegistration += 1;
     this.#requestDiagnostics.dispose();
     for (const cancelWait of this.#serviceWaits) cancelWait();
     this.#serviceWaits.clear();

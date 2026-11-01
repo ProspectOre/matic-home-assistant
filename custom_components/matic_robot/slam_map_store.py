@@ -140,6 +140,7 @@ class _MissionCandidate:
     truncated: bool = False
     dropped_photo_tiles: int = 0
     dropped_structure_tiles: int = 0
+    raw_bytes: int = 0
 
 
 @dataclass(slots=True)
@@ -206,6 +207,7 @@ class SlamMapStore:
         self._selection_generation = 0
         self._entries: dict[str, HermesCollectionEntry] = {}
         self._structure_entries: dict[str, HermesCollectionEntry] = {}
+        self._active_raw_bytes = 0
         self._entry_content_digests: dict[str, bytes] = {}
         self._structure_content_digests: dict[str, bytes] = {}
         self._revision = 0
@@ -258,6 +260,7 @@ class SlamMapStore:
         self._mission_id = loaded.mission_id
         self._entries = loaded.entries
         self._structure_entries = loaded.structure_entries
+        self._active_raw_bytes = stored_bytes(self._entries, self._structure_entries)
         self._entry_content_digests.clear()
         self._structure_content_digests.clear()
         self._truncated = loaded.truncated
@@ -392,6 +395,7 @@ class SlamMapStore:
             )
             previous_digest = _tile_content_digest(previous_tile)
         changed = previous is None or previous_digest != content_digest
+        self._active_raw_bytes += _entry_bytes(entry) - _entry_bytes(previous)
         target[key] = entry
         content_digests[key] = content_digest
         # Once a different mission has been observed, delayed pages from the
@@ -469,6 +473,7 @@ class SlamMapStore:
                 or (previous.sequence_start_ns, previous.sequence_no)
                 != (entry.sequence_start_ns, entry.sequence_no)
             )
+        candidate.raw_bytes += _entry_bytes(entry) - _entry_bytes(previous)
         target[key] = entry
         # Fresh candidate evidence starts a bounded classification window.
         # Even an unchanged replay remains contrary live-stream evidence and
@@ -700,6 +705,7 @@ class SlamMapStore:
         self._mission_id = candidate.mission_id
         self._entries = candidate.entries
         self._structure_entries = candidate.structure_entries
+        self._active_raw_bytes = candidate.raw_bytes
         self._entry_content_digests.clear()
         self._structure_content_digests.clear()
         self._truncated = candidate.truncated
@@ -735,24 +741,27 @@ class SlamMapStore:
             self._bound_candidate(
                 pending,
                 max_tiles=MAX_CANDIDATE_TILES_PER_LAYER,
-                max_bytes=max(0, _candidate_stored_bytes(pending) - excess),
+                max_bytes=max(0, pending.raw_bytes - excess),
             )
 
     def _candidate_bytes(self) -> int:
         """Return raw key/value bytes retained by every pending candidate."""
-        return sum(map(_candidate_stored_bytes, self._candidates.values()))
+        return sum(candidate.raw_bytes for candidate in self._candidates.values())
 
     def resident_bytes(self) -> int:
         """Return raw page bytes held by the active map and all candidates."""
-        return (
-            stored_bytes(self._entries, self._structure_entries)
-            + self._candidate_bytes()
-        )
+        return self._active_raw_bytes + self._candidate_bytes()
 
     @staticmethod
     def _bound_candidate(
         candidate: _MissionCandidate, *, max_tiles: int, max_bytes: int
     ) -> None:
+        if (
+            len(candidate.entries) <= max_tiles
+            and len(candidate.structure_entries) <= max_tiles
+            and candidate.raw_bytes <= max_bytes
+        ):
+            return
         dropped_photo, dropped_structure = enforce_collection_bounds(
             candidate.entries,
             candidate.structure_entries,
@@ -760,6 +769,9 @@ class SlamMapStore:
             max_bytes=max_bytes,
         )
         if dropped_photo or dropped_structure:
+            candidate.raw_bytes = stored_bytes(
+                candidate.entries, candidate.structure_entries
+            )
             candidate.truncated = True
             candidate.dropped_photo_tiles = _increment_by(
                 candidate.dropped_photo_tiles, dropped_photo
@@ -1175,6 +1187,7 @@ class SlamMapStore:
         self._collection_client = None
         self._entries.clear()
         self._structure_entries.clear()
+        self._active_raw_bytes = 0
         self._entry_content_digests.clear()
         self._structure_content_digests.clear()
         self._candidates.clear()
@@ -1217,6 +1230,12 @@ class SlamMapStore:
         await self._store.async_save(data)
 
     def _enforce_bounds(self) -> bool:
+        if (
+            len(self._entries) <= MAX_TILES
+            and len(self._structure_entries) <= MAX_TILES
+            and self._active_raw_bytes <= MAX_STORED_BYTES
+        ):
+            return False
         dropped_photo, dropped_structure = enforce_collection_bounds(
             self._entries,
             self._structure_entries,
@@ -1224,6 +1243,9 @@ class SlamMapStore:
             max_bytes=MAX_STORED_BYTES,
         )
         if dropped_photo or dropped_structure:
+            self._active_raw_bytes = stored_bytes(
+                self._entries, self._structure_entries
+            )
             # Pages evicted under the current bounds are genuinely missing;
             # no replay evidence can clear this latch within the session.
             self._truncated = True
@@ -1235,12 +1257,12 @@ class SlamMapStore:
             self._dropped_structure_tiles = _increment_by(
                 self._dropped_structure_tiles, dropped_structure
             )
-        for key in self._entry_content_digests.keys() - self._entries.keys():
-            self._entry_content_digests.pop(key)
-        for key in (
-            self._structure_content_digests.keys() - self._structure_entries.keys()
-        ):
-            self._structure_content_digests.pop(key)
+            for key in self._entry_content_digests.keys() - self._entries.keys():
+                self._entry_content_digests.pop(key)
+            for key in (
+                self._structure_content_digests.keys() - self._structure_entries.keys()
+            ):
+                self._structure_content_digests.pop(key)
         return bool(dropped_photo or dropped_structure)
 
     def _record_invalid(self) -> None:
@@ -1294,8 +1316,8 @@ def _current_bounds() -> tuple[int, int]:
     return MAX_TILES, MAX_STORED_BYTES
 
 
-def _candidate_stored_bytes(candidate: _MissionCandidate) -> int:
-    return stored_bytes(candidate.entries, candidate.structure_entries)
+def _entry_bytes(entry: HermesCollectionEntry | None) -> int:
+    return 0 if entry is None else len(entry.key) + len(entry.value)
 
 
 def _candidate_age(candidate: _MissionCandidate) -> int:

@@ -317,12 +317,12 @@ async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
         initial.operational,
         cues_voice_status=CuesVoiceStatus.LISTENING_FOR_WAKE_WORD,
     )
-    coordinator.async_process_cues_state(ready)
+    coordinator.async_process_operational_state(ready)
     listening = replace(
         ready,
         cues_voice_status=CuesVoiceStatus.LISTENING_FOR_INTENT,
     )
-    coordinator.async_process_cues_state(listening)
+    coordinator.async_process_operational_state(listening)
     classified = replace(
         listening,
         cues_voice_status=CuesVoiceStatus.CLASSIFIED,
@@ -330,8 +330,8 @@ async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
         cues_gesture_status=CuesGestureStatus.POINTED_TARGET_ACCEPTED,
         following_person=True,
     )
-    coordinator.async_process_cues_state(classified)
-    coordinator.async_process_cues_state(classified)
+    coordinator.async_process_operational_state(classified)
+    coordinator.async_process_operational_state(classified)
     await hass.async_block_till_done()
 
     assert [event.event_type for event in entity_events] == [
@@ -351,8 +351,191 @@ async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
     assert coordinator.data.operational.following_person is True
 
     remove_listener()
-    coordinator.async_process_cues_state(replace(classified, following_person=False))
+    coordinator.async_process_operational_state(
+        replace(classified, following_person=False)
+    )
     assert entity_events[-1].event_type == "following_started"
+
+
+async def test_live_pushes_do_not_confirm_errors_before_poll_confirmation(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    registry = ir.async_get(hass)
+    full = replace(initial.operational, error_codes=(206,), bag_full=True)
+
+    coordinator.async_process_operational_state(full)
+    coordinator.async_process_operational_state(full)
+
+    assert coordinator.data.operational.error_codes == ()
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_full_entry") is None
+
+    client.async_get_state.return_value = full
+    first_poll = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(first_poll)
+
+    assert coordinator.data.operational.error_codes == ()
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_full_entry") is None
+
+    second_poll = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(second_poll)
+
+    assert coordinator.data.operational.error_codes == (206,)
+    assert coordinator.data.operational.bag_full is True
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_full_entry") is not None
+
+
+async def test_live_state_preserves_poll_values_when_stream_field_is_unknown(
+    hass,
+) -> None:
+    coordinator = _coordinator(hass, _client())
+    initial = await coordinator._async_update_data()
+    initial = replace(
+        initial,
+        operational=replace(initial.operational, software_version="v1"),
+    )
+    coordinator.async_set_updated_data(initial)
+    streamed = replace(
+        initial.operational,
+        battery_percentage=None,
+        software_version=None,
+        cleaning=True,
+    )
+
+    coordinator.async_process_operational_state(streamed)
+
+    assert coordinator.data.operational.battery_percentage == 50
+    assert coordinator.data.operational.software_version == "v1"
+    assert coordinator.data.operational.cleaning is True
+
+
+async def test_live_state_push_keeps_native_session_telemetry_in_sync(hass) -> None:
+    coordinator = _coordinator(hass, _client())
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    assert coordinator.data.telemetry.active_cleaning_session is False
+
+    cleaning = replace(
+        initial.operational,
+        state_codes=(119,),
+        cleaning=True,
+    )
+    coordinator.async_process_operational_state(cleaning)
+    assert coordinator.data.operational.cleaning is True
+    assert coordinator.data.telemetry.active_cleaning_session is True
+
+    docked = replace(
+        cleaning,
+        state_codes=(106,),
+        charging_idle=True,
+        cleaning=False,
+    )
+    coordinator.async_process_operational_state(docked)
+    assert coordinator.data.operational.charging_idle is True
+    assert coordinator.data.telemetry.active_cleaning_session is False
+
+
+async def test_late_poll_does_not_overwrite_newer_stream_state(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    state_read_started = asyncio.Event()
+    release_state_read = asyncio.Event()
+
+    async def held_state_read():
+        state_read_started.set()
+        await release_state_read.wait()
+        return initial.operational
+
+    client.async_get_state.side_effect = held_state_read
+    poll = asyncio.create_task(coordinator._async_update_data())
+    await state_read_started.wait()
+    coordinator._state_push_sequence += 1
+    coordinator.async_process_operational_state(
+        replace(initial.operational, battery_percentage=47, cleaning=True)
+    )
+    release_state_read.set()
+
+    result = await poll
+
+    assert result.operational.battery_percentage == 47
+    assert result.operational.cleaning is True
+    assert result.telemetry.active_cleaning_session is True
+
+
+async def test_buffered_stream_push_cannot_overwrite_a_newer_poll(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+
+    # The subscriber received this snapshot, then delayed applying it while it
+    # rate-limited a burst. A later poll began after the push and saw the newer
+    # cleaning state.
+    stale_push_generation = coordinator._state_poll_generation
+    stale = replace(initial.operational, cleaning=False)
+    coordinator._state_push_sequence += 1
+    coordinator._latest_state_push_generation = stale_push_generation
+    coordinator._latest_received_state = stale
+    client.async_get_state.return_value = replace(initial.operational, cleaning=True)
+
+    fresh = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(fresh)
+    coordinator.async_process_operational_state(
+        stale, poll_generation=stale_push_generation
+    )
+
+    assert coordinator.data.operational.cleaning is True
+
+
+async def test_delayed_initial_stream_frame_uses_subscription_generation(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    subscription_started = asyncio.Event()
+    release_first_frame = asyncio.Event()
+    stale_baseline = initial.operational
+    fresh_push = replace(
+        initial.operational,
+        cleaning=True,
+        state_codes=(119,),
+        current_area="Kitchen",
+    )
+
+    async def subscription():
+        subscription_started.set()
+        await release_first_frame.wait()
+        yield stale_baseline
+        # Give the consumer a chance to reject the delayed baseline before a
+        # genuinely subsequent push arrives on this same subscription.
+        await asyncio.sleep(0)
+        yield fresh_push
+
+    client.async_subscribe_state = subscription
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.CUES_UPDATE_INTERVAL_SECONDS", 0
+    )
+    consumer = asyncio.create_task(coordinator._async_consume_state_subscription())
+    await subscription_started.wait()
+
+    # This poll starts after the subscription opened, then completes before its
+    # first frame is delivered. It is authoritative over that delayed baseline.
+    poll = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(poll)
+    poll_generation = coordinator._state_poll_generation
+    assert poll.operational.cleaning is False
+
+    release_first_frame.set()
+    assert await consumer == 2
+
+    assert coordinator._latest_state_push_generation == poll_generation
+    assert coordinator.data.operational.cleaning is True
+    assert coordinator.data.operational.current_area == "Kitchen"
 
 
 @pytest.mark.parametrize(
@@ -373,7 +556,7 @@ async def test_live_cues_remaining_voice_transitions(
     events: list[MaticCuesEvent] = []
     coordinator.async_add_cues_listener(events.append)
 
-    coordinator.async_process_cues_state(
+    coordinator.async_process_operational_state(
         replace(initial.operational, cues_voice_status=voice_status)
     )
 
@@ -393,7 +576,7 @@ async def test_live_cues_classified_intent_can_change_in_place(hass) -> None:
     events: list[MaticCuesEvent] = []
     coordinator.async_add_cues_listener(events.append)
 
-    coordinator.async_process_cues_state(
+    coordinator.async_process_operational_state(
         replace(classified, cues_voice_intent=CuesIntent.CLEAN_ALL)
     )
 
@@ -403,14 +586,14 @@ async def test_live_cues_classified_intent_can_change_in_place(hass) -> None:
 async def test_live_cues_ignores_updates_before_initial_refresh(hass) -> None:
     coordinator = _coordinator(hass, _client())
 
-    coordinator.async_process_cues_state(
+    coordinator.async_process_operational_state(
         RobotOperationalState(50, (), (), False, False, False, False, False, False)
     )
 
     assert coordinator.data is None
 
 
-async def test_cues_watcher_retries_transport_failures(hass) -> None:
+async def test_state_watcher_retries_transport_failures(hass) -> None:
     client = _client()
 
     async def failed_subscription():
@@ -428,12 +611,100 @@ async def test_cues_watcher_retries_transport_failures(hass) -> None:
         ) as sleep,
         pytest.raises(asyncio.CancelledError),
     ):
-        await coordinator.async_watch_cues()
+        await coordinator.async_watch_state()
 
     assert [args.args for args in sleep.await_args_list] == [(1,), (2,)]
 
 
-async def test_cues_watcher_backs_off_after_initial_snapshots(hass) -> None:
+async def test_state_polling_covers_stream_backoff_and_reconnected_push(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep polling useful through a stream outage, then resume live updates."""
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+
+    backoff_started = asyncio.Event()
+    retry_allowed = asyncio.Event()
+    reconnected = asyncio.Event()
+    deliver_fresh_push = asyncio.Event()
+    keep_stream_open = asyncio.Event()
+    attempts = 0
+
+    async def controlled_sleep(delay: float) -> None:
+        assert delay == 1
+        backoff_started.set()
+        await retry_allowed.wait()
+
+    async def subscription():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise MaticError("temporary stream outage")
+        reconnected.set()
+        await deliver_fresh_push.wait()
+        yield replace(
+            initial.operational,
+            battery_percentage=43,
+            cleaning=False,
+            current_area="Den",
+        )
+        await keep_stream_open.wait()
+
+    client.async_subscribe_state = subscription
+    real_process = coordinator.async_process_operational_state
+    processed = asyncio.Event()
+
+    def observe_process(state: RobotOperationalState, **kwargs: object) -> None:
+        real_process(state, **kwargs)
+        processed.set()
+
+    coordinator.async_process_operational_state = observe_process
+    watcher_asyncio = SimpleNamespace(
+        Event=asyncio.Event,
+        create_task=asyncio.create_task,
+        gather=asyncio.gather,
+        CancelledError=asyncio.CancelledError,
+        sleep=controlled_sleep,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.asyncio", watcher_asyncio
+    )
+    watcher = asyncio.create_task(coordinator.async_watch_state())
+    try:
+        await backoff_started.wait()
+
+        # The ordinary coordinator refresh remains the source of truth while
+        # push is unavailable.
+        polled = replace(
+            initial.operational,
+            battery_percentage=38,
+            cleaning=True,
+            current_area="Kitchen",
+        )
+        client.async_get_state.return_value = polled
+        result = await coordinator._async_update_data()
+        coordinator.async_set_updated_data(result)
+        assert coordinator.last_update_success is True
+        assert coordinator.data.operational == polled
+
+        retry_allowed.set()
+        await reconnected.wait()
+        deliver_fresh_push.set()
+        await processed.wait()
+        assert coordinator.data.operational.battery_percentage == 43
+        assert coordinator.data.operational.cleaning is False
+        assert coordinator.data.operational.current_area == "Den"
+        assert coordinator.last_update_success is True
+    finally:
+        keep_stream_open.set()
+        watcher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watcher
+
+
+async def test_state_watcher_backs_off_after_initial_snapshots(hass) -> None:
     client = _client()
     attempts = 0
 
@@ -455,12 +726,12 @@ async def test_cues_watcher_backs_off_after_initial_snapshots(hass) -> None:
         ) as sleep,
         pytest.raises(asyncio.CancelledError),
     ):
-        await coordinator.async_watch_cues()
+        await coordinator.async_watch_state()
 
     assert [args.args for args in sleep.await_args_list] == [(1,), (2,), (1,)]
 
 
-async def test_cues_subscription_resets_burst_backoff_when_stream_completes(
+async def test_state_subscription_resets_burst_backoff_when_stream_completes(
     hass,
 ) -> None:
     client = _client()
@@ -472,10 +743,10 @@ async def test_cues_subscription_resets_burst_backoff_when_stream_completes(
 
     client.async_subscribe_state = subscription
 
-    assert await coordinator._async_consume_cues_subscription() == 2
+    assert await coordinator._async_consume_state_subscription() == 2
 
 
-async def test_cues_subscription_returns_after_collector_finishes(hass) -> None:
+async def test_state_subscription_returns_after_collector_finishes(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
 
@@ -485,10 +756,10 @@ async def test_cues_subscription_returns_after_collector_finishes(hass) -> None:
 
     client.async_subscribe_state = subscription
 
-    assert await coordinator._async_consume_cues_subscription() == 0
+    assert await coordinator._async_consume_state_subscription() == 0
 
 
-async def test_cues_watcher_resets_delay_after_successful_burst(hass) -> None:
+async def test_state_watcher_resets_delay_after_successful_burst(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
 
@@ -504,12 +775,12 @@ async def test_cues_watcher_resets_delay_after_successful_burst(hass) -> None:
         ) as sleep,
         pytest.raises(asyncio.CancelledError),
     ):
-        await coordinator.async_watch_cues()
+        await coordinator.async_watch_state()
 
     assert sleep.await_args.args == (1,)
 
 
-async def test_cues_subscription_cancels_collector_on_shutdown(hass) -> None:
+async def test_state_subscription_cancels_collector_on_shutdown(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
     started = asyncio.Event()
@@ -520,14 +791,14 @@ async def test_cues_subscription_cancels_collector_on_shutdown(hass) -> None:
         yield client.async_get_state.return_value
 
     client.async_subscribe_state = subscription
-    consumer = asyncio.create_task(coordinator._async_consume_cues_subscription())
+    consumer = asyncio.create_task(coordinator._async_consume_state_subscription())
     await started.wait()
     consumer.cancel()
     with pytest.raises(asyncio.CancelledError):
         await consumer
 
 
-async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
+async def test_state_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
     initial = await coordinator._async_update_data()
@@ -544,7 +815,7 @@ async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     client.async_subscribe_state = subscription
 
     with pytest.raises(asyncio.CancelledError):
-        await coordinator.async_watch_cues()
+        await coordinator.async_watch_state()
 
     assert (
         coordinator.data.operational.cues_voice_status
@@ -552,7 +823,7 @@ async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     )
 
 
-async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
+async def test_state_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
     initial = client.async_get_state.return_value
@@ -580,7 +851,7 @@ async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
     deadlines: asyncio.Queue[tuple[float, asyncio.Event]] = asyncio.Queue()
     now = 0.0
 
-    def process(state: RobotOperationalState) -> None:
+    def process(state: RobotOperationalState, **_kwargs: object) -> None:
         processed.append(state)
         publications.put_nowait(state)
 
@@ -597,7 +868,7 @@ async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
         CancelledError=asyncio.CancelledError,
         sleep=wait_for_deadline,
     )
-    coordinator.async_process_cues_state = process
+    coordinator.async_process_operational_state = process
 
     with (
         patch("custom_components.matic_robot.coordinator.asyncio", cues_asyncio),
@@ -607,7 +878,7 @@ async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
             0.01,
         ),
     ):
-        watcher = asyncio.create_task(coordinator.async_watch_cues())
+        watcher = asyncio.create_task(coordinator.async_watch_state())
         try:
             async with asyncio.timeout(10):
                 assert await publications.get() == first
@@ -1131,7 +1402,7 @@ async def test_live_cues_push_wins_over_an_overlapping_poll(hass) -> None:
         cues_voice_intent=CuesIntent.CLEAN_ALL,
         following_person=True,
     )
-    coordinator.async_process_cues_state(pushed)
+    coordinator.async_process_operational_state(pushed)
     release_state_read.set()
 
     state = await poll
@@ -2407,7 +2678,7 @@ async def test_native_finished_event_excludes_unattempted_room_scope(hass):
     assert events[0].data["completed"] is False
 
 
-@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_cues"))
+@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_state"))
 async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     hass, watcher
 ) -> None:
@@ -2453,7 +2724,7 @@ async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     assert coordinator.data is None
 
 
-@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_cues"))
+@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_state"))
 async def test_retired_watcher_finishes_after_subscription_ends(hass, watcher) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)

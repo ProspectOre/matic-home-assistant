@@ -75,7 +75,17 @@ async def prepare_api(hass: HomeAssistant, tmp_path: Path) -> list[ServiceCall]:
 
     async def photo_patrol(call: ServiceCall) -> ServiceResponse:
         calls.append(call)
-        photos = [{"room": room, "url": PHOTO_URL} for room in call.data["rooms"]]
+        photos = [
+            {
+                "room": room,
+                "url": PHOTO_URL,
+                "analysis": {
+                    "problem": True,
+                    "summary": "A wet patch is visible.",
+                },
+            }
+            for room in call.data["rooms"]
+        ]
         return {"robots": [{"entity_id": VACUUM, "photos": photos}]}
 
     hass.services.async_register(
@@ -130,6 +140,7 @@ def inputs_for(filename: str) -> dict[str, Any]:
             "vacuum": VACUUM,
             "sensors": [LEAK],
             "room": " Kitchen ",
+            "ai_task_entity_id": "ai_task.blueprint_test",
             "notify_service": "notify.blueprint_test_phone",
             "cooldown": {"seconds": 0},
         }
@@ -256,10 +267,15 @@ async def test_import_save_reload_and_source_trigger(
             "entity_id": [VACUUM],
             "rooms": ["Kitchen"],
             "full_resolution": False,
+            "question": (
+                "Is there a safety problem visible, such as water, smoke or an open "
+                "door?"
+            ),
+            "ai_task_entity_id": "ai_task.blueprint_test",
         }
         assert calls[1].data == {
             "title": "Sink leak",
-            "message": "The robot took this photo in Kitchen.",
+            "message": "A wet patch is visible.",
             "data": {
                 "image": PHOTO_URL,
                 "tag": "matic_photo_automation.saved_matic_blueprint_test",

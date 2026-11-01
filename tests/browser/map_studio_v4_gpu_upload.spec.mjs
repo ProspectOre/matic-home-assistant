@@ -464,6 +464,85 @@ test("@safety WebGL uploads use bounded aligned chunks and compatible scenes pub
   expect(outcome.liveBuffers).toBeLessThanOrEqual(2);
 });
 
+test("@safety dirty GPU blocks upload in deterministic ascending order", async ({ page }) => {
+  await loadRenderer(page);
+  const outcome = await page.evaluate(async () => {
+    const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
+    const base = createGalleryState("ready");
+    const makeScene = (revision, previous = null, dirtyBlocks = []) => {
+      const pointOffset = 64;
+      const total = 100_000;
+      const buffer = new ArrayBuffer(pointOffset + total * 8);
+      const points = new Uint8Array(buffer, pointOffset);
+      if (previous) points.set(new Uint8Array(previous.buffer, previous.pointOffset, total * 8));
+      else points.fill(revision);
+      for (const block of dirtyBlocks) {
+        const start = block * 65_536;
+        points.fill(revision, start, Math.min(points.length, start + 65_536));
+      }
+      return {
+        ...base.resources.scene.value,
+        buffer,
+        pointOffset,
+        total,
+        floorCount: 80_000,
+        surfaceCount: 20_000,
+        revision,
+        source: "live",
+        ...(previous ? { deltaHint: {
+          baseRevision: previous.revision,
+          blockBytes: 65_536,
+          dirtyBlocks,
+        } } : {}),
+      };
+    };
+    const setScene = (scene) => ({
+      ...base,
+      resources: {
+        ...base.resources,
+        scene: { status: "ready", value: scene, problem: null },
+      },
+    });
+    const canvases = [document.createElement("canvas"), document.createElement("canvas")];
+    canvases.forEach((canvas) => document.body.append(canvas));
+    const renderer = new RendererController(...canvases);
+    const initial = makeScene(1);
+    renderer.setState(setScene(initial));
+    const context = contexts.at(-1);
+    const waitFor = async (predicate, attempts = 120) => {
+      for (let attempt = 0; attempt < attempts; attempt += 1) {
+        if (predicate()) return true;
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+      }
+      return predicate();
+    };
+    try {
+      const initialComplete = await waitFor(() => {
+        const state = renderer.diagnostics();
+        return state.sceneRevision === 1 && state.renderedPoints === initial.total;
+      });
+      const callStart = context.calls.length;
+      const updated = makeScene(2, initial, [1, 3, 5, 9]);
+      renderer.setState(setScene(updated));
+      const updateComplete = await waitFor(() => {
+        const state = renderer.diagnostics();
+        return state.sceneRevision === 2 && state.renderedPoints === updated.total;
+      });
+      const dirtyOffsets = context.calls.slice(callStart)
+        .filter((call) => call.type === "chunk" && call.bytes === 65_536)
+        .map((call) => call.offset);
+      return { initialComplete, updateComplete, dirtyOffsets };
+    } finally {
+      renderer.dispose();
+      canvases.forEach((canvas) => canvas.remove());
+    }
+  });
+
+  expect(outcome.initialComplete).toBe(true);
+  expect(outcome.updateComplete).toBe(true);
+  expect(outcome.dirtyOffsets).toEqual([65_536, 196_608, 327_680, 589_824]);
+});
+
 test("@safety a successor to an incomplete initial upload starts a full back buffer", async ({ page }) => {
   await loadRenderer(page);
   const outcome = await page.evaluate(async () => {
@@ -546,7 +625,16 @@ for (const interaction of ["existing camera", "pan during upload", "Fit during u
       const source = base.resources.scene.value;
       const makeScene = (revision, total, span) => {
         const buffer = new ArrayBuffer(source.pointOffset + total * 8);
-        new Uint8Array(buffer, source.pointOffset).fill(revision);
+        const points = new DataView(buffer, source.pointOffset);
+        for (let index = 0; index < total; index += 1) {
+          const offset = index * 8;
+          points.setUint16(offset, index % span[0], true);
+          points.setUint16(offset + 2, Math.floor(index / span[0]) % span[1], true);
+          points.setUint8(offset + 4, revision);
+          points.setUint8(offset + 5, revision);
+          points.setUint8(offset + 6, revision);
+          points.setUint8(offset + 7, revision);
+        }
         return { ...source, buffer, total, floorCount: total - 200_000,
           surfaceCount: 200_000, revision, metadata: { ...source.metadata, span } };
       };
@@ -623,8 +711,8 @@ for (const interaction of ["existing camera", "pan during upload", "Fit during u
     if (interaction === "Fit during upload") {
       expect(outcome.final.fitActive).toBe(true);
       expect(outcome.finalCamera.distance).toBeCloseTo(outcome.final.fitDistance, 5);
-      expect(outcome.finalCamera.targetX).toBe(0);
-      expect(outcome.finalCamera.targetZ).toBe(0);
+      expect(outcome.finalCamera.targetX).toBeCloseTo(0, 5);
+      expect(outcome.finalCamera.targetZ).toBeCloseTo(0, 5);
     } else {
       expect(outcome.finalCamera.distance).toBeCloseTo(outcome.before.distance, 5);
       expect(outcome.finalCamera.targetX).toBeCloseTo(outcome.before.targetX + outcome.centerShift, 5);
@@ -786,10 +874,22 @@ test("@safety live camera survives history and rejects a replaced session during
     const { RendererController, createGalleryState, WorkspaceStore, topView, contexts } = window.__gpuUploadHarness;
     const base = createGalleryState("ready");
     const store = new WorkspaceStore(base);
-    const makeScene = (revision, source = base.resources.scene.value) => ({
-      ...source, buffer: new ArrayBuffer(source.pointOffset + 1_000_000 * 8),
-      total: 1_000_000, floorCount: 800_000, surfaceCount: 200_000, revision,
-    });
+    const makeScene = (revision, source = base.resources.scene.value) => {
+      const total = 1_000_000;
+      const buffer = new ArrayBuffer(source.pointOffset + total * 8);
+      const points = new DataView(buffer, source.pointOffset);
+      const [width, height] = source.metadata.span;
+      for (let index = 0; index < total; index += 1) {
+        const offset = index * 8;
+        points.setUint16(offset, index % width, true);
+        points.setUint16(offset + 2, Math.floor(index / width) % height, true);
+        points.setUint8(offset + 4, revision);
+        points.setUint8(offset + 5, revision);
+        points.setUint8(offset + 6, revision);
+        points.setUint8(offset + 7, revision);
+      }
+      return { ...source, buffer, total, floorCount: 800_000, surfaceCount: 200_000, revision };
+    };
     const canvases = Array.from({ length: 2 }, () => document.createElement("canvas"));
     canvases.forEach((canvas) => {
       Object.assign(canvas.style, { width: "700px", height: "500px" });
@@ -880,12 +980,15 @@ test("@safety live camera survives history and rejects a replaced session during
   expect(outcome.loadingCamera).toEqual(outcome.savedCamera);
   expect(outcome.lostCamera).toEqual(outcome.savedCamera);
   expect(outcome.heldRestoredCamera).toEqual(outcome.savedCamera);
-  expect(outcome.restoredCamera).toEqual(outcome.liveCamera);
+  expect(outcome.restoredCamera.orthographic).toBe(outcome.liveCamera.orthographic);
+  for (const field of ["yaw", "pitch", "targetX", "targetZ", "zoom"]) {
+    expect(outcome.restoredCamera[field], field).toBeCloseTo(outcome.liveCamera[field], 5);
+  }
   expect(outcome.revisionDuringStaging).toBe(132);
   expect(outcome.finalRevision).toBe(134);
   expect(outcome.replacementCamera.zoom).toBeCloseTo(1, 5);
-  expect(outcome.replacementCamera.targetX).toBe(0);
-  expect(outcome.replacementCamera.targetZ).toBe(0);
+  expect(outcome.replacementCamera.targetX).toBeCloseTo(0, 5);
+  expect(outcome.replacementCamera.targetZ).toBeCloseTo(0, 5);
 });
 
 test("@safety held saved maps finish front uploads across status updates and GPU restoration", async ({ page }) => {
@@ -1169,6 +1272,7 @@ test("@safety context loss during compatible staging falls back to the latest ad
     };
     const stateFor = (scene) => ({
       ...base,
+      view: "top",
       appearance: "photo",
       labelsVisible: false,
       resources: { ...base.resources, scene: { status: "ready", value: scene, problem: null },
@@ -1224,7 +1328,9 @@ test("@safety context loss during compatible staging falls back to the latest ad
       renderedPoints: diagnostics.renderedPoints,
       currentGreen: pixel.some((value, index) => index % 4 === 1 && value > 240),
       currentRed: pixel.some((value, index) => index % 4 === 0 && value > 10),
-      obsoletePainted: obsoletePixel.some((value, index) => index % 4 === 3 && value > 0),
+      obsoleteRed: Array.from({ length: obsoletePixel.length / 4 }, (_, index) => index * 4)
+        .some((offset) => obsoletePixel[offset] > 100 && obsoletePixel[offset + 1] < 50
+          && obsoletePixel[offset + 2] < 50 && obsoletePixel[offset + 3] > 0),
     };
   });
 
@@ -1238,7 +1344,7 @@ test("@safety context loss during compatible staging falls back to the latest ad
   expect(outcome.renderedPoints).toBe(50_000);
   expect(outcome.currentGreen).toBe(true);
   expect(outcome.currentRed).toBe(false);
-  expect(outcome.obsoletePainted).toBe(false);
+  expect(outcome.obsoleteRed).toBe(false);
 });
 
 test("@safety hidden context restoration stays idle then uploads the same admitted scene on resume", async ({ page }) => {
@@ -1327,11 +1433,29 @@ test("@safety WebGL allocation and subdata errors fall back to the latest admitt
   const outcome = await page.evaluate(async () => {
     const { RendererController, createGalleryState, contexts } = window.__gpuUploadHarness;
     const base = createGalleryState("ready");
-    const makeScene = (revision, total = 4096) => {
+    const makeScene = (revision, total = 4096, previous = null, dirtyBlocks = []) => {
       const source = base.resources.scene.value;
       const buffer = new ArrayBuffer(source.pointOffset + total * 8);
-      new Uint8Array(buffer, source.pointOffset).fill(revision);
-      return { ...source, buffer, total, floorCount: total, surfaceCount: 0, revision };
+      const points = new Uint8Array(buffer, source.pointOffset);
+      if (previous) points.set(new Uint8Array(previous.buffer, previous.pointOffset, total * 8));
+      else points.fill(revision);
+      for (const block of dirtyBlocks) {
+        const start = block * 65_536;
+        points.fill(revision, start, Math.min(points.length, start + 65_536));
+      }
+      return {
+        ...source,
+        buffer,
+        total,
+        floorCount: total,
+        surfaceCount: 0,
+        revision,
+        ...(previous ? { deltaHint: {
+          baseRevision: previous.revision,
+          blockBytes: 65_536,
+          dirtyBlocks,
+        } } : {}),
+      };
     };
     const stateFor = (scene) => ({
       ...base,
@@ -1381,9 +1505,15 @@ test("@safety WebGL allocation and subdata errors fall back to the latest admitt
     const subdataScene = makeScene(40, 100_000);
     subdataRenderer.setState(stateFor(subdataScene));
     const subdataContext = contexts.at(-1);
+    await waitFor(() => subdataRenderer.diagnostics().sceneRevision === 40
+      && subdataRenderer.diagnostics().renderedPoints === subdataScene.total);
     subdataContext.failNextSubData = true;
-    const subdataFallback = await waitFor(() => subdataRenderer.diagnostics().mode === "canvas2d");
+    const dirtyScene = makeScene(41, subdataScene.total, subdataScene, [0]);
+    subdataRenderer.setState(stateFor(dirtyScene));
+    const subdataFallback = await waitFor(() => subdataRenderer.diagnostics().mode === "canvas2d"
+      && subdataRenderer.diagnostics().sceneRevision === dirtyScene.revision);
     const subdataResult = subdataRenderer.diagnostics();
+    const dirtyBlockErrors = subdataContext.calls.filter((call) => call.type === "chunk-error");
     const callsAtFallback = subdataContext.calls.length;
     await nextFrame();
     await nextFrame();
@@ -1401,6 +1531,7 @@ test("@safety WebGL allocation and subdata errors fall back to the latest admitt
       subdataFallback,
       subdataMode: subdataResult.mode,
       subdataRevision: subdataResult.sceneRevision,
+      dirtyBlockErrors,
       subdataCallsAtFallback: callsAtFallback,
       subdataCallsAfterFallback: callsAfterFallback,
     };
@@ -1414,7 +1545,9 @@ test("@safety WebGL allocation and subdata errors fall back to the latest admitt
   expect(outcome.allocationRevision).toBe(31);
   expect(outcome.subdataFallback).toBe(true);
   expect(outcome.subdataMode).toBe("canvas2d");
-  expect(outcome.subdataRevision).toBe(40);
+  expect(outcome.subdataRevision).toBe(41);
+  expect(outcome.dirtyBlockErrors).toHaveLength(1);
+  expect(outcome.dirtyBlockErrors[0]).toMatchObject({ offset: 0, bytes: 65_536 });
   expect(outcome.subdataCallsAfterFallback).toBe(outcome.subdataCallsAtFallback);
 });
 

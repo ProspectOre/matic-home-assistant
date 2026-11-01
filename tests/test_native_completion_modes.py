@@ -67,12 +67,21 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
         "vacuum_and_mop": vacuum_status == mop_status == 2,
     }[mode]
     duration = 60 if mode == "vacuum_and_mop" else 30
+    evidence = []
     assert (
         await _async_verify_room_completion(
-            reader, frozenset(), room, dispatched, attempts=1
+            reader,
+            frozenset(),
+            room,
+            dispatched,
+            attempts=1,
+            on_verified_completion=lambda ended, seconds: evidence.append(
+                (ended, seconds)
+            ),
         )
         is expected
     )
+    assert evidence == ([(session.ended_at, duration)] if expected else [])
     leg = await _async_verify_leg_completion(
         reader, frozenset(), [room], dispatched, attempts=1
     )

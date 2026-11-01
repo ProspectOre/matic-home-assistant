@@ -1237,7 +1237,7 @@ async def test_photo_patrol_settings_require_review_of_stale_blocked_rooms(
     assert saved["reason"] == "photo_patrol_rooms_unavailable"
 
 
-async def test_options_flow_does_not_offer_experimental_transport(hass) -> None:
+async def test_legacy_transport_option_does_not_enable_workspace_push(hass) -> None:
     entry, _manager = await _options_entry(
         hass, options={CONF_LIVE_WORKSPACE_TRANSPORT: True, "keep": "value"}
     )

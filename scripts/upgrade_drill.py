@@ -8,11 +8,15 @@ simulator copied in. Phases share real store files:
    second one cleaning when Home Assistant stops. The stores are copied as
    the pre-upgrade backup.
 2. upgrade (this checkout): settle the interrupted run and run the plan.
-3. downgrade (older): run the plan on the stores the newer code wrote.
-4. restore (older): run the plan on the pre-upgrade backup.
+3. downgrade (older): require its version-1 history reader to refuse the
+   version-2 history file without changing it; the newer plan store is read
+   for comparison only.
+4. restore (older): run the plan on the pre-upgrade version-1 backup.
 
-Afterwards the saved plan must be identical in every phase and no room may
-lose completed runs. See docs/upgrade-drill.md.
+Afterwards the saved plan and room/area history must survive. The SLAM history
+store must migrate with automatic, kept, and trash records, reject the old
+reader without writes, and remain readable by the old release after restoring
+the matching backup. See docs/upgrade-drill.md.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ DRILL = "tests/e2e/upgrade_drill.py"
 HARNESS = ("tests/__init__.py", "tests/conftest.py", "tests/e2e")
 PLAN = "evening"
 AREA_PLAN = "entry-area"
+ENTRY_ID = "matic-upgrade-drill"
 
 
 class DrillFailed(RuntimeError):
@@ -44,6 +49,31 @@ def plan_state(config: Path) -> dict[str, Any]:
     (robot,) = store["data"]["robots"].values()
     rotation = robot.get("rotations", {}).get(AREA_PLAN, {})
     area_records = rotation.get("areas", {})
+    history_path = config / ".storage" / f"matic_robot.slam_history.{ENTRY_ID}"
+    try:
+        history_store = json.loads(history_path.read_text())
+        history_data = history_store["data"]
+        history_records = history_data["snapshots"]
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as err:
+        raise DrillFailed(f"SLAM history store is missing or invalid: {err}") from err
+    if not isinstance(history_records, list):
+        raise DrillFailed("SLAM history snapshots are not a list")
+    history = {
+        "version": history_store.get("version"),
+        "minor_version": history_store.get("minor_version"),
+        "generation": history_data.get("generation", 0),
+        "records": [
+            {
+                "id": item.get("id"),
+                "record_id": item.get("record_id"),
+                "retention": item.get("retention", "automatic"),
+                "deleted_until": item.get("deleted_until"),
+                "deleted_retention": item.get("deleted_retention"),
+            }
+            for item in history_records
+            if isinstance(item, dict)
+        ],
+    }
     return {
         "minor_version": store["minor_version"],
         "plan": robot["plans"][PLAN],
@@ -75,11 +105,12 @@ def plan_state(config: Path) -> dict[str, Any]:
             }
             for area_id in robot.get("areas", {})
         },
+        "slam_history": history,
     }
 
 
 def compare(states: dict[str, dict[str, Any]]) -> None:
-    """Raise unless every phase kept the plan and each room's history."""
+    """Raise unless plan and legacy history survive the safe rollback flow."""
     seed = states["seed"]
     for phase, state in states.items():
         if state["plan"] != seed["plan"]:
@@ -98,6 +129,33 @@ def compare(states: dict[str, dict[str, Any]]) -> None:
                     raise DrillFailed(
                         f"{phase} lost {scope} completed runs for area {area_id}"
                     )
+
+    legacy = states["seed"].get("slam_history")
+    if legacy is not None:
+        upgraded = states["upgrade"].get("slam_history", {})
+        refused = states["downgrade"].get("slam_history", {})
+        restored = states["restore"].get("slam_history", {})
+        if legacy.get("version") != 1 or upgraded.get("version") != 2:
+            raise DrillFailed("SLAM history did not migrate from storage v1 to v2")
+        legacy_ids = {item.get("id") for item in legacy.get("records", [])}
+        upgraded_records = upgraded.get("records", [])
+        if not legacy_ids or not legacy_ids.issubset(
+            {item.get("id") for item in upgraded_records}
+        ):
+            raise DrillFailed("SLAM history migration lost legacy snapshot identity")
+        retentions = [item.get("retention") for item in upgraded_records]
+        for retention in ("automatic", "kept", "trash"):
+            if retention not in retentions:
+                raise DrillFailed(
+                    f"upgraded SLAM history did not preserve {retention} records"
+                )
+        if refused != upgraded:
+            raise DrillFailed("old SLAM history reader changed the v2 store")
+        if restored.get("version") != 1:
+            raise DrillFailed("restored backup is not readable SLAM history v1")
+        restored_ids = {item.get("id") for item in restored.get("records", [])}
+        if not legacy_ids.issubset(restored_ids):
+            raise DrillFailed("restored SLAM history backup lost legacy records")
 
 
 def require_area_evidence(states: dict[str, dict[str, Any]]) -> None:
@@ -199,12 +257,16 @@ def main(argv: list[str] | None = None) -> int:
         areas = sorted(
             record["plan"] for record in state["area_completed_runs"].values()
         )
+        slam_history = state["slam_history"]
+        retentions = sorted(item["retention"] for item in slam_history["records"])
         print(
             f"{phase:10} last run {state['last_run']:10} room runs {runs} "
-            f"area runs {areas} history {state['run_history']}"
+            f"area runs {areas} plan history {state['run_history']} "
+            f"SLAM v{slam_history['version']} {retentions}"
         )
     print(
-        "passed: plans, areas, and room and area history survived upgrade and rollback"
+        "passed: plan/area history survived; SLAM history migrated v1→v2, "
+        "old-reader refusal preserved bytes, and restored v1 backup remained usable"
     )
     return 0
 

@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadStopHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, canStopMotion, initialWorkspaceState, selectPrimaryAction } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, canStopMotion, initialWorkspaceState } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
       resolveDir: process.cwd(),
     },
     bundle: true,

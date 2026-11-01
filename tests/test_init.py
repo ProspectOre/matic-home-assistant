@@ -56,6 +56,7 @@ from custom_components.matic_robot.const import (
     DOMAIN,
     PLATFORMS,
 )
+from custom_components.matic_robot.media_source import DATA_PHOTO_ATTACHMENT_SOURCE
 from custom_components.matic_robot.photos import (
     MaticRobotPhotoPreviewView,
     MaticRobotPhotoView,
@@ -1015,7 +1016,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 14
+    assert hass.http.register_view.call_count == 18
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
@@ -1098,6 +1099,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     )
     plans.ledger.async_import_native_history = AsyncMock(return_value=False)
     track_workspace_entry = MagicMock()
+    photo_source = SimpleNamespace(activate_entry=MagicMock())
     scheduled_state_flushes = []
 
     def capture_state_flush(delay, callback):
@@ -1116,6 +1118,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
             DOMAIN: {
                 DATA_PLAN_MANAGER: plans,
                 DATA_FIRMWARE_TRACKER: MagicMock(),
+                DATA_PHOTO_ATTACHMENT_SOURCE: photo_source,
                 "workspace_socket": SimpleNamespace(track_entry=track_workspace_entry),
             }
         },
@@ -1132,6 +1135,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
+        async_watch_state=AsyncMock(),
         async_watch_floor_plan=AsyncMock(),
         displayed_floor_mission_id=None,
         data=SimpleNamespace(
@@ -1188,6 +1192,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     )
     slam_history = SimpleNamespace(
         async_load=AsyncMock(),
+        async_expire_trash_until_closed=AsyncMock(),
         async_shutdown=AsyncMock(),
     )
 
@@ -1223,6 +1228,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     ):
         assert await async_setup_entry(hass, entry) is True
         track_workspace_entry.assert_called_once_with(entry)
+        photo_source.activate_entry.assert_called_once_with(entry.entry_id)
         observe = client_factory.call_args.kwargs["observation_callback"]
         observe({"kind": "started"})
         with patch(
@@ -1326,11 +1332,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.run_trails is run_trails.return_value
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 7 + (
+    assert entry.async_create_background_task.call_count == 8 + (
         recovering_run or recovering_stop
     )
     assert isinstance(entry.runtime_data.photos, RobotPhotoStore)
-    coordinator.async_watch_cues.assert_called_once_with()
+    coordinator.async_watch_state.assert_called_once_with()
     coordinator.async_watch_floor_plan.assert_called_once_with()
     assert (
         entry.runtime_data.firmware_tracker
@@ -1427,7 +1433,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.repository.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 10 + (
+    assert entry.async_create_background_task.call_count == 11 + (
         recovering_run or recovering_stop
     )
     assert plans.catalog.async_upgrade_area_bindings.await_count == 5
@@ -1549,6 +1555,7 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
+        async_watch_state=AsyncMock(),
         async_watch_floor_plan=AsyncMock(),
         displayed_floor_mission_id=None,
         data=SimpleNamespace(floor_plan=initial),
@@ -1577,7 +1584,11 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         floor_plan_is_current=MagicMock(return_value=True),
         mission_identity=None,
     )
-    slam_history = SimpleNamespace(async_load=AsyncMock(), async_shutdown=AsyncMock())
+    slam_history = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_expire_trash_until_closed=AsyncMock(),
+        async_shutdown=AsyncMock(),
+    )
     hass.data.setdefault(DOMAIN, {})[DATA_PLAN_MANAGER] = manager
     hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = MagicMock()
     with (
@@ -1768,6 +1779,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     )
     slam_history = SimpleNamespace(
         async_load=AsyncMock(),
+        async_expire_trash_until_closed=AsyncMock(),
         async_shutdown=AsyncMock(),
     )
 
@@ -1835,6 +1847,9 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     pose_view = SimpleNamespace(clear_entry=MagicMock())
     floor_layers_view = SimpleNamespace(clear_entry=MagicMock())
     run_thumbnail_view = SimpleNamespace(clear_entry=MagicMock())
+    photo_source = SimpleNamespace(
+        activate_entry=MagicMock(), async_release_entry=AsyncMock()
+    )
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
@@ -1848,6 +1863,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             async_unload_platforms=AsyncMock(return_value=unload_ok)
         ),
         data={
+            DOMAIN: {DATA_PHOTO_ATTACHMENT_SOURCE: photo_source},
             DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
             DATA_FLOOR_LAYERS_VIEW: floor_layers_view,
@@ -1878,6 +1894,10 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     assert pose_view.clear_entry.called is unload_ok
     assert floor_layers_view.clear_entry.called is unload_ok
     assert run_thumbnail_view.clear_entry.called is unload_ok
+    if unload_ok:
+        photo_source.async_release_entry.assert_awaited_once_with("entry")
+    else:
+        photo_source.async_release_entry.assert_not_awaited()
     assert slam_map.async_shutdown.await_count == int(unload_ok)
     assert slam_history.async_shutdown.await_count == int(unload_ok)
     assert run_trails.async_shutdown.await_count == int(unload_ok)

@@ -10,6 +10,7 @@ import {
   type SceneDeltaHint,
   type SceneMetadata,
   type SceneModel,
+  type SceneTileIndex,
 } from "./backend-contracts";
 
 const XOR_CHUNK_BYTES = 1024 * 1024;
@@ -21,6 +22,7 @@ export interface ParsedScene {
   readonly surfaceCount: number;
   readonly total: number;
   readonly metadata: SceneMetadata;
+  readonly tileIndex?: SceneTileIndex;
 }
 
 export interface DecodedSceneDelta {
@@ -72,6 +74,8 @@ const createSceneCodec = (limits: Readonly<{
   dirtyBlockBytes: typeof SCENE_DELTA_DIRTY_BLOCK_BYTES;
   xorChunkBytes: number;
 }>) => {
+// This factory is serialized into a Worker. Keep every runtime dependency of
+// its codecs inside the factory or in the explicit limits argument.
 const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
   const HEADER = limits.sceneHeaderBytes;
   const STRIDE = limits.scenePointStride;
@@ -121,7 +125,7 @@ const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
     || !origin.every((value) => typeof value === "number" && Number.isFinite(value))
     || !Array.isArray(span)
     || span.length !== 2
-    || !span.every((value) => typeof value === "number" && Number.isFinite(value) && value >= 1 && value <= 65_536)
+    || !span.every((value) => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_536)
   ) fail();
   const rawRooms = Array.isArray(payload.rooms) ? payload.rooms.slice(0, 256) : [];
   const roomIds = new Set<string>();
@@ -159,6 +163,9 @@ const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
     : 1;
   const originValues = origin as number[];
   const spanValues = span as number[];
+  const sceneOrigin = [originValues[0] as number, originValues[1] as number] as const;
+  const sceneSpan = [spanValues[0] as number, spanValues[1] as number] as const;
+  const tileIndex = buildTileIndex(buffer, pointOffset, floorCount, total, sceneSpan);
   return {
     buffer,
     pointOffset,
@@ -167,12 +174,65 @@ const parseTransfer = (buffer: ArrayBuffer): ParsedScene => {
     total,
     metadata: {
       metersPerCell: meters as number,
-      origin: [originValues[0] as number, originValues[1] as number],
-      span: [spanValues[0] as number, spanValues[1] as number],
+      origin: sceneOrigin,
+      span: sceneSpan,
       sampleStep,
       rooms,
     },
+    ...(tileIndex ? { tileIndex } : {}),
   };
+};
+
+const buildTileIndex = (
+  buffer: ArrayBuffer,
+  pointOffset: number,
+  floorCount: number,
+  total: number,
+  span: readonly [number, number],
+): SceneTileIndex | undefined => {
+  // Run count and scratch storage are both hard-bounded. This index is only an
+  // accelerator: an unusual point order simply leaves the original cloud intact.
+  const MAX_RUNS = 8_192;
+  const values: number[] = [];
+  const seen = new Set<number>();
+  const points = new DataView(buffer, pointOffset, total * limits.scenePointStride);
+  let floorRuns = 0;
+  for (let range = 0; range < 2; range += 1) {
+    const start = range === 0 ? 0 : floorCount;
+    const end = range === 0 ? floorCount : total;
+    seen.clear();
+    let runStart = start;
+    let runTile = -1;
+    let runHeight = 0;
+    const finishRun = (runEnd: number): boolean => {
+      if (runTile < 0) return true;
+      if (values.length >= MAX_RUNS * 5) return false;
+      values.push(runStart, runEnd, runTile % 2048, Math.floor(runTile / 2048), runHeight);
+      return true;
+    };
+    for (let index = start; index < end; index += 1) {
+      const offset = index * limits.scenePointStride;
+      const x = points.getUint16(offset, true);
+      const y = points.getUint16(offset + 2, true);
+      const height = points.getUint8(offset + 4);
+      if (x >= span[0] || y >= span[1]) return undefined;
+      const tileX = x >>> 5;
+      const tileY = y >>> 5;
+      const tile = tileY * 2048 + tileX;
+      if (tile !== runTile) {
+        if (!finishRun(index) || seen.has(tile)) return undefined;
+        if (runTile >= 0) seen.add(runTile);
+        runStart = index;
+        runTile = tile;
+        runHeight = height;
+      } else if (height > runHeight) runHeight = height;
+    }
+    if (!finishRun(end)) return undefined;
+    if (range === 0) floorRuns = values.length / 5;
+  }
+  return values.length > 0
+    ? { runs: Uint32Array.from(values), floorRuns }
+    : undefined;
 };
 
 const decodeDeltaTransfer = async (
@@ -342,11 +402,17 @@ const workerSource = (): string => `
     try {
       if (kind === "parse") {
         const parsed = parseTransfer(buffer);
-        self.postMessage({ id, ok: true, parsed }, [parsed.buffer]);
+        self.postMessage({ id, ok: true, parsed }, [
+          parsed.buffer,
+          ...(parsed.tileIndex ? [parsed.tileIndex.runs.buffer] : []),
+        ]);
         return;
       }
       const decoded = await decodeDeltaTransfer(payload, base);
-      self.postMessage({ id, ok: true, ...decoded }, [decoded.parsed.buffer]);
+      self.postMessage({ id, ok: true, ...decoded }, [
+        decoded.parsed.buffer,
+        ...(decoded.parsed.tileIndex ? [decoded.parsed.tileIndex.runs.buffer] : []),
+      ]);
     } catch (error) {
       const problem = error instanceof Error && error.message.startsWith("invalid-scene")
         ? error.message

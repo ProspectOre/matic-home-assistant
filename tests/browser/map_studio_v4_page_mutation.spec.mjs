@@ -6,7 +6,7 @@ async function loadMutationHarness(page) {
     stdin: {
       contents: `
         export { EffectController } from "./frontend/map-studio-v4/effects";
-        export { WorkspaceStore, selectPrimaryAction } from "./frontend/map-studio-v4/state";
+        export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions";
         export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
         export { MaticBackend } from "./frontend/map-studio-v4/backend";
       `,
@@ -80,6 +80,8 @@ async function createPendingMutation(page, kind, { planId = "daily", planName = 
       vacuumEntityId: "vacuum.synthetic",
     });
     await run.effects.refreshCatalog(true);
+    // Plan writes need the catalog that the plan workflow now loads lazily.
+    if (kind === "plan") await run.effects.loadPlans();
     if (kind === "area" || kind === "area-update") {
       const current = store.value;
       const updating = kind === "area-update";

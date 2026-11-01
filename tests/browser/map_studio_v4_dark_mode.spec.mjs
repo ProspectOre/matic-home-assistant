@@ -8,9 +8,9 @@ import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 const LIGHT_APP = "rgb(243, 246, 248)"; // --ms-surface-app's light fallback
 const DARK_APP = "rgb(16, 26, 32)"; // and its dark one
 
-async function mount(page, scheme, themes) {
+async function mount(page, scheme, themes, fixtureOptions = {}) {
   await page.emulateMedia({ colorScheme: scheme });
-  const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged", ...fixtureOptions });
   await page.evaluate((value) => {
     const panel = window.__panelFixture.createPanel();
     if (value !== undefined) panel.hass = { ...panel.hass, themes: value };
@@ -57,9 +57,20 @@ test("switching Home Assistant's theme switches the panel", async ({ page }) => 
       });
     }
   });
-  const app = await mount(page, "light", { darkMode: false });
+  const room = { id: "room-a", name: "Kitchen", center: [50, 40], boundary: [[0, 0], [100, 0], [100, 80], [0, 80]] };
+  const app = await mount(page, "light", { darkMode: false }, {
+    initialPlanCatalog: { rooms: [{ room_id: room.id, name: room.name }], plans: [], selected_plan: null },
+    scenePoint: { x: 50, y: 40, color: [185, 219, 224] },
+    sceneRooms: [room],
+  });
   await expect.poll(() => background(app)).toBe(LIGHT_APP);
+  // The theme probe records Canvas2D palette writes. Give the 2D renderer a
+  // real room selection so the test observes an overlay stroke; the default
+  // 3D home map has no Canvas2D overlay to repaint.
+  await app.getByRole("button", { name: "2D", exact: true }).click();
+  await app.getByRole("button", { name: /^Clean rooms/ }).click();
   const shell = page.locator("matic-map-shell-v4");
+  await shell.getByRole("group", { name: "Rooms to clean" }).getByRole("checkbox", { name: "Kitchen" }).check();
   // The contrast-resolved primary and Stop fills and the indicator, which
   // the canvas strokes and fills its accent with (design-system.md §7).
   const resolved = () => shell.evaluate((element) => Object.fromEntries(["accent-fill", "danger-fill", "indicator"]

@@ -179,7 +179,9 @@ def make_robot_certificate(
     """Issue a robot certificate shaped like Matic's DirectoryName SAN."""
     now = datetime.datetime.now(datetime.UTC)
     ca_key = ec.generate_private_key(ec.SECP256R1())
-    ca_name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Simulated CA")])
+    ca_name = x509.Name(
+        [x509.NameAttribute(NameOID.COMMON_NAME, f"Simulated CA {serial_number}")]
+    )
     ca = (
         x509.CertificateBuilder()
         .subject_name(ca_name)
@@ -269,6 +271,7 @@ class SimulatedRobot:
         self.commands: list[ReceivedCommand] = []
         self.reads: Counter[str] = Counter()
         self.floor: SimFloor | None = None
+        self._mapped_floors: tuple[SimFloor, ...] = ()
         self.session: CoverageSession | None = None
         self.destination: UUID | None = None
         self.waiting_at_sink = False
@@ -301,6 +304,7 @@ class SimulatedRobot:
     def set_floor(self, floor: SimFloor) -> None:
         """Map a floor: its room plan and live photographic and structural map."""
         self.floor = floor
+        self._mapped_floors = (floor,)
         photo, structure = map_pages(floor)
         self.set_collection("map_compressed_rgb", photo)
         self.set_collection("map_integrated", structure)
@@ -312,6 +316,18 @@ class SimulatedRobot:
         )
         self._refresh_plan()
         self._refresh_pose()
+
+    def set_mapped_floors(self, floors: tuple[SimFloor, ...], active: SimFloor) -> None:
+        """Publish several mapped plans and select one as the active floor."""
+        if not floors or active not in floors:
+            raise ValueError("the active floor must be one of the mapped floors")
+        self.set_floor(active)
+        self._mapped_floors = floors
+        self._refresh_plan()
+        self.set_collection(
+            "displayed_mission",
+            [(b"current", displayed_mission(floors, active))],
+        )
 
     def finish_room(self) -> None:
         """Complete the session's current room and move on to the next."""
@@ -656,7 +672,13 @@ class SimulatedRobot:
         if self.floor is None:
             return
         retained = self.session.retained_goals() if self.session is not None else b""
-        self.set_property("coverage_plan", self.floor.encode() + retained)
+        plans = b"".join(
+            (floor.encode() + retained)
+            if floor.mission_id == self.floor.mission_id
+            else floor.encode()
+            for floor in self._mapped_floors
+        )
+        self.set_property("coverage_plan", plans)
 
     def _set_phase(self, phase: Phase) -> None:
         self.phase = phase

@@ -196,6 +196,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
       narrow: true,
       viewport: { width: 844, height: 390 },
     });
+    await patchState(gallery, { view: "top" });
     await gallery.locator(".stage").evaluate((stage) => {
       Object.assign(stage.style, { blockSize: "100dvh", minBlockSize: "0", maxInlineSize: "none" });
     });
@@ -294,7 +295,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await helpButton(gallery).click();
     const dialog = helpDialog(gallery);
-    expect(await rows(dialog)).toEqual({ Touch: "Drag to move the map · pinch to zoom · twist two fingers to rotate" });
+    expect(await rows(dialog)).toEqual({ Touch: "Drag to move the map · pinch to zoom · twist two fingers to rotate · drag two fingers up or down to tilt" });
     const close = dialog.getByRole("button", { name: "Close" });
     await expect(close).toBeFocused();
     const box = await close.boundingBox();
@@ -376,7 +377,7 @@ test.describe("help (map-surfaces.md §5 Help, §11 MS-HELP-01/02)", () => {
     await expect.poll(async () => Boolean(await three())).toBe(true);
     const afterPan = await three();
     expect(afterPan.yaw).toBeCloseTo(-Math.PI / 4, 3);
-    expect(afterPan.pitch).toBeCloseTo(0.82, 3);
+    expect(afterPan.pitch).toBeCloseTo(1.12, 3);
 
     await page.keyboard.down("Shift");
     await drag(page, from, to);
@@ -1074,7 +1075,7 @@ test.describe("Area review", () => {
     const bounds = await gallery.locator(".map-root").boundingBox();
     const corner = { x: 4, y: 4 };
     expect(await overlayAlpha(gallery, corner.x, corner.y), "no scrim in Draw").toBe(0);
-    const top = async () => (await snapshot(page)).cameras.top ?? { targetX: 0, targetZ: 0, zoom: 1 };
+    const top = async () => (await snapshot(page)).taskCameras.top ?? { targetX: 0, targetZ: 0, zoom: 1 };
     const before = await top();
     // Use the drawn circles' centre in map metres and the scene's origin.
     const expected = await page.evaluate((tag) => {
@@ -1127,6 +1128,7 @@ test.describe("Area review", () => {
       await gallery.getByRole("dialog", { name: "Discard changes?" })
         .getByRole("button", { name: "Discard", exact: true }).click();
       await expect.poll(async () => (await snapshot(page)).workflow).toBe("areas");
+      await expect.poll(async () => canvasOf(gallery).evaluate(element => element.rendererDiagnostics().fitActive)).toBe(true);
       await expect.poll(cameraZoom).toBeCloseTo(before, 4);
       await gallery.getByRole("button", { name: "Back to all tasks", exact: true }).click();
       await expect.poll(async () => (await snapshot(page)).workflow).toBe("none");
@@ -1139,7 +1141,7 @@ test.describe("Area review", () => {
     const gallery = await loadGallery(page, { scenario: "draw", viewport: { width: 1024, height: 768 } });
     await page.waitForTimeout(150);
     await gallery.locator(".action-bar").getByRole("button", { name: "Name and save", exact: true }).click();
-    await expect.poll(async () => (await snapshot(page)).cameras.top?.zoom ?? 1).toBeGreaterThan(1.5);
+    await expect.poll(async () => (await snapshot(page)).taskCameras.top?.zoom ?? 1).toBeGreaterThan(1.5);
     await expect.poll(() => overlayAlpha(gallery, 4, 4)).toBeGreaterThan(60);
   });
 
@@ -1332,10 +1334,10 @@ test.describe("History", () => {
     await patchState(gallery, { activity: "docked", dataMode: "live" });
     await expect(bar).toHaveCount(0);
     await expect(panel.getByRole("button", { name: /Live map required|Show live map/ })).toHaveCount(0);
-    await expect(panel.locator(".workflow-body .stack > :first-child")).toHaveText("Can't edit until you show the live map.");
+    await expect(panel.getByText("Can't edit until you show the live map.", { exact: true })).toHaveText("Can't edit until you show the live map.");
     await patchState(gallery, { dataMode: "live", activity: "cleaning" });
     await expect(strip.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
-    await expect(panel.locator(".workflow-body .stack > :first-child")).toHaveText("Can't edit until you show the live map.");
+    await expect(panel.getByText("Can't edit until you show the live map.", { exact: true })).toHaveText("Can't edit until you show the live map.");
     // Show live map returns to the live current floor and stays in History.
     await patchState(gallery, { dataMode: "history", activity: "docked" });
     await bar.getByRole("button", { name: "Show live map", exact: true }).click();
@@ -1573,6 +1575,58 @@ test.describe("Final review", () => {
     expect(intersects(await actions.boundingBox(), await help.boundingBox())).toBe(false);
   });
 
+  test("area outline points can be repositioned with labeled numeric controls and reject off-map coordinates", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "draw-points", viewport: { width: 1024, height: 768 } });
+    const outline = { closed: true, points: [{ x: 1, y: 1 }, { x: 3.5, y: 1 }, { x: 3.5, y: 2.5 }, { x: 1, y: 2.5 }] };
+    await patchState(gallery, { draw: { ...(await snapshot(page)).draw, outline } });
+    await canvasOf(gallery).getByRole("button", { name: "Point 1", exact: true }).click();
+    const x = canvasOf(gallery).getByRole("spinbutton", { name: "X coordinate for point 1 in meters" });
+    const y = canvasOf(gallery).getByRole("spinbutton", { name: "Y coordinate for point 1 in meters" });
+    await expect(x).toHaveValue("1");
+    await expect(y).toHaveValue("1");
+    await x.fill("1.25");
+    await x.press("Tab");
+    await expect.poll(async () => (await snapshot(page)).draw.outline.points[0].x).toBe(1.25);
+    await x.fill("999");
+    await x.press("Tab");
+    await expect.poll(async () => (await snapshot(page)).draw.outline.points[0].x).toBe(1.25);
+    await expect(canvasOf(gallery).getByRole("status").filter({ hasText: "Keep the point on the mapped floor." })).toBeVisible();
+  });
+
+  test("a draw overlay failure closes active coordinate edits and prevents review", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "draw", viewport: { width: 1024, height: 768 } });
+    const canvas = canvasOf(gallery);
+    const state = await snapshot(page);
+    const outline = { closed: true, points: [{ x: 1, y: 1 }, { x: 3.5, y: 1 }, { x: 3.5, y: 2.5 }, { x: 1, y: 2.5 }] };
+    await patchState(gallery, { draw: { ...state.draw, tool: "outline", outline } });
+    await canvas.getByRole("button", { name: "Point 1", exact: true }).click();
+    const x = canvas.getByRole("spinbutton", { name: "X coordinate for point 1 in meters" });
+    await x.evaluate((input) => { window.__staleCoordinateInput = input; });
+    const before = await snapshot(page);
+
+    // Simulate the renderer's failed lazy-import status after the editor has
+    // rendered, so a retained source-form control is exercised as well.
+    await canvas.evaluate((element) => {
+      element.drawReady = false;
+      element.onDrawOverlayStatus?.("failed");
+    });
+    await expect(canvas.getByRole("spinbutton", { name: /coordinate for point/u })).toHaveCount(0);
+    await expect(gallery.getByRole("button", { name: "Name and save", exact: true })).toHaveAttribute("aria-disabled", "true");
+    const map = canvas.locator(".map-root");
+    const bounds = await map.boundingBox();
+    await page.mouse.move(bounds.x + bounds.width * 0.42, bounds.y + bounds.height * 0.42);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + bounds.width * 0.52, bounds.y + bounds.height * 0.52, { steps: 3 });
+    await page.mouse.up();
+    await page.evaluate(() => {
+      const input = window.__staleCoordinateInput;
+      input.value = "2.25";
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      delete window.__staleCoordinateInput;
+    });
+    await expect.poll(async () => (await snapshot(page)).draw).toEqual(before.draw);
+  });
+
   for (const direction of ["ltr", "rtl"]) {
     test(`Help stays above overlapping draft point handles (${direction})`, async ({ page }) => {
       const gallery = await loadGallery(page, { scenario: "draw-points", viewport: { width: 1440, height: 900 } });
@@ -1619,6 +1673,7 @@ test.describe("Final review", () => {
 
   test("the saved-map chip keeps its own row: centred under RTL and clear of the map style switch", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "history", viewport: { width: 1024, height: 768 } });
+    await patchState(gallery, { view: "top" });
     const chip = chipOf(gallery);
     const style = gallery.getByRole("group", { name: "Map style" });
     await expect(style).toBeVisible();
@@ -1740,6 +1795,7 @@ test.describe("Codex review", () => {
       Keyboard: "WASD or arrows to move · +/− to zoom · 0 to fit",
     };
     const gallery = await loadGallery(page, { scenario: "ready" });
+    await patchState(gallery, { view: "top" });
     await helpButton(gallery).click();
     expect(await rows(helpDialog(gallery)), "2D").toEqual(top);
     await patchState(gallery, { view: "three" });
@@ -1756,12 +1812,12 @@ test.describe("Codex review", () => {
     const bounds = await gallery.locator(".map-root").boundingBox();
     await page.mouse.move(bounds.x + bounds.width * 0.5, bounds.y + bounds.height * 0.4);
     await page.mouse.wheel(0, 1);
-    await expect.poll(async () => Boolean((await snapshot(page)).cameras.top)).toBe(true);
-    const before = (await snapshot(page)).cameras.top;
+    await expect.poll(async () => Boolean((await snapshot(page)).taskCameras.top)).toBe(true);
+    const before = (await snapshot(page)).taskCameras.top;
     await page.keyboard.down("Alt");
     await page.mouse.wheel(0, 200);
     await page.keyboard.up("Alt");
-    await expect.poll(async () => (await snapshot(page)).cameras.top.zoom, "zoomed, not panned").not.toBeCloseTo(before.zoom, 3);
+    await expect.poll(async () => (await snapshot(page)).taskCameras.top.zoom, "zoomed, not panned").not.toBeCloseTo(before.zoom, 3);
   });
 
   test("Room colors apply to the top view Draw and the area review show, whatever the saved view", async ({ page }) => {
@@ -1816,7 +1872,7 @@ test.describe("Codex review", () => {
       const bounds = await gallery.locator(".map-root").boundingBox();
       const from = { x: bounds.x + bounds.width * 0.45, y: bounds.y + bounds.height * 0.3 };
       const to = { x: from.x + 90, y: from.y + 45 };
-      const top = async () => (await snapshot(page)).cameras.top;
+      const top = async () => (await snapshot(page)).taskCameras.top;
       const moved = (a, b) => Math.hypot(b.targetX - a.targetX, b.targetZ - a.targetZ);
       await drag(page, from, to, { button: "right" });
       await expect.poll(async () => Boolean(await top())).toBe(true);

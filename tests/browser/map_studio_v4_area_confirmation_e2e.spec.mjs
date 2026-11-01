@@ -49,31 +49,9 @@ const AREAS_CATALOG = (entryId, areaStatus, canRebind, geometry = "outline") => 
   selected_area: null,
 });
 
-const clickPanelButton = async (panel, label) => panel.evaluate((element, text) => {
-  const find = (root) => {
-    for (const button of root.querySelectorAll("button")) {
-      if (button.innerText.replace(/\s+/gu, " ").trim() === text) return button;
-    }
-    for (const child of root.querySelectorAll("*")) {
-      if (child.shadowRoot) {
-        const match = find(child.shadowRoot);
-        if (match) return match;
-      }
-    }
-    return null;
-  };
-  const button = find(element.shadowRoot);
-  if (!button) throw new Error(`UI button not found: ${text}; buttons=${JSON.stringify((() => {
-    const values = [];
-    const scan = (root) => {
-      values.push(...[...root.querySelectorAll("button")].map((candidate) => candidate.innerText.replace(/\s+/gu, " ").trim()));
-      for (const child of root.querySelectorAll("*")) if (child.shadowRoot) scan(child.shadowRoot);
-    };
-    scan(element.shadowRoot);
-    return values;
-  })())}`);
-  button.click();
-}, label);
+const clickPanelButton = async (panel, label) => {
+  await panel.getByRole("button", { name: label, exact: true }).click();
+};
 
 async function mountPanel(page, geometry = "outline") {
   await page.addInitScript(() => {
@@ -137,8 +115,7 @@ async function mountPanel(page, geometry = "outline") {
   const panel = page.locator(`${panelTag}[data-test-panel=true]`);
   await expect.poll(async () => panel.evaluate((element) => {
     const state = element.getWorkspaceSnapshot();
-    return state.resources.scene.status === "ready" && state.map.exactPose
-      && state.resources.plans.status === "ready";
+    return state.resources.scene.status === "ready" && state.map.exactPose;
   })).toBe(true);
   return panel;
 }
@@ -193,9 +170,9 @@ test("saved-area confirmation writes the same ID, reads it back as current, and 
 
   // A subsequent real workflow open makes one plans GET. The fake backend
   // supplies a fresh next_run_preview response for the UI to validate and parse.
-  await clickPanelButton(panel, "Your areas");
+  await clickPanelButton(panel, "Back to areas");
   await expect.poll(async () => panel.evaluate((element) => element.getWorkspaceSnapshot().workflow)).toBe("areas");
-  await clickPanelButton(panel, "All tasks");
+  await clickPanelButton(panel, "Back to all tasks");
   await expect.poll(async () => panel.evaluate((element) => element.getWorkspaceSnapshot().workflow)).toBe("none");
   const planReadsBefore = await page.evaluate(() => window.__panelFixture.planReads);
   await page.evaluate(({ token, catalog }) => {

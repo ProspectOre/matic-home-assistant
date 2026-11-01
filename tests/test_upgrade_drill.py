@@ -60,6 +60,20 @@ def test_plan_state_reads_the_drill_robot(tmp_path: Path) -> None:
     (storage / "matic_robot.plans").write_text(
         json.dumps({"minor_version": 12, "data": {"robots": {"SIM": robot}}})
     )
+    (storage / "matic_robot.slam_history.matic-upgrade-drill").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "minor_version": 1,
+                "data": {
+                    "generation": 3,
+                    "snapshots": [
+                        {"id": "a" * 24, "record_id": "b" * 32, "retention": "kept"}
+                    ],
+                },
+            }
+        )
+    )
     assert plan_state(tmp_path) == {
         "minor_version": 12,
         "plan": {"rooms": [], "entries": []},
@@ -83,6 +97,20 @@ def test_plan_state_reads_the_drill_robot(tmp_path: Path) -> None:
             }
         },
         "area_completed_runs": {"entry_rug": {"plan": 4, "global": 4}},
+        "slam_history": {
+            "version": 2,
+            "minor_version": 1,
+            "generation": 3,
+            "records": [
+                {
+                    "id": "a" * 24,
+                    "record_id": "b" * 32,
+                    "retention": "kept",
+                    "deleted_until": None,
+                    "deleted_retention": None,
+                }
+            ],
+        },
     }
 
 
@@ -133,3 +161,78 @@ def test_rollback_must_keep_custom_area_identity_geometry_and_history() -> None:
     missing_history["area_completed_runs"] = {"entry_rug": {"plan": 0, "global": 0}}
     with pytest.raises(DrillFailed, match="lost plan completed runs for area"):
         compare({"seed": seed, "restore": missing_history})
+
+
+def test_history_migration_requires_safe_downgrade_refusal_and_matching_restore() -> (
+    None
+):
+    seed = _state(1)
+    seed["slam_history"] = {
+        "version": 1,
+        "records": [{"id": "legacy-snapshot"}],
+    }
+    migrated = _state(2)
+    migrated["slam_history"] = {
+        "version": 2,
+        "records": [
+            {"id": "legacy-snapshot", "retention": "automatic"},
+            {"id": "kept-snapshot", "retention": "kept"},
+            {"id": "trash-snapshot", "retention": "trash"},
+        ],
+    }
+    restored = _state(1)
+    restored["slam_history"] = {
+        "version": 1,
+        "records": [{"id": "legacy-snapshot"}],
+    }
+    states = {
+        "seed": seed,
+        "upgrade": migrated,
+        "downgrade": {**_state(2), "slam_history": migrated["slam_history"]},
+        "restore": restored,
+    }
+    compare(states)
+
+    changed_downgrade = {
+        **states,
+        "downgrade": {
+            **states["downgrade"],
+            "slam_history": {"version": 1, "records": []},
+        },
+    }
+    with pytest.raises(
+        DrillFailed, match="old SLAM history reader changed the v2 store"
+    ):
+        compare(changed_downgrade)
+
+    missing_trash = {
+        **states,
+        "upgrade": {
+            **migrated,
+            "slam_history": {
+                "version": 2,
+                "records": migrated["slam_history"]["records"][:2],
+            },
+        },
+        "downgrade": {
+            **states["downgrade"],
+            "slam_history": {
+                "version": 2,
+                "records": migrated["slam_history"]["records"][:2],
+            },
+        },
+    }
+    with pytest.raises(DrillFailed, match="did not preserve trash records"):
+        compare(missing_trash)
+
+    missing_backup = {
+        **states,
+        "restore": {
+            **restored,
+            "slam_history": {"version": 1, "records": []},
+        },
+    }
+    with pytest.raises(
+        DrillFailed, match="restored SLAM history backup lost legacy records"
+    ):
+        compare(missing_backup)

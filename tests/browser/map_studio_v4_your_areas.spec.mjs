@@ -593,7 +593,7 @@ async function mountPanel(page, options) {
   const panel = page.locator(fixture.panelTag);
   await expect.poll(() => page.evaluate(() => {
     const state = window.__pinPanel.getWorkspaceSnapshot();
-    return state.resources.scene.status === "ready" && state.map.exactPose && state.resources.plans.status === "ready";
+    return state.resources.scene.status === "ready" && state.map.exactPose;
   })).toBe(true);
   return panel;
 }
@@ -625,7 +625,6 @@ test.describe("home shortcuts in Home Assistant's user data", () => {
     const initialPlanCatalog = { ...PLAN_CATALOG, plans: [daily, { ...daily, id: "x", name: "Plan X" }] };
     const panel = await mountPanel(page, { initialPlanCatalog, userData: { [KEY]: { version: 2, pins: [{ kind: "plan", id: "daily" }, { kind: "plan", id: "x" }], excluded: [] } } });
     await expect.poll(() => pins(page)).toEqual({ status: "ready", pins: [{ kind: "plan", id: "daily" }, { kind: "plan", id: "x" }] });
-    await expect.poll(() => page.evaluate(() => window.__pinPanel.getWorkspaceSnapshot().resources.areas.status)).toBe("ready");
     const shortcutsHeading = panel.locator("#shortcuts-heading");
     const editButton = panel.getByRole("button", { name: "Edit shortcuts" });
     await expect(shortcutsHeading).toHaveText("Shortcuts");
@@ -651,7 +650,6 @@ test.describe("home shortcuts in Home Assistant's user data", () => {
     const pinOrder = [{ kind: "plan", id: "daily" }, { kind: "plan", id: "x" }, { kind: "plan", id: "y" }, { kind: "plan", id: "z" }, { kind: "plan", id: "w" }];
     const panel = await mountPanel(page, { initialPlanCatalog, userData: { [KEY]: { version: 2, pins: pinOrder, excluded: [] } } });
     await expect.poll(() => pins(page)).toEqual({ status: "ready", pins: pinOrder });
-    await expect.poll(() => page.evaluate(() => window.__pinPanel.getWorkspaceSnapshot().resources.areas.status)).toBe("ready");
     await panel.getByRole("button", { name: "Edit shortcuts" }).click();
     const movePlanXDown = panel.getByRole("button", { name: "Move Plan X down" });
     await movePlanXDown.focus();

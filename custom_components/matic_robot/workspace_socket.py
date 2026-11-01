@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
@@ -514,18 +515,49 @@ class WorkspaceSocket:
         return min(MAX_RESOURCE_REVISION, max(0, raw_revision))
 
     @staticmethod
-    def _history_state(history: Any) -> tuple[tuple[str, int], ...]:
+    def _history_state(history: Any) -> tuple[object, ...]:
         """Return bounded catalog identity without retaining scene payloads."""
         catalog = getattr(history, "catalog", None)
         if not callable(catalog):
             return ()
         snapshots = catalog()
-        return tuple(
-            (snapshot.snapshot_id, snapshot.revision)
+        records = tuple(
+            (
+                snapshot.snapshot_id,
+                snapshot.revision,
+                getattr(snapshot, "mission_token", None),
+                (
+                    created_at.isoformat()
+                    if (created_at := getattr(snapshot, "created_at", None)) is not None
+                    else None
+                ),
+                getattr(snapshot, "point_count", None),
+                getattr(snapshot, "record_id", None),
+                getattr(snapshot, "name", None),
+                getattr(snapshot, "retention", "automatic"),
+                (
+                    snapshot.deleted_until.isoformat()
+                    if getattr(snapshot, "deleted_until", None) is not None
+                    else None
+                ),
+                getattr(snapshot, "imported", False),
+                getattr(snapshot, "comparison_group", None),
+                json.dumps(
+                    getattr(snapshot, "frame", None),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
             for snapshot in snapshots
             if isinstance(getattr(snapshot, "snapshot_id", None), str)
             and isinstance(getattr(snapshot, "revision", None), int)
             and not isinstance(getattr(snapshot, "revision", None), bool)
+        )
+        return (
+            getattr(history, "generation", None),
+            getattr(history, "capture_paused", None),
+            getattr(history, "capacity_blocked", None),
+            records,
         )
 
     def _entry(self, entry_id: str) -> Any:

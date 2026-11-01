@@ -166,5 +166,6 @@ def test_blueprints_are_named_and_every_input_is_described() -> None:
         "Matic: Send firmware alerts",
         "Matic: Photograph room on alert",
     }
-    # The firmware blueprint derives the robot from its sensor, so 24 remain.
-    assert inputs == 25
+    # The firmware blueprint derives the robot from its sensor; the photo
+    # blueprint asks the owner to choose an AI Task entity and question.
+    assert inputs == 27

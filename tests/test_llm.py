@@ -437,6 +437,8 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "MaticResetSchedule",
         "MaticGoToRoom",
         "MaticSendToSink",
+        "MaticTakePhoto",
+        "MaticInvestigate",
     ]
     research = await MaticFirmwareResearchAPI(hass).async_get_api_instance(_context())
     assert research.api.id == "matic_robot_firmware_research"
@@ -3051,6 +3053,11 @@ async def test_run_history_explains_endings_and_survives_robot_history_failures(
     )
     assert result["robot_history"] is True
     assert "low_battery" in result["ending_meaning"]
+    assert "another task took over; its source is unknown" in result["ending_meaning"]
+    assert (
+        "finished, stopped or unknown without actor attribution"
+        in result["ending_meaning"]
+    )
     assert result["runs"] == [
         {
             "source": "home_assistant",

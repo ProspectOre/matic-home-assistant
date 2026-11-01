@@ -40,6 +40,7 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.client.slam_tiles import decode_slam_tile
 from custom_components.matic_robot.const import (
     CONF_LIVE_WORKSPACE_TRANSPORT,
+    CONF_WORKSPACE_PUSH,
     DOMAIN,
 )
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
@@ -48,6 +49,9 @@ from custom_components.matic_robot.http import (
     CATALOG_API_URL,
     DELTA_API_URL,
     HISTORY_API_URL,
+    HISTORY_EXPORT_API_URL,
+    HISTORY_IMPORT_API_URL,
+    HISTORY_MANAGE_API_URL,
     HISTORY_SCENE_API_URL,
     PLANS_API_URL,
     POSE_API_URL,
@@ -76,9 +80,16 @@ from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.slam_catalog_view import MaticSlamCatalogView
 from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
+from custom_components.matic_robot.slam_history import HistoryReadCapacityError
 from custom_components.matic_robot.slam_history_view import (
+    MaticSlamHistoryExportView,
+    MaticSlamHistoryImportView,
+    MaticSlamHistoryManageView,
     MaticSlamHistorySceneView,
     MaticSlamHistoryView,
+    _history_error,
+    _history_record_metadata,
+    _read_json_object,
 )
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_pose_view import MaticSlamPoseView
@@ -323,13 +334,15 @@ def _entry(
     entry_id: str = "entry",
     options: dict[str, object] | None = None,
 ):
-    return SimpleNamespace(
+    entry = SimpleNamespace(
         domain=domain,
         state=state,
         runtime_data=runtime,
         entry_id=entry_id,
         options={} if options is None else options,
     )
+    runtime.coordinator.config_entry = entry
+    return entry
 
 
 async def test_scene_view_serves_and_etag_caches_compact_private_payload() -> None:
@@ -1298,7 +1311,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         "entries": [
             {
                 "entry_id": loaded.entry_id,
-                "live_workspace_transport_enabled": False,
+                "live_workspace_transport_enabled": True,
                 "scene_url": f"/api/matic_robot/slam_scene/{loaded.entry_id}",
                 "delta_url": f"/api/matic_robot/slam_delta/{loaded.entry_id}",
                 "pose_url": f"/api/matic_robot/slam_pose/{loaded.entry_id}",
@@ -1418,26 +1431,49 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
 
 
 @pytest.mark.parametrize(
-    ("options", "expected"),
+    "options",
     [
-        ({}, False),
-        ({CONF_LIVE_WORKSPACE_TRANSPORT: True}, False),
-        ({CONF_LIVE_WORKSPACE_TRANSPORT: False}, False),
-        ({CONF_LIVE_WORKSPACE_TRANSPORT: "true"}, False),
-        ({CONF_LIVE_WORKSPACE_TRANSPORT: 1}, False),
+        {},
+        {CONF_LIVE_WORKSPACE_TRANSPORT: True},
+        {CONF_LIVE_WORKSPACE_TRANSPORT: False},
+        {CONF_LIVE_WORKSPACE_TRANSPORT: "true"},
+        {CONF_LIVE_WORKSPACE_TRANSPORT: 1},
+        {CONF_WORKSPACE_PUSH: True},
+        {CONF_WORKSPACE_PUSH: False},
+        {CONF_WORKSPACE_PUSH: "true"},
+        {CONF_WORKSPACE_PUSH: 1},
     ],
 )
-async def test_admin_catalog_withholds_workspace_push_even_for_legacy_opt_ins(
-    options: dict[str, object], expected: bool
+async def test_admin_catalog_enables_workspace_push_and_ignores_legacy_options(
+    options: dict[str, object],
 ) -> None:
     runtime = _runtime()
     loaded = _entry(runtime, options=options)
     response = await MaticSlamCatalogView().get(_request(_hass(loaded)))
 
     entry = json.loads(response.body)["entries"][0]
-    assert entry["live_workspace_transport_enabled"] is expected
+    assert entry["live_workspace_transport_enabled"] is True
     assert entry["delta_url"] == delta_api_url("entry")
     assert entry["pose_url"] == pose_api_url("entry")
+
+
+async def test_catalog_push_is_enabled_independent_of_saved_options() -> None:
+    runtime = _runtime()
+    loaded = _entry(runtime)
+    assert (
+        catalog_entry_projection("entry", runtime)["live_workspace_transport_enabled"]
+        is True
+    )
+    loaded.options = {CONF_WORKSPACE_PUSH: True}
+    assert (
+        catalog_entry_projection("entry", runtime)["live_workspace_transport_enabled"]
+        is True
+    )
+    loaded.options = {CONF_WORKSPACE_PUSH: False}
+    assert (
+        catalog_entry_projection("entry", runtime)["live_workspace_transport_enabled"]
+        is True
+    )
 
 
 async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
@@ -1664,6 +1700,8 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
         response.headers["Cache-Control"] == PRIVATE_NO_STORE_HEADERS["Cache-Control"]
     )
     assert json.loads(response.body) == {
+        "entry_id": "entry",
+        "floor_token": plan_floor_token(runtime.coordinator.data.floor_plan),
         "rooms": [{"room_id": "room-1", "name": "Kitchen"}],
         "plans": [
             {
@@ -2067,6 +2105,45 @@ async def test_plan_workspace_reports_preview_unavailable() -> None:
         "mission_boundaries": [],
         "blocker": "preview_unavailable",
     }
+
+
+async def test_plan_workspace_shows_daily_limit_and_held_preview() -> None:
+    runtime = _runtime()
+    runtime.slam_map.floor_plan_is_current.return_value = True
+    runtime.cleaning_plans.catalog.plans.return_value = {
+        "home": {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+            "room_order": ["room-1"],
+        }
+    }
+    state = {"limit": 1, "completed_today": 1, "reached": True}
+    runtime.cleaning_plans.cadence.daily_limit_state = MagicMock(return_value=state)
+    runtime.cleaning_plans.planning.preview.return_value = {
+        "rooms": [],
+        "entries": [],
+        "daily_limit_held_rooms": [{"room_id": "room-1", **state}],
+    }
+    request_hass = _hass(_entry(runtime))
+    response = await MaticPlansView().get(_request(request_hass), "entry")
+    body = json.loads(response.body)
+    assert body["plans"][0]["rooms"][0]["daily_limit"] == state
+    assert body["rooms"][0]["daily_limit"] == state
+    assert body["plans"][0]["next_run_preview"]["blocker"] == "daily_limit_reached"
+
+    with patch(
+        "custom_components.matic_robot.plan_views.room_cadence_identity",
+        side_effect=ValueError("identity unavailable"),
+    ):
+        response = await MaticPlansView().get(_request(request_hass), "entry")
+    assert json.loads(response.body)["rooms"][0]["daily_limit"] == state
+    assert runtime.cleaning_plans.cadence.daily_limit_state.call_args.args[-1] is None
 
 
 async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
@@ -2983,10 +3060,29 @@ async def test_history_scene_cancellation_propagates_to_store_read() -> None:
             pass
 
     assert read_cancelled.is_set()
-    runtime.slam_history.async_scene.assert_awaited_once_with(
-        snapshot.snapshot_id,
-        mission_token=snapshot.mission_token,
+    runtime.slam_history.async_scene.assert_awaited_once_with(snapshot.snapshot_id)
+
+
+async def test_history_scene_capacity_returns_retryable_status() -> None:
+    runtime = _runtime()
+    snapshot = SimpleNamespace(
+        record_id="a" * 32,
+        snapshot_id="b" * 64,
+        retention="automatic",
     )
+    runtime.slam_history.catalog.return_value = (snapshot,)
+    runtime.slam_history.async_scene.side_effect = HistoryReadCapacityError("busy")
+
+    response = await MaticSlamHistorySceneView().get(
+        _request(_hass(_entry(runtime))), "entry", snapshot.record_id
+    )
+
+    assert response.status == HTTPStatus.SERVICE_UNAVAILABLE
+    assert response.headers["Retry-After"] == "1"
+    assert (
+        response.headers["Cache-Control"] == PRIVATE_NO_STORE_HEADERS["Cache-Control"]
+    )
+    assert json.loads(response.body) == {"error": "history-read-busy"}
 
 
 async def test_history_views_list_serve_hide_and_require_admin() -> None:
@@ -3006,6 +3102,26 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         point_count=512,
         mission_token="1" * 64,
     )
+    archive_snapshot = SimpleNamespace(
+        record_id="a" * 32,
+        snapshot_id="c" * 64,
+        created_at=datetime(2026, 7, 24, 12, 0, tzinfo=UTC),
+        revision=1,
+        point_count=256,
+        mission_token=None,
+        imported=True,
+        retention="kept",
+        name="Imported kitchen",
+        comparison_group=None,
+        frame={"diff_eligible": False},
+    )
+    runtime.slam_history.public_group = MagicMock(
+        side_effect=lambda token: {
+            current_token: "b" * 64,
+            saved_snapshot.mission_token: "a" * 64,
+            "2" * 64: "d" * 64,
+        }.get(token)
+    )
     runtime.coordinator.data.floor_plan = replace(
         runtime.coordinator.data.floor_plan,
         floor_label="Main",
@@ -3016,7 +3132,11 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         ),
     )
     runtime.slam_history.catalog_for_mission.return_value = (snapshot,)
-    runtime.slam_history.catalog.return_value = (snapshot, saved_snapshot)
+    runtime.slam_history.catalog.return_value = (
+        snapshot,
+        saved_snapshot,
+        archive_snapshot,
+    )
     runtime.slam_history.catalogs_by_mission.return_value = (
         (current_token, (snapshot,)),
         (saved_snapshot.mission_token, (saved_snapshot,)),
@@ -3026,75 +3146,75 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
     ).body
     runtime.slam_history.async_scene.side_effect = lambda snapshot_id, **_kwargs: (
         scene
-        if snapshot_id in {snapshot.snapshot_id, saved_snapshot.snapshot_id}
+        if snapshot_id
+        in {
+            snapshot.snapshot_id,
+            saved_snapshot.snapshot_id,
+            archive_snapshot.record_id,
+        }
         else None
     )
     hass = _hass(_entry(runtime))
 
     catalog = await MaticSlamHistoryView().get(_request(hass), "entry")
-    assert json.loads(catalog.body) == {
-        "entry_id": "entry",
-        "live_available": True,
-        "snapshots": [
-            {
-                "id": snapshot.snapshot_id,
-                "created_at": "2026-07-26T12:00:00+00:00",
-                "revision": 5,
-                "point_count": 1025,
-                "scene_url": (
-                    "/api/matic_robot/slam_history_scene/entry/0123456789abcdef01234567"
-                ),
-            }
-        ],
-        "floors": [
-            {
-                "id": "current",
-                "active": True,
-                "read_only": False,
-                "live_available": True,
-                "label": "Main",
-                "snapshots": [
-                    {
-                        "id": snapshot.snapshot_id,
-                        "created_at": "2026-07-26T12:00:00+00:00",
-                        "revision": 5,
-                        "point_count": 1025,
-                        "scene_url": (
-                            "/api/matic_robot/slam_history_scene/entry/"
-                            "0123456789abcdef01234567"
-                        ),
-                    }
-                ],
-            },
-            {
-                "id": "saved-1",
-                "active": False,
-                "read_only": True,
-                "ordinal": 1,
-                "label": "Workshop",
-                "snapshots": [
-                    {
-                        "id": saved_snapshot.snapshot_id,
-                        "created_at": "2026-07-25T12:00:00+00:00",
-                        "revision": 3,
-                        "point_count": 512,
-                        "scene_url": (
-                            "/api/matic_robot/slam_history_scene/entry/"
-                            "89abcdef0123456701234567"
-                        ),
-                    }
-                ],
-            },
-            {
-                "id": "saved-2",
-                "active": False,
-                "read_only": True,
-                "ordinal": 2,
-                "label": "Annex",
-                "snapshots": [],
-            },
-        ],
+    payload = json.loads(catalog.body)
+    assert payload["entry_id"] == "entry"
+    assert payload["live_available"] is True
+    assert [floor["id"] for floor in payload["floors"]] == [
+        "saved-" + "b" * 64,
+        "saved-" + "a" * 64,
+        "saved-" + "d" * 64,
+        "archive",
+    ]
+    record = payload["snapshots"][0]
+    assert record == {
+        "id": snapshot.snapshot_id,
+        "content_id": snapshot.snapshot_id,
+        "created_at": "2026-07-26T12:00:00+00:00",
+        "revision": 5,
+        "point_count": 1025,
+        "scene_url": (
+            "/api/matic_robot/slam_history_scene/entry/0123456789abcdef01234567"
+        ),
+        "name": None,
+        "retention": "automatic",
+        "deleted_until": None,
+        "imported": False,
+        "comparison_group": None,
+        "frame": None,
     }
+    assert payload["floors"][0]["snapshots"] == [record]
+    assert payload["floors"][1]["snapshots"][0]["id"] == saved_snapshot.snapshot_id
+    assert payload["floors"][2]["snapshots"] == []
+    assert payload["floors"][3]["label"] == "Imported maps"
+    assert payload["floors"][3]["active"] is False
+    assert payload["floors"][3]["read_only"] is True
+    assert payload["floors"][3]["live_available"] is False
+    assert payload["floors"][3]["snapshots"][0]["id"] == archive_snapshot.record_id
+    stable_saved_floor_id = payload["floors"][1]["id"]
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan,
+        mapped_floors=(
+            MappedFloor(1, "Main", current_token),
+            MappedFloor(2, "Workshop", saved_snapshot.mission_token),
+        ),
+    )
+    after_other_floor_removed = json.loads(
+        (await MaticSlamHistoryView().get(_request(hass), "entry")).body
+    )
+    assert any(
+        floor["id"] == stable_saved_floor_id
+        and floor["snapshots"][0]["id"] == saved_snapshot.snapshot_id
+        for floor in after_other_floor_removed["floors"]
+    )
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan,
+        mapped_floors=(
+            MappedFloor(1, "Main", current_token),
+            MappedFloor(2, "Workshop", saved_snapshot.mission_token),
+            MappedFloor(3, "Annex", "2" * 64),
+        ),
+    )
     response = await MaticSlamHistorySceneView().get(
         _request(hass), "entry", snapshot.snapshot_id
     )
@@ -3105,10 +3225,12 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         _request(hass), "entry", saved_snapshot.snapshot_id
     )
     assert saved_response.status == HTTPStatus.OK
-    runtime.slam_history.async_scene.assert_awaited_with(
-        saved_snapshot.snapshot_id,
-        mission_token=saved_snapshot.mission_token,
+    runtime.slam_history.async_scene.assert_awaited_with(saved_snapshot.snapshot_id)
+    archive_response = await MaticSlamHistorySceneView().get(
+        _request(hass), "entry", archive_snapshot.record_id
     )
+    assert archive_response.status == HTTPStatus.OK
+    runtime.slam_history.async_scene.assert_awaited_with(archive_snapshot.record_id)
     runtime.slam_history.async_scene.side_effect = None
     runtime.slam_history.async_scene.return_value = None
     assert (
@@ -3134,9 +3256,10 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         "snapshots": [],
     }
     assert [floor["id"] for floor in no_active_payload["floors"][1:]] == [
-        "saved-1",
-        "saved-2",
-        "saved-3",
+        "saved-" + "b" * 64,
+        "saved-" + "a" * 64,
+        "saved-" + "d" * 64,
+        "archive",
     ]
 
     with pytest.raises(Unauthorized):
@@ -3155,6 +3278,114 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
             _request(hass), "entry", snapshot.snapshot_id
         )
     ).status == HTTPStatus.NOT_FOUND
+
+
+async def test_history_management_views_use_bounded_contracts() -> None:
+    runtime = _runtime()
+    record = SimpleNamespace(
+        record_id="a" * 32,
+        snapshot_id="b" * 64,
+        created_at=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
+        revision=3,
+        point_count=20,
+        mission_token=None,
+        name="Saved floor",
+        retention="kept",
+        deleted_until=None,
+        imported=True,
+        comparison_group=None,
+        frame={"diff_eligible": False},
+        compressed=b"compressed",
+    )
+    runtime.slam_history.generation = 7
+    runtime.slam_history.capture_paused = True
+    runtime.slam_history.capacity_blocked = False
+    runtime.slam_history.usage = MagicMock(
+        return_value={"record_count": 1, "compressed_bytes": 100}
+    )
+    runtime.slam_history.catalog.return_value = (record,)
+    runtime.slam_history.async_mutate = AsyncMock(
+        return_value={"generation": 8, "request_id": "rename-1"}
+    )
+    runtime.slam_history.async_export = AsyncMock(
+        return_value={"format": "matic-map-archive", "version": 1, "records": []}
+    )
+    runtime.slam_history.async_import = AsyncMock(
+        return_value={
+            "generation": 9,
+            "request_id": "import-1",
+            "record_ids": ["c" * 32],
+        }
+    )
+    hass = _hass(_entry(runtime))
+
+    managed = await MaticSlamHistoryManageView().get(_request(hass), "entry")
+    managed_payload = json.loads(managed.body)
+    assert managed_payload["generation"] == 7
+    assert managed_payload["capture_paused"] is True
+    assert managed_payload["usage"] == {"record_count": 1, "compressed_bytes": 100}
+    assert managed_payload["records"][0]["id"] == "a" * 32
+    assert managed_payload["records"][0]["content_id"] == "b" * 64
+    assert managed_payload["records"][0]["compressed_bytes"] == len(b"compressed")
+    assert managed_payload["records"][0]["scene_url"].endswith("/" + "a" * 32)
+    assert managed.headers["Cache-Control"] == PRIVATE_NO_STORE_HEADERS["Cache-Control"]
+
+    mutation = {
+        "action": "rename",
+        "record_ids": ["a" * 32],
+        "expected_generation": 7,
+        "request_id": "rename-1",
+        "name": "Renamed floor",
+    }
+    changed = await MaticSlamHistoryManageView().post(
+        _json_request(hass, "POST", mutation, HISTORY_MANAGE_API_URL), "entry"
+    )
+    assert changed.status == HTTPStatus.OK
+    runtime.slam_history.async_mutate.assert_awaited_with(
+        "rename",
+        ["a" * 32],
+        expected_generation=7,
+        request_id="rename-1",
+        name="Renamed floor",
+        allow_kept=False,
+    )
+    malformed = await MaticSlamHistoryManageView().post(
+        _json_request(hass, "POST", {**mutation, "surprise": True}), "entry"
+    )
+    assert malformed.status == HTTPStatus.BAD_REQUEST
+
+    exported = await MaticSlamHistoryExportView().post(
+        _json_request(
+            hass,
+            "POST",
+            {"record_ids": ["a" * 32], "expected_generation": 7},
+            HISTORY_EXPORT_API_URL,
+        ),
+        "entry",
+    )
+    assert json.loads(exported.body)["format"] == "matic-map-archive"
+    runtime.slam_history.async_export.assert_awaited_with(
+        ["a" * 32], expected_generation=7
+    )
+
+    archive = {"format": "matic-map-archive", "version": 1, "records": []}
+    imported = await MaticSlamHistoryImportView().post(
+        _json_request(
+            hass,
+            "POST",
+            {
+                "archive": archive,
+                "expected_generation": 8,
+                "request_id": "import-1",
+            },
+            HISTORY_IMPORT_API_URL,
+        ),
+        "entry",
+    )
+    assert json.loads(imported.body)["record_ids"] == ["c" * 32]
+    runtime.slam_history.async_import.assert_awaited_with(
+        archive, expected_generation=8, request_id="import-1"
+    )
 
 
 async def test_area_workspace_preserves_perimeter_and_rejects_excess_coverage() -> None:
@@ -3581,3 +3812,179 @@ async def test_area_delete_reports_the_plans_it_would_empty() -> None:
     assert response.status == HTTPStatus.CONFLICT
     assert response.headers["X-Matic-Areas-Conflict"] == "plan-would-be-empty"
     assert json.loads(response.body) == {"plans": ["Rug only"]}
+
+
+async def test_history_management_and_archive_views_report_bounded_input_errors() -> (
+    None
+):
+    runtime = _runtime()
+    runtime.slam_history.async_export = AsyncMock(return_value={})
+    runtime.slam_history.async_import = AsyncMock(return_value={})
+    hass = _hass(_entry(runtime))
+
+    manage = MaticSlamHistoryManageView()
+    valid_mutation = {
+        "action": "rename",
+        "record_ids": ["a" * 32],
+        "expected_generation": 1,
+        "request_id": "req",
+    }
+    malformed_mutation = await manage.post(
+        _json_request(
+            hass,
+            "POST",
+            {**valid_mutation, "expected_generation": True},
+            HISTORY_MANAGE_API_URL,
+        ),
+        "entry",
+    )
+    assert malformed_mutation.status == HTTPStatus.BAD_REQUEST
+    assert json.loads(malformed_mutation.body) == {"error": "invalid-history-mutation"}
+
+    export = MaticSlamHistoryExportView()
+    malformed_export = await export.post(
+        _json_request(
+            hass,
+            "POST",
+            {"record_ids": "not-list", "expected_generation": 1},
+            HISTORY_EXPORT_API_URL,
+        ),
+        "entry",
+    )
+    assert malformed_export.status == HTTPStatus.BAD_REQUEST
+    runtime.slam_history.async_export.side_effect = ValueError(
+        "history-generation-conflict"
+    )
+    conflict = await export.post(
+        _json_request(
+            hass,
+            "POST",
+            {"record_ids": ["a" * 32], "expected_generation": 1},
+            HISTORY_EXPORT_API_URL,
+        ),
+        "entry",
+    )
+    assert conflict.status == HTTPStatus.CONFLICT
+
+    import_view = MaticSlamHistoryImportView()
+    malformed_import = await import_view.post(
+        _json_request(
+            hass,
+            "POST",
+            {"archive": [], "expected_generation": 1, "request_id": "req"},
+            HISTORY_IMPORT_API_URL,
+        ),
+        "entry",
+    )
+    assert malformed_import.status == HTTPStatus.BAD_REQUEST
+    runtime.slam_history.async_import.side_effect = ValueError(
+        "history-request-too-large"
+    )
+    too_large = await import_view.post(
+        _json_request(
+            hass,
+            "POST",
+            {
+                "archive": {},
+                "expected_generation": 1,
+                "request_id": "req",
+            },
+            HISTORY_IMPORT_API_URL,
+        ),
+        "entry",
+    )
+    assert too_large.status == HTTPStatus.REQUEST_ENTITY_TOO_LARGE
+
+    hass.config_entries.async_get_entry.return_value = None
+    assert (await manage.get(_request(hass), "entry")).status == HTTPStatus.NOT_FOUND
+    assert (
+        await manage.post(
+            _json_request(hass, "POST", valid_mutation, HISTORY_MANAGE_API_URL),
+            "entry",
+        )
+    ).status == HTTPStatus.NOT_FOUND
+    assert (
+        await export.post(
+            _json_request(
+                hass,
+                "POST",
+                {"record_ids": ["a" * 32], "expected_generation": 1},
+                HISTORY_EXPORT_API_URL,
+            ),
+            "entry",
+        )
+    ).status == HTTPStatus.NOT_FOUND
+    assert (
+        await import_view.post(
+            _json_request(
+                hass,
+                "POST",
+                {"archive": {}, "expected_generation": 1, "request_id": "req"},
+                HISTORY_IMPORT_API_URL,
+            ),
+            "entry",
+        )
+    ).status == HTTPStatus.NOT_FOUND
+
+
+async def test_history_json_reader_bounds_stream_and_rejects_invalid_json() -> None:
+    class Chunks:
+        def __init__(self, values):
+            self.values = list(values)
+
+        async def readany(self):
+            return self.values.pop(0) if self.values else b""
+
+    with pytest.raises(ValueError, match="request-too-large"):
+        await _read_json_object(
+            SimpleNamespace(content_length=11, _read_bytes=None), 10
+        )
+    with pytest.raises(ValueError, match="request-too-large"):
+        await _read_json_object(
+            SimpleNamespace(content_length=None, _read_bytes=b" " * 11), 10
+        )
+    with pytest.raises(ValueError, match="request-too-large"):
+        await _read_json_object(
+            SimpleNamespace(
+                content_length=None,
+                content=Chunks([b"{" + b" " * 10, b"}"]),
+            ),
+            10,
+        )
+    for raw in (b"{", b"\xff", b"[]"):
+        with pytest.raises(ValueError, match="invalid-json"):
+            await _read_json_object(
+                SimpleNamespace(content_length=None, content=Chunks([raw])), 10
+            )
+    assert await _read_json_object(
+        SimpleNamespace(content_length=None, content=Chunks([b'{"ok":true}'])), 20
+    ) == {"ok": True}
+
+
+def test_history_record_trash_metadata_omits_scene_url_and_errors_map_statuses() -> (
+    None
+):
+    record = SimpleNamespace(
+        record_id="a" * 32,
+        snapshot_id="b" * 24,
+        created_at=datetime(2026, 7, 26, tzinfo=UTC),
+        revision=1,
+        point_count=1,
+        compressed=b"abc",
+        retention="trash",
+        deleted_until=datetime(2026, 7, 27, tzinfo=UTC),
+        imported=False,
+    )
+    metadata = _history_record_metadata("entry", record)
+    assert metadata["scene_url"] is None
+    assert metadata["compressed_bytes"] == 3
+    for error, expected in (
+        ("history-generation-conflict", HTTPStatus.CONFLICT),
+        ("history-request-id-reused", HTTPStatus.CONFLICT),
+        ("history-record-not-found", HTTPStatus.NOT_FOUND),
+        ("history-request-too-large", HTTPStatus.REQUEST_ENTITY_TOO_LARGE),
+        ("invalid-history-name", HTTPStatus.BAD_REQUEST),
+    ):
+        response = _history_error(ValueError(error))
+        assert response.status == expected
+        assert json.loads(response.body) == {"error": error}

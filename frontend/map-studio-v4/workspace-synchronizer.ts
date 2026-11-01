@@ -4,19 +4,23 @@ import {
   CoherenceMachine,
   type WorkspaceStore,
 } from "./state";
-import {
+import type {
   WorkspaceTransport,
-  type WorkspaceConnection,
-  type WorkspaceInvalidation,
+  WorkspaceConnection,
+  WorkspaceInvalidation,
 } from "./workspace-transport";
 import {
   entryCoherenceIdentity,
   entryManagedLock,
 } from "./workspace-projection";
+import { scheduleAfterMapAdmission } from "./map-admission-gate";
 
 interface WorkspaceSynchronizationCallbacks {
   readonly projection: () => HassProjection | null;
-  readonly refreshSpatialBoundary: (entryId: string, invalidated?: readonly string[]) => void;
+  readonly accessDenied: () => void;
+  readonly refreshSpatialBoundary: (entryId: string, invalidated?: readonly string[]) => void | Promise<void>;
+  readonly catalogRequestGeneration: () => number;
+  readonly catalogSuccessfulGeneration: () => number;
   readonly loadResources: (
     entry: MapEntry,
     stamp: ResourceStamp,
@@ -24,6 +28,7 @@ interface WorkspaceSynchronizationCallbacks {
     refreshCatalogProjection?: boolean,
   ) => void;
   readonly spatialRecoveryBlocks: (entry: MapEntry) => boolean;
+  readonly loadTransport?: () => Promise<typeof import("./workspace-transport")>;
 }
 
 /** Owns the optional workspace stream and its monotonic admission fence. */
@@ -35,6 +40,17 @@ export class WorkspaceSynchronizer {
   readonly #callbacks: WorkspaceSynchronizationCallbacks;
   #transport: WorkspaceTransport | null = null;
   #transportEntry: string | null = null;
+  #transportUser: string | null = null;
+  #activation = 0;
+  #loading: { entryId: string; userKey: string; pending: boolean } | null = null;
+  #activationGate: { entryId: string; userKey: string } | null = null;
+  #cancelActivationGate: (() => void) | null = null;
+  #removedEntry: {
+    entryId: string;
+    userKey: string;
+    catalogRequestGeneration: number;
+    refreshPending: boolean;
+  } | null = null;
   #fence: {
     entryId: string;
     epoch: string;
@@ -69,7 +85,8 @@ export class WorkspaceSynchronizer {
     this.#syncWorkspaceTransport(projection);
     const robotReconnected = robotWasConnected === false && projection.host.robotConnected;
     if (robotReconnected && previousTransport === this.#transport) {
-      this.#transport?.notifyReconnect();
+      if (this.#transport) this.#transport.notifyReconnect();
+      else this.retry();
     }
     return robotReconnected;
   }
@@ -78,13 +95,20 @@ export class WorkspaceSynchronizer {
     this.#disposeTransport();
   }
 
+  retry(): void {
+    if (this.#disposed || this.#transport || this.#loading?.pending) return;
+    this.#disposeTransport();
+    const projection = this.#callbacks.projection();
+    if (projection) this.#syncWorkspaceTransport(projection);
+  }
+
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#disposeTransport();
   }
 
-  #syncWorkspaceTransport(projection: HassProjection): void {
+  #enabled(projection: HassProjection): boolean {
     const entryId = projection.entryKey;
     const state = this.#store.value;
     const catalogEntry = state.resources.catalog.value?.find((entry) => entry.entryId === entryId);
@@ -93,29 +117,123 @@ export class WorkspaceSynchronizer {
       ?? Boolean(catalogEntry?.liveWorkspaceTransportEnabled
         && admittedEntry?.entryId === entryId
         && admittedEntry.liveWorkspaceTransportEnabled);
-    if (!capabilityEnabled || !this.#connection || !projection.host.administrator
-      || !projection.host.connected || !projection.vacuumEntityId || !entryId || !this.#store.value.pageActive) {
+    return Boolean(capabilityEnabled && this.#connection && projection.host.administrator
+      && projection.host.connected && projection.vacuumEntityId && entryId && state.pageActive);
+  }
+
+  #syncWorkspaceTransport(projection: HassProjection): void {
+    const entryId = projection.entryKey;
+    const userKey = projection.userKey;
+    const removed = this.#removedEntry;
+    if (removed && (removed.entryId !== entryId || removed.userKey !== userKey)) {
+      this.#removedEntry = null;
+    } else if (removed) {
+      const catalog = this.#store.value.resources.catalog;
+      if (!removed.refreshPending
+        && (catalog.status === "ready" || catalog.status === "empty")
+        && this.#callbacks.catalogSuccessfulGeneration() > removed.catalogRequestGeneration) {
+        this.#removedEntry = null;
+      } else {
+        this.#disposeTransport();
+        return;
+      }
+    }
+    if (!this.#enabled(projection)) {
       this.#disposeTransport();
       return;
     }
-    if (this.#transport && this.#transportEntry === entryId) return;
-    this.#transport?.dispose();
-    this.#fence = null;
-    const transport = new WorkspaceTransport(this.#connection, {
+    const admittedEntryId = entryId!;
+    if (this.#transport && this.#transportEntry === entryId && this.#transportUser === userKey) return;
+    if (this.#loading?.entryId === entryId && this.#loading.userKey === userKey) return;
+    if (this.#activationGate?.entryId === admittedEntryId && this.#activationGate.userKey === userKey) {
+      return;
+    }
+    this.#disposeTransport();
+    this.#activationGate = { entryId: admittedEntryId, userKey };
+    this.#cancelActivationGate = scheduleAfterMapAdmission(
+      this.#store,
+      (state) => {
+        const current = this.#callbacks.projection();
+        return !this.#disposed && state.pageActive && current?.entryKey === admittedEntryId
+          && current.userKey === userKey && this.#enabled(current);
+      },
+      () => {
+        this.#cancelActivationGate = null;
+        this.#activateTransport(admittedEntryId, userKey);
+      },
+    );
+  }
+
+  #activateTransport(entryId: string, userKey: string): void {
+    if (this.#activationGate?.entryId !== entryId || this.#activationGate.userKey !== userKey) return;
+    this.#clearActivationGate();
+    const current = this.#callbacks.projection();
+    if (this.#disposed || !current || current.entryKey !== entryId
+      || current.userKey !== userKey || !this.#enabled(current)) return;
+    const activation = this.#activation;
+    const loading = { entryId, userKey, pending: true };
+    this.#loading = loading;
+    // Polling remains active while the capability module loads; a failed module
+    // leaves it active until a retry or lifecycle change.
+    void (this.#callbacks.loadTransport?.() ?? import("./workspace-transport")).then(({ WorkspaceTransport }) => {
+      const current = this.#callbacks.projection();
+      if (this.#disposed || activation !== this.#activation) return;
+      if (!current || current.entryKey !== entryId || current.userKey !== userKey || !this.#enabled(current)) {
+        this.#disposeTransport();
+        return;
+      }
+      this.#loading = null;
+      this.#startTransport(WorkspaceTransport, entryId, userKey);
+    }).catch(() => {
+      if (activation === this.#activation) loading.pending = false;
+    });
+  }
+
+  #startTransport(Transport: typeof WorkspaceTransport, entryId: string, userKey: string): void {
+    const transport = new Transport(this.#connection!, {
       entryId,
       onEvent: (event) => {
         // A disposed subscription can still have a queued callback. Its entry
         // scope must match both the active projection and current transport.
         if (this.#disposed || !this.#store.value.pageActive || this.#transport !== transport
           || this.#transportEntry !== entryId
-          || this.#callbacks.projection()?.entryKey !== entryId) return;
+          || this.#callbacks.projection()?.entryKey !== entryId
+          || this.#callbacks.projection()?.userKey !== userKey) return;
         if (event.type === "resync" && event.reason === "entry_removed") {
+          const removed = {
+            entryId,
+            userKey,
+            catalogRequestGeneration: this.#callbacks.catalogRequestGeneration(),
+            refreshPending: true,
+          };
+          this.#removedEntry = removed;
           transport.dispose();
           if (this.#transport === transport) {
             this.#transport = null;
             this.#transportEntry = null;
             this.#fence = null;
           }
+          // Retire the admitted projection as well as the subscription. Until
+          // the catalog confirms removal, a later host update could otherwise
+          // reopen the stream from a stale capability row.
+          void Promise.resolve(this.#callbacks.refreshSpatialBoundary(
+            entryId, ["plans", "areas", "history"],
+          )).then(() => {
+            if (this.#removedEntry !== removed) return;
+            const catalog = this.#store.value.resources.catalog;
+            removed.refreshPending = false;
+            if ((catalog.status === "ready" || catalog.status === "empty")
+              && this.#callbacks.catalogSuccessfulGeneration() > removed.catalogRequestGeneration) {
+              // refreshBoundary waits through any forced successor queued
+              // behind a request that was already running at removal time.
+              this.#removedEntry = null;
+              const current = this.#callbacks.projection();
+              if (current) this.#syncWorkspaceTransport(current);
+            } else {
+              // A failed or skipped forced refresh keeps the entry retired.
+              // Only a request that started after this event can release it.
+            }
+          });
           return;
         }
         if (event.type === "snapshot") {
@@ -196,11 +314,14 @@ export class WorkspaceSynchronizer {
         }
         if (event.type === "resync") {
           this.#fence = null;
-          if (event.reason !== "authorization") {
-            // A restart or sequence gap makes every REST-backed workspace
-            // cache potentially stale, even if the catalog identity is stable.
-            this.#callbacks.refreshSpatialBoundary(entryId, ["plans", "areas", "history"]);
+          if (event.accessDenied) {
+            this.#callbacks.accessDenied();
+            return;
           }
+          // Authorization loss revokes the retained floor proof immediately,
+          // just like an authorization snapshot. A restart or sequence gap
+          // likewise requires fresh REST-backed workspace projections.
+          this.#callbacks.refreshSpatialBoundary(entryId, ["plans", "areas", "history"]);
           return;
         }
         this.#acceptWorkspaceInvalidation(event.invalidation, entryId, transport);
@@ -208,6 +329,7 @@ export class WorkspaceSynchronizer {
     });
     this.#transport = transport;
     this.#transportEntry = entryId;
+    this.#transportUser = userKey;
     void transport.start();
   }
 
@@ -302,9 +424,19 @@ export class WorkspaceSynchronizer {
 
 
   #disposeTransport(): void {
+    this.#activation += 1;
+    this.#clearActivationGate();
+    this.#loading = null;
     this.#transport?.dispose();
     this.#transport = null;
     this.#transportEntry = null;
+    this.#transportUser = null;
     this.#fence = null;
+  }
+
+  #clearActivationGate(): void {
+    this.#activationGate = null;
+    this.#cancelActivationGate?.();
+    this.#cancelActivationGate = null;
   }
 }

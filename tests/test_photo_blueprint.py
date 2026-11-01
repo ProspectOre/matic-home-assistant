@@ -35,7 +35,11 @@ async def detach_triggers(hass: HomeAssistant) -> AsyncIterator[None]:
 
 
 async def setup_blueprint(
-    hass: HomeAssistant, *, fail: bool = False, cooldown: int = 0
+    hass: HomeAssistant,
+    *,
+    fail: bool = False,
+    problem: bool = True,
+    cooldown: int = 0,
 ) -> tuple[list[ServiceCall], list[ServiceCall]]:
     blueprint = Blueprint(
         load_yaml(PATH),
@@ -47,6 +51,8 @@ async def setup_blueprint(
         "vacuum": VACUUM,
         "sensors": [MOTION, LEAK],
         "room": "Kitchen",
+        "ai_task_entity_id": "ai_task.home_assistant",
+        "question": "Is there water on the floor?",
         "notify_service": "notify.phone",
         "cooldown": {"seconds": cooldown},
     }
@@ -68,7 +74,17 @@ async def setup_blueprint(
             "robots": [
                 {
                     "entity_id": VACUUM,
-                    "photos": [{"room": "Kitchen", "url": "/api/photo"}],
+                    "photos": [
+                        {
+                            "room": "Kitchen",
+                            "url": "/api/photo",
+                            "analysis": {
+                                "problem": problem,
+                                "summary": "Water is visible on the floor.",
+                                "disclosure": "Sent to the selected AI Task entity.",
+                            },
+                        }
+                    ],
                 }
             ]
         }
@@ -105,9 +121,21 @@ async def test_sends_the_photo_with_the_sensor_name(hass: HomeAssistant) -> None
         "entity_id": [VACUUM],
         "rooms": ["Kitchen"],
         "full_resolution": False,
+        "question": "Is there water on the floor?",
+        "ai_task_entity_id": "ai_task.home_assistant",
     }
     assert notifications[0].data["title"] == "Hall motion"
     assert notifications[0].data["data"]["image"] == "/api/photo"
+
+
+async def test_does_not_notify_when_ai_reports_no_problem(hass: HomeAssistant) -> None:
+    patrols, notifications = await setup_blueprint(hass, problem=False)
+
+    hass.states.async_set(MOTION, "on", {"friendly_name": "Hall motion"})
+    await hass.async_block_till_done()
+
+    assert len(patrols) == 1
+    assert notifications == []
 
 
 async def test_says_when_the_robot_could_not_take_the_photo(

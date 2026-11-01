@@ -34,7 +34,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false, viewport 
 async function loadStoreHarness(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { WorkspaceStore, selectPrimaryAction, canSelectRooms } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail, watchRuns } from "./frontend/map-studio-v4/run-history-data";',
+      contents: 'export { WorkspaceStore, canSelectRooms } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state"; export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { GestureController } from "./frontend/map-studio-v4/gesture-controller"; export { roomsSummary, roomTapAnnouncement } from "./frontend/map-studio-v4/rooms-view"; export { extendLiveTrail, watchRuns } from "./frontend/map-studio-v4/run-history-data";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -209,6 +209,70 @@ test.describe("whole-clean settings (home-rooms.md §5 Settings, Selection gate)
     }, HARNESS);
     expect(result.count).toBe(100);
     expect(result.notice).toEqual({ tone: "info", key: "v4_room_limit_reached", placeholders: { limit: 100 } });
+  });
+});
+
+test.describe("room daily limits", () => {
+  test("shows a room's cap and dispatches the selected cap from its settings disclosure", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "rooms-ready" });
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      const catalog = state.resources.plans.value;
+      element.replaceWorkspaceState({
+        ...state,
+        resources: { ...state.resources, plans: { ...state.resources.plans, value: {
+          ...catalog,
+          rooms: catalog.rooms.map((room) => room.roomId === "room-a"
+            ? { ...room, dailyLimit: { limit: 3, completedToday: 1, reached: false } }
+            : room),
+        } } },
+      });
+      // The gallery handles this event on its shell and stops it there. Listen
+      // on that host instead of an ancestor so the assertion sees the intent.
+      const shell = element.shadowRoot.querySelector("matic-map-shell-v4");
+      shell.addEventListener("matic-workspace-intent", (event) => {
+        if (event.detail.type === "set-room-daily-limit") window.__dailyLimitIntent = event.detail;
+      }, { capture: true });
+    });
+    await expect(roomsGroup(gallery).getByText("1 of 3 completed today")).toBeVisible();
+    await gallery.locator('[data-room-disclosure="room-a"]').click();
+    const cap = gallery.getByRole("combobox", { name: "Daily clean limit for Kitchen" });
+    await expect(cap).toHaveValue("3");
+    await cap.selectOption("2");
+    await expect.poll(() => page.evaluate(() => window.__dailyLimitIntent)).toEqual({
+      type: "set-room-daily-limit", roomId: "room-a", limit: 2,
+    });
+  });
+
+  test("reports held rooms from the admitted manual preview without losing the selection", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "rooms-ready" });
+    await gallery.evaluate((element) => {
+      const shell = element.shadowRoot.querySelector("matic-map-shell-v4");
+      for (const roomId of ["room-a", "room-c", "room-d"]) shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "toggle-room", roomId }, bubbles: true, composed: true,
+      }));
+    });
+    // Let the gallery finish normalizing and publishing the admitted preview
+    // before replacing the authoritative catalog fixture below.
+    await expect.poll(async () => (await snapshot(page)).selection.roomIds).toEqual(["room-b"]);
+    await gallery.evaluate((element) => {
+      const { withGalleryRoomPreview } = window.__galleryModule;
+      const state = element.getWorkspaceSnapshot();
+      const catalogState = {
+        ...state,
+        resources: { ...state.resources, plans: { ...state.resources.plans, value: {
+          ...state.resources.plans.value,
+          rooms: state.resources.plans.value.rooms.map((room) => room.roomId === "room-b"
+            ? { ...room, dailyLimit: { limit: 2, completedToday: 2, reached: true } }
+            : room),
+        } } },
+      };
+      element.replaceWorkspaceState(withGalleryRoomPreview(catalogState));
+    });
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(roomsGroup(gallery).getByText("Daily limit reached · 2 of 2 completed today")).toBeVisible();
+    await expect(panelOf(gallery).getByText("Held by daily clean limits: Living room: 2 of 2 completed today. Change a room limit or refresh room details. Home Assistant keeps each room on hold until it can match the room on the map and confirm today's clean count.")).toBeVisible();
+    expect((await snapshot(page)).selection.roomIds).toEqual(["room-b"]);
   });
 });
 
@@ -868,6 +932,7 @@ const rowNames = (menu) => menu.locator("[role^=menuitem]").evaluateAll((rows) =
 test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME-04, MS-RESP-05)", () => {
   test("opens as a menu named Map options with its first row focused @mobile", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
+    await patchState(gallery, { view: "top" });
     const button = optionsButton(gallery);
     await expect(button).toHaveAttribute("aria-haspopup", "menu");
     await expect(button).toHaveAttribute("aria-expanded", "false");
@@ -877,7 +942,7 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     await expect(menu).toHaveId("map-options");
     await expect.poll(() => focusedText(page)).toBe("button Photo");
     expect(await rowNames(menu)).toEqual([
-      "Photo", "Room colors", "Room names", "Follow the robot", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom",
+      "Photo", "Room colors", "Room names", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom",
       "Map diagnostics",
     ]);
     await expect(menu.getByRole("group", { name: "Map display" })).toBeVisible();
@@ -893,13 +958,20 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
 
   test("Up, Down, Home and End move over every row, wrapping", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
-    await openOptions(gallery);
+    await patchState(gallery, { view: "top" });
+    const menu = await openOptions(gallery);
+    await expect(menu.getByRole("menuitemcheckbox", { name: "Ride along in 3D" })).toHaveAttribute("aria-disabled", "true");
     const names = [];
-    for (let step = 0; step < 11; step += 1) {
+    for (let step = 0; step < 12; step += 1) {
       await page.keyboard.press("ArrowDown");
-      names.push((await focusedText(page)).replace(/^button /, ""));
+      const name = (await focusedText(page)).replace(/^button /, "");
+      names.push(name);
+      if (name === "Ride along in 3D") {
+        await page.keyboard.press("Enter");
+        expect((await snapshot(page)).followMode).toBe("off");
+      }
     }
-    expect(names).toEqual(["Room colors", "Room names", "Follow the robot", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics", "Photo"]);
+    expect(names).toEqual(["Room colors", "Room names", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics", "Photo"]);
     await page.keyboard.press("ArrowUp");
     await expect.poll(() => focusedText(page)).toBe("button Map diagnostics");
     await page.keyboard.press("Home");
@@ -910,6 +982,7 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
 
   test("display and detail rows change the map and keep the menu open; action rows close it", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
+    await patchState(gallery, { view: "top" });
     const menu = await openOptions(gallery);
     await menu.getByRole("menuitemradio", { name: "Room colors" }).click();
     await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
@@ -952,13 +1025,14 @@ test.describe("Map options and the rail (home-rooms.md §5 Display, §11 MS-HOME
     const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     await patchState(gallery, { view: "three" });
     const menu = await openOptions(gallery);
-    expect(await rowNames(menu)).toEqual(["Room names", "Follow the robot", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics"]);
+    expect(await rowNames(menu)).toEqual(["Room names", "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics"]);
     await page.keyboard.press("Escape");
 
     const wide = await loadGallery(page, { scenario: "ready", viewport: { width: 1180, height: 760 } });
+    await patchState(wide, { view: "top" });
     const wideMenu = await openOptions(wide);
     expect(await rowNames(wideMenu)).toEqual([
-      "Follow the robot", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics",
+      "Follow the robot", "Ride along in 3D", "Auto detail", "Efficient", "Balanced", "Maximum", "Robot trail", "Map zoom", "Map diagnostics",
     ]);
     await expect(wideMenu.getByRole("group", { name: "Map display" })).toHaveCount(0);
     await expect.poll(() => focusedText(page)).toBe("button Follow the robot");
@@ -1671,7 +1745,7 @@ test.describe("map parity and announcements (home-rooms.md §5 Parity, Selection
       const bare = { ...base, view: "top", labelsVisible: false, appearance: "photo", selection: { ...base.selection, roomIds: [], roomSettings: [] } };
       // Kitchen loses its catalog entry.
       const plans = bare.resources.plans.value;
-      const uncatalogued = { ...bare, resources: { ...bare.resources, plans: { ...bare.resources.plans, value: { ...plans, rooms: plans.rooms.map((room) => room.roomId === "room-a" ? { ...room, name: "Elsewhere" } : room) } } } };
+      const uncatalogued = { ...bare, resources: { ...bare.resources, areas: { ...bare.resources.areas, value: bare.resources.areas.value ? { ...bare.resources.areas.value, rooms: bare.resources.areas.value.rooms.filter((room) => room.roomId !== "room-a") } : null }, plans: { ...bare.resources.plans, value: { ...plans, rooms: plans.rooms.map((room) => room.roomId === "room-a" ? { ...room, name: "Elsewhere" } : room) } } } };
       let h = mount(uncatalogued);
       await h.settle();
       const orphan = h.scan("orphan");

@@ -140,10 +140,10 @@ for the owner's local testing and approval.
 
 ## Checks still needed
 
-The interior phase label is inferred from one capture. Follow and run-map pictures
-need hardware checks. The photo trial used equivalent manual commands; Photo patrol
-itself has not run on the installed integration.
+Interior phase labels are inferred from one capture; follow/run-map pictures need hardware checks.
+The photo trial used equivalent manual commands; Photo patrol has not run installed.
+Beta 1 is blocked pending live-stream/map-update reconnect, loss/order, authorization, polling, host and device qualification.
+Push starts automatically when supported (no user toggle); older backends use polling, and Matic keeps checking status on a schedule. This may add network traffic and Home Assistant load; the hoped-for 70% reduction in requests has not been shown.
 
 See [Matic Map and features](features.md), [Actions](actions.md), [Entities](entities.md),
-[Cleaning](cleaning.md), [Changing a running clean](queue-changes.md) and
-[Assistant tools](assistant-tools.md).
+[Cleaning](cleaning.md), [Changing a running clean](queue-changes.md) and [Assistant tools](assistant-tools.md).

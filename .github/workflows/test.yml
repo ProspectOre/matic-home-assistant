@@ -114,6 +114,8 @@ jobs:
       - run: npx playwright install --with-deps chromium
         if: ${{ !fromJSON(env.RECHECK) }}
       - run: npx playwright test --config playwright.live.config.mjs
+        env:
+          MATIC_LIVE_WORKSPACE_PUSH: paired
         if: ${{ !fromJSON(env.RECHECK) }}
 
   ci:

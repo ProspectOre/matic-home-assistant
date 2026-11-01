@@ -89,6 +89,7 @@ export const followPins = (
     if (done) return;
     if (!ok(state)) { done = true; unsubscribe?.(); return; }
     const bothReady = catalogReady(state, "plan") && catalogReady(state, "area");
+    if (mode === "new" && !bothReady) return;
     if (mode === "legacy") {
       if (!bothReady) return;
       const present = [...catalogPins(state, "plan"), ...catalogPins(state, "area")];
@@ -177,6 +178,7 @@ export class HomePinsPersistence {
     readonly epoch: () => number;
     readonly disposed: () => boolean;
     readonly onWrite: () => void;
+    readonly requestFailed: (error: unknown) => void;
   };
   #write: Promise<unknown> = Promise.resolve();
   #exclusions: HomePin[] = [];
@@ -198,6 +200,7 @@ export class HomePinsPersistence {
       readonly epoch: () => number;
       readonly disposed: () => boolean;
       readonly onWrite: () => void;
+      readonly requestFailed: (error: unknown) => void;
     },
   ) {
     this.#store = store;
@@ -264,8 +267,10 @@ export class HomePinsPersistence {
           this.#deferredCatalogMutations = [];
           this.#context.onWrite();
         }
-      } catch {
+      } catch (error) {
         if (current()) {
+          this.#context.requestFailed(error);
+          if (!current()) return;
           if (entry.kind === "catalog") this.#deferredCatalogMutations.push(entry.mutation);
           onFailure();
         }

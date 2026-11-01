@@ -1,8 +1,9 @@
 # Saved maps, storage and deletion
 
 Proposed lifecycle contract for the [map experience](design-map-experience.md), tracked
-by [PRO-146](https://linear.app/prospectore/issue/PRO-146). Design only, based on
-`46036213`; no production data has been saved, deleted or migrated by this work.
+by [PRO-146](https://linear.app/prospectore/issue/PRO-146), based on `46036213`.
+For the in-progress source candidate, see [implementation status](map-experience-implementation.md);
+qualification and actual-disk limits remain open. No owner data has been changed by this design.
 The [history/comparison contract](design-map-live-history.md) defines spatial validity.
 
 ## Keep the kinds of data distinct
@@ -17,11 +18,11 @@ The [history/comparison contract](design-map-live-history.md) defines spatial va
 | Plans, areas and run records | Independent configuration/accounting; history deletion cannot erase or rebind them. |
 | Trails, photos and exports | Separate retention; a map deletion cannot imply these copies have been erased. |
 
-Today [SlamHistoryStore](../custom_components/matic_robot/slam_history.py) automatically
-keeps at most 12 snapshots and 48 MiB of compressed scene payload per robot integration
+At baseline `46036213`, [SlamHistoryStore](../custom_components/matic_robot/slam_history.py) automatically
+kept at most 12 snapshots and 48 MiB of compressed scene payload per robot integration
 entry, shared across its floors/missions. Changed same-mission scenes within five minutes
-may replace the newest sample. Base64/JSON storage is larger than that payload ceiling.
-There is no manual Keep, map archive export, or individual snapshot deletion API today.
+could replace the newest sample. Base64/JSON storage is larger than that payload ceiling.
+That baseline had no manual Keep, map archive export, or individual snapshot deletion API.
 Removing the integration entry removes its associated local stores, including plans;
 it is not a substitute for deleting history or for resetting the robot's working map.
 
@@ -33,7 +34,7 @@ usage separately from compressed payload and browser memory; label unavailable v
 Keep entry-wide totals visible when filtering floors; aggregate entries without implying shared quotas.
 
 Each row has a thumbnail, floor, recorded time, optional name, size and retention state.
-Add server-owned logical/allocated size fields; current catalog metadata lacks sizes.
+Add server-owned logical/allocated size fields; the baseline catalog lacked sizes.
 Actions: View, Compare, Keep/name, Export and Delete, with accessible bulk selection.
 Use unique entry-scoped record IDs: neither `saved-N` ordinals nor scene-content hashes
 alone identify a deletion target across floors/dates. Keep content identity separate.

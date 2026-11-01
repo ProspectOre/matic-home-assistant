@@ -46,6 +46,23 @@ photo_patrol:
       default: false
       selector:
         boolean:
+    question:
+      required: false
+      description: >-
+        When provided with an AI Task entity, the full photo and question are
+        sent to that entity. Its provider may be cloud-based. Matic does not
+        select a provider automatically.
+      example: Is water visible on the floor?
+      selector:
+        text:
+          multiline: true
+    ai_task_entity_id:
+      required: false
+      description: Explicit AI Task destination for photo analysis.
+      example: ai_task.home_assistant
+      selector:
+        entity:
+          domain: ai_task
 
 skip_room:
   target: *vacuum_target

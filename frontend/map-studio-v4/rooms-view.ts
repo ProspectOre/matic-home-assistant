@@ -19,6 +19,12 @@ import { formatList, translate } from "./localize";
 import { COVERAGES, MODES, cadenceProblem, coverageLabel, modeLabel, settingLabel } from "./plan-cadence";
 import { dueLines, formatNumber, type Translate } from "./plan-copy";
 import { admittedManualRoomPreview, canSelectRooms, hasStoppableWork, initialWorkspaceState } from "./state";
+import {
+  dailyLimitHeldRoomCopy,
+  dailyLimitHeldSummaryCopy,
+  dailyLimitProgressCopy,
+  dailyLimitStatusCopy,
+} from "./daily-limit-copy";
 
 const DUE: readonly CadenceReason[] = ["mop_due", "coverage_due"];
 
@@ -147,6 +153,7 @@ export class MaticRoomsViewV4 extends LitElement {
 .row-lines { display: grid; flex: 1; gap: 0.125rem; min-inline-size: 0; }
 .row-lines bdi { overflow: hidden; font-weight: var(--ms-w-bold); text-overflow: ellipsis; white-space: nowrap; }
 .row-lines small { color: color-mix(in srgb, var(--ms-text) 78%, var(--ms-local)); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
+.row-expanded .hint { color: color-mix(in srgb, var(--ms-text) 78%, var(--ms-local)); }
 .problem-line { display: flex; gap: var(--ms-space-1); align-items: flex-start; color: var(--ms-text); }
 .problem-line .ms-icon { flex: none; inline-size: 1rem; block-size: 1rem; color: var(--ms-warning); }
 .room-settings { margin-inline-end: var(--ms-space-1); }
@@ -309,15 +316,24 @@ export class MaticRoomsViewV4 extends LitElement {
     const t = this.#t;
     const failed = state.manualRoomPreview.status === "error";
     const due = preview ? dueLines(t, state.locale, preview) : [];
+    const dailyHeld = admittedManualRoomPreview(state)?.preview.dailyLimitHeldRooms ?? [];
+    const dailyHeldCopy = dailyHeld.length
+      ? dailyLimitHeldSummaryCopy(formatList(state.locale, dailyHeld.map((room) => dailyLimitHeldRoomCopy(
+        room, t, (value) => formatNumber(state.locale, value),
+      ))), t)
+      : null;
     const blockedLine = blocker === null ? null
+      : blocker === "daily_limit_reached"
+        ? t("v4_daily_limit_blocker", "Can't run while daily limits hold the selected rooms. Review the reasons, refresh the plan, or change the room limits.")
       : blocker === "invalid_cadence_policy" && state.selection.useRoomSchedule
         && state.selection.roomSettings.some((room) => room.cleaningMode !== "vacuum")
         ? t("v4_room_preview_schedule_override", "Turn off \"Use room schedules\" to use this cleaning mode.")
         : t("v4_room_preview_blocked", "These rooms can't be cleaned with the current settings. Change the settings or the rooms, then try again.");
-    if (!due.length && !boundaries && !failed && !blockedLine) return nothing;
+    if (!due.length && !boundaries && !failed && !blockedLine && !dailyHeldCopy) return nothing;
     return html`
       <div class="check-lines">
         ${due.map((line) => html`<p class="line" data-tone="due">${icon(iconDue)}<span>${line}</span></p>`)}
+        ${dailyHeldCopy ? html`<p class="line" data-tone="warning">${icon(iconNoticeWarning)}<span>${dailyHeldCopy}</span></p>` : nothing}
         ${boundaries ? html`<p class="line" data-tone="info">${icon(iconDue)}<span>${t("v4_room_parts", "The robot cleans in {count} parts and may stop at the dock between parts.", { count: formatNumber(state.locale, boundaries + 1) })}</span></p>` : nothing}
         ${failed ? html`
           <p class="line" data-tone="warning">${icon(iconNoticeWarning)}<span>${t("v4_room_preview_unavailable", "Home Assistant couldn't check the room settings.")}</span>
@@ -339,6 +355,9 @@ export class MaticRoomsViewV4 extends LitElement {
     const loading = state.manualRoomPreview.status === "loading";
     const reasons = previewRoom?.cadenceReasons ?? room.sharedCadenceReasons ?? room.sharedCadenceProgress?.reasons ?? [];
     const problem = checked ? cadenceProblem(t, reasons) : null;
+    const dailyLimit = admittedManualRoomPreview(state)?.preview.dailyLimitHeldRooms
+      ?.find((candidate) => candidate.roomId === room.roomId)
+      ?? previewRoom?.dailyLimit ?? room.dailyLimit;
     const open = this._open === room.roomId;
     const bodyId = `room-settings-${index}`;
     const mop = settings.cleaningMode === "mop";
@@ -357,6 +376,11 @@ export class MaticRoomsViewV4 extends LitElement {
             <bdi>${room.name}</bdi>
             ${checked ? html`<small>${loading ? t("v4_room_preview_loading", "Checking settings…") : settingLabel(t, previewRoom ?? settings)}</small>` : nothing}
             ${problem ? html`<small class="problem-line">${icon(iconNoticeWarning)}<span>${problem}</span></small>` : nothing}
+            ${dailyLimit?.reached ? html`<small class="problem-line" data-daily-limit-reached>${icon(iconNoticeWarning)}<span>${dailyLimitStatusCopy(
+              dailyLimit, t, (value) => formatNumber(state.locale, value),
+            )}</span></small>` : dailyLimit?.limit !== null && dailyLimit?.limit !== undefined ? html`<small data-daily-limit-progress>${dailyLimitProgressCopy(
+              dailyLimit, t, (value) => formatNumber(state.locale, value),
+            )}</small>` : nothing}
           </span>
         </label>
         ${checked ? html`
@@ -395,6 +419,30 @@ export class MaticRoomsViewV4 extends LitElement {
               </label>`}
             </div>
             ${mopControl(t, state, settings.cleaningMode === "vacuum" ? previewRoom?.cleaningMode ?? "vacuum" : settings.cleaningMode, `room-${index}`)}
+            <label class="ms-field">${t("v4_daily_limit_title", "Daily clean limit")}
+              <select
+                class="ms-select"
+                data-daily-limit=${room.roomId}
+                aria-label=${t("v4_daily_limit_room_named", "Daily clean limit for {room}", { room: room.name })}
+                aria-disabled=${locked ? "true" : nothing}
+                aria-describedby=${this.#describe(held)}
+                .value=${room.dailyLimit?.limit === null || room.dailyLimit?.limit === undefined ? "" : String(room.dailyLimit.limit)}
+                @change=${(event: Event) => {
+                  const select = event.currentTarget as HTMLSelectElement;
+                  if (locked) { select.value = room.dailyLimit?.limit == null ? "" : String(room.dailyLimit.limit); return; }
+                  const raw = select.value;
+                  this.#intent({ type: "set-room-daily-limit", roomId: room.roomId, limit: raw === "" ? null : Number(raw) });
+                }}
+              >
+                <option value="">${t("v4_daily_limit_unlimited", "No daily limit")}</option>
+                ${Array.from({ length: 100 }, (_, i) => i + 1).map((limit) => html`<option value=${String(limit)} ?selected=${room.dailyLimit?.limit === limit}>${t("v4_daily_limit_per_day", "{count} per day", { count: formatNumber(state.locale, limit) })}</option>`)}
+              </select>
+            </label>
+            ${room.dailyLimit?.reached ? html`<p class="hint">${dailyLimitStatusCopy(
+              room.dailyLimit, t, (value) => formatNumber(state.locale, value),
+            )}</p>` : room.dailyLimit?.limit !== null && room.dailyLimit?.limit !== undefined ? html`<p class="hint">${dailyLimitProgressCopy(
+              room.dailyLimit, t, (value) => formatNumber(state.locale, value),
+            )}</p>` : nothing}
           </div>
         ` : nothing}
       </div>

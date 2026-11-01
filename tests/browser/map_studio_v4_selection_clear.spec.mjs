@@ -7,7 +7,7 @@ async function installSelectionHarness(page) {
       contents: `
         import { MaticMapCanvasV4 } from "./frontend/map-studio-v4/map-canvas";
         import { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";
-        import { WorkspaceStore, manualRoomPreviewKey, selectPrimaryAction } from "./frontend/map-studio-v4/state";
+        import { WorkspaceStore, manualRoomPreviewKey } from "./frontend/map-studio-v4/state"; import { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions";
         window.__selectionHarnessModule = { MaticMapCanvasV4, createGalleryState, withGalleryRoomPreview, WorkspaceStore, manualRoomPreviewKey, selectPrimaryAction };
       `,
       resolveDir: process.cwd(),

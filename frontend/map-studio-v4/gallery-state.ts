@@ -963,12 +963,21 @@ export const withGalleryRoomPreview = (state: WorkspaceState, overrides?: Galler
   const carriedToken = state.manualRoomPreview.value?.preview.previewToken ?? GALLERY_PREVIEW_TOKEN;
   const carried = overridesByToken.get(carriedToken) ?? {};
   const applied: GalleryPreviewOverrides = overrides ? { ...carried, ...overrides } : carried;
+  const dailyLimitHeldRooms = state.selection.roomIds.flatMap((roomId) => {
+    const room = rooms.find((candidate) => candidate.roomId === roomId);
+    const limit = room?.dailyLimit;
+    return room && limit?.reached && limit.limit !== null
+      ? [{ roomId, name: room.name, limit: limit.limit, completedToday: limit.completedToday, reached: true }]
+      : [];
+  });
+  const heldRoomIds = new Set(dailyLimitHeldRooms.map((room) => room.roomId));
   const preview: ManualRoomSequencePreview = {
     entryId: state.selection.entryId,
     floorToken: "f".repeat(64),
     // A re-application without new overrides keeps its token.
     previewToken: overrides ? tokenFor(applied) : carriedToken,
     rooms: state.selection.roomIds.flatMap((roomId) => {
+      if (heldRoomIds.has(roomId)) return [];
       const settings = state.selection.roomSettings.find((room) => room.roomId === roomId);
       if (!settings) return [];
       const effective = state.selection.useRoomSchedule ? applied.effective?.[roomId] : undefined;
@@ -982,6 +991,7 @@ export const withGalleryRoomPreview = (state: WorkspaceState, overrides?: Galler
     }),
     missionBoundaries: applied.missionBoundaries ?? [],
     blocker: applied.blocker ?? null,
+    ...(dailyLimitHeldRooms.length ? { dailyLimitHeldRooms } : {}),
   };
   return {
     ...state,

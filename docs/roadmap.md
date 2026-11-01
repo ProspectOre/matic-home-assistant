@@ -9,8 +9,13 @@ each names the evidence that decides it and the release it could land in.
 [task-first map experience](design-map-experience.md): 2D selection and editing,
 tightly framed photographic live overview, shared spatial identity and explicit qualification gates.
 [Saved-map storage](design-map-storage.md) includes keeping, retention, export and deletion.
-Design and prototype work precede implementation; no release is assigned. Existing
-0.6 requirements, beta-2 live status and after-0.6 workspace push keep their scope.
+Implementation and qualification are in progress. Beta 1 includes robot
+operational streaming and browser workspace push as release blockers. The approved
+experience enables push automatically when supported, without a user-facing toggle;
+older backends fall back to polling. Periodic polling remains for reconciliation,
+so push may increase traffic and CPU. Release depends on ordering, reconnect, loss,
+authorization, polling continuity, installed-host and supported-device evidence.
+The proposed 70% request reduction has not been demonstrated.
 
 ## After 0.5.0 stable
 

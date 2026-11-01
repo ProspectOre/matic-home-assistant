@@ -696,6 +696,9 @@ async def _async_run_leg(
                 completed_at=completed_at,
                 duration_seconds=duration_seconds,
                 verified_coverage_receipt=verified_coverage,
+                completion_session_hash=completion_sessions[-1]
+                if completion_sessions
+                else None,
                 completion_is_current=lambda: (
                     (cancel_event is None or not cancel_event.is_set())
                     and (

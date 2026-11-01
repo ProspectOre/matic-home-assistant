@@ -72,7 +72,7 @@ test("precomputes room selection once for the supported 100-room bound", async (
 
   const result = await page.evaluate(async () => {
     const { RendererController, createGalleryState } = await import("/renderer-room-bounds.js");
-    const base = createGalleryState("ready");
+    const base = { ...createGalleryState("ready"), optionalUiReady: true };
     const roomCount = 100;
     const rooms = Array.from({ length: roomCount }, (_, index) => {
       const column = index % 10;
@@ -166,7 +166,7 @@ test("all 256 room colors stay distinct by room ID, retain selection and labels,
 
   const result = await page.evaluate(async () => {
     const { RendererController, createGalleryState, parseSceneBuffer } = await import("/renderer-room-colors.js");
-    const base = createGalleryState("ready");
+    const base = { ...createGalleryState("ready"), optionalUiReady: true };
     const rooms = Array.from({ length: 256 }, (_, index) => {
       const left = index * 12;
       return {
@@ -221,10 +221,22 @@ test("all 256 room colors stay distinct by room ID, retain selection and labels,
         if (this.canvas === overlayCanvas) textCount += 1;
         return originalFillText.apply(this, args);
       };
-      const renderer = new RendererController(sceneCanvas, overlayCanvas);
+      let layersStatus = "idle";
+      const renderer = new RendererController(sceneCanvas, overlayCanvas, {
+        onModuleStatus: (module, status) => { if (module === "renderer-layers") layersStatus = status; },
+      });
       renderer.setPalette({ accent: [12, 120, 200], onAccent: [255, 255, 255], text: dark ? [230, 230, 230] : [20, 30, 40], quiet: dark ? [180, 180, 180] : [70, 80, 90], plate: dark ? [28, 28, 28] : [250, 250, 250], roomFill: forced ? [235, 235, 235] : dark ? [40, 40, 40] : [231, 238, 242], forced });
       renderer.setState(makeState(orderedRooms, options));
-      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      await frame();
+      if (options.labelsVisible) {
+        for (let attempt = 0; attempt < 120 && layersStatus !== "ready" && layersStatus !== "failed"; attempt += 1) await frame();
+        if (layersStatus !== "ready") throw new Error(`Room labels did not load: ${layersStatus}`);
+        await frame();
+        fills.length = 0; strokes.length = 0; widths.length = 0; textCount = 0;
+        renderer.requestRender();
+        await frame();
+      }
       const diagnostics = renderer.diagnostics();
       const png = options.preview ? overlayCanvas.toDataURL() : null;
       renderer.dispose();
@@ -371,7 +383,7 @@ test("room labels draw after every room fill so an overlapping room cannot cover
 
   const result = await page.evaluate(async () => {
     const { RendererController, createGalleryState } = await import("/renderer-label-order.js");
-    const base = createGalleryState("ready");
+    const base = { ...createGalleryState("ready"), optionalUiReady: true };
     // The second room's polygon covers the first room's label position, as a
     // narrow hallway beside a bathroom does on a real floor plan.
     const rooms = [
@@ -395,7 +407,10 @@ test("room labels draw after every room fill so an overlapping room cannot cover
       if (this.canvas === overlayCanvas) operations.push(`text:${text}`);
       return originalFillText.call(this, text, ...args);
     };
-    const renderer = new RendererController(sceneCanvas, overlayCanvas);
+    let layersStatus = "idle";
+    const renderer = new RendererController(sceneCanvas, overlayCanvas, {
+      onModuleStatus: (module, status) => { if (module === "renderer-layers") layersStatus = status; },
+    });
     renderer.setState({
       ...base,
       view: "top",
@@ -409,7 +424,14 @@ test("room labels draw after every room fill so an overlapping room cannot cover
         } },
       },
     });
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await frame();
+    for (let attempt = 0; attempt < 120 && layersStatus !== "ready" && layersStatus !== "failed"; attempt += 1) await frame();
+    if (layersStatus !== "ready") throw new Error(`Room labels did not load: ${layersStatus}`);
+    await frame();
+    operations.length = 0;
+    renderer.requestRender();
+    await frame();
     renderer.dispose();
     CanvasRenderingContext2D.prototype.fill = originalFill;
     CanvasRenderingContext2D.prototype.fillText = originalFillText;
@@ -444,7 +466,7 @@ test("a room label that would cover another moves aside instead of disappearing"
 
   const result = await page.evaluate(async () => {
     const { RendererController, createGalleryState } = await import("/renderer-label-spacing.js");
-    const base = createGalleryState("ready");
+    const base = { ...createGalleryState("ready"), optionalUiReady: true };
     // Two neighbouring rooms whose centres are a cell apart, as a small
     // bedroom beside a bathroom is on a real floor plan.
     const rooms = [
@@ -466,7 +488,10 @@ test("a room label that would cover another moves aside instead of disappearing"
       }
       return originalFillText.call(this, text, x, y, ...args);
     };
-    const renderer = new RendererController(sceneCanvas, overlayCanvas);
+    let layersStatus = "idle";
+    const renderer = new RendererController(sceneCanvas, overlayCanvas, {
+      onModuleStatus: (module, status) => { if (module === "renderer-layers") layersStatus = status; },
+    });
     renderer.setState({
       ...base,
       view: "top",
@@ -480,7 +505,14 @@ test("a room label that would cover another moves aside instead of disappearing"
         } },
       },
     });
-    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await frame();
+    for (let attempt = 0; attempt < 120 && layersStatus !== "ready" && layersStatus !== "failed"; attempt += 1) await frame();
+    if (layersStatus !== "ready") throw new Error(`Room labels did not load: ${layersStatus}`);
+    await frame();
+    labels.length = 0;
+    renderer.requestRender();
+    await frame();
     renderer.dispose();
     CanvasRenderingContext2D.prototype.fillText = originalFillText;
     sceneCanvas.remove();
@@ -513,7 +545,7 @@ test("a moved room label stays on the canvas", async ({ page }) => {
 
   const result = await page.evaluate(async () => {
     const { RendererController, createGalleryState } = await import("/renderer-label-edge.js");
-    const base = createGalleryState("ready");
+    const base = { ...createGalleryState("ready"), optionalUiReady: true };
     const rooms = [
       { id: "room-a", roomId: "a", name: "Bathroom", boundary: [[40, 40], [50, 40], [50, 60], [40, 60]], center: [49, 50] },
       { id: "room-b", roomId: "b", name: "Quinns Room", boundary: [[50, 40], [60, 40], [60, 60], [50, 60]], center: [51, 50] },
@@ -531,7 +563,10 @@ test("a moved room label stays on the canvas", async ({ page }) => {
       return originalFillText.call(this, text, x, y, ...args);
     };
     const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const renderer = new RendererController(sceneCanvas, overlayCanvas);
+    let layersStatus = "idle";
+    const renderer = new RendererController(sceneCanvas, overlayCanvas, {
+      onModuleStatus: (module, status) => { if (module === "renderer-layers") layersStatus = status; },
+    });
     renderer.setState({
       ...base,
       view: "top",
@@ -545,6 +580,9 @@ test("a moved room label stays on the canvas", async ({ page }) => {
         } },
       },
     });
+    await frame();
+    for (let attempt = 0; attempt < 120 && layersStatus !== "ready" && layersStatus !== "failed"; attempt += 1) await frame();
+    if (layersStatus !== "ready") throw new Error(`Room labels did not load: ${layersStatus}`);
     await frame();
     // Pan so the first name sits just inside the lower edge, where the slot
     // below the colliding second name would leave the canvas. A top-down pan

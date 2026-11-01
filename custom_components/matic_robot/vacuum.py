@@ -38,6 +38,7 @@ from .plan_model import (
     plan_area_fingerprint,
     plan_floor_token,
     resolve_room_reference,
+    room_cadence_identity,
 )
 from .stop_return import (
     async_clear_ownerless_stop_if_settled,
@@ -196,6 +197,32 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 translation_key="robot_stop_pending",
             )
 
+    def _require_daily_room_dispatch(
+        self, floor_plan: FloorPlan, rooms: list[Room], *, tracked: bool
+    ) -> None:
+        """Keep untracked or exhausted room requests from bypassing limits."""
+        serial_number = self.coordinator.data.info.serial_number
+        for room in rooms:
+            if not self._plans.cadence.has_daily_limit(serial_number, room.id):
+                continue
+            try:
+                identity = room_cadence_identity(floor_plan, room.id)
+            except ValueError:
+                identity = None
+            state = self._plans.cadence.daily_limit_state(
+                serial_number, room.id, identity
+            )
+            if state["reached"]:
+                raise _validation_error(
+                    "This room has reached its daily cleaning limit or needs review",
+                    "daily_room_limit_reached",
+                )
+            if not tracked:
+                raise _validation_error(
+                    "Use a managed room sequence to respect this room's daily limit",
+                    "daily_room_limit_requires_managed",
+                )
+
     async def _async_command(self, command: UserCommand) -> None:
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
@@ -302,6 +329,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "mixed_coverage_needs_plan",
             )
         floor_plan = self._current_floor_plan(expected_floor_token)
+        self._require_daily_room_dispatch(
+            floor_plan, rooms, tracked=motion_token is not None
+        )
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
         request_generation = self._plans.control.motion_generation(serial_number)
@@ -358,7 +388,10 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     self._require_stop_request_generation(
                         serial_number, request_stop_generation
                     )
-                self._current_floor_plan(command_floor_token)
+                current_floor = self._current_floor_plan(command_floor_token)
+                self._require_daily_room_dispatch(
+                    current_floor, rooms, tracked=motion_token is not None
+                )
                 if (
                     motion_token is not None
                     and self._plans.control.cancellation_event(serial_number).is_set()
@@ -712,6 +745,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     async def async_redo_last_clean(self) -> None:
         """Clean the most recent finished clean again, as the Matic app does."""
         serial_number = self.coordinator.data.info.serial_number
+        if self._plans.cadence.has_any_daily_limit(serial_number):
+            raise _validation_error(
+                "Use a managed room sequence to respect room daily limits",
+                "daily_room_limit_requires_managed",
+            )
         request_generation = self._plans.control.motion_generation(serial_number)
         request_stop_generation = self._plans.control.stop_request_generation(
             serial_number
@@ -761,6 +799,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     "The robot started a task before clean again was sent",
                     "redo_robot_busy",
                 )
+            if self._plans.cadence.has_any_daily_limit(serial_number):
+                raise _validation_error(
+                    "Use a managed room sequence to respect room daily limits",
+                    "daily_room_limit_requires_managed",
+                )
             try:
                 await self.coordinator.client.async_redo_clean(latest.key)
             except (MaticError, ValueError) as err:
@@ -802,6 +845,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         async with self._plans.control.external_command(serial_number):
             if not self.coordinator.data.operational.cleaning:
                 raise _queue_error("no_clean_running", target)
+            if action is not QueueAction.SKIP:
+                self._require_daily_room_dispatch(
+                    self._current_floor_plan(plan_floor_token(floor_plan)),
+                    [target],
+                    tracked=False,
+                )
             try:
                 await self.coordinator.client.async_change_queue(
                     self._current_floor_plan(plan_floor_token(floor_plan)),
