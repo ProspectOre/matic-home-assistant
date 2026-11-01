@@ -342,7 +342,7 @@ def test_decode_wifi_schedule_and_history() -> None:
     schedule = _decode_schedule(payload)
     assert schedule is not None
     assert schedule.time == "08:30"
-    assert schedule.weekdays == ("sunday", "tuesday")
+    assert schedule.weekdays == ("monday", "wednesday")
     assert schedule.timezone == "America/Los_Angeles"
     assert schedule.enabled is True
     assert schedule.ordered is True
@@ -400,6 +400,15 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert malformed_status.completed is None
     assert malformed_status.completed_rooms == ("Kitchen",)
     assert datetime.fromisoformat(session.started_at or "").tzinfo is UTC
+
+
+def test_decode_schedule_weekdays_run_monday_to_sunday() -> None:
+    # Monday and Thursday off, every other day on.
+    days = b"".join(_vfield(number, 1) for number in (2, 3, 5, 6, 7))
+    weekly = _bfield(1, days) + _bfield(3, _vfield(1, 525))
+    schedule = _decode_schedule(_bfield(1, weekly))
+    assert schedule is not None
+    assert schedule.weekdays == ("tuesday", "wednesday", "friday", "saturday", "sunday")
 
 
 def test_wifi_decoder_enforces_payload_network_and_nested_budgets(
