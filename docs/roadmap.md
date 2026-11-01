@@ -3,6 +3,14 @@
 Planned work after the current release. An entry is a commitment to decide, not to ship;
 each names the evidence that decides it and the release it could land in.
 
+## Map experience redesign
+
+[PRO-138](https://linear.app/prospectore/issue/PRO-138) tracks the proposed
+[task-first map experience](design-map-experience.md): 2D selection and editing,
+optional 3D inspection, shared spatial identity and explicit qualification gates.
+Design and prototype work precede implementation; no release is assigned. Existing
+0.6 requirements, beta-2 live status and after-0.6 workspace push keep their scope.
+
 ## After 0.5.0 stable
 
 | Item | Tracking | Target | Decided by |
