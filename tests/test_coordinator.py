@@ -576,33 +576,64 @@ async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
 
     client.async_subscribe_state = subscription
     processed: list[RobotOperationalState] = []
-    first_processed = asyncio.Event()
+    publications: asyncio.Queue[RobotOperationalState] = asyncio.Queue()
+    deadlines: asyncio.Queue[tuple[float, asyncio.Event]] = asyncio.Queue()
+    now = 0.0
 
     def process(state: RobotOperationalState) -> None:
         processed.append(state)
-        first_processed.set()
+        publications.put_nowait(state)
 
+    async def wait_for_deadline(delay: float) -> None:
+        release = asyncio.Event()
+        deadlines.put_nowait((delay, release))
+        await release.wait()
+
+    # Replace only this module's asyncio reference; HA keeps the real scheduler.
+    cues_asyncio = SimpleNamespace(
+        Event=asyncio.Event,
+        create_task=asyncio.create_task,
+        gather=asyncio.gather,
+        CancelledError=asyncio.CancelledError,
+        sleep=wait_for_deadline,
+    )
     coordinator.async_process_cues_state = process
 
-    with patch(
-        "custom_components.matic_robot.coordinator.CUES_UPDATE_INTERVAL_SECONDS",
-        0.01,
+    with (
+        patch("custom_components.matic_robot.coordinator.asyncio", cues_asyncio),
+        patch("custom_components.matic_robot.coordinator.monotonic", lambda: now),
+        patch(
+            "custom_components.matic_robot.coordinator.CUES_UPDATE_INTERVAL_SECONDS",
+            0.01,
+        ),
     ):
         watcher = asyncio.create_task(coordinator.async_watch_cues())
-        await first_processed.wait()
-        release_burst.set()
-        await burst_sent.wait()
+        try:
+            async with asyncio.timeout(10):
+                assert await publications.get() == first
+                release_burst.set()
+                await burst_sent.wait()
 
-        assert processed == [first]
-        await asyncio.sleep(0.02)
-        assert processed == [first, latest]
-        keep_open.set()
-        await asyncio.sleep(0.02)
-        assert processed == [first, latest, first]
+                delay, release = await deadlines.get()
+                assert delay == pytest.approx(0.01)
+                assert processed == [first]
+                now += delay
+                release.set()
+                assert await publications.get() == latest
+                assert processed == [first, latest]
 
-        watcher.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await watcher
+                keep_open.set()
+                delay, release = await deadlines.get()
+                assert delay == pytest.approx(0.01)
+                assert processed == [first, latest]
+                now += delay
+                release.set()
+                assert await publications.get() == first
+                assert processed == [first, latest, first]
+        finally:
+            watcher.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await watcher
 
 
 async def test_floor_watcher_refreshes_changed_mission_and_labels(
