@@ -77,7 +77,7 @@ HERMES_ENDPOINTS = (
     _collection("planned_path"),
     _property("petwaste_enabled_state", HermesEndpointSensitivity.DIAGNOSTIC),
     _collection("schedule_event_previews"),
-    _collection("schedule_events"),
+    _collection("schedule_events", tracked=True),
     _collection("semantics_override", tracked=True),
     _collection("sink_summon_locations"),
     _collection("sink_summons"),

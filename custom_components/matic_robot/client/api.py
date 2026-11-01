@@ -184,6 +184,7 @@ _WIFI_STATUS_MAX_BYTES = 256 * 1024
 _WIFI_NETWORK_MAX_COUNT = 256
 _SCHEDULE_MAX_BYTES = 64 * 1024
 _SCHEDULE_MAX_FIELDS = 1024
+_SCHEDULE_ROOM_MAX_FIELDS = 16 * 1024
 _SCHEDULE_MAX_UUIDS = 256
 # Inside one per-room schedule block: target (7) > region (3) > region ID (3),
 # where the ID has the coverage plan's nested UUID form (``Room.id_wire``).
@@ -2813,32 +2814,6 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
     except DecodeError:
         timezone = None
     try:
-        ordered = bool(
-            _telemetry_varint(
-                payload,
-                3,
-                max_bytes=_SCHEDULE_MAX_BYTES,
-                max_fields=_SCHEDULE_MAX_FIELDS,
-            )
-        )
-    except DecodeError:
-        ordered = False
-
-    enabled: bool | None = None
-    try:
-        enabled_payload = _telemetry_bytes(
-            payload, 9, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
-        )
-        if not enabled_payload:
-            enabled = True
-        else:
-            enabled_fields = _telemetry_fields(enabled_payload)
-            if enabled_fields:
-                enabled = enabled_fields[0].number == 1
-    except DecodeError:
-        pass
-
-    try:
         room_ids = _schedule_room_ids(payload) or _uuid_candidates(payload)
         name_fields = _bounded_fields(
             payload, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
@@ -2850,41 +2825,91 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
         weekdays=tuple(weekdays),
         minute_of_day=minute_of_day if 0 <= minute_of_day < 1440 else None,
         timezone=timezone,
-        ordered=ordered,
-        enabled=enabled,
+        ordered=_schedule_ordered(name_fields),
+        enabled=_schedule_enabled(name_fields),
         room_ids=room_ids,
     )
+
+
+def _schedule_enabled(fields: tuple[WireField, ...]) -> bool | None:
+    """Read the native enabled-state oneof, with the legacy bool as fallback."""
+    markers = [field for field in fields if field.number in (8, 9, 10)]
+    if markers:
+        # Native EnabledState encodes empty messages: enabled=8, disabled=9,
+        # suggested=10. Conflicting, malformed and suggested states are unknown.
+        if len(markers) != 1 or markers[0].wire_type != 2 or markers[0].value != b"":
+            return None
+        return {8: True, 9: False, 10: None}[markers[0].number]
+    legacy = [field for field in fields if field.number == 3]
+    if len(legacy) == 1 and legacy[0].wire_type == 0 and legacy[0].value in (0, 1):
+        return bool(legacy[0].value)
+    return None
+
+
+def _schedule_ordered(fields: tuple[WireField, ...]) -> bool | None:
+    """Identify ordered or unordered goal lists without using the enabled bool."""
+    kinds: set[int] = set()
+    for field in fields:
+        if field.number != 7:
+            continue
+        if field.wire_type != 2 or not isinstance(field.value, bytes):
+            return None
+        try:
+            goals = _bounded_fields(
+                field.value,
+                max_bytes=_SCHEDULE_MAX_BYTES,
+                max_fields=_SCHEDULE_MAX_FIELDS,
+            )
+        except DecodeError:
+            return None
+        for goal in goals:
+            if goal.number in (1, 2):
+                if goal.wire_type != 2:
+                    return None
+                kinds.add(goal.number)
+    return True if kinds == {1} else False if kinds == {2} else None
 
 
 def _schedule_room_ids(payload: bytes) -> tuple[str, ...]:
     """Return floor-plan room IDs from a schedule's per-room blocks.
 
-    Field 7 holds repeated blocks (field 1), several per scheduled room, each
-    carrying its room's floor-plan ID at ``_SCHEDULE_BLOCK_ROOM_PATH`` relative
+    Field 7 holds ordered (field 1) or unordered (field 2) blocks, several per room,
+    each carrying its floor-plan ID at ``_SCHEDULE_BLOCK_ROOM_PATH`` relative
     to the block. That is deeper than the generic scan in ``_uuid_candidates``
     reaches. Layout observed on firmware v181.10 (protocol 28). IDs keep their
     first-seen order; blocks that do not decode are skipped.
     """
-    found: list[str] = []
-    field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
+    found: dict[str, None] = {}
+    # Each room can have eight deeply nested blocks. Keep the aggregate bound
+    # separate from the per-message limit so whole-floor schedules fit.
+    field_budget = WireFieldBudget(_SCHEDULE_ROOM_MAX_FIELDS)
     for container in bytes_fields(payload, 7, field_budget=field_budget):
         try:
-            blocks = bytes_fields(container, 1, field_budget=field_budget)
+            blocks = decode_fields(
+                container,
+                max_fields=_SCHEDULE_MAX_FIELDS,
+                field_budget=field_budget,
+            )
         except WireFieldBudgetExceeded, WireFieldLimitExceeded:
             raise
         except DecodeError:
             continue
         for block in blocks:
+            if block.number not in (1, 2) or block.wire_type != 2:
+                continue
             try:
-                room = block
+                room = cast(bytes, block.value)
                 for number in _SCHEDULE_BLOCK_ROOM_PATH:
                     room = first_bytes(room, number, field_budget=field_budget)
-                found.append(uuid_string(room, field_budget=field_budget))
+                room_id = uuid_string(room, field_budget=field_budget)
             except WireFieldBudgetExceeded, WireFieldLimitExceeded:
                 raise
             except DecodeError:
                 continue
-    return tuple(dict.fromkeys(found))
+            found[room_id] = None
+            if len(found) > _SCHEDULE_MAX_UUIDS:
+                raise DecodeError("schedule has too many room identifiers")
+    return tuple(found)
 
 
 def _uuid_candidates(payload: bytes) -> tuple[str, ...]:

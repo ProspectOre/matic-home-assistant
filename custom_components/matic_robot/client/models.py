@@ -236,7 +236,7 @@ class CleaningSchedule:
     weekdays: tuple[str, ...]
     minute_of_day: int | None
     timezone: str | None
-    ordered: bool
+    ordered: bool | None
     enabled: bool | None
     room_ids: tuple[str, ...]
 

@@ -16,12 +16,20 @@ This hotfix addresses the four reports in
   robot, including scheduled cleans. They remain separate from plan completion
   counts and room schedules. See [room statistics](entities.md#room-statistics-and-the-recorder)
   for matching requirements.
-- **Correct schedule weekdays and rooms.** The schedule sensor uses the app's
-  weekday order and reads the rooms selected in each schedule.
+- **Correct native schedules.** The reader acknowledges schedule records so
+  later entries can arrive. Weekdays use the app's order; enabled state and room
+  ordering use their separate protocol fields. Room lists support ordered and
+  unordered schedules, including larger whole-floor selections.
 
-The missing second schedule and unknown on/off state reported in #384 remain
-under investigation. [Schedule diagnostics](native-schedule-diagnostics.md)
-can report the message structure without exposing schedule contents.
+The protocol fixes have synthetic regression coverage. Confirmation on the
+reporter's installation remains open. [Schedule diagnostics](native-schedule-diagnostics.md)
+can report record counts and message structure without exposing schedule contents.
+
+Thanks to [kpes](https://github.com/kpes) for the reports and the error confirmation,
+weekday and room-decoding contributions in [#385](https://github.com/ProspectOre/matic-home-assistant/pull/385),
+[#386](https://github.com/ProspectOre/matic-home-assistant/pull/386) and
+[#387](https://github.com/ProspectOre/matic-home-assistant/pull/387). Their original
+commits are retained alongside the additional hotfix changes.
 
 Update through HACS and restart Home Assistant. Existing entities, plans,
 custom areas and settings are kept. Home Assistant 2026.10 or later is required.

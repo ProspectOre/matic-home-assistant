@@ -341,7 +341,7 @@ def test_decode_wifi_schedule_and_history() -> None:
         + _bfield(2, b"Morning")
         + _vfield(3, 1)
         + _bfield(7, room_id)
-        + _bfield(9, b"")
+        + _bfield(8, b"")
     )
     schedule = _decode_schedule(payload)
     assert schedule is not None
@@ -349,7 +349,7 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert schedule.weekdays == ("monday", "wednesday")
     assert schedule.timezone == "America/Los_Angeles"
     assert schedule.enabled is True
-    assert schedule.ordered is True
+    assert schedule.ordered is None
     assert len(schedule.room_ids) == 1
 
     def timestamp(value: int) -> bytes:
@@ -573,7 +573,7 @@ def test_decoders_fail_closed_and_use_safe_defaults() -> None:
     schedule = _decode_schedule(minimal)
     assert schedule is not None
     assert schedule.timezone is None
-    assert schedule.ordered is False
+    assert schedule.ordered is None
     assert schedule.enabled is None
 
     empty_summary = _bfield(5, _vfield(1, 1) + _bfield(6, b"\x0a\xff"))

@@ -2091,17 +2091,34 @@ def test_decode_text_field_rejects_non_bytes_payloads() -> None:
     assert _decode_text_field(_bfield(1, b"x" * 513), 1) is None
 
 
-def test_decode_schedule_reads_explicit_enabled_markers() -> None:
+@pytest.mark.parametrize(
+    ("marker", "expected"),
+    [
+        (_bfield(8, b""), True),
+        (_bfield(9, b""), False),
+        (_bfield(10, b""), None),
+        (_bfield(11, b""), None),
+        (b"", None),
+        (_vfield(3, 1), True),
+        (_vfield(3, 0), False),
+        (_vfield(3, 2), None),
+        (_bfield(3, b""), None),
+        (_vfield(3, 1) + _vfield(3, 0), None),
+        (_vfield(3, 1) + _bfield(9, b""), False),
+        (_vfield(3, 1) + _bfield(10, b""), None),
+        (_bfield(8, b"") + _bfield(9, b""), None),
+        (_bfield(8, b"") + _bfield(8, b""), None),
+        (_vfield(8, 1), None),
+        (_bfield(9, _bfield(1, b"")), None),
+    ],
+)
+def test_decode_schedule_reads_native_enabled_markers(marker, expected) -> None:
     weekly = _bfield(1, _vfield(2, 1)) + _bfield(3, _vfield(1, 510))
-    base = _bfield(1, weekly)
-
-    enabled = _decode_schedule(base + _bfield(9, _bfield(1, b"")))
-    assert enabled is not None
-    assert enabled.enabled is True
-
-    disabled = _decode_schedule(base + _bfield(9, _bfield(2, b"")))
-    assert disabled is not None
-    assert disabled.enabled is False
+    schedule = _decode_schedule(_bfield(1, weekly) + marker)
+    assert schedule is not None
+    assert schedule.enabled is expected
+    # The legacy enabled bool must never be exposed as room ordering.
+    assert schedule.ordered is None
 
 
 def test_uuid_candidates_bound_recursion_depth() -> None:
@@ -2147,22 +2164,57 @@ def test_decode_schedule_reads_room_ids_from_per_room_blocks() -> None:
     assert _uuid_candidates(payload) == ()
 
 
-def test_schedule_room_ids_fit_a_whole_floor_of_room_blocks() -> None:
-    # Eight blocks per room, as observed, for seven rooms; the last block's
+@pytest.mark.parametrize("goal_field", [1, 2])
+def test_schedule_room_ids_fit_a_whole_floor_of_room_blocks(goal_field) -> None:
+    # Eight blocks per room, as observed, for seventeen rooms; the last block's
     # room ID is malformed and is skipped.
     blocks = b"".join(
-        _bfield(1, _schedule_block(index // 8 + 1, index)) for index in range(56)
+        _bfield(goal_field, _schedule_block(index // 8 + 1, index))
+        for index in range(136)
     )
-    blocks += _bfield(1, _bfield(7, _bfield(3, _bfield(3, b"\x09"))))
+    blocks += _bfield(goal_field, _bfield(7, _bfield(3, _bfield(3, b"\x09"))))
     weekly = _bfield(1, _vfield(2, 1)) + _bfield(3, _vfield(1, 510))
 
     schedule = _decode_schedule(_bfield(1, weekly) + _bfield(7, blocks))
 
     assert schedule is not None
-    assert schedule.room_ids == tuple(str(UUID(int=room)) for room in range(1, 8))
+    assert schedule.room_ids == tuple(str(UUID(int=room)) for room in range(1, 18))
+    assert schedule.ordered is (goal_field == 1)
 
 
-def test_schedule_room_ids_share_the_schedule_field_budget() -> None:
+@pytest.mark.parametrize(
+    "goals",
+    [
+        _vfield(7, 1),
+        _bfield(7, b"\xff"),
+        _bfield(7, _vfield(1, 1)),
+        _bfield(7, _bfield(1, b"") + _bfield(2, b"")),
+        _bfield(7, _bfield(3, b"")),
+    ],
+)
+def test_schedule_ordering_rejects_unknown_or_conflicting_goals(goals) -> None:
+    weekly = _bfield(1, _vfield(2, 1)) + _bfield(3, _vfield(1, 510))
+    schedule = _decode_schedule(_bfield(1, weekly) + _bfield(8, b"") + goals)
+    assert schedule is not None
+    assert schedule.enabled is True
+    assert schedule.ordered is None
+
+
+def test_schedule_room_ids_bound_distinct_rooms(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._SCHEDULE_MAX_UUIDS", 1
+    )
+    payload = _bfield(
+        7, _bfield(1, _schedule_block(1, 11)) + _bfield(1, _schedule_block(2, 12))
+    )
+    with pytest.raises(DecodeError, match="too many room identifiers"):
+        _schedule_room_ids(payload)
+
+
+def test_schedule_room_ids_share_the_schedule_field_budget(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._SCHEDULE_ROOM_MAX_FIELDS", 1024
+    )
     too_many_blocks = _bfield(7, _bfield(1, b"") * 1100)
     with pytest.raises(WireFieldBudgetExceeded):
         _schedule_room_ids(too_many_blocks)

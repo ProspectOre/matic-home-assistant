@@ -1,13 +1,17 @@
 # Native schedule diagnostics
 
 **Scheduled cleanings** reads the schedule records returned by the robot. In
-0.5.1, weekdays use Monday through Sunday and room lists follow the room targets
-reported by firmware v181.10. The sensor does not change schedules in the Matic app.
+0.5.1, the reader acknowledges each record so the stream can advance. Weekdays
+use Monday through Sunday; room lists follow both ordered and unordered goals.
+The sensor does not change schedules in the Matic app.
 
 [Issue #384](https://github.com/ProspectOre/matic-home-assistant/issues/384)
-also reports a missing second schedule and an unknown `enabled` value. The
-weekday and room fixes do not resolve those two discrepancies. An unknown
-on/off value is kept unknown rather than inferred from past cleaning runs.
+identified incorrect weekdays, missing records, empty room lists and unknown
+enabled state. The [protocol evidence](native-schedule-protocol.md) establishes
+the state and ordering fields and the acknowledged read path. Suggested,
+conflicting or unknown state markers remain unknown. Missing or mixed goal
+lists also leave ordering unknown; it is never inferred from enabled state.
+Affected-install confirmation remains open.
 
 To investigate missing records, run **Advanced: Inspect robot data** from
 Home Assistant's developer actions with the robot connected:
@@ -31,10 +35,8 @@ outer structure could not be inspected.
 
 Compare the entry count with the app's schedule count. Record whether the app
 shows each schedule enabled, but keep names, times and home details private.
-If investigating the on/off field, compare inspections before and after changing
-one schedule in the app, then restore the original setting. A changed checksum
-alone does not establish a field's meaning. No schedule-setting action is
-available through this diagnostic.
+No schedule-setting action is available through this diagnostic. Existing
+schedules can be inspected without changing their enabled state or contents.
 
 See [advanced actions](actions.md#advanced-actions) for the inspection service
 and [privacy](privacy.md) for diagnostic data handling.
