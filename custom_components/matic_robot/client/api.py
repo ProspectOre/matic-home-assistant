@@ -114,7 +114,9 @@ from .wire import (
     WireFieldBudget,
     WireFieldBudgetExceeded,
     WireFieldLimitExceeded,
+    bytes_fields,
     decode_fields,
+    first_bytes,
     uuid_string,
 )
 
@@ -280,13 +282,13 @@ _BINARY_SETTING_CHANNELS = {
 }
 
 _WEEKDAYS = (
-    "sunday",
     "monday",
     "tuesday",
     "wednesday",
     "thursday",
     "friday",
     "saturday",
+    "sunday",
 )
 
 
@@ -2815,7 +2817,7 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
         pass
 
     try:
-        room_ids = _uuid_candidates(payload)
+        room_ids = _schedule_room_ids(payload) or _uuid_candidates(payload)
         name_fields = _bounded_fields(
             payload, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
         )
@@ -2830,6 +2832,32 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
         enabled=enabled,
         room_ids=room_ids,
     )
+
+
+def _schedule_room_ids(payload: bytes) -> tuple[str, ...]:
+    """Read floor-plan room IDs from the schedule's per-room blocks."""
+    found: list[str] = []
+    field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
+    for container in bytes_fields(payload, 7, field_budget=field_budget):
+        try:
+            blocks = bytes_fields(container, 1, field_budget=field_budget)
+        except WireFieldBudgetExceeded, WireFieldLimitExceeded:
+            raise
+        except DecodeError:
+            continue
+        for block in blocks:
+            try:
+                room = block
+                for number in (7, 3, 3):
+                    room = first_bytes(room, number, field_budget=field_budget)
+                room_id = uuid_string(room, field_budget=field_budget)
+            except WireFieldBudgetExceeded, WireFieldLimitExceeded:
+                raise
+            except DecodeError:
+                continue
+            if room_id not in found:
+                found.append(room_id)
+    return tuple(found)
 
 
 def _uuid_candidates(payload: bytes) -> tuple[str, ...]:

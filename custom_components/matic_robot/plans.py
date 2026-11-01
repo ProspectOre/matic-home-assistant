@@ -93,6 +93,7 @@ from .coverage_accounting import (
 )
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
+from .room_statistics import NativeRoomStatistic, completed_native_room_statistics
 
 _LOGGER = logging.getLogger(__name__)
 _MetadataResult = TypeVar("_MetadataResult")
@@ -5892,6 +5893,28 @@ class CleaningPlanManager:
                 }
                 for room_id, room in robot["rooms"].items()
             },
+            "robot_reported_completed_by_room": {
+                room_id: {
+                    "name": room.get("name"),
+                    "at": room.get("robot_last_completed"),
+                    "duration_seconds": room.get("robot_last_duration_seconds"),
+                    "started_at": room.get("robot_last_session_started_at"),
+                    "floor_mission_id": room.get(
+                        "robot_last_floor_id", room.get("robot_last_invalid_floor_id")
+                    ),
+                    "source": (
+                        "robot_native_mode_result_room_name_match"
+                        if isinstance(room.get("robot_last_completed"), str)
+                        else "robot_native_mode_result_managed_session"
+                        if room.get("robot_last_invalid_source") == "managed_session"
+                        else "robot_native_mode_result_ambiguous"
+                    ),
+                    "excluded_modes": room.get("robot_last_conflicted_modes", []),
+                }
+                for room_id, room in robot["rooms"].items()
+                if isinstance(room.get("robot_last_completed"), str)
+                or isinstance(room.get("robot_last_invalidated_at"), str)
+            },
             "native_reconciliation_pending": isinstance(
                 robot.get("pending_native_reconciliation"), dict
             ),
@@ -7170,7 +7193,237 @@ def _import_native_room_activity(
         if any(global_room.get(key) != value for key, value in updates.items()):
             global_room.update(updates)
             changed = True
+
+    # Keep robot-reported statistics separate from verified managed outcomes.
+    # Native history identifies neither a managed dispatch nor the floor on
+    # which its room name was recorded.
+    now = dt_util.utcnow()
+    current_floor_id = floor_plan.mission_id
+    previous_floor_id = robot.get("robot_room_statistics_floor_id")
+    if (
+        isinstance(previous_floor_id, int)
+        and not isinstance(previous_floor_id, bool)
+        and previous_floor_id != current_floor_id
+    ):
+        robot["robot_room_statistics_floor_changed_at"] = now.isoformat()
+        # Retain the old source marker so room sensors can clear a restored
+        # value whose floor no longer matches the active map.
+        changed = True
+    if previous_floor_id != current_floor_id:
+        robot["robot_room_statistics_floor_id"] = current_floor_id
+        changed = True
+    changed_at = _latest_timestamp(robot.get("robot_room_statistics_floor_changed_at"))
+    mapped_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
+    multiple_floors_known = len(mapped_floor_ids | {current_floor_id}) > 1
+    statistics = completed_native_room_statistics(
+        records,
+        floor_plan.rooms,
+        now=now,
+        future_tolerance_seconds=ROTATION_FUTURE_TOLERANCE_SECONDS,
+        multiple_floors_known=multiple_floors_known,
+        minimum_timestamp=changed_at,
+    )
+    for room_id, statistic in statistics.items():
+        global_room = robot["rooms"].setdefault(room_id, {})
+        existing_timestamp = _latest_timestamp(
+            global_room.get("robot_last_completed"),
+            global_room.get("robot_last_invalidated_at"),
+        )
+        if existing_timestamp is not None and existing_timestamp > statistic.timestamp:
+            continue
+        same_session = (
+            existing_timestamp == statistic.timestamp
+            and global_room.get(
+                "robot_last_session_hash",
+                global_room.get("robot_last_invalid_session_hash"),
+            )
+            == statistic.session_hash
+            and global_room.get(
+                "robot_last_session_started_at",
+                global_room.get("robot_last_invalid_session_started_at"),
+            )
+            == statistic.started_at
+            and global_room.get(
+                "robot_last_floor_id", global_room.get("robot_last_invalid_floor_id")
+            )
+            == current_floor_id
+        )
+        previously_managed = (
+            same_session
+            and global_room.get("robot_last_managed_session_hash")
+            == statistic.session_hash
+            and global_room.get("robot_last_managed_session_started_at")
+            == statistic.started_at
+        )
+        managed_session = (
+            previously_managed
+            or _native_room_statistic_matches_managed_history(robot, room_id, statistic)
+        )
+        if managed_session:
+            managed_exclusion: dict[str, Any] = {
+                "robot_last_invalidated_at": statistic.ended_at,
+                "robot_last_invalid_session_hash": statistic.session_hash,
+                "robot_last_invalid_session_started_at": statistic.started_at,
+                "robot_last_invalid_floor_id": current_floor_id,
+                "robot_last_invalid_source": "managed_session",
+                "robot_last_managed_session_hash": statistic.session_hash,
+                "robot_last_managed_session_started_at": statistic.started_at,
+            }
+            completed_keys = (
+                "robot_last_completed",
+                "robot_last_duration_seconds",
+                "robot_last_completed_mode_durations",
+                "robot_last_session_hash",
+                "robot_last_session_started_at",
+                "robot_last_floor_id",
+            )
+            changed = (
+                changed
+                or any(key in global_room for key in completed_keys)
+                or any(
+                    global_room.get(key) != value
+                    for key, value in managed_exclusion.items()
+                )
+            )
+            for key in completed_keys:
+                global_room.pop(key, None)
+            global_room.update(managed_exclusion)
+            continue
+        if existing_timestamp == statistic.timestamp and not same_session:
+            continue
+        conflicted_modes = set(statistic.conflicting_modes)
+        if same_session:
+            stored_conflicts = global_room.get("robot_last_conflicted_modes", [])
+            if isinstance(stored_conflicts, list):
+                conflicted_modes.update(
+                    mode for mode in stored_conflicts if mode in {"vacuum", "mop"}
+                )
+            invalid_modes = global_room.get("robot_last_invalid_modes", [])
+            if isinstance(invalid_modes, list):
+                conflicted_modes.update(
+                    mode for mode in invalid_modes if mode in {"vacuum", "mop"}
+                )
+        mode_durations = {
+            mode: duration
+            for mode, duration in statistic.mode_durations.items()
+            if mode not in conflicted_modes
+        }
+        if same_session:
+            prior_modes = global_room.get("robot_last_completed_mode_durations")
+            if isinstance(prior_modes, dict):
+                mode_durations = {
+                    **{
+                        mode: duration
+                        for mode, duration in prior_modes.items()
+                        if mode in {"vacuum", "mop"}
+                        and mode not in conflicted_modes
+                        and isinstance(duration, int)
+                        and not isinstance(duration, bool)
+                        and duration > 0
+                    },
+                    **mode_durations,
+                }
+        if not mode_durations:
+            if same_session and conflicted_modes:
+                for key in (
+                    "robot_last_completed",
+                    "robot_last_duration_seconds",
+                    "robot_last_completed_mode_durations",
+                    "robot_last_session_hash",
+                    "robot_last_session_started_at",
+                    "robot_last_floor_id",
+                ):
+                    global_room.pop(key, None)
+                global_room.update(
+                    {
+                        "robot_last_invalidated_at": statistic.ended_at,
+                        "robot_last_invalid_session_hash": statistic.session_hash,
+                        "robot_last_invalid_session_started_at": statistic.started_at,
+                        "robot_last_invalid_floor_id": current_floor_id,
+                        "robot_last_invalid_modes": sorted(conflicted_modes),
+                    }
+                )
+                changed = True
+            continue
+        duration_seconds = sum(mode_durations.values())
+        previous_modes = global_room.get("robot_last_completed_mode_durations")
+        previous_conflicts = global_room.get("robot_last_conflicted_modes", [])
+        changed = changed or (
+            existing_timestamp != statistic.timestamp
+            or not same_session
+            or previous_modes != mode_durations
+            or previous_conflicts != sorted(conflicted_modes)
+        )
+        for key in (
+            "robot_last_invalidated_at",
+            "robot_last_invalid_session_hash",
+            "robot_last_invalid_session_started_at",
+            "robot_last_invalid_floor_id",
+            "robot_last_invalid_modes",
+            "robot_last_invalid_source",
+            "robot_last_managed_session_hash",
+            "robot_last_managed_session_started_at",
+        ):
+            global_room.pop(key, None)
+        global_room.update(
+            {
+                "name": statistic.room_name,
+                "robot_last_completed": statistic.ended_at,
+                "robot_last_duration_seconds": duration_seconds,
+                "robot_last_completed_mode_durations": mode_durations,
+                "robot_last_session_hash": statistic.session_hash,
+                "robot_last_session_started_at": statistic.started_at,
+                "robot_last_floor_id": current_floor_id,
+                "robot_last_conflicted_modes": sorted(conflicted_modes),
+            }
+        )
     return changed
+
+
+def _native_room_statistic_matches_managed_history(
+    robot: Mapping[str, Any], room_id: str, statistic: NativeRoomStatistic
+) -> bool:
+    """Match a native robot session to a recorded managed room start."""
+    native_start = (
+        dt_util.parse_datetime(statistic.started_at)
+        if isinstance(statistic.started_at, str)
+        else None
+    )
+    native_end = dt_util.parse_datetime(statistic.ended_at)
+    if (
+        native_start is None
+        or native_start.tzinfo is None
+        or native_end is None
+        or native_end.tzinfo is None
+    ):
+        return False
+    rotations = robot.get("rotations")
+    if not isinstance(rotations, Mapping):
+        return False
+    for rotation in rotations.values():
+        if not isinstance(rotation, Mapping):
+            continue
+        rooms = rotation.get("rooms")
+        if not isinstance(rooms, Mapping):
+            continue
+        record = rooms.get(room_id)
+        if not isinstance(record, Mapping):
+            continue
+        raw_managed_start = record.get("last_started")
+        managed_start = (
+            dt_util.parse_datetime(raw_managed_start)
+            if isinstance(raw_managed_start, str)
+            else None
+        )
+        if managed_start is None or managed_start.tzinfo is None:
+            continue
+        if (
+            native_start - timedelta(seconds=120)
+            <= managed_start
+            <= native_end + timedelta(seconds=120)
+        ):
+            return True
+    return False
 
 
 def _rotation_sort_key(candidate: _RotationCandidate) -> tuple[bool, float, int]:

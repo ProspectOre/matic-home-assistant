@@ -38,7 +38,7 @@ from .const import (
     DATA_PLAN_MANAGER,
     DOMAIN,
     EVENT_ACTIVITY_OBSERVED,
-    EVENT_CLEANING_FINISHED,
+    EVENT_NATIVE_HISTORY_UPDATED,
     PLATFORMS,
 )
 from .coordinator import MaticCoordinator
@@ -536,13 +536,11 @@ def _register_native_history_sync(
     plans: CleaningPlanManager,
     serial_number: str,
 ) -> None:
-    """Record where the robot worked, whoever started the clean.
+    """Import native activity and separate room statistics, including revisions.
 
-    A managed plan verifies its own rooms, but firmware also cleans on its
-    own: it resumes a task after an error and the vendor app can start one.
-    The robot's record cannot prove those rooms were finished, so importing
-    it as each session ends keeps rotation fairness current without ever
-    claiming a completion; see ``_import_native_room_activity``.
+    Managed plans retain their own completion requirements. Native mode
+    results can update room sensors without advancing managed counts or
+    cadence; late results must not replay the public cleaning-finished event.
     """
     generation = (
         plans.robot_generation(serial_number)
@@ -568,7 +566,9 @@ def _register_native_history_sync(
             **kwargs,
         )
 
-    entry.async_on_unload(hass.bus.async_listen(EVENT_CLEANING_FINISHED, _async_sync))
+    entry.async_on_unload(
+        hass.bus.async_listen(EVENT_NATIVE_HISTORY_UPDATED, _async_sync)
+    )
 
 
 def _schedule_native_reconciliation_recovery(

@@ -1315,7 +1315,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ((plan_unsubscribe,), {}),
     ]
     hass.bus.async_listen.assert_called_once()
-    assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_cleaning_finished"
+    assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_native_history_updated"
     sync_area_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
 
     with patch(
@@ -2159,8 +2159,8 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
 
 
 async def test_finished_session_records_where_the_robot_worked(hass) -> None:
-    """Any finished clean updates rotation fairness, claiming no completion."""
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    """A native history revision imports activity and separate room statistics."""
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
@@ -2175,11 +2175,11 @@ async def test_finished_session_records_where_the_robot_worked(hass) -> None:
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
     assert unloads
 
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "other"})
+    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "other"})
     await hass.async_block_till_done()
     plans.async_import_native_history.assert_not_awaited()
 
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "entry-1"})
     await hass.async_block_till_done()
     plans.async_import_native_history.assert_awaited_once_with(
         "serial",
@@ -2198,7 +2198,7 @@ async def test_finished_session_records_where_the_robot_worked(hass) -> None:
 
 async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
     from custom_components.matic_robot.client.exceptions import MaticError
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
@@ -2210,7 +2210,7 @@ async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
     coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
 
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "entry-1"})
     await hass.async_block_till_done()
 
     plans.async_import_native_history.assert_not_awaited()
@@ -2218,7 +2218,7 @@ async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
 
 async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> None:
     """An old event callback keeps its generation across a robot re-add."""
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
@@ -2240,7 +2240,7 @@ async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> Non
     coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
 
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "entry-1"})
     await records_ready.wait()
 
     generation = 2

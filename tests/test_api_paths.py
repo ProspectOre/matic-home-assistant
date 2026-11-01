@@ -26,6 +26,7 @@ from custom_components.matic_robot.client.api import (
     _decode_pose_observation_time,
     _decode_schedule,
     _decode_text_field,
+    _schedule_room_ids,
     _uuid_candidates,
 )
 from custom_components.matic_robot.client.auth import HermesCredential
@@ -62,7 +63,11 @@ from custom_components.matic_robot.client.proto.hermes_pb2 import (
     KabukiOutputWire,
     SequenceId,
 )
-from custom_components.matic_robot.client.wire import first_bytes, uuid_string
+from custom_components.matic_robot.client.wire import (
+    WireFieldBudgetExceeded,
+    first_bytes,
+    uuid_string,
+)
 from tests.test_mission import _labeled as _labeled_floor
 from tests.test_mission import _state as _mission_client_state
 from tests.wire_builders import _bfield, _fixed64, _vfield
@@ -2107,6 +2112,45 @@ def test_uuid_candidates_bound_recursion_depth() -> None:
     for _ in range(11):
         nested = _bfield(1, nested)
     assert _uuid_candidates(nested) == ()
+
+
+def _schedule_block(room: int, other: int) -> bytes:
+    def nested_uuid(high: int, low: int) -> bytes:
+        return _bfield(2, _bfield(2, _fixed64(1, high) + _fixed64(2, low)))
+
+    target = (
+        _bfield(1, _bfield(1, nested_uuid(9, other)))
+        + _bfield(2, _bfield(1, b""))
+        + _bfield(3, _bfield(3, nested_uuid(0, room)))
+    )
+    return _bfield(6, _bfield(1, nested_uuid(7, other))) + _bfield(7, target)
+
+
+def test_decode_schedule_reads_room_ids_from_per_room_blocks() -> None:
+    blocks = b"".join(
+        _bfield(1, _schedule_block(room, other))
+        for room, other in ((1, 11), (1, 12), (2, 13), (2, 14))
+    )
+    blocks += _bfield(1, _bfield(6, b""))
+    weekly = _bfield(1, _vfield(2, 1)) + _bfield(3, _vfield(1, 510))
+    payload = _bfield(1, weekly) + _bfield(7, b"\xff") + _bfield(7, blocks)
+
+    schedule = _decode_schedule(payload)
+
+    assert schedule is not None
+    assert schedule.room_ids == (str(UUID(int=1)), str(UUID(int=2)))
+    assert _uuid_candidates(payload) == ()
+
+
+def test_schedule_room_ids_share_the_schedule_field_budget() -> None:
+    too_many_blocks = _bfield(7, _bfield(1, b"") * 1100)
+    with pytest.raises(WireFieldBudgetExceeded):
+        _schedule_room_ids(too_many_blocks)
+
+    wide_block = _vfield(1, 0) + _vfield(2, 0) + _vfield(3, 0) + _vfield(4, 0)
+    too_wide_blocks = _bfield(7, _bfield(1, wide_block) * 300)
+    with pytest.raises(WireFieldBudgetExceeded):
+        _schedule_room_ids(too_wide_blocks)
 
 
 def test_decode_cleaning_session_rejects_malformed_summaries() -> None:
