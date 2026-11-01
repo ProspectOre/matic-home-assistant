@@ -11,7 +11,13 @@ from datetime import datetime
 
 from homeassistant.util import dt as dt_util
 
-from .client.models import CleaningModeResult, CleaningSessionRecord, Room
+from .client.models import CleaningModeResult, CleaningSessionRecord, FloorPlan, Room
+
+
+def native_statistics_have_ambiguous_floor(floor_plan: FloorPlan) -> bool:
+    """Whether room-name-only history could belong to another known floor."""
+    known_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
+    return len(known_floor_ids | {floor_plan.mission_id}) > 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,8 +78,8 @@ def native_room_statistics_by_session(
 ) -> dict[str, tuple[NativeRoomStatistic, ...]]:
     """Map explicit completed mode results to unambiguous active room names.
 
-    The native history does not include a floor identity. This function only
-    uses names that uniquely identify a room on the supplied current floor.
+    The decoded history does not yet include a verified floor identity. This
+    function only uses names that uniquely identify a room on the current floor.
     It returns sensor history evidence; it does not confer managed-run credit.
     If the active map reports multiple floors, room names cannot identify which
     floor the native record belongs to, so no room statistic is returned.

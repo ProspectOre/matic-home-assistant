@@ -42,7 +42,7 @@ mop result with a positive duration. Both completed modes contribute to that
 room's duration; incomplete or ambiguous modes do not. These statistics do not
 advance managed completion counts, room schedules or plan history.
 
-Robot history identifies rooms by name, without a floor identifier. A name
+The integration currently reads room names without a verified floor link. A name
 must match exactly one room on the current floor after case and spacing are
 normalized. Statistics from that source are withheld when multiple floors are
 known, and cleared when the active floor changes. If the robot reports only one
@@ -53,6 +53,16 @@ later results for the same session can add a newly completed mode. A correction
 from completed to partial or unattempted retracts that mode's native completion,
 while an independently completed mode remains usable. A newer partial run does
 not erase an older successful clean.
+
+When multiple saved floors block app-started or app-scheduled statistics, both
+room sensors expose `native_statistics_blocked_reason` with an explanation.
+This describes the native-history limitation even if a verified managed value
+is available; `statistics_source` continues to identify the displayed value.
+Deleting a floor cannot prove which floor produced older history and is not a
+recommended workaround. The OEM app's history model includes mission and partition
+identities; the integration does not yet verify their wire mapping. Multi-floor
+support needs that mapping, including rejection of changed or ambiguous partitions.
+See the [floor-identity evidence](native-history-floor-evidence.md).
 
 For a managed result, **Last clean duration** uses native per-room work time
 when supplied by completion, otherwise tracked active room time. The room
