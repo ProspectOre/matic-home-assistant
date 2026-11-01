@@ -32,10 +32,13 @@ head/base, review provenance, findings, CI links and actual merge result on the 
 
 ## Maintenance and release
 
-Check the intended release branch and its merged commits before describing or
-publishing a candidate. `release/0.4` includes the 0.4.8 firmware features; a
-build from it is not a narrow 0.4.7 diagnostic. A new protected release target
-requires explicit authority and verified protections.
+`main` holds production code: the latest stable release and its hotfixes, which
+land by PR. The next release and its betas live on `release/X.Y` (now
+`release/0.6`), which merges into `main` for the stable release and is then
+deleted. `release/0.4` includes the merged 0.4.8 firmware features.
+A build from that maintenance branch must not be described as a narrow 0.4.7
+diagnostic. Resolve release composition before publishing a candidate. A new
+protected release target requires explicit authority and verified protections.
 
 The gate migration does not close historical evidence gaps: the 19 original
 review-event runs retained in the #216 investigation lack required receipt proof,

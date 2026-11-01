@@ -1076,10 +1076,12 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
 @pytest.mark.parametrize("native_history_error", [False, True])
 @pytest.mark.parametrize("recovering_run", [False, True])
 @pytest.mark.parametrize("recovering_stop", [False, True])
+@pytest.mark.parametrize("initial_floor_present", [False, True])
 async def test_setup_refreshes_before_forwarding_platforms(
     native_history_error: bool,
     recovering_run: bool,
     recovering_stop: bool,
+    initial_floor_present: bool,
 ) -> None:
     coordinator_unsubscribe = MagicMock()
     plan_unsubscribe = MagicMock()
@@ -1097,7 +1099,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
             AreaBindingUpgradeResult(1, False),
         )
     )
-    plans.ledger.async_import_native_history = AsyncMock(return_value=False)
+    plans.ledger.async_process_native_history = AsyncMock(return_value=False)
     track_workspace_entry = MagicMock()
     photo_source = SimpleNamespace(activate_entry=MagicMock())
     scheduled_state_flushes = []
@@ -1125,11 +1127,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
     )
     entry = _entry()
     client = MagicMock()
-    client.async_get_cleaning_session_records = AsyncMock(
+    client.async_get_cleaning_session_snapshot = AsyncMock(
         side_effect=CannotConnectError("history unavailable")
         if native_history_error
         else None,
-        return_value=(),
+        return_value=((), "history-revision"),
     )
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(),
@@ -1139,15 +1141,17 @@ async def test_setup_refreshes_before_forwarding_platforms(
         async_watch_floor_plan=AsyncMock(),
         displayed_floor_mission_id=None,
         data=SimpleNamespace(
+            telemetry=SimpleNamespace(native_history_revision="history-revision"),
             floor_plan=FloorPlan(
                 42,
                 "synthetic-partition",
                 b"synthetic-partition",
                 (),
             )
-            if native_history_error
-            else None
+            if native_history_error or initial_floor_present
+            else None,
         ),
+        async_ack_native_history_revision=MagicMock(),
     )
     initial_floor_plan = coordinator.data.floor_plan
     setup_floor_plan = FloorPlan(
@@ -1301,15 +1305,21 @@ async def test_setup_refreshes_before_forwarding_platforms(
         setup_floor_plan,
     )
     if native_history_error:
-        plans.ledger.async_import_native_history.assert_not_awaited()
+        plans.ledger.async_process_native_history.assert_not_awaited()
     else:
-        plans.ledger.async_import_native_history.assert_awaited_once_with(
+        plans.ledger.async_process_native_history.assert_awaited_once_with(
             "synthetic-serial",
-            None,
+            initial_floor_plan,
             (),
             coverage_verifier=client.async_confirm_coverage_receipt,
             current_floor_plan=ANY,
         )
+    if not native_history_error and initial_floor_present:
+        coordinator.async_ack_native_history_revision.assert_called_once_with(
+            "history-revision"
+        )
+    else:
+        coordinator.async_ack_native_history_revision.assert_not_called()
     hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
         entry, PLATFORMS
     )
@@ -1362,7 +1372,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ((plan_unsubscribe,), {}),
     ]
     hass.bus.async_listen.assert_called_once()
-    assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_cleaning_finished"
+    assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_native_history_updated"
     sync_area_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
 
     with patch(
@@ -1572,7 +1582,12 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     entry = _entry()
     entry.async_create_background_task.side_effect = capture_task
     client = MagicMock()
-    client.async_get_cleaning_session_records = AsyncMock(return_value=())
+    client.async_get_cleaning_session_snapshot = AsyncMock(
+        return_value=((), "history-revision")
+    )
+    coordinator.data.telemetry = SimpleNamespace(
+        native_history_revision="history-revision"
+    )
     client.async_send_command = AsyncMock()
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
@@ -1747,7 +1762,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     plans.catalog.async_upgrade_area_bindings = AsyncMock(
         return_value=AreaBindingUpgradeResult(0, False)
     )
-    plans.ledger.async_import_native_history = AsyncMock(return_value=False)
+    plans.ledger.async_process_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),
         config_entries=SimpleNamespace(
@@ -1764,11 +1779,16 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     )
     entry = _entry()
     client = MagicMock()
-    client.async_get_cleaning_session_records = AsyncMock(return_value=())
+    client.async_get_cleaning_session_snapshot = AsyncMock(
+        return_value=((), "history-revision")
+    )
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=MagicMock()),
-        data=SimpleNamespace(floor_plan=None),
+        data=SimpleNamespace(
+            floor_plan=None,
+            telemetry=SimpleNamespace(native_history_revision="history-revision"),
+        ),
     )
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
@@ -2295,74 +2315,115 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
 
 
 async def test_finished_session_records_where_the_robot_worked(hass) -> None:
-    """Any finished clean updates rotation fairness, claiming no completion."""
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    """A native history revision imports activity and separate room statistics."""
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
     unloads: list = []
     entry.async_on_unload = unloads.append
     client = SimpleNamespace(
-        async_get_cleaning_session_records=AsyncMock(return_value=("record",))
+        async_get_cleaning_session_snapshot=AsyncMock(
+            return_value=(("record",), "revision-1")
+        )
     )
     plans = SimpleNamespace(
         control=SimpleNamespace(),
         ledger=SimpleNamespace(
-            async_import_native_history=AsyncMock(return_value=True)
+            async_process_native_history=AsyncMock(return_value=True)
         ),
     )
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+    floor_plan = FloorPlan(7, "floor-plan", b"floor-plan", ())
+    acknowledged: set[str] = set()
+
+    def acknowledge(revision):
+        acknowledged.add(revision)
+
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=floor_plan,
+            telemetry=SimpleNamespace(native_history_revision="revision-1"),
+        ),
+        native_history_revision_acknowledged=lambda revision: revision in acknowledged,
+        native_history_revision_is_current=lambda revision: revision == "revision-1",
+        async_ack_native_history_revision=MagicMock(side_effect=acknowledge),
+    )
 
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
     assert unloads
 
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "other"})
+    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "other"})
     await hass.async_block_till_done()
-    plans.ledger.async_import_native_history.assert_not_awaited()
+    plans.ledger.async_process_native_history.assert_not_awaited()
 
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "entry-1"})
     await hass.async_block_till_done()
-    plans.ledger.async_import_native_history.assert_awaited_once_with(
+    plans.ledger.async_process_native_history.assert_not_awaited()
+
+    hass.bus.async_fire(
+        EVENT_NATIVE_HISTORY_UPDATED,
+        {"entry_id": "entry-1", "revision": "revision-1"},
+    )
+    await hass.async_block_till_done()
+    plans.ledger.async_process_native_history.assert_awaited_once_with(
         "serial",
-        "floor-plan",
+        floor_plan,
         ("record",),
         coverage_verifier=None,
         current_floor_plan=ANY,
     )
-    floor_reader = plans.ledger.async_import_native_history.await_args.kwargs[
+    floor_reader = plans.ledger.async_process_native_history.await_args.kwargs[
         "current_floor_plan"
     ]
-    assert floor_reader() == "floor-plan"
-    coordinator.data.floor_plan = "replacement-floor"
-    assert floor_reader() == "replacement-floor"
+    assert floor_reader() == floor_plan
+    replacement_floor = FloorPlan(8, "replacement-floor", b"replacement", ())
+    coordinator.data.floor_plan = replacement_floor
+    assert floor_reader() == replacement_floor
+    hass.bus.async_fire(
+        EVENT_NATIVE_HISTORY_UPDATED,
+        {"entry_id": "entry-1", "revision": "revision-1"},
+    )
+    await hass.async_block_till_done()
+    plans.ledger.async_process_native_history.assert_awaited_once()
 
 
 async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
     from custom_components.matic_robot.client.exceptions import MaticError
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
     entry.async_on_unload = MagicMock()
     client = SimpleNamespace(
-        async_get_cleaning_session_records=AsyncMock(side_effect=MaticError("down"))
+        async_get_cleaning_session_snapshot=AsyncMock(side_effect=MaticError("down"))
     )
     plans = SimpleNamespace(
         control=SimpleNamespace(),
-        ledger=SimpleNamespace(async_import_native_history=AsyncMock()),
+        ledger=SimpleNamespace(async_process_native_history=AsyncMock()),
     )
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(7, "floor-plan", b"floor-plan", ()),
+            telemetry=SimpleNamespace(native_history_revision="revision-1"),
+        ),
+        native_history_revision_acknowledged=lambda _revision: False,
+        native_history_revision_is_current=lambda revision: revision == "revision-1",
+        async_ack_native_history_revision=MagicMock(),
+    )
 
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(
+        EVENT_NATIVE_HISTORY_UPDATED,
+        {"entry_id": "entry-1", "revision": "revision-1"},
+    )
     await hass.async_block_till_done()
 
-    plans.ledger.async_import_native_history.assert_not_awaited()
+    plans.ledger.async_process_native_history.assert_not_awaited()
 
 
 async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> None:
     """An old event callback keeps its generation across a robot re-add."""
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
@@ -2373,33 +2434,38 @@ async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> Non
     async def get_records():
         records_ready.set()
         await release_records.wait()
-        return ("record",)
+        return (("record",), "revision-1")
 
-    client = SimpleNamespace(async_get_cleaning_session_records=get_records)
+    client = SimpleNamespace(async_get_cleaning_session_snapshot=get_records)
     generation = 1
     plans = SimpleNamespace(
         control=SimpleNamespace(
             robot_generation=MagicMock(side_effect=lambda _serial: generation)
         ),
         ledger=SimpleNamespace(
-            async_import_native_history=AsyncMock(return_value=True)
+            async_process_native_history=AsyncMock(return_value=True)
         ),
     )
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(7, "floor-plan", b"floor-plan", ()),
+            telemetry=SimpleNamespace(native_history_revision="revision-1"),
+        ),
+        native_history_revision_acknowledged=lambda _revision: False,
+        native_history_revision_is_current=lambda revision: revision == "revision-1",
+        async_ack_native_history_revision=MagicMock(),
+    )
 
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(
+        EVENT_NATIVE_HISTORY_UPDATED,
+        {"entry_id": "entry-1", "revision": "revision-1"},
+    )
     await records_ready.wait()
 
     generation = 2
     release_records.set()
     await hass.async_block_till_done()
 
-    plans.ledger.async_import_native_history.assert_awaited_once_with(
-        "serial",
-        "floor-plan",
-        ("record",),
-        generation=1,
-        coverage_verifier=None,
-        current_floor_plan=ANY,
-    )
+    plans.ledger.async_process_native_history.assert_not_awaited()
+    coordinator.async_ack_native_history_revision.assert_not_called()

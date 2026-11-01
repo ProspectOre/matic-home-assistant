@@ -15,11 +15,13 @@ from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.firmware import (
     ANALYSIS_VERSION,
     MAX_HISTORY,
+    WIRE_SHAPE_NESTED_PATHS,
     FirmwareTracker,
     _compare_snapshots,
     fingerprint_entry,
     snapshot_timestamp,
 )
+from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
 def _snapshot(
@@ -895,6 +897,95 @@ def test_pose_shape_variation_is_not_a_firmware_capability_candidate() -> None:
     assert comparison["content_changed_endpoints"] == ["latest_pose"]
     assert comparison["wire_shape_changed_endpoints"] == []
     assert comparison["new_wire_shapes"] == {}
+
+
+def test_schedule_fingerprint_recurses_only_through_known_containers() -> None:
+    days = _vfield(1, 1) + _vfield(4, 1)
+    schedule_time = _vfield(1, 525) + _bfield(4, _bfield(2, b"PrivateZoneZeta"))
+    weekly = _bfield(1, days) + _bfield(3, schedule_time)
+    room_id = _bfield(2, _fixed64(1, 1) + _fixed64(2, 2))
+    target = _bfield(3, _bfield(3, room_id))
+    block = _bfield(7, target)
+    payload = (
+        _bfield(1, weekly)
+        + _bfield(2, b"HiddenScheduleZeta")
+        + _bfield(7, _bfield(1, block))
+    )
+
+    fingerprint = fingerprint_entry(
+        HermesCollectionEntry(b"private-key", payload),
+        endpoint_name="schedule_events",
+    )
+
+    paths = fingerprint["wire_shape"]
+    assert isinstance(paths, list)
+    assert "1:2/1:2/4:0" in paths
+    assert "1:2/3:2/1:0" in paths
+    assert "7:2/1:2/7:2/3:2/3:2" in paths
+    rendered = repr(fingerprint)
+    assert "HiddenScheduleZeta" not in rendered
+    assert "PrivateZoneZeta" not in rendered
+    assert "private-key" not in rendered
+    assert repr(payload) not in rendered
+    assert all(len(path.split("/")) <= 5 for path in paths)
+    assert all(len(path) <= 4 for path in WIRE_SHAPE_NESTED_PATHS["schedule_events"])
+
+
+def test_schedule_shapes_do_not_create_firmware_capability_candidates() -> None:
+    previous = _snapshot("v168.11", wire_shapes=["1:2"])
+    current = _snapshot("v169.0", wire_shapes=["1:2", "1:2/1:2"])
+    for snapshot in (previous, current):
+        endpoint = snapshot["endpoints"][0]
+        assert isinstance(endpoint, dict)
+        endpoint["name"] = "schedule_events"
+
+    comparison = _compare_snapshots(previous, current)
+
+    assert comparison["firmware_changed"] is True
+    assert comparison["content_changed_endpoints"] == ["schedule_events"]
+    assert comparison["wire_shape_changed_endpoints"] == []
+    assert comparison["new_wire_shapes"] == {}
+
+
+def test_schedule_fingerprint_keeps_root_when_nested_field_budget_is_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from custom_components.matic_robot.client import wire
+
+    monkeypatch.setattr(wire, "MAX_WIRE_SHAPE_FIELDS", 5)
+    payload = _bfield(1, _bfield(1, _vfield(1, 1) * 8))
+
+    fingerprint = fingerprint_entry(
+        HermesCollectionEntry(b"", payload), endpoint_name="schedule_events"
+    )
+
+    assert fingerprint["wire_shape"] == ["1:2"]
+    assert fingerprint["wire_shape_root_only"] is True
+
+
+def test_large_schedule_fingerprint_keeps_root_markers_without_contents() -> None:
+    from custom_components.matic_robot.client import wire
+
+    block = b"".join(_vfield(number, 1) for number in range(1, 7))
+    block += _bfield(7, _bfield(3, _bfield(3, b"private-room-id")))
+    payload = (
+        _bfield(2, b"private-schedule-name")
+        + _bfield(7, _bfield(1, block) * 32)
+        + _bfield(9, b"")
+    )
+    fingerprint = fingerprint_entry(
+        HermesCollectionEntry(b"", payload), endpoint_name="schedule_events"
+    )
+    assert fingerprint["wire_shape"] == ["2:2", "7:2", "9:2"]
+    assert fingerprint["wire_shape_root_only"] is True
+    assert "private" not in repr(fingerprint)
+
+    oversized = fingerprint_entry(
+        HermesCollectionEntry(b"", b"x" * (wire.MAX_WIRE_SHAPE_BYTES + 1)),
+        endpoint_name="schedule_events",
+    )
+    assert oversized["wire_shape"] is None
+    assert "wire_shape_root_only" not in oversized
 
 
 def test_snapshot_timestamp_uses_home_assistant_utc_clock() -> None:

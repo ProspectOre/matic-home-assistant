@@ -155,13 +155,19 @@ test("a retained result preserves current map warning and active-run priority an
   const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
   const panel = page.locator(fixture.panelTag);
-  const shell = panel.locator("matic-map-shell-v4");
   await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
-  await shell.evaluate(element => {
-    const state = element.state;
-    element.state = { ...state, activity: "docked", coherence: "degraded",
+  await panel.evaluate(element => {
+    const state = element.getWorkspaceSnapshot();
+    // This case checks presentation priority. Retire the live workspace so a
+    // delayed catalog update cannot replace the state under assertion.
+    element.remove();
+    const shell = document.createElement("matic-map-shell-v4");
+    shell.id = "retained-result-shell";
+    shell.state = { ...state, activity: "docked", coherence: "degraded",
       lastRun: { runId: "area-run", outcome: "unverified", completedRoomCount: 0, roomCount: 0 } };
+    document.body.append(shell);
   });
+  const shell = page.locator("#retained-result-shell");
   await expect(shell.locator(".status-copy strong")).toHaveText("Map limited");
   await shell.evaluate(element => element.state = { ...element.state, coherence: "current" });
   await expect(shell.locator(".status-copy strong")).toHaveText("Last run unverified");

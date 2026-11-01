@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 
 from google.protobuf.message import DecodeError
 
+from .exceptions import MaticError
 from .models import (
     CleaningModeResult,
     CleaningSession,
+    CleaningSessionRecord,
+    HermesCollectionEntry,
 )
 from .telemetry_fields import (
     _TELEMETRY_NESTED_MAX_FIELDS,
@@ -27,6 +31,36 @@ _ROOM_MODE_COMPLETED_STATUS = 2
 _CLEANING_SESSION_MAX_BYTES = 256 * 1024
 _CLEANING_SESSION_MAX_FIELDS = 1024
 _CLEANING_SESSION_MAX_ROOMS = 256
+
+
+def _native_history_collection_revision(
+    entries: tuple[HermesCollectionEntry, ...],
+) -> str:
+    """Hash ended records in a complete history snapshot without exposing them."""
+    digest = hashlib.sha256(b"matic-native-history-v1\0")
+    for entry in sorted(entries, key=lambda item: item.key):
+        session = decode_cleaning_session(entry.value)
+        if session is None or session.ended_at is None:
+            continue
+        digest.update(len(entry.key).to_bytes(4, "big"))
+        digest.update(entry.key)
+        digest.update(len(entry.value).to_bytes(8, "big"))
+        digest.update(entry.value)
+    return digest.hexdigest()
+
+
+def decode_cleaning_session_records(
+    entries: tuple[HermesCollectionEntry, ...], *, strict: bool = False
+) -> tuple[CleaningSessionRecord, ...]:
+    """Decode opaque-keyed history entries, optionally requiring full coverage."""
+    records = tuple(
+        CleaningSessionRecord(entry.key, session)
+        for entry in entries
+        if entry.key and (session := decode_cleaning_session(entry.value)) is not None
+    )
+    if strict and len(records) != len(entries):
+        raise MaticError("Native history is incomplete or undecodable")
+    return records
 
 
 def decode_cleaning_session(payload: bytes) -> CleaningSession | None:

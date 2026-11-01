@@ -36,9 +36,30 @@ room summary, explicitly labeled as such, and provide separate positive-duration
 vacuum, mop, and combined completion counts. The native summary does not identify
 the mode requested by a plan.
 
-Room **Last clean duration** uses the verified managed-room timing: native
-per-room work time when supplied by completion, otherwise tracked active room
-time. The whole-robot **Last clean duration** uses the latest session timing;
+Room **Last cleaned** and **Last clean duration** also accept app-started and
+app-scheduled cleans when the robot reports an explicit completed vacuum or
+mop result with a positive duration. Both completed modes contribute to that
+room's duration; incomplete or ambiguous modes do not. These statistics do not
+advance managed completion counts, room schedules or plan history. Results from
+a session overlapping any managed room dispatch stay excluded, including
+incidental visits to other rooms; they do not prove independent ownership.
+
+Robot history identifies rooms by name, without a floor identifier. A name
+must match exactly one room on the current floor after case and spacing are
+normalized. Statistics from that source are withheld when multiple floors are
+known, and cleared when the active floor changes. If the robot reports only one
+floor, a name match still cannot prove an older result belonged to that floor.
+The `statistics_source` attribute distinguishes robot room-name matching from
+managed results and restored values. Repeated reads do not double-count work;
+later results for the same session can add a newly completed mode. A correction
+from completed to partial or unattempted retracts that mode's native completion,
+while an independently completed mode remains usable. A newer partial run does
+not erase an older successful clean.
+
+For a managed result, **Last clean duration** uses native per-room work time
+when supplied by completion, otherwise tracked active room time. The room
+sensors prefer the newest result, with managed evidence preferred on a tie.
+The whole-robot **Last clean duration** uses the latest session timing;
 Home Assistant can prefer a matching locally tracked active session when the
 native summary lacks mode results. Native MCP history separately reports the
 session's start-to-end duration and each mode's work duration. These measurements

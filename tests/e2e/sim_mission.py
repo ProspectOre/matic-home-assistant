@@ -65,7 +65,7 @@ def schedule_event(
 ) -> tuple[bytes, bytes]:
     """Build one synthetic Hermes schedule entry using the observed wire shape.
 
-    Weekdays use the observed protocol fields (1=Sunday through 7=Saturday).
+    Weekdays use the observed protocol fields (1=Monday through 7=Sunday).
     Bytes are constructed independently of the production schedule decoder.
     """
     if not 0 <= minute_of_day < 24 * 60 or any(
@@ -76,18 +76,10 @@ def schedule_event(
     zone = bytes_field(2, timezone.encode())
     schedule_time = varint_field(1, minute_of_day) + bytes_field(4, zone)
     weekly = bytes_field(1, days) + bytes_field(3, schedule_time)
-    enabled_marker = bytes_field(9, bytes_field(1 if enabled else 2, b""))
     payload = (
         bytes_field(1, weekly)
         + bytes_field(2, name.encode())
-        + varint_field(3, int(ordered))
-        + b"".join(
-            bytes_field(
-                7, fixed64(1, room.int >> 64) + fixed64(2, room.int & ((1 << 64) - 1))
-            )
-            for room in room_ids
-        )
-        + enabled_marker
+        + bytes_field(8 if enabled else 9, b"")
     )
     mode_values = {
         None: (),
@@ -97,10 +89,14 @@ def schedule_event(
     }
     if cleaning_mode not in mode_values:
         raise ValueError("unsupported synthetic native schedule mode")
-    for mode in mode_values[cleaning_mode]:
-        spec = varint_field(1, coverage_setting) + varint_field(4, mode)
-        goal = bytes_field(6, bytes_field(3, spec))
-        payload += bytes_field(7, bytes_field(1, goal))
+    for room in room_ids:
+        target = bytes_field(7, bytes_field(3, bytes_field(3, uuid_wire(room))))
+        for mode in mode_values[cleaning_mode] or (None,):
+            goal = target
+            if mode is not None:
+                spec = varint_field(1, coverage_setting) + varint_field(4, mode)
+                goal += bytes_field(6, bytes_field(3, spec))
+            payload += bytes_field(7, bytes_field(1 if ordered else 2, goal))
     return name.encode(), payload
 
 

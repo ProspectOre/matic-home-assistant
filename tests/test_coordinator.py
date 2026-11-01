@@ -1678,7 +1678,7 @@ async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> Non
     client = _client()
     fault = replace(
         client.async_get_state.return_value,
-        error_codes=(207,),
+        error_codes=(206,),
         bag_full=True,
     )
     client.async_get_state.return_value = fault
@@ -1693,10 +1693,99 @@ async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> Non
 
     assert first.operational.error_codes == ()
     assert first.operational.bag_full is None
-    assert second.operational.error_codes == (207,)
+    assert second.operational.error_codes == (206,)
     assert second.operational.bag_full is True
     assert cleared.operational.error_codes == ()
     assert repeated_once.operational.error_codes == ()
+
+
+def _error_poller(hass):
+    """Return a coordinator and a poll that reports decoded error state."""
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def poll(*error_codes: int) -> RobotOperationalState:
+        reported = bool(error_codes)
+        client.async_get_state.return_value = replace(
+            client.async_get_state.return_value,
+            error_codes=error_codes,
+            bag_full=206 in error_codes if reported else None,
+            bag_missing=205 in error_codes if reported else None,
+        )
+        coordinator.async_set_updated_data(await coordinator._async_update_data())
+        return coordinator.data.operational
+
+    return coordinator, poll
+
+
+async def test_confirmed_robot_error_stays_exposed_while_new_one_confirms(hass) -> None:
+    """A changed error set only delays codes that are new in it."""
+    _, poll = _error_poller(hass)
+
+    assert (await poll(207)).error_codes == ()
+    assert (await poll(207)).error_codes == (207,)
+
+    added = await poll(205, 207)
+    assert added.error_codes == (207,)
+    assert added.bag_missing is False
+    assert added.bag_full is False
+
+    confirmed = await poll(205, 207)
+    assert confirmed.error_codes == (205, 207)
+    assert confirmed.bag_missing is True
+
+    removed = await poll(207)
+    assert removed.error_codes == (207,)
+    assert removed.bag_missing is False
+
+
+async def test_one_poll_bag_error_beside_confirmed_error_is_not_exposed(hass) -> None:
+    """A pulse cannot reach the error list or bag statistics."""
+    coordinator, poll = _error_poller(hass)
+    await poll(207)
+    await poll(207)
+
+    pulse = await poll(206, 207)
+    after = await poll(207)
+
+    assert pulse.error_codes == (207,)
+    assert pulse.bag_full is False
+    assert after.error_codes == (207,)
+    assert after.bag_full is False
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "full_events_observed"
+        ]
+        == 0
+    )
+
+
+async def test_error_missing_for_one_poll_confirms_again(hass) -> None:
+    """A code that drops out starts confirmation over when it returns."""
+    _, poll = _error_poller(hass)
+    await poll(207)
+    await poll(207)
+
+    replaced = await poll(205)
+    assert replaced.error_codes == ()
+    assert replaced.bag_full is None
+    assert replaced.bag_missing is None
+
+    assert (await poll(207)).error_codes == ()
+    assert (await poll(207)).error_codes == (207,)
+
+
+async def test_cleared_robot_errors_clear_immediately(hass) -> None:
+    """An empty report clears exposed errors and bag flags."""
+    _, poll = _error_poller(hass)
+    await poll(205, 207)
+    await poll(205, 207)
+
+    cleared = await poll()
+
+    assert cleared.error_codes == ()
+    assert cleared.bag_missing is False
+    assert cleared.bag_full is False
 
 
 async def test_rejected_credential_starts_home_assistant_reauthentication(hass) -> None:
@@ -2753,17 +2842,17 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
         coordinator.robot_health.track_alerts(replace(base, error_codes=(206, 304)))
         assert registry.async_get_issue(DOMAIN, issue) is not None
         clock[0] = datetime(2026, 10, 30, 3, 1, tzinfo=UTC)
-        coordinator.robot_health.track_alerts(replace(base, error_codes=(304, 207)))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=(304, 999)))
         assert registry.async_get_issue(DOMAIN, issue) is None
         clock[0] = datetime(2026, 10, 30, 3, 2, tzinfo=UTC)
         coordinator.robot_health.track_alerts(replace(base, error_codes=()))
         clock[0] = datetime(2026, 10, 30, 3, 3, tzinfo=UTC)
-        coordinator.robot_health.track_alerts(replace(base, error_codes=(207,)))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=(999,)))
 
-    # 304 ran on from 03:00 without restarting; 207 cleared and came back.
+    # 304 ran on from 03:00 without restarting; 999 cleared and came back.
     unknown_codes = coordinator.robot_health.unknown_alert_codes
     assert json.loads(json.dumps(unknown_codes)) == {
-        "207": {
+        "999": {
             "first_seen": "2026-10-30T03:01:00+00:00",
             "last_seen": "2026-10-30T03:03:00+00:00",
         },
@@ -2800,3 +2889,30 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
     assert replace(base, error_codes=(304,)).alerts == ("unknown",)
     assert replace(base, error_codes=(304,)).alert == "unknown"
     assert replace(base, error_codes=()).alert == "none"
+
+
+async def test_confirmed_bag_repair_survives_new_fault_then_retires(hass) -> None:
+    """Changing codes preserve active Repairs and retire cleared ones."""
+    coordinator = _coordinator(hass, _client())
+    base = (await coordinator._async_update_data()).operational
+    registry = ir.async_get(hass)
+    issue = "robot_alert_bag_full_entry"
+
+    def poll(*codes):
+        state = replace(
+            base, error_codes=codes, bag_full=206 in codes, bag_missing=205 in codes
+        )
+        return coordinator._process_confirmed_operational_state(state)
+
+    assert poll(206).error_codes == ()
+    assert poll(206).error_codes == (206,)
+    assert registry.async_get_issue(DOMAIN, issue) is not None
+    assert poll(206, 999).error_codes == (206,)
+    assert registry.async_get_issue(DOMAIN, issue) is not None
+    assert coordinator.robot_health.unknown_alert_codes == {}
+    assert poll(206, 999).error_codes == (206, 999)
+    assert "999" in coordinator.robot_health.unknown_alert_codes
+    assert poll(220).error_codes == ()
+    assert registry.async_get_issue(DOMAIN, issue) is None
+    assert poll(220).error_codes == (220,)
+    assert poll().error_codes == ()

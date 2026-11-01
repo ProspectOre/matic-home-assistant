@@ -202,6 +202,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Read opaque-keyed native history records for completion evidence."""
         return await self._reads.async_get_cleaning_session_records(strict=strict)
 
+    async def async_get_cleaning_session_snapshot(
+        self,
+        *,
+        strict: bool = False,
+    ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
+        """Read native history and its stable revision from one snapshot."""
+        return await self._reads.async_get_cleaning_session_snapshot(strict=strict)
+
     async def async_get_cleaning_session_images(
         self,
     ) -> tuple[CleaningSessionImage, ...]:

@@ -195,6 +195,28 @@ class PlanHistory:
                 }
                 for room_id, room in robot["rooms"].items()
             },
+            "robot_reported_completed_by_room": {
+                room_id: {
+                    "name": room.get("name"),
+                    "at": room.get("robot_last_completed"),
+                    "duration_seconds": room.get("robot_last_duration_seconds"),
+                    "floor_mission_id": room.get(
+                        "robot_last_floor_id", room.get("robot_last_invalid_floor_id")
+                    ),
+                    "started_at": room.get("robot_last_session_started_at"),
+                    "source": (
+                        "robot_native_mode_result_room_name_match"
+                        if isinstance(room.get("robot_last_completed"), str)
+                        else "robot_native_mode_result_managed_session"
+                        if room.get("robot_last_invalid_source") == "managed_session"
+                        else "robot_native_mode_result_ambiguous"
+                    ),
+                    "excluded_modes": room.get("robot_last_conflicted_modes", []),
+                }
+                for room_id, room in robot["rooms"].items()
+                if isinstance(room.get("robot_last_completed"), str)
+                or isinstance(room.get("robot_last_invalidated_at"), str)
+            },
             "native_reconciliation_pending": isinstance(
                 robot.get("pending_native_reconciliation"), dict
             ),

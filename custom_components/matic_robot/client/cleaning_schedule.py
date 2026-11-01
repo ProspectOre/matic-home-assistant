@@ -15,7 +15,6 @@ from .telemetry_fields import (
     decode_text_field,
     decode_text_from_fields,
     telemetry_bytes,
-    telemetry_fields,
     telemetry_varint,
 )
 from .wire import (
@@ -31,14 +30,16 @@ _SCHEDULE_MAX_FIELDS = 1024
 _SCHEDULE_MAX_UUIDS = 256
 _SCHEDULE_MAX_DEPTH = 4
 _WEEKDAYS = (
-    "sunday",
     "monday",
     "tuesday",
     "wednesday",
     "thursday",
     "friday",
     "saturday",
+    "sunday",
 )
+_SCHEDULE_ROOM_MAX_FIELDS = 16 * 1024
+_SCHEDULE_BLOCK_ROOM_PATH = (7, 3, 3)
 
 
 def decode_schedule(payload: bytes) -> CleaningSchedule | None:
@@ -68,36 +69,12 @@ def decode_schedule(payload: bytes) -> CleaningSchedule | None:
     except DecodeError:
         timezone = None
     try:
-        ordered = bool(
-            telemetry_varint(
-                payload,
-                3,
-                max_bytes=_SCHEDULE_MAX_BYTES,
-                max_fields=_SCHEDULE_MAX_FIELDS,
-            )
-        )
-    except DecodeError:
-        ordered = False
-
-    enabled: bool | None = None
-    try:
-        enabled_payload = telemetry_bytes(
-            payload, 9, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
-        )
-        if not enabled_payload:
-            enabled = True
-        else:
-            enabled_fields = telemetry_fields(enabled_payload)
-            if enabled_fields:
-                enabled = enabled_fields[0].number == 1
-    except DecodeError:
-        pass
-
-    try:
-        room_ids = _uuid_candidates(payload)
         name_fields = bounded_fields(
             payload, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
         )
+        ordered = _schedule_ordered(name_fields)
+        enabled = _schedule_enabled(name_fields)
+        room_ids = _schedule_room_ids(payload) or _uuid_candidates(payload)
     except DecodeError:
         return None
     return CleaningSchedule(
@@ -112,10 +89,88 @@ def decode_schedule(payload: bytes) -> CleaningSchedule | None:
     )
 
 
+def _schedule_enabled(fields: tuple[WireField, ...]) -> bool | None:
+    """Decode the native enabled-state oneof and only then its legacy bool."""
+    markers = [field for field in fields if field.number in (8, 9, 10)]
+    if markers:
+        if len(markers) != 1 or markers[0].wire_type != 2 or markers[0].value != b"":
+            return None
+        return {8: True, 9: False, 10: None}[markers[0].number]
+    legacy = [field for field in fields if field.number == 3]
+    if len(legacy) == 1 and legacy[0].wire_type == 0 and legacy[0].value in (0, 1):
+        return bool(legacy[0].value)
+    return None
+
+
+def _schedule_ordered(fields: tuple[WireField, ...]) -> bool | None:
+    """Derive order from the native ordered or unordered room goal list."""
+    kinds: set[int] = set()
+    for field in fields:
+        if field.number != 7:
+            continue
+        if field.wire_type != 2 or not isinstance(field.value, bytes):
+            return None
+        try:
+            goals = bounded_fields(
+                field.value,
+                max_bytes=_SCHEDULE_MAX_BYTES,
+                max_fields=_SCHEDULE_MAX_FIELDS,
+            )
+        except DecodeError:
+            return None
+        for goal in goals:
+            if goal.number in (1, 2):
+                if goal.wire_type != 2:
+                    return None
+                kinds.add(goal.number)
+    return True if kinds == {1} else False if kinds == {2} else None
+
+
+def _schedule_room_ids(payload: bytes) -> tuple[str, ...]:
+    """Decode the floor-plan room ID from each bounded per-room goal block."""
+    from .wire import (
+        WireFieldLimitExceeded,
+        bytes_fields,
+        first_bytes,
+        uuid_string,
+    )
+
+    found: dict[str, None] = {}
+    budget = WireFieldBudget(_SCHEDULE_ROOM_MAX_FIELDS)
+    for container in bytes_fields(payload, 7, field_budget=budget):
+        try:
+            blocks = decode_fields(
+                container,
+                max_fields=_SCHEDULE_MAX_FIELDS,
+                field_budget=budget,
+            )
+        except WireFieldBudgetExceeded, WireFieldLimitExceeded:
+            raise
+        except DecodeError:
+            continue
+        for block in blocks:
+            if block.number not in (1, 2) or block.wire_type != 2:
+                continue
+            try:
+                room = block.value
+                assert isinstance(room, bytes)
+                for number in _SCHEDULE_BLOCK_ROOM_PATH:
+                    room = first_bytes(room, number, field_budget=budget)
+                room_id = uuid_string(room, field_budget=budget)
+            except WireFieldBudgetExceeded, WireFieldLimitExceeded:
+                raise
+            except DecodeError:
+                continue
+            found[room_id] = None
+            if len(found) > _SCHEDULE_MAX_UUIDS:
+                raise DecodeError("schedule has too many room identifiers")
+    return tuple(found)
+
+
 def _schedule_cleaning_mode(fields: tuple[WireField, ...]) -> str | None:
     """Summarize the modes of a schedule's cleaning goals.
 
-    Goals sit at 7.1 and carry the same 6.3 coverage spec as a start command;
+    Goals sit at 7.1 or 7.2 and carry the same 6.3 coverage spec as a start command;
     spec field 4 is the mode, 0 for vacuum and 1 for mop, omitted when 0.
     The room walk in ``_uuid_candidates`` already rejects a schedule over the
     shared field budget, so this budget only guards against a second walk.
@@ -142,7 +197,8 @@ def _schedule_cleaning_mode(fields: tuple[WireField, ...]) -> str | None:
         spec
         for field in fields
         if field.number == 7 and isinstance(field.value, bytes)
-        for goal in nested(field.value, 1)
+        for list_kind in (1, 2)
+        for goal in nested(field.value, list_kind)
         for wrapper in nested(goal, 6)
         for spec in nested(wrapper, 3)
     ]

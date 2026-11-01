@@ -34,8 +34,7 @@ class RobotHealth:
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self.hass = hass
         self.entry_id = entry_id
-        self._pending_error_codes: tuple[int, ...] = ()
-        self._pending_error_polls = 0
+        self._error_code_polls: dict[int, int] = {}
         self._bag_previous_full: bool | None = None
         self._bag_errors_observed = False
         self._unknown_alert_codes: dict[int, dict[str, str]] = {}
@@ -70,27 +69,27 @@ class RobotHealth:
 
     @callback
     def confirm_errors(self, state: RobotOperationalState) -> RobotOperationalState:
-        """Suppress one-poll firmware error pulses while preserving real faults."""
+        """Confirm new error codes individually and preserve active faults."""
         codes = state.error_codes
-        if not codes:
-            self._pending_error_codes = ()
-            self._pending_error_polls = 0
+        polls = {code: self._error_code_polls.get(code, 0) + 1 for code in codes}
+        self._error_code_polls = polls
+        exposed = tuple(
+            code for code in codes if polls[code] >= ERROR_CONFIRMATION_POLLS
+        )
+        if exposed == codes:
             return state
-        if codes != self._pending_error_codes:
-            self._pending_error_codes = codes
-            self._pending_error_polls = 1
-        else:
-            self._pending_error_polls += 1
-        if self._pending_error_polls < ERROR_CONFIRMATION_POLLS:
-            _LOGGER.debug(
-                "Waiting for a second poll before exposing robot error codes %s",
-                codes,
-            )
-            # Bag flags are derived from the same error list and must obey the
-            # same confirmation window; otherwise a one-poll firmware pulse
-            # could create a false full-bag statistic.
+        _LOGGER.debug(
+            "Waiting for a second poll before exposing robot error codes %s",
+            tuple(code for code in codes if code not in exposed),
+        )
+        if not exposed:
             return replace(state, error_codes=(), bag_full=None, bag_missing=None)
-        return state
+        return replace(
+            state,
+            error_codes=exposed,
+            bag_full=206 in exposed,
+            bag_missing=205 in exposed,
+        )
 
     @callback
     def track_bag_state(self, state: RobotOperationalState) -> None:
@@ -134,8 +133,12 @@ class RobotHealth:
         confirmation, existing Repairs stay as they are.
         """
         if (
-            self._pending_error_codes
-            and self._pending_error_polls < ERROR_CONFIRMATION_POLLS
+            self._alert_issues is None
+            and self._error_code_polls
+            and all(
+                polls < ERROR_CONFIRMATION_POLLS
+                for polls in self._error_code_polls.values()
+            )
         ):
             return
         now = dt_util.utcnow().isoformat()

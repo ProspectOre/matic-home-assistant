@@ -47,6 +47,7 @@ from .const import (
     DOMAIN,
     EVENT_CLEANING_FINISHED,
     EVENT_CUES,
+    EVENT_NATIVE_HISTORY_UPDATED,
     MAP_UPDATE_INTERVAL_SECONDS,
     SLOW_UPDATE_INTERVAL_SECONDS,
     UPDATE_INTERVAL_SECONDS,
@@ -200,6 +201,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._snapshot_retry_after: dict[tuple[str, int | None], float] = {}
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
+        self._latest_native_history_revision: str | None = None
+        self._acknowledged_native_history_revision: str | None = None
         self._finished_observation_started_at = dt_util.utcnow()
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
@@ -563,6 +566,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             self._maintenance_issues.async_sync(telemetry)
             self._async_check_time_zone(telemetry)
             # Events require native evidence; local estimates are display-only.
+            self._async_fire_native_history_updated(state)
             self._async_fire_session_finished(state, version)
             state = await self._async_track_cleaning_session(state)
             if self.firmware_tracker is not None:
@@ -955,6 +959,41 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._snapshot_retry_after.pop(snapshot_identity, None)
         finally:
             self._snapshot_versions_in_progress.discard(snapshot_identity)
+
+    @callback
+    def _async_fire_native_history_updated(self, state: RobotState) -> None:
+        """Request a refresh until the full native history revision is imported."""
+        revision = state.telemetry.native_history_revision
+        if not isinstance(revision, str):
+            return
+        self._latest_native_history_revision = revision
+        if revision == self._acknowledged_native_history_revision:
+            return
+        # This internal refresh has no completion semantics. The public
+        # cleaning-finished event below still announces a session only once.
+        self.hass.bus.async_fire(
+            EVENT_NATIVE_HISTORY_UPDATED,
+            {"entry_id": self.config_entry.entry_id, "revision": revision},
+        )
+
+    @callback
+    def async_ack_native_history_revision(self, revision: str | None) -> None:
+        """Acknowledge one successfully imported native history snapshot."""
+        if (
+            isinstance(revision, str)
+            and revision == self._latest_native_history_revision
+        ):
+            self._acknowledged_native_history_revision = revision
+
+    @callback
+    def native_history_revision_acknowledged(self, revision: str) -> bool:
+        """Return whether a full native history snapshot was already imported."""
+        return revision == self._acknowledged_native_history_revision
+
+    @callback
+    def native_history_revision_is_current(self, revision: str) -> bool:
+        """Return whether a refresh request still matches the latest poll."""
+        return revision == self._latest_native_history_revision
 
     @callback
     def _async_fire_session_finished(

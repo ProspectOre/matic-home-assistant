@@ -14,13 +14,16 @@ from time import monotonic
 from google.protobuf.message import DecodeError
 
 from .cleaning_schedule import decode_schedule
-from .cleaning_session import decode_cleaning_session
+from .cleaning_session import (
+    _native_history_collection_revision,
+    decode_cleaning_session,
+    decode_cleaning_session_records,
+)
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
     EndpointUnsupportedError,
-    MaticError,
 )
 from .floor_plan import decode_floor_plans, decode_pose
 from .flythrough import Flythrough, decode_flythrough
@@ -373,18 +376,22 @@ class HermesReads:
         strict: bool = False,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
+        records, _revision = await self.async_get_cleaning_session_snapshot(
+            strict=strict
+        )
+        return records
+
+    async def async_get_cleaning_session_snapshot(
+        self,
+        *,
+        strict: bool = False,
+    ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
+        """Return decoded records and their revision from one collection read."""
         entries = await self._collections.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
-        records = tuple(
-            CleaningSessionRecord(entry.key, session)
-            for entry in entries
-            if entry.key
-            and (session := decode_cleaning_session(entry.value)) is not None
-        )
-        if strict and len(records) != len(entries):
-            raise MaticError("Native history is incomplete or undecodable")
-        return records
+        records = decode_cleaning_session_records(entries, strict=strict)
+        return records, _native_history_collection_revision(entries)
 
     async def async_get_cleaning_session_images(
         self,
@@ -486,6 +493,11 @@ class HermesReads:
                 sessions,
                 key=lambda item: item.started_at or "",
                 default=None,
+            ),
+            native_history_revision=(
+                _native_history_collection_revision(session_entries)
+                if isinstance(session_entries, tuple)
+                else None
             ),
             child_lock_enabled=decode_binary_state(values["child_lock_enabled_state"]),
             pet_waste_enabled=decode_binary_state(values["petwaste_enabled_state"]),

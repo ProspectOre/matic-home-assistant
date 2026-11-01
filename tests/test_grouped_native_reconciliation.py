@@ -607,13 +607,30 @@ async def test_mop_first_group_reconciles_later_vacuum_coverage(hass, proof_case
     current_floor = (
         replace(floor, mission_id=99) if proof_case == "changed_floor" else floor
     )
-    assert await manager.ledger.async_import_native_history(
+    before = deepcopy(robot)
+    processed = await manager.ledger.async_import_native_history(
         "serial",
         floor,
         [record],
         coverage_verifier=verifier,
         current_floor_plan=lambda: current_floor,
     )
+    if proof_case == "changed_floor":
+        assert processed is None
+        assert robot == before
+        assert (
+            await manager.ledger.async_import_native_history(
+                "serial",
+                floor,
+                [record],
+                coverage_verifier=verifier,
+                current_floor_plan=lambda: floor,
+            )
+            is True
+        )
+        assert manager.ledger.pending_native_reconciliation("serial") is None
+        return
+    assert processed is True
 
     assert manager.cadence.cadence_progress("serial", "weekly-plan", "room-study")[
         "coverage"

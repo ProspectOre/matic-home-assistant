@@ -301,6 +301,7 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
     assert telemetry.scheduled_cleanings == 0
     assert telemetry.local_cleaning_sessions == 0
     assert telemetry.wifi_ssid == "private-ssid"
+    assert isinstance(telemetry.native_history_revision, str)
 
 
 async def test_verified_setting_payloads_and_bounds() -> None:
@@ -364,15 +365,15 @@ def test_decode_wifi_schedule_and_history() -> None:
         + _bfield(2, b"Morning")
         + _vfield(3, 1)
         + _bfield(7, room_id)
-        + _bfield(9, b"")
+        + _bfield(8, b"")
     )
     schedule = decode_schedule(payload)
     assert schedule is not None
     assert schedule.time == "08:30"
-    assert schedule.weekdays == ("sunday", "tuesday")
+    assert schedule.weekdays == ("monday", "wednesday")
     assert schedule.timezone == "America/Los_Angeles"
     assert schedule.enabled is True
-    assert schedule.ordered is True
+    assert schedule.ordered is None
     assert len(schedule.room_ids) == 1
 
     def timestamp(value: int) -> bytes:
@@ -427,6 +428,16 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert malformed_status.completed is None
     assert malformed_status.completed_rooms == ("Kitchen",)
     assert datetime.fromisoformat(session.started_at or "").tzinfo is UTC
+
+
+def test_decode_schedule_weekdays_run_monday_to_sunday() -> None:
+    days = b"".join(_vfield(number, 1) for number in (2, 3, 5, 6, 7))
+    weekly = _bfield(1, days) + _bfield(3, _vfield(1, 525))
+
+    schedule = decode_schedule(_bfield(1, weekly))
+
+    assert schedule is not None
+    assert schedule.weekdays == ("tuesday", "wednesday", "friday", "saturday", "sunday")
 
 
 def test_wifi_decoder_enforces_payload_network_and_nested_budgets(
@@ -638,7 +649,7 @@ def test_decoders_fail_closed_and_use_safe_defaults() -> None:
     schedule = decode_schedule(minimal)
     assert schedule is not None
     assert schedule.timezone is None
-    assert schedule.ordered is False
+    assert schedule.ordered is None
     assert schedule.enabled is None
 
     empty_summary = _bfield(5, _vfield(1, 1) + _bfield(6, b"\x0a\xff"))
@@ -647,10 +658,11 @@ def test_decoders_fail_closed_and_use_safe_defaults() -> None:
     assert session.rooms == ()
 
 
-def _schedule_with_goals(*specs: bytes) -> bytes:
+def _schedule_with_goals(*specs: bytes, list_kind: int = 1) -> bytes:
     weekly = _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 630))
     goals = b"".join(
-        _bfield(1, _bfield(6, _bfield(1, b"") + _bfield(3, spec))) for spec in specs
+        _bfield(list_kind, _bfield(6, _bfield(1, b"") + _bfield(3, spec)))
+        for spec in specs
     )
     return _bfield(1, weekly) + _bfield(7, goals)
 
@@ -663,10 +675,13 @@ def _schedule_with_goals(*specs: bytes) -> bytes:
         (CleaningMode.BOTH, "vacuum_and_mop"),
     ],
 )
+@pytest.mark.parametrize("list_kind", (1, 2))
 def test_schedule_cleaning_mode_reads_goal_specs(
-    mode: CleaningMode, expected: str
+    mode: CleaningMode, expected: str, list_kind: int
 ) -> None:
-    schedule = decode_schedule(_schedule_with_goals(*_coverage_specs(mode, 1)))
+    schedule = decode_schedule(
+        _schedule_with_goals(*_coverage_specs(mode, 1), list_kind=list_kind)
+    )
 
     assert schedule is not None
     assert schedule.cleaning_mode == expected

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -32,6 +33,7 @@ from .client.models import (
     CleaningPhase,
     CuesGestureStatus,
     CuesVoiceStatus,
+    FloorPlan,
     RobotActivity,
     RobotState,
     Room,
@@ -653,6 +655,7 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
         {
             "matic_entry_id",
             "last_completed_by_room",
+            "robot_reported_completed_by_room",
             "plans",
             "plan_history",
             "selected_plan",
@@ -1140,10 +1143,21 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
         """Return whether a managed run owns the session and its room result."""
         state = self.coordinator.data
         snapshot = self._history.history.snapshot(self._serial_number)
-        historical = _managed_room_history_value(snapshot, self._room_id)
+        managed_historical = _managed_room_history_value(snapshot, self._room_id)
+        native_historical = _robot_reported_room_history_value(
+            snapshot, self._room_id, state.floor_plan
+        )
+        if _native_room_history_matches_managed_room(snapshot, self._room_id):
+            native_historical = None
+        historical = _latest_room_statistics_value(
+            managed_historical, native_historical
+        )
+        ineligible_native = _native_room_history_is_ineligible(
+            snapshot, self._room_id, state.floor_plan
+        )
         session = state.telemetry.latest_session
         if session is None or session.ended_at is None or state.floor_plan is None:
-            return historical is not None, historical
+            return historical is not None or ineligible_native, historical
         room = next(
             (item for item in state.floor_plan.rooms if item.id == self._room_id),
             None,
@@ -1157,13 +1171,39 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
             session.ended_at,
         )
         if managed:
-            return True, _latest_room_statistics_value(managed_value, historical)
+            unrelated_native = (
+                None
+                if _native_room_result_overlaps_session(
+                    native_historical, session.started_at, session.ended_at
+                )
+                else native_historical
+            )
+            return True, _latest_room_statistics_value(managed_value, unrelated_native)
         # A robot-reported session cannot establish that a room was finished:
         # the robot marks the room it occupied when a session ended, and
         # reports a stopped session as completed, so trusting it here credited
         # a room that was interrupted after a minute.  Room statistics
         # therefore keep the last verified value instead.
-        return historical is not None, historical
+        return historical is not None or ineligible_native, historical
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Identify whether room statistics came from managed or native evidence."""
+        state = self.coordinator.data
+        snapshot = self._history.history.snapshot(self._serial_number)
+        managed_value = _managed_room_history_value(snapshot, self._room_id)
+        native_value = _robot_reported_room_history_value(
+            snapshot, self._room_id, state.floor_plan
+        )
+        managed_session, value = self._room_session_result()
+        source = _room_statistics_source(
+            value,
+            managed_value,
+            native_value,
+            managed_session=managed_session,
+            restored=self.native_value is not None,
+        )
+        return {"statistics_source": source} if source is not None else {}
 
     @callback
     def _async_apply_session(self) -> None:
@@ -1243,6 +1283,157 @@ def _managed_room_history_value(
     if not isinstance(completed, str) or not isinstance(duration, int | float):
         return None
     return completed, max(0, round(duration))
+
+
+def _robot_reported_room_history_value(
+    snapshot: dict[str, Any], room_id: str, floor_plan: FloorPlan | None
+) -> tuple[str, int] | None:
+    """Return explicit per-mode completion reported by native robot history."""
+    if floor_plan is None:
+        return None
+    known_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
+    if len(known_floor_ids | {floor_plan.mission_id}) > 1:
+        return None
+    record = snapshot.get("robot_reported_completed_by_room", {}).get(room_id)
+    if not isinstance(record, dict):
+        return None
+    if record.get("floor_mission_id") != floor_plan.mission_id:
+        return None
+    if record.get("source") != "robot_native_mode_result_room_name_match":
+        return None
+    completed = record.get("at")
+    duration = record.get("duration_seconds")
+    if (
+        not isinstance(completed, str)
+        or not isinstance(duration, int | float)
+        or isinstance(duration, bool)
+        or not math.isfinite(duration)
+        or duration <= 0
+    ):
+        return None
+    parsed = dt_util.parse_datetime(completed)
+    if parsed is None or parsed.tzinfo is None:
+        return None
+    return completed, round(duration)
+
+
+def _native_room_history_is_ineligible(
+    snapshot: dict[str, Any], room_id: str, floor_plan: FloorPlan | None
+) -> bool:
+    """Detect persisted native statistics that no longer fit the active map."""
+    if floor_plan is None:
+        return False
+    record = snapshot.get("robot_reported_completed_by_room", {}).get(room_id)
+    if not isinstance(record, dict):
+        return False
+    source = record.get("source")
+    if not isinstance(source, str) or not source.startswith("robot_native_mode_result"):
+        return False
+    if source != "robot_native_mode_result_room_name_match":
+        return True
+    known_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
+    return (
+        len(known_floor_ids | {floor_plan.mission_id}) > 1
+        or record.get("floor_mission_id") != floor_plan.mission_id
+        or _robot_reported_room_history_value(snapshot, room_id, floor_plan) is None
+    )
+
+
+def _native_room_result_overlaps_session(
+    native: tuple[str, int] | None,
+    started_at: str | None,
+    ended_at: str,
+) -> bool:
+    """Identify native room evidence inside a known managed session window."""
+    if native is None or started_at is None:
+        return False
+    started = dt_util.parse_datetime(started_at)
+    ended = dt_util.parse_datetime(ended_at)
+    result = dt_util.parse_datetime(native[0])
+    if (
+        started is None
+        or started.tzinfo is None
+        or ended is None
+        or ended.tzinfo is None
+        or result is None
+        or result.tzinfo is None
+    ):
+        return False
+    return started - timedelta(seconds=120) <= result <= ended
+
+
+def _native_room_history_matches_managed_room(
+    snapshot: dict[str, Any], room_id: str
+) -> bool:
+    """Reject native evidence whose session is represented by a managed run."""
+    native_record = snapshot.get("robot_reported_completed_by_room", {}).get(room_id)
+    if not isinstance(native_record, dict):
+        return False
+    native_started = native_record.get("started_at")
+    raw_native_end = native_record.get("at")
+    native_end = (
+        dt_util.parse_datetime(raw_native_end)
+        if isinstance(raw_native_end, str)
+        else None
+    )
+    if native_end is None or native_end.tzinfo is None:
+        return False
+    parsed_start = (
+        dt_util.parse_datetime(native_started)
+        if isinstance(native_started, str)
+        else None
+    )
+    records = []
+    for rotation in snapshot.get("plan_history", {}).values():
+        rooms = rotation.get("rooms") if isinstance(rotation, dict) else None
+        record = rooms.get(room_id) if isinstance(rooms, dict) else None
+        if isinstance(record, dict):
+            records.append(record)
+    for record in records:
+        raw_start = record.get("last_started")
+        managed_start = (
+            dt_util.parse_datetime(raw_start) if isinstance(raw_start, str) else None
+        )
+        if managed_start is None or managed_start.tzinfo is None:
+            continue
+        raw_end = record.get("last_completed")
+        managed_end = (
+            dt_util.parse_datetime(raw_end) if isinstance(raw_end, str) else None
+        )
+        if managed_end is None or managed_end.tzinfo is None:
+            managed_end = managed_start
+        if parsed_start is not None and parsed_start.tzinfo is not None:
+            if (
+                parsed_start - timedelta(seconds=120)
+                <= managed_start
+                <= native_end + timedelta(seconds=120)
+            ):
+                return True
+        elif (
+            managed_start - timedelta(seconds=120)
+            <= native_end
+            <= managed_end + timedelta(seconds=120)
+        ):
+            return True
+    return False
+
+
+def _room_statistics_source(
+    value: tuple[str, int] | None,
+    managed: tuple[str, int] | None,
+    native: tuple[str, int] | None,
+    *,
+    managed_session: bool,
+    restored: bool,
+) -> str | None:
+    """Label the evidence selected for one room sensor value."""
+    if value is None:
+        return "restored_sensor_state" if restored else None
+    if value == managed or (managed_session and native != value):
+        return "verified_managed_result"
+    if value == native:
+        return "robot_native_mode_result_room_name_match"
+    return "restored_sensor_state"
 
 
 def _latest_room_statistics_value(

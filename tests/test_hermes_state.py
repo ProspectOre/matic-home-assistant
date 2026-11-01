@@ -72,7 +72,7 @@ def test_decode_verified_kabuki_state_fields() -> None:
     assert state.cleaning is False
     assert state.returning is False
     assert state.activity is RobotActivity.PAUSED
-    assert state.error_names == ("error_code_207",)
+    assert state.error_names == ("Lid open (observed with code 207)",)
 
 
 def test_decode_verified_dust_bag_error_flags() -> None:
@@ -225,11 +225,12 @@ def test_decode_verified_build_and_area_fields() -> None:
 
 def test_live_and_future_error_codes_remain_truthful_and_automation_safe() -> None:
     state = decode_operational_state(
-        KabukiOutputWire(errors=[207, 304, 999]).SerializeToString()
+        KabukiOutputWire(errors=[207, 220, 304, 999]).SerializeToString()
     )
 
     assert state.error_names == (
-        "error_code_207",
+        "Lid open (observed with code 207)",
+        "Waiting for mopping water (observed with code 220)",
         "error_code_304",
         "error_code_999",
     )

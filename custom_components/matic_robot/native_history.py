@@ -36,9 +36,11 @@ from .plan_timing import (
     _record_duration_sample,
     _stored_count,
 )
+from .room_statistics import NativeRoomStatistic, native_room_statistics_by_session
 from .run_history import repair_run_history
 
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = max(64, MAX_ROOM_SEQUENCE_SIZE)
+ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 
 
 def _daily_session_hash(key: bytes) -> str:
@@ -622,7 +624,41 @@ def _import_native_room_activity(
         if any(global_room.get(key) != value for key, value in updates.items()):
             global_room.update(updates)
             changed = True
-    return changed
+    return _import_native_room_statistics(robot, floor_plan, records) or changed
+
+
+def _import_native_room_statistics(
+    robot: dict[str, Any],
+    floor_plan: FloorPlan,
+    records: Iterable[CleaningSessionRecord],
+) -> bool:
+    """Keep native per-mode statistics separate from verified run history."""
+    now = dt_util.utcnow()
+    current_floor_id = floor_plan.mission_id
+    previous_floor_id = robot.get("robot_room_statistics_floor_id")
+    changed = False
+    if (
+        isinstance(previous_floor_id, int)
+        and not isinstance(previous_floor_id, bool)
+        and previous_floor_id != current_floor_id
+    ):
+        robot["robot_room_statistics_floor_changed_at"] = now.isoformat()
+        changed = True
+    if previous_floor_id != current_floor_id:
+        robot["robot_room_statistics_floor_id"] = current_floor_id
+        changed = True
+    changed_at = _latest_timestamp(robot.get("robot_room_statistics_floor_changed_at"))
+    mapped_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
+    multiple_floors_known = len(mapped_floor_ids | {current_floor_id}) > 1
+    statistics = native_room_statistics_by_session(
+        records,
+        floor_plan.rooms,
+        now=now,
+        future_tolerance_seconds=ROTATION_FUTURE_TOLERANCE_SECONDS,
+        multiple_floors_known=multiple_floors_known,
+        minimum_timestamp=changed_at,
+    )
+    return _apply_native_room_statistics(robot, current_floor_id, statistics) or changed
 
 
 def _global_room(robot: dict[str, Any], room: CleaningRoom | Room) -> dict[str, Any]:
@@ -633,3 +669,446 @@ def _global_room(robot: dict[str, Any], room: CleaningRoom | Room) -> dict[str, 
         record = {"name": room.name, "completed_runs": 0}
         records[room_id] = record
     return cast(dict[str, Any], record)
+
+
+def _apply_native_room_statistics(
+    robot: dict[str, Any],
+    floor_id: int,
+    histories: Mapping[str, tuple[NativeRoomStatistic, ...]],
+) -> bool:
+    """Apply per-session evidence, retaining bounded mode tombstones."""
+    changed = False
+    # Upgrade legacy negative evidence independently of this refresh's page.
+    # Native history can omit an older session or even the entire room, but a
+    # later page must not erase the rejection before that session reappears.
+    for room in robot["rooms"].values():
+        if not isinstance(room, dict):
+            continue
+        tombstones = _native_mode_tombstones(room.get("robot_native_mode_tombstones"))
+        old_tombstones = room.get("robot_native_mode_tombstones", [])
+        legacy_tombstones = (
+            (
+                room.get("robot_last_invalid_floor_id"),
+                room.get("robot_last_invalid_session_hash"),
+                room.get("robot_last_invalid_session_started_at"),
+                room.get("robot_last_invalidated_at"),
+                room.get("robot_last_invalid_modes"),
+            ),
+            (
+                room.get("robot_last_floor_id"),
+                room.get("robot_last_session_hash"),
+                room.get("robot_last_session_started_at"),
+                room.get("robot_last_completed"),
+                room.get("robot_last_conflicted_modes"),
+            ),
+        )
+        for (
+            legacy_floor,
+            legacy_hash,
+            legacy_start,
+            legacy_end,
+            legacy_modes,
+        ) in legacy_tombstones:
+            if room.get(
+                "robot_last_invalid_source"
+            ) == "managed_session" and legacy_hash == room.get(
+                "robot_last_invalid_session_hash"
+            ):
+                continue
+            if (
+                not isinstance(legacy_floor, int)
+                or isinstance(legacy_floor, bool)
+                or not isinstance(legacy_hash, str)
+                or not isinstance(legacy_end, str)
+                or not isinstance(legacy_modes, list)
+            ):
+                continue
+            valid_modes = {mode for mode in legacy_modes if mode in {"vacuum", "mop"}}
+            if valid_modes:
+                changed = (
+                    _remember_native_mode_tombstone_identity(
+                        tombstones,
+                        legacy_floor,
+                        legacy_hash,
+                        legacy_start,
+                        legacy_end,
+                        valid_modes,
+                    )
+                    or changed
+                )
+        if old_tombstones != tombstones:
+            room["robot_native_mode_tombstones"] = tombstones
+            changed = True
+
+    for room_id, history in histories.items():
+        room = robot["rooms"].setdefault(room_id, {})
+        prior_modes = _positive_native_mode_durations(
+            room.get("robot_last_completed_mode_durations")
+        )
+        stored_hash = room.get("robot_last_session_hash")
+        stored_end = room.get("robot_last_completed")
+        if room.get("robot_last_invalid_source") != "managed_session":
+            stored_hash = stored_hash or room.get("robot_last_invalid_session_hash")
+            stored_end = stored_end or room.get("robot_last_invalidated_at")
+        same_stored = (
+            isinstance(stored_hash, str)
+            and isinstance(stored_end, str)
+            and room.get("robot_last_floor_id", room.get("robot_last_invalid_floor_id"))
+            == floor_id
+        )
+        tombstones = _native_mode_tombstones(room.get("robot_native_mode_tombstones"))
+
+        candidates: list[tuple[NativeRoomStatistic, dict[str, int], set[str]]] = []
+        retracted: NativeRoomStatistic | None = None
+        touched_tombstones = False
+        for statistic in history:
+            same_session = same_stored and stored_hash == statistic.session_hash
+            session_modes = prior_modes if same_session else {}
+            conflicting = set(statistic.conflicting_modes)
+            if same_session:
+                stored_conflicts = room.get("robot_last_conflicted_modes", [])
+                if isinstance(stored_conflicts, list):
+                    conflicting.update(
+                        mode for mode in stored_conflicts if mode in {"vacuum", "mop"}
+                    )
+                stored_invalid_modes = room.get("robot_last_invalid_modes", [])
+                if isinstance(stored_invalid_modes, list):
+                    conflicting.update(
+                        mode
+                        for mode in stored_invalid_modes
+                        if mode in {"vacuum", "mop"}
+                    )
+                conflicting.update(
+                    mode
+                    for mode, duration in statistic.mode_durations.items()
+                    if mode in session_modes and session_modes[mode] != duration
+                )
+            tombstoned = _native_tombstone_modes(tombstones, floor_id, statistic)
+            explicit = set(statistic.invalidated_modes)
+            persistent = set(conflicting)
+            persistent.update(explicit & statistic.reported_completed_modes)
+            if same_session:
+                persistent.update(explicit & session_modes.keys())
+            if persistent:
+                touched_tombstones = (
+                    _remember_native_mode_tombstone(
+                        tombstones, floor_id, statistic, persistent
+                    )
+                    or touched_tombstones
+                )
+                tombstoned.update(persistent)
+
+            modes = {
+                mode: duration
+                for mode, duration in statistic.mode_durations.items()
+                if mode not in tombstoned
+            }
+            if same_session:
+                modes = {
+                    **{
+                        mode: duration
+                        for mode, duration in session_modes.items()
+                        if mode not in tombstoned
+                    },
+                    **modes,
+                }
+            if modes:
+                candidates.append((statistic, modes, conflicting | tombstoned))
+            elif same_session and persistent & session_modes.keys():
+                retracted = statistic
+
+        old_tombstones = room.get("robot_native_mode_tombstones", [])
+        if touched_tombstones or old_tombstones != tombstones:
+            room["robot_native_mode_tombstones"] = tombstones[-64:]
+            changed = True
+
+        positive_timestamp = _latest_timestamp(room.get("robot_last_completed"))
+        existing_timestamp = _latest_timestamp(
+            room.get("robot_last_completed"), room.get("robot_last_invalidated_at")
+        )
+        managed = next(
+            (
+                statistic
+                for statistic in history
+                if (
+                    room.get("robot_last_invalid_source") == "managed_session"
+                    and room.get("robot_last_managed_session_hash")
+                    == statistic.session_hash
+                    and room.get("robot_last_invalid_floor_id") == floor_id
+                )
+            ),
+            None,
+        )
+        if managed is None:
+            managed = next(
+                (
+                    statistic
+                    for statistic in history
+                    if (
+                        existing_timestamp is None
+                        or statistic.timestamp >= existing_timestamp
+                    )
+                    and (
+                        room.get("robot_last_managed_session_hash")
+                        == statistic.session_hash
+                        or _native_room_statistic_matches_managed_history(
+                            robot, statistic
+                        )
+                    )
+                ),
+                None,
+            )
+        selected = max(candidates, key=lambda item: item[0].timestamp, default=None)
+        if managed is not None and (
+            selected is None or managed.timestamp >= selected[0].timestamp
+        ):
+            updates: dict[str, Any] = {
+                "robot_last_invalidated_at": managed.ended_at,
+                "robot_last_invalid_session_hash": managed.session_hash,
+                "robot_last_invalid_session_started_at": managed.started_at,
+                "robot_last_invalid_floor_id": floor_id,
+                "robot_last_invalid_source": "managed_session",
+                "robot_last_managed_session_hash": managed.session_hash,
+                "robot_last_managed_session_started_at": managed.started_at,
+            }
+            for key in (
+                "robot_last_completed",
+                "robot_last_duration_seconds",
+                "robot_last_completed_mode_durations",
+                "robot_last_session_hash",
+                "robot_last_session_started_at",
+                "robot_last_floor_id",
+            ):
+                if key in room:
+                    room.pop(key)
+                    changed = True
+            if any(room.get(key) != value for key, value in updates.items()):
+                changed = True
+                room.update(updates)
+            continue
+
+        if retracted is not None:
+            invalidation = {
+                "robot_last_invalidated_at": retracted.ended_at,
+                "robot_last_invalid_session_hash": retracted.session_hash,
+                "robot_last_invalid_session_started_at": retracted.started_at,
+                "robot_last_invalid_floor_id": floor_id,
+                "robot_last_invalid_source": "mode_retracted",
+            }
+            if any(room.get(key) != value for key, value in invalidation.items()):
+                changed = True
+                room.update(invalidation)
+
+        if selected is None:
+            if retracted is not None:
+                for key in (
+                    "robot_last_completed",
+                    "robot_last_duration_seconds",
+                    "robot_last_completed_mode_durations",
+                    "robot_last_session_hash",
+                    "robot_last_session_started_at",
+                    "robot_last_floor_id",
+                    "robot_last_conflicted_modes",
+                ):
+                    if key in room:
+                        room.pop(key)
+                        changed = True
+                room["robot_last_invalid_modes"] = sorted(
+                    _native_tombstone_modes(tombstones, floor_id, retracted)
+                )
+            continue
+
+        statistic, modes, excluded = selected
+        if (
+            positive_timestamp is not None
+            and statistic.timestamp < positive_timestamp
+            and retracted is None
+        ):
+            continue
+        if (
+            positive_timestamp is not None
+            and statistic.timestamp == positive_timestamp
+            and stored_hash != statistic.session_hash
+            and retracted is None
+        ):
+            continue
+        updates = {
+            "name": statistic.room_name,
+            "robot_last_completed": statistic.ended_at,
+            "robot_last_duration_seconds": sum(modes.values()),
+            "robot_last_completed_mode_durations": modes,
+            "robot_last_session_hash": statistic.session_hash,
+            "robot_last_session_started_at": statistic.started_at,
+            "robot_last_floor_id": floor_id,
+            "robot_last_conflicted_modes": sorted(excluded),
+        }
+        if any(room.get(key) != value for key, value in updates.items()):
+            changed = True
+            room.update(updates)
+        invalid_at = _latest_timestamp(room.get("robot_last_invalidated_at"))
+        if invalid_at is None or statistic.timestamp > invalid_at:
+            for key in (
+                "robot_last_invalidated_at",
+                "robot_last_invalid_session_hash",
+                "robot_last_invalid_session_started_at",
+                "robot_last_invalid_floor_id",
+                "robot_last_invalid_modes",
+                "robot_last_invalid_source",
+                "robot_last_managed_session_hash",
+                "robot_last_managed_session_started_at",
+            ):
+                room.pop(key, None)
+    return changed
+
+
+def _positive_native_mode_durations(value: object) -> dict[str, int]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        mode: duration
+        for mode, duration in value.items()
+        if mode in {"vacuum", "mop"}
+        and isinstance(duration, int)
+        and not isinstance(duration, bool)
+        and duration > 0
+    }
+
+
+def _native_mode_tombstones(value: object) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    normalized: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        session_hash = item.get("session_hash")
+        ended_at = item.get("ended_at")
+        floor_id = item.get("floor_id")
+        modes = item.get("modes")
+        if (
+            not isinstance(session_hash, str)
+            or not isinstance(ended_at, str)
+            or not isinstance(floor_id, int)
+            or isinstance(floor_id, bool)
+            or not isinstance(modes, list)
+        ):
+            continue
+        normalized.append(
+            {
+                "session_hash": session_hash,
+                "started_at": item.get("started_at"),
+                "ended_at": ended_at,
+                "floor_id": floor_id,
+                "modes": sorted({mode for mode in modes if mode in {"vacuum", "mop"}}),
+            }
+        )
+    return normalized[-64:]
+
+
+def _native_tombstone_modes(
+    tombstones: list[dict[str, Any]], floor_id: int, statistic: NativeRoomStatistic
+) -> set[str]:
+    return {
+        mode
+        for item in tombstones
+        if item["floor_id"] == floor_id
+        and item["session_hash"] == statistic.session_hash
+        for mode in item["modes"]
+    }
+
+
+def _remember_native_mode_tombstone(
+    tombstones: list[dict[str, Any]],
+    floor_id: int,
+    statistic: NativeRoomStatistic,
+    modes: set[str],
+) -> bool:
+    return _remember_native_mode_tombstone_identity(
+        tombstones,
+        floor_id,
+        statistic.session_hash,
+        statistic.started_at,
+        statistic.ended_at,
+        modes,
+    )
+
+
+def _remember_native_mode_tombstone_identity(
+    tombstones: list[dict[str, Any]],
+    floor_id: int,
+    session_hash: str,
+    started_at: str | None,
+    ended_at: str,
+    modes: set[str],
+) -> bool:
+    existing = {
+        mode
+        for item in tombstones
+        if item["floor_id"] == floor_id and item["session_hash"] == session_hash
+        for mode in item["modes"]
+    }
+    merged = existing | modes
+    if merged == existing:
+        return False
+    tombstones[:] = [
+        item
+        for item in tombstones
+        if not (item["floor_id"] == floor_id and item["session_hash"] == session_hash)
+    ]
+    tombstones.append(
+        {
+            "session_hash": session_hash,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "floor_id": floor_id,
+            "modes": sorted(merged),
+        }
+    )
+    del tombstones[:-64]
+    return True
+
+
+def _native_room_statistic_matches_managed_history(
+    robot: Mapping[str, Any], statistic: NativeRoomStatistic
+) -> bool:
+    """Match a native session to any room start recorded for a managed run."""
+    native_start = (
+        dt_util.parse_datetime(statistic.started_at)
+        if isinstance(statistic.started_at, str)
+        else None
+    )
+    native_end = dt_util.parse_datetime(statistic.ended_at)
+    if (
+        native_start is None
+        or native_start.tzinfo is None
+        or native_end is None
+        or native_end.tzinfo is None
+    ):
+        return False
+    rotations = robot.get("rotations")
+    if not isinstance(rotations, Mapping):
+        return False
+    for rotation in rotations.values():
+        if not isinstance(rotation, Mapping):
+            continue
+        rooms = rotation.get("rooms")
+        if not isinstance(rooms, Mapping):
+            continue
+        for record in rooms.values():
+            if not isinstance(record, Mapping):
+                continue
+            raw_managed_start = record.get("last_started")
+            managed_start = (
+                dt_util.parse_datetime(raw_managed_start)
+                if isinstance(raw_managed_start, str)
+                else None
+            )
+            if managed_start is None or managed_start.tzinfo is None:
+                continue
+            if (
+                native_start - timedelta(seconds=120)
+                <= managed_start
+                <= native_end + timedelta(seconds=120)
+            ):
+                return True
+    return False

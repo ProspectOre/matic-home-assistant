@@ -824,7 +824,7 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
         return verifier_result
 
     verifier = AsyncMock(side_effect=verify)
-    assert await manager.ledger.async_import_native_history(
+    processed = await manager.ledger.async_process_native_history(
         "serial",
         FLOOR,
         [record],
@@ -834,13 +834,27 @@ async def test_late_native_history_credits_coverage_only_with_fresh_matching_ver
         else None,
     )
 
-    expected = 0 if verifier_result is True and floor_outcome == "current" else 2
-    assert (
-        manager.cadence.cadence_progress("serial", "home", ROOM_ID)["coverage"]
-        == expected
-    )
-    assert robot["rotations"]["home"]["rooms"][ROOM_ID]["completed_runs"] == 1
-    assert "pending_native_reconciliation" not in robot
+    if floor_outcome in {"changed", "unavailable"}:
+        # A verifier may finish after the active map changes. The entire
+        # captured-floor history batch is rejected before any room or cadence
+        # history is committed; the listener must retry with a fresh floor.
+        assert processed is None
+        assert (
+            manager.cadence.cadence_progress("serial", "home", ROOM_ID)["coverage"] == 2
+        )
+        assert (
+            robot["rotations"]["home"]["rooms"][ROOM_ID].get("completed_runs", 0) == 0
+        )
+        assert manager.ledger.pending_native_reconciliation("serial") is not None
+    else:
+        assert processed is True
+        expected = 0 if verifier_result is True and floor_outcome == "current" else 2
+        assert (
+            manager.cadence.cadence_progress("serial", "home", ROOM_ID)["coverage"]
+            == expected
+        )
+        assert robot["rotations"]["home"]["rooms"][ROOM_ID]["completed_runs"] == 1
+        assert "pending_native_reconciliation" not in robot
     if verifier_result is not None:
         verifier.assert_awaited_once_with(_receipt(), SESSION_HASH)
 

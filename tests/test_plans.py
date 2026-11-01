@@ -288,7 +288,7 @@ async def test_removed_entry_generation_stays_fenced_after_reactivation(hass) ->
         await manager.ledger.async_import_native_history(
             "serial", floor_plan, (), generation=old_generation
         )
-        is False
+        is None
     )
 
 
@@ -303,7 +303,7 @@ async def test_native_history_after_robot_removal_cannot_recreate_data(hass) -> 
 
     assert (
         await manager.ledger.async_import_native_history("removed", None, ())
-    ) is False
+    ) is None
     assert "removed" not in manager.repository.data["robots"]
 
 
@@ -318,23 +318,25 @@ async def test_robot_activation_clears_removal_tombstone(hass) -> None:
 
 async def test_native_history_rechecks_removal_after_waiting_for_lock(hass) -> None:
     manager = CleaningPlanManager(hass)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     manager.repository.data = {"robots": {"serial": {}}}
-
-    class MarkRemoved:
-        async def __aenter__(self):
-            manager.repository.removed_robots.add("serial")
-
-        async def __aexit__(self, *args):
-            return None
-
-    manager.control.lock = lambda _serial: MarkRemoved()
-
+    manager.control.async_cancel_and_wait = AsyncMock()
     floor_plan = FloorPlan(1, "partition", b"partition", ())
-
-    assert (
-        await manager.ledger.async_import_native_history("serial", floor_plan, ())
-        is False
+    native_history_lock = manager.repository.native_history_lock("serial")
+    await native_history_lock.acquire()
+    importing = asyncio.create_task(
+        manager.ledger.async_import_native_history("serial", floor_plan, ())
     )
+    await asyncio.sleep(0)
+    removing = asyncio.create_task(manager.async_remove_robot("serial"))
+    await asyncio.sleep(0)
+
+    assert "serial" in manager.repository.removed_robots
+    native_history_lock.release()
+
+    assert await importing is None
+    await removing
+    assert "serial" not in manager.repository.data["robots"]
 
 
 async def test_native_history_lock_does_not_claim_managed_plan(hass) -> None:
@@ -2291,7 +2293,7 @@ async def test_native_history_import_records_activity_not_completion(
     )
     assert (
         await manager.ledger.async_import_native_history("serial", None, records)
-        is False
+        is None
     )
     manager.repository.store.async_save.assert_not_awaited()
     listener.assert_not_called()

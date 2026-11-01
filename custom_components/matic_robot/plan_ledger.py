@@ -203,10 +203,11 @@ class PlanLedger:
         generation: int | None = None,
         coverage_verifier: CoverageVerifier | None = None,
         current_floor_plan: Callable[[], FloorPlan | None] | None = None,
-    ) -> bool:
+    ) -> bool | None:
         """Import native activity and reconcile only the matching pending room."""
         if floor_plan is None:
-            return False
+            return None
+        floor_token = plan_floor_token(floor_plan)
         entry_generation = self.control.robot_generation(serial_number)
         proof_generation = self.control.motion_generation(serial_number)
         records = tuple(records)
@@ -253,7 +254,7 @@ class PlanLedger:
                     )
         reconciled: list[dict[str, Any]] = []
 
-        async def commit(lease: _MetadataLockLease) -> bool:
+        async def commit(lease: _MetadataLockLease) -> bool | None:
             motion_generation = self.control.motion_generation(serial_number)
             lease.release(self.control.command_lock(serial_number))
             async with self.repository.store_lock:
@@ -262,12 +263,17 @@ class PlanLedger:
                     or self.control.robot_generation(serial_number) != entry_generation
                     or self.control.motion_generation(serial_number)
                     != motion_generation
+                    or motion_generation != proof_generation
                     or (
                         generation is not None
                         and generation != self.control.robot_generation(serial_number)
                     )
                 ):
-                    return False
+                    return None
+                if current_floor_plan is not None:
+                    current = current_floor_plan()
+                    if current is None or plan_floor_token(current) != floor_token:
+                        return None
                 return await self.async_import_native_history_transaction(
                     serial_number,
                     floor_plan,
@@ -284,7 +290,7 @@ class PlanLedger:
                     else None,
                 )
 
-        def after_commit(changed: bool) -> None:
+        def after_commit(changed: bool | None) -> None:
             if not changed:
                 return
             self.repository.notify_listeners(serial_number)
@@ -318,7 +324,27 @@ class PlanLedger:
             ),
             after_commit=after_commit,
         )
-        return bool(result)
+        return None if result is None else bool(result)
+
+    async def async_process_native_history(
+        self,
+        serial_number: str,
+        floor_plan: FloorPlan | None,
+        records: Iterable[CleaningSessionRecord],
+        *,
+        generation: int | None = None,
+        coverage_verifier: CoverageVerifier | None = None,
+        current_floor_plan: Callable[[], FloorPlan | None] | None = None,
+    ) -> bool | None:
+        """Process one complete native-history page for its captured floor."""
+        return await self.async_import_native_history(
+            serial_number,
+            floor_plan,
+            records,
+            generation=generation,
+            coverage_verifier=coverage_verifier,
+            current_floor_plan=current_floor_plan,
+        )
 
     async def async_import_native_history_transaction(
         self,
@@ -329,7 +355,7 @@ class PlanLedger:
         generation: int | None,
         reconciled: list[dict[str, Any]],
         verified_coverage_receipt: CoverageReceipt | None = None,
-    ) -> bool:
+    ) -> bool | None:
         """Import and reconcile native history under the plan-write lock."""
         robot = self.repository.robot(serial_number)
         before = deepcopy(robot)
@@ -351,14 +377,12 @@ class PlanLedger:
             native_history._import_daily_native_uncertainty(robot, floor_plan, records)
             or changed
         )
-        if (
-            not changed
-            or serial_number in self.repository.removed_robots
-            or (
-                generation is not None
-                and generation != self.control.robot_generation(serial_number)
-            )
+        if serial_number in self.repository.removed_robots or (
+            generation is not None
+            and generation != self.control.robot_generation(serial_number)
         ):
+            return None
+        if not changed:
             return False
         await self.async_save_native_history(serial_number, before)
         return True

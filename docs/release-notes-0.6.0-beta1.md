@@ -1,10 +1,6 @@
 # Matic 0.6 beta 1
 
-Matic 0.6 adds sink and room navigation, cleaning history, robot trails and
-occupied-room skipping to Home Assistant while keeping the Matic app usable.
-
-This is an unpublished beta candidate from `release/0.6`. Publication waits
-for the owner's local testing and approval.
+Unpublished candidate from `release/0.6`; publication needs owner testing and approval.
 
 ## Highlights
 
@@ -93,10 +89,11 @@ for the owner's local testing and approval.
 
 - **Robot schedules.** `calendar.matic_native_schedules` shows each enabled
   weekly schedule from the Matic app, with its rooms and cleaning mode. Schedule
-  details stay out of Recorder.
+  details stay out of Recorder. The 0.5.1 fixes preserve every acknowledged
+  schedule, Monday-first weekdays, enabled state and ordered/unordered room lists.
 - **Robot alert.** The alert sensor names a full or missing bag, and either one
-  raises a Repair with the fix until the robot stops reporting it. Other alerts
-  show as Unknown alert.
+  raises a Repair with the fix until the robot stops reporting it. Confirmed
+  faults stay visible when other codes change; 207/220 use reporter-observed labels.
 - **Maintenance suggested.** On while the robot's newest monthly recap suggests
   maintenance, with a Repair naming the month. The recap doesn't say which part
   yet, so check the brush roll, side brush, mop roll, caster and wedge.
@@ -110,6 +107,11 @@ for the owner's local testing and approval.
   schedule and cooldown checks. See [Photo patrol](photo-patrol.md).
 
 ## Working with the Matic app
+
+- **Room statistics.** Completed room results reported by the robot can update sensors
+  for app-started and scheduled cleans. Late corrections retract only the affected
+  mode; plan schedules and daily completion counts keep their separate rules.
+  Contributor credits are in the [0.5.1 notes](release-notes-0.5.1.md).
 
 - **Plans give way.** When the app, the robot's button, voice or a robot
   schedule takes over, a running plan ends as taken over and never sends a
@@ -145,5 +147,4 @@ The photo trial used equivalent manual commands; Photo patrol has not run instal
 Beta 1 is blocked pending live-stream/map-update reconnect, loss/order, authorization, polling, host and device qualification.
 Push starts automatically when supported (no user toggle); older backends use polling, and Matic keeps checking status on a schedule. This may add network traffic and Home Assistant load; the hoped-for 70% reduction in requests has not been shown.
 
-See [Matic Map and features](features.md), [Actions](actions.md), [Entities](entities.md),
-[Cleaning](cleaning.md), [Changing a running clean](queue-changes.md) and [Assistant tools](assistant-tools.md).
+See [Matic Map and features](features.md), [Actions](actions.md) and [Entities](entities.md).
