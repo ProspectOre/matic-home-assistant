@@ -330,6 +330,244 @@ def test_unresolved_time_hold_is_refreshed_with_bounded_writes():
     assert row["unknown_time_until"] == (now + timedelta(hours=73)).isoformat()
 
 
+@pytest.mark.parametrize("initial_time", [None, "future"])
+def test_late_native_timestamp_revision_clears_its_session_hold(
+    monkeypatch, initial_time
+):
+    floor = _floor()
+    identity = room_cadence_identity(floor, ROOM_ID)
+    now = datetime(2026, 7, 2, 18, tzinfo=UTC)
+    monkeypatch.setattr(native_history.dt_util, "utcnow", lambda: now)
+    key = b"revised-session-time"
+    first_end = None if initial_time is None else (now + timedelta(days=1)).isoformat()
+    first = CleaningSession(
+        (now - timedelta(hours=2)).isoformat(),
+        first_end,
+        90,
+        ("Kitchen",),
+        (),
+        None,
+        mode_results=(CleaningModeResult("Kitchen", "vacuum", "completed", 90),),
+    )
+    robot: dict = {}
+    assert native_history._import_daily_native_uncertainty(
+        robot, floor, [CleaningSessionRecord(key, first)]
+    )
+    row = robot["daily_room_completions"][ROOM_ID]
+    session_hash = native_history._daily_session_hash(key)
+    assert row["unknown_time_holds"] == [
+        {
+            "session_hash": session_hash,
+            "until": (now + timedelta(hours=72)).isoformat(),
+        }
+    ]
+
+    revised = replace(first, ended_at=(now - timedelta(days=1)).isoformat())
+    assert native_history._import_daily_native_uncertainty(
+        robot, floor, [CleaningSessionRecord(key, revised)]
+    )
+    row = robot["daily_room_completions"][ROOM_ID]
+    assert "unknown_time_holds" not in row
+    assert row["receipts"] == [
+        {
+            "at": revised.ended_at,
+            "identity": identity,
+            "session_hash": session_hash,
+            "unverified": True,
+        }
+    ]
+    assert not daily_room_limit.daily_state(
+        {
+            "daily_room_limits": {ROOM_ID: {"identity": identity, "limit": 1}},
+            "daily_room_completions": {ROOM_ID: row},
+        },
+        ROOM_ID,
+        identity,
+        now=now,
+        timezone=UTC,
+    )["reached"]
+
+
+def test_native_timestamp_revision_keeps_other_session_hold_and_legacy_hold():
+    identity = "e" * 64
+    now = datetime(2026, 7, 2, 18, tzinfo=UTC)
+    first_hash = "a" * 64
+    second_hash = "b" * 64
+    robot = {
+        "daily_room_limits": {ROOM_ID: {"identity": identity, "limit": 1}},
+    }
+    assert daily_room_limit.record_unknown_completion_time(
+        robot, ROOM_ID, now=now, session_hash=first_hash
+    )
+    assert daily_room_limit.record_unknown_completion_time(
+        robot, ROOM_ID, now=now, session_hash=second_hash
+    )
+    assert not daily_room_limit.record_unknown_completion_time(
+        robot, ROOM_ID, now=now + timedelta(minutes=20), session_hash=second_hash
+    )
+    assert daily_room_limit.record_completion(
+        robot,
+        ROOM_ID,
+        identity,
+        (now - timedelta(days=4)).isoformat(),
+        now=now,
+        session_hash=first_hash,
+        unverified=True,
+    )
+    assert "receipts" not in robot["daily_room_completions"][ROOM_ID]
+    assert not daily_room_limit.record_completion(
+        robot,
+        ROOM_ID,
+        identity,
+        (now - timedelta(days=4)).isoformat(),
+        now=now,
+        session_hash=first_hash,
+        unverified=True,
+    )
+    assert robot["daily_room_completions"][ROOM_ID]["unknown_time_holds"] == [
+        {
+            "session_hash": second_hash,
+            "until": (now + timedelta(hours=72)).isoformat(),
+        }
+    ]
+    assert _state(robot, identity, now)["reached"]
+
+    # Old aggregate holds have no session identity and remain fail-closed.
+    daily_room_limit.record_unknown_completion_time(robot, ROOM_ID, now=now)
+    assert daily_room_limit.record_completion(
+        robot,
+        ROOM_ID,
+        identity,
+        (now - timedelta(days=1)).isoformat(),
+        now=now,
+        session_hash=second_hash,
+        unverified=True,
+    )
+    row = robot["daily_room_completions"][ROOM_ID]
+    assert "unknown_time_holds" not in row
+    assert _state(robot, identity, now)["reached"]
+    assert not _state(robot, identity, now + timedelta(hours=73))["reached"]
+
+
+def test_revised_native_receipt_tracks_time_until_verified_credit_arrives():
+    identity = "9" * 64
+    session_hash = "8" * 64
+    now = datetime(2026, 7, 2, 18, tzinfo=UTC)
+    robot = {"daily_room_limits": {ROOM_ID: {"identity": identity, "limit": 2}}}
+    assert daily_room_limit.record_unknown_completion_time(
+        robot, ROOM_ID, now=now, session_hash=session_hash
+    )
+    assert daily_room_limit.record_completion(
+        robot,
+        ROOM_ID,
+        identity,
+        (now - timedelta(days=1)).isoformat(),
+        now=now,
+        session_hash=session_hash,
+        unverified=True,
+    )
+    assert daily_room_limit.record_completion(
+        robot,
+        ROOM_ID,
+        identity,
+        (now - timedelta(days=2)).isoformat(),
+        now=now,
+        session_hash=session_hash,
+        unverified=True,
+    )
+    row = robot["daily_room_completions"][ROOM_ID]
+    assert row["receipts"][0]["at"] == (now - timedelta(days=2)).isoformat()
+    stale_revision = (now - timedelta(days=4)).isoformat()
+    assert daily_room_limit.record_completion(
+        robot,
+        ROOM_ID,
+        identity,
+        stale_revision,
+        now=now,
+        session_hash=session_hash,
+        unverified=True,
+    )
+    assert row["receipts"][0]["at"] == stale_revision
+
+    verified_at = (now - timedelta(hours=1)).isoformat()
+    assert daily_room_limit.record_completion(
+        robot,
+        ROOM_ID,
+        identity,
+        verified_at,
+        now=now,
+        session_hash=session_hash,
+    )
+    assert not daily_room_limit.record_completion(
+        robot,
+        ROOM_ID,
+        identity,
+        (now - timedelta(days=2)).isoformat(),
+        now=now,
+        session_hash=session_hash,
+        unverified=True,
+    )
+    receipt = robot["daily_room_completions"][ROOM_ID]["receipts"][0]
+    assert receipt["at"] == verified_at
+    assert "unverified" not in receipt
+    assert _state(robot, identity, now)["completed_today"] == 1
+
+
+def test_malformed_or_unbound_session_holds_fail_closed_until_expiry():
+    identity = "f" * 64
+    now = datetime(2026, 7, 1, 18, tzinfo=UTC)
+    robot = {
+        "daily_room_limits": {ROOM_ID: {"identity": identity, "limit": 1}},
+        "daily_room_completions": {
+            ROOM_ID: {
+                "unknown_time_holds": [
+                    {
+                        "session_hash": None,
+                        "until": (now + timedelta(hours=1)).isoformat(),
+                    }
+                ]
+            }
+        },
+    }
+    assert _state(robot, identity, now)["reached"]
+    assert not _state(robot, identity, now + timedelta(hours=2))["reached"]
+    robot["daily_room_completions"][ROOM_ID]["unknown_time_holds"] = [
+        {"session_hash": "bad", "until": "invalid"}
+    ]
+    assert _state(robot, identity, now + timedelta(days=4))["reached"]
+    robot["daily_room_completions"][ROOM_ID]["unknown_time_holds"] = "malformed"
+    assert _state(robot, identity, now)["reached"]
+    assert daily_room_limit.record_unknown_completion_time(
+        robot, ROOM_ID, now=now, session_hash="1" * 64
+    )
+    assert _state(robot, identity, now)["reached"]
+    assert not _state(robot, identity, now + timedelta(hours=73))["reached"]
+
+
+def test_session_hold_overflow_fails_closed(monkeypatch):
+    monkeypatch.setattr(daily_room_limit, "MAX_RECENT_COMPLETIONS", 1)
+    identity = "c" * 64
+    now = datetime(2026, 7, 1, 18, tzinfo=UTC)
+    robot = {"daily_room_limits": {ROOM_ID: {"identity": identity, "limit": 1}}}
+    assert daily_room_limit.record_unknown_completion_time(
+        robot, ROOM_ID, now=now, session_hash="1" * 64
+    )
+    assert daily_room_limit.record_unknown_completion_time(
+        robot, ROOM_ID, now=now, session_hash="2" * 64
+    )
+    row = robot["daily_room_completions"][ROOM_ID]
+    assert row["unknown_time_holds"] == []
+    assert "overflow_until" in row
+    assert _state(robot, identity, now)["reason"] == "completion_history_unverified"
+    row["unknown_time_holds"] = "malformed"
+    assert daily_room_limit.record_unknown_completion_time(
+        robot, ROOM_ID, now=now, session_hash="3" * 64
+    )
+    assert row["unknown_time_holds"] == []
+    assert _state(robot, identity, now)["reason"] == "completion_history_unverified"
+    assert not _state(robot, identity, now + timedelta(hours=73))["reached"]
+
+
 def test_corrupt_completion_writes_do_not_replace_stored_state(monkeypatch):
     now = datetime(2026, 7, 1, 18, tzinfo=UTC)
     for robot in (
@@ -342,6 +580,16 @@ def test_corrupt_completion_writes_do_not_replace_stored_state(monkeypatch):
         assert not daily_room_limit.record_completion(
             robot, ROOM_ID, "d" * 64, now.isoformat(), now=now
         )
+    malformed = {
+        "daily_room_completions": {
+            ROOM_ID: {"unknown_time_holds": [{"until": "invalid"}]}
+        }
+    }
+    assert daily_room_limit.record_unknown_completion_time(
+        malformed, ROOM_ID, now=now, session_hash="1" * 64
+    )
+    assert "overflow_until" in malformed["daily_room_completions"][ROOM_ID]
+    assert malformed["daily_room_completions"][ROOM_ID]["unknown_time_holds"] == []
     robot = {}
     assert not daily_room_limit.record_completion(
         robot, ROOM_ID, None, "invalid", now=now

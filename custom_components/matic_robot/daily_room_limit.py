@@ -31,10 +31,53 @@ def _valid_identity(value: object) -> bool:
     )
 
 
-def record_unknown_completion_time(
-    robot: dict[str, Any], room_id: str, *, now: datetime
+def _valid_session_hash(value: object) -> bool:
+    return _valid_identity(value)
+
+
+def _resolve_unknown_session_hold(
+    row: dict[str, Any], session_hash: str | None
 ) -> bool:
-    """Hold an unresolved native completion for a bounded observation window."""
+    """Remove one session-bound hold after that session receives a valid time."""
+    if not _valid_session_hash(session_hash):
+        return False
+    holds = row.get("unknown_time_holds")
+    if not isinstance(holds, list) or len(holds) > MAX_RECENT_COMPLETIONS:
+        return False
+    retained = [
+        hold
+        for hold in holds
+        if not isinstance(hold, Mapping) or hold.get("session_hash") != session_hash
+    ]
+    if len(retained) == len(holds):
+        return False
+    if retained:
+        row["unknown_time_holds"] = retained
+    else:
+        row.pop("unknown_time_holds", None)
+    return True
+
+
+def _mark_unknown_hold_overflow(row: dict[str, Any], now: datetime) -> bool:
+    """Collapse malformed or oversized holds into a bounded fail-closed timer."""
+    changed = row.get("unknown_time_holds") != []
+    row["unknown_time_holds"] = []
+    current_expiry = _time(row.get("overflow_until"))
+    target_expiry = now + RECEIPT_RETENTION
+    if current_expiry is None or current_expiry < target_expiry - timedelta(hours=1):
+        row["overflow_until"] = target_expiry.isoformat()
+        changed = True
+    return changed
+
+
+def record_unknown_completion_time(
+    robot: dict[str, Any],
+    room_id: str,
+    *,
+    now: datetime,
+    session_hash: str | None = None,
+) -> bool:
+    """Hold an unresolved completion, binding native evidence to its session."""
     records = robot.setdefault("daily_room_completions", {})
     if not isinstance(records, dict):
         return False
@@ -42,6 +85,39 @@ def record_unknown_completion_time(
     if not isinstance(row, dict):
         return False
     now = now.astimezone(UTC)
+    if _valid_session_hash(session_hash):
+        holds = row.get("unknown_time_holds", [])
+        if not isinstance(holds, list) or len(holds) > MAX_RECENT_COMPLETIONS:
+            return _mark_unknown_hold_overflow(row, now)
+        if any(
+            not isinstance(hold, Mapping) or _time(hold.get("until")) is None
+            for hold in holds
+        ):
+            return _mark_unknown_hold_overflow(row, now)
+        holds = [
+            hold
+            for hold in holds
+            if (until := _time(hold.get("until"))) is not None and until > now
+        ]
+        prior = next(
+            (hold for hold in holds if hold.get("session_hash") == session_hash),
+            None,
+        )
+        expiry = _time(prior.get("until")) if prior is not None else None
+        if expiry is not None and expiry > now + RECEIPT_RETENTION - timedelta(hours=1):
+            return False
+        holds = [hold for hold in holds if hold.get("session_hash") != session_hash]
+        holds.append(
+            {
+                "session_hash": session_hash,
+                "until": (now + RECEIPT_RETENTION).isoformat(),
+            }
+        )
+        if len(holds) > MAX_RECENT_COMPLETIONS:
+            row["unknown_time_holds"] = holds[:-1]
+            return _mark_unknown_hold_overflow(row, now)
+        row["unknown_time_holds"] = holds
+        return True
     expiry = _time(row.get("unknown_time_until"))
     if expiry is not None and expiry > now + RECEIPT_RETENTION - timedelta(hours=1):
         return False
@@ -69,9 +145,32 @@ def record_completion(
         # A completion timestamp ahead of Home Assistant is not proof that a
         # room completed today. Keep the allowance closed for a bounded window
         # instead of counting it on either the current or a future local day.
-        return record_unknown_completion_time(robot, room_id, now=now)
+        return record_unknown_completion_time(
+            robot, room_id, now=now, session_hash=session_hash
+        )
     if completed < now - RECEIPT_RETENTION:
-        return False
+        records = robot.get("daily_room_completions")
+        row = records.get(room_id) if isinstance(records, dict) else None
+        if not isinstance(row, dict):
+            return False
+        changed = _resolve_unknown_session_hold(row, session_hash)
+        if _valid_session_hash(session_hash):
+            receipts = row.get("receipts")
+            if isinstance(receipts, list) and len(receipts) <= MAX_RECENT_COMPLETIONS:
+                prior = next(
+                    (
+                        item
+                        for item in receipts
+                        if isinstance(item, dict)
+                        and item.get("session_hash") == session_hash
+                        and item.get("unverified") is True
+                    ),
+                    None,
+                )
+                if prior is not None and prior.get("at") != completed.isoformat():
+                    prior["at"] = completed.isoformat()
+                    changed = True
+        return changed
     records = robot.setdefault("daily_room_completions", {})
     if not isinstance(records, dict):
         return False
@@ -79,6 +178,7 @@ def record_completion(
     if not isinstance(row, dict):
         return False
     before = deepcopy(row)
+    resolved_unknown = _resolve_unknown_session_hold(row, session_hash)
     existing = row.get("receipts")
     too_many = isinstance(existing, list) and len(existing) > MAX_RECENT_COMPLETIONS
     if isinstance(existing, list) and too_many:
@@ -138,13 +238,18 @@ def record_completion(
         if not unverified:
             if prior.get("identity") is None and identity is not None:
                 prior["identity"] = identity
+            prior["at"] = completed.isoformat()
             prior.pop("unverified", None)
             if valid_session is not None:
                 prior["session_hash"] = valid_session
             if proof is not None:
                 prior["proof"] = proof
+        elif prior.get("unverified") is True:
+            # A later revision may correct this native session's timestamp.
+            # Managed, verified receipts keep their original trusted instant.
+            prior["at"] = completed.isoformat()
         row["receipts"] = receipts
-        return row != before
+        return row != before or resolved_unknown
     receipt: dict[str, Any] = {"at": completed.isoformat(), "identity": identity}
     if proof is not None:
         receipt["proof"] = proof
@@ -161,7 +266,7 @@ def record_completion(
     expiry = _time(row.get("overflow_until"))
     if expiry is not None and expiry <= now:
         row.pop("overflow_until", None)
-    return row != before
+    return row != before or resolved_unknown
 
 
 def daily_state(
@@ -244,6 +349,39 @@ def daily_state(
             "reached": True,
             "reason": "completion_history_unverified",
         }
+    holds = row.get("unknown_time_holds", [])
+    if not isinstance(holds, list) or len(holds) > MAX_RECENT_COMPLETIONS:
+        return {
+            "limit": limit,
+            "completed_today": 0,
+            "reached": True,
+            "reason": "completion_history_unverified",
+        }
+    for hold in holds:
+        if (
+            not isinstance(hold, Mapping)
+            or (hold_until := _time(hold.get("until"))) is None
+        ):
+            return {
+                "limit": limit,
+                "completed_today": 0,
+                "reached": True,
+                "reason": "completion_history_unverified",
+            }
+        if hold_until > now and not _valid_session_hash(hold.get("session_hash")):
+            return {
+                "limit": limit,
+                "completed_today": 0,
+                "reached": True,
+                "reason": "completion_history_unverified",
+            }
+        if hold_until > now:
+            return {
+                "limit": limit,
+                "completed_today": 0,
+                "reached": True,
+                "reason": "completion_history_unverified",
+            }
     overflow = _time(row.get("overflow_until"))
     if "overflow_until" in row and overflow is None:
         return {

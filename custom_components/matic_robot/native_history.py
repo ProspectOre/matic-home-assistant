@@ -78,7 +78,12 @@ def _import_daily_native_uncertainty(
                 if daily_room_limit._time(session.ended_at) is None:
                     changed = (
                         daily_room_limit.record_unknown_completion_time(
-                            robot, room.id, now=now
+                            robot,
+                            room.id,
+                            now=now,
+                            session_hash=_daily_session_hash(record.key)
+                            if record.key
+                            else None,
                         )
                         or changed
                     )

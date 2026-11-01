@@ -79,6 +79,8 @@ Ambiguous native completion evidence holds the room for that day rather than
 inventing a count. Missing or invalid completion time holds it for 72 hours
 after last observation. If an unresolved record persists, its hold can continue
 until the record disappears or qualifies; there is no guaranteed automatic reset.
+A dated revision clears only the matching session's missing-time hold; other
+unresolved sessions and legacy unbound holds retain their own expiry.
 Evidence is bounded to 72 hours and 1,024 receipts per
 room; corrupt/overflow history, unknown timezone, or changed room identity fails
 closed. These are source rules; restart, day-boundary, managed-run, and physical
