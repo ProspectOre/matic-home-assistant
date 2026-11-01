@@ -18,9 +18,9 @@ def _time(value: object) -> datetime | None:
         return None
     try:
         parsed = datetime.fromisoformat(value)
-    except ValueError:
+        return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
+    except (ValueError, OverflowError):
         return None
-    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
 
 
 def _valid_identity(value: object) -> bool:

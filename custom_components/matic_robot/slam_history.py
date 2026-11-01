@@ -766,7 +766,13 @@ class SlamHistoryStore:
                     None,
                     self._group_salt,
                 )
-            except (TypeError, ValueError, DecodeError, zlib.error) as err:
+            except (
+                TypeError,
+                ValueError,
+                OverflowError,
+                DecodeError,
+                zlib.error,
+            ) as err:
                 raise ValueError("invalid-history-archive-record") from err
             prepared.append(
                 replace(

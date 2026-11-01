@@ -536,6 +536,8 @@ async def test_history_archive_rejects_invalid_envelopes(hass, archive) -> None:
         ({"scene_zlib_base64": "%%%"}, "invalid-history-archive-record"),
         ({"sha256": "0" * 64}, "invalid-history-archive-record"),
         ({"created_at": "2026-07-26T12:00:00"}, "invalid-history-archive-record"),
+        ({"created_at": "0001-01-01T00:00:00+23:59"}, "invalid-history-archive-record"),
+        ({"created_at": "9999-12-31T23:59:59-23:59"}, "invalid-history-archive-record"),
         ({"source_id": "x" * 129}, "invalid-history-archive-record"),
         ({"unknown": "field"}, "invalid-history-archive-record"),
         (

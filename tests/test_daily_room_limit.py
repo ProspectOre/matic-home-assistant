@@ -164,6 +164,34 @@ def test_corrupt_policy_or_history_fails_closed(policies, records, reason):
     assert _state(robot, "d" * 64, now)["reason"] == reason
 
 
+@pytest.mark.parametrize(
+    "timestamp",
+    ["0001-01-01T00:00:00+23:59", "9999-12-31T23:59:59-23:59"],
+)
+@pytest.mark.parametrize(
+    "field", ["receipt", "overflow_until", "unknown_time_until", "hold"]
+)
+def test_utc_overflow_in_stored_history_fails_closed(timestamp, field):
+    identity = "d" * 64
+    now = datetime(2026, 7, 1, 18, tzinfo=UTC)
+    if field == "receipt":
+        row = {"receipts": [{"at": timestamp, "identity": identity}]}
+    elif field == "hold":
+        row = {"unknown_time_holds": [{"until": timestamp, "session_hash": "a" * 64}]}
+    else:
+        row = {field: timestamp}
+    robot = {
+        "daily_room_limits": {ROOM_ID: {"identity": identity, "limit": 2}},
+        "daily_room_completions": {ROOM_ID: row},
+    }
+
+    state = _state(robot, identity, now)
+
+    assert state["reason"] == "completion_history_unverified"
+    assert state["reached"] is True
+    assert state["completed_today"] == 0
+
+
 def test_missing_timezone_and_ambiguous_receipt_fail_closed():
     identity = "d" * 64
     now = datetime(2026, 7, 1, 18, tzinfo=UTC)
