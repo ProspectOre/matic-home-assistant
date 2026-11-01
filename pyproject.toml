@@ -25,6 +25,10 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "build>=1",
+  "dbus-fast>=1.83.0",
+  "gazetteer-matcher==1.1.0",
+  "hassil==3.12.1",
+  "home-assistant-intents==2026.10.6",
   "mypy>=1.16",
   "PyTurboJPEG==1.8.3",
   "pytest>=8",

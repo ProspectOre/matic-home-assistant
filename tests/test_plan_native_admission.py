@@ -174,7 +174,7 @@ async def test_stale_native_import_releases_command_and_skips_after_replacement(
         manager.repository.store_lock.release()
         import_result = await asyncio.wait_for(import_task, timeout=2)
 
-    assert import_result is False
+    assert import_result is None
     await hass.async_block_till_done()
 
     robot = manager.repository.robot(SERIAL)

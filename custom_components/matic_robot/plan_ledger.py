@@ -278,7 +278,6 @@ class PlanLedger:
                     serial_number,
                     floor_plan,
                     records,
-                    generation=generation,
                     reconciled=reconciled,
                     verified_coverage_receipt=verified_coverage
                     if proof_generation == motion_generation
@@ -352,10 +351,9 @@ class PlanLedger:
         floor_plan: FloorPlan,
         records: Iterable[CleaningSessionRecord],
         *,
-        generation: int | None,
         reconciled: list[dict[str, Any]],
         verified_coverage_receipt: CoverageReceipt | None = None,
-    ) -> bool | None:
+    ) -> bool:
         """Import and reconcile native history under the plan-write lock."""
         robot = self.repository.robot(serial_number)
         before = deepcopy(robot)
@@ -377,11 +375,8 @@ class PlanLedger:
             native_history._import_daily_native_uncertainty(robot, floor_plan, records)
             or changed
         )
-        if serial_number in self.repository.removed_robots or (
-            generation is not None
-            and generation != self.control.robot_generation(serial_number)
-        ):
-            return None
+        # Admission was rechecked under the store lock before this transaction;
+        # no await can change that ownership before the save below.
         if not changed:
             return False
         await self.async_save_native_history(serial_number, before)
