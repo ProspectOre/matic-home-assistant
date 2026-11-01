@@ -39,6 +39,7 @@ from .client.models import (
 from .entity import MaticEntity
 from .native_completion import native_room_key
 from .plans import plan_floor_token, room_cadence_identity
+from .room_statistics import native_statistics_have_ambiguous_floor
 
 PARALLEL_UPDATES = 0
 
@@ -1112,7 +1113,7 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
 
     @property
     def extra_state_attributes(self) -> dict[str, str]:
-        """Identify whether room statistics came from managed or native evidence."""
+        """Identify the value's source and explain withheld app-started results."""
         state = self.coordinator.data
         snapshot = self._history.snapshot(self._serial_number)
         managed_value = _managed_room_history_value(snapshot, self._room_id)
@@ -1127,7 +1128,16 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
             managed_session=managed_session,
             restored=self.native_value is not None,
         )
-        return {"statistics_source": source} if source is not None else {}
+        attributes = {"statistics_source": source} if source is not None else {}
+        if state.floor_plan is not None and native_statistics_have_ambiguous_floor(
+            state.floor_plan
+        ):
+            attributes["native_statistics_blocked_reason"] = (
+                "App-started room statistics are unavailable because multiple floors "
+                "are saved and the integration cannot yet verify which floor "
+                "each clean belongs to."
+            )
+        return attributes
 
     @callback
     def _async_apply_session(self) -> None:
@@ -1215,8 +1225,7 @@ def _robot_reported_room_history_value(
     """Return explicit per-mode completion reported by native robot history."""
     if floor_plan is None:
         return None
-    known_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
-    if len(known_floor_ids | {floor_plan.mission_id}) > 1:
+    if native_statistics_have_ambiguous_floor(floor_plan):
         return None
     record = snapshot.get("robot_reported_completed_by_room", {}).get(room_id)
     if not isinstance(record, dict):
@@ -1255,9 +1264,8 @@ def _native_room_history_is_ineligible(
         return False
     if source != "robot_native_mode_result_room_name_match":
         return True
-    known_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
     return (
-        len(known_floor_ids | {floor_plan.mission_id}) > 1
+        native_statistics_have_ambiguous_floor(floor_plan)
         or record.get("floor_mission_id") != floor_plan.mission_id
         or _robot_reported_room_history_value(snapshot, room_id, floor_plan) is None
     )

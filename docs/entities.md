@@ -121,10 +121,10 @@ across firmware versions. Recorded activity keeps their numeric codes after clea
 
 ## Room statistics and the recorder
 
-Enable each room's **Last cleaned** and **Last clean duration** to retain room
-statistics, including completed app-started cleans; see [cleaning results](native-cleaning-results.md)
-for matching and floor limits. The robot-wide duration is recorded by default. For missing
-**Scheduled cleanings** records or on/off details, see [schedule diagnostics](native-schedule-diagnostics.md).
+Enable each room's **Last cleaned** and **Last clean duration** for completed app-started cleans.
+Check `native_statistics_blocked_reason` for withheld app results and `statistics_source` for displayed evidence.
+See [cleaning results](native-cleaning-results.md) for floor limits. Robot-wide duration is recorded by default.
+For missing **Scheduled cleanings** records or on/off details, see [schedule diagnostics](native-schedule-diagnostics.md).
 
 Room lists, SSID, schedules, detailed run results, and plan history remain
 available to templates through `state_attr()` but are excluded from Recorder

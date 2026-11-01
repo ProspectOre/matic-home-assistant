@@ -93,7 +93,11 @@ from .coverage_accounting import (
 )
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
-from .room_statistics import NativeRoomStatistic, native_room_statistics_by_session
+from .room_statistics import (
+    NativeRoomStatistic,
+    native_room_statistics_by_session,
+    native_statistics_have_ambiguous_floor,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _MetadataResult = TypeVar("_MetadataResult")
@@ -7223,8 +7227,8 @@ def _import_native_room_activity(
             changed = True
 
     # Keep robot-reported statistics separate from verified managed outcomes.
-    # Native history identifies neither a managed dispatch nor the floor on
-    # which its room name was recorded.
+    # The decoded history does not establish a managed dispatch or verify the
+    # floor on which its room name was recorded.
     now = dt_util.utcnow()
     current_floor_id = floor_plan.mission_id
     previous_floor_id = robot.get("robot_room_statistics_floor_id")
@@ -7241,14 +7245,12 @@ def _import_native_room_activity(
         robot["robot_room_statistics_floor_id"] = current_floor_id
         changed = True
     changed_at = _latest_timestamp(robot.get("robot_room_statistics_floor_changed_at"))
-    mapped_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
-    multiple_floors_known = len(mapped_floor_ids | {current_floor_id}) > 1
     statistics = native_room_statistics_by_session(
         records,
         floor_plan.rooms,
         now=now,
         future_tolerance_seconds=ROTATION_FUTURE_TOLERANCE_SECONDS,
-        multiple_floors_known=multiple_floors_known,
+        multiple_floors_known=native_statistics_have_ambiguous_floor(floor_plan),
         minimum_timestamp=changed_at,
     )
     statistics_changed = _apply_native_room_statistics(
