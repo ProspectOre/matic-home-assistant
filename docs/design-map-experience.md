@@ -5,6 +5,7 @@ Design baseline: `460362131bb1691e032995915c9e605f525c6e8a`, October 31, 2026.
 This proposal does not change shipped behavior or assign a release. Implementation
 order and status belong in Linear. [Architecture](design-map-architecture.md) and
 [qualification](qualification-map-experience.md) define the supporting contracts.
+[Live, launch, history and comparison](design-map-live-history.md) define their distinct experiences.
 
 ## Product principles
 
@@ -22,15 +23,15 @@ inspection helps. Every map operation has a usable list or form equivalent.
 7. Make setup and recovery as deliberate as the successful path.
 
 The current [controls](map-controls.md) already support top/3D views and map/list
-selection. Initial state is top view with photo appearance; drawing and area review
-force top view. This proposal changes task defaults and consistency, not the existence
+selection. The initializer uses top/photo, but saved preferences can restore 3D at launch;
+drawing and area review force top view. This proposal changes task defaults, not the existence
 of 2D. Existing [authority](architecture-0.5.md) and safety boundaries continue to apply.
 
 ## From first open to a familiar workspace
 
 Show the selected robot, observed status and current verified floor first. Offer a
-robot picker only when needed. Fit the labeled structural map to usable space after
-accounting for the inspector or sheet. Do not wait for photographic detail to offer
+robot picker only when needed. Fit the live overview to usable space after accounting
+for the inspector or sheet; progressively add photo detail. Do not wait for it to offer
 an admitted room list. First visit offers Clean rooms, Run a plan and Clean an area;
 the live run takes precedence when one is already active.
 
@@ -48,7 +49,7 @@ architecture proposal; until then, protect in-session drafts and warn before lea
 
 | Task | Default map | Interaction and primary action |
 | --- | --- | --- |
-| Home | Labeled 2D room colors | Select a task; current work and next scheduled work remain visible. |
+| Home/live | Tightly framed photographic overview; restrained 3D or chosen 2D | Recognize the floor and robot; select a task; current and next scheduled work remain visible. |
 | Clean rooms | 2D room colors | Map and list toggle the same room IDs. Preview the selected work. |
 | Pick a plan | 2D preview | Choosing a plan shows its actual next-run set, settings and blockers. |
 | Edit a plan | 2D rooms and area outlines | Add/remove rooms and saved areas; order mixed entries with explicit list controls; Save draft. |
@@ -57,6 +58,7 @@ architecture proposal; until then, protect in-session drafts and warn before lea
 | Running/paused | 2D progress | Current room and known queue, Pause/Resume and stable Stop; optional Follow. |
 | Inspect | User-chosen 2D or 3D | Pan, zoom, orbit and photographic detail; Return to task restores task view. |
 | History/saved floor | Dated 2D, optional 3D | Read-only inspection; explicit Return to live; never a live pose. |
+| Compare maps | Registered top-down A/B | Inspect compatible retained versions with shared camera, timestamps and explicit unknown regions. |
 | Schedules | 2D scope highlight | Explain which rooms/plans share a rule; preview its effect before Save. |
 | Camera viewpoints | 2D position/heading, optional 3D inspection | Review a supported saved viewpoint and privacy constraints before an explicit action. |
 
@@ -102,10 +104,10 @@ pending, stopped and unreachable; never present a local click as robot confirmat
 Follow is opt-in and yields to manual navigation; Resume follow is explicit. Keep run
 ownership and takeover reasons visible without repeated alerts or moving controls.
 
-History keeps floor, date and snapshot identity visible. Distinguish the robot trail
-from proven cleaned coverage; a stored map picture is not completion evidence. Comparing
-maps is a later bounded feature: align only verified compatible coordinate frames and
-label unknown alignment. A historical pose must never look like the robot's current pose.
+History keeps floor, date and snapshot identity visible. Distinguish trails, map snapshots,
+run outcomes and camera photos. Comparison is first-class design scope under PRO-121;
+its data and resource prerequisites remain required. The [timeline contract](design-map-live-history.md)
+defines compatibility, unknown coverage and bounded retention. Neither view shows live pose.
 
 | State | Visible behavior and next action |
 | --- | --- |

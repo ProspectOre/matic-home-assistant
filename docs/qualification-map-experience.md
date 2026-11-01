@@ -38,11 +38,13 @@ soak and tablet run do not establish retention or supported-phone acceptance.
 | Identity | Duplicate/renamed rooms; unmatched scene/catalog; entry/floor/session change; access revocation; two tabs and two users. |
 | Geometry | Concave/tiny/overlapping rooms, holes where supported, boundary taps, negative coordinates, origin/scale changes, incomplete maps. |
 | Projection | Map→screen→map round trip; top/perspective parity; zoom limits; resized/occluded viewport; rotation; device-pixel ratio. |
+| Launch/live framing | First visit versus restored 2D/3D/legacy/distant preference; raw empty extents, irregular floor, narrow viewport, sheet occlusion; pose/tile/catalog updates preserve camera. |
 | Input | Tap versus pan, pinch/twist, cancellation, lost pointer capture, wheel, keyboard, touch, screen-reader list operation, non-drag ordering/drawing. |
 | Task state | First visit, returning preference, room/plan selection, mixed room/area reorder, area rebind, changed progress, draft save/cancel/recovery, preview rejection/change, loading/empty/partial/error. |
 | Active run | Start double-click, pause/resume, Stop during map loss/history/resize, queued room change, ownership takeover, unconfirmed command timeout. |
 | Recovery | Offline/online, HA/robot restart, stale polls, delayed/out-of-order responses, suspend/BFCache, context loss, worker error and teardown races. |
 | History | Floor/date identity, no live pose, no movement/editing, Return to live, bounded cache; incompatible map comparison refused. |
+| Comparison | Shifted origins, sampling differences, partial coverage, identical/changed content, legacy metadata, incompatible frames, pair cancellation/eviction; no false removal from missing observations; bounded two-endpoint memory. |
 | Persistence | Disk full, truncated/corrupt page, interrupted durable boundaries, retry, upgrade/downgrade refusal and matching-backup restore. |
 | Privacy/camera | No-photo areas, opt-in, role/account changes, current camera-card rendering, expiry/restart errors, retained robot photos, explicit AI disclosure, no capture from map viewing. |
 

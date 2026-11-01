@@ -2,6 +2,7 @@
 
 Supporting [experience design](design-map-experience.md) for
 [PRO-138](https://linear.app/prospectore/issue/PRO-138), based on `46036213`.
+[Launch/live/history/compare](design-map-live-history.md) supplies camera and snapshot contracts.
 This is a proposed target, not a claim that implementation or qualification is complete.
 The [current architecture](architecture.md) describes shipped-source ownership.
 
@@ -61,8 +62,9 @@ capabilities with a typed reason from admitted state; avoid independently mainta
 booleans in panels, layers and gesture handlers.
 
 Task entry selects a presentation preset. Selection/editing uses top view and readable
-room colors; Inspect restores the user's inspection camera. Existing camera preferences
-remain scoped to user/entry/floor/session, and history uses separate preferences.
+room colors; Home/live and Inspect use their own overview cameras. Saved view is currently
+user-level while camera restoration is map-bound; define first-visit policy explicitly.
+Keep live/task/history camera ownership distinct and pair comparison in a shared frame.
 Transitions preserve semantic state and do not dispatch motion. Back/Cancel and dirty
 draft decisions are reducer transitions with a single focus/navigation owner.
 Keep drafts in session for the first slice. Persistent recovery needs a bounded,
