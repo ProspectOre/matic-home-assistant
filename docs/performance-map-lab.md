@@ -79,6 +79,19 @@ forced-GC heap and backing storage were essentially flat. Other tests overlapped
 this does not prove driver reclamation or transport-enabled retention. Receipt
 SHA-256: `8078c55a2c857ac9ee668811bf16c19814fbc1aab63f31ccdf3bbed63f9ad2ec`.
 
+### Quiet-host follow-up (November 1, 2026)
+
+At clean source `5beb88d6c546fa3c0ac254fca21257ed2ca36fe0`, the unchanged
+parser/renderer stamp `43f1d38e…ee50` completed all 20 cycles with 1.5M cells.
+No local test suite ran concurrently. On the Apple M4 with headless Chromium
+151 and SwiftShader, remount-to-surface p50 was 1.91 seconds, p95 2.80 seconds
+and maximum 2.93 seconds. Every cycle admitted the full fixture; page, console,
+request and WebGL error lists were empty, and tracked handles returned to zero.
+The receipt SHA-256 is
+`83e62df2f9e5d8bebc8994f69dc620855b4f2f38697777c6a3a3f9fc73e4ab02`.
+This replaces the contended timing as the current synthetic observation, not a
+physical-device or Home Assistant host qualification. No idle soak was repeated.
+
 ## Large-home acceptance still required
 
 The 1.2M/1.5M desktop runs are preliminary point-capacity observations. A
