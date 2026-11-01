@@ -281,6 +281,9 @@ _BINARY_SETTING_CHANNELS = {
     "voice": "voice_enabled_command",
 }
 
+# Schedule day fields 1-7 run Monday to Sunday. Checked on a robot: a schedule
+# with Monday off in the Matic app had field 1 clear, and turning Thursday off
+# as well cleared field 4.
 _WEEKDAYS = (
     "monday",
     "tuesday",
