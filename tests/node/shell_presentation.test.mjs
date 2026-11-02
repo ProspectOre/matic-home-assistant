@@ -27,3 +27,27 @@ test("comparison status is read-only and authorization/connectivity gates retain
   assert.equal(statusCopy({ ...comparing, resources: { ...comparing.resources, entry: { ...comparing.resources.entry, stopSettlePending: true } } }).title, "Stopping");
   assert.equal(statusCopy({ ...comparing, smartStop: { phase: "returning_to_dock", kind: "room", target: null } }).title, "Smart Stop");
 });
+
+
+test("comparison keeps current robot work visible", () => {
+  const ready = createGalleryState("ready");
+  for (const dataMode of ["live", "history"]) {
+    const comparing = { ...ready, dataMode, comparisonActive: true, coherence: "verifying" };
+    for (const [activity, title] of [["starting", "Starting"], ["cleaning", "Cleaning"], ["paused", "Paused"],
+      ["returning", "Returning"], ["recharging", "Charging to resume"]]) {
+      const actual = statusCopy({ ...comparing, activity });
+      assert.equal(actual.title, title, `${dataMode} ${activity}`);
+      assert.equal(actual.notable, true, `${dataMode} ${activity}`);
+    }
+    for (const activity of ["idle", "docked", "unknown"]) {
+      const active = { ...comparing, activity, resources: { ...comparing.resources, entry: {
+        ...comparing.resources.entry, nativeSessionActive: true,
+      } } };
+      assert.equal(statusCopy(active).title, "Run in progress", `${dataMode} ${activity}`);
+    }
+    for (const activity of ["idle", "docked", "unknown"]) {
+      assert.equal(statusCopy({ ...comparing, activity, command: "starting" }).title, "Starting");
+    }
+    assert.equal(statusCopy({ ...comparing, activity: "idle" }).title, "Comparing saved maps");
+  }
+});

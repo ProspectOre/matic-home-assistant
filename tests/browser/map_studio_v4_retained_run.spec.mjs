@@ -179,6 +179,32 @@ test("a retained result preserves current map warning and active-run priority an
   await expect(shell.locator(".status-copy strong")).toHaveText("Run in progress");
 });
 
+test("comparison keeps active robot status visible in the packaged shell", async ({ page }) => {
+  const { installPanelFixture } = await import("./map_studio_v4_panel_fixture.mjs");
+  const fixture = await installPanelFixture(page, { moduleSource: "packaged" });
+  await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
+  const panel = page.locator(fixture.panelTag);
+  await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
+  await panel.evaluate(element => {
+    const state = element.getWorkspaceSnapshot();
+    element.remove();
+    const shell = document.createElement("matic-map-shell-v4");
+    shell.id = "comparison-status-shell";
+    shell.state = { ...state, comparisonActive: true, dataMode: "history", activity: "cleaning",
+      lastRun: { runId: "run-1", outcome: "running", completedRoomCount: 0, roomCount: 3 } };
+    document.body.append(shell);
+  });
+  const shell = page.locator("#comparison-status-shell");
+  await expect(shell.locator(".status-copy strong")).toHaveText("Cleaning");
+  await expect(shell.locator(".status-copy small")).toHaveText("0 of 3 rooms confirmed");
+  for (const [activity, title] of [["paused", "Paused"], ["returning", "Returning"], ["recharging", "Charging to resume"]]) {
+    await shell.evaluate((element, activity) => element.state = { ...element.state, activity }, activity);
+    await expect(shell.locator(".status-copy strong")).toHaveText(title);
+  }
+  await shell.evaluate(element => element.state = { ...element.state, activity: "idle" });
+  await expect(shell.locator(".status-copy strong")).toHaveText("Comparing saved maps");
+});
+
 test("Home panel keeps a partial result after dock and refresh, hides it for a new run and successful completion", async ({ page }) => {
   const { installPanelFixture } = await import("./map_studio_v4_panel_fixture.mjs");
   const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialRobotStates: {

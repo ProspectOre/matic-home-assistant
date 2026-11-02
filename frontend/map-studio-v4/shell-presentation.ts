@@ -58,8 +58,8 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
       estimate: state.smartStop.phase === "finishing_room" ? roomProgressEstimate() : undefined,
       icon: iconPaused, notable: true };
   }
-  if (state.comparisonActive) return { title: t("v4_comparison_read_only_status", "Comparing saved maps"), detail: t("v4_comparison_read_only_detail", "Read-only comparison · live map unchanged"), icon: iconHistory, notable: false };
-  if (state.dataMode === "history") {
+  if (state.comparisonActive && !hasStoppableWork(state) && state.activity !== "starting") return { title: t("v4_comparison_read_only_status", "Comparing saved maps"), detail: t("v4_comparison_read_only_detail", "Read-only comparison · live map unchanged"), icon: iconHistory, notable: false };
+  if (state.dataMode === "history" && !state.comparisonActive) {
     // shell.md §4 row 7: the date and place of the saved map, as the chip says.
     const saved = savedMapPosition(state);
     return {
@@ -69,11 +69,11 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
       notable: false,
     };
   }
-  if (state.coherence === "verifying" || state.coherence === "booting") {
+  if (!state.comparisonActive && (state.coherence === "verifying" || state.coherence === "booting")) {
     return { title: t("v4_locating", "Locating"), detail: t("v4_finding_map", "Finding the current map"), icon: iconRobot, notable: true };
   }
-  if ((state.resources.entry?.activePlan || state.resources.entry?.runnerLocked)
-    && (state.activity === "idle" || state.activity === "docked")) {
+  if ((state.resources.entry?.activePlan || state.resources.entry?.runnerLocked || state.resources.entry?.nativeSessionActive)
+    && (state.activity === "idle" || state.activity === "docked" || state.activity === "unknown")) {
     return {
       title: t("v4_task_in_progress", "Run in progress"),
       detail: state.coherence === "unavailable" || state.coherence === "blocked"
@@ -85,7 +85,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
       notable: true,
     };
   }
-  if (state.command === "starting" && (state.activity === "idle" || state.activity === "docked")) {
+  if (state.activity === "starting" || (state.command === "starting" && (state.activity === "idle" || state.activity === "docked" || state.activity === "unknown"))) {
     return { title: t("v4_action_starting", "Starting"), detail: t("v4_action_starting_detail", "Waiting for the robot to begin"), icon: iconRobot, notable: true };
   }
   const mapUnavailable = state.coherence === "unavailable" || state.coherence === "blocked";
@@ -93,7 +93,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
   if (state.activity === "cleaning") {
     // Row 11: the room the robot reports, when it is a room on this floor.
     const area = roomKey(state.currentArea);
-    const room = area && state.resources.scene.value?.metadata.rooms.find((candidate) => roomKey(candidate.name) === area || roomKey(candidate.id) === area)?.name;
+    const room = state.dataMode === "live" && area && state.resources.scene.value?.metadata.rooms.find((candidate) => roomKey(candidate.name) === area || roomKey(candidate.id) === area)?.name;
     const progress = state.lastRun?.outcome === "running" ? state.lastRun : null;
     const run = state.robotRun;
     const minutes = run?.remainingSeconds == null ? null : Math.max(1, Math.round(run.remainingSeconds / 60));
