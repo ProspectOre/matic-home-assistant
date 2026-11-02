@@ -239,6 +239,7 @@
     "v4_robot_offline": "Robot offline",
     "v4_robot_offline_body": "Showing the last known map. Cleaning comes back when the robot reconnects.",
     "v4_robot_offline_title": "Robot offline",
+    "v4_robot_last_seen": "Last clean: last seen",
     "v4_robot_position_hidden": "The robot position is not shown.",
     "v4_robot_position_verified": "The robot's position is confirmed.",
     "v4_room_colours": "Room colors",
