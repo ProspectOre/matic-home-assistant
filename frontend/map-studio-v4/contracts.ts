@@ -203,6 +203,8 @@ export interface WifiSignalCell {
   readonly x: number;
   readonly y: number;
   readonly dbm: number;
+  /** Grid resolution when this reading was collected, in metres. */
+  readonly size: number;
 }
 
 export interface WifiSignalLayer {

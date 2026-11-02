@@ -2989,7 +2989,6 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
         kitchen,
         study,
     ]
-
     await manager.ledger.async_mark_started("serial", "away", kitchen)
     await manager.ledger.async_mark_resumed("serial", "away", kitchen)
     confirmed_at = manager.repository.robot("serial")["rotations"]["away"]["rooms"][
@@ -3022,6 +3021,50 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
         kitchen,
         study,
     ]
+
+
+async def test_revisited_room_updates_active_room_without_losing_skip_baseline(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    kitchen, study = _room("Kitchen", "room-kitchen"), _room("Study", "room-study")
+    robot = manager.repository.robot("serial")
+    robot["last_run"] = {
+        "run_id": "run-1",
+        "plan_id": "away",
+        "outcome": "running",
+        "recovery_checkpoint": {"started_room_ids": []},
+    }
+    original = "2026-08-31T12:00:00+00:00"
+    manager.ledger.room("serial", "away", kitchen)["last_opportunity"] = original
+    robot["rooms"][kitchen.room_id] = {"last_opportunity": original}
+
+    assert await manager.ledger.async_mark_started(
+        "serial", "away", kitchen, run_id="run-1"
+    )
+    await manager.ledger.async_mark_resumed("serial", "away", kitchen)
+    assert await manager.ledger.async_mark_started(
+        "serial", "away", study, run_id="run-1"
+    )
+    await manager.ledger.async_mark_resumed("serial", "away", study)
+    assert not await manager.ledger.async_mark_started(
+        "serial", "away", kitchen, run_id="run-1"
+    )
+    await manager.ledger.async_mark_resumed("serial", "away", kitchen)
+
+    assert (
+        manager.history.snapshot("serial")["active_plan"]["room_id"] == kitchen.room_id
+    )
+    assert (
+        manager.ledger.room("serial", "away", kitchen)["opportunity_before_run"][
+            "value"
+        ]
+        == original
+    )
+    assert (
+        robot["rooms"][kitchen.room_id]["opportunity_before_run"]["value"] == original
+    )
 
 
 async def test_stale_run_completion_cannot_credit_new_run_with_same_plan_id(
@@ -11569,6 +11612,9 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
     await hass.async_block_till_done()
     # HA schedules listener callbacks independently; assert delivery multiplicity.
     assert sorted(starts) == ["Kitchen", "Office"]
+    assert [
+        call.args[2].name for call in manager.ledger.async_mark_started.await_args_list
+    ] == ["Kitchen", "Office", "Kitchen", "Office"]
     assert manager.ledger.async_mark_completed.await_count == 2
 
 

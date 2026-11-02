@@ -19,7 +19,8 @@ test("comparison loads pinned scene URLs and clears without choosing a replaceme
     const { MaticMapComparisonV4, createGalleryState } = await import("/comparison-element.js");
     const base = createGalleryState("ready");
     const state = { ...base, workflow: "history", dataMode: "history", owner: { userKey: "u", entryKey: "robot" },
-      host: { ...base.host, administrator: true }, selection: { ...base.selection, entryId: "robot" } };
+      host: { ...base.host, administrator: true }, floor: { ...base.floor, displayName: "House" },
+      selection: { ...base.selection, entryId: "robot" } };
     const scene = base.resources.scene.value;
     const calls = [];
     const records = [
@@ -43,6 +44,8 @@ test("comparison loads pinned scene URLs and clears without choosing a replaceme
     document.body.append(element);
     await new Promise((resolve) => setTimeout(resolve, 100));
     const firstCalls = structuredClone(calls);
+    const previewLabels = Array.from(element.shadowRoot.querySelectorAll(".map-preview"), (canvas) =>
+      canvas.shadowRoot.querySelector(".scene-window")?.getAttribute("aria-label") ?? "");
     element.catalog = { ...element.catalog, generation: 2, records: [records[1]] };
     await element.updateComplete;
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -53,11 +56,16 @@ test("comparison loads pinned scene URLs and clears without choosing a replaceme
       sourcePoints: canvas.rendererDiagnostics()?.sourcePoints ?? 0,
     }));
     element.remove();
-    return { firstCalls, afterDelete, message, selected, clearedPreviews };
+    return { firstCalls, afterDelete, message, selected, clearedPreviews, previewLabels };
   });
   expect(result.firstCalls.map(({ url }) => url).sort()).toEqual(["/record/a", "/record/b"]);
   expect(result.afterDelete).toEqual(result.firstCalls);
   expect(result.message).toContain("no longer available");
+  expect(result.previewLabels).toHaveLength(2);
+  expect(result.previewLabels).toEqual([
+    "Saved read-only map for an unspecified floor. Live robot position is hidden.",
+    "Saved read-only map for an unspecified floor. Live robot position is hidden.",
+  ]);
   expect(result.selected.at(-1)).toBeNull();
   expect(result.clearedPreviews).toHaveLength(2);
   expect(result.clearedPreviews).toEqual([

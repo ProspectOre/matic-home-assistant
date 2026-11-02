@@ -133,6 +133,7 @@ export const queueControls = ({ state, roomId, localize, dates, setRoom, current
           @change=${(event: Event) => setRoom((event.currentTarget as HTMLSelectElement).value)}
         >${rooms.map((candidate) => html`<option value=${candidate.roomId} ?selected=${candidate.roomId === room.roomId}>${candidate.name}</option>`)}</select>
       </label>
+      <p class="quiet">${t("v4_queue_room_scope", "All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.")}</p>
       <div class="queue-actions" role="group" aria-label=${t("v4_queue_actions", "Change {room}", { room: room.name })}>
         ${button("skip_room", t("v4_queue_skip", "Skip"))}
         ${button("clean_room_next", t("v4_queue_next", "Clean next"))}

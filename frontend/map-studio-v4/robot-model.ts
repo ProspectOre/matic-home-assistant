@@ -20,7 +20,7 @@ const LID = 0.115;
 const LID_INSET = 0.9;
 const BAND: readonly [low: number, high: number] = [0.055, 0.082];
 /** On-screen length the model never shrinks below, in CSS pixels. */
-const MIN_PIXELS = 30;
+const MIN_PIXELS = 18;
 const MAX_SCALE = 8;
 /** Light comes from the map's upper left, in map meters. */
 const LIGHT: Local = [-0.6, 0.8];

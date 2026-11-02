@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from http import HTTPStatus
 from time import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, override
 
 from aiohttp import web
 from homeassistant.components.http.decorators import require_admin
@@ -18,7 +18,7 @@ from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
 from homeassistant.helpers.storage import Store
 
 from .client.exceptions import MaticError
-from .client.floor_plan import MAX_MAP_COORDINATE
+from .client.floor_plan import MAX_MAP_COORDINATE, pose_observation_is_current
 from .client.models import RobotPose
 from .const import DOMAIN
 from .http import (
@@ -33,12 +33,14 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-STORAGE_VERSION = 1
+STORAGE_VERSION = 2
 SAVE_DELAY_SECONDS = 30
-CELL_SIZE_METERS = 1.0
+CELL_SIZE_METERS = 0.5
+LEGACY_CELL_SIZE_METERS = 1.0
 SAMPLE_INTERVAL_SECONDS = 30
-# A scan takes about 7 seconds, so a cleaning robot covers a metre or two.
-MAX_POSE_DRIFT_METERS = 2.0
+# A scan may take several seconds. Reject readings whose location cannot be
+# bounded closely enough to be useful at the finer survey resolution.
+MAX_POSE_DRIFT_METERS = 0.5
 MAX_CELLS_PER_FLOOR = 4096
 MAX_FLOORS = 8
 # A cell is a plain mean of its first 20 scans, then a fading average that
@@ -58,7 +60,31 @@ class SignalCell:
     updated_at: float
 
 
-type _CellKey = tuple[int, int]
+type _CellKey = tuple[int, int, float]
+
+
+class _WifiSurveyStorage(Store[dict[str, Any]]):
+    """Keep older coarse readings distinguishable from finer observations."""
+
+    @override
+    async def _async_migrate_func(
+        self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        if old_major_version != 1 or old_minor_version != 1:
+            raise ValueError(
+                "unsupported Wi-Fi survey storage version "
+                f"{old_major_version}.{old_minor_version}"
+            )
+        # Validate before Home Assistant writes the migrated payload. Older
+        # five-field rows retain their original one-metre grid.
+        stored = old_data if isinstance(old_data, dict) else {}
+        floors = _decode_floors(stored.get("floors"))
+        frames = _decode_frames(stored.get("frames"))
+        return {
+            "enabled": stored.get("enabled") is True,
+            "floors": _encode_floors(floors),
+            "frames": {str(mission): frame for mission, frame in frames.items()},
+        }
 
 
 class WifiSurveyStore:
@@ -66,7 +92,7 @@ class WifiSurveyStore:
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
         self._hass = hass
-        self._store = Store[dict[str, Any]](
+        self._store = _WifiSurveyStorage(
             hass,
             STORAGE_VERSION,
             f"{DOMAIN}.wifi_survey.{entry_id}",
@@ -124,7 +150,11 @@ class WifiSurveyStore:
             and MIN_DBM <= dbm <= MAX_DBM
         ):
             return False
-        key = (math.floor(x / CELL_SIZE_METERS), math.floor(y / CELL_SIZE_METERS))
+        key = (
+            math.floor(x / CELL_SIZE_METERS),
+            math.floor(y / CELL_SIZE_METERS),
+            CELL_SIZE_METERS,
+        )
         if self._frames.get(mission_id) != frame:
             # A new frame for this mission moves every coordinate.
             self._floors.pop(mission_id, None)
@@ -154,13 +184,14 @@ class WifiSurveyStore:
             return []
         return [
             {
-                "x": round((ix + 0.5) * CELL_SIZE_METERS, 3),
-                "y": round((iy + 0.5) * CELL_SIZE_METERS, 3),
+                "x": round((ix + 0.5) * size, 3),
+                "y": round((iy + 0.5) * size, 3),
+                "size": size,
                 "dbm": round(cell.dbm, 1),
                 "samples": cell.samples,
                 "updated_at": round(cell.updated_at),
             }
-            for (ix, iy), cell in sorted(self._floors.get(mission_id, {}).items())
+            for (ix, iy, size), cell in sorted(self._floors.get(mission_id, {}).items())
         ]
 
     async def async_collect(
@@ -193,12 +224,19 @@ class WifiSurveyStore:
         epoch = self._epoch
         try:
             before = await client.async_get_pose(expected_mission_id=mission_id)
+            if not pose_observation_is_current(before, floor_plan, now=time()):
+                return
             dbm = await client.async_scan_wifi_signal()
             after = await client.async_get_pose(expected_mission_id=mission_id)
         except MaticError as err:
             _LOGGER.debug("Wi-Fi survey sample skipped: %s", err)
             return
-        if dbm is None or epoch != self._epoch or not _poses_agree(before, after):
+        if (
+            dbm is None
+            or epoch != self._epoch
+            or not pose_observation_is_current(after, floor_plan, now=time())
+            or not _poses_agree(before, after)
+        ):
             return
         # The frame can change during the scan; a stale fingerprint would wipe
         # the new frame's cells.
@@ -236,13 +274,7 @@ class WifiSurveyStore:
     def _data(self) -> dict[str, Any]:
         return {
             "enabled": self._enabled,
-            "floors": {
-                str(mission_id): [
-                    [ix, iy, round(cell.dbm, 2), cell.samples, round(cell.updated_at)]
-                    for (ix, iy), cell in cells.items()
-                ]
-                for mission_id, cells in self._floors.items()
-            },
+            "floors": _encode_floors(self._floors),
             "frames": {
                 str(mission_id): frame for mission_id, frame in self._frames.items()
             },
@@ -286,6 +318,18 @@ def _decode_floors(raw: object) -> dict[int, dict[_CellKey, SignalCell]]:
     return floors
 
 
+def _encode_floors(
+    floors: dict[int, dict[_CellKey, SignalCell]],
+) -> dict[str, list[list[float | int]]]:
+    return {
+        str(mission_id): [
+            [ix, iy, round(cell.dbm, 2), cell.samples, round(cell.updated_at), size]
+            for (ix, iy, size), cell in cells.items()
+        ]
+        for mission_id, cells in floors.items()
+    }
+
+
 def _decode_frames(raw: object) -> dict[int, str]:
     if not isinstance(raw, dict):
         return {}
@@ -307,25 +351,27 @@ def _is_mission_key(key: str) -> bool:
 
 
 _MAX_TIMESTAMP = 1e11
-_MAX_CELL_INDEX = math.ceil(MAX_MAP_COORDINATE / CELL_SIZE_METERS)
 
 
 def _decode_cell(row: object) -> tuple[_CellKey, SignalCell] | None:
-    if not isinstance(row, list) or len(row) != 5:
+    if not isinstance(row, list) or len(row) not in (5, 6):
         return None
-    ix, iy, dbm, samples, updated_at = row
+    ix, iy, dbm, samples, updated_at = row[:5]
+    size = row[5] if len(row) == 6 else LEGACY_CELL_SIZE_METERS
     if not (
         all(type(value) is int for value in (ix, iy, samples))
         and all(type(value) in (int, float) for value in (dbm, updated_at))
+        and type(size) in (int, float)
+        and size in (CELL_SIZE_METERS, LEGACY_CELL_SIZE_METERS)
         and MIN_DBM <= dbm <= MAX_DBM
-        and abs(ix) <= _MAX_CELL_INDEX
-        and abs(iy) <= _MAX_CELL_INDEX
-        and samples > 0
+        and abs(ix) <= math.ceil(MAX_MAP_COORDINATE / size)
+        and abs(iy) <= math.ceil(MAX_MAP_COORDINATE / size)
+        and 0 < samples <= 2**31 - 1
         # A bound, not isfinite(): a huge stored int would overflow the float.
         and 0 <= updated_at <= _MAX_TIMESTAMP
     ):
         return None
-    return (ix, iy), SignalCell(float(dbm), samples, float(updated_at))
+    return (ix, iy, float(size)), SignalCell(float(dbm), samples, float(updated_at))
 
 
 class MaticWifiHeatmapView(HomeAssistantView):

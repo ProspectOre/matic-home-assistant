@@ -2083,6 +2083,7 @@ test.describe("change this clean", () => {
       document.addEventListener("matic-workspace-action", (event) => window.__queueActions.push(event.detail));
     });
     const queue = gallery.getByRole("region", { name: "Change this clean" });
+    await expect(queue).toContainText("All mapped rooms are listed. Skip and Clean next work only for rooms in the robot's current queue.");
     const room = queue.getByRole("combobox", { name: "Room" });
     await expect(room.locator("option:checked")).toHaveText("Kitchen");
     const actions = queue.getByRole("group", { name: "Change Kitchen" }).getByRole("button");

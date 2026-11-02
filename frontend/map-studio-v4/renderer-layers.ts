@@ -165,7 +165,7 @@ export function drawMapLayers(
       drawFloorType(context, state.floorTypes.vent, "hsl(205 80% 50%)", project);
     }
     if (state.wifiSignal?.status === "ready") {
-      drawWifiSignal(context, state.wifiSignal.cells, state.wifiSignal.cellSize / 2, project);
+      drawWifiSignal(context, state.wifiSignal.cells, project);
     }
   }
 }
@@ -182,42 +182,74 @@ export function drawRunTrail(
   if (!trail || state.dataMode !== "live"
     || (trail.id !== "live" && state.workflow !== "runs")
     || trail.mapSessionKey !== state.resources.entry?.mapSessionKey) return;
+  const isolated: MapPoint[] = [];
   context.beginPath();
   for (const segment of trail.segments) {
-    segment.forEach(([x, y], index) => {
+    let previous: { x: number; y: number; point: MapPoint; linked: boolean } | null = null;
+    const finishPoint = () => { if (previous && !previous.linked) isolated.push(previous.point); };
+    segment.forEach(([x, y]) => {
       const point = project(x, y, 0, false);
-      if (point) {
-        if (index === 0) context.moveTo(point.x, point.y);
-        else context.lineTo(point.x, point.y);
-      }
+      if (!point) { finishPoint(); previous = null; return; }
+      // A long gap contains no evidence of the path between observations.
+      const linked = previous !== null && Math.hypot(x - previous.x, y - previous.y) <= 1;
+      if (linked) context.lineTo(point.x, point.y);
+      else { finishPoint(); context.moveTo(point.x, point.y); }
+      previous = { x, y, point, linked };
     });
+    finishPoint();
   }
+  context.save();
   context.lineJoin = context.lineCap = "round";
-  context.strokeStyle = rgba(palette.accent, .7);
+  context.strokeStyle = rgba(palette.onAccent, 1);
+  context.lineWidth = 7;
+  context.stroke();
+  context.strokeStyle = rgba(palette.accent, 1);
   context.lineWidth = 3;
   context.stroke();
+  // A lone observation would otherwise have no stroked line at all.
+  for (const [radius, colour] of [[3.5, palette.onAccent], [1.5, palette.accent]] as const) {
+    context.beginPath();
+    for (const point of isolated) {
+      context.moveTo(point.x + radius, point.y);
+      context.arc(point.x, point.y, radius, 0, Math.PI * 2);
+    }
+    context.fillStyle = rgba(colour, 1);
+    context.fill();
+  }
+  context.restore();
 }
 
 // Strong signal (-50 dBm or better) is green, weak (-85 or worse) is red.
 function drawWifiSignal(
   context: CanvasRenderingContext2D,
   cells: readonly WifiSignalCell[],
-  half: number,
   project: ProjectMeters,
 ): void {
   context.save();
   for (const cell of cells) {
-    const corners = ([[-half, -half], [half, -half], [half, half], [-half, half]] as const)
-      .map(([dx, dy]) => project(cell.x + dx, cell.y + dy, 0.1, false));
-    if (corners.some((corner) => !corner)) continue;
+    // Dots mark approximate sample locations, not a measured square. Older
+    // one-metre readings use a ring to retain their coarser provenance.
+    const radius = Math.min(cell.size / 2, 0.18);
+    const points = Array.from({ length: 12 }, (_, index) => {
+      const angle = index * Math.PI / 6;
+      return project(cell.x + radius * Math.cos(angle), cell.y + radius * Math.sin(angle), 0.1, false);
+    });
+    if (points.some((point) => !point)) continue;
     const strength = Math.min(1, Math.max(0, (cell.dbm + 85) / 35));
-    context.fillStyle = `hsl(${Math.round(strength * 120)} 75% 45% / .45)`;
+    const colour = `hsl(${Math.round(strength * 120)} 75% 45% / .8)`;
     context.beginPath();
-    corners.forEach((corner, index) => index
-      ? context.lineTo(corner!.x, corner!.y)
-      : context.moveTo(corner!.x, corner!.y));
+    points.forEach((point, index) => index
+      ? context.lineTo(point!.x, point!.y)
+      : context.moveTo(point!.x, point!.y));
     context.closePath();
-    context.fill();
+    if (cell.size > 0.5) {
+      context.strokeStyle = colour;
+      context.lineWidth = 2;
+      context.stroke();
+    } else {
+      context.fillStyle = colour;
+      context.fill();
+    }
   }
   context.restore();
 }

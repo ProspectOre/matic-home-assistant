@@ -36,6 +36,11 @@ PARTITION = b"partition-1"
 FRAME = survey_frame(PARTITION)
 
 
+@pytest.fixture(autouse=True)
+def _survey_clock(monkeypatch) -> None:
+    monkeypatch.setattr(wifi_survey, "time", lambda: 12.0)
+
+
 def _wifi(signal: int | None) -> bytes:
     status = _vfield(1, 3) + _bfield(4, b"Test LAN")
     if signal is None:
@@ -122,8 +127,22 @@ async def test_samples_fold_into_cells_and_survive_a_reload(hass) -> None:
 
     half = CELL_SIZE_METERS / 2
     assert store.cells(7, FRAME) == [
-        {"x": -half, "y": half, "dbm": -70.0, "samples": 1, "updated_at": 30},
-        {"x": half, "y": half, "dbm": -55.0, "samples": 2, "updated_at": 20},
+        {
+            "x": -half,
+            "y": half,
+            "size": CELL_SIZE_METERS,
+            "dbm": -70.0,
+            "samples": 1,
+            "updated_at": 30,
+        },
+        {
+            "x": half,
+            "y": half,
+            "size": CELL_SIZE_METERS,
+            "dbm": -55.0,
+            "samples": 2,
+            "updated_at": 20,
+        },
     ]
     assert store.cells(8, FRAME) == []
 
@@ -222,6 +241,38 @@ async def test_load_drops_malformed_rows(hass, hass_storage) -> None:
     assert (store.enabled, store.cells(7, FRAME)) == (False, [])
 
 
+async def test_legacy_coarse_cells_keep_their_positions_across_finer_samples(
+    hass, hass_storage
+) -> None:
+    hass_storage[f"{DOMAIN}.wifi_survey.entry"] = {
+        "version": 1,
+        "data": {
+            "enabled": True,
+            "floors": {"7": [[-2, 3, -70, 4, 100]]},
+            "frames": {"7": FRAME},
+        },
+    }
+    store = WifiSurveyStore(hass, "entry")
+    await store.async_load()
+    assert store.cells(7, FRAME) == [
+        {
+            "x": -1.5,
+            "y": 3.5,
+            "size": 1.0,
+            "dbm": -70.0,
+            "samples": 4,
+            "updated_at": 100,
+        }
+    ]
+    assert store.add_sample(7, FRAME, -1.4, 3.4, -55, 200)
+    expected = store.cells(7, FRAME)
+    assert sorted(cell["size"] for cell in expected) == [0.5, 1.0]
+    await store.async_shutdown()
+    restored = WifiSurveyStore(hass, "entry")
+    await restored.async_load()
+    assert restored.cells(7, FRAME) == expected
+
+
 def _coordinator(*, charging: bool = False, mission: int | None = 7):
     floor_plan = (
         SimpleNamespace(mission_id=7, partition_id_wire=PARTITION)
@@ -246,11 +297,18 @@ def _sampling_client(*poses: RobotPose, dbm: int | None = -55) -> SimpleNamespac
 
 async def test_sample_pairs_the_scan_with_the_pose_around_it(hass) -> None:
     store = WifiSurveyStore(hass, "entry")
-    client = _sampling_client(_pose(1.0, 1.0, 10.0), _pose(1.2, 1.0, 12.0))
+    client = _sampling_client(_pose(1.0, 1.0, 98.0), _pose(1.2, 1.0, 99.0))
     with patch.object(wifi_survey, "time", return_value=99.0):
         await store._async_sample(client, _coordinator())
     assert store.cells(7, FRAME) == [
-        {"x": 1.5, "y": 1.5, "dbm": -55.0, "samples": 1, "updated_at": 99}
+        {
+            "x": 1.25,
+            "y": 1.25,
+            "size": CELL_SIZE_METERS,
+            "dbm": -55.0,
+            "samples": 1,
+            "updated_at": 99,
+        }
     ]
     client.async_get_pose.assert_awaited_with(expected_mission_id=7)
 
@@ -328,6 +386,8 @@ async def test_sample_is_dropped_when_the_frame_changes_during_the_scan(
         (_coordinator(), _sampling_client(_pose(0, 0, None), _pose(0, 0, 2.0))),
         (_coordinator(), _sampling_client(_pose(0, 0, 1.0), _pose(0, 0, None))),
         (_coordinator(), _sampling_client(_pose(0, 0, 1.0), _pose(2.1, 0, 8.0))),
+        (_coordinator(), _sampling_client(_pose(0, 0, 10.0), _pose(0.51, 0, 12.0))),
+        (_coordinator(), _sampling_client(_pose(0, 0, 10.0), _pose(0, 0, 20.0))),
         (
             _coordinator(),
             SimpleNamespace(

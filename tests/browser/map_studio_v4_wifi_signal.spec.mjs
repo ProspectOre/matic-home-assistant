@@ -65,9 +65,9 @@ test("Map options turns on the Wi-Fi signal layer and reads the survey", async (
     status: "ready",
     surveying: true,
     cellSize: 0.5,
-    cells: [{ x: 0.75, y: 0.75, dbm: -48 }, { x: 1.25, y: 0.75, dbm: -88 }],
+    cells: [{ x: 0.75, y: 0.75, dbm: -48, size: 0.5 }, { x: 1.25, y: 0.75, dbm: -88, size: 0.5 }],
   });
-  await expect.poll(() => wifiRow(panel)).toEqual({ checked: "true", text: "Wi-Fi signal Green is strong, red is weak" });
+  await expect.poll(() => wifiRow(panel)).toEqual({ checked: "true", text: "Wi-Fi signal Approximate samples: green strong, red weak. Rings are older; blank areas are unmeasured." });
 
   await clickInShadow(panel, "[data-wifi-signal]");
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toBeNull();
@@ -200,12 +200,13 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     await frame();
     renderer.dispose();
     const lastRoomFill = painted.findLastIndex((value) => / 0\.94\)$/u.test(value));
-    // The canvas reports the cells' hsl(... / .45) as rgba with alpha 0.45.
-    const firstCell = painted.findIndex((value) => / 0\.45\)$/u.test(value));
+    // The canvas reports the cells' hsl(... / .8) as rgba with alpha 0.8.
+    const firstCell = painted.findIndex((value) => / 0\.8\)$/u.test(value));
     const roomColours = { roomFills: lastRoomFill >= 0, cellsAbove: firstCell > lastRoomFill };
     const rejected = [
       { enabled: "yes", cell_size: 0.5, cells: [] },
       { enabled: true, cell_size: 0.5, cells: [{ x: 0, y: 0, dbm: 3 }] },
+      { enabled: true, cell_size: 0.5, cells: [{ x: 0, y: 0, dbm: -50, size: -1 }] },
       { enabled: true, cell_size: 0, cells: [] },
       { enabled: true, cell_size: 0.5, cells: [null] },
       null,
@@ -213,11 +214,36 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     return { live, history, retained, rejected, roomColours };
   }, SURVEY);
   // -48 dBm is past the strong end of the scale and -88 past the weak end.
-  expect(result.live).toEqual(["hsl(120 75% 45% / .45)", "hsl(0 75% 45% / .45)"]);
+  expect(result.live).toEqual(["hsl(120 75% 45% / .8)", "hsl(0 75% 45% / .8)"]);
   expect(result.history).toEqual([]);
   // A retained read-only scene waits for the live one before cells draw.
   expect(result.retained).toEqual([]);
   // Room colors fill rooms at 94% opacity; the cells must paint over them.
   expect(result.roomColours).toEqual({ roomFills: true, cellsAbove: true });
-  expect(result.rejected).toEqual([true, true, true, true, true]);
+  expect(result.rejected).toEqual([true, true, true, true, true, true]);
+});
+
+test("Wi-Fi samples render as small marks and retain the older coarse-reading distinction", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { drawMapLayers } from "./frontend/map-studio-v4/renderer-layers";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/wifi-marks.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { drawMapLayers } = await import("/wifi-marks.js");
+    const marks = [];
+    let points = [];
+    const context = {
+      save() {}, restore() {}, beginPath() { points = []; }, closePath() {},
+      moveTo(x, y) { points.push([x, y]); }, lineTo(x, y) { points.push([x, y]); },
+      fill() { marks.push({ kind: "sample", width: Math.max(...points.map(p => p[0])) - Math.min(...points.map(p => p[0])) }); },
+      stroke() { marks.push({ kind: "older", width: Math.max(...points.map(p => p[0])) - Math.min(...points.map(p => p[0])) }); },
+    };
+    const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" },
+      wifiSignal: { status: "ready", cells: [
+        { x: 0, y: 0, dbm: -55, size: 0.5 }, { x: 2, y: 0, dbm: -75, size: 1 },
+      ] } };
+    drawMapLayers(context, state, (x, y) => ({ x: x * 100, y: y * 100 }));
+    return marks;
+  });
+  expect(result.map(mark => mark.kind)).toEqual(["sample", "older"]);
+  expect(result.every(mark => mark.width > 0 && mark.width <= 40)).toBe(true);
 });

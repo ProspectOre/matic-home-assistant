@@ -444,6 +444,36 @@ const livePose = (overrides = {}) => ({
   freshness: "live", nativeObservationAgeSeconds: 0, ...overrides,
 });
 
+test("slow server work does not consume fresh-pose lifetime twice", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const f = fixture();
+  const reply = deferred();
+  const owner = new SpatialPose(f.store, { pose: () => reply.promise }, f.coherence, f.requests, {
+    ...f.callbacks, failed() {}, recovered() {}, extendLiveTrail() {},
+  });
+  const load = owner.load(f.entry, f.stamp);
+  now = 6_000;
+  reply.resolve(livePose({ nativeObservationAgeSeconds: 0.75, poseProcessingSeconds: 5.5 }));
+  await load;
+  assert.equal(f.store.value.map.exactPose, true);
+  t.mock.timers.tick(3_749);
+  assert.equal(f.store.value.map.exactPose, true);
+  t.mock.timers.tick(1);
+  assert.equal(f.store.value.map.exactPose, false);
+
+  const oldServer = deferred();
+  const conservative = new SpatialPose(f.store, { pose: () => oldServer.promise }, f.coherence, f.requests, {
+    ...f.callbacks, failed() {}, recovered() {}, extendLiveTrail() {},
+  });
+  const pending = conservative.load(f.entry, f.stamp);
+  now += 6_000;
+  oldServer.resolve(livePose({ nativeObservationAgeSeconds: 0.75 }));
+  await pending;
+  assert.equal(f.store.value.map.exactPose, false);
+});
+
 test("a retained pose expires on its original deadline across a forced same-frame refresh", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const f = fixture();

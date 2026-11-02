@@ -12,7 +12,7 @@ const wifiNote = (layer: WorkspaceState["wifiSignal"], t: MapOptionsContext["t"]
   const note = layer.status === "failed"
     ? t("v4_wifi_signal_failed", "Couldn't load the survey")
     : layer.cells.length
-      ? t("v4_wifi_signal_legend", "Green is strong, red is weak")
+      ? t("v4_wifi_signal_legend", "Approximate samples: green strong, red weak. Rings are older; blank areas are unmeasured.")
       : layer.surveying
         ? t("v4_wifi_signal_waiting", "No samples yet · they arrive during cleaning")
         : t("v4_wifi_signal_off", "Turn on Wi-Fi survey in the robot's settings");
@@ -92,7 +92,7 @@ export class MapOptions {
     .overflow-menu [role="menuitemcheckbox"] { justify-content: space-between; gap: var(--ms-space-3); }
     .overflow-menu [role="group"] { display: grid; gap: var(--ms-space-1); }
     .overflow-menu [role="group"] + * { border-block-start: 1px solid var(--ms-line); padding-block-start: var(--ms-space-1); }
-    .overflow-menu :is([data-wifi-signal], [data-floor-types]) > span:first-child { display: grid; text-align: start; }
+    .overflow-menu :is([data-wifi-signal], [data-floor-types], [data-robot-trail]) > span:first-child { display: grid; text-align: start; }
     .menu-note { color: var(--ms-text-quiet); font-size: var(--ms-t-sm); }
     .menu-heading { margin: 0; padding: var(--ms-space-2) var(--ms-space-3) var(--ms-space-1); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
 
@@ -167,9 +167,10 @@ export class MapOptions {
           type="button"
           role="menuitemcheckbox"
           aria-checked=${String(state.trail?.id === "live")}
+          data-robot-trail
           tabindex="-1"
           @click=${() => intent({ type: "show-trail", trail: state.trail?.id === "live" ? null : "live" })}
-        ><span>${t("v4_robot_trail", "Robot trail")}</span><span class="ms-switch" aria-checked=${String(state.trail?.id === "live")} aria-hidden="true"></span></button>` : nothing}
+        ><span>${t("v4_robot_trail", "Robot trail")}${state.trail?.id === "live" ? html`<small class="menu-note">${t("v4_robot_trail_hint", "The sampled path can have gaps.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.trail?.id === "live")} aria-hidden="true"></span></button>` : nothing}
         ${this.#zoom.available() ? html`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${() => this.#zoom.show()}>${t("v4_map_zoom", "Map zoom")}</button>` : nothing}
         <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${() => { this.menu.close(false); diagnostics(); }}>${t("v4_map_diagnostics", "Map diagnostics")}</button>
       </div>`}

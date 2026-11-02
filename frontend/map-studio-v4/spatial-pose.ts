@@ -102,7 +102,12 @@ export class SpatialPose {
       const requestElapsedMs = Math.max(0, performance.now() - requestStartedAt);
       const ageKnown = pose.nativeObservationAgeSeconds === undefined
         || typeof pose.nativeObservationAgeSeconds === "number";
-      const remainingFreshMs = (5_000 - (pose.nativeObservationAgeSeconds ?? 0) * 1_000) - requestElapsedMs;
+      // The server measures native age after waiting for the robot. Do not
+      // count that wait twice, but keep all unaccounted transit and local
+      // processing inside the freshness budget. Older servers stay conservative.
+      const serverMs = Math.min(requestElapsedMs, (pose.poseProcessingSeconds ?? 0) * 1_000);
+      const remainingFreshMs = 5_000 - Math.max(0, pose.nativeObservationAgeSeconds ?? 0) * 1_000
+        - (requestElapsedMs - serverMs);
       const exactLivePose = pose.position !== null && pose.freshness === "live"
         && ageKnown && remainingFreshMs > 0;
       this.clearExpiry();

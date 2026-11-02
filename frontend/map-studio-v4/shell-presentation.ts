@@ -56,6 +56,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
       estimate: state.smartStop.phase === "finishing_room" ? roomProgressEstimate() : undefined,
       icon: iconPaused, notable: true };
   }
+  if (state.comparisonActive) return { title: t("v4_comparison_read_only_status", "Comparing saved maps"), detail: t("v4_comparison_read_only_detail", "Read-only comparison · live map unchanged"), icon: iconHistory, notable: false };
   if (state.dataMode === "history") {
     // shell.md §4 row 7: the date and place of the saved map, as the chip says.
     const saved = savedMapPosition(state);

@@ -20,10 +20,12 @@ export const parseWifiSignal = (value: unknown): WifiSignalLayer => {
   if (typeof root.enabled !== "boolean" || !Array.isArray(root.cells) || root.cells.length > MAX_CELLS) {
     throw new ContractError("invalid-wifi-signal");
   }
+  const cellSize = finite(root.cell_size, 0.05, 10);
   const cells = root.cells.map((candidate): WifiSignalCell => {
     if (!candidate || typeof candidate !== "object") throw new ContractError("invalid-wifi-signal");
     const cell = candidate as Record<string, unknown>;
-    return { x: finite(cell.x), y: finite(cell.y), dbm: finite(cell.dbm, -120, 0) };
+    return { x: finite(cell.x), y: finite(cell.y), dbm: finite(cell.dbm, -120, 0),
+      size: cell.size === undefined ? cellSize : finite(cell.size, 0.05, 10) };
   });
-  return { status: "ready", surveying: root.enabled, cellSize: finite(root.cell_size, 0.05, 10), cells };
+  return { status: "ready", surveying: root.enabled, cellSize, cells };
 };

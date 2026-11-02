@@ -142,6 +142,8 @@ export interface PoseModel {
   readonly freshness: "live" | "coordinator_fallback" | "unavailable";
   /** Native observation age; undefined only for pre-age-field responses. */
   readonly nativeObservationAgeSeconds?: number | null;
+  /** Server processing time before it measured that age. */
+  readonly poseProcessingSeconds?: number;
   /** Map-frame yaw in radians when the pose carried a rotation. */
   readonly heading?: number | null;
 }
@@ -624,6 +626,10 @@ export const parsePose = (value: unknown): PoseModel => {
       ? payload.pose_age_seconds
       : null
     : undefined;
+  const poseProcessingSeconds = typeof payload.pose_processing_seconds === "number"
+    && Number.isFinite(payload.pose_processing_seconds)
+    && payload.pose_processing_seconds >= 0 && payload.pose_processing_seconds <= 60
+    ? payload.pose_processing_seconds : undefined;
   return {
     position,
     source: boundedString(payload.source, 64, "invalid-pose-source"),
@@ -636,6 +642,7 @@ export const parsePose = (value: unknown): PoseModel => {
     mapSessionKey: mapSessionKey(payload.map_session_key),
     freshness,
     ...(nativeObservationAgeSeconds === undefined ? {} : { nativeObservationAgeSeconds }),
+    ...(poseProcessingSeconds === undefined ? {} : { poseProcessingSeconds }),
     // An unreadable heading falls back to the plain dot instead of dropping
     // an otherwise valid position.
     heading: position !== null && typeof payload.heading === "number"
