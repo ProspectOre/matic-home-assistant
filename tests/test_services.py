@@ -5966,6 +5966,7 @@ async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> No
             managed_motion_is_current=MagicMock(return_value=True),
         ),
         ledger=SimpleNamespace(
+            async_claim_native_session=AsyncMock(),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
