@@ -1,8 +1,8 @@
-# Matic 0.5 stable qualification
+# Matic 0.5.0 stable qualification
 
-Updated October 29, 2026. This summary reconciles the current candidate with
-historical entries in the [acceptance matrix](acceptance-0.5.md). It preserves
-their evidence and limitations; it does not turn older observations into new tests.
+This October 29, 2026 snapshot reconciles the 0.5.0 candidate with the [acceptance matrix](acceptance-0.5.md).
+Version 0.5.0 was later [published](https://github.com/ProspectOre/matic-home-assistant/releases/tag/v0.5.0). Evidence and limits below
+apply to their named revisions, not a later hotfix's release gate.
 
 ## Candidate and source review
 
@@ -143,6 +143,7 @@ Windows NVDA and High Contrast, a full restore drill, endurance and sustained
 resources (including the Android p95 miss), a real firmware-transition alert,
 model-selected Assist physical writes, the full live fault matrix, complete
 recovery of maps truncated by earlier versions, and an installed large-map
-memory ceiling. Stable needs the owner's explicit approval and a manual merge
-of #324 after its review ([checklist](maintenance-reviews.md)); tracking is in
+memory ceiling. At this decision point, stable still needed owner approval and
+the manual merge of #324 after its review ([checklist](maintenance-reviews.md));
+the later publication is linked above. Tracking is in
 [PRO-34](https://linear.app/prospectore/issue/PRO-34).

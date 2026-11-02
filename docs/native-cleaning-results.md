@@ -72,8 +72,8 @@ name matching, managed results and restored values. Repeated reads do not
 count work twice. Corrections to one session can add or retract a mode, while
 an unrelated newer partial run does not erase an older successful clean.
 The [OEM replay evidence](native-history-floor-evidence.md) establishes parser
-semantics. The installed Home Assistant runtime remains `v0.5.1-beta1`
-(`63c143c6`); source changes here are not deployment evidence.
+semantics. [PR #391](https://github.com/ProspectOre/matic-home-assistant/pull/391)
+records the implementation and its independent source and deployment checks.
 
 ## Physical observations
 
@@ -83,6 +83,13 @@ to its original dock with no reported errors. These physical observations are
 independent of the offline OEM decoder replay and do not qualify integration
 history parsing, runtime deployment, or managed-run completion. Household room
 names and raw device evidence remain private.
+
+A later beta2 app-started vacuum, with two saved floors retained, reported 479
+seconds of room work; the corresponding room duration matched. A temporary
+shared schedule advanced once, remained at one after the option was toggled
+off/on and the integration reloaded, and was then removed. Managed run counts
+and plan-only cadence stayed unchanged. This is one installation's evidence,
+not a claim about every firmware or floor configuration.
 
 For a managed result, **Last clean duration** uses native per-room work time
 when supplied by completion, otherwise tracked active room time. The room

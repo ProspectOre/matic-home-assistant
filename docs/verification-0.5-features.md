@@ -2,11 +2,11 @@
 
 This matrix maps every feature, upgrade change, and explicit deferral in
 [the 0.5 release notes](release-notes-0.5.0.md). It distinguishes source tests,
-current installed checks, robot runs and owner acceptance. A passing layer does
+installed checks on named revisions, robot runs and owner acceptance. A passing layer does
 not imply another one passed. The full synthetic walkthrough used source head
-`1e9e11aaae25603bce6ba802ff63df8405cbcc22`; the installed runtime remains
-`5a1a93a2bee71af04cd5aaef941cef172de7d2f7`. Later gesture changes are in a
-working candidate and are not yet installed or owner-tested on the iPhone.
+`1e9e11aaae25603bce6ba802ff63df8405cbcc22`; the installed runtime at that
+checkpoint was `5a1a93a2bee71af04cd5aaef941cef172de7d2f7`. Gesture changes
+were then pending installation and iPhone retest; see [later qualification](verification-0.5-stable.md).
 
 ## Common completed evidence
 

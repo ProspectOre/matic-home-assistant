@@ -64,16 +64,17 @@ The legacy schedule-derived candidate identity does not control the OEM
 partition result. Missing root mission identity, canonical partition identity,
 or start reason is rejected by the strict replay reader. The evidence also
 includes missing, malformed, duplicate, and bounded-input cases. This establishes
-the OEM semantics and replay-reader behavior; it does not establish that the
-integration implementation is complete or deployed. The feature integration is
-still in progress, and the installed Home Assistant runtime remains
-`v0.5.1-beta1` (`63c143c6`).
+OEM semantics and replay-reader behavior. The implementation and its separate
+source, installation and live evidence are recorded in
+[PR #391](https://github.com/ProspectOre/matic-home-assistant/pull/391); the
+reporter's beta2 confirmation used one saved floor.
 
 A separate offline `kabuki_state` replay supplied packed wire error `220`
 (`12 02 dc 01`). The same installed OEM binding returned `errors=[220]` and
 `KabukiDisplayedError.SolventUnavailable`. This proves the current app's mapping;
-the UniFFI enum ordinal alone was not that proof. No physical tank fault was
-induced, and this does not establish cross-firmware behavior.
+the UniFFI enum ordinal alone was not that proof. The replay did not induce a
+physical fault; a later tank-removal attempt did not reproduce 220. This does
+not establish cross-firmware behavior.
 
 Raw captures, map identities, household labels and vendor artifacts remain in
 the private evidence store. This offline replay did not clean, dock, induce a
