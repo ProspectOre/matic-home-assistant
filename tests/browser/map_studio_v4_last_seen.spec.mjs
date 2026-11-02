@@ -207,7 +207,8 @@ test(`visible initial map loads the historical marker without a visibility trans
       resources: { ...base.resources,
         entry: { entryId: "entry", mapSessionKey: session, mapFloorCoherent: true, mapSessionVerified: true },
         scene: { status: "ready", value: { source: "live" }, problem: null },
-        pose: { status: "ready", value: { position: pose, mapSessionKey: session, freshness: "stale" }, problem: null },
+        pose: { status: "ready", value: { position: pose, mapSessionKey: session, freshness: "live",
+          nativeObservationAgeSeconds: null }, problem: null },
       },
     };
     const history = { entry_id: "entry", map_session_key: session, robot_history: true,
