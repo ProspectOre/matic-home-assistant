@@ -148,7 +148,7 @@ export const lastSeenDuringLatestRun = (
   entryId: string,
   mapSessionKey: string | null,
 ): LastSeenDuringRun | null => {
-  if (!mapSessionKey || history.entryId !== entryId || history.mapSessionKey !== mapSessionKey
+  if (!history.robotHistory || !mapSessionKey || history.entryId !== entryId || history.mapSessionKey !== mapSessionKey
     || trail.mapSessionKey !== mapSessionKey
     || history.runs.some((run) => !run.startedAt)
     || new Set(history.runs.map((run) => run.startedAt)).size !== history.runs.length) return null;

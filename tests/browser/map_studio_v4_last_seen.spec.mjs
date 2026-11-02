@@ -24,6 +24,11 @@ test("last-seen trail annotations require the latest finished run and a matching
     const trail = parseRunTrail({ trail: "trail-1", map_session_key: session,
       segments: [[], [[1.25, 2.5]]] });
     const marker = lastSeenDuringLatestRun(history, trail, "entry", session);
+    const incompleteHistory = parseRunHistory({
+      entry_id: "entry", map_session_key: session, robot_history: false,
+      runs: history.runs,
+    });
+    const incompleteMarker = lastSeenDuringLatestRun(incompleteHistory, trail, "entry", session);
     const base = initialWorkspaceState();
     const state = {
       ...base, pageActive: true, activity: "docked", dataMode: "live", coherence: "current",
@@ -80,7 +85,7 @@ test("last-seen trail annotations require the latest finished run and a matching
     };
     const liveAccessibleDescription = describeMap(liveState);
     return {
-      marker, isDisplayable, canFollowFromHistorical, canRideFromHistorical,
+      marker, incompleteMarker, isDisplayable, canFollowFromHistorical, canRideFromHistorical,
       accessibleDescription,
       liveAccessibleDescription,
       canvasLabels,
@@ -93,6 +98,7 @@ test("last-seen trail annotations require the latest finished run and a matching
     };
   });
   expect(result.marker).toEqual({ entryId: "entry", mapSessionKey: "a".repeat(64), position: [1.25, 2.5] });
+  expect(result.incompleteMarker).toBeNull();
   expect(result.isDisplayable).toBe(true);
   expect(result.accessibleDescription).toContain("Last clean: last seen");
   expect(result.liveAccessibleDescription).not.toContain("Last seen during last clean");
@@ -181,6 +187,51 @@ test("last-seen history read is revoked when map identity becomes unverified", a
   expect(result.trailReads).toBe(0);
   expect(result.seenAfterPoseSessionChange).toBeNull();
   expect(result.poseTrailReads).toBe(0);
+});
+
+test("incomplete native history does not fetch a trail or show an older last-seen marker", async ({ page }) => {
+  const bundle = await build({
+    stdin: {
+      contents: 'export { RunHistoryResources } from "./frontend/map-studio-v4/run-history-resources"; export { initialWorkspaceState, WorkspaceStore } from "./frontend/map-studio-v4/state"; export { ResourceRequests } from "./frontend/map-studio-v4/resource-requests";',
+      resolveDir: process.cwd(),
+    },
+    bundle: true, format: "esm", write: false,
+  });
+  await page.route("**/incomplete-seen.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { RunHistoryResources, initialWorkspaceState, WorkspaceStore, ResourceRequests } = await import("/incomplete-seen.js");
+    const session = "e".repeat(64);
+    const base = initialWorkspaceState();
+    const state = {
+      ...base, pageActive: true, activity: "docked", dataMode: "live", coherence: "current",
+      selection: { ...base.selection, entryId: "entry", floorId: "current" },
+      map: { ...base.map, available: true, floorCoherent: true, sessionVerified: true, exactPose: false },
+      host: { ...base.host, connected: true, administrator: true, robotConnected: true },
+      resources: { ...base.resources,
+        entry: { entryId: "entry", mapSessionKey: session, mapFloorCoherent: true, mapSessionVerified: true },
+        pose: { status: "ready", value: { position: null, mapSessionKey: session, freshness: "live" }, problem: null },
+      },
+    };
+    const reads = [];
+    const history = { entry_id: "entry", map_session_key: session, robot_history: false,
+      runs: [{ id: "old", source: "robot", started_at: "2026-11-01T10:00:00Z", ended_at: "2026-11-01T10:30:00Z",
+        plan_name: null, outcome: "finished", ending: "finished", rooms: [], areas: [], trail: "old-trail", thumbnail: null }] };
+    const backend = { runs: async (_entry, trail) => {
+      reads.push(trail ?? "history");
+      return trail
+        ? { trail: "old-trail", map_session_key: session, segments: [[[1, 2]]] }
+        : history;
+    } };
+    const store = new WorkspaceStore(state);
+    const resources = new RunHistoryResources(store, backend, new ResourceRequests(), { disposed: () => false, pageActive: () => true });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const result = { reads, seen: store.value.seen ?? null };
+    resources.dispose();
+    return result;
+  });
+  expect(result.reads).toEqual(["history"]);
+  expect(result.seen).toBeNull();
 });
 
 for (const pose of [null, [9, 9]]) {

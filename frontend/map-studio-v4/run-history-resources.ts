@@ -141,7 +141,8 @@ export class RunHistoryResources {
     this.#runs ??= await import("./run-history-data");
     try {
       const history = this.#runs.parseRunHistory(await this.#backend.runs(entry.entryId, null, controller.signal));
-      if (!current() || history.entryId !== entry.entryId || history.mapSessionKey !== session) return;
+      if (!current() || !history.robotHistory || history.entryId !== entry.entryId
+        || history.mapSessionKey !== session) return;
       const latest = history.runs[0];
       // A newer active, partial, or unknown run prevents an older trail from
       // appearing to describe the robot after that run.
