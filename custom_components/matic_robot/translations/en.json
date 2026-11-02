@@ -672,6 +672,7 @@
     "v4_last_run_partial": "Last run did not finish",
     "v4_last_run_unverified": "Last run unverified",
     "v4_last_run_rooms": "{completed} of {total} rooms completed",
+    "v4_rooms_confirmed": "{completed} of {total} rooms confirmed",
     "v4_shortcuts_loading_catalogs": "Loading your saved home choices…",
     "v4_shortcuts_plans_unavailable": "Saved plan shortcuts couldn't be loaded.",
     "v4_shortcuts_areas_unavailable": "Saved area shortcuts couldn't be loaded.",

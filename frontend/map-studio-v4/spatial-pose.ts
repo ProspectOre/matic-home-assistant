@@ -1,5 +1,4 @@
-import { entryCoherenceIdentity } from "./workspace-projection";
-import type { MapEntry } from "./backend-contracts";
+import { entryCoherenceIdentity, type MapEntry } from "./backend-contracts";
 import type { HassProjection, ResourceStamp, WorkspaceState } from "./contracts";
 import type { MaticBackend } from "./backend";
 import type { CoherenceMachine, WorkspaceStore } from "./state";

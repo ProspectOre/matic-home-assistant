@@ -93,7 +93,7 @@ for (const narrow of [false, true]) {
         if (detail) await expect(shell.locator(".status-copy small")).toHaveText(detail);
       }
     };
-    await expectStatus("Cleaning", "0 of 3 rooms completed");
+    await expectStatus("Cleaning", "0 of 3 rooms confirmed");
     await expect(shell.getByRole("button", { name: "Stop cleaning", exact: true })).toBeVisible();
     const update = (fields) => page.evaluate((fields) => {
       const panel = document.querySelector(window.__panelFixture.panelTag);
@@ -105,15 +105,15 @@ for (const narrow of [false, true]) {
       panel.hass = { ...panel.hass, states };
     }, fields);
     await update({ lastRun: { completed_room_count: 1 } });
-    await expectStatus("Cleaning", "1 of 3 rooms completed");
+    await expectStatus("Cleaning", "1 of 3 rooms confirmed");
     await update({ activeRunId: "replacement" });
     await expectStatus("Cleaning", "70% battery");
     await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().lastRun)).toBeNull();
     await update({ lastRun: { run_id: "replacement", completed_room_count: 2 } });
-    await expectStatus("Cleaning", "2 of 3 rooms completed");
+    await expectStatus("Cleaning", "2 of 3 rooms confirmed");
     await expect.poll(() => panel.evaluate(element => element.getWorkspaceSnapshot().coherence)).toBe("current");
     await update({ currentArea: "Kitchen" });
-    await expectStatus("Cleaning", "2 of 3 rooms completed · In Kitchen");
+    await expectStatus("Cleaning", "2 of 3 rooms confirmed · In Kitchen");
     await update({ activity: "docked", currentArea: null });
     await expectStatus("Docked", "70% battery");
     await update({ activity: "cleaning", lastRun: { outcome: "failed" } });
@@ -189,7 +189,7 @@ test("Home panel keeps a partial result after dock and refresh, hides it for a n
   const panel = page.locator(fixture.panelTag);
   const shell = panel.locator("matic-map-shell-v4");
   await expect(shell.locator(".status-copy strong")).toHaveText("Last run did not finish");
-  await expect(shell.locator(".status-copy small")).toHaveText("1 of 3 rooms completed");
+  await expect(shell.locator(".status-copy small")).toHaveText("1 of 3 rooms confirmed");
   await page.reload();
   await fixture.remount();
   await page.evaluate(() => document.body.append(window.__panelFixture.createPanel()));
@@ -234,7 +234,7 @@ test("low-charge suspension stays visible when settled and yields to live chargi
     panel.hass = { ...panel.hass, states };
   }, { state, charging });
   await expect(status.locator("strong")).toHaveText("Last run did not finish");
-  await expect(status.locator("small")).toHaveText("1 of 3 rooms completed");
+  await expect(status.locator("small")).toHaveText("1 of 3 rooms confirmed");
   await updateActivity("idle");
   await expect(status.locator("strong")).toHaveText("Last run did not finish");
   await updateActivity("docked", true);

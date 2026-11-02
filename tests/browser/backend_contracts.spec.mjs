@@ -63,6 +63,21 @@ test("pose heading is kept only beside a position and inside one turn", async ({
   expect(result).toEqual([1.25, -Math.PI, null, null, null, null]);
 });
 
+test("pose timing rejects non-finite and out-of-range values", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async () => {
+    const { parsePose } = await import("/backend-contracts.js");
+    const base = {
+      position: [1, 2], source: "exact_pose", revision: 1, scene_revision: null,
+      scene_epoch: null, pose_revision: 1, map_floor_coherent: true,
+      map_session_key: null, pose_freshness: "live",
+    };
+    const values = [0, 4, 60, -1, 61, NaN, Infinity, "4", null];
+    return values.map(value => parsePose({ ...base, pose_processing_seconds: value }).poseProcessingSeconds ?? null);
+  });
+  expect(result).toEqual([0, 4, 60, null, null, null, null, null, null]);
+});
+
 test("the area catalog names the selected custom area, or none", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async () => {

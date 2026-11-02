@@ -1,10 +1,9 @@
 import type { HassProjection } from "./contracts";
-import type { MapEntry, PlansCatalog, AreasCatalog } from "./backend-contracts";
+import { entryCoherenceIdentity, entryManagedLock, type MapEntry, type PlansCatalog, type AreasCatalog } from "./backend-contracts";
 import { BackendError, type MaticBackend } from "./backend";
 import { canReadFloorResources, type CoherenceMachine, type WorkspaceStore, needsPlanCatalog } from "./state";
 import type { ResourceRequests } from "./resource-requests";
 import { resource, isAbort, problemCode } from "./resource-state";
-import { entryCoherenceIdentity, entryManagedLock } from "./workspace-projection";
 import type { CatalogRecoveryLease } from "./catalog-recovery-lease";
 
 interface CatalogResourceCallbacks {

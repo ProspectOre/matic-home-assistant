@@ -382,7 +382,7 @@ test("rooms chosen in Matic Map are cleaned and the run finishes", async ({ shar
   expect(started.current_area).toBe("Kitchen");
   expect(started.commands.filter(({ channel }) => channel === "user_command")).toHaveLength(1);
   await captureNativeOwnership(page, robot, testInfo, "first-command-cleaning");
-  await expect(page.getByText("0 of 2 rooms completed · In Kitchen")).toBeVisible();
+  await expect(page.getByText("0 of 2 rooms confirmed · In Kitchen")).toBeVisible();
   await expect(page.getByRole("button", { name: "Stop" })).toBeVisible();
 
   await step(robot, "finish_room");
@@ -475,7 +475,7 @@ test("Skip in Change this clean drops a room from a clean started in Matic Map",
   await page.getByRole("button", { name: "Clean 2 rooms" }).click();
   await expect.poll(async () => (await robotState(robot)).phase).toBe("cleaning");
   expect((await robotState(robot)).plan).toEqual(["Kitchen", "Study"]);
-  await expect(page.getByText("0 of 2 rooms completed · In Kitchen")).toBeVisible();
+  await expect(page.getByText("0 of 2 rooms confirmed · In Kitchen")).toBeVisible();
 
   // Queue changes live on Home, the all-tasks view.
   await page.getByRole("button", { name: "Back to all tasks" }).click();

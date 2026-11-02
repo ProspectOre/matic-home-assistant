@@ -23,6 +23,8 @@ const roomKey = (name: string | null): string => name?.toLowerCase().replace(/\s
 export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateFormat): StatusPresentation => {
   const t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
     translate(localize, key, fallback, placeholders, dates);
+  const confirmedRooms = (run: { completedRoomCount: number; roomCount: number }): string =>
+    t("v4_rooms_confirmed", "{completed} of {total} rooms confirmed", { completed: run.completedRoomCount, total: run.roomCount });
   const roomProgressEstimate = (): string | undefined => {
     const timing = state.lastRun?.outcome === "running" ? state.lastRun.estimate : undefined;
     const area = roomKey(state.currentArea);
@@ -107,7 +109,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
       title,
       estimate,
       detail: mapUnavailable ? t("v4_active_map_unavailable", "Live map unavailable") : progress
-        ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: progress.completedRoomCount, total: progress.roomCount })
+        ? confirmedRooms(progress)
           + (room ? ` · ${t("v4_cleaning_room", "In {room}", { room })}` : "")
         : room ? t("v4_cleaning_room", "In {room}", { room }) : battery,
       icon: iconCleaning,
@@ -138,7 +140,7 @@ export const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: D
     const run = state.lastRun;
     return {
       title: run.outcome === "unverified" ? t("v4_last_run_unverified", "Last run unverified") : t("v4_last_run_partial", "Last run did not finish"),
-      detail: run.roomCount ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: run.completedRoomCount, total: run.roomCount }) : "",
+      detail: run.roomCount ? confirmedRooms(run) : "",
       icon: iconPlan,
       notable: true,
       history: true,

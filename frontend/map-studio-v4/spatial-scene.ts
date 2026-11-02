@@ -1,11 +1,9 @@
-import { entryFloorKey, entryMissionKey, type MapEntry } from "./backend-contracts";
+import { entryFloorKey, entryMissionKey, entryCoherenceIdentity, type MapEntry } from "./backend-contracts";
 import type { HassProjection, ResourceStamp, WorkspaceState } from "./contracts";
 import { BackendError, type MaticBackend } from "./backend";
 import type { CoherenceMachine, WorkspaceStore } from "./state";
 import type { ResourceRequests } from "./resource-requests";
 import { resource, isAbort, problemCode } from "./resource-state";
-
-import { entryCoherenceIdentity } from "./workspace-projection";
 
 interface SpatialSceneCallbacks {
   readonly disposed: () => boolean;
