@@ -15,7 +15,8 @@ pose updates and catalog polling remain available.
 The owner approved retiring the bespoke status gate while preserving authentic
 complete head/base review, findings dispositions, required CI, native protections
 and designated-owner manual merges. See [the replacement process](maintenance-reviews.md).
-Historical custom-gate and one-off exception receipts below remain historical;
+[Historical custom-gate and one-off exception receipts](acceptance-0.5.md#source-qualification-and-historical-runtime-evidence)
+remain historical;
 19 original #216 event runs lack receipt proof, and the #219 gap remains recorded.
 Their preservation does not impose the retired custom workflow as a new merge
 prerequisite or establish missing historical coverage. Runtime, physical and
