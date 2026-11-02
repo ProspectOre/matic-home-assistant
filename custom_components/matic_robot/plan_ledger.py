@@ -1229,6 +1229,10 @@ class PlanLedger:
             plan_id,
             room,
             cadence_state,
+            completion_id=hashlib.sha256(
+                f"{run_id or now}:{room.room_id}".encode()
+            ).hexdigest(),
+            completed_at=cast(datetime, dt_util.parse_datetime(now)).timestamp(),
             verified_coverage=verified_room_coverage(
                 checkpoint.get("coverage_evidence")
                 if isinstance(checkpoint, dict)
@@ -1448,6 +1452,15 @@ class PlanLedger:
                 plan_id,
                 room_settings,
                 pending.get("cadence_state"),
+                completion_id=hashlib.sha256(
+                    (
+                        f"{pending.get('run_id') or pending['dispatched_at']}:"
+                        f"{room.room_id}"
+                    ).encode()
+                ).hexdigest(),
+                completed_at=cast(
+                    datetime, dt_util.parse_datetime(completed_value)
+                ).timestamp(),
                 current_identity=room_identity,
                 validate_current_identity=True,
                 verified_coverage=verified_room_coverage(

@@ -482,6 +482,14 @@ def _reconcile_native_room_history(
             pending["plan_id"],
             room_settings,
             cadence_state,
+            completion_id=hashlib.sha256(
+                (
+                    f"{pending.get('run_id') or pending['dispatched_at']}:{room.id}"
+                ).encode()
+            ).hexdigest(),
+            completed_at=cast(
+                datetime, dt_util.parse_datetime(matches[0].ended_at)
+            ).timestamp(),
             current_identity=current_identity,
             validate_current_identity=True,
             verified_coverage=verified_room_coverage(

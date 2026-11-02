@@ -1738,6 +1738,7 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
 
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
+            async_claim_native_session=AsyncMock(),
             async_mark_started=AsyncMock(return_value=False),
             async_mark_failed=AsyncMock(),
         ),
@@ -1825,6 +1826,7 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
 
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
+            async_claim_native_session=AsyncMock(),
             async_mark_started=AsyncMock(return_value=False),
             async_mark_completed=AsyncMock(),
             async_mark_failed=AsyncMock(),

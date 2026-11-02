@@ -374,6 +374,7 @@ async def test_one_room_leg_settles_a_skipped_room() -> None:
     )
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
+            async_claim_native_session=AsyncMock(),
             async_mark_started=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),

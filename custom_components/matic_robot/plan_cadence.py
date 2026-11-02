@@ -27,6 +27,7 @@ from .cadence import (
     cadence_snapshot,
     normalize_cadence_policy,
 )
+from .completion_ledger import reset_progress as _reset_completion_progress
 from .plan_model import (
     CleaningRoom,
     SharedRoomScheduleLockedError,
@@ -990,6 +991,14 @@ class PlanCadence:
             if isinstance(policy, Mapping) and policy.get("scope") == "shared":
                 schedule = shared.get(room_id)
                 if isinstance(schedule, dict):
+                    # Keep the chronological ledger in step with the visible
+                    # counters. Replaying after the next completion must not
+                    # restore native or managed events from before this reset.
+                    _reset_completion_progress(
+                        schedule,
+                        reset_modes,
+                        at=dt_util.utcnow().timestamp(),
+                    )
                     # _robot() has already normalized each persisted progress
                     # record before this policy mutation begins.
                     progress = schedule["progress"]
