@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import math
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -12,8 +13,15 @@ from homeassistant.util import dt as dt_util
 from .cadence import cadence_snapshot
 from .client.coverage_receipts import native_session_hash
 from .client.models import CleaningSessionRecord, FloorPlan
-from .completion_ledger import record_completion, retract_completion
+from .completion_ledger import (
+    MAX_LEDGER_EVENTS,
+    record_completion,
+    retract_completion,
+)
 from .room_identity import room_cadence_identity
+
+# The client requests at most this many completed sessions per history read.
+MAX_NATIVE_IMPORT_RECORDS = 64
 
 
 def _timestamp(value: object) -> float | None:
@@ -60,7 +68,19 @@ def import_native_cadence(
             if schedule.get("native_binding") != observed_binding:
                 schedule["native_binding"] = observed_binding
                 changed = True
-    for record in sorted(records, key=lambda item: item.session.ended_at or ""):
+    # Sorting history is part of each import's cost. Refuse an oversized batch
+    # as a unit so a truncated view cannot retract or silently omit revisions.
+    bounded_records = list(itertools.islice(records, MAX_NATIVE_IMPORT_RECORDS + 1))
+    if len(bounded_records) > MAX_NATIVE_IMPORT_RECORDS:
+        for schedule in schedules.values():
+            if (
+                isinstance(schedule, dict)
+                and schedule.get("accounting_unverified") is not True
+            ):
+                schedule["accounting_unverified"] = True
+                changed = True
+        return changed
+    for record in sorted(bounded_records, key=lambda item: item.session.ended_at or ""):
         session = record.session
         session_hash = native_session_hash(record.key)
         if session_hash is None:
@@ -82,6 +102,11 @@ def import_native_cadence(
                 continue
             event_id = hashlib.sha256(f"{session_hash}:{room_id}".encode()).hexdigest()
             admitted = schedule.get("native_events", {})
+            if isinstance(admitted, dict) and len(admitted) > MAX_LEDGER_EVENTS:
+                if schedule.get("accounting_unverified") is not True:
+                    schedule["accounting_unverified"] = True
+                    changed = True
+                continue
             prior = admitted.get(event_id) if isinstance(admitted, dict) else None
             binding = schedule.get("native_binding")
             if not isinstance(binding, dict) or binding.get(
@@ -138,6 +163,23 @@ def import_native_cadence(
             else:
                 schedule_since = _timestamp(schedule.get("native_since"))
                 cutoff = max(since or now, schedule_since or since or now)
+                accounting = schedule.get("accounting")
+                reset_cutoff = (
+                    accounting.get("cutoff")
+                    if isinstance(accounting, Mapping)
+                    else None
+                )
+                if isinstance(reset_cutoff, (int, float)) and not isinstance(
+                    reset_cutoff, bool
+                ):
+                    # A full reset prunes old admission IDs. A later revision
+                    # of an old session must not revive its pre-reset work.
+                    try:
+                        if math.isfinite(reset_cutoff):
+                            cutoff = max(cutoff, reset_cutoff)
+                    except OverflowError:
+                        # The ledger validation rejects malformed stored data.
+                        pass
                 if (
                     not enabled
                     or not valid
@@ -164,6 +206,16 @@ def import_native_cadence(
                 normal_cleaning_mode="vacuum",
                 normal_coverage_setting="standard",
             )
+            if (
+                prior is None
+                and isinstance(admitted, dict)
+                and len(admitted) >= MAX_LEDGER_EVENTS
+            ):
+                if schedule.get("accounting_unverified") is not True:
+                    schedule["accounting_unverified"] = True
+                    changed = True
+                continue
+            was_unverified = schedule.get("accounting_unverified") is True
             if record_completion(
                 schedule,
                 event_id,
@@ -172,8 +224,14 @@ def import_native_cadence(
                 snapshot=snapshot,
                 mode=mode,
             ):
-                schedule.setdefault("native_events", {})[event_id] = (
-                    prior if prior is not None else {**identity, "since": cutoff}
-                )
+                native_events = schedule.setdefault("native_events", {})
+                if isinstance(native_events, dict):
+                    native_events[event_id] = (
+                        prior if prior is not None else {**identity, "since": cutoff}
+                    )
+                changed = True
+            elif not was_unverified and schedule.get("accounting_unverified") is True:
+                # record_completion refuses new rows at capacity but leaves a
+                # quarantine marker for the owning transaction to persist.
                 changed = True
     return changed

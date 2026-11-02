@@ -40,6 +40,7 @@ from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
 )
+from .plan_storage import _restore_unsaved_changes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -68,7 +69,13 @@ class _CadenceMutation:
 
 def _unverified_cadence_modes(record: object, policy: Mapping[str, Any]) -> list[str]:
     """Return active cadence modes whose persisted progress needs owner reset."""
-    raw_modes = record.get("unverified_modes") if isinstance(record, Mapping) else None
+    raw_modes = (
+        ["mop", "coverage"]
+        if isinstance(record, Mapping) and record.get("accounting_unverified") is True
+        else record.get("unverified_modes")
+        if isinstance(record, Mapping)
+        else None
+    )
     if not isinstance(raw_modes, list):
         return []
     stored = {
@@ -437,6 +444,11 @@ class PlanCadence:
                         coverage_setting=room.coverage_setting,
                     )
                     progress = schedule.get("progress")
+                    if _unverified_cadence_modes(schedule, policy):
+                        raise ValueError(
+                            "room cadence progress is unverified; reset mop and "
+                            "coverage before use"
+                        )
                 elif (
                     policy_value.get("mop_every_n") is not None
                     or policy_value.get("coverage_every_n") is not None
@@ -474,6 +486,11 @@ class PlanCadence:
                         coverage_setting=room.coverage_setting,
                     )
                     progress = schedule.get("progress")
+                    if _unverified_cadence_modes(schedule, policy):
+                        raise ValueError(
+                            "room cadence progress is unverified; reset mop and "
+                            "coverage before use"
+                        )
             elif isinstance(policy_value, Mapping) and plan_id is not None:
                 policy = normalize_cadence_policy(
                     policy_value,
@@ -994,11 +1011,27 @@ class PlanCadence:
                     # Keep the chronological ledger in step with the visible
                     # counters. Replaying after the next completion must not
                     # restore native or managed events from before this reset.
-                    _reset_completion_progress(
+                    reset = _reset_completion_progress(
                         schedule,
                         reset_modes,
                         at=dt_util.utcnow().timestamp(),
                     )
+                    if not reset:
+                        # Refusing one reset must not leave earlier rooms partly
+                        # reset. Persist only the quarantine that callers need
+                        # to recover through an explicit full reset.
+                        _restore_unsaved_changes(robot, before, deepcopy(robot))
+                        robot["shared_room_cadence"][room_id][
+                            "accounting_unverified"
+                        ] = True
+                        await self.repository.async_save_with_rollback(
+                            serial_number, before
+                        )
+                        self.repository.notify_listeners(serial_number)
+                        raise ValueError(
+                            "room cadence progress is unverified; reset mop and "
+                            "coverage before use"
+                        )
                     # _robot() has already normalized each persisted progress
                     # record before this policy mutation begins.
                     progress = schedule["progress"]

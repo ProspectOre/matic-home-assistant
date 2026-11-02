@@ -57,6 +57,12 @@ backfill. Turning it off preserves earlier credit; subsequent corrections to
 already counted records still retract or revise it. Creating or rebinding a
 shared schedule also starts a new counting boundary.
 
+Each room retains at most 1,024 completion and reset records. If more history
+cannot be counted safely, progress becomes unverified and dependent shared
+schedules wait for a full counter reset. Retained records remain correctable.
+Reset both room-schedule counters to start a new counting boundary; saved plans
+and managed run history remain intact.
+
 Credit requires a known initiator, matching floor/room identities, a completed
 modern summary, a finished stop reason, and positive completed-mode durations.
 Cancelled, partial, ambiguous and malformed records cannot earn this credit.

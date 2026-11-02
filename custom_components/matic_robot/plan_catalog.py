@@ -761,6 +761,7 @@ class PlanCatalog:
                 schedule.pop("accounting", None)
                 schedule.pop("native_events", None)
                 schedule.pop("native_binding", None)
+                schedule.pop("accounting_unverified", None)
             elif floor_token is not None and schedule.get("floor_token") != floor_token:
                 # A verified floor rebind must not carry progress from an
                 # older map whose room identity happened to remain stable.
@@ -769,6 +770,7 @@ class PlanCatalog:
                 schedule.pop("accounting", None)
                 schedule.pop("native_events", None)
                 schedule.pop("native_binding", None)
+                schedule.pop("accounting_unverified", None)
             schedule["policy"] = {
                 key: value for key, value in policy.items() if key != "scope"
             }

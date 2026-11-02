@@ -13,6 +13,10 @@ _MODES = {"vacuum", "mop", "vacuum_and_mop"}
 _COVERAGES = {"quick", "standard", "heavy_duty"}
 _ID = re.compile(r"[0-9a-f]{64}\Z")
 _RESET_ID = re.compile(r"reset:[0-9]+\Z")
+# The event ledger is deliberately small: every accepted change replays the
+# complete retained history. Refuse growth past this bound instead of folding
+# still-correctable events into an irreversible baseline.
+MAX_LEDGER_EVENTS = 1024
 _SNAPSHOT_KEYS = {
     "scope",
     "schedule_active",
@@ -121,6 +125,11 @@ def _ledger(schedule: dict[str, Any]) -> dict[str, Any] | None:
     baseline = accounting.get("baseline")
     events = accounting.get("events")
     if not isinstance(baseline, dict) or not isinstance(events, list):
+        return None
+    if len(events) > MAX_LEDGER_EVENTS:
+        # Do not scan or replay an oversized persisted ledger. Keep the source
+        # intact and let an explicit full reset establish a new history.
+        schedule["accounting_unverified"] = True
         return None
     if _count(baseline.get("mop")) is None or _count(baseline.get("coverage")) is None:
         return None
@@ -350,6 +359,9 @@ def record_completion(
             return False
         events[index] = replacement
     else:
+        if len(events) >= MAX_LEDGER_EVENTS:
+            schedule["accounting_unverified"] = True
+            return False
         events.append(
             {
                 "id": event_id,
@@ -401,17 +413,67 @@ def reset_progress(
     selected = sorted(set(requested))
     if timestamp is None or not selected:
         return False
-    accounting = _ledger(schedule)
-    if accounting is None:
-        return False
     if set(selected) == {"mop", "coverage"}:
-        timestamp = max(timestamp, accounting.get("cutoff", timestamp))
-        accounting["baseline"] = {"mop": 0, "coverage": 0}
-        accounting["events"] = [
-            event for event in accounting["events"] if event["at"] > timestamp
-        ]
-        accounting["cutoff"] = timestamp
+        raw_accounting = schedule.get("accounting")
+        raw_events = (
+            raw_accounting.get("events") if isinstance(raw_accounting, dict) else None
+        )
+        # Only inspect a history that is already within the replay bound.
+        # Oversized or malformed history is deliberately discarded by this
+        # explicit reset without scanning its rows.
+        accounting = (
+            _ledger(schedule)
+            if raw_events is None
+            or (isinstance(raw_events, list) and len(raw_events) <= MAX_LEDGER_EVENTS)
+            else None
+        )
+        if accounting is None:
+            prior_cutoff = (
+                _timestamp(raw_accounting.get("cutoff"))
+                if isinstance(raw_accounting, dict)
+                else None
+            )
+            timestamp = max(timestamp, prior_cutoff or timestamp)
+            accounting = {
+                "version": 1,
+                "baseline": {"mop": 0, "coverage": 0},
+                "events": [],
+                "cutoff": timestamp,
+            }
+            schedule["accounting"] = accounting
+        else:
+            timestamp = max(timestamp, accounting.get("cutoff", timestamp))
+            accounting["baseline"] = {"mop": 0, "coverage": 0}
+            accounting["events"] = [
+                event for event in accounting["events"] if event["at"] > timestamp
+            ]
+            accounting["cutoff"] = timestamp
+        native_events = schedule.get("native_events")
+        if isinstance(native_events, dict) and len(native_events) <= MAX_LEDGER_EVENTS:
+            retained_ids = {
+                event["id"]
+                for event in accounting["events"]
+                if event.get("source") == "native"
+            }
+            schedule["native_events"] = {
+                event_id: metadata
+                for event_id, metadata in native_events.items()
+                if event_id in retained_ids
+            }
+        else:
+            # An oversized index cannot be safely reconciled within the bound;
+            # the reset cutoff invalidates its prior entries.
+            schedule["native_events"] = {}
+        schedule.pop("accounting_unverified", None)
+        _replay(schedule, accounting)
+        return True
     else:
+        accounting = _ledger(schedule)
+        if accounting is None:
+            return False
+        if len(accounting["events"]) >= MAX_LEDGER_EVENTS:
+            schedule["accounting_unverified"] = True
+            return False
         reset_number = (
             max(
                 (
