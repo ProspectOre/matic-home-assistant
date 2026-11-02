@@ -3,7 +3,7 @@ import { entryCoherenceIdentity, entryManagedLock, type MapEntry, type PlansCata
 import { BackendError, type MaticBackend } from "./backend";
 import { canReadFloorResources, type CoherenceMachine, type WorkspaceStore, needsPlanCatalog } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort, problemCode } from "./resource-state";
+import { resource, isAbort, problemCode } from "./shared-primitives";
 import type { CatalogRecoveryLease } from "./catalog-recovery-lease";
 
 interface CatalogResourceCallbacks {

@@ -1,6 +1,6 @@
 import type { RoomPreviewController, RoomPreviewHelpers } from "./room-preview-controller";
 import { CatalogResources } from "./catalog-resources";
-import { resource, cancelLoading, isAbort, problemCode } from "./resource-state";
+import { resource, cancelLoading, isAbort, problemCode } from "./shared-primitives";
 import {
   notice,
   type HassProjection,

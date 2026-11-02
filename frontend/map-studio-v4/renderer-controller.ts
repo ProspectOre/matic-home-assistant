@@ -1,5 +1,5 @@
 import { PERSPECTIVE_FIELD_OF_VIEW, sceneGeometryBounds, perspectiveBoundsFitDistance, multiply, perspective, orthographic, lookAt, pointInPolygon } from "./renderer-math";
-import { clamp } from "./numeric";
+import { clamp } from "./shared-primitives";
 import { liveCameraKey, cameraPreferences, mapCameraIdentity } from "./camera-preferences";
 import type { AreaCircle, MapZoneOverlay, PoseModel, SceneModel } from "./backend-contracts";
 import { SCENE_DELTA_DIRTY_BLOCK_BYTES } from "./backend-contracts";

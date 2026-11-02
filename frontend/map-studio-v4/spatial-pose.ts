@@ -3,7 +3,7 @@ import type { HassProjection, ResourceStamp, WorkspaceState } from "./contracts"
 import type { MaticBackend } from "./backend";
 import type { CoherenceMachine, WorkspaceStore } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./resource-state";
+import { resource, isAbort, problemCode, sameCoherenceGeneration } from "./shared-primitives";
 
 interface SpatialPoseCallbacks {
   readonly disposed: () => boolean;

@@ -1,8 +1,9 @@
 import type { FloorTypeOutline, WifiSignalCell, WorkspaceState } from "./contracts";
+import { wifiScaleBounds, wifiSignalHue } from "./wifi-scale";
 import type { SceneRoom } from "./backend-contracts";
 import type { CanvasPalette } from "./theme-probe";
 import { rgba } from "./theme-probe";
-import { clamp } from "./numeric";
+import { clamp } from "./shared-primitives";
 
 export interface MapPoint {
   readonly x: number;
@@ -165,7 +166,7 @@ export function drawMapLayers(
       drawFloorType(context, state.floorTypes.vent, "hsl(205 80% 50%)", project);
     }
     if (state.wifiSignal?.status === "ready") {
-      drawWifiSignal(context, state.wifiSignal.cells, project);
+      drawWifiSignal(context, state.wifiSignal.cells, state.wifiSignal.cellSize, state.wifiScale, project);
     }
   }
 }
@@ -219,30 +220,31 @@ export function drawRunTrail(
   context.restore();
 }
 
-// Strong signal (-50 dBm or better) is green, weak (-85 or worse) is red.
 function drawWifiSignal(
   context: CanvasRenderingContext2D,
   cells: readonly WifiSignalCell[],
+  cellSize: number,
+  scale: WorkspaceState["wifiScale"],
   project: ProjectMeters,
 ): void {
   context.save();
+  const bounds = wifiScaleBounds(cells, scale);
   for (const cell of cells) {
-    // Dots mark approximate sample locations, not a measured square. Older
-    // one-metre readings use a ring to retain their coarser provenance.
+    // Dots mark approximate sample locations, not a measured square. Older,
+    // coarser readings use a ring to retain their provenance.
     const radius = Math.min(cell.size / 2, 0.18);
     const points = Array.from({ length: 12 }, (_, index) => {
       const angle = index * Math.PI / 6;
       return project(cell.x + radius * Math.cos(angle), cell.y + radius * Math.sin(angle), 0.1, false);
     });
     if (points.some((point) => !point)) continue;
-    const strength = Math.min(1, Math.max(0, (cell.dbm + 85) / 35));
-    const colour = `hsl(${Math.round(strength * 120)} 75% 45% / .8)`;
+    const colour = `hsl(${wifiSignalHue(cell.dbm, bounds)} 75% 45% / .8)`;
     context.beginPath();
     points.forEach((point, index) => index
       ? context.lineTo(point!.x, point!.y)
       : context.moveTo(point!.x, point!.y));
     context.closePath();
-    if (cell.size > 0.5) {
+    if (cell.size > cellSize) {
       context.strokeStyle = colour;
       context.lineWidth = 2;
       context.stroke();

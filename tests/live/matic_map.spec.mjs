@@ -614,7 +614,7 @@ test("the Wi-Fi signal layer reads a real survey cell and follows its switch", a
   await updatedWifi.click();
   await updatedWifi.click();
   await expect(updatedWifi).toHaveAttribute("aria-checked", "true");
-  await expect(updatedWifi).toContainText("Approximate samples: green strong, red weak");
+  await expect(updatedWifi).toContainText("Approximate averages. Rings are coarser; blank areas are unmeasured.");
   expect((await workspaceState(page)).wifiSignal.cells.length).toBeGreaterThan(0);
 
   await step(robot, "finish_room");

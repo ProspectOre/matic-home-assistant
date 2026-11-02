@@ -33,14 +33,20 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-STORAGE_VERSION = 2
+STORAGE_VERSION = 3
 SAVE_DELAY_SECONDS = 30
-CELL_SIZE_METERS = 0.5
+CELL_SIZE_METERS = 0.3048  # One foot.
 LEGACY_CELL_SIZE_METERS = 1.0
+PREVIOUS_CELL_SIZE_METERS = 0.5
+SUPPORTED_CELL_SIZES = (
+    CELL_SIZE_METERS,
+    PREVIOUS_CELL_SIZE_METERS,
+    LEGACY_CELL_SIZE_METERS,
+)
 SAMPLE_INTERVAL_SECONDS = 30
 # A scan may take several seconds. Reject readings whose location cannot be
 # bounded closely enough to be useful at the finer survey resolution.
-MAX_POSE_DRIFT_METERS = 0.5
+MAX_POSE_DRIFT_METERS = CELL_SIZE_METERS
 MAX_CELLS_PER_FLOOR = 4096
 MAX_FLOORS = 8
 # A cell is a plain mean of its first 20 scans, then a fading average that
@@ -64,19 +70,20 @@ type _CellKey = tuple[int, int, float]
 
 
 class _WifiSurveyStorage(Store[dict[str, Any]]):
-    """Keep older coarse readings distinguishable from finer observations."""
+    """Keep readings from older grids distinguishable from newer ones."""
 
     @override
     async def _async_migrate_func(
         self, old_major_version: int, old_minor_version: int, old_data: dict[str, Any]
     ) -> dict[str, Any]:
-        if old_major_version != 1 or old_minor_version != 1:
+        if old_major_version not in (1, 2) or old_minor_version != 1:
             raise ValueError(
                 "unsupported Wi-Fi survey storage version "
                 f"{old_major_version}.{old_minor_version}"
             )
         # Validate before Home Assistant writes the migrated payload. Older
-        # five-field rows retain their original one-metre grid.
+        # Five-field rows retain their one-metre grid; version-2 rows carry
+        # their original size and must not be reinterpreted as one-foot cells.
         stored = old_data if isinstance(old_data, dict) else {}
         floors = _decode_floors(stored.get("floors"))
         frames = _decode_frames(stored.get("frames"))
@@ -362,7 +369,7 @@ def _decode_cell(row: object) -> tuple[_CellKey, SignalCell] | None:
         all(type(value) is int for value in (ix, iy, samples))
         and all(type(value) in (int, float) for value in (dbm, updated_at))
         and type(size) in (int, float)
-        and size in (CELL_SIZE_METERS, LEGACY_CELL_SIZE_METERS)
+        and size in SUPPORTED_CELL_SIZES
         and MIN_DBM <= dbm <= MAX_DBM
         and abs(ix) <= math.ceil(MAX_MAP_COORDINATE / size)
         and abs(iy) <= math.ceil(MAX_MAP_COORDINATE / size)

@@ -9,7 +9,7 @@ import {
   draftForPlan,
 } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort, problemCode } from "./resource-state";
+import { resource, isAbort, problemCode } from "./shared-primitives";
 
 interface PlanCatalogCallbacks {
   readonly disposed: () => boolean;

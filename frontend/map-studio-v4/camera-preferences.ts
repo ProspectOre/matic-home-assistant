@@ -1,4 +1,4 @@
-import { clamp } from "./numeric";
+import { clamp } from "./shared-primitives";
 import type { CameraPreference, WorkspaceState } from "./contracts";
 import { isMapTask } from "./task-presentation";
 

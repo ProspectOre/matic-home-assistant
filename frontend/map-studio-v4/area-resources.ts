@@ -3,7 +3,7 @@ import { entryBoundaryKey, type AreasCatalog } from "./backend-contracts";
 import { BackendError, type MaticBackend } from "./backend";
 import { type CoherenceMachine, type WorkspaceStore, areaSelection, canReadFloorResources } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, cancelLoading, isAbort, problemCode, sameCoherenceGeneration } from "./resource-state";
+import { resource, cancelLoading, isAbort, problemCode, sameCoherenceGeneration } from "./shared-primitives";
 
 const areaRemovedNotice = notice("warning", "v4_notice_area_removed", "This saved area was removed elsewhere. Your edits are kept as a new draft; saving will create a new area.");
 

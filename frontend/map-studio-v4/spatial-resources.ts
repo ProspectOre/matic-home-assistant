@@ -13,7 +13,7 @@ import {
   needsPlanCatalog,
 } from "./state";
 import type { ResourceRequests } from "./resource-requests";
-import { resource, isAbort } from "./resource-state";
+import { resource, isAbort } from "./shared-primitives";
 import type { CatalogRecoveryLease } from "./catalog-recovery-lease";
 
 interface SpatialResourceCallbacks {

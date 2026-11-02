@@ -8,10 +8,10 @@ import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
 const SURVEY = {
   enabled: true,
-  cell_size: 0.5,
+  cell_size: 0.3048,
   cells: [
-    { x: 0.75, y: 0.75, dbm: -48, samples: 3, updated_at: 1 },
-    { x: 1.25, y: 0.75, dbm: -88, samples: 1, updated_at: 1 },
+    { x: 0.152, y: 0.152, dbm: -48, samples: 3, updated_at: 1 },
+    { x: 0.457, y: 0.152, dbm: -88, samples: 1, updated_at: 1 },
   ],
 };
 
@@ -41,8 +41,8 @@ const clickInShadow = (panel, selector) => panel.evaluate((element, target) => {
   scan(element.shadowRoot).click();
 }, selector);
 
-const mountPanel = async (page, wifiSignal) => {
-  const { panelTag } = await installPanelFixture(page, { wifiSignal });
+const mountPanel = async (page, wifiSignal, moduleSource = "typescript", options = {}) => {
+  const { panelTag } = await installPanelFixture(page, { wifiSignal, moduleSource, ...options });
   await page.evaluate(async (tag) => {
     const panel = window.__panelFixture.createPanel();
     panel.dataset.testPanel = "true";
@@ -64,13 +64,77 @@ test("Map options turns on the Wi-Fi signal layer and reads the survey", async (
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toEqual({
     status: "ready",
     surveying: true,
-    cellSize: 0.5,
-    cells: [{ x: 0.75, y: 0.75, dbm: -48, size: 0.5 }, { x: 1.25, y: 0.75, dbm: -88, size: 0.5 }],
+    cellSize: 0.3048,
+    cells: [{ x: 0.152, y: 0.152, dbm: -48, size: 0.3048 }, { x: 0.457, y: 0.152, dbm: -88, size: 0.3048 }],
   });
-  await expect.poll(() => wifiRow(panel)).toEqual({ checked: "true", text: "Wi-Fi signal Approximate samples: green strong, red weak. Rings are older; blank areas are unmeasured." });
+  await expect.poll(() => wifiRow(panel)).toEqual({ checked: "true", text: "Wi-Fi signal Approximate averages. Rings are coarser; blank areas are unmeasured." });
 
   await clickInShadow(panel, "[data-wifi-signal]");
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toBeNull();
+});
+
+test("Wi-Fi colors can compare strong sampled spots without labeling them as poor signal", async ({ page }) => {
+  await page.clock.install();
+  await page.addInitScript(() => {
+    window.__wifiPaint = [];
+    const original = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, "fillStyle");
+    Object.defineProperty(CanvasRenderingContext2D.prototype, "fillStyle", {
+      ...original,
+      set(value) {
+        if (typeof value === "string" && value.startsWith("hsl(")) window.__wifiPaint.push(value);
+        original.set.call(this, value);
+      },
+    });
+  });
+  const panel = await mountPanel(page, { enabled: true, cell_size: 0.3048, cells: [
+    { x: 0.152, y: 0.152, dbm: -59 }, { x: 0.457, y: 0.152, dbm: -41.3 },
+  ] }, "packaged");
+  await clickInShadow(panel, "[aria-controls=map-options]");
+  await expect.poll(() => wifiRow(panel)).not.toBeNull();
+  await clickInShadow(panel, "[data-wifi-signal]");
+  await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal?.status)).toBe("ready");
+  const menu = panel.getByRole("menu", { name: "Map options" });
+  await expect(menu.getByRole("menuitemradio", { name: "Signal strength" })).toHaveAttribute("aria-checked", "true");
+  await expect(menu.getByRole("img", { name: "Color scale: -90 dBm – -35 dBm" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__wifiPaint)).toEqual(expect.arrayContaining([
+    "hsl(68 75% 45% / .8)",
+  ]));
+  await page.evaluate(() => { window.__wifiPaint = []; });
+  await menu.getByRole("menuitemradio", { name: "Compare sampled spots" }).click();
+  await expect(menu.getByRole("menuitemradio", { name: "Compare sampled spots" })).toHaveAttribute("aria-checked", "true");
+  await expect(menu.getByRole("menuitemradio", { name: "Signal strength" })).toHaveAttribute("aria-checked", "false");
+  await expect(menu.getByRole("menuitemradio", { name: "Signal strength" })).not.toHaveAttribute("data-selected", "true");
+  await expect(menu.getByRole("menuitemradio", { name: "Compare sampled spots" })).toHaveAttribute("data-selected", "true");
+  await expect(menu.getByRole("img", { name: "Color scale: -59 dBm – -41.3 dBm" })).toBeVisible();
+  await expect(menu.getByText("Colors compare sampled spots, not absolute quality.")).toBeVisible();
+  await expect(menu.getByText("Sampled range: -59 dBm – -41.3 dBm")).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.__wifiPaint)).toEqual(expect.arrayContaining([
+    "hsl(0 75% 45% / .8)",
+  ]));
+  await page.screenshot({ path: test.info().outputPath("wifi-relative-scale.png") });
+  await page.evaluate(() => { window.__wifiSignalReply = { enabled: true, cell_size: 0.3048, cells: [
+    { x: 0.152, y: 0.152, dbm: -58 }, { x: 0.457, y: 0.152, dbm: -42 },
+  ] }; });
+  await page.clock.fastForward(30_000);
+  await expect(menu.getByRole("img", { name: "Color scale: -58 dBm – -42 dBm" })).toBeVisible();
+  await expect(menu.getByRole("menuitemradio", { name: "Compare sampled spots" })).toHaveAttribute("aria-checked", "true");
+});
+
+test("Wi-Fi colors stay available while docked on a narrow screen", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const panel = await mountPanel(page, SURVEY, "packaged", { initialRobotStates: {
+    "vacuum.synthetic": { state: "docked", attributes: { matic_entry_id: "synthetic-entry" } },
+  } });
+  await clickInShadow(panel, "[aria-controls=map-options]");
+  await expect.poll(() => wifiRow(panel)).not.toBeNull();
+  await clickInShadow(panel, "[data-wifi-signal]");
+  const menu = panel.getByRole("menu", { name: "Map options" });
+  const relative = menu.getByRole("menuitemradio", { name: "Compare sampled spots" });
+  await relative.scrollIntoViewIfNeeded();
+  await relative.click();
+  await expect(relative).toHaveAttribute("aria-checked", "true");
+  await expect(menu.getByText("Colors compare sampled spots, not absolute quality.")).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("wifi-relative-mobile.png") });
 });
 
 test("the layer picks up new cells while it stays on", async ({ page }) => {
@@ -187,6 +251,21 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     renderer.setState({ ...initial, wifiSignal });
     await frame();
     const live = fills.splice(0);
+    const strong = parseWifiSignal({ enabled: true, cell_size: 0.3048, cells: [
+      { x: 0.152, y: 0.152, dbm: -59 }, { x: 0.457, y: 0.152, dbm: -41.3 },
+    ] });
+    renderer.setState({ ...initial, wifiSignal: strong });
+    await frame();
+    const absoluteStrong = fills.splice(0);
+    renderer.setState({ ...initial, wifiSignal: strong, wifiScale: "relative" });
+    await frame();
+    const relativeStrong = fills.splice(0);
+    const uniform = parseWifiSignal({ enabled: true, cell_size: 0.3048, cells: [
+      { x: 0.152, y: 0.152, dbm: -55 }, { x: 0.457, y: 0.152, dbm: -54.8 },
+    ] });
+    renderer.setState({ ...initial, wifiSignal: uniform, wifiScale: "relative" });
+    await frame();
+    const relativeUniform = fills.splice(0);
     renderer.setState({ ...initial, wifiSignal, dataMode: "history" });
     await frame();
     const history = fills.splice(0);
@@ -211,10 +290,13 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
       { enabled: true, cell_size: 0.5, cells: [null] },
       null,
     ].map((value) => { try { parseWifiSignal(value); return false; } catch { return true; } });
-    return { live, history, retained, rejected, roomColours };
+    return { live, absoluteStrong, relativeStrong, relativeUniform, history, retained, rejected, roomColours };
   }, SURVEY);
-  // -48 dBm is past the strong end of the scale and -88 past the weak end.
-  expect(result.live).toEqual(["hsl(120 75% 45% / .8)", "hsl(0 75% 45% / .8)"]);
+  // The fixed scale distinguishes strong readings without saturating at -50 dBm.
+  expect(result.live).toEqual(["hsl(92 75% 45% / .8)", "hsl(4 75% 45% / .8)"]);
+  expect(result.absoluteStrong).toEqual(["hsl(68 75% 45% / .8)", "hsl(106 75% 45% / .8)"]);
+  expect(result.relativeStrong).toEqual(["hsl(0 75% 45% / .8)", "hsl(120 75% 45% / .8)"]);
+  expect(result.relativeUniform).toEqual(["hsl(58 75% 45% / .8)", "hsl(62 75% 45% / .8)"]);
   expect(result.history).toEqual([]);
   // A retained read-only scene waits for the live one before cells draw.
   expect(result.retained).toEqual([]);
@@ -237,13 +319,14 @@ test("Wi-Fi samples render as small marks and retain the older coarse-reading di
       fill() { marks.push({ kind: "sample", width: Math.max(...points.map(p => p[0])) - Math.min(...points.map(p => p[0])) }); },
       stroke() { marks.push({ kind: "older", width: Math.max(...points.map(p => p[0])) - Math.min(...points.map(p => p[0])) }); },
     };
-    const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" },
-      wifiSignal: { status: "ready", cells: [
-        { x: 0, y: 0, dbm: -55, size: 0.5 }, { x: 2, y: 0, dbm: -75, size: 1 },
+    const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" }, wifiScale: "absolute",
+      wifiSignal: { status: "ready", cellSize: 0.3048, cells: [
+        { x: 0, y: 0, dbm: -55, size: 0.3048 }, { x: 2, y: 0, dbm: -75, size: 0.5 },
+        { x: 4, y: 0, dbm: -75, size: 1 },
       ] } };
     drawMapLayers(context, state, (x, y) => ({ x: x * 100, y: y * 100 }));
     return marks;
   });
-  expect(result.map(mark => mark.kind)).toEqual(["sample", "older"]);
+  expect(result.map(mark => mark.kind)).toEqual(["sample", "older", "older"]);
   expect(result.every(mark => mark.width > 0 && mark.width <= 40)).toBe(true);
 });

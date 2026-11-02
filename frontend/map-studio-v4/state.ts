@@ -1,4 +1,4 @@
-import { clamp } from "./numeric";
+import { clamp } from "./shared-primitives";
 import { normalizeCamera, liveCameraKey, cameraPreferences } from "./camera-preferences";
 import { isMapTask, taskPresentation } from "./task-presentation";
 import { needsDraftConfirmation } from "./draft-navigation";
@@ -94,6 +94,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   appearance: "photo",
   labelsVisible: true,
   wifiSignal: null,
+  wifiScale: "absolute",
   floorTypes: null,
   followMode: "off",
   comparisonActive: false,
@@ -426,6 +427,8 @@ export const reduceWorkspace = (
       return { ...state, labelsVisible: !state.labelsVisible };
     case "toggle-wifi-signal":
       return { ...state, wifiSignal: state.wifiSignal ? null : { status: "loading", surveying: false, cellSize: 0, cells: [] } };
+    case "set-wifi-scale":
+      return { ...state, wifiScale: intent.scale === "relative" ? "relative" : "absolute" };
     case "set-follow-mode":
       if (intent.mode !== "off" && !canFollowRobot(state, intent.mode)) return state;
       return state.followMode === intent.mode ? state : {
