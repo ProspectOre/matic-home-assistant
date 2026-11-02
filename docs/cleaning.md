@@ -43,10 +43,10 @@ A plan runs in one or more parts, and the Run view says when there are several:
 So "Kitchen, Rug, Hall" runs in three parts, usually with two dock trips, while
 "Kitchen, Hall, Rug" runs in two. To keep dock trips down, put custom areas at
 the start or end of a plan. Each room and area gets its own result, and **Plan
-finished** fires once, after the last part. After a Home Assistant restart, the integration can reconnect to the same active
-mission when its identity and floor match. Completion is checked before work is
-credited or the queue advances; uncertain dispatches are not replayed ([restart
-recovery](restart-recovery.md)).
+finished** fires once, after the last part. After a Home Assistant restart, the
+integration can reconnect to a clean still in progress if it can confirm the
+same clean and floor. Completion is checked before work is credited or the
+queue advances; uncertain starts are not repeated ([restart recovery](restart-recovery.md)).
 
 <a id="intelligent-rotation"></a>
 ### Smart Order
