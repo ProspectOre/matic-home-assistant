@@ -1,9 +1,9 @@
 # Native history floor identity
 
 Research for [#383](https://github.com/ProspectOre/matic-home-assistant/issues/383),
-observed November 1, 2026. The integration currently omits floor identity from its
-decoded history. The OEM app's model includes it. Missing parser support must not
-be described as a missing protocol capability.
+observed November 1, 2026. The installed OEM decoder confirms that native history
+contains mission and partition identity, per-mode completion, stop reason, and
+start initiator. The integration's previous parser did not expose these semantics.
 
 ## Source identity
 
@@ -18,49 +18,68 @@ split's extracted library. The bounded robot read reported firmware v181.10.
 | Native library | `d3c4358caad2819810214a325902bbe205a430777273575ac204ae8f529be01e` |
 
 The generated `HistoryEvent` binding and its UniFFI converter expose `mission_id`,
-`goals`, and `partition_id`. This establishes the app model's identity fields,
-not their protobuf tag numbers. The app's history screen associates runs with maps.
+`goals`, and `partition_id`. To verify wire meaning, an isolated `app_process`
+probe loaded the installed OEM bindings and replayed captured history through a
+local TLS replay server. The replay library differed from the installed library
+only in the private fixture root CA literal range; all other bytes, including
+`.text`, were unchanged. The installed app and its default trust configuration
+were untouched. The replay sent no robot commands.
 
 ## Structural capture
 
-A bounded acknowledged read captured 20 history records and two saved floors.
-Only one mission appeared in those history records; this is not a two-floor
-history qualification.
+An official-app baseline contained 20 unique history events. Matching its
+mission, partition, completion, stop, and initiator results against the private
+decoder replay gave parity for all 20 events. No captured identifiers, names, or
+household labels are included here.
 
-- Every root field 1 decoded as a mission identifier matching one saved floor.
-- Path `2/1/10/2/1/1` contained a valid partition identifier in all 20 records.
-  Each record repeated one distinct identifier between 8 and 150 times.
-- Sixteen records' identifiers exactly matched that floor's current partition
-  encoding. Four records had a different identifier. They were not missing the
-  field. The reason for that difference is unproven.
+The verified wire mappings are:
 
-Exact equality corroborates a candidate association. It does not establish the
-official meaning of the nested field or justify assigning a mismatched record
-to the current partition. Current-map identity and room names alone are inadequate.
+- Root field `1` is `MissionId`, with nested fields `2` (`fixed32`).
+- The canonical partition ID is under log field `2`, repeated field `1`, initial
+  event `2`, start-goals `1`, repeated goal `2` (or `1` in a verified variant),
+  goal metadata `7`, partition envelope `1/1/2`, then payload fields `1`
+  (`fixed64` high) and `2` (`fixed64` low). Mutating this UUID changes the OEM `getPartitionId()`
+  result; omitting it is rejected. The previously suspected path
+  `2/1/10/2/1/1` is correlated data, not the canonical identity: mutating or
+  removing it leaves the official partition result unchanged.
+- Modern completion is root field `5`, field `11`, repeated field `1`, map-entry
+  value field `2`, repeated field `2`, mode-map value field `2`, status field
+  `5`. Mode key field `1` has value `0` for vacuum and `1` for mop;
+  status `0` means not started,
+  `1` incomplete, and `2` completed. A complete vacuum combined with an
+  unattempted or partial mop is incomplete overall. When this modern summary is
+  present, mutations to legacy global status (`5/5`) and legacy vacuum status
+  (`5/6/1/2/5`) do not change the OEM result.
+- Stop reason is independently decoded from root field `5`, field `10`, under
+  nested fields `5/1` or `5/2` for finished, and `8/1` for user cancellation.
+  Changing the corresponding log stop event does not change the OEM result. Changing the stop reason to
+  cancellation preserves completed work; missing stop evidence yields
+  `BotCancelled`.
+- Start initiator is log `2/1/2/3`. User initiator variant `2/1/1` is the
+  generic app; variants `2` through `6` encode Atrium, Button, Matter, Voice,
+  and Gesture. Schedule start labels are at `3/2` as UTF-8. Household labels
+  are intentionally omitted from this public record.
 
-## Remaining proof
+The legacy schedule-derived candidate identity does not control the OEM
+partition result. Missing root mission identity, canonical partition identity,
+or start reason is rejected by the strict replay reader. The evidence also
+includes missing, malformed, duplicate, and bounded-input cases. This establishes
+the OEM semantics and replay-reader behavior; it does not establish that the
+integration implementation is complete or deployed. The feature integration is
+still in progress, and the installed Home Assistant runtime remains
+`v0.5.1-beta1` (`63c143c6`).
 
-The older symbol-bearing library used for the schedule research has SHA-256
-`150e992f40daf46f204f7de349a5ba154fa2c524f6533fdf330b1fa6432840e9`.
-Its `HistoryEvent::try_from_proto_impl` at `0xea44ac` calls
-`CoverageSessionLog::try_from_proto_impl` at `0xeb1764`. Its model metadata links
-session logs to goals, and goals to a partition. These are useful leads, but do
-not bind the observed nested path to the installed version's semantic decoder.
-
-Before enabling multi-floor imports, obtain an exact schema/decoder trace or an
-official parse result from the matching app version. Establish the mission and
-partition tag paths, then test matching, mismatched, missing, conflicting and
-malformed identities using synthetic fixtures. Exercise histories from two
-floors, reused room names and changed partitions. Unknown identities remain
-withheld; native statistics still cannot award managed-run completion credit.
-
-The installed app's error types include `SolventUnavailable` and refill guidance,
-but this investigation did not prove its numeric association with code 220 in
-1.182.1. That label remains observational pending current-version evidence.
+A separate offline `kabuki_state` replay supplied packed wire error `220`
+(`12 02 dc 01`). The same installed OEM binding returned `errors=[220]` and
+`KabukiDisplayedError.SolventUnavailable`. This proves the current app's mapping;
+the UniFFI enum ordinal alone was not that proof. No physical tank fault was
+induced, and this does not establish cross-firmware behavior.
 
 Raw captures, map identities, household labels and vendor artifacts remain in
-the private evidence store. No cleaning, docking, fault induction, floor edits
-or firmware changes were performed for this research.
+the private evidence store. This offline replay did not clean, dock, induce a
+fault, edit floors, or change firmware. Separate authorized physical cleanings
+are recorded in [cleaning results](native-cleaning-results.md); those runs are
+not evidence for the offline parser replay.
 
 See [cleaning results](native-cleaning-results.md) and the
 [OEM research workflow](https://github.com/ProspectOre/wiki/blob/main/workflows/oem-protocol-research.md).

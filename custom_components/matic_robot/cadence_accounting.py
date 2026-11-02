@@ -9,6 +9,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from .cadence import advance_cadence
+from .completion_ledger import record_completion
 
 
 class CadenceCompletion(Protocol):
@@ -124,6 +125,8 @@ def apply_verified_cadence(
     room: CadenceCompletion,
     cadence_state: object,
     *,
+    completion_id: str | None = None,
+    completed_at: float | None = None,
     current_identity: str | None = None,
     validate_current_identity: bool = False,
     verified_coverage: str | None = None,
@@ -179,7 +182,19 @@ def apply_verified_cadence(
         verified_coverage=verified_coverage,
     )
     if scope == "shared":
-        schedule["progress"] = next_progress
+        if completion_id is not None and completed_at is not None:
+            if not record_completion(
+                schedule,
+                completion_id,
+                at=completed_at,
+                source="managed",
+                snapshot=cadence_state,
+                mode=room.cleaning_mode,
+                coverage=verified_coverage,
+            ):
+                return False
+        else:
+            schedule["progress"] = next_progress
     else:
         record["progress"] = next_progress
     if isinstance(policy, dict):

@@ -629,9 +629,8 @@ def test_room_sensors_explain_withheld_native_statistics(sensor_class, managed_r
     assert entity.extra_state_attributes == {
         **original_attributes,
         "native_statistics_blocked_reason": (
-            "App-started room statistics are unavailable because multiple floors "
-            "are saved and the integration cannot yet verify which floor "
-            "each clean belongs to."
+            "App-started room statistics are unavailable because native "
+            "history lacks verified floor identity."
         ),
     }
     if managed_result:

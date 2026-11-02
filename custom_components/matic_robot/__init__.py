@@ -32,6 +32,7 @@ from .const import (
     CONF_COVERAGE_SETTING,
     CONF_HERMES_CREDENTIAL,
     CONF_HOSTNAME,
+    CONF_INCLUDE_NATIVE_CLEANINGS,
     CONF_SERIAL_NUMBER,
     DATA_FIRMWARE_TRACKER,
     DATA_LLM_API,
@@ -201,6 +202,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
         robot_generation = plans.activate_robot(serial_number)
+        await plans.async_set_native_cleanings_enabled(
+            serial_number, entry.options.get(CONF_INCLUDE_NATIVE_CLEANINGS, True)
+        )
+
+        async def update_native_cleanings(
+            hass: HomeAssistant, updated: ConfigEntry
+        ) -> None:
+            await plans.async_set_native_cleanings_enabled(
+                serial_number, updated.options.get(CONF_INCLUDE_NATIVE_CLEANINGS, True)
+            )
+
+        entry.async_on_unload(entry.add_update_listener(update_native_cleanings))
         area_binding_upgrade = await plans.async_upgrade_area_bindings(
             serial_number, coordinator.data.floor_plan
         )

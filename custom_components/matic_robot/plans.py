@@ -78,6 +78,7 @@ from .client.coverage_receipts import (
     native_session_hash,
 )
 from .client.models import CleaningSessionRecord, FloorPlan, Room
+from .completion_ledger import reset_progress as reset_completion_progress
 from .const import (
     DATA_PLAN_MANAGER,
     DOMAIN,
@@ -91,8 +92,10 @@ from .coverage_accounting import (
     coverage_evidence_from_storage,
     verified_room_coverage,
 )
+from .native_cadence import import_native_cadence
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
+from .room_identity import room_cadence_identity as room_cadence_identity
 from .room_statistics import (
     NativeRoomStatistic,
     native_room_statistics_by_session,
@@ -125,7 +128,7 @@ class _MetadataLockLease:
 
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 12
+STORAGE_MINOR_VERSION = 13
 STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
 PLAN_FLOOR_TOKEN = "_matic_plan_floor"
@@ -647,32 +650,6 @@ def plan_floor_token(floor_plan: FloorPlan) -> str:
         add(id_wire)
         add(protocol_id)
         add(room_id)
-    return digest.hexdigest()
-
-
-def room_cadence_identity(floor_plan: FloorPlan, room_id: str) -> str:
-    """Bind cadence to robot-owned floor and room IDs, excluding room labels.
-
-    Mission, partition, and native room identity prevent a reused room ID on
-    another mapped floor from inheriting progress. Geometry and names remain
-    free to change without affecting the schedule identity.
-    """
-    room = next(
-        (candidate for candidate in floor_plan.rooms if candidate.id == room_id), None
-    )
-    if room is None:
-        raise ValueError("room is not present on the current map")
-    digest = hashlib.sha256(b"matic-room-cadence-identity-v1\0")
-    digest.update(struct.pack(">q", floor_plan.mission_id))
-    for value in (
-        floor_plan.partition_id_wire,
-        floor_plan.partition_protocol_id.encode(),
-        room.id_wire,
-        room.protocol_id.encode(),
-        room.id.encode(),
-    ):
-        digest.update(struct.pack(">I", len(value)))
-        digest.update(value)
     return digest.hexdigest()
 
 
@@ -2336,6 +2313,29 @@ class CleaningPlanManager:
         )
         return deepcopy(pending) if pending is not None else None
 
+    async def async_set_native_cleanings_enabled(
+        self, serial_number: str, enabled: bool
+    ) -> None:
+        """Persist activation before importing history; never backfill old runs."""
+        if not isinstance(enabled, bool):
+            raise ValueError("native cleanings option must be boolean")
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._store_lock:
+                robot = self._robot(serial_number)
+                state = robot.get("native_cleanings")
+                if isinstance(state, dict) and state.get("enabled") is enabled:
+                    return False
+                before = deepcopy(robot)
+                robot["native_cleanings"] = {
+                    "enabled": enabled,
+                    "since": dt_util.utcnow().isoformat(),
+                }
+                await self._async_save_with_rollback(serial_number, before)
+                return True
+
+        await self._async_run_owned_metadata(serial_number, commit, notify=True)
+
     async def async_import_native_history(
         self,
         serial_number: str,
@@ -2486,6 +2486,7 @@ class CleaningPlanManager:
         before = deepcopy(robot)
         records = tuple(records)
         changed = _import_native_room_activity(robot, floor_plan, records)
+        changed = import_native_cadence(robot, floor_plan, records) or changed
         changed = (
             _reconcile_pending_native_history(
                 robot,
@@ -3128,6 +3129,7 @@ class CleaningPlanManager:
                 schedule = {
                     "progress": {"mop": 0, "coverage": 0},
                     "identity": room_identity,
+                    "native_since": dt_util.utcnow().isoformat(),
                 }
                 schedules[room_id] = schedule
             elif (
@@ -3136,11 +3138,19 @@ class CleaningPlanManager:
                 # A reused room ID on a different native floor identity starts
                 # a new shared schedule and cannot inherit ambiguous progress.
                 schedule["progress"] = {"mop": 0, "coverage": 0}
+                schedule.pop("accounting", None)
+                schedule.pop("native_events", None)
+                schedule.pop("native_binding", None)
+                schedule["native_since"] = dt_util.utcnow().isoformat()
                 schedule["identity"] = room_identity
             elif floor_token is not None and schedule.get("floor_token") != floor_token:
                 # A verified floor rebind must not carry progress from an
                 # older map whose room identity happened to remain stable.
                 schedule["progress"] = {"mop": 0, "coverage": 0}
+                schedule.pop("accounting", None)
+                schedule.pop("native_events", None)
+                schedule.pop("native_binding", None)
+                schedule["native_since"] = dt_util.utcnow().isoformat()
             schedule["policy"] = {
                 key: value for key, value in policy.items() if key != "scope"
             }
@@ -4099,9 +4109,9 @@ class CleaningPlanManager:
                 if isinstance(schedule, dict):
                     # _robot() has already normalized each persisted progress
                     # record before this policy mutation begins.
-                    progress = schedule["progress"]
-                    for mode in reset_modes:
-                        progress[mode] = 0
+                    reset_completion_progress(
+                        schedule, reset_modes, at=dt_util.utcnow().timestamp()
+                    )
                     policy = schedule.get("policy")
                     if isinstance(policy, dict):
                         for mode in reset_modes:
@@ -4418,6 +4428,35 @@ class CleaningPlanManager:
                 await self._store.async_save(self._data)
 
         await self._async_run_owned_metadata(serial_number, commit, notify=True)
+
+    async def async_claim_native_session(
+        self, serial_number: str, session_id: str, *, run_id: str | None = None
+    ) -> None:
+        """Durably reserve our exact command UUID before sending it to the robot."""
+        canonical_id = str(UUID(session_id))
+        claim = hashlib.sha256(canonical_id.encode("ascii")).hexdigest()
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self._store_lock:
+                robot = self._robot(serial_number)
+                last_run = robot.get("last_run")
+                if run_id is not None and (
+                    not isinstance(last_run, dict)
+                    or last_run.get("run_id") != run_id
+                    or last_run.get("outcome") != "running"
+                ):
+                    raise ValueError("managed run no longer owns this dispatch")
+                claims = robot.setdefault("managed_native_sessions", {})
+                if claim in claims:
+                    return False
+                before = deepcopy(robot)
+                claims[claim] = {"at": dt_util.utcnow().isoformat(), "run_id": run_id}
+                await self._async_save_with_rollback(serial_number, before)
+                return True
+
+        await self._async_run_owned_metadata(
+            serial_number, commit, reject_on_admission_close=True
+        )
 
     async def async_set_recovery_checkpoint(
         self,
@@ -5400,6 +5439,10 @@ class CleaningPlanManager:
             plan_id,
             room,
             cadence_state,
+            completion_id=hashlib.sha256(
+                f"{run_id or now}:{room.room_id}".encode()
+            ).hexdigest(),
+            completed_at=cast(datetime, dt_util.parse_datetime(now)).timestamp(),
             verified_coverage=verified_room_coverage(
                 checkpoint.get("coverage_evidence")
                 if isinstance(checkpoint, dict)
@@ -5598,6 +5641,15 @@ class CleaningPlanManager:
                 plan_id,
                 room_settings,
                 pending.get("cadence_state"),
+                completion_id=hashlib.sha256(
+                    (
+                        f"{pending.get('run_id') or pending['dispatched_at']}:"
+                        f"{room.room_id}"
+                    ).encode()
+                ).hexdigest(),
+                completed_at=cast(
+                    datetime, dt_util.parse_datetime(completed_value)
+                ).timestamp(),
                 current_identity=room_identity,
                 validate_current_identity=True,
                 verified_coverage=verified_room_coverage(
@@ -5934,8 +5986,16 @@ class CleaningPlanManager:
                     "floor_mission_id": room.get(
                         "robot_last_floor_id", room.get("robot_last_invalid_floor_id")
                     ),
+                    **(
+                        {"floor_partition_hash": room["robot_last_partition_hash"]}
+                        if isinstance(room.get("robot_last_partition_hash"), str)
+                        else {}
+                    ),
                     "source": (
-                        "robot_native_mode_result_room_name_match"
+                        "robot_native_mode_result_identity_match"
+                        if isinstance(room.get("robot_last_completed"), str)
+                        and isinstance(room.get("robot_last_partition_hash"), str)
+                        else "robot_native_mode_result_room_name_match"
                         if isinstance(room.get("robot_last_completed"), str)
                         else "robot_native_mode_result_managed_session"
                         if room.get("robot_last_invalid_source") == "managed_session"
@@ -6023,6 +6083,7 @@ class CleaningPlanManager:
             "rotation_resets",
             "shared_room_cadence",
             "plan_room_cadence",
+            "managed_native_sessions",
         ):
             if not isinstance(robot.get(key), dict):
                 robot[key] = {}
@@ -7043,6 +7104,14 @@ def _reconcile_pending_native_history(
             pending["plan_id"],
             room_settings,
             cadence_state,
+            completion_id=hashlib.sha256(
+                (
+                    f"{pending.get('run_id') or pending['dispatched_at']}:{room.id}"
+                ).encode()
+            ).hexdigest(),
+            completed_at=cast(
+                datetime, dt_util.parse_datetime(matches[0].ended_at)
+            ).timestamp(),
             current_identity=current_identity,
             validate_current_identity=True,
             verified_coverage=verified_room_coverage(
@@ -7200,11 +7269,36 @@ def _import_native_room_activity(
         timestamp = _latest_timestamp(session.ended_at)
         if timestamp is None or not isinstance(session.ended_at, str):
             continue
-        worked_rooms = (
-            session.visited_rooms if session.mode_results else session.completed_rooms
-        )
-        for worked_name in worked_rooms:
-            mapped_room = room_lookup.get(_native_room_key(worked_name))
+        canonical = session.mission_id is not None or session.partition_id is not None
+        if canonical:
+            if (
+                session.mission_id != floor_plan.mission_id
+                or session.partition_id != floor_plan.partition_protocol_id
+            ):
+                continue
+            active_rooms = {room.protocol_id: room for room in floor_plan.rooms}
+            worked = {
+                result.room_id
+                for result in session.mode_results
+                if result.status in {"partial", "completed"}
+            }
+            mapped_rooms: list[tuple[str, str] | None] = [
+                (mapped.id, mapped.name)
+                for room_id in worked
+                if (mapped := active_rooms.get(room_id or "")) is not None
+            ]
+        else:
+            if native_statistics_have_ambiguous_floor(floor_plan):
+                continue
+            worked_rooms = (
+                session.visited_rooms
+                if session.mode_results
+                else session.completed_rooms
+            )
+            mapped_rooms = [
+                room_lookup.get(_native_room_key(name)) for name in worked_rooms
+            ]
+        for mapped_room in mapped_rooms:
             if mapped_room is None:
                 continue
             room_id, room_name = mapped_room
@@ -7251,8 +7345,57 @@ def _import_native_room_activity(
         now=now,
         future_tolerance_seconds=ROTATION_FUTURE_TOLERANCE_SECONDS,
         multiple_floors_known=native_statistics_have_ambiguous_floor(floor_plan),
+        floor_plan=floor_plan,
         minimum_timestamp=changed_at,
     )
+    # A present but rejected revision is not history retention loss. Retract
+    # the cached canonical session even if its floor is currently inactive.
+    by_hash = {hashlib.sha256(record.key).hexdigest(): record for record in records}
+    for room_id, stored in robot["rooms"].items():
+        if not isinstance(stored, dict) or not isinstance(
+            stored.get("robot_last_session_hash"), str
+        ):
+            continue
+        prior = by_hash.get(stored["robot_last_session_hash"])
+        partition_hash = stored.get("robot_last_partition_hash")
+        ended = stored.get("robot_last_completed")
+        timestamp = _latest_timestamp(ended)
+        stored_floor = stored.get("robot_last_floor_id")
+        if (
+            prior is None
+            or not isinstance(partition_hash, str)
+            or not isinstance(ended, str)
+            or timestamp is None
+            or not isinstance(stored_floor, int)
+        ):
+            continue
+        session = prior.session
+        if (
+            _latest_timestamp(session.ended_at) is not None
+            and session.mission_id == stored_floor
+            and isinstance(session.partition_id, str)
+            and hashlib.sha256(session.partition_id.encode()).hexdigest()
+            == partition_hash
+        ):
+            continue
+        rejected = NativeRoomStatistic(
+            room_id,
+            stored.get("name", ""),
+            ended,
+            0,
+            timestamp,
+            stored.get("robot_last_session_started_at"),
+            hashlib.sha256(prior.key).hexdigest(),
+            {},
+            frozenset(),
+            frozenset({"vacuum", "mop"}),
+            frozenset(),
+            partition_hash,
+        )
+        changed = (
+            _apply_native_room_statistics(robot, stored_floor, {room_id: (rejected,)})
+            or changed
+        )
     statistics_changed = _apply_native_room_statistics(
         robot, current_floor_id, statistics
     )
@@ -7466,6 +7609,7 @@ def _apply_native_room_statistics(
                 "robot_last_session_hash",
                 "robot_last_session_started_at",
                 "robot_last_floor_id",
+                "robot_last_partition_hash",
             ):
                 if key in room:
                     room.pop(key)
@@ -7496,6 +7640,7 @@ def _apply_native_room_statistics(
                     "robot_last_session_hash",
                     "robot_last_session_started_at",
                     "robot_last_floor_id",
+                    "robot_last_partition_hash",
                     "robot_last_conflicted_modes",
                 ):
                     if key in room:
@@ -7528,6 +7673,7 @@ def _apply_native_room_statistics(
             "robot_last_session_hash": statistic.session_hash,
             "robot_last_session_started_at": statistic.started_at,
             "robot_last_floor_id": floor_id,
+            "robot_last_partition_hash": statistic.partition_hash,
             "robot_last_conflicted_modes": sorted(excluded),
         }
         if any(room.get(key) != value for key, value in updates.items()):

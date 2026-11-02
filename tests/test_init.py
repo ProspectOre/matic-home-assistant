@@ -82,6 +82,7 @@ def _entry() -> SimpleNamespace:
         entry_id="entry",
         async_create_background_task=MagicMock(side_effect=close_background_coroutine),
         async_on_unload=MagicMock(),
+        add_update_listener=MagicMock(),
     )
 
 
@@ -709,6 +710,7 @@ async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
         "expires_at": "2026-08-13T12:12:00+00:00",
     }
     plans = MagicMock()
+    plans.async_set_native_cleanings_enabled = AsyncMock()
     plans.recovery_run.return_value = None
     plans.pending_native_reconciliation.return_value = None
     entry = SimpleNamespace(async_create_background_task=MagicMock())
@@ -1058,6 +1060,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     coordinator_unsubscribe = MagicMock()
     plan_unsubscribe = MagicMock()
     plans = MagicMock()
+    plans.async_set_native_cleanings_enabled = AsyncMock()
     plans.recovery_run.return_value = {} if recovering_run else None
     plans.pending_stop_run_id.return_value = "run" if recovering_stop else None
     plans.areas.return_value = {}
@@ -1266,6 +1269,16 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert plans.async_upgrade_area_bindings.await_args_list[1].args == (
         "synthetic-serial",
         setup_floor_plan,
+    )
+    plans.async_set_native_cleanings_enabled.assert_awaited_once_with(
+        "synthetic-serial", True
+    )
+    update_options = entry.add_update_listener.call_args.args[0]
+    await update_options(
+        hass, SimpleNamespace(options={"include_native_cleanings": False})
+    )
+    plans.async_set_native_cleanings_enabled.assert_awaited_with(
+        "synthetic-serial", False
     )
     if native_history_error:
         plans.async_process_native_history.assert_not_awaited()
@@ -1618,7 +1631,8 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     assert current_area["map_binding"] == current_binding
     assert area_binding_status(current_area, later_refresh) is AreaBindingStatus.CURRENT
     create_issue.assert_not_called()
-    assert manager._store.async_save.await_count == 0
+    # Startup persists the initial external-cleaning activation cutoff.
+    assert manager._store.async_save.await_count == 1
     preview = manager.preview(
         serial,
         {room.id: room.name for room in later_refresh.rooms},
@@ -1701,6 +1715,7 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
 
 async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     plans = MagicMock()
+    plans.async_set_native_cleanings_enabled = AsyncMock()
     plans.async_upgrade_area_bindings = AsyncMock(
         return_value=AreaBindingUpgradeResult(0, False)
     )

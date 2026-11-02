@@ -5,12 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-# Reporter observations, not a firmware-wide protocol specification. Keep raw
-# Hermes codes alongside these readable names in the activity sensor.
+# Labels backed by physical observations and the OEM 1.182.1 decoder replay.
+# Keep raw Hermes codes alongside names; this is not a firmware-wide guarantee.
 # https://github.com/ProspectOre/matic-home-assistant/issues/382
 _OBSERVED_ERROR_NAMES = {
     207: "Lid open (observed with code 207)",
-    220: "Waiting for mopping water (observed with code 220)",
+    220: "Mopping water unavailable",
 }
 
 
@@ -174,9 +174,10 @@ class RobotOperationalState:
         """Return readable labels for observed codes and raw labels otherwise.
 
         The app's public enum ordering is not the numeric Hermes wire mapping;
-        live firmware uses values such as 207 and 304. The meanings for 207
-        and 220 are reporter observations on one robot. Unknown codes retain
-        their numeric labels; the activity sensor always exposes raw codes too.
+        live firmware uses values such as 207 and 304. The meaning for 207
+        is physically confirmed; 220 maps to SolventUnavailable in the exact
+        OEM 1.182.1 decoder replay. Unknown codes retain their numeric labels;
+        the activity sensor always exposes raw codes too.
         """
         return tuple(
             _OBSERVED_ERROR_NAMES.get(code, f"error_code_{code}")
@@ -257,6 +258,7 @@ class CleaningModeResult:
     cleaning_mode: str
     status: str | None
     duration_seconds: int | None
+    room_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,6 +276,11 @@ class CleaningSession:
     mop_completed_rooms: tuple[str, ...] = ()
     combined_completed_rooms: tuple[str, ...] = ()
     mode_results: tuple[CleaningModeResult, ...] = ()
+    mission_id: int | None = None
+    partition_id: str | None = None
+    initiator: str | None = None
+    stop_reason: str | None = None
+    completion_kind: str | None = None
 
     @property
     def visited_rooms(self) -> tuple[str, ...]:
@@ -380,6 +387,7 @@ class FloorPlan:
     rooms: tuple[Room, ...]
     floor_label: str | None = None
     mapped_floors: tuple[MappedFloor, ...] = ()
+    history_floor_plans: tuple[FloorPlan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
