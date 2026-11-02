@@ -263,6 +263,7 @@ async def _async_dispatch_leg_command(
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     on_dispatch: Callable[[], None] | None = None,
+    on_claim: Callable[[str], Awaitable[None]] | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_identity: Callable[[bytes | None], None] | None = None,
     expected_dispatch_identity: bytes | None = None,
@@ -342,6 +343,15 @@ async def _async_dispatch_leg_command(
         params[PLAN_SESSION_ID] = str(managed_session_id)
     if floor_token is not None:
         params[PLAN_FLOOR_TOKEN] = floor_token
+    if managed_session_id is not None and on_claim is not None:
+        # Persist ownership before the command can create a native history row.
+        # A later importer must never reclassify a private or interrupted plan
+        # as an external cleaning just because its final checkpoint was lost.
+        await on_claim(str(managed_session_id))
+        if floor_is_current is not None and not floor_is_current():
+            raise _validation_error(
+                "The robot's room map is unavailable", "room_plan_unavailable"
+            )
     if on_dispatch is not None:
         on_dispatch()
     try:
@@ -540,6 +550,9 @@ async def _async_run_room(
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
+                on_claim=lambda session_id: manager.async_claim_native_session(
+                    serial_number, session_id, run_id=run_id
+                ),
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
@@ -1182,6 +1195,9 @@ async def _async_run_area_leg(
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
+                on_claim=lambda session_id: manager.async_claim_native_session(
+                    serial_number, session_id, run_id=run_id
+                ),
                 session_identity=session_identity,
                 on_identity=on_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
@@ -1448,6 +1464,9 @@ async def _async_run_leg(
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
+                on_claim=lambda session_id: manager.async_claim_native_session(
+                    serial_number, session_id, run_id=run_id
+                ),
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
@@ -3820,6 +3839,11 @@ async def _async_execute_rooms_reserved(
                             floor_token=floor_token,
                             session_identity=session_identity,
                             on_dispatch=lambda: bind_native_identity(None),
+                            on_claim=lambda session_id: (
+                                manager.async_claim_native_session(
+                                    serial_number, session_id, run_id=run_id
+                                )
+                            ),
                             on_identity=bind_native_identity,
                         )
                     except (HomeAssistantError, MaticError) as err:

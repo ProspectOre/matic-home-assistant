@@ -2252,7 +2252,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
 ) -> None:
     manager = CleaningPlanManager(hass)
     assert manager._store.version == 1
-    assert manager._store.minor_version == 12
+    assert manager._store.minor_version == 13
     assert manager._store._private is True
     stored = {
         "robots": {
@@ -2321,7 +2321,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
     with pytest.raises(ValueError, match="storage version"):
         await manager._store._async_migrate_func(2, 1, stored)
     with pytest.raises(ValueError, match="minor version"):
-        await manager._store._async_migrate_func(1, 13, stored)
+        await manager._store._async_migrate_func(1, 14, stored)
 
 
 async def test_plan_store_migrates_interrupted_manual_run_without_private_credit(
@@ -3329,6 +3329,7 @@ async def test_load_repairs_malformed_plan_storage_without_inventing_history(
         "shared_room_cadence": {},
         "plan_room_cadence": {},
         "native_completion_dedup": [],
+        "managed_native_sessions": {},
         "selected_plan": "valid",
         "selected_area": None,
         "active_plan": None,
@@ -7023,6 +7024,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
     )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -7085,6 +7087,7 @@ async def test_room_timeout_is_failure_safe() -> None:
     )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -7129,6 +7132,7 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -7172,6 +7176,7 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -7216,6 +7221,7 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
     )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -7274,6 +7280,7 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
     )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -7329,6 +7336,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
     order: list[str] = []
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         coverage_receipt=MagicMock(return_value=None),
         async_mark_completed=AsyncMock(
             side_effect=lambda *_args, **_kwargs: (
@@ -7638,6 +7646,7 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
     )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -7687,6 +7696,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
     next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         coverage_receipt=MagicMock(return_value=None),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
@@ -7785,6 +7795,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
 def _leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         coverage_receipt=MagicMock(return_value=None),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
@@ -8910,6 +8921,7 @@ async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:
     next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         coverage_receipt=MagicMock(return_value=None),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
@@ -8991,6 +9003,7 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
     room = _room("Kitchen", "room-kitchen")
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -9046,6 +9059,7 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
     room = _room("Kitchen", "room-kitchen")
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -9109,6 +9123,7 @@ async def test_unknown_active_session_interrupts_without_room_credit(
     )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -9167,6 +9182,7 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
     )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -9218,6 +9234,7 @@ async def test_room_pause_and_resume_outcome() -> None:
     )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -9276,6 +9293,7 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
         hass = SimpleNamespace(services=services, bus=bus)
         manager = SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9336,6 +9354,7 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),

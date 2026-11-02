@@ -58,8 +58,11 @@ rooms explain due work and any extra passes. Matic Map refreshes that check
 when you start; if it changed, review the updated settings before starting
 again. A failed check keeps your selection and offers **Try again**.
 
-Starts from the Matic app, physical controls, and custom-area cleans do not
-advance room schedules. Existing Home Assistant service calls keep their
+The integration setting **App-started cleanings** is on by default. Successful
+room cleans from the Matic app, its schedules and robot controls can advance
+shared schedules from activation onward. They do not advance plan-only schedules.
+Custom-area cleans do not advance room schedules. See [cleaning results](native-cleaning-results.md)
+for matching, correction and reset rules. Existing Home Assistant service calls keep their
 behavior; tracked schedule use is explicit through `use_room_schedule` on
 `matic_robot.clean_room_sequence`. Its `override_room_schedule` option keeps
 your supplied settings while retaining compatible completion accounting.

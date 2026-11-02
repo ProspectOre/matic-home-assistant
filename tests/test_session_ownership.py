@@ -1721,6 +1721,7 @@ async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, report
     from custom_components.matic_robot.managed_executor import _async_run_room
 
     manager = SimpleNamespace(
+        async_claim_native_session=AsyncMock(),
         async_mark_started=AsyncMock(return_value=False),
         async_mark_failed=AsyncMock(),
         async_replace_managed_motion=AsyncMock(),
@@ -1801,6 +1802,7 @@ async def test_unavailable_native_history_baseline_fails_before_start(hass):
     from custom_components.matic_robot.managed_executor import _async_run_room
 
     manager = SimpleNamespace(
+        async_claim_native_session=AsyncMock(),
         async_mark_started=AsyncMock(return_value=False),
         async_mark_completed=AsyncMock(),
         async_mark_failed=AsyncMock(),

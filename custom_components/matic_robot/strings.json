@@ -826,7 +826,8 @@
           "default_plan": "Choose the default plan",
           "reset_history": "Reset room cleaning history for one plan",
           "confirm_reset_all_history": "Reset room cleaning history for all plans",
-          "finish": "Done"
+          "finish": "Done",
+          "native_cleanings": "App-started cleanings"
         }
       },
       "default_plan": {
@@ -858,6 +859,16 @@
         "title": "Reset history for all plans?",
         "description": "Every plan starts again from its first room and each room's last-cleaned record is cleared, while plans and settings are kept. This can't be undone.",
         "submit": "Reset"
+      },
+      "native_cleanings": {
+        "title": "App-started cleanings",
+        "description": "Count successful room cleanings started outside Home Assistant toward shared room schedules. Plan-only schedules and saved plan run history stay separate.",
+        "data": {
+          "include_native_cleanings": "Include app-started cleanings"
+        },
+        "data_description": {
+          "include_native_cleanings": "Counting starts when enabled. Turning this off keeps earlier counts. Vacuum-strength tasks stay due until their settings are confirmed."
+        }
       }
     }
   },
