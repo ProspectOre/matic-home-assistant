@@ -8,47 +8,61 @@ from unittest.mock import AsyncMock, Mock, call
 
 import pytest
 
-from custom_components.matic_robot.client import api as api_module
+from custom_components.matic_robot.client import (
+    cleaning_schedule as cleaning_schedule_module,
+)
+from custom_components.matic_robot.client import (
+    cleaning_session as cleaning_session_module,
+)
+from custom_components.matic_robot.client import (
+    telemetry_fields as telemetry_fields_module,
+)
+from custom_components.matic_robot.client import wifi_status as wifi_status_module
 from custom_components.matic_robot.client import wire as wire_module
 from custom_components.matic_robot.client.api import (
     MaticHermesClient,
-    _decode_binary_state,
-    _decode_cleaning_session,
-    _decode_coverage_time,
-    _decode_current_version,
-    _decode_deep_mop_state,
-    _decode_nested_timestamp,
-    _decode_presence_state,
-    _decode_run_progress,
-    _decode_schedule,
-    _decode_text_field,
-    _decode_timezone,
-    _decode_update_state,
-    _decode_uploader_state,
-    _decode_water_flow_factor,
-    _decode_wifi_status,
+)
+from custom_components.matic_robot.client.cleaning_schedule import decode_schedule
+from custom_components.matic_robot.client.cleaning_session import (
+    decode_cleaning_session,
+    decode_nested_timestamp,
 )
 from custom_components.matic_robot.client.commands import CleaningMode, _coverage_specs
+from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import (
     CleaningPhase,
     HermesCollectionEntry,
     RobotOperationalState,
     RunProgress,
 )
+from custom_components.matic_robot.client.telemetry import (
+    decode_binary_state,
+    decode_coverage_time,
+    decode_current_version,
+    decode_deep_mop_state,
+    decode_presence_state,
+    decode_run_progress,
+    decode_timezone,
+    decode_update_state,
+    decode_uploader_state,
+    decode_water_flow_factor,
+)
+from custom_components.matic_robot.client.telemetry_fields import decode_text_field
+from custom_components.matic_robot.client.wifi_status import decode_wifi_status
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
 @pytest.mark.parametrize(
     "decoder",
     [
-        _decode_current_version,
-        _decode_binary_state,
-        _decode_presence_state,
-        _decode_water_flow_factor,
-        _decode_update_state,
-        _decode_timezone,
-        _decode_uploader_state,
-        _decode_coverage_time,
+        decode_current_version,
+        decode_binary_state,
+        decode_presence_state,
+        decode_water_flow_factor,
+        decode_update_state,
+        decode_timezone,
+        decode_uploader_state,
+        decode_coverage_time,
     ],
 )
 def test_scalar_telemetry_rejects_field_amplification_before_allocation(
@@ -62,7 +76,7 @@ def test_scalar_telemetry_rejects_field_amplification_before_allocation(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(wire_module, "WireField", capture)
-    limit = api_module._TELEMETRY_NESTED_MAX_FIELDS
+    limit = telemetry_fields_module._TELEMETRY_NESTED_MAX_FIELDS
     payload = _vfield(1, 0) * (limit + 50)
     result = decoder(payload)
     assert result in {None, (None, None, None, None)}
@@ -72,29 +86,29 @@ def test_scalar_telemetry_rejects_field_amplification_before_allocation(
 @pytest.mark.parametrize(
     "decoder",
     [
-        _decode_current_version,
-        _decode_binary_state,
-        _decode_presence_state,
-        _decode_water_flow_factor,
-        _decode_update_state,
-        _decode_timezone,
-        _decode_uploader_state,
-        _decode_coverage_time,
+        decode_current_version,
+        decode_binary_state,
+        decode_presence_state,
+        decode_water_flow_factor,
+        decode_update_state,
+        decode_timezone,
+        decode_uploader_state,
+        decode_coverage_time,
     ],
 )
 def test_scalar_telemetry_rejects_oversized_bytes_before_parsing(
     monkeypatch: pytest.MonkeyPatch, decoder
 ) -> None:
     parser = Mock()
-    monkeypatch.setattr(api_module, "decode_fields", parser)
-    result = decoder(b"x" * (api_module._TELEMETRY_NESTED_MAX_BYTES + 1))
+    monkeypatch.setattr(telemetry_fields_module, "decode_fields", parser)
+    result = decoder(b"x" * (telemetry_fields_module.TELEMETRY_NESTED_MAX_BYTES + 1))
     assert result in {None, (None, None, None, None)}
     parser.assert_not_called()
 
 
 def test_nested_water_flow_property_rejects_field_amplification() -> None:
-    dense = _vfield(1, 0) * (api_module._TELEMETRY_NESTED_MAX_FIELDS + 1)
-    assert _decode_water_flow_factor(_bfield(1, dense)) is None
+    dense = _vfield(1, 0) * (telemetry_fields_module._TELEMETRY_NESTED_MAX_FIELDS + 1)
+    assert decode_water_flow_factor(_bfield(1, dense)) is None
 
 
 def test_schedule_nested_field_budget_prevents_aggregate_allocation(
@@ -112,65 +126,67 @@ def test_schedule_nested_field_budget_prevents_aggregate_allocation(
     monkeypatch.setattr(wire_module, "WireField", capture)
     nested = _vfield(1, 0) * 600
     with pytest.raises(DecodeError):
-        api_module._uuid_candidates(_bfield(1, nested) + _bfield(2, nested))
-    assert len(allocated) == api_module._SCHEDULE_MAX_FIELDS
+        cleaning_schedule_module._uuid_candidates(
+            _bfield(1, nested) + _bfield(2, nested)
+        )
+    assert len(allocated) == cleaning_schedule_module._SCHEDULE_MAX_FIELDS
 
 
 def test_decode_safe_telemetry_fixtures() -> None:
     version = b"\x0a\x06v200.1\x12\x06stable\x18\x19\x20\x01"
     timezone = b"\x0a\x0b\x12\x09Etc/UTC+1"
 
-    assert _decode_current_version(version) == ("v200.1", "stable", 25, True)
-    assert _decode_binary_state(b"\x08\x01") is True
-    assert _decode_binary_state(b"tombstone-value!") is False
-    assert _decode_deep_mop_state(b"\x0a\x00") is False
-    assert _decode_deep_mop_state(b"\x12\x00") is True
-    assert _decode_presence_state(b"tombstone-value!") is False
-    assert _decode_presence_state(b"\x0a\x00") is True
-    assert _decode_water_flow_factor(b"\x0a\x05\x0d" + struct.pack("<f", 1.4)) == 1.4
-    assert _decode_update_state(b"\x0a\x00") == "idle"
-    assert _decode_update_state(b"\x32\x00") == "available"
-    assert _decode_timezone(timezone) == "Etc/UTC+1"
-    assert _decode_wifi_status(b"\x08\x03")[0] == "connected"
+    assert decode_current_version(version) == ("v200.1", "stable", 25, True)
+    assert decode_binary_state(b"\x08\x01") is True
+    assert decode_binary_state(b"tombstone-value!") is False
+    assert decode_deep_mop_state(b"\x0a\x00") is False
+    assert decode_deep_mop_state(b"\x12\x00") is True
+    assert decode_presence_state(b"tombstone-value!") is False
+    assert decode_presence_state(b"\x0a\x00") is True
+    assert decode_water_flow_factor(b"\x0a\x05\x0d" + struct.pack("<f", 1.4)) == 1.4
+    assert decode_update_state(b"\x0a\x00") == "idle"
+    assert decode_update_state(b"\x32\x00") == "available"
+    assert decode_timezone(timezone) == "Etc/UTC+1"
+    assert decode_wifi_status(b"\x08\x03")[0] == "connected"
 
 
 def test_decode_optional_telemetry_fails_closed() -> None:
     malformed = b"\x0a\xff"
 
-    assert _decode_current_version(malformed) == (None, None, None, None)
-    assert _decode_binary_state(malformed) is None
-    assert _decode_deep_mop_state(malformed) is None
-    assert _decode_presence_state(malformed) is None
-    assert _decode_water_flow_factor(malformed) is None
-    assert _decode_update_state(malformed) is None
-    assert _decode_timezone(malformed) is None
-    assert _decode_wifi_status(malformed)[0] is None
+    assert decode_current_version(malformed) == (None, None, None, None)
+    assert decode_binary_state(malformed) is None
+    assert decode_deep_mop_state(malformed) is None
+    assert decode_presence_state(malformed) is None
+    assert decode_water_flow_factor(malformed) is None
+    assert decode_update_state(malformed) is None
+    assert decode_timezone(malformed) is None
+    assert decode_wifi_status(malformed)[0] is None
 
 
 @pytest.mark.parametrize(
     "decoder",
     [
-        _decode_current_version,
-        _decode_binary_state,
-        _decode_deep_mop_state,
-        _decode_presence_state,
-        _decode_water_flow_factor,
-        _decode_update_state,
-        _decode_timezone,
+        decode_current_version,
+        decode_binary_state,
+        decode_deep_mop_state,
+        decode_presence_state,
+        decode_water_flow_factor,
+        decode_update_state,
+        decode_timezone,
     ],
 )
 def test_decode_optional_telemetry_rejects_non_bytes(decoder) -> None:
     result = decoder(None)
     assert result in {None, (None, None, None, None)}
-    assert _decode_wifi_status(None) == (None, None, None, ())
+    assert decode_wifi_status(None) == (None, None, None, ())
 
 
 def test_decode_optional_telemetry_handles_defaults_and_unknowns() -> None:
-    assert _decode_deep_mop_state(b"\x18\x01") is None
-    assert _decode_water_flow_factor(b"tombstone-value!") == 1.0
-    assert _decode_update_state(b"\x3a\x00") is None
-    assert _decode_timezone(b"tombstone-value!") is None
-    assert _decode_wifi_status(b"\x08\x63")[0] == "unknown"
+    assert decode_deep_mop_state(b"\x18\x01") is None
+    assert decode_water_flow_factor(b"tombstone-value!") == 1.0
+    assert decode_update_state(b"\x3a\x00") is None
+    assert decode_timezone(b"tombstone-value!") is None
+    assert decode_wifi_status(b"\x08\x63")[0] == "unknown"
 
 
 @pytest.mark.parametrize(
@@ -185,13 +201,13 @@ def test_decode_optional_telemetry_handles_defaults_and_unknowns() -> None:
     ),
 )
 def test_double_pass_rejects_ambiguous_or_unobserved_state(payload) -> None:
-    assert _decode_deep_mop_state(payload) is None
+    assert decode_deep_mop_state(payload) is None
 
 
 async def test_active_session_identity_distinguishes_tasks_end_and_unknown() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
     first, second = b"\x0a\x05first", b"\x0a\x06second"
-    client.async_get_property = AsyncMock(
+    client._collections.async_get_property = AsyncMock(
         side_effect=(first, first, second, b"tombstone-value!", b"", b"\x0a\xff")
     )
     assert await client.async_get_cleaning_session_identity() == first
@@ -218,7 +234,7 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
         + _bfield(6, _bfield(1, _bfield(2, details)))
     )
     client = MaticHermesClient("192.0.2.1", 16320)
-    client.async_get_tracked_collection_entries = AsyncMock(
+    client._collections.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(b"opaque-synthetic-key", _bfield(5, summary)),
             HermesCollectionEntry(b"", _bfield(5, summary)),
@@ -232,13 +248,13 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     assert records[0].key == b"opaque-synthetic-key"
     assert records[0].session.completed is True
     assert records[0].session.completed_rooms == ("Kitchen",)
-    client.async_get_tracked_collection_entries.assert_awaited_once_with(
+    client._collections.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=64
     )
-    with pytest.raises(api_module.MaticError, match="incomplete or undecodable"):
+    with pytest.raises(MaticError, match="incomplete or undecodable"):
         await client.async_get_cleaning_session_records(strict=True)
-    client.async_get_tracked_collection_entries.return_value = (
-        client.async_get_tracked_collection_entries.return_value[0],
+    client._collections.async_get_tracked_collection_entries.return_value = (
+        client._collections.async_get_tracked_collection_entries.return_value[0],
     )
     assert await client.async_get_cleaning_session_records(strict=True) == records
 
@@ -262,10 +278,14 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
         "active_session_key": b"disabled-setting",
         "coverage_time": b"disabled-setting",
     }
-    client.async_get_property = AsyncMock(side_effect=lambda name: values[name])
-    client.async_get_collection_entries = AsyncMock(return_value=())
-    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
-    client.async_get_collection_count = AsyncMock(side_effect=(4, 1))
+    client._collections.async_get_property = AsyncMock(
+        side_effect=lambda name: values[name]
+    )
+    client._collections.async_get_collection_entries = AsyncMock(return_value=())
+    client._collections.async_get_tracked_collection_entries = AsyncMock(
+        return_value=()
+    )
+    client._collections.async_get_collection_count = AsyncMock(side_effect=(4, 1))
 
     telemetry = await client.async_get_telemetry()
 
@@ -281,14 +301,15 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
     assert telemetry.scheduled_cleanings == 0
     assert telemetry.local_cleaning_sessions == 0
     assert telemetry.wifi_ssid == "private-ssid"
+    assert isinstance(telemetry.native_history_revision, str)
 
 
 async def test_verified_setting_payloads_and_bounds() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._channel = object()
-    client.async_connect = AsyncMock()
-    client._async_send_channel_payload = AsyncMock()
-    client.async_get_property = AsyncMock(
+    client._connection._channel = object()
+    client._connection.async_connect = AsyncMock()
+    client._connection._async_send_channel_payload = AsyncMock()
+    client._collections.async_get_property = AsyncMock(
         side_effect=(
             b"\x08\x01",
             b"\x08\x00",
@@ -304,14 +325,14 @@ async def test_verified_setting_payloads_and_bounds() -> None:
     await client.async_set_deep_mop(False)
     await client.async_set_water_flow(1.4)
 
-    assert client._async_send_channel_payload.await_args_list == [
+    assert client._connection._async_send_channel_payload.await_args_list == [
         call("child_lock_enabled_command", b"\x08\x01"),
         call("petwaste_enabled_command", b"\x08\x00"),
         call("deep_mop_override_setting_command", b"\x12\x00"),
         call("deep_mop_override_setting_command", b"\x0a\x00"),
         call("water_flow_override_command", b"\x0a\x05\x0d" + struct.pack("<f", 1.4)),
     ]
-    assert client.async_get_property.await_args_list == [
+    assert client._collections.async_get_property.await_args_list == [
         call("child_lock_enabled_state"),
         call("petwaste_enabled_state"),
         call("deep_mop_override_setting_state"),
@@ -330,7 +351,7 @@ async def test_verified_setting_payloads_and_bounds() -> None:
 def test_decode_wifi_schedule_and_history() -> None:
     network = _bfield(1, b"Test LAN") + _vfield(3, 1) + _vfield(6, 89) + _vfield(8, 1)
     wifi = _vfield(1, 3) + _bfield(4, b"Test LAN") + _bfield(7, _bfield(1, network))
-    state, ssid, signal, networks = _decode_wifi_status(wifi)
+    state, ssid, signal, networks = decode_wifi_status(wifi)
     assert (state, ssid, signal) == ("connected", "Test LAN", -45)
     assert networks[0].known is True
 
@@ -344,15 +365,15 @@ def test_decode_wifi_schedule_and_history() -> None:
         + _bfield(2, b"Morning")
         + _vfield(3, 1)
         + _bfield(7, room_id)
-        + _bfield(9, b"")
+        + _bfield(8, b"")
     )
-    schedule = _decode_schedule(payload)
+    schedule = decode_schedule(payload)
     assert schedule is not None
     assert schedule.time == "08:30"
-    assert schedule.weekdays == ("sunday", "tuesday")
+    assert schedule.weekdays == ("monday", "wednesday")
     assert schedule.timezone == "America/Los_Angeles"
     assert schedule.enabled is True
-    assert schedule.ordered is True
+    assert schedule.ordered is None
     assert len(schedule.room_ids) == 1
 
     def timestamp(value: int) -> bytes:
@@ -370,7 +391,7 @@ def test_decode_wifi_schedule_and_history() -> None:
         + _bfield(4, timestamp(1_700_000_900))
         + _bfield(6, _bfield(1, room))
     )
-    session = _decode_cleaning_session(_bfield(5, summary))
+    session = decode_cleaning_session(_bfield(5, summary))
     assert session is not None
     assert session.duration_seconds == 900
     assert session.rooms == ("Kitchen",)
@@ -389,18 +410,18 @@ def test_decode_wifi_schedule_and_history() -> None:
         + _bfield(4, timestamp(1_700_000_083))
         + _bfield(6, _bfield(1, _bfield(2, interrupted_details)))
     )
-    interrupted = _decode_cleaning_session(_bfield(5, interrupted_summary))
+    interrupted = decode_cleaning_session(_bfield(5, interrupted_summary))
     assert interrupted is not None
     assert interrupted.completed is False
     assert interrupted.rooms == ("Kitchen",)
     assert interrupted.room_durations == (("Kitchen", 43),)
     assert interrupted.completed_rooms == ()
 
-    failed = _decode_cleaning_session(_bfield(5, summary + _vfield(5, 2)))
+    failed = decode_cleaning_session(_bfield(5, summary + _vfield(5, 2)))
     assert failed is not None
     assert failed.completed is False
     assert failed.completed_rooms == ("Kitchen",)
-    malformed_status = _decode_cleaning_session(
+    malformed_status = decode_cleaning_session(
         _bfield(5, summary + _bfield(5, b"wrong-wire-type"))
     )
     assert malformed_status is not None
@@ -409,22 +430,32 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert datetime.fromisoformat(session.started_at or "").tzinfo is UTC
 
 
+def test_decode_schedule_weekdays_run_monday_to_sunday() -> None:
+    days = b"".join(_vfield(number, 1) for number in (2, 3, 5, 6, 7))
+    weekly = _bfield(1, days) + _bfield(3, _vfield(1, 525))
+
+    schedule = decode_schedule(_bfield(1, weekly))
+
+    assert schedule is not None
+    assert schedule.weekdays == ("tuesday", "wednesday", "friday", "saturday", "sunday")
+
+
 def test_wifi_decoder_enforces_payload_network_and_nested_budgets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     network = _bfield(1, b"Test LAN") + _vfield(3, 1)
     wifi = _vfield(1, 3) + _bfield(7, _bfield(1, network) + _bfield(1, network))
 
-    monkeypatch.setattr(api_module, "_WIFI_STATUS_MAX_BYTES", len(wifi) - 1)
-    assert _decode_wifi_status(wifi) == (None, None, None, ())
+    monkeypatch.setattr(wifi_status_module, "WIFI_STATUS_MAX_BYTES", len(wifi) - 1)
+    assert decode_wifi_status(wifi) == (None, None, None, ())
 
-    monkeypatch.setattr(api_module, "_WIFI_STATUS_MAX_BYTES", len(wifi))
-    monkeypatch.setattr(api_module, "_WIFI_NETWORK_MAX_COUNT", 1)
-    assert _decode_wifi_status(wifi)[3] == ()
+    monkeypatch.setattr(wifi_status_module, "WIFI_STATUS_MAX_BYTES", len(wifi))
+    monkeypatch.setattr(wifi_status_module, "_WIFI_NETWORK_MAX_COUNT", 1)
+    assert decode_wifi_status(wifi)[3] == ()
 
     one_network = _vfield(1, 3) + _bfield(7, _bfield(1, network))
-    monkeypatch.setattr(api_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
-    assert _decode_wifi_status(one_network)[3] == ()
+    monkeypatch.setattr(wifi_status_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
+    assert decode_wifi_status(one_network)[3] == ()
 
 
 def test_schedule_decoder_enforces_payload_field_and_uuid_budgets(
@@ -434,16 +465,18 @@ def test_schedule_decoder_enforces_payload_field_and_uuid_budgets(
     weekly = _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 510))
     payload = _bfield(1, weekly) + _bfield(7, room_id)
 
-    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_BYTES", len(payload) - 1)
-    assert _decode_schedule(payload) is None
+    monkeypatch.setattr(
+        cleaning_schedule_module, "_SCHEDULE_MAX_BYTES", len(payload) - 1
+    )
+    assert decode_schedule(payload) is None
 
-    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_BYTES", len(payload))
-    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_FIELDS", 1)
-    assert _decode_schedule(payload) is None
+    monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_BYTES", len(payload))
+    monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_FIELDS", 1)
+    assert decode_schedule(payload) is None
 
-    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_FIELDS", 1024)
-    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_UUIDS", 0)
-    assert _decode_schedule(payload) is None
+    monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_FIELDS", 1024)
+    monkeypatch.setattr(cleaning_schedule_module, "_SCHEDULE_MAX_UUIDS", 0)
+    assert decode_schedule(payload) is None
 
 
 def test_cleaning_session_decoder_enforces_payload_field_and_room_budgets(
@@ -455,16 +488,20 @@ def test_cleaning_session_decoder_enforces_payload_field_and_room_budgets(
 
     payload = _bfield(5, room(b"Kitchen") + room(b"Office"))
 
-    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_BYTES", len(payload) - 1)
-    assert _decode_cleaning_session(payload) is None
+    monkeypatch.setattr(
+        cleaning_session_module, "_CLEANING_SESSION_MAX_BYTES", len(payload) - 1
+    )
+    assert decode_cleaning_session(payload) is None
 
-    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_BYTES", len(payload))
-    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_FIELDS", 1)
-    assert _decode_cleaning_session(payload) is None
+    monkeypatch.setattr(
+        cleaning_session_module, "_CLEANING_SESSION_MAX_BYTES", len(payload)
+    )
+    monkeypatch.setattr(cleaning_session_module, "_CLEANING_SESSION_MAX_FIELDS", 1)
+    assert decode_cleaning_session(payload) is None
 
-    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_FIELDS", 1024)
-    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_ROOMS", 1)
-    assert _decode_cleaning_session(payload) is None
+    monkeypatch.setattr(cleaning_session_module, "_CLEANING_SESSION_MAX_FIELDS", 1024)
+    monkeypatch.setattr(cleaning_session_module, "_CLEANING_SESSION_MAX_ROOMS", 1)
+    assert decode_cleaning_session(payload) is None
 
 
 def test_decode_room_completion_statuses_fail_closed() -> None:
@@ -485,7 +522,7 @@ def test_decode_room_completion_statuses_fail_closed() -> None:
         6, _bfield(1, _bfield(2, interrupted))
     )
 
-    session = _decode_cleaning_session(_bfield(5, summary))
+    session = decode_cleaning_session(_bfield(5, summary))
 
     assert session is not None
     assert session.rooms == ("Kitchen", "Hallway")
@@ -497,7 +534,7 @@ def test_decode_room_completion_statuses_fail_closed() -> None:
     for status_pair in [(1, 2), (2, 1), (2, 3)]:
         vacuum = details(b"Study", 90, (5, status_pair[0]), (6, 1))
         mop = details(b"Study", 50, (5, status_pair[1]), (6, 1))
-        mixed = _decode_cleaning_session(
+        mixed = decode_cleaning_session(
             _bfield(
                 5,
                 _bfield(6, _bfield(1, _bfield(2, vacuum)))
@@ -515,7 +552,7 @@ def test_decode_room_completion_statuses_fail_closed() -> None:
         _vfield(5, 2) + _vfield(5, 2),
     ):
         unknown = details(b"Study", 90) + status
-        session = _decode_cleaning_session(
+        session = decode_cleaning_session(
             _bfield(5, _bfield(6, _bfield(1, _bfield(2, unknown))))
         )
         assert session is not None
@@ -523,7 +560,7 @@ def test_decode_room_completion_statuses_fail_closed() -> None:
         assert session.completed_rooms == ()
 
     missing = details(b"Study", 90)
-    session = _decode_cleaning_session(
+    session = decode_cleaning_session(
         _bfield(5, _bfield(6, _bfield(1, _bfield(2, missing))))
     )
     assert session is not None
@@ -532,13 +569,13 @@ def test_decode_room_completion_statuses_fail_closed() -> None:
 
 
 def test_decode_auxiliary_states() -> None:
-    assert _decode_uploader_state(_bfield(1, b"")) is False
-    assert _decode_uploader_state(_bfield(2, _vfield(1, 1))) is True
-    assert _decode_uploader_state(_vfield(2, 1)) is True
-    assert _decode_uploader_state(_vfield(2, 0)) is False
-    assert _decode_uploader_state(b"tombstone-value!") is False
-    assert _decode_coverage_time(_bfield(3, _vfield(1, 321))) == 321
-    assert _decode_coverage_time(b"tombstone-value!") is None
+    assert decode_uploader_state(_bfield(1, b"")) is False
+    assert decode_uploader_state(_bfield(2, _vfield(1, 1))) is True
+    assert decode_uploader_state(_vfield(2, 1)) is True
+    assert decode_uploader_state(_vfield(2, 0)) is False
+    assert decode_uploader_state(b"tombstone-value!") is False
+    assert decode_coverage_time(_bfield(3, _vfield(1, 321))) == 321
+    assert decode_coverage_time(b"tombstone-value!") is None
 
 
 def test_decode_run_progress_from_a_running_clean() -> None:
@@ -548,23 +585,23 @@ def test_decode_run_progress_from_a_running_clean() -> None:
         + _bfield(2, _vfield(1, 2231))
         + _bfield(3, _bfield(1, _bfield(1, _vfield(1, 3607)))),
     )
-    progress = _decode_run_progress(running)
+    progress = decode_run_progress(running)
     assert progress == RunProgress(2231, 3607)
     assert progress is not None and progress.percent == 38
     assert RunProgress(0, 0).percent == 0
     # Idle firmware sends a 16-byte value without field 4.
-    assert _decode_run_progress(b"tombstone-value!") is None
-    assert _decode_run_progress(_bfield(3, _vfield(1, 321))) is None
-    assert _decode_run_progress(_bfield(4, _bfield(2, _vfield(1, 5)))) is None
-    assert _decode_run_progress(_vfield(4, 1)) is None
-    assert _decode_run_progress(b"\xff") is None
+    assert decode_run_progress(b"tombstone-value!") is None
+    assert decode_run_progress(_bfield(3, _vfield(1, 321))) is None
+    assert decode_run_progress(_bfield(4, _bfield(2, _vfield(1, 5)))) is None
+    assert decode_run_progress(_vfield(4, 1)) is None
+    assert decode_run_progress(b"\xff") is None
 
 
 async def test_client_reads_run_progress_from_coverage_time() -> None:
     client = MaticHermesClient("192.0.2.1", 16320)
-    client.async_get_property = AsyncMock(return_value=b"tombstone-value!")
+    client._collections.async_get_property = AsyncMock(return_value=b"tombstone-value!")
     assert await client.async_get_run_progress() is None
-    client.async_get_property.assert_awaited_once_with("coverage_time")
+    client._collections.async_get_property.assert_awaited_once_with("coverage_time")
 
 
 @pytest.mark.parametrize(
@@ -588,43 +625,44 @@ def test_cleaning_phase_follows_the_goal_behavior_code(
 
 
 def test_decoders_fail_closed_and_use_safe_defaults() -> None:
-    assert _decode_text_field(b"\x0a\xff", 1) is None
-    assert _decode_uploader_state(None) is None
-    assert _decode_uploader_state(b"\x0a\xff") is None
-    assert _decode_uploader_state(_bfield(2, b"")) is False
-    assert _decode_uploader_state(b"\x18\x01") is None
-    assert _decode_coverage_time(_vfield(1, 1)) is None
-    assert _decode_coverage_time(b"\x0a\xff") is None
-    assert _decode_schedule(b"bad") is None
-    assert _decode_cleaning_session(b"bad") is None
-    assert _decode_nested_timestamp(b"bad", 1) is None
+    assert decode_text_field(b"\x0a\xff", 1) is None
+    assert decode_uploader_state(None) is None
+    assert decode_uploader_state(b"\x0a\xff") is None
+    assert decode_uploader_state(_bfield(2, b"")) is False
+    assert decode_uploader_state(b"\x18\x01") is None
+    assert decode_coverage_time(_vfield(1, 1)) is None
+    assert decode_coverage_time(b"\x0a\xff") is None
+    assert decode_schedule(b"bad") is None
+    assert decode_cleaning_session(b"bad") is None
+    assert decode_nested_timestamp(b"bad", 1) is None
 
     network = _bfield(1, b"Fallback LAN")
     scan = _vfield(2, 1) + _bfield(1, _vfield(3, 1)) + _bfield(1, network)
     wifi = _vfield(1, 3) + _bfield(4, b"Fallback LAN") + _bfield(7, scan)
-    _state, _ssid, signal, networks = _decode_wifi_status(wifi)
+    _state, _ssid, signal, networks = decode_wifi_status(wifi)
     assert signal is None
     assert networks[0].connected is True
     assert networks[0].known is True
 
     minimal_time = _vfield(1, 180)
     minimal = _bfield(1, _bfield(1, b"") + _bfield(3, minimal_time))
-    schedule = _decode_schedule(minimal)
+    schedule = decode_schedule(minimal)
     assert schedule is not None
     assert schedule.timezone is None
-    assert schedule.ordered is False
+    assert schedule.ordered is None
     assert schedule.enabled is None
 
     empty_summary = _bfield(5, _vfield(1, 1) + _bfield(6, b"\x0a\xff"))
-    session = _decode_cleaning_session(empty_summary)
+    session = decode_cleaning_session(empty_summary)
     assert session is not None
     assert session.rooms == ()
 
 
-def _schedule_with_goals(*specs: bytes) -> bytes:
+def _schedule_with_goals(*specs: bytes, list_kind: int = 1) -> bytes:
     weekly = _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 630))
     goals = b"".join(
-        _bfield(1, _bfield(6, _bfield(1, b"") + _bfield(3, spec))) for spec in specs
+        _bfield(list_kind, _bfield(6, _bfield(1, b"") + _bfield(3, spec)))
+        for spec in specs
     )
     return _bfield(1, weekly) + _bfield(7, goals)
 
@@ -637,10 +675,13 @@ def _schedule_with_goals(*specs: bytes) -> bytes:
         (CleaningMode.BOTH, "vacuum_and_mop"),
     ],
 )
+@pytest.mark.parametrize("list_kind", (1, 2))
 def test_schedule_cleaning_mode_reads_goal_specs(
-    mode: CleaningMode, expected: str
+    mode: CleaningMode, expected: str, list_kind: int
 ) -> None:
-    schedule = _decode_schedule(_schedule_with_goals(*_coverage_specs(mode, 1)))
+    schedule = decode_schedule(
+        _schedule_with_goals(*_coverage_specs(mode, 1), list_kind=list_kind)
+    )
 
     assert schedule is not None
     assert schedule.cleaning_mode == expected
@@ -648,7 +689,7 @@ def test_schedule_cleaning_mode_reads_goal_specs(
 
 def test_schedule_cleaning_mode_edge_cases() -> None:
     def mode_of(payload: bytes) -> str | None:
-        schedule = _decode_schedule(payload)
+        schedule = decode_schedule(payload)
         assert schedule is not None
         return schedule.cleaning_mode
 

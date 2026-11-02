@@ -1,0 +1,1 @@
+var e=e=>e.pageActive&&e.host.connected&&e.host.administrator&&e.host.robotConnected&&"live"===e.dataMode&&"cleaning"===e.activity&&null===e.smartStop&&("idle"===e.command||"failed"===e.command||"starting"===e.command)&&!e.queuePending&&null===e.queueUncertainToken;export{e as a};

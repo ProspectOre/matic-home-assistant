@@ -150,6 +150,16 @@ def test_resource_bounds_fail_closed(tmp_path, monkeypatch, bound):
     assert result["observed_code_matches_installed_source"] is False
 
 
+def test_source_module_catalog_accepts_its_limit_and_rejects_one_more(tmp_path):
+    for index in range(runtime_code.MAX_MODULES):
+        (tmp_path / f"module_{index}.py").touch()
+    assert len(runtime_code._source_paths(tmp_path)) == runtime_code.MAX_MODULES
+
+    (tmp_path / "excess.py").touch()
+    with pytest.raises(ValueError, match="source module bound"):
+        runtime_code._source_paths(tmp_path)
+
+
 def test_malformed_source_and_symlinks_do_not_yield_a_match(tmp_path, monkeypatch):
     root, path, _module = load_source(tmp_path, monkeypatch)
     path.write_text("invalid source:")

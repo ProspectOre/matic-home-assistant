@@ -1,5 +1,6 @@
 import { clamp } from "./numeric";
 import type { CameraPreference, WorkspaceState } from "./contracts";
+import { isMapTask } from "./task-presentation";
 
 const cameraValue = (value: number, fallback: number, minimum: number, maximum: number): number =>
   clamp(Number.isFinite(value) ? value : fallback, minimum, maximum);
@@ -34,5 +35,6 @@ export const liveCameraKey = (state: WorkspaceState | null): string | null => {
 export const cameraPreferences = (state: WorkspaceState): WorkspaceState["cameras"] => {
   if (state.dataMode === "history") return state.historyCameras;
   const key = liveCameraKey(state);
+  if (isMapTask(state.workflow)) return key && state.taskCameraKey === key ? state.taskCameras : {};
   return key && state.cameraKey === key ? state.cameras : {};
 };

@@ -1,0 +1,1 @@
+var a=(a,t,h)=>Math.max(t,Math.min(h,a));export{a};

@@ -33,11 +33,10 @@ the same command after `npm ci` and `pip install -e '.[test]'`.
 | Floor and task | `coverage_plan` serves the floor and retains the commanded goals as room visits, so a room cleaned again appears twice; `active_session_key` carries the task's session; `coverage_session_history` gets a record with per-room, per-mode results when the task ends. One live photographic and one structural map page confirm the floor. `sink_summon_locations` holds a sink posture once a test saves one. |
 | Navigation | The robot's state codes while driving somewhere are not recorded, so it arrives at once: ready in the room without a task, paused with one. A sink trip waits until the `refilled` step, then returns. |
 
-Time does not pass on its own. A test moves the robot with scripted steps such
+Tests move the robot with explicit scripted steps such
 as `start_cleaning`, `finish_room`, `finish_session`, `arrive_at_dock`,
 `low_charge_recharge`, `fault`, `app_takes_over`, `refilled` and `offline`,
-then runs a
-coordinator poll, so results do not depend on timing. History timestamps use
+then await the integration's accepted state before advancing. History timestamps use
 the wall clock because the integration binds a record to the dispatch time.
 A few tests shorten a wait constant (the dock-after-stop poll, the history
 window) rather than wait minutes; the logic is unchanged.
@@ -67,21 +66,39 @@ window) rather than wait minutes; the logic is unchanged.
 - An occupancy-aware saved plan holds a room whose sensor is on.
 - A full bag raises a Repair after the confirmation poll and clears it when
   the error goes.
+- Custom-area geometry reaches the native command. Saved area plans and a
+  room → area → room plan preserve mission order, dock handoffs and separate
+  room and area history; unknown areas are refused before dispatch.
+- Native schedules expose all three cleaning modes, ordered and unordered
+  rooms, disabled entries and local-time occurrences through the HA calendar.
+  A new native scheduled session takes over without a managed STOP.
+- The Wi-Fi survey switch starts a scheduled scan, records signal strength at
+  a fresh pose without a network name, stops sampling, and clears saved cells.
+- Grouped native history held past verification reconciles only the original
+  session's observed rooms. Wrong-session evidence expires without credit or
+  redispatch, and late credit preserves the original terminal run outcome.
+- Camera and patrol calls cross the real service, client and image HTTP paths:
+  arrival and capture freshness, wrong or unknown rooms, takeover, opt-in,
+  cooldown, blocked-room manual snapshots, preview bytes, authentication and
+  the 16-photo memory limit.
 - An unreachable robot makes entities unavailable and they recover.
 - A revoked credential starts reauthentication.
 - Client level: pairing window, unknown credentials, fingerprint and serial
   pinning, snapshot, tracked and pushed collections, unsupported endpoints.
 
-- In a browser: choosing Kitchen and Study in Matic Map sends one coverage
-  command, the panel follows the robot from room to room, and returns to
-  ready once the robot docks. Go to room sends the docked robot to the Study.
-  Skip in "Change this clean" drops the Study from a clean started there.
+- In a browser against Home Assistant: choosing Kitchen and Study sends one
+  coverage command, the panel follows the robot and returns to ready at the
+  dock. Open history reflects delayed completion without a page reload.
+  Go to room and Map-started Skip preserve their command and queue contracts.
+  Drawing, saving and cleaning a custom area reaches the native area mission;
+  history shows the next native schedule; the Wi-Fi layer reads a survey cell
+  and responds to the survey switch.
 
 ## Not covered yet
 
-Custom areas, native schedules, the Wi-Fi survey and delayed history
-reconciliation in the simulator; history views in the live lane. The scripted check on an
-installed host is a separate milestone item.
+The scripted check on an installed host, real-store upgrade and rollback, and
+physical robot acceptance remain separate milestones. New camera capabilities
+such as aimed views or image analysis need their own implementation and tests.
 
 ## What this proves
 

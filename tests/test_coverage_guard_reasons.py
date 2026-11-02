@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -17,13 +18,17 @@ from custom_components.matic_robot.client.exceptions import (
 )
 from custom_components.matic_robot.client.models import FloorPlan
 from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
-from custom_components.matic_robot.managed_executor import (
-    _async_execute_rooms,
-    _async_run_leg,
-    _async_run_room,
-    _failure_reason_code,
-)
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
+from custom_components.matic_robot.managed_executor import _async_execute_rooms
+from custom_components.matic_robot.managed_leg import _async_run_leg
+from custom_components.matic_robot.managed_room import _async_run_room
+from custom_components.matic_robot.managed_run import _failure_reason_code
+from custom_components.matic_robot.plan_model import CleaningRoom
+from custom_components.matic_robot.plans import CleaningPlanManager
+
+
+@asynccontextmanager
+async def _current_reconciliation(_serial: str, _token: int):
+    yield True
 
 
 @pytest.mark.parametrize(
@@ -45,9 +50,13 @@ async def test_coverage_preflight_guard_is_safe_and_sends_no_command(
     expected: CoverageGuardReason,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
-    client.async_get_cleaning_session_identity = AsyncMock(side_effect=identity_values)
-    client.async_get_active_cleaning_session_state = AsyncMock(return_value=active)
-    client._async_send_user_payload = AsyncMock()
+    client._reads.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=identity_values
+    )
+    client._reads.async_get_active_cleaning_session_state = AsyncMock(
+        return_value=active
+    )
+    client._connection._async_send_user_payload = AsyncMock()
 
     with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
@@ -69,7 +78,7 @@ async def test_coverage_preflight_guard_is_safe_and_sends_no_command(
     assert error.safe_message == str(error)
     assert "opaque-native-identity" not in error.safe_message
     assert _failure_reason_code(error) == expected.value
-    client._async_send_user_payload.assert_not_awaited()
+    client._connection._async_send_user_payload.assert_not_awaited()
 
 
 @pytest.mark.parametrize("reason", list(CoverageGuardReason))
@@ -82,9 +91,18 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
-        async_mark_started=AsyncMock(return_value=True),
-        async_mark_failed=AsyncMock(),
-        replace_managed_motion=MagicMock(),
+        ledger=SimpleNamespace(
+            async_mark_started=AsyncMock(return_value=True),
+            async_claim_native_session=AsyncMock(),
+            async_mark_failed=AsyncMock(),
+        ),
+        control=SimpleNamespace(
+            replace_managed_motion=MagicMock(),
+            cancellation_reason=MagicMock(return_value=None),
+            pending_stop_run_id=MagicMock(return_value=None),
+            managed_reconciliation=_current_reconciliation,
+            managed_motion_is_current=MagicMock(return_value=True),
+        ),
     )
     stop_sender = AsyncMock()
     call = SimpleNamespace(
@@ -106,14 +124,14 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
 
     assert caught.value.translation_domain == "matic_robot"
     assert caught.value.translation_key == reason.value
-    manager.async_mark_failed.assert_awaited_once()
-    assert manager.async_mark_failed.await_args.args[3] == error.safe_message
+    manager.ledger.async_mark_failed.assert_awaited_once()
+    assert manager.ledger.async_mark_failed.await_args.args[3] == error.safe_message
     assert bus.async_fire.call_args.args[0] == "matic_robot_room_failed"
     event = bus.async_fire.call_args.args[1]
     assert event["reason_code"] == reason.value
     assert event["error"] == error.safe_message
     stop_sender.assert_not_awaited()
-    manager.replace_managed_motion.assert_not_called()
+    manager.control.replace_managed_motion.assert_not_called()
 
 
 @pytest.mark.parametrize("reason", list(CoverageGuardReason))
@@ -134,9 +152,18 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
-        async_mark_started=AsyncMock(return_value=True),
-        async_mark_failed=AsyncMock(),
-        replace_managed_motion=MagicMock(),
+        ledger=SimpleNamespace(
+            async_mark_started=AsyncMock(return_value=True),
+            async_claim_native_session=AsyncMock(),
+            async_mark_failed=AsyncMock(),
+        ),
+        control=SimpleNamespace(
+            replace_managed_motion=MagicMock(),
+            cancellation_reason=MagicMock(return_value=None),
+            pending_stop_run_id=MagicMock(return_value=None),
+            managed_reconciliation=_current_reconciliation,
+            managed_motion_is_current=MagicMock(return_value=True),
+        ),
     )
     call = SimpleNamespace(
         context=None,
@@ -161,8 +188,8 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
         )
 
     assert caught.value.translation_key == reason.value
-    manager.async_mark_failed.assert_awaited_once()
-    assert manager.async_mark_failed.await_args.args[3] == error.safe_message
+    manager.ledger.async_mark_failed.assert_awaited_once()
+    assert manager.ledger.async_mark_failed.await_args.args[3] == error.safe_message
     room_event = next(
         args.args[1]
         for args in bus.async_fire.call_args_list
@@ -171,16 +198,16 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
     assert room_event["reason_code"] == reason.value
     assert _failure_reason_code(caught.value) == reason.value
     stop_sender.assert_not_awaited()
-    manager.replace_managed_motion.assert_not_called()
+    manager.control.replace_managed_motion.assert_not_called()
 
 
 async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
     """Mixed coverage keeps a typed preflight error at the HA service edge."""
-    from custom_components.matic_robot.plans import (
+    from custom_components.matic_robot.plan_model import (
         PLAN_MOTION_TOKEN,
         PLAN_SESSION_ID,
-        CleaningPlanManager,
     )
+    from custom_components.matic_robot.plans import CleaningPlanManager
     from custom_components.matic_robot.vacuum import MaticVacuum
     from tests.test_entities import _entry
 
@@ -188,9 +215,9 @@ async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
     error = CoverageGuardError(reason)
     entry = _entry()
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
-    token = manager.begin_managed_motion("synthetic-serial")
+    token = manager.control.begin_managed_motion("synthetic-serial")
     client = entry.runtime_data.coordinator.client
     client.async_start_mixed_coverage = AsyncMock(side_effect=error)
     client.async_start_coverage = AsyncMock()
@@ -212,7 +239,7 @@ async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
     assert caught.value.translation_key == reason.value
     assert isinstance(caught.value.__cause__, CoverageGuardError)
     assert caught.value.__cause__.safe_message == error.safe_message
-    assert not manager.stop_pending("synthetic-serial")
+    assert not manager.control.stop_pending("synthetic-serial")
     client.async_start_mixed_coverage.assert_awaited_once()
     client.async_start_coverage.assert_not_awaited()
 
@@ -237,7 +264,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
 
     hass.services.async_register("vacuum", "send_command", reject_dispatch)
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
     events = []
     hass.bus.async_listen(f"{DOMAIN}_room_failed", events.append)
     hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
@@ -264,7 +291,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
         pytest.MonkeyPatch.context() as monkeypatch,
     ):
         monkeypatch.setattr(
-            "custom_components.matic_robot.managed_executor._async_recover_managed_dispatch_identity",
+            "custom_components.matic_robot.managed_dispatch._async_recover_managed_dispatch_identity",
             AsyncMock(return_value=None),
         )
         await _async_execute_rooms(
@@ -281,7 +308,7 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
 
     await hass.async_block_till_done()
     assert caught.value.translation_key == reason.value
-    last_run = manager.snapshot("synthetic-serial")["last_run"]
+    last_run = manager.history.snapshot("synthetic-serial")["last_run"]
     assert last_run["outcome"] == "failed"
     assert last_run["reason_code"] == reason.value
     assert last_run["completed_room_count"] == 0
@@ -289,5 +316,5 @@ async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, re
         reason.value,
         reason.value,
     ]
-    assert manager.cancellation_reason("synthetic-serial") is None
+    assert manager.control.cancellation_reason("synthetic-serial") is None
     stop_sender.assert_not_awaited()

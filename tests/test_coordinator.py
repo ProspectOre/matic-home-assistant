@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -40,8 +41,8 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.coordinator import (
     MaticCoordinator,
     MaticCuesEvent,
-    async_delete_robot_alert_issues,
 )
+from custom_components.matic_robot.robot_health import async_delete_robot_alert_issues
 
 
 def _client() -> AsyncMock:
@@ -137,41 +138,99 @@ async def test_bag_observation_tracks_confirmed_full_and_replacement_edges(
     coordinator.async_set_updated_data(initial)
 
     with patch(
-        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        "custom_components.matic_robot.robot_health.dt_util.utcnow",
         side_effect=(
             datetime(2026, 9, 2, 10, 0, tzinfo=UTC),
             datetime(2026, 9, 2, 10, 1, tzinfo=UTC),
         ),
     ):
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=True))
-        assert coordinator.bag_observation["full_events_observed"] == 1
-        assert coordinator.bag_observation["replacement_events_observed"] == 0
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=True)
+        )
+        assert (
+            coordinator.robot_health.bag_observation(coordinator.data.operational)[
+                "full_events_observed"
+            ]
+            == 1
+        )
+        assert (
+            coordinator.robot_health.bag_observation(coordinator.data.operational)[
+                "replacement_events_observed"
+            ]
+            == 0
+        )
 
         # One clear followed by a full report is ignored as a transient pulse.
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=True))
-        assert coordinator.bag_observation["replacement_events_observed"] == 0
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=False)
+        )
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=True)
+        )
+        assert (
+            coordinator.robot_health.bag_observation(coordinator.data.operational)[
+                "replacement_events_observed"
+            ]
+            == 0
+        )
 
         # A clear full flag while the bag is still missing is not a replacement.
-        coordinator._async_track_bag_state(
+        coordinator.robot_health.track_bag_state(
             replace(initial.operational, bag_full=False, bag_missing=True)
         )
-        assert coordinator.bag_observation["replacement_events_observed"] == 0
+        assert (
+            coordinator.robot_health.bag_observation(coordinator.data.operational)[
+                "replacement_events_observed"
+            ]
+            == 0
+        )
 
         # Two consecutive clear reports identify a replacement transition.
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
-        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=False)
+        )
+        coordinator.robot_health.track_bag_state(
+            replace(initial.operational, bag_full=False)
+        )
 
-    assert coordinator.bag_observation["full_events_observed"] == 1
-    assert coordinator.bag_observation["replacement_events_observed"] == 1
-    assert coordinator.bag_observation["last_full_at"] is not None
-    assert coordinator.bag_observation["last_replaced_at"] is not None
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "full_events_observed"
+        ]
+        == 1
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "replacement_events_observed"
+        ]
+        == 1
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "last_full_at"
+        ]
+        is not None
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "last_replaced_at"
+        ]
+        is not None
+    )
     coordinator.data = replace(
         initial,
         operational=replace(initial.operational, bag_full=False, bag_missing=False),
     )
-    assert coordinator.bag_observation["full"] is False
-    assert coordinator.bag_observation["missing"] is False
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)["full"]
+        is False
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "missing"
+        ]
+        is False
+    )
 
 
 async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> None:
@@ -204,7 +263,12 @@ async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> N
 
     await poll(206, 207)
     await poll(206, 207)
-    assert coordinator.bag_observation["full_events_observed"] == 1
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "full_events_observed"
+        ]
+        == 1
+    )
 
     # The bag is replaced and the unrelated fault has cleared too, so the robot
     # now reports an empty error list. Before the capability was tracked this
@@ -212,8 +276,18 @@ async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> N
     await poll()
     await poll()
     assert coordinator.data.operational.bag_full is False
-    assert coordinator.bag_observation["replacement_events_observed"] == 1
-    assert coordinator.bag_observation["last_replaced_at"] is not None
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "replacement_events_observed"
+        ]
+        == 1
+    )
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "last_replaced_at"
+        ]
+        is not None
+    )
 
 
 async def test_bag_flags_stay_unknown_until_an_error_is_ever_reported(hass) -> None:
@@ -243,12 +317,12 @@ async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
         initial.operational,
         cues_voice_status=CuesVoiceStatus.LISTENING_FOR_WAKE_WORD,
     )
-    coordinator.async_process_cues_state(ready)
+    coordinator.async_process_operational_state(ready)
     listening = replace(
         ready,
         cues_voice_status=CuesVoiceStatus.LISTENING_FOR_INTENT,
     )
-    coordinator.async_process_cues_state(listening)
+    coordinator.async_process_operational_state(listening)
     classified = replace(
         listening,
         cues_voice_status=CuesVoiceStatus.CLASSIFIED,
@@ -256,8 +330,8 @@ async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
         cues_gesture_status=CuesGestureStatus.POINTED_TARGET_ACCEPTED,
         following_person=True,
     )
-    coordinator.async_process_cues_state(classified)
-    coordinator.async_process_cues_state(classified)
+    coordinator.async_process_operational_state(classified)
+    coordinator.async_process_operational_state(classified)
     await hass.async_block_till_done()
 
     assert [event.event_type for event in entity_events] == [
@@ -277,8 +351,191 @@ async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
     assert coordinator.data.operational.following_person is True
 
     remove_listener()
-    coordinator.async_process_cues_state(replace(classified, following_person=False))
+    coordinator.async_process_operational_state(
+        replace(classified, following_person=False)
+    )
     assert entity_events[-1].event_type == "following_started"
+
+
+async def test_live_pushes_do_not_confirm_errors_before_poll_confirmation(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    registry = ir.async_get(hass)
+    full = replace(initial.operational, error_codes=(206,), bag_full=True)
+
+    coordinator.async_process_operational_state(full)
+    coordinator.async_process_operational_state(full)
+
+    assert coordinator.data.operational.error_codes == ()
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_full_entry") is None
+
+    client.async_get_state.return_value = full
+    first_poll = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(first_poll)
+
+    assert coordinator.data.operational.error_codes == ()
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_full_entry") is None
+
+    second_poll = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(second_poll)
+
+    assert coordinator.data.operational.error_codes == (206,)
+    assert coordinator.data.operational.bag_full is True
+    assert registry.async_get_issue(DOMAIN, "robot_alert_bag_full_entry") is not None
+
+
+async def test_live_state_preserves_poll_values_when_stream_field_is_unknown(
+    hass,
+) -> None:
+    coordinator = _coordinator(hass, _client())
+    initial = await coordinator._async_update_data()
+    initial = replace(
+        initial,
+        operational=replace(initial.operational, software_version="v1"),
+    )
+    coordinator.async_set_updated_data(initial)
+    streamed = replace(
+        initial.operational,
+        battery_percentage=None,
+        software_version=None,
+        cleaning=True,
+    )
+
+    coordinator.async_process_operational_state(streamed)
+
+    assert coordinator.data.operational.battery_percentage == 50
+    assert coordinator.data.operational.software_version == "v1"
+    assert coordinator.data.operational.cleaning is True
+
+
+async def test_live_state_push_keeps_native_session_telemetry_in_sync(hass) -> None:
+    coordinator = _coordinator(hass, _client())
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    assert coordinator.data.telemetry.active_cleaning_session is False
+
+    cleaning = replace(
+        initial.operational,
+        state_codes=(119,),
+        cleaning=True,
+    )
+    coordinator.async_process_operational_state(cleaning)
+    assert coordinator.data.operational.cleaning is True
+    assert coordinator.data.telemetry.active_cleaning_session is True
+
+    docked = replace(
+        cleaning,
+        state_codes=(106,),
+        charging_idle=True,
+        cleaning=False,
+    )
+    coordinator.async_process_operational_state(docked)
+    assert coordinator.data.operational.charging_idle is True
+    assert coordinator.data.telemetry.active_cleaning_session is False
+
+
+async def test_late_poll_does_not_overwrite_newer_stream_state(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    state_read_started = asyncio.Event()
+    release_state_read = asyncio.Event()
+
+    async def held_state_read():
+        state_read_started.set()
+        await release_state_read.wait()
+        return initial.operational
+
+    client.async_get_state.side_effect = held_state_read
+    poll = asyncio.create_task(coordinator._async_update_data())
+    await state_read_started.wait()
+    coordinator._state_push_sequence += 1
+    coordinator.async_process_operational_state(
+        replace(initial.operational, battery_percentage=47, cleaning=True)
+    )
+    release_state_read.set()
+
+    result = await poll
+
+    assert result.operational.battery_percentage == 47
+    assert result.operational.cleaning is True
+    assert result.telemetry.active_cleaning_session is True
+
+
+async def test_buffered_stream_push_cannot_overwrite_a_newer_poll(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+
+    # The subscriber received this snapshot, then delayed applying it while it
+    # rate-limited a burst. A later poll began after the push and saw the newer
+    # cleaning state.
+    stale_push_generation = coordinator._state_poll_generation
+    stale = replace(initial.operational, cleaning=False)
+    coordinator._state_push_sequence += 1
+    coordinator._latest_state_push_generation = stale_push_generation
+    coordinator._latest_received_state = stale
+    client.async_get_state.return_value = replace(initial.operational, cleaning=True)
+
+    fresh = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(fresh)
+    coordinator.async_process_operational_state(
+        stale, poll_generation=stale_push_generation
+    )
+
+    assert coordinator.data.operational.cleaning is True
+
+
+async def test_delayed_initial_stream_frame_uses_subscription_generation(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    subscription_started = asyncio.Event()
+    release_first_frame = asyncio.Event()
+    stale_baseline = initial.operational
+    fresh_push = replace(
+        initial.operational,
+        cleaning=True,
+        state_codes=(119,),
+        current_area="Kitchen",
+    )
+
+    async def subscription():
+        subscription_started.set()
+        await release_first_frame.wait()
+        yield stale_baseline
+        # Give the consumer a chance to reject the delayed baseline before a
+        # genuinely subsequent push arrives on this same subscription.
+        await asyncio.sleep(0)
+        yield fresh_push
+
+    client.async_subscribe_state = subscription
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.CUES_UPDATE_INTERVAL_SECONDS", 0
+    )
+    consumer = asyncio.create_task(coordinator._async_consume_state_subscription())
+    await subscription_started.wait()
+
+    # This poll starts after the subscription opened, then completes before its
+    # first frame is delivered. It is authoritative over that delayed baseline.
+    poll = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(poll)
+    poll_generation = coordinator._state_poll_generation
+    assert poll.operational.cleaning is False
+
+    release_first_frame.set()
+    assert await consumer == 2
+
+    assert coordinator._latest_state_push_generation == poll_generation
+    assert coordinator.data.operational.cleaning is True
+    assert coordinator.data.operational.current_area == "Kitchen"
 
 
 @pytest.mark.parametrize(
@@ -299,7 +556,7 @@ async def test_live_cues_remaining_voice_transitions(
     events: list[MaticCuesEvent] = []
     coordinator.async_add_cues_listener(events.append)
 
-    coordinator.async_process_cues_state(
+    coordinator.async_process_operational_state(
         replace(initial.operational, cues_voice_status=voice_status)
     )
 
@@ -319,7 +576,7 @@ async def test_live_cues_classified_intent_can_change_in_place(hass) -> None:
     events: list[MaticCuesEvent] = []
     coordinator.async_add_cues_listener(events.append)
 
-    coordinator.async_process_cues_state(
+    coordinator.async_process_operational_state(
         replace(classified, cues_voice_intent=CuesIntent.CLEAN_ALL)
     )
 
@@ -329,14 +586,14 @@ async def test_live_cues_classified_intent_can_change_in_place(hass) -> None:
 async def test_live_cues_ignores_updates_before_initial_refresh(hass) -> None:
     coordinator = _coordinator(hass, _client())
 
-    coordinator.async_process_cues_state(
+    coordinator.async_process_operational_state(
         RobotOperationalState(50, (), (), False, False, False, False, False, False)
     )
 
     assert coordinator.data is None
 
 
-async def test_cues_watcher_retries_transport_failures(hass) -> None:
+async def test_state_watcher_retries_transport_failures(hass) -> None:
     client = _client()
 
     async def failed_subscription():
@@ -354,12 +611,100 @@ async def test_cues_watcher_retries_transport_failures(hass) -> None:
         ) as sleep,
         pytest.raises(asyncio.CancelledError),
     ):
-        await coordinator.async_watch_cues()
+        await coordinator.async_watch_state()
 
     assert [args.args for args in sleep.await_args_list] == [(1,), (2,)]
 
 
-async def test_cues_watcher_backs_off_after_initial_snapshots(hass) -> None:
+async def test_state_polling_covers_stream_backoff_and_reconnected_push(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep polling useful through a stream outage, then resume live updates."""
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+
+    backoff_started = asyncio.Event()
+    retry_allowed = asyncio.Event()
+    reconnected = asyncio.Event()
+    deliver_fresh_push = asyncio.Event()
+    keep_stream_open = asyncio.Event()
+    attempts = 0
+
+    async def controlled_sleep(delay: float) -> None:
+        assert delay == 1
+        backoff_started.set()
+        await retry_allowed.wait()
+
+    async def subscription():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise MaticError("temporary stream outage")
+        reconnected.set()
+        await deliver_fresh_push.wait()
+        yield replace(
+            initial.operational,
+            battery_percentage=43,
+            cleaning=False,
+            current_area="Den",
+        )
+        await keep_stream_open.wait()
+
+    client.async_subscribe_state = subscription
+    real_process = coordinator.async_process_operational_state
+    processed = asyncio.Event()
+
+    def observe_process(state: RobotOperationalState, **kwargs: object) -> None:
+        real_process(state, **kwargs)
+        processed.set()
+
+    coordinator.async_process_operational_state = observe_process
+    watcher_asyncio = SimpleNamespace(
+        Event=asyncio.Event,
+        create_task=asyncio.create_task,
+        gather=asyncio.gather,
+        CancelledError=asyncio.CancelledError,
+        sleep=controlled_sleep,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.asyncio", watcher_asyncio
+    )
+    watcher = asyncio.create_task(coordinator.async_watch_state())
+    try:
+        await backoff_started.wait()
+
+        # The ordinary coordinator refresh remains the source of truth while
+        # push is unavailable.
+        polled = replace(
+            initial.operational,
+            battery_percentage=38,
+            cleaning=True,
+            current_area="Kitchen",
+        )
+        client.async_get_state.return_value = polled
+        result = await coordinator._async_update_data()
+        coordinator.async_set_updated_data(result)
+        assert coordinator.last_update_success is True
+        assert coordinator.data.operational == polled
+
+        retry_allowed.set()
+        await reconnected.wait()
+        deliver_fresh_push.set()
+        await processed.wait()
+        assert coordinator.data.operational.battery_percentage == 43
+        assert coordinator.data.operational.cleaning is False
+        assert coordinator.data.operational.current_area == "Den"
+        assert coordinator.last_update_success is True
+    finally:
+        keep_stream_open.set()
+        watcher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watcher
+
+
+async def test_state_watcher_backs_off_after_initial_snapshots(hass) -> None:
     client = _client()
     attempts = 0
 
@@ -381,12 +726,12 @@ async def test_cues_watcher_backs_off_after_initial_snapshots(hass) -> None:
         ) as sleep,
         pytest.raises(asyncio.CancelledError),
     ):
-        await coordinator.async_watch_cues()
+        await coordinator.async_watch_state()
 
     assert [args.args for args in sleep.await_args_list] == [(1,), (2,), (1,)]
 
 
-async def test_cues_subscription_resets_burst_backoff_when_stream_completes(
+async def test_state_subscription_resets_burst_backoff_when_stream_completes(
     hass,
 ) -> None:
     client = _client()
@@ -398,10 +743,10 @@ async def test_cues_subscription_resets_burst_backoff_when_stream_completes(
 
     client.async_subscribe_state = subscription
 
-    assert await coordinator._async_consume_cues_subscription() == 2
+    assert await coordinator._async_consume_state_subscription() == 2
 
 
-async def test_cues_subscription_returns_after_collector_finishes(hass) -> None:
+async def test_state_subscription_returns_after_collector_finishes(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
 
@@ -411,10 +756,10 @@ async def test_cues_subscription_returns_after_collector_finishes(hass) -> None:
 
     client.async_subscribe_state = subscription
 
-    assert await coordinator._async_consume_cues_subscription() == 0
+    assert await coordinator._async_consume_state_subscription() == 0
 
 
-async def test_cues_watcher_resets_delay_after_successful_burst(hass) -> None:
+async def test_state_watcher_resets_delay_after_successful_burst(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
 
@@ -430,12 +775,12 @@ async def test_cues_watcher_resets_delay_after_successful_burst(hass) -> None:
         ) as sleep,
         pytest.raises(asyncio.CancelledError),
     ):
-        await coordinator.async_watch_cues()
+        await coordinator.async_watch_state()
 
     assert sleep.await_args.args == (1,)
 
 
-async def test_cues_subscription_cancels_collector_on_shutdown(hass) -> None:
+async def test_state_subscription_cancels_collector_on_shutdown(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
     started = asyncio.Event()
@@ -446,14 +791,14 @@ async def test_cues_subscription_cancels_collector_on_shutdown(hass) -> None:
         yield client.async_get_state.return_value
 
     client.async_subscribe_state = subscription
-    consumer = asyncio.create_task(coordinator._async_consume_cues_subscription())
+    consumer = asyncio.create_task(coordinator._async_consume_state_subscription())
     await started.wait()
     consumer.cancel()
     with pytest.raises(asyncio.CancelledError):
         await consumer
 
 
-async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
+async def test_state_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
     initial = await coordinator._async_update_data()
@@ -470,7 +815,7 @@ async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     client.async_subscribe_state = subscription
 
     with pytest.raises(asyncio.CancelledError):
-        await coordinator.async_watch_cues()
+        await coordinator.async_watch_state()
 
     assert (
         coordinator.data.operational.cues_voice_status
@@ -478,7 +823,7 @@ async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     )
 
 
-async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
+async def test_state_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
     initial = client.async_get_state.return_value
@@ -502,33 +847,64 @@ async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
 
     client.async_subscribe_state = subscription
     processed: list[RobotOperationalState] = []
-    first_processed = asyncio.Event()
+    publications: asyncio.Queue[RobotOperationalState] = asyncio.Queue()
+    deadlines: asyncio.Queue[tuple[float, asyncio.Event]] = asyncio.Queue()
+    now = 0.0
 
-    def process(state: RobotOperationalState) -> None:
+    def process(state: RobotOperationalState, **_kwargs: object) -> None:
         processed.append(state)
-        first_processed.set()
+        publications.put_nowait(state)
 
-    coordinator.async_process_cues_state = process
+    async def wait_for_deadline(delay: float) -> None:
+        release = asyncio.Event()
+        deadlines.put_nowait((delay, release))
+        await release.wait()
 
-    with patch(
-        "custom_components.matic_robot.coordinator.CUES_UPDATE_INTERVAL_SECONDS",
-        0.01,
+    # Replace only this module's asyncio reference; HA keeps the real scheduler.
+    cues_asyncio = SimpleNamespace(
+        Event=asyncio.Event,
+        create_task=asyncio.create_task,
+        gather=asyncio.gather,
+        CancelledError=asyncio.CancelledError,
+        sleep=wait_for_deadline,
+    )
+    coordinator.async_process_operational_state = process
+
+    with (
+        patch("custom_components.matic_robot.coordinator.asyncio", cues_asyncio),
+        patch("custom_components.matic_robot.coordinator.monotonic", lambda: now),
+        patch(
+            "custom_components.matic_robot.coordinator.CUES_UPDATE_INTERVAL_SECONDS",
+            0.01,
+        ),
     ):
-        watcher = asyncio.create_task(coordinator.async_watch_cues())
-        await first_processed.wait()
-        release_burst.set()
-        await burst_sent.wait()
+        watcher = asyncio.create_task(coordinator.async_watch_state())
+        try:
+            async with asyncio.timeout(10):
+                assert await publications.get() == first
+                release_burst.set()
+                await burst_sent.wait()
 
-        assert processed == [first]
-        await asyncio.sleep(0.02)
-        assert processed == [first, latest]
-        keep_open.set()
-        await asyncio.sleep(0.02)
-        assert processed == [first, latest, first]
+                delay, release = await deadlines.get()
+                assert delay == pytest.approx(0.01)
+                assert processed == [first]
+                now += delay
+                release.set()
+                assert await publications.get() == latest
+                assert processed == [first, latest]
 
-        watcher.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await watcher
+                keep_open.set()
+                delay, release = await deadlines.get()
+                assert delay == pytest.approx(0.01)
+                assert processed == [first, latest]
+                now += delay
+                release.set()
+                assert await publications.get() == first
+                assert processed == [first, latest, first]
+        finally:
+            watcher.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await watcher
 
 
 async def test_floor_watcher_refreshes_changed_mission_and_labels(
@@ -1026,7 +1402,7 @@ async def test_live_cues_push_wins_over_an_overlapping_poll(hass) -> None:
         cues_voice_intent=CuesIntent.CLEAN_ALL,
         following_person=True,
     )
-    coordinator.async_process_cues_state(pushed)
+    coordinator.async_process_operational_state(pushed)
     release_state_read.set()
 
     state = await poll
@@ -1302,7 +1678,7 @@ async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> Non
     client = _client()
     fault = replace(
         client.async_get_state.return_value,
-        error_codes=(207,),
+        error_codes=(206,),
         bag_full=True,
     )
     client.async_get_state.return_value = fault
@@ -1317,10 +1693,99 @@ async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> Non
 
     assert first.operational.error_codes == ()
     assert first.operational.bag_full is None
-    assert second.operational.error_codes == (207,)
+    assert second.operational.error_codes == (206,)
     assert second.operational.bag_full is True
     assert cleared.operational.error_codes == ()
     assert repeated_once.operational.error_codes == ()
+
+
+def _error_poller(hass):
+    """Return a coordinator and a poll that reports decoded error state."""
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def poll(*error_codes: int) -> RobotOperationalState:
+        reported = bool(error_codes)
+        client.async_get_state.return_value = replace(
+            client.async_get_state.return_value,
+            error_codes=error_codes,
+            bag_full=206 in error_codes if reported else None,
+            bag_missing=205 in error_codes if reported else None,
+        )
+        coordinator.async_set_updated_data(await coordinator._async_update_data())
+        return coordinator.data.operational
+
+    return coordinator, poll
+
+
+async def test_confirmed_robot_error_stays_exposed_while_new_one_confirms(hass) -> None:
+    """A changed error set only delays codes that are new in it."""
+    _, poll = _error_poller(hass)
+
+    assert (await poll(207)).error_codes == ()
+    assert (await poll(207)).error_codes == (207,)
+
+    added = await poll(205, 207)
+    assert added.error_codes == (207,)
+    assert added.bag_missing is False
+    assert added.bag_full is False
+
+    confirmed = await poll(205, 207)
+    assert confirmed.error_codes == (205, 207)
+    assert confirmed.bag_missing is True
+
+    removed = await poll(207)
+    assert removed.error_codes == (207,)
+    assert removed.bag_missing is False
+
+
+async def test_one_poll_bag_error_beside_confirmed_error_is_not_exposed(hass) -> None:
+    """A pulse cannot reach the error list or bag statistics."""
+    coordinator, poll = _error_poller(hass)
+    await poll(207)
+    await poll(207)
+
+    pulse = await poll(206, 207)
+    after = await poll(207)
+
+    assert pulse.error_codes == (207,)
+    assert pulse.bag_full is False
+    assert after.error_codes == (207,)
+    assert after.bag_full is False
+    assert (
+        coordinator.robot_health.bag_observation(coordinator.data.operational)[
+            "full_events_observed"
+        ]
+        == 0
+    )
+
+
+async def test_error_missing_for_one_poll_confirms_again(hass) -> None:
+    """A code that drops out starts confirmation over when it returns."""
+    _, poll = _error_poller(hass)
+    await poll(207)
+    await poll(207)
+
+    replaced = await poll(205)
+    assert replaced.error_codes == ()
+    assert replaced.bag_full is None
+    assert replaced.bag_missing is None
+
+    assert (await poll(207)).error_codes == ()
+    assert (await poll(207)).error_codes == (207,)
+
+
+async def test_cleared_robot_errors_clear_immediately(hass) -> None:
+    """An empty report clears exposed errors and bag flags."""
+    _, poll = _error_poller(hass)
+    await poll(205, 207)
+    await poll(205, 207)
+
+    cleared = await poll()
+
+    assert cleared.error_codes == ()
+    assert cleared.bag_missing is False
+    assert cleared.bag_full is False
 
 
 async def test_rejected_credential_starts_home_assistant_reauthentication(hass) -> None:
@@ -1693,7 +2158,9 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
 ) -> None:
     from pytest_homeassistant_custom_component.common import async_capture_events
 
-    from custom_components.matic_robot.client.api import _decode_cleaning_session
+    from custom_components.matic_robot.client.cleaning_session import (
+        decode_cleaning_session,
+    )
     from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
     from custom_components.matic_robot.llm import MaticRobotStatusAPI
     from tests.wire_builders import _bfield, _vfield
@@ -1720,7 +2187,7 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
         )
         summary += _bfield(6, _bfield(1, _bfield(2, detail)))
     summary += _bfield(10, _bfield(8, _bfield(1, b"")))
-    session = _decode_cleaning_session(_bfield(5, summary))
+    session = decode_cleaning_session(_bfield(5, summary))
     assert session.completed_rooms == ("Study",)
     assert session.combined_completed_rooms == ()
     client.async_get_telemetry.return_value = RobotTelemetry(latest_session=session)
@@ -2300,7 +2767,7 @@ async def test_native_finished_event_excludes_unattempted_room_scope(hass):
     assert events[0].data["completed"] is False
 
 
-@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_cues"))
+@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_state"))
 async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     hass, watcher
 ) -> None:
@@ -2317,7 +2784,7 @@ async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     async def subscription(*_args):
         nonlocal subscriptions
         subscriptions += 1
-        async with client._map_stream_errors("synthetic subscription"):
+        async with client._connection._map_stream_errors("synthetic subscription"):
             with wrapper:
                 started.set()
                 await asyncio.Event().wait()
@@ -2329,7 +2796,7 @@ async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     channel.close.side_effect = lambda: wrapper.cancel(
         StreamTerminatedError("synthetic closed channel")
     )
-    client._channel = channel
+    client._connection._channel = channel
     coordinator.async_request_refresh = AsyncMock()
     task = asyncio.create_task(getattr(coordinator, watcher)())
     await started.wait()
@@ -2341,12 +2808,12 @@ async def test_retired_watcher_finishes_after_transport_replaces_cancellation(
     await asyncio.wait_for(task, 0.5)
     assert subscriptions == 1
     assert client.retired
-    assert client._channel is None
+    assert client._connection._channel is None
     coordinator.async_request_refresh.assert_not_awaited()
     assert coordinator.data is None
 
 
-@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_cues"))
+@pytest.mark.parametrize("watcher", ("async_watch_floor_plan", "async_watch_state"))
 async def test_retired_watcher_finishes_after_subscription_ends(hass, watcher) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
@@ -2369,22 +2836,23 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
 
     clock = [datetime(2026, 10, 30, 3, 0, tzinfo=UTC)]
     with patch(
-        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        "custom_components.matic_robot.robot_health.dt_util.utcnow",
         side_effect=lambda: clock[0],
     ):
-        coordinator._async_track_alerts(replace(base, error_codes=(206, 304)))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=(206, 304)))
         assert registry.async_get_issue(DOMAIN, issue) is not None
         clock[0] = datetime(2026, 10, 30, 3, 1, tzinfo=UTC)
-        coordinator._async_track_alerts(replace(base, error_codes=(304, 207)))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=(304, 999)))
         assert registry.async_get_issue(DOMAIN, issue) is None
         clock[0] = datetime(2026, 10, 30, 3, 2, tzinfo=UTC)
-        coordinator._async_track_alerts(replace(base, error_codes=()))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=()))
         clock[0] = datetime(2026, 10, 30, 3, 3, tzinfo=UTC)
-        coordinator._async_track_alerts(replace(base, error_codes=(207,)))
+        coordinator.robot_health.track_alerts(replace(base, error_codes=(999,)))
 
-    # 304 ran on from 03:00 without restarting; 207 cleared and came back.
-    assert coordinator.unknown_alert_codes == {
-        "207": {
+    # 304 ran on from 03:00 without restarting; 999 cleared and came back.
+    unknown_codes = coordinator.robot_health.unknown_alert_codes
+    assert json.loads(json.dumps(unknown_codes)) == {
+        "999": {
             "first_seen": "2026-10-30T03:01:00+00:00",
             "last_seen": "2026-10-30T03:03:00+00:00",
         },
@@ -2406,11 +2874,11 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
     reloaded = _coordinator(hass, _client())
     # The first poll after a reload is still unconfirmed, so it leaves the
     # previous Repair alone instead of clearing it for one poll.
-    reloaded._async_confirm_robot_errors(replace(base, error_codes=(206,)))
-    reloaded._async_track_alerts(replace(base, error_codes=()))
+    reloaded.robot_health.confirm_errors(replace(base, error_codes=(206,)))
+    reloaded.robot_health.track_alerts(replace(base, error_codes=()))
     assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry")
-    reloaded._async_confirm_robot_errors(replace(base, error_codes=(206,)))
-    reloaded._async_track_alerts(replace(base, error_codes=(206,)))
+    reloaded.robot_health.confirm_errors(replace(base, error_codes=(206,)))
+    reloaded.robot_health.track_alerts(replace(base, error_codes=(206,)))
     assert registry.async_get_issue(DOMAIN, "robot_alert_bag_missing_entry") is None
     assert registry.async_get_issue(DOMAIN, issue) is not None
     # Removing the robot clears its Repairs, since no poll will reach them.
@@ -2421,3 +2889,30 @@ async def test_alerts_raise_repairs_and_record_unmapped_codes(hass) -> None:
     assert replace(base, error_codes=(304,)).alerts == ("unknown",)
     assert replace(base, error_codes=(304,)).alert == "unknown"
     assert replace(base, error_codes=()).alert == "none"
+
+
+async def test_confirmed_bag_repair_survives_new_fault_then_retires(hass) -> None:
+    """Changing codes preserve active Repairs and retire cleared ones."""
+    coordinator = _coordinator(hass, _client())
+    base = (await coordinator._async_update_data()).operational
+    registry = ir.async_get(hass)
+    issue = "robot_alert_bag_full_entry"
+
+    def poll(*codes):
+        state = replace(
+            base, error_codes=codes, bag_full=206 in codes, bag_missing=205 in codes
+        )
+        return coordinator._process_confirmed_operational_state(state)
+
+    assert poll(206).error_codes == ()
+    assert poll(206).error_codes == (206,)
+    assert registry.async_get_issue(DOMAIN, issue) is not None
+    assert poll(206, 999).error_codes == (206,)
+    assert registry.async_get_issue(DOMAIN, issue) is not None
+    assert coordinator.robot_health.unknown_alert_codes == {}
+    assert poll(206, 999).error_codes == (206, 999)
+    assert "999" in coordinator.robot_health.unknown_alert_codes
+    assert poll(220).error_codes == ()
+    assert registry.async_get_issue(DOMAIN, issue) is None
+    assert poll(220).error_codes == (220,)
+    assert poll().error_codes == ()

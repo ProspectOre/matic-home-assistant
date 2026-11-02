@@ -20,7 +20,8 @@ from typing import Any
 
 MAX_SOURCE_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_SOURCE_BYTES = 8 * 1024 * 1024
-MAX_MODULES = 128
+# Allow the current split integration while bounding catalog traversal.
+MAX_MODULES = 192
 MAX_TREE_ENTRIES = 512
 MAX_TREE_DEPTH = 16
 MAX_IDENTITY_FAILURES = 16

@@ -3,6 +3,10 @@ import type { Localize, Workflow } from "./contracts";
 import { translate } from "./localize";
 
 export type ChunkStatus = "idle" | "loading" | "ready" | "failed";
+export interface ChunkStatusCopy {
+  readonly loading?: { readonly key: string; readonly fallback: string };
+  readonly failed?: { readonly key: string; readonly fallback: string };
+}
 
 // copy-style-0.5.md:83 requires a loading line to time out with a recovery
 // action. Twenty seconds matches the Locating timer (shell.md §5).
@@ -120,8 +124,13 @@ export const chunkStatus = (
   status: ChunkStatus,
   localize: Localize | undefined,
   retry: (event: Event) => void,
-) => status === "ready"
+  copy: ChunkStatusCopy = {},
+) => {
+  const failed = copy.failed ?? { key: "v4_workflow_load_failed", fallback: "The cleaning tools didn't load. Reload the page to try again." };
+  const loading = copy.loading ?? { key: "v4_workflow_loading", fallback: "Loading…" };
+  return status === "ready"
   ? nothing
   : status === "failed"
-    ? html`<div class="problem" role="alert"><p>${translate(localize, "v4_workflow_load_failed", "The cleaning tools didn't load. Reload the page to try again.")}</p><button class="ms-btn ms-btn--secondary" type="button" data-dialog-launcher="discardDraft" @click=${retry}>${translate(localize, "v4_retry", "Try again")}</button></div>`
-    : html`<p class="loading" role="status">${translate(localize, "v4_workflow_loading", "Loading…")}</p>`;
+    ? html`<div class="problem" role="alert"><p>${translate(localize, failed.key, failed.fallback)}</p><button class="ms-btn ms-btn--secondary" type="button" data-dialog-launcher="discardDraft" @click=${retry}>${translate(localize, "v4_retry", "Try again")}</button></div>`
+    : html`<p class="loading" role="status">${translate(localize, loading.key, loading.fallback)}</p>`;
+};

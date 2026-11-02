@@ -11,12 +11,14 @@ import {
 
 interface GestureCallbacks {
   readonly state: () => WorkspaceState;
+  readonly drawReady: () => boolean;
   readonly onCircles: (
     circles: readonly AreaCircle[],
     coordinateEdit: CoordinateEditCapture,
   ) => void;
   readonly onCirclePreview: (circles: readonly AreaCircle[] | null, coordinateEdit?: CoordinateEditCapture) => void;
   readonly onRoom: (roomId: string) => void;
+  readonly onRoomCandidates?: (roomIds: readonly string[]) => void;
   readonly onOutlinePoint?: (point: MapPoint, coordinateEdit: CoordinateEditCapture) => void;
   /** The user moved the camera by hand. */
   readonly onCameraGesture?: () => void;
@@ -54,8 +56,29 @@ interface SafariGestureEvent extends Event {
 const cloneCircles = (circles: readonly AreaCircle[]): AreaCircle[] =>
   circles.map((circle) => ({ ...circle }));
 
+const sameRoomHitContext = (captured: WorkspaceState, current: WorkspaceState): boolean =>
+  current.pageActive
+  && captured.generation === current.generation
+  && captured.owner?.userKey === current.owner?.userKey
+  && captured.owner?.entryKey === current.owner?.entryKey
+  && captured.dataMode === current.dataMode
+  && captured.workflow === current.workflow
+  && captured.planView === current.planView
+  && captured.selection.entryId === current.selection.entryId
+  && captured.selection.floorId === current.selection.floorId
+  && captured.selection.historyId === current.selection.historyId
+  && captured.selection.planId === current.selection.planId
+  && captured.floor.readOnly === current.floor.readOnly
+  && captured.host.administrator === current.host.administrator
+  && captured.resources.entry?.mapSessionKey === current.resources.entry?.mapSessionKey
+  && captured.resources.scene.value?.metadata?.rooms === current.resources.scene.value?.metadata?.rooms
+  && captured.resources.plans.value?.rooms === current.resources.plans.value?.rooms
+  && captured.resources.areas.value?.rooms === current.resources.areas.value?.rooms;
+
 const INTERACTIVE_SELECTOR =
   "button, input, select, textarea, a, [contenteditable='true'], [role='button'], [role='menuitem'], [data-map-control]";
+
+const MAX_TILT_PAIR_SPREAD_CHANGE_PX = 10;
 
 // Walk the composed path rather than `target.closest(...)`: a press inside a
 // custom element's shadow root is retargeted to the host, which matches
@@ -90,6 +113,7 @@ export class GestureController {
   #navigationUntilRelease = false;
   #touchArmTimer: number | null = null;
   #coordinateCapture: CoordinateEditCapture | null = null;
+  #roomHitSequence = 0;
   #disposed = false;
 
   constructor(host: HTMLElement, renderer: RendererController, callbacks: GestureCallbacks) {
@@ -164,7 +188,8 @@ export class GestureController {
       return;
     }
     const state = this.#callbacks.state();
-    const drawing = state.workflow === "draw" && state.map.available && !state.floor.readOnly;
+    const drawing = state.workflow === "draw" && state.map.available && !state.floor.readOnly
+      && this.#callbacks.drawReady();
     // D1 (map-surfaces.md §10): one-finger drag moves the map. Two-finger
     // vertical drag tilts in 3D; in top view it remains a pan. Space-drag
     // moves while drawing. The effective view decides in review surfaces.
@@ -187,6 +212,7 @@ export class GestureController {
         this.#touchArmTimer = window.setTimeout(() => {
           this.#touchArmTimer = null;
           if (this.#pointers.size !== 1 || this.#navigationUntilRelease
+            || !this.#callbacks.drawReady()
             || !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
             this.#cancelCoordinateGesture();
             return;
@@ -231,7 +257,14 @@ export class GestureController {
       this.#pointers.clear();
       return;
     }
-    if (this.#coordinateCapture && !hasCoordinateEditAdmission(state, this.#coordinateCapture)) {
+    if (this.#coordinateCapture && (!this.#callbacks.drawReady()
+      || !hasCoordinateEditAdmission(state, this.#coordinateCapture))) {
+      this.#cancelCoordinateGesture();
+    }
+  }
+
+  cancelCoordinateEdit(): void {
+    if (this.#coordinateCapture || this.#mode === "paint" || this.#mode === "erase" || this.#mode === "outline") {
       this.#cancelCoordinateGesture();
     }
   }
@@ -257,8 +290,8 @@ export class GestureController {
       this.observeState(currentState);
       return;
     }
-    if (this.#coordinateCapture
-      && !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
+    if (this.#coordinateCapture && (!this.#callbacks.drawReady()
+      || !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture))) {
       this.#cancelCoordinateGesture();
       return;
     }
@@ -297,6 +330,8 @@ export class GestureController {
         this.#dragCamera,
         sample.clientX - pointer.startX,
         sample.clientY - pointer.startY,
+        pointer.startX,
+        pointer.startY,
       ));
     } else if (this.#mode === "orbit") {
       this.#callbacks.onCameraGesture?.();
@@ -327,16 +362,23 @@ export class GestureController {
     // branch cut doesn't suddenly look like a large twist.
     const rawRotation = angle(first, second) - this.#pinchAngle;
     const rotation = Math.atan2(Math.sin(rawRotation), Math.cos(rawRotation));
-    const rotationSize = abs(rotation);
-    // Real fingers do not track perfectly in parallel. A small amount of
-    // spread and twist is normal during an intended vertical tilt; keep the
-    // thresholds below deliberate pinch/twist motion while tolerating that.
-    const smallRotation = rotationSize < 0.08;
-    const distanceChange = abs(nextDistance - this.#pinchDistance) / this.#pinchDistance;
     const verticalMotion = abs(deltaY) > abs(dx) * 1.25;
     const sameDirection = firstY * secondY > 0;
+    // Pair rotation and spread are noisy proxies for intent when one touch
+    // reports a frame before the other: a few pixels of lateral sensor jitter
+    // or a short vertical lag can make a parallel drag look like a twist.
+    // Judge the contacts' own paths as well, so mostly-vertical movement stays
+    // a tilt even when their travel is not identical.
+    const firstX = first.x - first.startX;
+    const secondX = second.x - second.startX;
+    const firstVertical = abs(firstY) >= abs(firstX) * 1.25;
+    const secondVertical = abs(secondY) >= abs(secondX) * 1.25;
+    // Relative pair spacing distinguishes an intentional spread from shared
+    // horizontal drift, while a small absolute allowance tolerates touch noise
+    // even when contacts are close together.
+    const spreadChange = abs(nextDistance - this.#pinchDistance);
     const tiltCandidate = !start.orthographic && verticalMotion && sameDirection
-      && distanceChange <= 0.04 && smallRotation;
+      && firstVertical && secondVertical && spreadChange < MAX_TILT_PAIR_SPREAD_CHANGE_PX;
     const bothFingersPastIntentThreshold = Math.min(abs(firstY), abs(secondY)) >= 12;
     const firstTravel = Math.hypot(first.x - first.startX, first.y - first.startY);
     const secondTravel = Math.hypot(second.x - second.startX, second.y - second.startY);
@@ -346,19 +388,11 @@ export class GestureController {
     if (!flushPending && !this.#twoFingerTilt && !this.#twoFingerTransform
       && !start.orthographic && Math.max(firstTravel, secondTravel) < 3) return;
     // Near-vertical pointer streams are commonly delivered one contact at a
-    // time. Hold ambiguous samples until both fingers confirm tilt, the pair
-    // clearly expresses a different transform, or the gesture ends. This
-    // prevents a noisy early pan from being reset to the starting camera when
-    // a later sample finally qualifies as tilt.
-    // A lone leading finger also changes the pair's angle and spread, so close
-    // fingers can look like a twist before the partner's sample arrives. Keep
-    // holding that lead, however far it gets, until its partner moves or the
-    // gesture ends; release still applies a stationary-anchor transform.
-    const loneLead = Math.min(firstTravel, secondTravel) < 3;
-    const clearlyComposed = !loneLead && (distanceChange >= 0.08 || rotationSize >= 0.18);
+    // time. Do not commit the first stale-pair sample to pan or twist while one
+    // contact has yet to show meaningful vertical travel. Once both do, the
+    // per-contact paths above distinguish tilt from pinch and twist.
     if (!flushPending && !this.#twoFingerTilt && !this.#twoFingerTransform
-      && !start.orthographic && verticalMotion && !tiltCandidate && !clearlyComposed
-      && !bothFingersPastIntentThreshold) return;
+      && !start.orthographic && verticalMotion && !bothFingersPastIntentThreshold) return;
     if (!this.#twoFingerTilt && !this.#twoFingerTransform && tiltCandidate) {
       this.#twoFingerTilt = Math.min(abs(firstY), abs(secondY)) >= 12;
       if (!this.#twoFingerTilt && !flushPending) return;
@@ -374,7 +408,7 @@ export class GestureController {
         ...start,
         distance: start.distance * this.#pinchDistance / nextDistance,
         yaw: start.yaw + rotation,
-      }, dx, deltaY));
+      }, dx, deltaY, center.x, center.y));
   }
 
   readonly #pointerUp = (event: PointerEvent): void => {
@@ -383,8 +417,8 @@ export class GestureController {
       this.observeState(currentState);
       return;
     }
-    if (this.#coordinateCapture
-      && !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
+    if (this.#coordinateCapture && (!this.#callbacks.drawReady()
+      || !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture))) {
       this.#cancelCoordinateGesture();
       return;
     }
@@ -399,6 +433,7 @@ export class GestureController {
     this.#host.releasePointerCapture?.(event.pointerId);
     this.#cancelTouchArm();
     if (this.#mode === "outline" && event.type !== "pointercancel"
+      && this.#callbacks.drawReady()
       && hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)
       && Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) < 7) {
       const point = this.#renderer.screenToMap(pointer.x, pointer.y);
@@ -406,6 +441,7 @@ export class GestureController {
     }
     if (event.type !== "pointercancel"
       && (this.#mode === "paint" || this.#mode === "erase")
+      && this.#callbacks.drawReady()
       && hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)
       && JSON.stringify(this.#draft) !== JSON.stringify(this.#coordinateCapture!.baselineCircles)) {
       this.#callbacks.onCircles(this.#draft, this.#coordinateCapture!);
@@ -418,7 +454,21 @@ export class GestureController {
       && (this.#callbacks.state().workflow === "rooms"
         || (this.#callbacks.state().workflow === "plan" && canEditCoordinates(this.#callbacks.state())))) {
       const roomId = this.#renderer.roomAt(pointer.x, pointer.y);
-      if (roomId) this.#callbacks.onRoom(roomId);
+      if (roomId) {
+        this.#roomHitSequence += 1;
+        this.#callbacks.onRoom(roomId);
+      }
+      else {
+        const admission = this.#callbacks.state();
+        const request = ++this.#roomHitSequence;
+        void this.#renderer.roomCandidatesAt(pointer.x, pointer.y).then((result) => {
+          const latest = this.#callbacks.state();
+          if (this.#disposed || request !== this.#roomHitSequence
+            || !sameRoomHitContext(admission, latest)) return;
+          if (result.status === "resolved") this.#callbacks.onRoom(result.roomId);
+          else if (result.status === "ambiguous") this.#callbacks.onRoomCandidates?.(result.roomIds);
+        }).catch(() => undefined);
+      }
     }
     if (this.#mode === "paint" || this.#mode === "erase") this.#callbacks.onCirclePreview(null);
     if (this.#pointers.size === 0) {
@@ -448,7 +498,8 @@ export class GestureController {
   };
 
   #applyBrush(clientX: number, clientY: number): void {
-    if (!hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
+    if (!this.#callbacks.drawReady()
+      || !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
       this.#cancelCoordinateGesture();
       return;
     }
@@ -563,7 +614,7 @@ export class GestureController {
     const state = this.#callbacks.state();
     if (event.repeat || this.#disposed || this.#pointers.size
       || event.composedPath()[0] !== this.#host || !this.#host.matches(":focus")
-      || state.workflow !== "draw" || !canEditCoordinates(state)
+      || state.workflow !== "draw" || !this.#callbacks.drawReady() || !canEditCoordinates(state)
       || (state.command !== "idle" && state.command !== "failed")
       || (state.draw.tool !== "paint" && state.draw.tool !== "erase" && state.draw.tool !== "outline")) return;
     const canvas = this.#host.querySelector<HTMLCanvasElement>(".scene-canvas");
@@ -616,8 +667,8 @@ export class GestureController {
     else if (event.key === "]") this.#renderer.orbitBy(40, 0);
     else if (event.key === "PageUp") this.#renderer.orbitBy(0, -30);
     else if (event.key === "PageDown") this.#renderer.orbitBy(0, 30);
-    else if (key === "d" && state.workflow === "draw") this.#dispatch({ type: "set-draw-tool", tool: "paint" });
-    else if (key === "e" && state.workflow === "draw") this.#dispatch({ type: "set-draw-tool", tool: "erase" });
+    else if (key === "d" && state.workflow === "draw" && this.#callbacks.drawReady()) this.#dispatch({ type: "set-draw-tool", tool: "paint" });
+    else if (key === "e" && state.workflow === "draw" && this.#callbacks.drawReady()) this.#dispatch({ type: "set-draw-tool", tool: "erase" });
     else if (["arrowleft", "arrowright", "arrowup", "arrowdown"].includes(key)) {
       if (topView(state) === "three" && !event.shiftKey) {
         const horizontal = key === "arrowleft" ? -24 : key === "arrowright" ? 24 : 0;
@@ -715,6 +766,7 @@ export class GestureController {
     if (this.#disposed) return;
     this.#cancelCoordinateGesture();
     this.#disposed = true;
+    this.#roomHitSequence += 1;
     this.#cancelMotion();
     this.#host.removeEventListener("pointerdown", this.#pointerDown);
     this.#host.removeEventListener("pointermove", this.#pointerMove);

@@ -1,3 +1,5 @@
+import { FOCUSABLE } from "./shell-focus";
+import { SheetController } from "./sheet-controller";
 import { LitElement, adoptStyles, nothing } from "lit";
 import { shellStyles } from "./shell-styles";
 import { html, unsafeStatic } from "lit/static-html.js";
@@ -5,6 +7,7 @@ import type { PropertyValues } from "lit";
 
 import type {
   DateFormat,
+  AcknowledgeQueueUncertainAction,
   DeleteSharedCadenceAction,
   HomePin,
   Localize,
@@ -28,20 +31,19 @@ import {
   SHELL_TAG,
   WORKFLOW_TAG,
 } from "./element-tags";
-import { heldReasonKey, renderDrawTools } from "./draw-tools";
-import { LazyChunk, chunkStatus, reloadInto, takeResume, type ChunkStatus } from "./lazy-chunk";
+
+import { LazyChunk, chunkStatus, reloadInto, takeResume, type ChunkStatus, type ChunkStatusCopy } from "./lazy-chunk";
 import type { MapOptions } from "./map-options";
+import type { MaticBackend } from "./backend";
 import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
 import { opaque, readColors, resolveFill, resolveTone, rgba, watchTheme, type Channel } from "./theme-probe";
 import {
   icon,
   iconBack,
-  iconCharging,
   iconChevronDown,
   iconChevronRight,
   iconChevronUp,
-  iconCleaning,
   iconClose,
   iconDiagnostics,
   iconHistory,
@@ -51,9 +53,7 @@ import {
   iconNoticeError,
   iconNoticeSuccess,
   iconNoticeWarning,
-  iconOffline,
   iconOverflow,
-  iconPaused,
   iconRobot,
   iconExitFullMap,
   iconFullMap,
@@ -64,307 +64,37 @@ import {
 } from "./map-canvas";
 import "./map-canvas";
 import { translate } from "./localize";
+import type { RendererModuleStatus } from "./renderer-controller";
+
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
-  canChangeQueue,
   canShowLiveMap,
-  isReadOnlyWorkspace,
   deleteSubject,
   hasStoppableWork,
+  heldReasonKey,
   initialWorkspaceState,
   isSelectedRobotUnavailable,
   selectGoToRoomAction,
   selectStopSecondaryAction,
-  selectPrimaryAction,
-  savedMapPosition,
+  selectGlobalPrimaryAction,
 } from "./state";
 import type { DialogPresentation } from "./dialog-copy";
+import { homeState, homeWorkflowCopy, readyPlans, statusCopy, type StatusPresentation } from "./shell-presentation";
+
+type LoadedWorkflowModule = typeof import("./workflow-panel") & typeof import("./workflow-actions");
+
+const DRAW_OVERLAY_STATUS_COPY: ChunkStatusCopy = {
+  loading: { key: "v4_draw_overlay_loading", fallback: "Loading map drawing…" },
+  failed: { key: "v4_draw_overlay_failed", fallback: "Map drawing isn't available, so edits are paused. Reload the page to try again." },
+};
+const AREA_PREVIEW_STATUS_COPY: ChunkStatusCopy = {
+  loading: { key: "v4_area_preview_loading", fallback: "Loading the area preview…" },
+  failed: { key: "v4_area_preview_failed", fallback: "The map preview isn't available, so you can't review or save this area. Reload the page to try again." },
+};
 
 const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 const workflowTag = unsafeStatic(WORKFLOW_TAG);
-
-interface StatusPresentation {
-  readonly title: string;
-  readonly detail: string;
-  readonly estimate?: string | undefined;
-  readonly icon: string;
-  /** True when the robot is doing something the workspace title alone would hide. */
-  readonly notable: boolean;
-  /** True for the idle "Map limited" row, whose sheet body offers Try again. */
-  readonly recheck?: boolean;
-  /** True for the last-run row, which links to Cleaning history. */
-  readonly history?: boolean;
-}
-
-// How managed_executor.py matches a firmware room phrase to a room's ID or
-// name: case, spacing and a leading "the" aside.
-const roomKey = (name: string | null): string => name?.toLowerCase().replace(/\s+/gu, " ").trim().replace(/^the /u, "") ?? "";
-
-const statusCopy = (state: WorkspaceState, localize?: Localize, dates?: DateFormat): StatusPresentation => {
-  const t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
-    translate(localize, key, fallback, placeholders, dates);
-  const roomProgressEstimate = (): string | undefined => {
-    const timing = state.lastRun?.outcome === "running" ? state.lastRun.estimate : undefined;
-    const area = roomKey(state.currentArea);
-    return state.activity === "cleaning" && state.coherence === "current" && timing && area
-      && (area === roomKey(timing.room) || area === roomKey(timing.roomId))
-      ? t("v4_room_estimated_time_progress", "Estimated room progress: {percent}% (based on time)", { percent: timing.percent }) : undefined;
-  };
-  if (!state.host.connected) return { title: t("v4_reconnecting", "Reconnecting"), detail: t("v4_ha_offline", "Home Assistant is offline"), icon: iconOffline, notable: true };
-  if (!state.host.administrator) return { title: t("v4_access_required", "Access required"), detail: t("v4_admin_only", "Administrator only"), icon: iconOffline, notable: true };
-  if (state.host.robotCount === 0) return { title: t("v4_no_robot_short", "No robot"), detail: t("v4_set_up_robot", "Check the integration"), icon: iconOffline, notable: true };
-  if (isSelectedRobotUnavailable(state)) return { title: t("v4_selected_robot_unavailable", "Selected robot unavailable"), detail: t("v4_choose_another_robot", "Choose another robot to open its map."), icon: iconOffline, notable: true };
-  if (!state.host.robotConnected) return { title: t("v4_robot_offline", "Robot offline"), detail: t("v4_last_map_read_only", "Last known map · read only"), icon: iconOffline, notable: true };
-  if (state.activity === "problem") return { title: t("v4_needs_attention", "Needs attention"), detail: t("v4_check_robot", "Check the robot"), icon: iconOffline, notable: true };
-  // shell.md §4 row 15: from the press until the robot or the backend's fence settles.
-  if (state.command === "settling" || state.activity === "stopping" || state.resources.entry?.stopSettlePending) {
-    return { title: t("v4_stopping", "Stopping"), detail: t("v4_waiting_robot", "Waiting for the robot"), icon: iconPaused, notable: true };
-  }
-  if (state.smartStop) {
-    const detail = state.smartStop.phase === "returning_to_dock"
-      ? t("v4_smart_stop_returning_detail", "Smart Stop is returning to the dock.")
-      : state.smartStop.phase === "verifying_completion"
-      ? t("v4_smart_stop_checking_reason", "Checking the result before docking.")
-      : state.activity === "paused"
-      ? t("v4_smart_stop_paused_detail", "Resume to finish this clean, or stop now and dock.")
-      : state.smartStop.target
-        ? t("v4_smart_stop_named_detail", "Finishing {target}, then returning to the dock.", { target: state.smartStop.target })
-        : state.smartStop.kind === "area"
-          ? t("v4_smart_stop_area_detail", "Finishing this area, then returning to the dock.")
-          : t("v4_smart_stop_room_detail", "Finishing this room, then returning to the dock.");
-    return { title: t("v4_smart_stop", "Smart Stop"), detail,
-      estimate: state.smartStop.phase === "finishing_room" ? roomProgressEstimate() : undefined,
-      icon: iconPaused, notable: true };
-  }
-  if (state.dataMode === "history") {
-    // shell.md §4 row 7: the date and place of the saved map, as the chip says.
-    const saved = savedMapPosition(state);
-    return {
-      title: t("v4_saved_map", "Saved map"),
-      detail: saved ? t("v4_saved_map_position", "{date} · {position} of {count}", { date: { date: saved.date }, position: saved.position, count: saved.count }) : "",
-      icon: iconHistory,
-      notable: false,
-    };
-  }
-  if (state.coherence === "verifying" || state.coherence === "booting") {
-    return { title: t("v4_locating", "Locating"), detail: t("v4_finding_map", "Finding the current map"), icon: iconRobot, notable: true };
-  }
-  if ((state.resources.entry?.activePlan || state.resources.entry?.runnerLocked)
-    && (state.activity === "idle" || state.activity === "docked")) {
-    return {
-      title: t("v4_task_in_progress", "Run in progress"),
-      detail: state.coherence === "unavailable" || state.coherence === "blocked"
-        ? t("v4_task_map_unavailable", "The live map is unavailable; the current clean continues.")
-        : state.activity === "docked"
-        ? t("v4_task_docked", "Robot docked; the clean has not finished.")
-        : t("v4_task_waiting", "Waiting for the clean to continue or finish."),
-      icon: iconPlan,
-      notable: true,
-    };
-  }
-  if (state.command === "starting" && (state.activity === "idle" || state.activity === "docked")) {
-    return { title: t("v4_action_starting", "Starting"), detail: t("v4_action_starting_detail", "Waiting for the robot to begin"), icon: iconRobot, notable: true };
-  }
-  const mapUnavailable = state.coherence === "unavailable" || state.coherence === "blocked";
-  const battery = state.batteryPercent === null ? "" : t("v4_battery", "{percent}% battery", { percent: state.batteryPercent });
-  if (state.activity === "cleaning") {
-    // Row 11: the room the robot reports, when it is a room on this floor.
-    const area = roomKey(state.currentArea);
-    const room = area && state.resources.scene.value?.metadata.rooms.find((candidate) => roomKey(candidate.name) === area || roomKey(candidate.id) === area)?.name;
-    const progress = state.lastRun?.outcome === "running" ? state.lastRun : null;
-    const run = state.robotRun;
-    const minutes = run?.remainingSeconds == null ? null : Math.max(1, Math.round(run.remainingSeconds / 60));
-    // The robot's whole-run estimate stands in when no room estimate applies.
-    const estimate = roomProgressEstimate() ?? (run?.percent != null && minutes !== null
-      ? t("v4_run_time_left", "{percent}% done · about {minutes} min left", { percent: run.percent, minutes })
-      : undefined);
-    const title = run?.phase === "interior" ? t("v4_cleaning_interior", "Cleaning the interior")
-      : run?.phase === "edges" ? t("v4_cleaning_edges", "Cleaning edges")
-      : run?.phase === "toekicks" ? t("v4_cleaning_toekicks", "Cleaning toekicks")
-      : t("v4_cleaning", "Cleaning");
-    return {
-      title,
-      estimate,
-      detail: mapUnavailable ? t("v4_active_map_unavailable", "Live map unavailable") : progress
-        ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: progress.completedRoomCount, total: progress.roomCount })
-          + (room ? ` · ${t("v4_cleaning_room", "In {room}", { room })}` : "")
-        : room ? t("v4_cleaning_room", "In {room}", { room }) : battery,
-      icon: iconCleaning,
-      notable: true,
-    };
-  }
-  if (state.activity === "recharging") return { title: t("v4_recharging", "Charging to resume"), detail: battery || t("v4_recharging_detail", "Will resume automatically when ready"), icon: iconCharging, notable: true };
-  if (state.activity === "paused") return { title: t("v4_paused", "Paused"), detail: t("v4_can_resume", "Cleaning can resume"), icon: iconPaused, notable: true };
-  if (state.activity === "returning") return { title: t("v4_returning", "Returning"), detail: t("v4_going_dock", "Going to the dock"), icon: iconCleaning, notable: true };
-  if (mapUnavailable) return {
-    title: t("v4_map_unavailable", "Map unavailable"),
-    detail: t("v4_map_unavailable_status", "Home Assistant can't show the map right now, so cleaning can't start."),
-    icon: iconOffline,
-    notable: true,
-  };
-  // shell.md §4 row 8: a degraded map while idle can persist, so say so and
-  // offer the recheck at once rather than a Ready beside "Finding the map".
-  if (state.coherence === "degraded") return {
-    title: t("v4_map_limited", "Map limited"),
-    detail: state.rechecking
-      ? t("v4_locating_rechecking", "Checking again")
-      : t("v4_cleaning_blocked", "Cleaning can't start"),
-    icon: iconRobot,
-    notable: true,
-    recheck: true,
-  };
-  if (state.lastRun && state.lastRun.outcome !== "running" && (state.activity === "docked" || state.activity === "idle")) {
-    const run = state.lastRun;
-    return {
-      title: run.outcome === "unverified" ? t("v4_last_run_unverified", "Last run unverified") : t("v4_last_run_partial", "Last run did not finish"),
-      detail: run.roomCount ? t("v4_last_run_rooms", "{completed} of {total} rooms completed", { completed: run.completedRoomCount, total: run.roomCount }) : "",
-      icon: iconPlan,
-      notable: true,
-      history: true,
-    };
-  }
-  return {
-    title: state.activity === "docked" ? t("v4_docked", "Docked") : t("v4_ready", "Ready"),
-    detail: battery,
-    icon: iconRobot,
-    notable: false,
-  };
-};
-
-/**
- * Home's one state (home-rooms.md §4 H1-H11), checked in the strip's order.
- * Each state has one heading and at most one description; the cards and
- * the Maps group follow from it, so nothing is stated twice (MS-HOME-03).
- */
-type HomeKind =
-  | "ready" | "locating" | "busy" | "paused" | "problem" | "map-unavailable" | "map-limited"
-  | "offline" | "reconnecting" | "administrator" | "robot-unavailable" | "read-only" | "setup";
-
-// Home reads the catalog only once it is ready (home-rooms.md §4 H2): a read
-// in flight or failed keeps the last catalog (loadPlans) but shows as such,
-// as the picker's own loading and unavailable lines do.
-const readyPlans = (state: WorkspaceState) => (state.resources.plans.status === "ready" ? state.resources.plans.value : null);
-
-const homeState = (state: WorkspaceState): HomeKind => {
-  const { host } = state;
-  if (!host.connected) return "reconnecting";
-  if (!host.administrator) return "administrator";
-  if (host.robotCount === 0) return "setup";
-  if (isSelectedRobotUnavailable(state)) return "robot-unavailable";
-  if (!host.robotConnected) return "offline";
-  if (isReadOnlyWorkspace(state)) return "read-only";
-  if (state.activity === "problem") return "problem";
-  if ((hasStoppableWork(state) && state.activity !== "paused")
-    || state.activity === "stopping" || state.command === "settling"
-    || state.resources.entry?.stopSettlePending === true) return "busy";
-  if (state.activity === "paused") return "paused";
-  if (state.coherence === "unavailable" || state.coherence === "blocked") return "map-unavailable";
-  if (state.coherence === "degraded") return "map-limited";
-  if (state.coherence === "verifying" || state.coherence === "booting") return "locating";
-  return "ready";
-};
-
-const homeCopy = (kind: HomeKind, state: WorkspaceState, t: (key: string, fallback: string) => string): {
-  readonly title: string;
-  readonly description: string;
-} => {
-  if (state.smartStop?.phase === "verifying_completion" && kind === "busy" && state.command !== "settling") {
-    return { title: t("v4_smart_stop_checking_title", "Checking the result"), description: t("v4_smart_stop_checking_home", "Before returning to the dock.") };
-  }
-  if (state.smartStop?.phase === "returning_to_dock" && kind === "busy" && state.command !== "settling") {
-    return { title: t("v4_smart_stop_returning_title", "Returning to the dock"), description: "" };
-  }
-  if (state.smartStop && (kind === "busy" || kind === "paused")
-    && (state.activity === "cleaning" || state.activity === "paused")
-    && state.command !== "settling" && !state.resources.entry?.stopSettlePending) {
-    return state.activity === "paused"
-      ? { title: t("v4_paused", "Paused"), description: t("v4_smart_stop_paused_detail", "Resume to finish this clean, or stop now and dock.") }
-      : { title: state.smartStop.kind === "area" ? t("v4_smart_stop_finishing_area", "Finishing this area") : t("v4_smart_stop_finishing_room", "Finishing this room"), description: t("v4_smart_stop_return_after_room", "Returning to the dock when it's done.") };
-  }
-  switch (kind) {
-    case "ready":
-      return { title: t("v4_what_to_clean", "Choose what to clean"), description: "" };
-    case "locating":
-      return { title: t("v4_what_to_clean", "Choose what to clean"), description: t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.") };
-    case "busy":
-      return { title: t("v4_home_busy_title", "The robot is busy"), description: t("v4_home_busy_detail", "You can start a new clean when it's done.") };
-    case "paused":
-      return { title: t("v4_home_busy_title", "The robot is busy"), description: t("v4_home_paused_detail", "Resume or stop this clean before starting a new one.") };
-    case "problem":
-      return { title: t("v4_attention_title", "The robot needs attention"), description: t("v4_attention_body", "The robot reported a problem. Check it in the Matic app, then start a new clean.") };
-    case "map-unavailable":
-      return { title: t("v4_what_to_clean", "Choose what to clean"), description: t("v4_map_unavailable_status", "Home Assistant can't show the map right now, so cleaning can't start.") };
-    case "map-limited":
-      return { title: t("v4_what_to_clean", "Choose what to clean"), description: t("v4_map_limited_body", "Home Assistant can show this map but can't confirm it well enough to start cleaning.") };
-    case "offline":
-      return { title: t("v4_robot_offline_title", "Robot offline"), description: t("v4_robot_offline_body", "Showing the last known map. Cleaning comes back when the robot reconnects.") };
-    case "reconnecting":
-      return { title: t("v4_reconnecting_title", "Reconnecting to Home Assistant"), description: t("v4_reconnecting_body", "Waiting for Home Assistant to reconnect.") };
-    case "administrator":
-      return { title: t("v4_admin_title", "Administrator access required"), description: t("v4_admin_body", "Ask a Home Assistant administrator to open this map.") };
-    case "robot-unavailable":
-      return { title: t("v4_selected_robot_unavailable", "Selected robot unavailable"), description: t("v4_choose_another_robot", "Choose another robot to open its map.") };
-    case "read-only":
-      if (state.dataMode === "live" && state.smartStop) {
-        return { title: t("v4_live_map_read_only_title", "Map is read only"), description: "" };
-      }
-      return {
-        title: t("v4_saved_map_read_only_title", "Saved map is read only"),
-        description: state.dataMode === "live"
-          ? t("v4_map_recovery_automatic", "Cleaning becomes available automatically when the live map is ready.")
-          : t("v4_saved_map_read_only_detail", "Return to the live map to choose rooms, run a plan, or draw a custom area."),
-      };
-    case "setup":
-      return { title: t("v4_setup_title", "No robot available"), description: t("v4_no_robot_body", "Check the Matic (Unofficial) integration, or add it if you haven't set up a robot.") };
-  }
-};
-
-const workflowCopy = (state: WorkspaceState, localize?: Localize): {
-  readonly title: string;
-  readonly description: string;
-} => {
-  const t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string => translate(localize, key, fallback, placeholders);
-  switch (state.workflow) {
-    case "rooms":
-      // The view renders its own description, so the rows can be described by it (R6).
-      return { title: t("v4_choose_rooms", "Choose rooms"), description: "" };
-    case "draw":
-      return { title: t("v4_draw_area", "Draw an area"), description: t("v4_draw_area_detail", "Outline or paint the area, then review it before saving.") };
-    case "plans":
-      // An empty picker is its card alone (plan.md §3).
-      return { title: t("v4_your_plans", "Your plans"), description: state.resources.plans.value?.plans.length === 0 ? "" : t("v4_choose_plan_detail", "Tap a plan to see its next run.") };
-    case "areas":
-      // The view renders its description, as Rooms does (R6).
-      return { title: t("v4_your_areas", "Your areas"), description: "" };
-    case "plan":
-      // Run is titled with the plan's saved name: Run never shows a dirty draft.
-      return {
-        title: state.planView === "run" ? state.planDraft.name : state.planDraft.id ? t("v4_edit_plan", "Edit plan") : t("v4_new_plan", "New plan"),
-        description: "",
-      };
-    case "areaReview": {
-      // New: a name to give. Saved: its name; after a map change, a check (map-surfaces.md §4).
-      const draft = state.areaDraft;
-      if (draft.id === null) return { title: t("v4_name_this_area", "Name this area"), description: t("area_details_hint", "Name the area and choose cleaning settings.") };
-      return { title: draft.canRebind || draft.status === "review" ? t("v4_check_area", "Check {name}", { name: draft.name }) : draft.name, description: "" };
-    }
-    case "history":
-      return { title: t("v4_map_history", "Map history"), description: t("v4_map_history_detail", "Saved maps show one floor each. They can't be edited and never show where the robot is now.") };
-    case "support":
-      return { title: t("v4_map_diagnostics", "Map diagnostics"), description: t("v4_map_support_detail", "Details to share with support") };
-    case "runs":
-      return { title: t("v4_cleaning_history", "Cleaning history"), description: "" };
-    case "none":
-      return homeCopy(homeState(state), state, t);
-  }
-};
-
-type SheetDetent = "peek" | "half" | "full";
-
-const DETENTS: readonly SheetDetent[] = ["peek", "half", "full"];
-// A compact sheet (height < 480) has no half (design-system.md §7).
-const COMPACT_DETENTS: readonly SheetDetent[] = ["peek", "full"];
 
 // shell.md §4 notice rule: glyph per tone, and how long each toast stays.
 const NOTICE_ICONS: Readonly<Record<NoticeTone, string>> = {
@@ -374,89 +104,6 @@ const NOTICE_ICONS: Readonly<Record<NoticeTone, string>> = {
   error: iconNoticeError,
 };
 const TOAST_MS: Readonly<Record<NoticeTone, number>> = { info: 6000, success: 4000, warning: 6000, error: 10000 };
-
-// Where the sheet rests when a workflow or plan view opens (shell.md §5
-// Sheet). The map is the document, so a drawing starts at peek; room and
-// plan choices stay visible at half height, while the long forms (plan Edit,
-// diagnostics) start at full height.
-const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {
-  none: "half",
-  rooms: "half",
-  draw: "peek",
-  plan: "half",
-  plans: "half",
-  areas: "half",
-  areaReview: "half",
-  history: "half",
-  runs: "half",
-  support: "full",
-};
-const startingDetent = (state: WorkspaceState, compact: boolean): SheetDetent =>
-  compact ? /^(rooms|draw|areaReview|history)$/u.test(state.workflow) ? "peek" : "full"
-  : state.workflow === "plan" && state.planView === "edit" ? "full" : DEFAULT_DETENT[state.workflow];
-
-// Faster than this on release and the sheet goes to the next detent in the
-// direction of travel regardless of where the finger let go.
-const FLICK_VELOCITY = 0.5;
-// Velocity is read over the samples from this many ms before release, not
-// from the last pair of pointermoves alone: browsers deliver moves in bursts,
-// and one late frame at the end of a real flick would otherwise read as a
-// slow drag.
-const FLICK_WINDOW_MS = 100;
-const TAP_SLOP = 6;
-const BODY_SWIPE_DISTANCE = 48;
-// The panel's scrollers: the pinned top, capped on a sheet, and the body.
-const SCROLLERS = ".panel-top, .sheet-body, .workflow-body";
-const INTERACTIVE_SHEET_SELECTOR = [
-  "a[href]",
-  "button",
-  "input",
-  "label",
-  "select",
-  "textarea",
-  "summary",
-  '[contenteditable]:not([contenteditable="false"])',
-  '[role="button"]',
-  '[role="link"]',
-  '[role="slider"]',
-  '[role="checkbox"]',
-  '[role="radio"]',
-  '[role="switch"]',
-  '[role="tab"]',
-  '[role="menuitem"]',
-  // A scroller is a tab stop only so a keyboard can scroll it
-  // (#syncScrollers); a swipe that starts on it still steps the sheet.
-  `[tabindex]:not([tabindex="-1"]):not(${SCROLLERS})`,
-].join(",");
-
-interface SheetDrag {
-  readonly pointerId: number;
-  readonly startY: number;
-  readonly startHeight: number;
-  readonly heights: Readonly<Record<SheetDetent, number>>;
-  samples: { y: number; t: number }[];
-  moved: boolean;
-}
-
-interface BodySwipe {
-  readonly pointerId: number;
-  readonly startY: number;
-  readonly scroller: HTMLElement | null;
-  consumed: boolean;
-}
-
-const FOCUSABLE = [
-  "button:not(:disabled)",
-  "a[href]",
-  "input:not(:disabled)",
-  "select:not(:disabled)",
-  "textarea:not(:disabled)",
-  "[tabindex]:not([tabindex='-1'])",
-].join(", ");
-
-// Whether Tab reaches anything inside `root`, open shadow roots included.
-const hasFocusable = (root: ParentNode): boolean => Boolean(root.querySelector(FOCUSABLE))
-  || [...root.querySelectorAll("*")].some((element) => element.shadowRoot !== null && hasFocusable(element.shadowRoot));
 
 const deepActiveElement = (root: Document | ShadowRoot = document): HTMLElement | null => {
   let active = root.activeElement as HTMLElement | null;
@@ -472,14 +119,11 @@ const isVisible = (element: HTMLElement | null | undefined): element is HTMLElem
 export class MaticMapShellV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
+    backend: { attribute: false },
     localize: { attribute: false },
     dates: { attribute: false },
     scheme: { attribute: false },
-    _measuredNarrow: { state: true },
-    _compact: { state: true },
-    _sheetOffset: { state: true },
     _helpOpen: { state: true },
-    _sheetDetent: { state: true },
     _polite: { state: true },
     _alert: { state: true },
     _toast: { state: true },
@@ -489,6 +133,7 @@ export class MaticMapShellV4 extends LitElement {
   static override styles = shellStyles;
 
   state: WorkspaceState = initialWorkspaceState();
+  backend: MaticBackend | null = null;
   localize?: Localize;
   /** How the panel shows timestamps; set by the panel, not part of the snapshot. */
   dates?: DateFormat;
@@ -507,12 +152,18 @@ export class MaticMapShellV4 extends LitElement {
     });
   }
 
+  readonly #sheet = new SheetController(this, {
+    state: () => this.state,
+    helpOpen: () => this._helpOpen,
+    helpReturnsFull: () => this.#helpReturnsFull,
+    focusPanel: () => this.#focusPanel(),
+    announce: (detent) => this.#announce("_polite", detent === "peek" ? this.#t("v4_workspace_height_peek", "Cleaning panel, collapsed")
+      : detent === "half" ? this.#t("v4_workspace_height_half", "Cleaning panel, half height")
+      : this.#t("v4_workspace_height_full", "Cleaning panel, full height")),
+  });
+
   readonly #t = (key: string, fallback: string, placeholders?: NoticePlaceholders): string =>
     translate(this.localize, key, fallback, placeholders, this.dates);
-  // Unset until the host is measured; till then the host's narrow hint decides.
-  protected _measuredNarrow?: boolean;
-  protected _compact = false;
-  protected _sheetOffset = 0;
   // The help popover (map-help.ts, in the views chunk) is the shell's: it
   // opens from the rail "?" and closes from Close, Escape (after the menu,
   // shell.md §5) or a change of workflow or Full map. The canvas renders it
@@ -520,13 +171,13 @@ export class MaticMapShellV4 extends LitElement {
   protected _helpOpen = false;
   #helpLauncher: HTMLElement | null = null;
   #helpReturnsFull = false;
-  protected _sheetDetent: SheetDetent = "half";
   // The two live regions (shell.md §4 rule 6). Each holds only its newest
   // message: the polite one for detent, status title and non-error notices,
   // the alert one for error notices.
   protected _polite = "";
   protected _alert = "";
   #statusRow: string | null = null;
+  #drawOverlayStatus: ChunkStatus = "idle";
   #announced = new Set<"_polite" | "_alert">();
   protected _toast: WorkspaceNotice | null = null;
   // The room the Change this clean controls act on; "" follows the robot.
@@ -536,6 +187,14 @@ export class MaticMapShellV4 extends LitElement {
   // editor and hands it to the canvas, so the sheet is the one place a failure
   // of either, building included, is said.
   readonly #views = new LazyChunk(this, () => this.#workflowModule());
+  readonly #planViews = new LazyChunk(this, () => import("./plan-views"));
+  readonly #candidates = new LazyChunk(this, async () => {
+    const module = await import("./room-candidates");
+    const root = this.renderRoot as ShadowRoot;
+    adoptStyles(root, [...root.adoptedStyleSheets, module.roomCandidateStyles]);
+    return module;
+  });
+  readonly #drawTools = new LazyChunk(this, () => import("./draw-tools"));
   readonly #mapHelpView = new LazyChunk(this, async () => {
     const help = await import("./map-help");
     help.watchHelpDismissal(this, () => this._helpOpen, () => this.#helpLauncher, () => this.#closeHelp(false));
@@ -562,12 +221,7 @@ export class MaticMapShellV4 extends LitElement {
   #toastRemaining = 0;
   #toastHover = false;
   #toastFocus = false;
-  #focused: Element | null = null;
-  #resizeObserver: ResizeObserver | null = null;
-  #sheetResizeObserver: ResizeObserver | null = null;
-  #scrollerResizeObserver: ResizeObserver | null = null;
   #unwatchTheme: (() => void) | null = null;
-  #observedSheet: Element | null = null;
   #dialogLauncher: HTMLElement | null = null;
   #workspaceLauncher: HTMLElement | null = null;
   // What Discard goes on to: the intent that asked, or Try again's reload.
@@ -589,19 +243,28 @@ export class MaticMapShellV4 extends LitElement {
   #editingHomeShortcuts = false;
   #shortcutsOwner: string | null = null;
   #workflowStyled = false;
+  #candidateFocusPending = false;
+
+  #focusRoomCandidates(): void {
+    const picker = this.#candidateFocusPending && this.state.roomCandidates.length
+      ? this.renderRoot.querySelector<HTMLElement>("[data-room-candidate-picker]") : null;
+    if (picker) { picker.focus(); this.#candidateFocusPending = false; }
+  }
 
   // Workflow views bring their shell and form rules. The independent Map
   // options module renders its own menu and shared switch rules.
-  async #workflowModule(): Promise<typeof import("./workflow-panel")> {
-    const views = await import("./workflow-panel");
+  async #workflowModule(): Promise<LoadedWorkflowModule> {
+    const [views, actions] = await Promise.all([
+      import("./workflow-panel"),
+      import("./workflow-actions"),
+    ]);
     if (!this.#workflowStyled) {
       this.#workflowStyled = true;
-      adoptStyles(this.renderRoot as ShadowRoot, [...shellStyles, views.shellWorkflowStyles, views.formControls]);
+      adoptStyles(this.renderRoot as ShadowRoot, [...shellStyles, views.shellWorkflowStyles, views.formControls,
+        ...(this.#candidates.value ? [this.#candidates.value.roomCandidateStyles] : [])]);
     }
-    return views;
+    return { ...views, ...actions };
   }
-  #drag: SheetDrag | null = null;
-  #bodySwipe: BodySwipe | null = null;
 
   // D3 (map-surfaces.md §10): Full map asks the browser for full screen
   // and leaves it on exit; leaving the browser's full screen (its own
@@ -611,34 +274,11 @@ export class MaticMapShellV4 extends LitElement {
     if (!document.fullscreenElement && this.state.fullMap) this.#intent({ type: "exit-full-map" });
   };
 
-  // design-system.md §7: the inspector at 1024 and up, and from 768 in
-  // landscape (the compact inspector); a sheet otherwise, compact when short.
-  #measure({ width, height }: { width: number; height: number }): void {
-    // A hidden panel measures 0 × 0; keep the layout it will come back to.
-    if (!width || !height) return;
-    const compact = height < 480;
-    this._measuredNarrow = compact || width < 768 || (width < 1024 && width <= height);
-    if (compact !== this._compact) {
-      this._compact = compact;
-      this._sheetDetent = startingDetent(this.state, compact);
-    }
-  }
-
   override connectedCallback(): void {
     super.connectedCallback();
-    this.#resizeObserver = new ResizeObserver(([entry]) => {
-      if (entry) this.#measure(entry.contentRect);
-    });
-    this.#resizeObserver.observe(this);
+    this.#sheet.connect();
+    if (this.hasUpdated) this.#sheet.measure(this.getBoundingClientRect());
     document.addEventListener("fullscreenchange", this.#fullscreenChange);
-    // Reads the box height, which a translateY drag does not change, so a
-    // drag never relayouts the canvas. Only the committed detent does.
-    this.#sheetResizeObserver = new ResizeObserver(([entry]) => {
-      if (!entry) return;
-      const next = Math.ceil(entry.target.getBoundingClientRect().height);
-      if (next !== this._sheetOffset) this._sheetOffset = next;
-    });
-    this.#scrollerResizeObserver = new ResizeObserver(() => this.#syncScrollers());
     this.#resolveTheme();
     this.#unwatchTheme = watchTheme(() => this.#resolveTheme());
   }
@@ -679,15 +319,9 @@ export class MaticMapShellV4 extends LitElement {
   override disconnectedCallback(): void {
     // Nothing re-arms a toast on reconnect, so it must not outlive the detach.
     this.#hideToast();
-    this.#resizeObserver?.disconnect();
-    this.#resizeObserver = null;
-    this.#sheetResizeObserver?.disconnect();
-    this.#sheetResizeObserver = null;
-    this.#scrollerResizeObserver?.disconnect();
-    this.#scrollerResizeObserver = null;
+    this.#sheet.disconnect();
     this.#unwatchTheme?.();
     this.#unwatchTheme = null;
-    this.#observedSheet = null;
     document.removeEventListener("fullscreenchange", this.#fullscreenChange);
     super.disconnectedCallback();
   }
@@ -719,15 +353,16 @@ export class MaticMapShellV4 extends LitElement {
     // hides it (Stop on its "No button" row, a closed notice or toast),
     // updated() hands focus to the heading rather than let it fall to the
     // page (shell.md §5 Focus, MS-KEY-01).
-    this.#focused = this.shadowRoot?.activeElement ?? null;
+    this.#sheet.captureFocus();
     if (!changed.has("state")) return;
     // Home Assistant flips its narrow hint as the panel resizes, but the
     // ResizeObserver can report frames later. Measure now so this render
     // never lays out from the old size and moves a control under a key press.
     const previous = changed.get("state") as WorkspaceState | undefined;
-    if (previous && previous.narrowHint !== this.state.narrowHint && this.isConnected) {
-      this.#measure(this.getBoundingClientRect());
+    if (this.isConnected && (!previous || previous.narrowHint !== this.state.narrowHint)) {
+      this.#sheet.measure(this.getBoundingClientRect());
     }
+    if (!previous) this.#sheet.resetForWorkflow(this.state, false);
     // The untranslated title names the status row, so only a new row is
     // announced, in the current language.
     const row = statusCopy(this.state).title;
@@ -811,37 +446,26 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    this.#focusRoomCandidates();
     if (changed.has("scheme") && changed.get("scheme") !== undefined) this.#resolveTheme();
-    const instant = this.renderRoot.querySelector<HTMLElement>(".mobile-sheet.instant");
-    if (instant) {
-      // Resolve the new height while transitions are off, so turning them
-      // back on starts none; detent steps and drags ease as before.
-      void getComputedStyle(instant).blockSize;
-      instant.classList.remove("instant");
-    }
-    const focused = this.#focused;
-    this.#focused = null;
-    if (focused && (!focused.isConnected || focused.closest("[hidden]"))) this.#focusPanel();
-    const sheet = this.renderRoot.querySelector(".mobile-sheet");
-    if (sheet !== this.#observedSheet) {
-      this.#sheetResizeObserver?.disconnect();
-      this.#observedSheet = sheet;
-      if (sheet) this.#sheetResizeObserver?.observe(sheet);
-      else if (this._sheetOffset !== 0) this._sheetOffset = 0;
-    }
-    // Observing again reports each box once after this layout, and later
-    // whenever a scroller or its content (the workflow view too) resizes.
-    this.#scrollerResizeObserver?.disconnect();
-    for (const scroller of this.renderRoot.querySelectorAll(SCROLLERS)) {
-      for (const element of [scroller, ...scroller.children]) this.#scrollerResizeObserver?.observe(element);
-    }
+    this.#sheet.afterRender();
     if (this.#optionsPending && this.#options.status !== "loading") {
       this.#optionsPending = false;
       this.#options.value?.menu.toggle();
     }
     if (changed.has("state")) {
+      // The home rows populate #launchers during render, so consume a reload
+      // resume only after the current state has produced its eligible rows.
       this.#resumeWorkflow();
       const previous = changed.get("state") as WorkspaceState | undefined;
+      if (this.state.comparisonActive && !previous?.comparisonActive) this.#sheet.setDetent("full");
+      if (this.state.roomCandidates.length && !previous?.roomCandidates.length) {
+        this.#candidateFocusPending = true;
+        this.#focusRoomCandidates();
+      } else if (!this.state.roomCandidates.length && previous?.roomCandidates.length) {
+        this.#candidateFocusPending = false;
+        this.renderRoot.querySelector(MAP_CANVAS_TAG)?.shadowRoot?.querySelector<HTMLElement>(".map-root")?.focus();
+      }
       // A shortcut's run returns home once it starts; one that is idle (its
       // check was refused, or nothing took the action) shows its Run view
       // with the reason, and a later Run plan there no longer jumps home.
@@ -936,19 +560,8 @@ export class MaticMapShellV4 extends LitElement {
           });
         });
       }
-      if (!previous) {
-        this._sheetDetent = startingDetent(this.state, this._compact);
-      } else if (!this.#pinRun && (previous.workflow !== this.state.workflow || previous.planView !== this.state.planView)) {
-        // Only on a workflow or view CHANGE: a state tick inside a view must
-        // not yank the sheet back to its default while the user is reading.
-        const detent = startingDetent(this.state, this._compact);
-        if (detent !== this._sheetDetent) {
-          // The view, not the user, moved the sheet: it lands at the new
-          // height at once. An eased resize here would still be running
-          // under the next click and hold that click's frame back a vsync.
-          this.#sheet()?.classList.add("instant");
-          this._sheetDetent = detent;
-        }
+      if (previous && !this.#pinRun && (previous.workflow !== this.state.workflow || previous.planView !== this.state.planView)) {
+        this.#sheet.resetForWorkflow(this.state, true);
         const state = this.state;
         // Leaving a plan view, the control that led there takes focus once
         // the views have rendered it (plan.md §5); else, at once, the heading,
@@ -977,22 +590,6 @@ export class MaticMapShellV4 extends LitElement {
   // group named by the h2; the body below it is already the region of that
   // name, and landmark names must be unique. A focused scroller
   // keeps its stop until it loses focus, so focus never falls to the page.
-  #syncScrollers = (): void => {
-    for (const scroller of this.renderRoot.querySelectorAll<HTMLElement>(SCROLLERS)) {
-      const stop = scroller.scrollHeight > scroller.clientHeight && !hasFocusable(scroller);
-      if (!stop && scroller.matches(":focus")) {
-        scroller.addEventListener("blur", this.#syncScrollers, { once: true });
-        continue;
-      }
-      const set = (name: string, value: string) => (stop ? scroller.setAttribute(name, value) : scroller.removeAttribute(name));
-      set("tabindex", "0");
-      if (scroller.classList.contains("panel-top")) {
-        set("role", "group");
-        set("aria-labelledby", "workspace-title");
-      }
-    }
-  };
-
   // The heading, else the primary; in Full map neither shows, so the control
   // that leaves it, which Full map entry focuses too.
   #focusPanel(): void {
@@ -1027,6 +624,8 @@ export class MaticMapShellV4 extends LitElement {
 
   #action(action: PrimaryAction): void {
     if (!action.enabled) return;
+    if (this.state.map.available && this.#drawOverlayStatus !== "ready"
+      && (action.id === "review-area" || action.id === "save-area")) return;
     if (action.id === "return-live") {
       this.#intent({ type: "set-history", historyId: null });
       return;
@@ -1042,6 +641,7 @@ export class MaticMapShellV4 extends LitElement {
   // launcher, so Back lands on the heading (home-rooms.md R18). Back does
   // not come through here.
   #workflow(workflow: Workflow, launcher?: EventTarget | null): void {
+    this.#resume = null;
     this.#homeLauncher = null;
     this.#leave({ type: "open-workflow", workflow }, launcher);
   }
@@ -1062,11 +662,15 @@ export class MaticMapShellV4 extends LitElement {
     const workflow = this.#resume;
     const { coherence, workflow: open } = this.state;
     if (!workflow || (open === "none" && (coherence === "booting" || coherence === "verifying"))) return;
-    this.#resume = null;
-    if (open !== "none") return;
+    if (open !== "none") {
+      this.#resume = null;
+      return;
+    }
     if (this.#launchers.has(workflow)) {
+      this.#resume = null;
       this.#workflow(workflow as Workflow);
     } else if (workflow === "draw" && this.#launchers.has("areas")) {
+      this.#resume = null;
       // A new drawing opens from Your areas' New area (UX9), so it resumes
       // the same road: Your areas, then Draw, with Back stepping through both.
       this.#workflow("areas");
@@ -1087,13 +691,38 @@ export class MaticMapShellV4 extends LitElement {
     this.#intent({ type: "open-dialog", dialog: "discardDraft" });
   };
 
+  readonly #drawOverlayStatusChanged = (status: RendererModuleStatus): void => {
+    if (this.#drawOverlayStatus === status) return;
+    this.#drawOverlayStatus = status;
+    this.requestUpdate();
+  };
+
   // The worst of the chunks `workflow` needs, each requested as it opens.
   #tools(workflow: Workflow): ChunkStatus {
     this.#views.request();
-    if (workflow !== "draw") return this.#views.status;
-    this.#outline.request();
-    const views = this.#views.status, outline = this.#outline.status;
-    return views === "failed" || outline === "failed" ? "failed" : views === outline ? views : "loading";
+    const statuses = [this.#views.status];
+    if (workflow === "plans" || workflow === "plan") {
+      this.#planViews.request();
+      statuses.push(this.#planViews.status);
+    }
+    if (workflow === "draw") {
+      this.#outline.request();
+      this.#drawTools.request();
+      statuses.push(this.#outline.status, this.#drawTools.status);
+    }
+    if ((workflow === "draw" || workflow === "areaReview") && this.state.map.available) {
+      statuses.push(this.#drawOverlayStatus);
+    }
+    return statuses.includes("failed") ? "failed" : statuses.every((status) => status === "ready") ? "ready" : "loading";
+  }
+
+  #workflowStatusCopy(workflow: Workflow): ChunkStatusCopy | undefined {
+    const copy = workflow === "draw" ? DRAW_OVERLAY_STATUS_COPY
+      : workflow === "areaReview" ? AREA_PREVIEW_STATUS_COPY : undefined;
+    if (!copy) return undefined;
+    if (this.#drawOverlayStatus === "failed") return copy.failed ? { failed: copy.failed } : undefined;
+    if (this.#drawOverlayStatus !== "ready") return copy.loading ? { loading: copy.loading } : undefined;
+    return undefined;
   }
 
   #discardAndContinue(): void {
@@ -1160,7 +789,7 @@ export class MaticMapShellV4 extends LitElement {
     if (launcher) requestAnimationFrame(() => launcher.focus({ preventScroll: true }));
   }
 
-  #dispatchAction(action: string | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction, settled?: SaveSettled): void {
+  #dispatchAction(action: string | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction | AcknowledgeQueueUncertainAction, settled?: SaveSettled): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
       detail: typeof action === "string" ? { id: action, settled } : action,
       bubbles: true,
@@ -1175,174 +804,6 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   // ---- Bottom sheet -------------------------------------------------------
-
-  #setDetent(detent: SheetDetent): void {
-    if (this._helpOpen && this.#helpReturnsFull) detent = "peek";
-    if (detent === this._sheetDetent) return;
-    this._sheetDetent = detent;
-    this.#announce("_polite", detent === "peek" ? this.#t("v4_workspace_height_peek", "Cleaning panel, collapsed")
-      : detent === "half" ? this.#t("v4_workspace_height_half", "Cleaning panel, half height")
-      : this.#t("v4_workspace_height_full", "Cleaning panel, full height"));
-  }
-
-  #detents(): readonly SheetDetent[] {
-    return this._compact ? COMPACT_DETENTS : DETENTS;
-  }
-
-  #sheetStep(delta: 1 | -1, wrap = false): void {
-    const detents = this.#detents();
-    let next = detents.indexOf(this._sheetDetent) + delta;
-    if (wrap && next >= detents.length) next = 0;
-    this.#setDetent(detents[Math.max(0, Math.min(detents.length - 1, next))] ?? this._sheetDetent);
-  }
-
-  #detentHeights(sheet: HTMLElement): Readonly<Record<SheetDetent, number>> {
-    const available = this.renderRoot.querySelector<HTMLElement>(".workspace")?.clientHeight
-      ?? sheet.parentElement?.clientHeight
-      ?? sheet.offsetHeight;
-    const rem = parseFloat(getComputedStyle(this).fontSize) || 16;
-    const chrome = [":scope>.sheet-grip", ":scope>.sheet-tools", ":scope>.action-bar"]
-      .map((selector) => sheet.querySelector<HTMLElement>(selector)?.offsetHeight ?? 0)
-      .reduce((sum, height) => sum + height, 0) + rem * 0.75;
-    const full = this._compact ? available * 0.72 : Math.min(available * 0.92, available - rem * 9);
-    const half = Math.min(available * 0.48, rem * 26, full);
-    return { peek: Math.min(chrome, half), half, full };
-  }
-
-  #sheet(): HTMLElement | null {
-    return this.renderRoot.querySelector<HTMLElement>(".mobile-sheet");
-  }
-
-  // A drag moves the sheet by transform only, so the toast, anchored to the
-  // sheet's resting top edge, takes the same transform and rides with it.
-  #translateSheet(sheet: HTMLElement, transform: string): void {
-    sheet.style.transform = transform;
-    const toast = this.renderRoot.querySelector<HTMLElement>("[data-notice-toast]");
-    if (toast) toast.style.transform = transform;
-  }
-
-  #startsOnInteractiveSheetDescendant(event: PointerEvent): boolean {
-    const currentTarget = event.currentTarget;
-    for (const target of event.composedPath()) {
-      if (target === currentTarget) return false;
-      if (target instanceof Element && target.matches(INTERACTIVE_SHEET_SELECTOR)) return true;
-    }
-    return false;
-  }
-
-  #gripDown(event: PointerEvent): void {
-    if (this.#helpReturnsFull) return;
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-    if (this.#startsOnInteractiveSheetDescendant(event)) return;
-    const sheet = this.#sheet();
-    if (!sheet || this.#drag) return;
-    this.#drag = {
-      pointerId: event.pointerId,
-      startY: event.clientY,
-      startHeight: sheet.offsetHeight,
-      heights: this.#detentHeights(sheet),
-      samples: [{ y: event.clientY, t: event.timeStamp }],
-      moved: false,
-    };
-    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
-    sheet.classList.add("dragging");
-  }
-
-  #gripMove(event: PointerEvent): void {
-    const drag = this.#drag;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    const sheet = this.#sheet();
-    if (!sheet) return;
-    const dy = event.clientY - drag.startY;
-    if (!drag.moved && Math.abs(dy) > TAP_SLOP) drag.moved = true;
-    drag.samples.push({ y: event.clientY, t: event.timeStamp });
-    while (drag.samples.length > 2 && event.timeStamp - (drag.samples[1]?.t ?? 0) > FLICK_WINDOW_MS) drag.samples.shift();
-    if (!drag.moved) return;
-    // Positive = the sheet moves down. It may not rise above the full detent
-    // or sink below peek. Translate, never resize: a height change here would
-    // relayout the canvas on every frame.
-    const min = drag.startHeight - drag.heights.full;
-    const max = drag.startHeight - drag.heights.peek;
-    const offset = Math.max(min, Math.min(max, dy));
-    this.#translateSheet(sheet, `translateY(${offset}px)`);
-  }
-
-  #gripUp(event: PointerEvent): void {
-    const drag = this.#drag;
-    if (!drag || event.pointerId !== drag.pointerId) return;
-    this.#drag = null;
-    const sheet = this.#sheet();
-    if (sheet) {
-      this.#translateSheet(sheet, "");
-      sheet.classList.remove("dragging");
-    }
-    if (event.type === "pointercancel") return;
-    if (!drag.moved) {
-      this.#sheetStep(1, true);
-      return;
-    }
-    const dy = event.clientY - drag.startY;
-    const detents = this.#detents();
-    const index = detents.indexOf(this._sheetDetent);
-    const first = drag.samples[0];
-    const last = drag.samples[drag.samples.length - 1];
-    const velocity = first && last && last !== first ? (last.y - first.y) / Math.max(1, last.t - first.t) : 0;
-    if (Math.abs(velocity) > FLICK_VELOCITY) {
-      this.#setDetent(detents[Math.max(0, Math.min(detents.length - 1, index + (velocity < 0 ? 1 : -1)))] ?? this._sheetDetent);
-      return;
-    }
-    const target = drag.startHeight - dy;
-    let nearest: SheetDetent = this._sheetDetent;
-    let distance = Number.POSITIVE_INFINITY;
-    for (const detent of detents) {
-      const gap = Math.abs(drag.heights[detent] - target);
-      if (gap < distance) {
-        distance = gap;
-        nearest = detent;
-      }
-    }
-    this.#setDetent(nearest);
-  }
-
-  // A swipe follows what the finger scrolls: the nearest scrollable ancestor
-  // of where it starts inside the panel (the capped pinned top or the body).
-  // It steps the sheet only while that scroller is at its top, or with none.
-  #swipeScroller(event: PointerEvent): HTMLElement | null {
-    for (const node of event.composedPath()) {
-      if (node === event.currentTarget) break;
-      if (node instanceof HTMLElement && node.scrollHeight > node.clientHeight
-        && /auto|scroll/u.test(getComputedStyle(node).overflowY)) return node;
-    }
-    return null;
-  }
-
-  #bodyDown(event: PointerEvent): void {
-    if (event.pointerType === "mouse") return;
-    if (this.#startsOnInteractiveSheetDescendant(event)) return;
-    const scroller = this.#swipeScroller(event);
-    this.#bodySwipe = scroller?.scrollTop ? null : {
-      pointerId: event.pointerId,
-      startY: event.clientY,
-      scroller,
-      consumed: false,
-    };
-  }
-
-  #bodyMove(event: PointerEvent): void {
-    const swipe = this.#bodySwipe;
-    if (!swipe || swipe.consumed || event.pointerId !== swipe.pointerId) return;
-    if (swipe.scroller?.scrollTop) {
-      this.#bodySwipe = null;
-      return;
-    }
-    if (event.clientY - swipe.startY < BODY_SWIPE_DISTANCE) return;
-    swipe.consumed = true;
-    this.#sheetStep(-1);
-  }
-
-  #bodyUp(): void {
-    this.#bodySwipe = null;
-  }
 
   // ---- App bar ------------------------------------------------------------
 
@@ -1396,15 +857,15 @@ export class MaticMapShellV4 extends LitElement {
   // Help owns its small lazy chunk, so opening it never loads workflow views.
   #openHelp(launcher: HTMLElement | null): void {
     this.#helpLauncher = launcher;
-    this.#helpReturnsFull = !this.state.fullMap && this.#sheet()?.dataset.detent === "full";
-    if (this.#helpReturnsFull) this.#setDetent("peek");
+    this.#helpReturnsFull = !this.state.fullMap && this.#sheet.sheet()?.dataset.detent === "full";
+    if (this.#helpReturnsFull) this.#sheet.setDetent("peek");
     this.#mapHelpView.request();
     this._helpOpen = true;
   }
 
   #closeHelp(restoreFocus: boolean): void {
     this._helpOpen = false;
-    if (restoreFocus && this.#helpReturnsFull && this._sheetDetent === "peek") this.#setDetent("full");
+    if (restoreFocus && this.#helpReturnsFull && this.#sheet.detent === "peek") this.#sheet.setDetent("full");
     this.#helpReturnsFull = false;
     if (restoreFocus) this.#helpLauncher?.focus();
   }
@@ -1497,7 +958,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #skipToWorkspace(): void {
-    if (this._sheetDetent === "peek" && this.#sheet()) this.#setDetent(this._compact ? "full" : "half");
+    if (this.#sheet.detent === "peek" && this.#sheet.sheet()) this.#sheet.setDetent(this.#sheet.compact ? "full" : "half");
     void this.updateComplete.then(() => this.#focusPanel());
   }
 
@@ -1637,34 +1098,44 @@ export class MaticMapShellV4 extends LitElement {
   // change the robot's queue can't take, and the notice says why.
   #queueControls(state: WorkspaceState) {
     const rooms = readyPlans(state)?.rooms ?? [];
-    if (state.activity !== "cleaning" || state.smartStop || rooms.length === 0) return nothing;
-    const t = this.#t;
-    const current = state.currentArea?.trim().toLocaleLowerCase();
-    const room = rooms.find((candidate) => candidate.roomId === this._queueRoom)
-      ?? rooms.find((candidate) => candidate.roomId === state.lastRun?.estimate?.roomId
-        || candidate.name.toLocaleLowerCase() === current)
-      ?? rooms[0]!;
-    const held = !canChangeQueue(state);
-    const button = (change: QueueChangeAction["change"], label: string) => html`
-      <button class="ms-btn ms-btn--secondary" type="button" aria-disabled=${held ? "true" : nothing}
-        @click=${() => { if (canChangeQueue(this.state)) this.#dispatchAction({ id: "change-queue", change, roomId: room.roomId, room: room.name }); }}
-      >${label}</button>`;
-    return html`
-      <section class="queue" aria-labelledby="queue-heading">
-        <h3 class="ms-section-heading" id="queue-heading">${t("v4_queue_heading", "Change this clean")}</h3>
-        <label class="ms-field">${t("v4_queue_room", "Room")}
-          <select name="queue-room" .value=${room.roomId}
-            @change=${(event: Event) => { this._queueRoom = (event.currentTarget as HTMLSelectElement).value; }}
-          >${rooms.map((candidate) => html`<option value=${candidate.roomId} ?selected=${candidate.roomId === room.roomId}>${candidate.name}</option>`)}</select>
-        </label>
-        <div class="queue-actions" role="group" aria-label=${t("v4_queue_actions", "Change {room}", { room: room.name })}>
-          ${button("skip_room", t("v4_queue_skip", "Skip"))}
-          ${button("clean_room_next", t("v4_queue_next", "Clean next"))}
-          ${button("clean_room_again", t("v4_queue_again", "Clean again"))}
-        </div>
-        ${state.queuePending ? html`<p class="queue-status" role="status">${t("v4_queue_pending", "Waiting for the robot to confirm…")}</p>` : nothing}
-      </section>
-    `;
+    const plansReady = state.resources.plans.status === "ready";
+    if (state.activity !== "cleaning" || state.smartStop || (plansReady && rooms.length === 0)) {
+      return nothing;
+    }
+    if (!state.optionalUiReady) {
+      return state.host.administrator && state.host.connected && state.pageActive
+        ? this.#queueLoading() : nothing;
+    }
+    if (!state.map.available && state.resources.plans.status !== "error") return this.#queueHeld();
+    const render = this.#views.value?.queueControls;
+    if (render) {
+      if (plansReady && state.queueControllerStatus !== "ready") {
+        if (state.queueControllerStatus === "error") return this.#queueLoading(chunkStatus("failed", this.localize, this.#retry));
+        if (state.queueControllerStatus === "loading") return this.#queueLoading();
+        return this.#queueHeld();
+      }
+      return render({ state, roomId: this._queueRoom,
+        ...(this.localize === undefined ? {} : { localize: this.localize }),
+        ...(this.dates === undefined ? {} : { dates: this.dates }),
+        setRoom: (roomId) => { this._queueRoom = roomId; }, currentState: () => this.state,
+        dispatch: (action) => this.#dispatchAction(action), retry: this.#retry });
+    }
+    if (this.#views.status === "failed") {
+      return chunkStatus(this.#views.status, this.localize, this.#retry);
+    }
+    if (this.#views.status === "idle") this.#views.request();
+    return this.#queueLoading();
+  }
+
+  #queueLoading(status: unknown = chunkStatus("loading", this.localize, this.#retry)) {
+    return html`<section class="queue" aria-labelledby="queue-heading">
+      <h3 class="ms-section-heading" id="queue-heading">${this.#t("v4_queue_heading", "Change this clean")}</h3>
+      ${status}
+    </section>`;
+  }
+
+  #queueHeld() {
+    return this.#queueLoading(html`<p class="loading" role="status">${this.#t("v4_queue_catalog_held", "Queue changes are unavailable until the current map and room list are ready.")}</p>`);
   }
 
   // Home (home-rooms.md §3): the heading and description come from homeCopy;
@@ -1771,7 +1242,8 @@ export class MaticMapShellV4 extends LitElement {
       t: this.#t,
       held,
       editing: this.#editingHomeShortcuts,
-      canReorder: state.resources.plans.status === "ready" && state.resources.areas.status === "ready",
+      canReorder: pins.every((pin) => (pin.kind === "plan"
+        ? state.resources.plans : state.resources.areas).status === "ready"),
       toggleEditing: () => { this.#editingHomeShortcuts = !this.#editingHomeShortcuts; this.requestUpdate(); },
       move: (pin, direction) => {
         this.#intent({ type: "move-home-pin", pin, direction });
@@ -1800,10 +1272,11 @@ export class MaticMapShellV4 extends LitElement {
       // so they stay put when it goes.
       return narrow && state.workflow === "draw"
         ? nothing
-        : chunkStatus(tools, this.localize, this.#retry);
+        : chunkStatus(tools, this.localize, this.#retry, this.#workflowStatusCopy(state.workflow));
     }
     return html`<${workflowTag}
       .state=${state}
+      .backend=${this.backend}
       .localize=${this.localize}
       .dates=${this.dates}
       .retry=${this.#retry}
@@ -1848,7 +1321,7 @@ export class MaticMapShellV4 extends LitElement {
 
   #panelTop(state: WorkspaceState) {
     const plan = state.workflow === "plan";
-    const title = workflowCopy(state, this.localize).title;
+    const title = this.#workflowCopy(state).title;
     return html`
       <div class="panel-top">
         <div class="panel-heading">
@@ -1862,7 +1335,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #panel(state: WorkspaceState, narrow: boolean) {
-    const { description } = workflowCopy(state, this.localize);
+    const { description } = this.#workflowCopy(state);
     // Home's demoted cards need a reason even when its visible copy is concise.
     const heldReason = state.workflow === "none" && !description && state.smartStop
       ? homeState(state) === "read-only"
@@ -1887,19 +1360,37 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #sheetStatus(state: WorkspaceState, status: StatusPresentation): string {
-    const workflow = workflowCopy(state, this.localize);
+    const workflow = this.#workflowCopy(state);
     const line = (state.workflow === "rooms" ? this.#views.value?.roomsGripLine(this.#t, state) : null) ?? workflow.title;
     // With the body open the h2 already names the workflow, so the grip line
     // carries the robot instead of repeating the title directly above it.
-    if (this._sheetDetent !== "peek" && this.#homeSmartStopSummary(state)) {
+    if (this.#sheet.detent !== "peek" && this.#homeSmartStopSummary(state)) {
       const target = state.activity !== "paused" && (state.smartStop?.phase === "finishing_room" || state.smartStop?.phase === "finishing_area")
         ? state.smartStop.target : null;
       return target ? `${status.title} · ${target}` : status.title;
     }
-    if (this._sheetDetent !== "peek" || state.activity === "cleaning" || state.smartStop) {
+    if (this.#sheet.detent !== "peek" || state.activity === "cleaning" || state.smartStop) {
       return status.detail ? `${status.title} · ${status.detail}` : status.title;
     }
     return status.notable ? `${status.title} · ${line}` : line;
+  }
+
+  #workflowCopy(state: WorkspaceState): { readonly title: string; readonly description: string } {
+    if (state.workflow === "none") return homeWorkflowCopy(state, this.localize);
+    const copy = this.#views.value?.workflowCopy(state, this.localize);
+    if (copy) return copy;
+    const title = state.workflow === "plan"
+      ? state.planView === "run" ? state.planDraft.name
+        : state.planDraft.id ? this.#t("v4_edit_plan", "Edit plan") : this.#t("v4_new_plan", "New plan")
+      : state.workflow === "rooms" ? this.#t("v4_choose_rooms", "Choose rooms")
+        : state.workflow === "draw" ? this.#t("v4_draw_area", "Draw an area")
+          : state.workflow === "plans" ? this.#t("v4_your_plans", "Your plans")
+            : state.workflow === "areas" ? this.#t("v4_your_areas", "Your areas")
+              : state.workflow === "areaReview" ? this.#t("v4_name_this_area", "Name this area")
+                : state.workflow === "history" ? this.#t("v4_map_history", "Map history")
+                  : state.workflow === "support" ? this.#t("v4_map_diagnostics", "Map diagnostics")
+                    : this.#t("v4_cleaning_history", "Cleaning history");
+    return { title, description: "" };
   }
 
   // Keep a single workflow panel: the same element is a wide grid column or
@@ -1908,8 +1399,8 @@ export class MaticMapShellV4 extends LitElement {
   protected override render() {
     // Home stands in for the Run view while a shortcut's run starts (#pinRun).
     const state: WorkspaceState = this.#pinRun ? { ...this.state, workflow: "none" } : this.state;
-    const narrow = this._measuredNarrow ?? state.narrowHint;
-    const compact = narrow && this._compact;
+    const narrow = this.#sheet.narrow ?? state.narrowHint;
+    const compact = narrow && this.#sheet.compact;
     const options = this.#options.value;
     const status = statusCopy(state, this.localize, this.dates);
     const shortSmartStop = this.#homeSmartStopSummary(state);
@@ -1919,7 +1410,15 @@ export class MaticMapShellV4 extends LitElement {
       : status.detail;
     const roomEstimate = status.estimate ? html`<small class="room-estimate">${status.estimate}</small>` : nothing;
     const selectedRobotUnavailable = isSelectedRobotUnavailable(state);
-    const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
+    const selectedPrimary: PrimaryAction | NoButtonAction = selectGlobalPrimaryAction(state)
+      ?? this.#views.value?.selectPrimaryAction(state)
+      ?? { id: "workflow-loading", enabled: false };
+    const drawOverlayReady = !state.map.available || this.#drawOverlayStatus === "ready";
+    const primary: typeof selectedPrimary = !drawOverlayReady && (selectedPrimary.id === "review-area" || selectedPrimary.id === "save-area")
+      ? { ...selectedPrimary, enabled: false,
+        reason: "Wait for map drawing to load before reviewing or saving this area.",
+        reasonKey: "v4_draw_overlay_action_unavailable" } as typeof selectedPrimary
+      : selectedPrimary;
     // Stop takes the bar when work is stoppable (shell.md §3) and Redraw moves
     // into the body; else the area review pairs Redraw with its primary, held
     // with the R12 reason (map-surfaces.md §4).
@@ -1968,16 +1467,19 @@ export class MaticMapShellV4 extends LitElement {
     // The HUD takes the sheet's band in Full map, so the rail, dock and
     // scale lift above it as they do above the sheet (nothing is covered).
     const sheetOffset = state.fullMap ? "--map-sheet-offset:calc(var(--ms-control-lg) + 3 * var(--ms-space-3))"
-      : narrow ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
+      : narrow ? `--map-sheet-offset:${this.#sheet.offset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";
     const help = !this._helpOpen ? null : this.#mapHelpView.value
       ? this.#mapHelpView.value.renderMapHelp({ state, coarse: window.matchMedia("(any-pointer: coarse)").matches, t: this.#t, close: () => this.#closeHelp(true) })
       : chunkStatus(this.#mapHelpView.status, this.localize, this.#retry);
-    const precisionOpen = state.precisionOpen && state.workflow === "draw";
+    const drawReady = this.#views.status === "ready" && this.#outline.status === "ready"
+      && this.#drawTools.status === "ready"
+      && (!state.map.available || this.#drawOverlayStatus === "ready");
+    const precisionOpen = drawReady && state.precisionOpen && state.workflow === "draw";
     // Success and error always toast; info and warning only while the slot is
     // off-screen (sheet at peek, or Full map).
     const toast = this._toast && (this._toast.tone === "success" || this._toast.tone === "error"
-      || state.fullMap || (narrow && this._sheetDetent === "peek")) ? this._toast : null;
+      || state.fullMap || (narrow && this.#sheet.detent === "peek")) ? this._toast : null;
     return html`
       <div class=${`root ${narrow ? "narrow" : "wide"}${compact ? " compact" : ""}`} ?data-dock=${!narrow && state.workflow === "draw"} @keydown=${this.#keyboard}>
         <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToMap}>${this.#t("v4_skip_to_map", "Skip to the map")}</button>
@@ -2040,7 +1542,7 @@ export class MaticMapShellV4 extends LitElement {
             </div>
           </header>
 
-          <main class=${`workspace ${state.fullMap ? "full-map" : ""}`} style=${sheetOffset}>
+          <main class=${`workspace ${state.fullMap ? "full-map" : ""} ${state.comparisonActive ? "comparison" : ""}`} style=${sheetOffset}>
             <div class="canvas">
               <${mapCanvasTag}
                 class="map-canvas"
@@ -2052,67 +1554,74 @@ export class MaticMapShellV4 extends LitElement {
                 .localize=${this.localize}
                 .dates=${this.dates}
                 .outlineEditor=${this.#outline.value}
+                .renderDrawTools=${this.#drawTools.value?.renderDrawTools}
+                .drawReady=${drawReady}
+                .onDrawOverlayStatus=${this.#drawOverlayStatusChanged}
+                .retry=${this.#retry}
                 .narrow=${narrow}
-                ?data-short=${compact && !state.fullMap && this._sheetDetent === "full"}
+                ?data-short=${compact && !state.fullMap && this.#sheet.detent === "full"}
                 .help=${help}
                 .recipes=${state.workflow === "draw" ? this.#views.value?.drawRecipes(this.#t) ?? null : null}
               >${this.#floorSwitcher(state)}
-                ${narrow && !state.fullMap && this._sheetDetent === "full" ? html`
+                ${narrow && !state.fullMap && this.#sheet.detent === "full" ? html`
                   <button
                     class="sheet-scrim"
                     slot="scrim"
                     data-map-control
                     type="button"
                     aria-label=${this.#t("v4_collapse_sheet", "Collapse panel")}
-                    @click=${() => this.#setDetent("peek")}
+                    @click=${() => this.#sheet.setDetent("peek")}
                   ></button>
                 ` : nothing}
               </${mapCanvasTag}>
+              ${state.roomCandidates.length ? html`<div style="position:absolute;inset-block-start:4rem;inset-inline-start:.75rem;max-inline-size:calc(100% - 1.5rem);z-index:6"
+                @keydown=${(event: KeyboardEvent) => { if (event.key === "Escape") { event.stopPropagation(); this.#intent({ type: "show-room-candidates", roomIds: [] }); } }}
+              >${(this.#candidates.request(), this.#candidates.value?.renderRoomCandidates(state, this.#intent, this.#t)) ?? nothing}</div>` : nothing}
             </div>
 
             <aside
               id="map-workspace"
               class=${narrow ? "inspector mobile-sheet" : "inspector"}
-              data-detent=${narrow ? this._sheetDetent : nothing}
+              data-detent=${narrow ? this.#sheet.detent : nothing}
               data-workflow=${state.workflow}
               aria-label=${this.#t("v4_map_workspace", "Cleaning panel")}
             >
               ${narrow ? html`
                 <div
                   class="sheet-grip"
-                  @pointerdown=${this.#gripDown}
-                  @pointermove=${this.#gripMove}
-                  @pointerup=${this.#gripUp}
-                  @pointercancel=${this.#gripUp}
+                  @pointerdown=${this.#sheet.gripDown}
+                  @pointermove=${this.#sheet.gripMove}
+                  @pointerup=${this.#sheet.gripUp}
+                  @pointercancel=${this.#sheet.gripUp}
                 >
                   <span class="sheet-handle" role="presentation"></span>
-                  ${this._sheetDetent === "peek" ? this.#back(state, true) : nothing}
+                  ${this.#sheet.detent === "peek" ? this.#back(state, true) : nothing}
                   <span class="sheet-status">${this.#sheetStatus(state, status)}${roomEstimate}</span>
                   ${compact ? this.#actionBar(state, footerPrimary, footerSecondary) : nothing}
-                  ${/* step is always +1 or -1 */ (compact ? [this._sheetDetent === "full" ? -1 : 1] as const : [1, -1] as const).map((step) => html`<button
+                  ${/* step is always +1 or -1 */ (compact ? [this.#sheet.detent === "full" ? -1 : 1] as const : [1, -1] as const).map((step) => html`<button
                     class="ms-btn ms-btn--icon ms-btn--sm"
                     type="button"
                     aria-label=${step < 0 ? this.#t("v4_show_less", "Collapse panel") : this.#t("v4_show_more", "Expand panel")}
                     aria-controls="sheet-panel"
-                    ?disabled=${this.#helpReturnsFull || this._sheetDetent === (step < 0 ? "peek" : "full")}
-                    @click=${() => this.#sheetStep(step)}
+                    ?disabled=${this.#helpReturnsFull || this.#sheet.detent === (step < 0 ? "peek" : "full")}
+                    @click=${() => this.#sheet.step(step)}
                   >${icon(step < 0 ? iconChevronDown : iconChevronUp)}</button>`)}
                 </div>
                 ${showDrawTools ? html`
                   <div class="sheet-tools">
-                    ${chunkStatus(this.#tools("draw"), this.localize, this.#retry)}
+                    ${chunkStatus(this.#tools("draw"), this.localize, this.#retry, this.#workflowStatusCopy("draw"))}
                     ${sheetHint ? html`<p class="draw-hint sheet-hint">${sheetHint}</p>` : nothing}
                     ${precisionOpen ? html`<${precisionControlsTag} class="sheet-precision" .state=${state} .localize=${this.localize}></${precisionControlsTag}>` : nothing}
-                    ${renderDrawTools(state, { intent: this.#intent, openBrush: () => this.#intent({ type: "set-precision-open", value: !this.state.precisionOpen }), t: this.#t }, "grid")}
+                    ${drawReady ? this.#drawTools.value?.renderDrawTools(state, { intent: this.#intent, openBrush: () => this.#intent({ type: "set-precision-open", value: !this.state.precisionOpen }), t: this.#t }, "grid") : nothing}
                   </div>
                 ` : nothing}
                 <div
                   class="sheet-panel"
                   id="sheet-panel"
-                  @pointerdown=${this.#bodyDown}
-                  @pointermove=${this.#bodyMove}
-                  @pointerup=${this.#bodyUp}
-                  @pointercancel=${this.#bodyUp}
+                  @pointerdown=${this.#sheet.bodyDown}
+                  @pointermove=${this.#sheet.bodyMove}
+                  @pointerup=${this.#sheet.bodyUp}
+                  @pointercancel=${this.#sheet.bodyUp}
                 >
                   ${this.#panelTop(state)}
                   <div class="sheet-body" role="region" aria-labelledby="workspace-title">${this.#panel(state, narrow)}</div>

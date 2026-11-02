@@ -13,21 +13,15 @@ import { stepperStyles } from "./stepper";
 import { PLAN_VIEWS_TAG } from "./element-tags";
 import { MenuController } from "./menu-controller";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
-import {
-  PLAN_BLOCKERS,
-  PLAN_PREVIEW,
-  canEditCoordinates,
-  draftForPlan,
-  hasStoppableWork,
-  initialWorkspaceState,
-  roomBlocker,
-} from "./state";
+import { canEditCoordinates, draftForPlan, hasStoppableWork, initialWorkspaceState } from "./state";
+import { PLAN_BLOCKERS, PLAN_PREVIEW, roomBlocker } from "./workflow-actions";
 import { formatDuration, formatList, translate } from "./localize";
 import {
   draftSteps, dueLines, formatNumber, fromSteps, planAreas, planRowLine2, planRowLine3, roomsAndAreas, withPlanAreas,
 } from "./plan-copy";
 import { scheduleLine, settingLabel } from "./plan-cadence";
 import { homePinSwitch } from "./home-shortcuts";
+import { dailyLimitHeldRoomCopy, dailyLimitHeldSummaryCopy } from "./daily-limit-copy";
 
 /** A plan holds up to 100 custom areas, as many as rooms (`save_plan`). */
 const MAX_PLAN_AREAS = MAX_ROOM_SEQUENCE_SIZE;
@@ -364,6 +358,12 @@ export class MaticPlanViewsV4 extends LitElement {
       ${!paused && preview?.heldRooms?.length ? html`<p class="quiet" data-held-rooms>${this.#t("v4_plan_held_rooms", "Held while occupied: {rooms}. They stay first in line for the next run.", {
         rooms: formatList(state.locale, preview.heldRooms.map((room) => this.#t("v4_plan_held_room", "{room} ({sensor})", { room: room.name, sensor: room.sensor }))),
       })}</p>` : nothing}
+      ${!paused && preview?.dailyLimitHeldRooms?.length ? html`<p class="quiet" data-daily-limit-held>${dailyLimitHeldSummaryCopy(
+        formatList(state.locale, preview.dailyLimitHeldRooms.map((room) => dailyLimitHeldRoomCopy(
+          room, this.#t, (value) => this.#count(value),
+        ))),
+        this.#t,
+      )}</p>` : nothing}
       ${ready && !ordered ? html`<p class="quiet">${this.#t("v4_plan_rotation_settings", "Smart Order cleans the rooms and areas that have waited longest first, checking again each time.")}</p>` : nothing}
       ${boundaries.length ? html`<p class="quiet">${this.#t("v4_room_parts", "The robot cleans in {count} parts and may stop at the dock between parts.", {
         count: this.#count(boundaries.length + 1),

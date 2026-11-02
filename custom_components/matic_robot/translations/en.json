@@ -396,7 +396,14 @@
     "v4_reason_live_map_required": "Can't edit until you show the live map.",
     "v4_zone_invalid": "Keep the outline from crossing itself.",
     "v4_zone_empty": "Make the outline wider and keep it on the mapped floor.",
-    "v4_zone_point_help": "Drag to move. Arrow keys adjust; Delete removes.",
+    "v4_zone_point_help": "Drag or edit the X and Y fields to move. Arrow keys adjust; Delete removes.",
+    "v4_zone_coordinates_group": "Point coordinates in meters",
+    "v4_zone_coordinate_x": "X coordinate (m)",
+    "v4_zone_coordinate_y": "Y coordinate (m)",
+    "v4_zone_coordinate_x_named": "X coordinate for point {number} in meters",
+    "v4_zone_coordinate_y_named": "Y coordinate for point {number} in meters",
+    "v4_zone_coordinate_invalid": "Enter a map coordinate in meters.",
+    "v4_zone_coordinate_outside": "Keep the point on the mapped floor.",
     "v4_zone_delete_point": "Delete point",
     "v4_zone_tool": "Points",
     "v4_zone_insert_point": "Insert point",
@@ -462,7 +469,7 @@
     "v4_notice_queue_last_room": "That's the only room left. Stop the clean instead.",
     "v4_notice_queue_already_next": "That room is already being cleaned or is next.",
     "v4_notice_queue_not_in_plan": "That room isn't in this clean anymore. Clean it once this clean ends.",
-    "v4_notice_queue_unconfirmed": "The robot didn't confirm the change to {room}. Check the queue in the Matic app.",
+    "v4_notice_queue_unconfirmed": "The earlier change may still take effect after you check. Another change could repeat it. Check the queue in the Matic app before continuing.",
     "v4_notice_coverage_task_changed": "The clean changed while starting, so check the robot first.",
     "v4_action_clean_rooms_count_one": "Clean 1 room",
     "v4_history_position": "{position} of {count}",
@@ -635,6 +642,7 @@
     "v4_reason_check_area": "Can't clean this area until you check it.",
     "v4_clean_named_area": "Clean {area}",
     "v4_shortcuts_unavailable": "Home Assistant couldn't load your home shortcuts.",
+    "v4_pins_unavailable": "Home shortcuts are still loading. Try again shortly.",
     "v4_reason_shortcuts_unavailable": "Can't change this until you choose Try again on the home screen.",
     "v4_reason_shortcuts_loading": "Waiting for Home Assistant to load your home shortcuts.",
     "v4_show_on_home": "Show on home",
@@ -709,12 +717,17 @@
     "v4_run_item_unconfirmed": "Not confirmed",
     "v4_run_item_skipped": "Skipped",
     "v4_queue_heading": "Change this clean",
+    "v4_queue_catalog_failed": "The rooms for this clean couldn't be read. Check the map and reload to try again.",
+    "v4_queue_catalog_held": "Queue changes are unavailable until the current map and room list are ready.",
     "v4_queue_room": "Room",
     "v4_queue_actions": "Change {room}",
     "v4_queue_skip": "Skip",
     "v4_queue_next": "Clean next",
     "v4_queue_again": "Clean again",
     "v4_queue_pending": "Waiting for the robot to confirm…",
+    "v4_queue_unconfirmed": "The earlier change may still take effect after you check. Another change could repeat it. Check the queue in the Matic app before continuing.",
+    "v4_notice_queue_limit": "Several room changes are still waiting. Wait for one to finish before trying again.",
+    "v4_queue_checked": "I checked the queue",
     "v4_run_item_running": "In progress",
     "v4_run_item_not_started": "Not started",
     "v4_run_item_unknown": "Not reported",
@@ -733,7 +746,148 @@
     "v4_runs_last_unfinished": "The last run didn't finish. See what happened.",
     "v4_runs_quick_detail": "See recent cleans and how they ended.",
     "v4_robot_trail": "Robot trail",
-    "v4_notice_trail_unavailable": "That trail isn't available on this map."
+    "v4_notice_trail_unavailable": "That trail isn't available on this map.",
+    "v4_daily_limit_title": "Daily clean limit",
+    "v4_daily_limit_unlimited": "No daily limit",
+    "v4_daily_limit_per_day": "{count} per day",
+    "v4_daily_limit_progress": "{completed} of {limit} completed today",
+    "v4_daily_limit_reached": "Daily limit reached · {progress}",
+    "v4_daily_limit_held_rooms": "Held by daily clean limits: {rooms}. Change a room limit or refresh room details. Home Assistant keeps each room on hold until it can match the room on the map and confirm today's clean count.",
+    "v4_daily_limit_blocker": "Can't run while daily limits hold the selected rooms. Review the reasons, refresh the plan, or change the room limits.",
+    "v4_daily_limit_room_named": "Daily clean limit for {room}",
+    "v4_daily_limit_room_progress": "{room}: {progress}",
+    "v4_daily_limit_save_failed": "The daily limit wasn't confirmed. Reload the rooms and try again.",
+    "v4_ride_along": "Ride along in 3D",
+    "v4_history_source_missing": "This saved map is no longer available. Choose another map or return to Live.",
+    "v4_room_candidates_title": "Choose a room",
+    "v4_room_candidate_select": "Select {room}",
+    "v4_room_candidate_select_numbered": "Select {room}, candidate {number}",
+    "v4_room_candidate_number": "Candidate {number}",
+    "v4_room_candidates_unavailable": "Room details are no longer available. Close this list and try again.",
+    "v4_room_candidates_dismiss": "Cancel room choice",
+    "v4_room_candidates_close": "Close room choices",
+    "v4_archive_changed": "Saved maps changed. Review the current selection before continuing.",
+    "v4_archive_file_limit": "Choose an archive no larger than 68 MiB.",
+    "v4_archive_confirm_permanent": "Permanently delete these saved maps?",
+    "v4_archive_confirm_unkeep": "Allow automatic replacement?",
+    "v4_archive_confirm_delete": "Move these saved maps to Recently deleted?",
+    "v4_archive_permanent_warning": "This cannot be undone. Exports and backups remain independent copies. Space is reclaimed only after stored data and active readers are released.",
+    "v4_archive_unkeep_warning": "These maps become eligible for automatic replacement when new history needs space.",
+    "v4_archive_delete_warning": "Restore is available for 24 hours. These maps continue to count against storage until permanently removed. Open views and comparisons using them will become unavailable.",
+    "v4_archive_include_kept": "Include {count} explicitly selected kept maps",
+    "v4_archive_cancel": "Cancel",
+    "v4_archive_permanent": "Delete permanently",
+    "v4_archive_unkeep": "Unkeep",
+    "v4_archive_delete": "Move to Recently deleted",
+    "v4_archive_size": "{size} MiB compressed",
+    "v4_archive_kept": "Kept",
+    "v4_archive_trash": "Recently deleted",
+    "v4_archive_automatic": "Automatic",
+    "v4_archive_imported": "Imported",
+    "v4_archive_restore_until": "Restore until {date}",
+    "v4_archive_expiry_unknown": "Restore deadline unavailable",
+    "v4_archive_restore": "Restore",
+    "v4_archive_name": "Name",
+    "v4_archive_save_name": "Save name",
+    "v4_archive_view": "View",
+    "v4_archive_keep": "Keep",
+    "v4_archive_export": "Export",
+    "v4_archive_admin": "Administrator access is required to manage saved maps.",
+    "v4_archive_title": "Maps & storage",
+    "v4_archive_local_only": "Saved maps are local history. These controls do not change the robot’s working map, plans, areas, run records or camera photos.",
+    "v4_archive_pending": "Waiting for saved-map confirmation…",
+    "v4_archive_refresh": "Refresh",
+    "v4_archive_resume": "Resume automatic history",
+    "v4_archive_pause": "Pause automatic history",
+    "v4_archive_quota": "{count} of 12 maps · {size} of 48 MiB compressed",
+    "v4_archive_counts": "Automatic: {automatic} · Kept: {kept} · Recently deleted: {trash}",
+    "v4_archive_paused": "Automatic history is paused.",
+    "v4_archive_capacity_blocked": "Automatic history will resume when space is available.",
+    "v4_archive_enabled": "Automatic history is on. Unkept maps may be replaced; Keep versions you need.",
+    "v4_archive_entry_quota": "The quota is shared across this robot’s floors, including kept and recently deleted maps. Disk usage is not measured here; compressed map size is not actual disk usage.",
+    "v4_archive_reserved": "Capture reservation: {count} slots, {size} MiB",
+    "v4_archive_show": "Show",
+    "v4_archive_active": "Active saved maps",
+    "v4_archive_select_automatic": "Select all automatic maps",
+    "v4_archive_clear_selection": "Clear selection",
+    "v4_archive_export_selected": "Export selected",
+    "v4_archive_compare_selected": "Compare selected",
+    "v4_archive_delete_selected": "Move selected to Recently deleted",
+    "v4_archive_empty_trash": "Empty recently deleted",
+    "v4_archive_empty": "No saved maps in this view.",
+    "v4_archive_import_title": "Import an archive",
+    "v4_archive_privacy": "Archives contain your home’s layout and imagery. Export downloads a local copy; it does not share or delete maps. Imported maps are historical only and cannot restore the robot’s navigation map.",
+    "v4_archive_import_file": "Choose a map archive (maximum 68 MiB)",
+    "v4_archive_loading": "Saved-map information is not available yet. Refresh to try again.",
+    "v4_archive_retry_access": "Retry access",
+    "v4_follow_needs_live_pose": "Following needs a live position; Ride along also needs the robot's heading.",
+    "v4_room_candidates_identity_unresolved": "Matic can't tell these rooms apart. Rename them in the robot app and wait for the updated room names to appear.",
+    "v4_daily_limit_reason_invalid_policy": "Home Assistant can't confirm this room's limit.",
+    "v4_daily_limit_reason_room_identity_unconfirmed": "Home Assistant can't match this room on the map.",
+    "v4_daily_limit_reason_timezone_unavailable": "Home Assistant can't confirm the local day.",
+    "v4_daily_limit_reason_completion_history_unverified": "Home Assistant can't confirm this room's completed cleans.",
+    "v4_daily_limit_reason_unknown": "Home Assistant can't confirm this room limit.",
+    "v4_daily_limit_held_reason": "Daily limit held · {reason}",
+    "v4_daily_limit_room_uncertain": "{room}: held because {reason}",
+    "v4_archive_access_required": "Administrator access is required. Sign in again, then refresh saved maps.",
+    "v4_archive_quota_error": "Saved-map storage is full. Export maps you need, then permanently remove selected maps from Recently deleted before importing or capturing more.",
+    "v4_archive_expired_error": "The 24-hour restore period has ended. Refresh to see which maps remain available.",
+    "v4_archive_kept_error": "This selection includes kept maps. Review it and explicitly confirm their inclusion.",
+    "v4_archive_missing_error": "A selected map is no longer available here. Refresh and select from the current saved maps.",
+    "v4_archive_unavailable_error": "This robot integration is restarting or unavailable. Wait for reconnection, then refresh.",
+    "v4_archive_damaged_error": "Home Assistant can’t read this archive. Export it again from a supported version.",
+    "v4_archive_name_error": "The map name can’t be saved. Use at most 128 characters without control characters.",
+    "v4_archive_changed_error": "Saved maps changed. Refresh, review the current selection, and try again.",
+    "v4_archive_size_error": "This archive exceeds the map storage or import size limit. Choose a smaller archive or remove saved maps you no longer need.",
+    "v4_archive_storage_error": "Storage is full or unavailable. Free space, then refresh before retrying.",
+    "v4_archive_file_error": "The archive is too large to import. Choose a file no larger than 68 MiB.",
+    "v4_archive_format_error": "Home Assistant can’t read this archive. Export it again from a supported version.",
+    "v4_archive_unconfirmed_error": "The operation could not be confirmed. Refresh saved maps before retrying; no additional action has been sent.",
+    "v4_archive_refreshed": "Saved maps refreshed",
+    "v4_comparison_choose_maps": "Choose two saved maps to compare.",
+    "v4_comparison_context_changed": "Your selected robot or Home Assistant user changed, so the comparison was cleared. Select two saved maps again.",
+    "v4_comparison_access_required": "You need administrator access and two saved maps to compare maps. Sign in as an administrator, then select two saved maps.",
+    "v4_comparison_map_missing": "One selected saved map is no longer available. Refresh saved maps, then choose two maps again.",
+    "v4_comparison_closed": "Comparison closed.",
+    "v4_comparison_loading": "Loading the two selected saved maps…",
+    "v4_comparison_ready": "The maps line up and show the same parts of the floor.",
+    "v4_comparison_aligned_no_shared": "The maps line up, but don't show enough of the same floor to count differences.",
+    "v4_comparison_unaligned": "These maps can be viewed side by side. They don't line up, so differences can't be counted.",
+    "v4_comparison_load_error": "These saved maps could not be loaded. Refresh saved maps, then choose both maps again.",
+    "v4_comparison_selection_changed": "The selected map changed. Loading the selected maps…",
+    "v4_comparison_record_label": "{name} · {date}",
+    "v4_comparison_saved_map": "Saved map",
+    "v4_comparison_map_a": "Map A",
+    "v4_comparison_map_b": "Map B",
+    "v4_comparison_aria": "Compare saved maps",
+    "v4_comparison_title": "Compare saved maps",
+    "v4_comparison_view": "Comparison view",
+    "v4_comparison_2d": "2D",
+    "v4_comparison_3d": "3D",
+    "v4_comparison_close": "Close comparison",
+    "v4_comparison_need_two": "Save at least two maps to compare them.",
+    "v4_comparison_observed_aria": "Observed map differences",
+    "v4_comparison_observed_title": "Observed map differences",
+    "v4_comparison_changed": "Changed {count}",
+    "v4_comparison_unchanged": "Unchanged {count}",
+    "v4_comparison_unknown": "Unknown {count}",
+    "v4_comparison_unknown_explainer": "Only map cells observed in both saved maps are counted. Unknown cells may have changed.",
+    "v4_comparison_compared_with": "{first} compared with {second}",
+    "v4_renderer_layers_loading": "Loading map details and room names…",
+    "v4_renderer_layers_failed": "Some map details or room names aren't available, so they aren't shown. Reload the page to try again.",
+    "v4_surface_loading": "Loading detailed map…",
+    "v4_surface_failed": "Detailed map isn't available, so you're seeing a simplified map. Reload the page to try again.",
+    "v4_surface_sampled": "This map is missing some detail.",
+    "v4_surface_limited": "Showing less detail for smoother movement.",
+    "v4_camera_follow_loading": "Starting robot tracking…",
+    "v4_camera_follow_failed": "Robot tracking didn't start, so the camera isn't following. Reload the page, then turn tracking on again.",
+    "v4_draw_overlay_loading": "Loading map drawing…",
+    "v4_draw_overlay_failed": "Map drawing isn't available, so edits are paused. Reload the page to try again.",
+    "v4_area_preview_loading": "Loading the area preview…",
+    "v4_area_preview_failed": "The map preview isn't available, so you can't review or save this area. Reload the page to try again.",
+    "v4_draw_overlay_action_unavailable": "Wait for map drawing to load before reviewing or saving this area.",
+    "v4_task_view_2d": "This task uses 2D. Return to Home to view the map in 3D.",
+    "v4_map_simplified_detail": "Showing a simplified map because full graphics support is unavailable."
   },
   "config": {
     "flow_title": "{name}",
@@ -895,10 +1049,12 @@
       "entry_not_loaded": "The robot is not connected, so settings can't open. Check that it is on and on the same network, then reload Matic (Unofficial) under Settings > Devices & services.",
       "default_plan_set": "Default plan: {plan_name}",
       "history_reset": "Room cleaning history reset for {plan_name}",
-      "all_history_reset": "Room cleaning history reset for all plans"
+      "all_history_reset": "Room cleaning history reset for all plans",
+      "photo_patrol_rooms_unavailable": "The current map no longer matches a saved no-photo room. Review the room list before saving."
     },
     "error": {
-      "plan_unavailable": "That plan no longer exists. Choose another plan."
+      "plan_unavailable": "That plan no longer exists. Choose another plan.",
+      "photo_patrol_rooms_unavailable": "The current map no longer matches a saved no-photo room. Review the room list before saving."
     },
     "step": {
       "init": {
@@ -908,7 +1064,9 @@
           "default_plan": "Choose the default plan",
           "reset_history": "Reset room cleaning history for one plan",
           "confirm_reset_all_history": "Reset room cleaning history for all plans",
-          "finish": "Done"
+          "photo_patrol_settings": "Photo patrol privacy and safety",
+          "finish": "Done",
+          "native_cleanings": "App-started cleanings"
         }
       },
       "default_plan": {
@@ -940,6 +1098,30 @@
         "title": "Reset history for all plans?",
         "description": "Every plan starts again from its first room and each room's last-cleaned record is cleared, while plans and settings are kept. This can't be undone.",
         "submit": "Reset"
+      },
+      "photo_patrol_settings": {
+        "title": "Photo patrol privacy and safety",
+        "description": "Photo patrols move the robot on their own. Enable them only after reviewing these safeguards. The room list uses the current map.",
+        "data": {
+          "photo_patrol_allow_unattended": "Allow unattended photo patrols",
+          "photo_patrol_no_photo_rooms": "No-photo rooms",
+          "photo_patrol_cooldown_seconds": "Minimum time between patrols (seconds)"
+        },
+        "data_description": {
+          "photo_patrol_allow_unattended": "Required before any photo patrol can move or take photos. Manual Take photo remains available separately.",
+          "photo_patrol_no_photo_rooms": "Photos from Home Assistant snapshots and patrols are refused in these rooms. Names are saved as room IDs on the current map. An unavailable room stays selected and blocks photos until you review it.",
+          "photo_patrol_cooldown_seconds": "Minimum delay between patrols, including sensor-triggered patrols."
+        }
+      },
+      "native_cleanings": {
+        "title": "App-started cleanings",
+        "description": "Count successful room cleanings started outside Home Assistant toward shared room schedules. Plan-only schedules and saved plan run history stay separate.",
+        "data": {
+          "include_native_cleanings": "Include app-started cleanings"
+        },
+        "data_description": {
+          "include_native_cleanings": "Counting starts when enabled. Turning this off keeps earlier counts. Vacuum-strength tasks stay due until their settings are confirmed."
+        }
       }
     }
   },
@@ -1736,6 +1918,33 @@
     "photo_patrol_running": {
       "message": "A photo patrol is already running on this robot."
     },
+    "photo_patrol_not_opted_in": {
+      "message": "Unattended photo patrols are disabled. Review the robot's privacy settings before enabling them."
+    },
+    "photo_patrol_rooms_unavailable": {
+      "message": "The current map or room is unavailable, so the photo patrol was stopped without taking a photo."
+    },
+    "photo_patrol_room_unknown": {
+      "message": "Home Assistant can't match {room} to a room on the current map."
+    },
+    "photo_patrol_room_blocked": {
+      "message": "Photos are disabled in this room."
+    },
+    "photo_patrol_schedule_conflict": {
+      "message": "The photo patrol could overlap a robot schedule. Try again after the schedule window."
+    },
+    "photo_patrol_cooldown": {
+      "message": "Another photo patrol ran recently. Wait {seconds} seconds before trying again."
+    },
+    "photo_patrol_timeout": {
+      "message": "The photo patrol reached its time limit. The robot was returned to the dock when it was safe to do so."
+    },
+    "photo_patrol_dock_timeout": {
+      "message": "The photo patrol finished, but Home Assistant could not confirm the robot's safe return to the dock within the time limit."
+    },
+    "photo_patrol_battery_unknown": {
+      "message": "The robot's battery level is unavailable, so the photo patrol was not started."
+    },
     "photo_patrol_robot_busy": {
       "message": "The robot is busy with a clean or on its way to the dock. Take photos once it has docked."
     },
@@ -1750,6 +1959,24 @@
     },
     "photo_patrol_unreachable": {
       "message": "The robot stopped answering during the photo patrol."
+    },
+    "daily_room_limit_reached": {
+      "message": "The room has reached its daily completed-clean limit."
+    },
+    "daily_room_limit_requires_managed": {
+      "message": "This room has a daily clean limit. Start it through Rooms or a saved cleaning plan so completed cleans can be counted."
+    },
+    "photo_patrol_ai_question_required": {
+      "message": "Provide both a question and an AI Task entity to analyze a photo."
+    },
+    "photo_patrol_ai_question_invalid": {
+      "message": "The photo question must contain 1 to 500 characters."
+    },
+    "photo_patrol_ai_unavailable": {
+      "message": "Choose an available AI Task entity that supports photo questions."
+    },
+    "photo_patrol_ai_failed": {
+      "message": "The selected AI Task could not return a structured photo answer."
     }
   },
   "issues": {
@@ -1812,9 +2039,9 @@
           "name": "Rooms",
           "description": "Room names or IDs, visited in this order. Up to 12."
         },
-        "return_to_dock": {
-          "name": "Return to the dock",
-          "description": "Dock after the last photo, or after a failure. Turn off to leave the robot in the last room; it docks on its own after about ten minutes."
+        "full_resolution": {
+          "name": "Send the full photo",
+          "description": "By default, the response and event use a pixelated preview. Set this only when full-resolution photos are appropriate for the recipients."
         }
       }
     },

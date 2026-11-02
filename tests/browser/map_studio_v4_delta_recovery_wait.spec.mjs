@@ -36,6 +36,14 @@ async function startRecovery(page, failure = null) {
       areasUrl: "/synthetic-areas-b",
       mapSessionKey: "b".repeat(64),
     };
+    const savedHistory = {
+      entryId: entryA.entryId,
+      liveAvailable: true,
+      floors: [{ id: "saved-1", active: false, readOnly: true, liveAvailable: false,
+        label: "Saved floor", ordinal: 1, snapshots: [{ id: "saved-snapshot-a",
+          createdAt: "2026-09-30T11:00:00Z", revision: 7, pointCount: 1,
+          sceneUrl: "/synthetic-saved-scene-a" }] }],
+    };
     const probe = window.__deltaRecoveryWait = {
       selectedId: entryA.entryId,
       sceneReads: { a: 0, b: 0 },
@@ -71,6 +79,7 @@ async function startRecovery(page, failure = null) {
         ...initial.resources,
         catalog: { status: "ready", value: [entryA], problem: null },
         entry: entryA,
+        history: { status: "ready", value: savedHistory, problem: null },
       },
     });
     const effects = new EffectController(store, {
@@ -108,7 +117,7 @@ async function startRecovery(page, failure = null) {
         }
         return initial.resources.pose.value;
       },
-      history: async () => initial.resources.history.value,
+      history: async () => savedHistory,
       plans: async () => initial.resources.plans.value,
       areas: async () => initial.resources.areas.value,
       sceneDelta: async (url, _scene, _floorCoherent, signal) => {
@@ -285,6 +294,7 @@ for (const boundary of ["floor", "entry", "dispose"]) {
     }));
 
     if (boundary === "floor") {
+      await page.evaluate(() => window.__deltaRecoveryWaitRun.effects.openWorkflow("history"));
       await page.evaluate(() => window.__deltaRecoveryWaitRun.effects.selectFloor("saved-1"));
       await expect.poll(() => page.evaluate(() => window.__deltaRecoveryWaitRun.store.value.dataMode)).toBe("history");
     } else if (boundary === "entry") {

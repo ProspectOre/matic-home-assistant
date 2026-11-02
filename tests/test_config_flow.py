@@ -16,6 +16,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from zeroconf import ServiceStateChange
 
 from custom_components.matic_robot import config_flow as flow_module
+from custom_components.matic_robot import config_flow_discovery as discovery_module
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
@@ -24,6 +25,8 @@ from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
 from custom_components.matic_robot.config_flow import (
     MaticRobotConfigFlow,
     MaticRobotOptionsFlow,
+)
+from custom_components.matic_robot.config_flow_discovery import (
     _async_discover_robots,
     _async_select_discovery_host,
     _preferred_discovery_host,
@@ -32,10 +35,8 @@ from custom_components.matic_robot.const import (
     CONF_LIVE_WORKSPACE_TRANSPORT,
     DOMAIN,
 )
-from custom_components.matic_robot.plans import (
-    CleaningPlanManager,
-    MetadataAdmissionClosedError,
-)
+from custom_components.matic_robot.plan_repository import MetadataAdmissionClosedError
+from custom_components.matic_robot.plans import CleaningPlanManager
 
 
 @pytest.fixture(autouse=True)
@@ -220,12 +221,12 @@ async def test_manual_setup_uses_home_assistant_shared_zeroconf(
             return ["192.0.2.1"]
 
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
-    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
     monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
 
     discoveries = await _async_discover_robots(hass)
@@ -270,12 +271,12 @@ async def test_manual_discovery_discards_incomplete_records(
             return addresses
 
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
-    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
     monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
 
     assert await _async_discover_robots(hass) == []
@@ -292,11 +293,11 @@ async def test_manual_discovery_returns_empty_when_no_services_are_seen(
             return None
 
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
 
     assert await _async_discover_robots(hass, discovery_seconds=0) == []
 
@@ -341,16 +342,16 @@ async def test_manual_discovery_caps_names_addresses_and_resolution_concurrency(
         def parsed_scoped_addresses(self, _ip_version):
             return [f"192.0.2.{index}" for index in range(1, 10)]
 
-    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_SERVICES", 3)
-    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_ADDRESSES", 2)
-    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_CONCURRENCY", 2)
+    monkeypatch.setattr(discovery_module, "MAX_DISCOVERY_SERVICES", 3)
+    monkeypatch.setattr(discovery_module, "MAX_DISCOVERY_ADDRESSES", 2)
+    monkeypatch.setattr(discovery_module, "DISCOVERY_RESOLVE_CONCURRENCY", 2)
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
-    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
 
     discoveries = await _async_discover_robots(hass, discovery_seconds=0)
 
@@ -391,15 +392,15 @@ async def test_manual_discovery_has_one_global_resolution_deadline(
             finally:
                 cancelled_names.append(self.name)
 
-    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_CONCURRENCY", 1)
-    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(discovery_module, "DISCOVERY_RESOLVE_CONCURRENCY", 1)
+    monkeypatch.setattr(discovery_module, "DISCOVERY_RESOLVE_TIMEOUT_SECONDS", 0.01)
     monkeypatch.setattr(
-        flow_module,
+        discovery_module,
         "async_get_async_instance",
         AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
     )
-    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
-    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+    monkeypatch.setattr(discovery_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(discovery_module, "AsyncServiceInfo", FakeServiceInfo)
 
     assert await _async_discover_robots(hass, discovery_seconds=0) == []
     assert started_names == ["stale-0.service"]
@@ -498,11 +499,11 @@ async def test_discovery_probes_advertised_addresses_for_live_robot(
         return b"certificate"
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.validate_certificate",
+        "custom_components.matic_robot.config_flow_discovery.validate_certificate",
         lambda _certificate, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.async_fetch_peer_certificate",
+        "custom_components.matic_robot.config_flow_discovery.async_fetch_peer_certificate",
         fetch_certificate,
     )
     monkeypatch.setattr(
@@ -529,11 +530,11 @@ async def test_discovery_probes_fresh_hostname_resolution(monkeypatch) -> None:
         return b"certificate"
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.validate_certificate",
+        "custom_components.matic_robot.config_flow_discovery.validate_certificate",
         lambda _certificate, **_kwargs: None,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.async_fetch_peer_certificate",
+        "custom_components.matic_robot.config_flow_discovery.async_fetch_peer_certificate",
         fetch_certificate,
     )
     monkeypatch.setattr(
@@ -573,7 +574,7 @@ async def test_discovery_falls_back_when_resolution_and_probes_fail(
         AsyncMock(side_effect=OSError("resolution failed")),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.config_flow.async_fetch_peer_certificate",
+        "custom_components.matic_robot.config_flow_discovery.async_fetch_peer_certificate",
         AsyncMock(side_effect=CannotConnectError("offline")),
     )
 
@@ -590,8 +591,10 @@ async def test_discovery_probe_timeout_falls_back_to_advertised_address(
         await never.wait()
         return b"certificate"
 
-    monkeypatch.setattr(flow_module, "DISCOVERY_PROBE_TIMEOUT_SECONDS", 0)
-    monkeypatch.setattr(flow_module, "async_fetch_peer_certificate", fetch_certificate)
+    monkeypatch.setattr(discovery_module, "DISCOVERY_PROBE_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(
+        discovery_module, "async_fetch_peer_certificate", fetch_certificate
+    )
     monkeypatch.setattr(
         asyncio.get_running_loop(), "getaddrinfo", AsyncMock(return_value=[])
     )
@@ -615,8 +618,10 @@ async def test_discovery_caps_candidate_address_probe_fanout(monkeypatch) -> Non
         probed.append(host)
         raise CannotConnectError("offline")
 
-    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_ADDRESSES", 3)
-    monkeypatch.setattr(flow_module, "async_fetch_peer_certificate", fetch_certificate)
+    monkeypatch.setattr(discovery_module, "MAX_DISCOVERY_ADDRESSES", 3)
+    monkeypatch.setattr(
+        discovery_module, "async_fetch_peer_certificate", fetch_certificate
+    )
     monkeypatch.setattr(
         asyncio.get_running_loop(),
         "getaddrinfo",
@@ -1058,7 +1063,7 @@ async def test_removing_flow_cancels_pairing_tasks_and_passkey() -> None:
 
 async def _options_entry(hass, *, options: dict[str, object] | None = None):
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(
+    manager.repository.store = SimpleNamespace(
         async_load=AsyncMock(return_value=None), async_save=AsyncMock()
     )
     floor_plan = FloorPlan(
@@ -1070,7 +1075,7 @@ async def _options_entry(hass, *, options: dict[str, object] | None = None):
             Room("room-2", "Study", "two", b"two", ((1, 0), (2, 0), (2, 1))),
         ),
     )
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "synthetic-serial",
         "whole_home",
         {
@@ -1124,6 +1129,7 @@ async def test_options_flow_aborts_when_entry_is_not_loaded(hass) -> None:
     [
         ("init", None),
         ("finish", None),
+        ("native_cleanings", None),
         ("default_plan", {"plan": "whole_home"}),
         ("reset_history", {"plan": "whole_home"}),
         ("confirm_reset_history", {}),
@@ -1139,8 +1145,8 @@ async def test_options_flow_guards_each_action_when_entry_unloads(
     flow._reset_plan_id = "whole_home"
     select_plan = AsyncMock()
     reset_history = AsyncMock()
-    monkeypatch.setattr(manager, "async_select_plan", select_plan)
-    monkeypatch.setattr(manager, "async_reset_history", reset_history)
+    monkeypatch.setattr(manager.catalog, "async_select_plan", select_plan)
+    monkeypatch.setattr(manager.ledger, "async_reset_history", reset_history)
 
     result = await getattr(flow, f"async_step_{step}")(payload)
 
@@ -1159,9 +1165,11 @@ async def test_options_flow_keeps_only_native_settings_and_maintenance(hass) -> 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
     assert result["menu_options"] == [
+        "native_cleanings",
         "default_plan",
         "reset_history",
         "confirm_reset_all_history",
+        "photo_patrol_settings",
         "finish",
     ]
     assert result["description_placeholders"] == {"plan_count": "1"}
@@ -1178,7 +1186,60 @@ async def test_options_flow_finish_preserves_existing_preferences(hass) -> None:
     assert result["data"] == {"existing_option": "preserved"}
 
 
-async def test_options_flow_does_not_offer_experimental_transport(hass) -> None:
+async def test_photo_patrol_settings_default_to_safe_values_and_preserve_options(
+    hass,
+) -> None:
+    entry, _manager = await _options_entry(
+        hass, options={"existing_option": "preserved"}
+    )
+    flow = _direct_options_flow(hass, entry)
+
+    form = await flow.async_step_photo_patrol_settings()
+
+    assert _form_defaults(form) == {
+        "photo_patrol_allow_unattended": False,
+        "photo_patrol_no_photo_rooms": [],
+        "photo_patrol_cooldown_seconds": 900,
+    }
+    saved = await flow.async_step_photo_patrol_settings(
+        {
+            "photo_patrol_allow_unattended": True,
+            "photo_patrol_no_photo_rooms": ["room-2"],
+            "photo_patrol_cooldown_seconds": 1800,
+        }
+    )
+    assert saved["type"] is FlowResultType.CREATE_ENTRY
+    assert saved["data"] == {
+        "existing_option": "preserved",
+        "photo_patrol_allow_unattended": True,
+        "photo_patrol_no_photo_rooms": ["room-2"],
+        "photo_patrol_cooldown_seconds": 1800,
+    }
+
+
+async def test_photo_patrol_settings_require_review_of_stale_blocked_rooms(
+    hass,
+) -> None:
+    entry, _manager = await _options_entry(
+        hass, options={"photo_patrol_no_photo_rooms": ["removed-room"]}
+    )
+    flow = _direct_options_flow(hass, entry)
+
+    form = await flow.async_step_photo_patrol_settings()
+    assert "removed-room" in _form_defaults(form)["photo_patrol_no_photo_rooms"]
+
+    saved = await flow.async_step_photo_patrol_settings(
+        {
+            "photo_patrol_allow_unattended": True,
+            "photo_patrol_no_photo_rooms": ["removed-room"],
+            "photo_patrol_cooldown_seconds": 900,
+        }
+    )
+    assert saved["type"] is FlowResultType.ABORT
+    assert saved["reason"] == "photo_patrol_rooms_unavailable"
+
+
+async def test_legacy_transport_option_does_not_enable_workspace_push(hass) -> None:
     entry, _manager = await _options_entry(
         hass, options={CONF_LIVE_WORKSPACE_TRANSPORT: True, "keep": "value"}
     )
@@ -1186,9 +1247,11 @@ async def test_options_flow_does_not_offer_experimental_transport(hass) -> None:
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["menu_options"] == [
+        "native_cleanings",
         "default_plan",
         "reset_history",
         "confirm_reset_all_history",
+        "photo_patrol_settings",
         "finish",
     ]
     finished = await hass.config_entries.options.async_configure(
@@ -1222,7 +1285,7 @@ async def _start_options_step(hass, entry, step: str):
 
 
 async def _add_second_plan(manager: CleaningPlanManager) -> None:
-    await manager.async_save_plan(
+    await manager.catalog.async_save_plan(
         "synthetic-serial",
         "second_plan",
         {
@@ -1255,14 +1318,16 @@ async def test_options_flow_sets_existing_plan_as_default(hass) -> None:
     assert result["reason"] == "default_plan_set"
     assert result["description_placeholders"] == {"plan_name": "Second plan"}
     assert dict(entry.options) == {"keep": "value"}
-    assert manager.snapshot("synthetic-serial")["selected_plan"] == "second_plan"
+    assert (
+        manager.history.snapshot("synthetic-serial")["selected_plan"] == "second_plan"
+    )
 
 
 async def test_options_flow_rejects_default_plan_removed_during_selection(hass) -> None:
     entry, manager = await _options_entry(hass)
     await _add_second_plan(manager)
     flow = _direct_options_flow(hass, entry)
-    manager._robot("synthetic-serial")["plans"].pop("whole_home")
+    manager.repository.robot("synthetic-serial")["plans"].pop("whole_home")
 
     result = await flow.async_step_default_plan({"plan": "whole_home"})
 
@@ -1288,14 +1353,18 @@ async def test_options_flow_recovers_from_stale_plan_input(hass, step) -> None:
 )
 async def test_options_flow_returns_to_settings_when_no_plans_exist(hass, step) -> None:
     entry, manager = await _options_entry(hass, options={"keep": "value"})
-    manager._robot("synthetic-serial")["plans"].clear()
+    manager.repository.robot("synthetic-serial")["plans"].clear()
     flow = _direct_options_flow(hass, entry)
 
     result = await getattr(flow, f"async_step_{step}")()
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["finish"]
+    assert result["menu_options"] == [
+        "native_cleanings",
+        "photo_patrol_settings",
+        "finish",
+    ]
     assert result["description_placeholders"]["plan_count"] == "0"
     assert dict(entry.options) == {"keep": "value"}
 
@@ -1308,10 +1377,10 @@ async def test_options_flow_refreshes_default_choices_after_manager_keyerror(
     flow = _direct_options_flow(hass, entry)
 
     async def deleted_during_admission(_serial_number, plan_id):
-        manager._robot("synthetic-serial")["plans"].pop(plan_id)
+        manager.repository.robot("synthetic-serial")["plans"].pop(plan_id)
         raise KeyError(plan_id)
 
-    monkeypatch.setattr(manager, "async_select_plan", deleted_during_admission)
+    monkeypatch.setattr(manager.catalog, "async_select_plan", deleted_during_admission)
     result = await flow.async_step_default_plan({"plan": "whole_home"})
 
     assert result["type"] is FlowResultType.FORM
@@ -1322,7 +1391,7 @@ async def test_options_flow_refreshes_default_choices_after_manager_keyerror(
 
 async def _seed_two_plan_history(manager: CleaningPlanManager) -> None:
     await _add_second_plan(manager)
-    manager._robot("synthetic-serial")["rotations"] = {
+    manager.repository.robot("synthetic-serial")["rotations"] = {
         "whole_home": {"rooms": {"room-1": {}}},
         "second_plan": {"rooms": {"room-1": {}}},
     }
@@ -1346,7 +1415,9 @@ async def test_options_flow_resets_one_named_plan_after_confirmation(hass) -> No
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "history_reset"
     assert result["description_placeholders"] == {"plan_name": "Whole home"}
-    assert set(manager.snapshot("synthetic-serial")["plan_history"]) == {"second_plan"}
+    assert set(manager.history.snapshot("synthetic-serial")["plan_history"]) == {
+        "second_plan"
+    }
     assert dict(entry.options) == {"keep": "value"}
 
 
@@ -1365,7 +1436,7 @@ async def test_options_flow_resets_all_plans_after_confirmation(hass) -> None:
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "all_history_reset"
     assert result["description_placeholders"] is None
-    assert manager.snapshot("synthetic-serial")["plan_history"] == {}
+    assert manager.history.snapshot("synthetic-serial")["plan_history"] == {}
     assert dict(entry.options) == {"keep": "value"}
 
 
@@ -1379,10 +1450,10 @@ async def test_options_flow_refreshes_reset_choices_after_manager_keyerror(
 
     async def deleted_during_reset(_serial_number, plan_id):
         assert plan_id == "whole_home"
-        manager._robot("synthetic-serial")["plans"].pop(plan_id)
+        manager.repository.robot("synthetic-serial")["plans"].pop(plan_id)
         raise KeyError(plan_id)
 
-    monkeypatch.setattr(manager, "async_reset_history", deleted_during_reset)
+    monkeypatch.setattr(manager.ledger, "async_reset_history", deleted_during_reset)
     result = await flow.async_step_confirm_reset_history({})
 
     assert result["type"] is FlowResultType.FORM
@@ -1402,17 +1473,25 @@ async def test_options_flow_returns_to_settings_if_raced_plan_was_last(
         flow._reset_plan_id = "whole_home"
 
     async def deleted_during_commit(_serial_number, plan_id):
-        manager._robot("synthetic-serial")["plans"].pop(plan_id)
+        manager.repository.robot("synthetic-serial")["plans"].pop(plan_id)
         raise KeyError(plan_id)
 
     method = "async_select_plan" if step == "default_plan" else "async_reset_history"
-    monkeypatch.setattr(manager, method, deleted_during_commit)
+    monkeypatch.setattr(
+        manager.catalog if step == "default_plan" else manager.ledger,
+        method,
+        deleted_during_commit,
+    )
     payload = {"plan": "whole_home"} if step == "default_plan" else {}
     result = await getattr(flow, f"async_step_{step}")(payload)
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["finish"]
+    assert result["menu_options"] == [
+        "native_cleanings",
+        "photo_patrol_settings",
+        "finish",
+    ]
     assert result["description_placeholders"]["plan_count"] == "0"
     assert flow._reset_plan_id is None
     assert dict(entry.options) == {"keep": "value"}
@@ -1424,13 +1503,17 @@ async def test_options_flow_returns_to_settings_when_reset_plan_disappears(
     entry, manager = await _options_entry(hass)
     flow = _direct_options_flow(hass, entry)
     flow._reset_plan_id = "whole_home"
-    manager._robot("synthetic-serial")["plans"].clear()
+    manager.repository.robot("synthetic-serial")["plans"].clear()
 
     result = await flow.async_step_confirm_reset_history()
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["finish"]
+    assert result["menu_options"] == [
+        "native_cleanings",
+        "photo_patrol_settings",
+        "finish",
+    ]
     assert flow._reset_plan_id is None
 
 
@@ -1443,7 +1526,7 @@ async def test_options_flow_handles_manager_unloading_during_default_change(
     async def closing(*args):
         raise MetadataAdmissionClosedError("unloading")
 
-    monkeypatch.setattr(manager, "async_select_plan", closing)
+    monkeypatch.setattr(manager.catalog, "async_select_plan", closing)
     result = await flow.async_step_default_plan({"plan": "whole_home"})
 
     assert result["type"] is FlowResultType.ABORT
@@ -1460,7 +1543,7 @@ async def test_options_flow_handles_manager_unloading_during_history_reset(
     async def closing(*args):
         raise MetadataAdmissionClosedError("unloading")
 
-    monkeypatch.setattr(manager, "async_reset_history", closing)
+    monkeypatch.setattr(manager.ledger, "async_reset_history", closing)
     result = await flow.async_step_confirm_reset_history({})
 
     assert result["type"] is FlowResultType.ABORT
@@ -1478,7 +1561,11 @@ async def test_options_flow_aborts_if_entry_unloads_after_manager_write(
         entry.mock_state(hass, config_entries.ConfigEntryState.NOT_LOADED)
 
     method = "async_select_plan" if step == "default_plan" else "async_reset_history"
-    monkeypatch.setattr(manager, method, unload_after_write)
+    monkeypatch.setattr(
+        manager.catalog if step == "default_plan" else manager.ledger,
+        method,
+        unload_after_write,
+    )
     if step == "confirm_reset_history":
         flow._reset_plan_id = "whole_home"
     payload = {"plan": "whole_home"} if step == "default_plan" else {}
@@ -1501,7 +1588,11 @@ async def test_options_flow_aborts_on_raced_plan_removal_during_unload(
         raise KeyError("whole_home")
 
     method = "async_select_plan" if step == "default_plan" else "async_reset_history"
-    monkeypatch.setattr(manager, method, remove_while_unloading)
+    monkeypatch.setattr(
+        manager.catalog if step == "default_plan" else manager.ledger,
+        method,
+        remove_while_unloading,
+    )
     if step == "confirm_reset_history":
         flow._reset_plan_id = "whole_home"
     payload = {"plan": "whole_home"} if step == "default_plan" else {}
@@ -1523,7 +1614,11 @@ async def test_options_flow_propagates_manager_persistence_failures(
         raise OSError("store failed")
 
     method = "async_select_plan" if step == "default_plan" else "async_reset_history"
-    monkeypatch.setattr(manager, method, fail_to_persist)
+    monkeypatch.setattr(
+        manager.catalog if step == "default_plan" else manager.ledger,
+        method,
+        fail_to_persist,
+    )
     if step == "confirm_reset_history":
         flow._reset_plan_id = "whole_home"
     payload = {"plan": "whole_home"} if step == "default_plan" else {}
@@ -1545,7 +1640,7 @@ async def test_options_flow_all_history_reset_aborts_when_entry_unloads(
             raise MetadataAdmissionClosedError("unloading")
         entry.mock_state(hass, config_entries.ConfigEntryState.NOT_LOADED)
 
-    monkeypatch.setattr(manager, "async_reset_history", reset)
+    monkeypatch.setattr(manager.ledger, "async_reset_history", reset)
     result = await flow.async_step_confirm_reset_all_history({})
 
     assert result["type"] is FlowResultType.ABORT
@@ -1575,3 +1670,42 @@ async def test_pairing_code_shows_progress_while_a_new_code_is_prepared(hass) ->
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_photo_patrol_settings_abort_when_entry_is_not_loaded(hass) -> None:
+    entry, _manager = await _options_entry(hass)
+    entry.mock_state(hass, config_entries.ConfigEntryState.NOT_LOADED)
+    flow = _direct_options_flow(hass, entry)
+
+    result = await flow.async_step_photo_patrol_settings()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+
+
+async def test_photo_patrol_settings_abort_if_entry_unloads_before_save(
+    hass, monkeypatch
+) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+    monkeypatch.setattr(flow, "_is_loaded", MagicMock(side_effect=[True, False]))
+
+    result = await flow.async_step_photo_patrol_settings(
+        {
+            "photo_patrol_allow_unattended": True,
+            "photo_patrol_no_photo_rooms": [],
+            "photo_patrol_cooldown_seconds": 900,
+        }
+    )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "entry_not_loaded"
+
+
+async def test_app_cleaning_option_defaults_on_and_preserves_other_settings(hass):
+    entry, _manager = await _options_entry(hass, options={"keep": "value"})
+    flow = _direct_options_flow(hass, entry)
+    form = await flow.async_step_native_cleanings()
+    assert form["data_schema"]({}) == {"include_native_cleanings": True}
+    saved = await flow.async_step_native_cleanings({"include_native_cleanings": False})
+    assert saved["data"] == {"keep": "value", "include_native_cleanings": False}

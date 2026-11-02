@@ -160,6 +160,26 @@ _SITE_FORMS = {
         [("notice", "v4_n", "N", set())],
         [],
     ),
+    "notice through the typed factory": (
+        'makeNotice("success", "v4_n", "Done.")',
+        [("notice", "v4_n", "Done.", set())],
+        [],
+    ),
+    "notice object with placeholders": (
+        '{ tone: "info", key: "v4_n", fallback: "N {x}", placeholders: { x: 1 } }',
+        [("notice", "v4_n", "N {x}", {"x"})],
+        [],
+    ),
+    "notice object without placeholders": (
+        '{ tone: "info", key: "v4_n", fallback: "N" }',
+        [("notice", "v4_n", "N", set())],
+        [],
+    ),
+    "notice object with a concatenated fallback": (
+        '{ tone: "info", key: "v4_n", fallback: "N" + suffix }',
+        [],
+        ["v4_n"],
+    ),
     "notice catalog tuple": (
         "const notices = {\n"
         "  coverage_identity_unavailable: "

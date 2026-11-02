@@ -10,7 +10,7 @@ import type {
 } from "./backend-contracts";
 import type { WorkspaceIntent, WorkspaceState } from "./contracts";
 import { formatNumber, type Translate } from "./plan-copy";
-import { roomBlockReason } from "./state";
+import { roomBlockReason } from "./workflow-actions";
 import { icon, iconChevronRight, iconNoticeWarning, iconOverflow } from "./icons";
 import type { MenuController } from "./menu-controller";
 import { MOP_INTERVAL_MIN, snapInterval, stepper } from "./stepper";

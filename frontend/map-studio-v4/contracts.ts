@@ -20,6 +20,7 @@ export type CoherenceState =
 export type ColorScheme = "light" | "dark" | "";
 export type DataMode = "live" | "history";
 export type MapView = "three" | "top";
+export type FollowMode = "off" | "follow" | "ride";
 export type MapQuality = "auto" | "efficient" | "balanced" | "maximum";
 export type MapAppearance = "photo" | "rooms";
 export type Localize = (key: string, placeholders?: Record<string, unknown>) => string;
@@ -102,12 +103,29 @@ export interface QueueChangeAction {
   readonly roomId: string;
   /** The room's name, for the result notice. */
   readonly room: string;
+  /** In-memory owner/catalog fence captured by the rendered queue control. */
+  readonly scope: {
+    readonly ownerUserKey: string | null;
+    readonly ownerEntryKey: string | null;
+    readonly entryId: string | null;
+    readonly floorId: string;
+    readonly generation: number;
+    readonly catalog: object;
+    readonly revision: number;
+  };
+}
+
+export interface AcknowledgeQueueUncertainAction {
+  readonly id: "acknowledge-queue-uncertain";
+  /** Opaque operation token prevents a stale recovery button clearing newer work. */
+  readonly token: string;
+  readonly scope: QueueChangeAction["scope"];
 }
 
 /** Told once whether this save was acknowledged, so Discard changes? settles on its own save. */
 export type SaveSettled = (saved: boolean) => void;
 
-export type WorkspaceAction = { readonly id: string; readonly settled?: SaveSettled } | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction;
+export type WorkspaceAction = { readonly id: string; readonly settled?: SaveSettled } | ResetCadenceAction | DeleteSharedCadenceAction | QueueChangeAction | AcknowledgeQueueUncertainAction;
 
 export interface ResourceStamp {
   readonly entryKey: string;
@@ -350,6 +368,12 @@ export interface WorkspaceState {
   /** Object URLs of robot map pictures by history id. */
   readonly runThumbnails: Readonly<Record<string, string>>;
   readonly pageActive: boolean;
+  /** Optional workflow chunks may load after the map opportunity or bounded fallback. */
+  readonly optionalUiReady: boolean;
+  /** Queue action code is admitted only after optional UI/map admission. */
+  readonly queueControllerStatus: "idle" | "loading" | "ready" | "error";
+  /** Monotonic invalidation for queue buttons retained across scope roundtrips. */
+  readonly queueScopeRevision: number;
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;
   readonly draftFloorOrdinal: number | null;
   readonly draftMapSessionKey: string | null;
@@ -365,6 +389,8 @@ export interface WorkspaceState {
   readonly rechecking: boolean;
   /** A queue change Home Assistant is still confirming with the robot. */
   readonly queuePending: boolean;
+  /** Opaque token for the active owner's unconfirmed queue change, if any. */
+  readonly queueUncertainToken: string | null;
   readonly fullMap: boolean;
   readonly precisionOpen: boolean;
   readonly dialog: DialogKind | null;
@@ -384,12 +410,16 @@ export interface WorkspaceState {
   readonly wifiSignal: WifiSignalLayer | null;
   /** The carpet and vent layer; null while hidden. */
   readonly floorTypes: FloorTypesLayer | null;
-  /** Keep the live robot centred; a pan or orbit by the user turns it off. */
-  readonly followRobot: boolean;
+  readonly followMode: FollowMode;
+  readonly comparisonActive: boolean;
+  readonly homePresentation: { readonly view: MapView; readonly appearance: MapAppearance } | null;
+  readonly roomCandidates: readonly string[];
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   /** Only preferences belonging to the verified live map can be restored. */
   readonly cameraKey: string | null;
+  readonly taskCameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
+  readonly taskCameraKey: string | null;
   readonly historyCameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
   readonly managedLock: boolean;
   readonly batteryPercent: number | null;
@@ -442,7 +472,9 @@ export type WorkspaceIntent =
   | { readonly type: "toggle-labels" }
   | { readonly type: "toggle-wifi-signal" }
   | { readonly type: "toggle-floor-types" }
-  | { readonly type: "set-follow-robot"; readonly value: boolean }
+  | { readonly type: "set-follow-mode"; readonly mode: FollowMode }
+  | { readonly type: "show-room-candidates"; readonly roomIds: readonly string[] }
+  | { readonly type: "set-room-daily-limit"; readonly roomId: string; readonly limit: number | null }
   | { readonly type: "open-workflow"; readonly workflow: Workflow }
   | { readonly type: "enter-full-map" }
   | { readonly type: "exit-full-map" }
@@ -494,6 +526,10 @@ export type WorkspaceIntent =
   | { readonly type: "set-floor"; readonly floorId: string }
   | { readonly type: "select-entry"; readonly entryId: string }
   | { readonly type: "set-history"; readonly historyId: string | null }
+  | { readonly type: "refresh-history"; readonly historyId?: string }
+  | { readonly type: "invalidate-history"; readonly historyIds: readonly string[] }
+  | { readonly type: "archive-access-denied" }
+  | { readonly type: "set-comparison-active"; readonly value: boolean }
   | { readonly type: "select-plan"; readonly planId: string | null; readonly origin?: "home" }
   | { readonly type: "select-area"; readonly areaId: string | null; readonly workflow?: "areaReview" }
   | { readonly type: "set-plan-view"; readonly view: PlanView; readonly roomId?: string | null }
@@ -691,7 +727,9 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "toggle-labels": true,
   "toggle-wifi-signal": true,
   "toggle-floor-types": true,
-  "set-follow-robot": true,
+  "set-follow-mode": true,
+  "show-room-candidates": true,
+  "set-room-daily-limit": true,
   "open-workflow": true,
   "enter-full-map": true,
   "exit-full-map": true,
@@ -718,6 +756,10 @@ const workspaceIntentTypes: Readonly<Record<WorkspaceIntent["type"], true>> = {
   "set-floor": true,
   "select-entry": true,
   "set-history": true,
+  "refresh-history": true,
+  "invalidate-history": true,
+  "archive-access-denied": true,
+  "set-comparison-active": true,
   "select-plan": true,
   "select-area": true,
   "set-plan-view": true,

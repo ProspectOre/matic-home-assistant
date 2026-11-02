@@ -282,7 +282,11 @@ def native_entry(record: CleaningSessionRecord) -> dict[str, Any]:
             if session.completed is False
             else "unknown"
         ),
-        "ending": "finished" if session.completed is True else "unknown",
+        # A captured stop reason explains the end without changing completion
+        # evidence. Only legacy records lacking a reason use completion here;
+        # an explicit unknown reason must not be relabeled as finished.
+        "ending": session.stop_reason
+        or ("finished" if session.completed is True else "unknown"),
         "rooms": rooms,
         "areas": [],
         "thumbnail": native_run_id(record.key),

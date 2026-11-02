@@ -11,7 +11,7 @@ from __future__ import annotations
 import pytest
 from homeassistant.exceptions import ServiceValidationError
 
-from custom_components.matic_robot import managed_executor
+import custom_components.matic_robot.managed_observation as managed_observation_module
 from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import SimulatedRobot
@@ -32,7 +32,9 @@ def _room_names(robot: SimulatedRobot) -> list[str]:
 async def test_skip_the_next_room(
     plan: PlanRun, robot: SimulatedRobot, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(managed_executor, "SESSION_HISTORY_TIMEOUT_SECONDS", 2)
+    monkeypatch.setattr(
+        managed_observation_module, "SESSION_HISTORY_TIMEOUT_SECONDS", 2
+    )
     await plan.start()
     await plan.call(DOMAIN, "skip_room", room="Study")
     assert _room_names(robot) == ["Kitchen"]

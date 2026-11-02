@@ -57,9 +57,9 @@ class CheckFailed(RuntimeError):
 
 @dataclass(frozen=True)
 class Candidate:
-    """The files, actions and served assets a release tag should install."""
+    """The files, actions and served assets at an immutable candidate commit."""
 
-    tag: str
+    tag: str | None
     commit: str
     version: str
     files: dict[str, str]
@@ -70,6 +70,20 @@ class Candidate:
     def from_git(cls, repo: Path, tag: str) -> Candidate:
         """Read the candidate from the local checkout's copy of the tag."""
         commit = _git(repo, "rev-parse", f"refs/tags/{tag}^{{commit}}").decode().strip()
+        return cls._from_commit(repo, commit, tag)
+
+    @classmethod
+    def from_commit(cls, repo: Path, commit: str) -> Candidate:
+        """Read an unpublished candidate by its full commit ID, without a tag."""
+        if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise ValueError("the candidate needs a full lowercase commit ID")
+        resolved = _git(repo, "rev-parse", "--verify", f"{commit}^{{commit}}")
+        if resolved.decode().strip() != commit:
+            raise ValueError("the candidate ID must identify a commit")
+        return cls._from_commit(repo, commit, None)
+
+    @classmethod
+    def _from_commit(cls, repo: Path, commit: str, tag: str | None) -> Candidate:
         archive = _git(repo, "archive", "--format=tar", commit, INTEGRATION)
         blobs: dict[str, bytes] = {}
         with tarfile.open(fileobj=io.BytesIO(archive)) as tar:
@@ -80,7 +94,9 @@ class Candidate:
         return cls.from_blobs(tag, commit, blobs)
 
     @classmethod
-    def from_blobs(cls, tag: str, commit: str, blobs: Mapping[str, bytes]) -> Candidate:
+    def from_blobs(
+        cls, tag: str | None, commit: str, blobs: Mapping[str, bytes]
+    ) -> Candidate:
         """Build the candidate from the integration's files at the tag."""
         version = json.loads(blobs["manifest.json"])["version"]
         services = re.findall(
@@ -189,7 +205,8 @@ class Receipt:
         suffix = 0
         while True:
             collision = f"-{suffix}" if suffix else ""
-            path = directory / f"{self.candidate.tag}-{stamp}{collision}.json"
+            label = self.candidate.tag or self.candidate.commit
+            path = directory / f"{label}-{stamp}{collision}.json"
             try:
                 with path.open("x", encoding="utf-8") as receipt_file:
                     receipt_file.write(contents)
@@ -455,6 +472,8 @@ class InstalledCheck:
 
     async def install(self) -> dict[str, Any]:
         """Download the tag through HACS and restart Home Assistant."""
+        if self.candidate.tag is None:
+            raise CheckFailed("an unpublished commit cannot be installed through HACS")
         repositories = await self.ha.call("hacs/repositories/list")
         matches = [
             repo
@@ -764,7 +783,11 @@ def _now() -> str:
 
 
 async def _main(args: argparse.Namespace) -> int:
-    candidate = Candidate.from_git(args.repo, args.tag)
+    candidate = (
+        Candidate.from_commit(args.repo, args.commit)
+        if args.commit
+        else Candidate.from_git(args.repo, args.tag)
+    )
     receipt = Receipt(candidate)
     stage = "setup"
     cancelled = False
@@ -823,7 +846,12 @@ def _record_failure(receipt: Receipt, name: str, error: Exception | str) -> None
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("tag", help="release tag to install, for example v0.6.0b1")
+    parser.add_argument(
+        "tag", nargs="?", help="release tag to install, for example v0.6.0b1"
+    )
+    parser.add_argument(
+        "--commit", help="full unpublished commit ID to check with --skip-install"
+    )
     parser.add_argument("--url", required=True, help="Home Assistant base URL")
     parser.add_argument(
         "--token-file", type=Path, help="long-lived token; else HA_TOKEN"
@@ -846,6 +874,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--room", help="room for the physical clean")
     args = parser.parse_args(argv)
+    if bool(args.tag) == bool(args.commit):
+        parser.error("provide either a release tag or --commit")
+    if args.commit and (
+        not args.skip_install or re.fullmatch(r"[0-9a-f]{40}", args.commit) is None
+    ):
+        parser.error("--commit requires a full lowercase commit ID and --skip-install")
     if args.physical and not args.room:
         parser.error("--physical needs --room")
     return asyncio.run(_main(args))

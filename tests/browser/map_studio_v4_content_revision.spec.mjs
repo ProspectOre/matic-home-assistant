@@ -97,7 +97,7 @@ test("same-frame catalog revisions preserve drafts while stale scene stamps and 
       generation: store.value.generation,
       revision: store.value.resources.entry.mapRevision,
       circles: store.value.draw.circles,
-      camera: store.value.cameras.top,
+      camera: store.value.taskCameras.top,
       captureAdmitted: m.hasCoordinateEditAdmission(store.value, frameCapture),
     };
     s.entry = { ...s.entry, mapRevision: 8 };
@@ -109,7 +109,7 @@ test("same-frame catalog revisions preserve drafts while stale scene stamps and 
       sceneStatus: store.value.resources.scene.status,
       retainedSceneRevision: store.value.resources.scene.value?.revision,
       circles: store.value.draw.circles,
-      camera: store.value.cameras.top,
+      camera: store.value.taskCameras.top,
       captureAdmitted: m.hasCoordinateEditAdmission(store.value, frameCapture),
       canEdit: m.canEditCoordinates(store.value),
       signalAborted: s.sceneSignals[1]?.aborted ?? null,
@@ -195,7 +195,7 @@ test("same-frame catalog revisions preserve drafts while stale scene stamps and 
       priorCaptureAdmitted: m.hasCoordinateEditAdmission(store.value, priorCapture),
       floorOrdinal: store.value.resources.entry.mapFloorOrdinal,
       draftCircles: store.value.draw.circles,
-      camera: store.value.cameras.top,
+      camera: store.value.taskCameras.top,
     };
     s.effects.dispose();
     return result;

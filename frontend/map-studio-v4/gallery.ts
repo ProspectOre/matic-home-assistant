@@ -88,7 +88,7 @@ export class MaticMapStudioGalleryV4 extends LitElement {
    */
   simulateMotion = false;
   #motion: ReturnType<typeof setTimeout>[] = [];
-  protected _workspace: WorkspaceState = createGalleryState("ready");
+  protected _workspace: WorkspaceState = { ...createGalleryState("ready"), optionalUiReady: true, queueControllerStatus: "ready" };
 
   readonly #store = new WorkspaceStore(this._workspace);
   #unsubscribe: (() => void) | null = null;
@@ -112,6 +112,8 @@ export class MaticMapStudioGalleryV4 extends LitElement {
       this.#store.replace({
         ...createGalleryState(this.scenario),
         narrowHint: this.narrow,
+        optionalUiReady: true,
+        queueControllerStatus: "ready",
       });
     } else if (changed.has("narrow")) {
       this.#store.dispatch({ type: "set-narrow-hint", value: this.narrow });

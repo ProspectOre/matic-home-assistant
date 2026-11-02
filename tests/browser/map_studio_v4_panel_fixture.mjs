@@ -53,6 +53,9 @@ export async function installPanelFixture(page, {
   userData = null,
   // The Wi-Fi survey response. Null leaves the URL out of the catalog, as before.
   wifiSignal = null,
+  // Opt into the new-server workspace capability. Omitted continues to model
+  // older servers, which have no capability and therefore remain poll-only.
+  workspacePush = false,
   // The carpet and vent response. Null leaves the URL out of the catalog.
   floorTypes = null,
 } = {}) {
@@ -114,7 +117,7 @@ export async function installPanelFixture(page, {
   await onNavigationComplete?.();
   // Home Assistant mounts the panel again on every page load; `remount` does
   // the same after a test reloads the page.
-  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes }) => {
+  const remount = () => page.evaluate(async ({ module, scenes, plans, areas, sceneDeltaPayload, posePosition, initialCatalogEntries, initialRobotStates, userData, wifiSignal, floorTypes, workspacePush }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -139,6 +142,7 @@ export async function installPanelFixture(page, {
       map_floor_ordinal: 1,
       history_count: 1,
       history_floor_count: 2,
+      ...(workspacePush ? { live_workspace_transport_enabled: true } : {}),
       map_health: "ready",
       stream_failures: 0,
       bootstrap_state: "complete",
@@ -170,11 +174,14 @@ export async function installPanelFixture(page, {
       })),
     })) };
     const pendingHistoryScenes = [];
+    let deferredSceneReads = 0;
+    const pendingSceneReads = [];
     const serviceCalls = [];
     const serviceFailures = [];
     let deferredServices = 0;
     let deferredServiceResponses = 0;
     let failedPlanReads = 0;
+    let failedAreaReads = 0;
     let deferredPlanReads = 0;
     const pendingPlanReads = [];
     let deferredAreaReads = 0;
@@ -274,6 +281,10 @@ export async function installPanelFixture(page, {
       });
       if (/areas\/synthetic(?:-b)?$/.test(path)) {
         areaRequests.push({ method: "GET" });
+        if (failedAreaReads > 0) {
+          failedAreaReads -= 1;
+          return new Response(null, { status: 503 });
+        }
         const result = json(areaCatalog ?? {
         scene_url: `/api/matic_robot/slam_scene/${entryB ? "synthetic-b" : "synthetic"}`,
         rooms: [],
@@ -320,19 +331,34 @@ export async function installPanelFixture(page, {
           },
         });
       }
-      if (/slam_scene\/synthetic(?:-b)?$/.test(path)) return new Response(new Uint8Array(scenes), {
-        headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "7" },
-      });
+      if (/slam_scene\/synthetic(?:-b)?$/.test(path)) {
+        const result = new Response(new Uint8Array(scenes), {
+          headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "7" },
+        });
+        if (deferredSceneReads > 0) {
+          deferredSceneReads -= 1;
+          return new Promise((resolve) => pendingSceneReads.push(() => resolve(result)));
+        }
+        return result;
+      }
       throw new Error(`unexpected synthetic request: ${path}`);
     };
     // Only the frontend user data messages; anything else is not served here.
     const userStore = userData ? structuredClone(userData) : null;
     const userDataCalls = [];
     const userDataFailures = [];
+    const workspaceCalls = [];
     let deferredUserDataReads = 0;
     const pendingUserDataReads = [];
     const connection = userStore ? {
       sendMessagePromise: async (message) => {
+        if (message.type?.startsWith("matic_robot/workspace_")) {
+          const panel = document.querySelector(MATIC_MAP_PANEL_TAG);
+          workspaceCalls.push({
+            type: message.type,
+            mapAvailable: panel?.getWorkspaceSnapshot?.().map.available === true,
+          });
+        }
         userDataCalls.push(structuredClone(message));
         const failure = userDataFailures.findIndex((type) => type === message.type);
         if (failure >= 0) {
@@ -351,9 +377,32 @@ export async function installPanelFixture(page, {
           userStore[message.key] = structuredClone(message.value);
           return null;
         }
+        if (message.type === "matic_robot/workspace_snapshot") {
+          return {
+            schema: 1,
+            capabilities: { snapshot: 1 },
+            epoch: "synthetic-workspace-epoch",
+            sequence: 0,
+            coherence_generation: 1,
+            revisions: {},
+            entry_id: message.entry_id,
+            identity: { entry_id: message.entry_id, floor_mission_id: 1, floor_verified: true },
+            status: { state: "ready", reason: null, retryable: false },
+            payload: { available: true, entry: null },
+          };
+        }
         throw new Error(`unexpected synthetic message: ${message.type}`);
       },
-      subscribeMessage: async () => () => undefined,
+      subscribeMessage: async (_callback, message) => {
+        if (message?.type?.startsWith("matic_robot/workspace_")) {
+          const panel = document.querySelector(MATIC_MAP_PANEL_TAG);
+          workspaceCalls.push({
+            type: message.type,
+            mapAvailable: panel?.getWorkspaceSnapshot?.().map.available === true,
+          });
+        }
+        return () => undefined;
+      },
     } : null;
     const makePanel = () => {
       const panel = document.createElement(MATIC_MAP_PANEL_TAG);
@@ -434,6 +483,7 @@ export async function installPanelFixture(page, {
       deferNextService: () => { deferredServices += 1; },
       deferNextServiceResponse: () => { deferredServiceResponses += 1; },
       failNextPlansRead: () => { failedPlanReads += 1; },
+      failNextAreasRead: () => { failedAreaReads += 1; },
       deferNextPlansRead: () => { deferredPlanReads += 1; },
       pendingPlanReadCount: () => pendingPlanReads.length,
       releasePlansRead: () => { const release = pendingPlanReads.shift(); if (!release) throw new Error("no deferred plans read"); release(); },
@@ -468,10 +518,14 @@ export async function installPanelFixture(page, {
         serviceFailures.push({ service, error });
       },
       pendingHistoryScenes,
+      deferNextSceneRead: () => { deferredSceneReads += 1; },
+      pendingSceneReadCount: () => pendingSceneReads.length,
+      releaseSceneRead: () => { const release = pendingSceneReads.shift(); if (!release) throw new Error("no deferred scene read"); release(); },
       get planReads() { return planReads; },
       setPlanCatalog: (value) => Object.assign(planCatalog, structuredClone(value)),
       areaRequests,
       userData: () => structuredClone(userStore),
+      workspaceCalls,
       userDataCalls,
       // Reject the next frontend user data message of `type` once.
       failNextUserData: (type) => { userDataFailures.push(type); },
@@ -499,6 +553,7 @@ export async function installPanelFixture(page, {
     userData,
     wifiSignal,
     floorTypes,
+    workspacePush,
   });
   await remount();
   return {

@@ -56,14 +56,17 @@ from custom_components.matic_robot.const import (
     DOMAIN,
     PLATFORMS,
 )
-from custom_components.matic_robot.photos import MaticRobotPhotoView, RobotPhotoStore
-from custom_components.matic_robot.plans import (
-    STOP_FENCE_EXPIRES_AT,
-    AreaBindingUpgradeResult,
-    CleaningPlanManager,
+from custom_components.matic_robot.media_source import DATA_PHOTO_ATTACHMENT_SOURCE
+from custom_components.matic_robot.photos import (
+    MaticRobotPhotoPreviewView,
+    MaticRobotPhotoView,
+    RobotPhotoStore,
 )
+from custom_components.matic_robot.plan_model import AreaBindingUpgradeResult
+from custom_components.matic_robot.plan_storage import STOP_FENCE_EXPIRES_AT
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
-from custom_components.matic_robot.slam_scene import observe_coordinator_trail
+from custom_components.matic_robot.slam_view_data import observe_coordinator_trail
 
 
 def _wifi_survey() -> SimpleNamespace:
@@ -93,6 +96,7 @@ def _entry() -> SimpleNamespace:
         entry_id="entry",
         async_create_background_task=MagicMock(side_effect=close_background_coroutine),
         async_on_unload=MagicMock(),
+        add_update_listener=MagicMock(),
     )
 
 
@@ -720,8 +724,9 @@ async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
         "expires_at": "2026-08-13T12:12:00+00:00",
     }
     plans = MagicMock()
-    plans.recovery_run.return_value = None
-    plans.pending_native_reconciliation.return_value = None
+    plans.ledger.async_set_native_cleanings_enabled = AsyncMock()
+    plans.recovery.recovery_run.return_value = None
+    plans.ledger.pending_native_reconciliation.return_value = None
     entry = SimpleNamespace(async_create_background_task=MagicMock())
     hass = MagicMock()
     client = MagicMock()
@@ -738,7 +743,7 @@ async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
         target.close()
         return lifecycle_task
 
-    plans.pending_native_reconciliation.return_value = pending
+    plans.ledger.pending_native_reconciliation.return_value = pending
     entry.async_create_background_task.side_effect = capture_task
     _schedule_native_reconciliation_recovery(
         hass, entry, client, coordinator, plans, "synthetic-serial"
@@ -748,7 +753,7 @@ async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
     assert entry.async_create_background_task.call_args.args[2] == (
         "matic_robot native stop recovery"
     )
-    plans.register_reconciliation_task.assert_called_once_with(
+    plans.control.register_reconciliation_task.assert_called_once_with(
         "synthetic-serial", lifecycle_task
     )
 
@@ -766,8 +771,8 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
     )
     floor_plan = FloorPlan(1, "partition", b"partition", (room,))
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("synthetic-serial")["pending_native_reconciliation"] = {
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("synthetic-serial")["pending_native_reconciliation"] = {
         "plan_id": "away",
         "room_id": room.id,
         "room": room.name,
@@ -775,7 +780,7 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
         "expires_at": (now + timedelta(seconds=10)).isoformat(),
         "run_id": "synthetic-restart-run",
     }
-    pending = manager.pending_native_reconciliation("synthetic-serial")
+    pending = manager.ledger.pending_native_reconciliation("synthetic-serial")
     assert pending is not None
     native_record = CleaningSessionRecord(
         b"late-session",
@@ -808,8 +813,8 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
 
     sleep.assert_awaited_once_with(5)
     client.async_get_cleaning_session_records.assert_awaited_once()
-    assert manager.pending_native_reconciliation("synthetic-serial") is None
-    room_history = manager.snapshot("synthetic-serial")["plan_history"]["away"][
+    assert manager.ledger.pending_native_reconciliation("synthetic-serial") is None
+    room_history = manager.history.snapshot("synthetic-serial")["plan_history"]["away"][
         "rooms"
     ][room.id]
     assert room_history["last_result"] == "completed"
@@ -824,8 +829,8 @@ async def test_restart_recovery_expires_marker_after_transport_error(hass) -> No
     now = datetime(2026, 8, 13, 12, tzinfo=UTC)
     dispatched_at = now - timedelta(seconds=5)
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    robot = manager._robot("synthetic-serial")
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    robot = manager.repository.robot("synthetic-serial")
     robot["pending_native_reconciliation"] = {
         "plan_id": "away",
         "room_id": "room-kitchen",
@@ -834,8 +839,8 @@ async def test_restart_recovery_expires_marker_after_transport_error(hass) -> No
         "expires_at": (now + timedelta(seconds=1)).isoformat(),
     }
     robot[STOP_FENCE_EXPIRES_AT] = (now + timedelta(seconds=1)).isoformat()
-    manager._arm_stop_pending("synthetic-serial", -1)
-    pending = manager.pending_native_reconciliation("synthetic-serial")
+    manager.control.arm_stop_pending("synthetic-serial", -1)
+    pending = manager.ledger.pending_native_reconciliation("synthetic-serial")
     assert pending is not None
     client = SimpleNamespace(
         async_get_cleaning_session_records=AsyncMock(
@@ -861,16 +866,16 @@ async def test_restart_recovery_expires_marker_after_transport_error(hass) -> No
 
     sleep.assert_awaited_once_with(1)
     client.async_get_cleaning_session_records.assert_awaited_once()
-    assert manager.pending_native_reconciliation("synthetic-serial") is None
-    assert STOP_FENCE_EXPIRES_AT not in manager._robot("synthetic-serial")
-    manager._store.async_save.assert_awaited_once()
+    assert manager.ledger.pending_native_reconciliation("synthetic-serial") is None
+    assert STOP_FENCE_EXPIRES_AT not in manager.repository.robot("synthetic-serial")
+    manager.repository.store.async_save.assert_awaited_once()
 
 
 async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> None:
     now = datetime(2026, 8, 13, 12, tzinfo=UTC)
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    robot = manager._robot("synthetic-serial")
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    robot = manager.repository.robot("synthetic-serial")
     robot["pending_native_reconciliation"] = {
         "plan_id": "away",
         "room_id": "room-kitchen",
@@ -878,7 +883,7 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> 
         "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
         "expires_at": (now + timedelta(seconds=10)).isoformat(),
     }
-    pending = manager.pending_native_reconciliation("synthetic-serial")
+    pending = manager.ledger.pending_native_reconciliation("synthetic-serial")
     assert pending is not None
     replacement = {
         **pending,
@@ -898,9 +903,9 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> 
         patch("custom_components.matic_robot.dt_util.utcnow", return_value=now),
         patch("custom_components.matic_robot.asyncio.sleep", AsyncMock()),
         patch.object(
-            manager,
+            manager.ledger,
             "async_import_native_history",
-            wraps=manager.async_import_native_history,
+            wraps=manager.ledger.async_import_native_history,
         ) as import_history,
     ):
         await _async_resume_native_reconciliation(
@@ -912,7 +917,9 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> 
         )
 
     import_history.assert_not_awaited()
-    assert manager.pending_native_reconciliation("synthetic-serial") == replacement
+    assert (
+        manager.ledger.pending_native_reconciliation("synthetic-serial") == replacement
+    )
 
 
 async def test_setup_registers_services_without_media_view() -> None:
@@ -947,7 +954,11 @@ async def test_setup_registers_services_without_media_view() -> None:
         assert await async_setup(hass, {}) is True
 
     assert hass.services.async_register.call_count == 28
-    hass.http.register_view.assert_called_once_with(MaticRobotPhotoView)
+    assert hass.http.register_view.call_count == 2
+    assert {call.args[0] for call in hass.http.register_view.call_args_list} == {
+        MaticRobotPhotoView,
+        MaticRobotPhotoPreviewView,
+    }
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
 
@@ -1007,7 +1018,7 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 13
+    assert hass.http.register_view.call_count == 18
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
@@ -1067,19 +1078,22 @@ async def test_setup_registers_map_studio_when_frontend_is_loaded(
 @pytest.mark.parametrize("native_history_error", [False, True])
 @pytest.mark.parametrize("recovering_run", [False, True])
 @pytest.mark.parametrize("recovering_stop", [False, True])
+@pytest.mark.parametrize("initial_floor_present", [False, True])
 async def test_setup_refreshes_before_forwarding_platforms(
     native_history_error: bool,
     recovering_run: bool,
     recovering_stop: bool,
+    initial_floor_present: bool,
 ) -> None:
     coordinator_unsubscribe = MagicMock()
     plan_unsubscribe = MagicMock()
     plans = MagicMock()
-    plans.recovery_run.return_value = {} if recovering_run else None
-    plans.pending_stop_run_id.return_value = "run" if recovering_stop else None
-    plans.areas.return_value = {}
-    plans.async_add_listener.return_value = plan_unsubscribe
-    plans.async_upgrade_area_bindings = AsyncMock(
+    plans.ledger.async_set_native_cleanings_enabled = AsyncMock()
+    plans.recovery.recovery_run.return_value = {} if recovering_run else None
+    plans.control.pending_stop_run_id.return_value = "run" if recovering_stop else None
+    plans.catalog.areas.return_value = {}
+    plans.repository.async_add_listener.return_value = plan_unsubscribe
+    plans.catalog.async_upgrade_area_bindings = AsyncMock(
         side_effect=(
             AreaBindingUpgradeResult(0, True),
             AreaBindingUpgradeResult(0, True),
@@ -1088,8 +1102,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
             AreaBindingUpgradeResult(1, False),
         )
     )
-    plans.async_import_native_history = AsyncMock(return_value=False)
+    plans.ledger.async_process_native_history = AsyncMock(return_value=False)
     track_workspace_entry = MagicMock()
+    photo_source = SimpleNamespace(activate_entry=MagicMock())
     scheduled_state_flushes = []
 
     def capture_state_flush(delay, callback):
@@ -1108,34 +1123,38 @@ async def test_setup_refreshes_before_forwarding_platforms(
             DOMAIN: {
                 DATA_PLAN_MANAGER: plans,
                 DATA_FIRMWARE_TRACKER: MagicMock(),
+                DATA_PHOTO_ATTACHMENT_SOURCE: photo_source,
                 "workspace_socket": SimpleNamespace(track_entry=track_workspace_entry),
             }
         },
     )
     entry = _entry()
     client = MagicMock()
-    client.async_get_cleaning_session_records = AsyncMock(
+    client.async_get_cleaning_session_snapshot = AsyncMock(
         side_effect=CannotConnectError("history unavailable")
         if native_history_error
         else None,
-        return_value=(),
+        return_value=((), "history-revision"),
     )
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
+        async_watch_state=AsyncMock(),
         async_watch_floor_plan=AsyncMock(),
         displayed_floor_mission_id=None,
         data=SimpleNamespace(
+            telemetry=SimpleNamespace(native_history_revision="history-revision"),
             floor_plan=FloorPlan(
                 42,
                 "synthetic-partition",
                 b"synthetic-partition",
                 (),
             )
-            if native_history_error
-            else None
+            if native_history_error or initial_floor_present
+            else None,
         ),
+        async_ack_native_history_revision=MagicMock(),
     )
     initial_floor_plan = coordinator.data.floor_plan
     setup_floor_plan = FloorPlan(
@@ -1157,7 +1176,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         coordinator.data.floor_plan = setup_floor_plan
         return plan_unsubscribe
 
-    plans.async_add_listener.side_effect = deliver_setup_floor_plan
+    plans.repository.async_add_listener.side_effect = deliver_setup_floor_plan
     setup_scheduled = []
 
     def capture_setup_tasks(_hass, target, name):
@@ -1180,6 +1199,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     )
     slam_history = SimpleNamespace(
         async_load=AsyncMock(),
+        async_expire_trash_until_closed=AsyncMock(),
         async_shutdown=AsyncMock(),
     )
 
@@ -1215,6 +1235,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     ):
         assert await async_setup_entry(hass, entry) is True
         track_workspace_entry.assert_called_once_with(entry)
+        photo_source.activate_entry.assert_called_once_with(entry.entry_id)
         observe = client_factory.call_args.kwargs["observation_callback"]
         observe({"kind": "started"})
         with patch(
@@ -1277,29 +1298,47 @@ async def test_setup_refreshes_before_forwarding_platforms(
     decode.assert_called_once_with("test-credential")
     coordinator.async_config_entry_first_refresh.assert_awaited_once()
     slam_map.async_prime.assert_awaited_once_with(client)
-    assert plans.async_upgrade_area_bindings.await_count == 2
-    assert plans.async_upgrade_area_bindings.await_args_list[0].args == (
+    assert plans.catalog.async_upgrade_area_bindings.await_count == 2
+    assert plans.catalog.async_upgrade_area_bindings.await_args_list[0].args == (
         "synthetic-serial",
         initial_floor_plan,
     )
-    assert plans.async_upgrade_area_bindings.await_args_list[1].args == (
+    assert plans.catalog.async_upgrade_area_bindings.await_args_list[1].args == (
         "synthetic-serial",
         setup_floor_plan,
     )
+    plans.ledger.async_set_native_cleanings_enabled.assert_awaited_once_with(
+        "synthetic-serial", True
+    )
+    update_options = entry.add_update_listener.call_args.args[0]
+    await update_options(
+        hass, SimpleNamespace(options={"include_native_cleanings": False})
+    )
+    plans.ledger.async_set_native_cleanings_enabled.assert_awaited_with(
+        "synthetic-serial", False
+    )
     if native_history_error:
-        plans.async_import_native_history.assert_not_awaited()
+        plans.ledger.async_process_native_history.assert_not_awaited()
     else:
-        plans.async_import_native_history.assert_awaited_once_with(
+        plans.ledger.async_process_native_history.assert_awaited_once_with(
             "synthetic-serial",
-            None,
+            initial_floor_plan,
             (),
             coverage_verifier=client.async_confirm_coverage_receipt,
             current_floor_plan=ANY,
         )
+    if not native_history_error and initial_floor_present:
+        coordinator.async_ack_native_history_revision.assert_called_once_with(
+            "history-revision"
+        )
+    else:
+        coordinator.async_ack_native_history_revision.assert_not_called()
     hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
         entry, PLATFORMS
     )
-    plans.pending_native_reconciliation.assert_called_once_with("synthetic-serial")
+    plans.ledger.pending_native_reconciliation.assert_called_once_with(
+        "synthetic-serial"
+    )
     assert entry.runtime_data.client is client
     assert entry.runtime_data.slam_map is slam_map
     assert entry.runtime_data.slam_history is slam_history
@@ -1316,11 +1355,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.run_trails is run_trails.return_value
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 7 + (
+    assert entry.async_create_background_task.call_count == 8 + (
         recovering_run or recovering_stop
     )
     assert isinstance(entry.runtime_data.photos, RobotPhotoStore)
-    coordinator.async_watch_cues.assert_called_once_with()
+    coordinator.async_watch_state.assert_called_once_with()
     coordinator.async_watch_floor_plan.assert_called_once_with()
     assert (
         entry.runtime_data.firmware_tracker
@@ -1331,7 +1370,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert trail_callback.func is observe_coordinator_trail
     assert trail_callback.args == (entry.runtime_data,)
     sync_callback = coordinator.async_add_listener.call_args.args[0]
-    plans.async_add_listener.assert_called_once_with("synthetic-serial", sync_callback)
+    plans.repository.async_add_listener.assert_called_once_with(
+        "synthetic-serial", sync_callback
+    )
     # A displayed-mission transition can revoke the floor before its
     # replacement fetch completes; keep the map admission bound to that
     # observed mission instead of clearing it back to an older floor.
@@ -1344,7 +1385,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ((plan_unsubscribe,), {}),
     ]
     hass.bus.async_listen.assert_called_once()
-    assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_cleaning_finished"
+    assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_native_history_updated"
     sync_area_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
 
     with patch(
@@ -1412,14 +1453,14 @@ async def test_setup_refreshes_before_forwarding_platforms(
         sync_callback()
         assert len(scheduled) == 3
         await scheduled[2]
-        plans.async_add_listener.call_args.args[1]()
+        plans.repository.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 10 + (
+    assert entry.async_create_background_task.call_count == 11 + (
         recovering_run or recovering_stop
     )
-    assert plans.async_upgrade_area_bindings.await_count == 5
-    assert plans.async_upgrade_area_bindings.call_args.args == (
+    assert plans.catalog.async_upgrade_area_bindings.await_count == 5
+    assert plans.catalog.async_upgrade_area_bindings.call_args.args == (
         "synthetic-serial",
         updated_floor_plan,
     )
@@ -1506,8 +1547,8 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     legacy_area["map_binding"]["version"] = 4
 
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    robot = manager._robot(serial)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    robot = manager.repository.robot(serial)
     robot["areas"].update({"current": current_area, "legacy": legacy_area})
     robot["plans"]["area-plan"] = {
         "id": "area-plan",
@@ -1537,11 +1578,12 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
+        async_watch_state=AsyncMock(),
         async_watch_floor_plan=AsyncMock(),
         displayed_floor_mission_id=None,
         data=SimpleNamespace(floor_plan=initial),
     )
-    manager.async_add_listener = MagicMock(return_value=plan_unsubscribe)
+    manager.repository.async_add_listener = MagicMock(return_value=plan_unsubscribe)
     scheduled_upgrades = []
 
     def capture_task(_hass, target, name):
@@ -1553,7 +1595,12 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     entry = _entry()
     entry.async_create_background_task.side_effect = capture_task
     client = MagicMock()
-    client.async_get_cleaning_session_records = AsyncMock(return_value=())
+    client.async_get_cleaning_session_snapshot = AsyncMock(
+        return_value=((), "history-revision")
+    )
+    coordinator.data.telemetry = SimpleNamespace(
+        native_history_revision="history-revision"
+    )
     client.async_send_command = AsyncMock()
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
@@ -1565,7 +1612,11 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         floor_plan_is_current=MagicMock(return_value=True),
         mission_identity=None,
     )
-    slam_history = SimpleNamespace(async_load=AsyncMock(), async_shutdown=AsyncMock())
+    slam_history = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_expire_trash_until_closed=AsyncMock(),
+        async_shutdown=AsyncMock(),
+    )
     hass.data.setdefault(DOMAIN, {})[DATA_PLAN_MANAGER] = manager
     hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = MagicMock()
     with (
@@ -1592,7 +1643,7 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
             return_value=MagicMock(),
         ),
         patch(
-            "custom_components.matic_robot.area_binding.ir.async_create_issue"
+            "custom_components.matic_robot.area_binding_repairs.ir.async_create_issue"
         ) as create_issue,
     ):
         assert await async_setup_entry(hass, entry) is True
@@ -1616,7 +1667,7 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
         # and the new-map notification. Its pending retry still exercises the
         # listener's real scheduling path, while the remaining current v5 area
         # is the only saved target whose notification behavior is measured.
-        manager._robot(serial)["areas"].pop("legacy")
+        manager.repository.robot(serial)["areas"].pop("legacy")
         coordinator.data.floor_plan = refresh
         sync_callback()
         assert len(scheduled_upgrades) == 1
@@ -1636,8 +1687,9 @@ async def test_setup_listener_keeps_current_area_quiet_on_safe_map_refresh(
     assert current_area["map_binding"] == current_binding
     assert area_binding_status(current_area, later_refresh) is AreaBindingStatus.CURRENT
     create_issue.assert_not_called()
-    assert manager._store.async_save.await_count == 0
-    preview = manager.preview(
+    # Startup persists the initial external-cleaning activation cutoff.
+    assert manager.repository.store.async_save.await_count == 1
+    preview = manager.planning.preview(
         serial,
         {room.id: room.name for room in later_refresh.rooms},
         "area-plan",
@@ -1721,10 +1773,11 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
 
 async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     plans = MagicMock()
-    plans.async_upgrade_area_bindings = AsyncMock(
+    plans.ledger.async_set_native_cleanings_enabled = AsyncMock()
+    plans.catalog.async_upgrade_area_bindings = AsyncMock(
         return_value=AreaBindingUpgradeResult(0, False)
     )
-    plans.async_import_native_history = AsyncMock(return_value=False)
+    plans.ledger.async_process_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),
         config_entries=SimpleNamespace(
@@ -1741,11 +1794,16 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     )
     entry = _entry()
     client = MagicMock()
-    client.async_get_cleaning_session_records = AsyncMock(return_value=())
+    client.async_get_cleaning_session_snapshot = AsyncMock(
+        return_value=((), "history-revision")
+    )
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=MagicMock()),
-        data=SimpleNamespace(floor_plan=None),
+        data=SimpleNamespace(
+            floor_plan=None,
+            telemetry=SimpleNamespace(native_history_revision="history-revision"),
+        ),
     )
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
@@ -1756,6 +1814,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     )
     slam_history = SimpleNamespace(
         async_load=AsyncMock(),
+        async_expire_trash_until_closed=AsyncMock(),
         async_shutdown=AsyncMock(),
     )
 
@@ -1796,12 +1855,15 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
     run_trails = SimpleNamespace(async_shutdown=AsyncMock())
     plans = SimpleNamespace(
-        async_cancel_and_wait=AsyncMock(),
-        async_retire_recovery=AsyncMock(),
-        async_close_metadata_admission_and_wait=AsyncMock(),
-        async_close_command_admission_and_wait=AsyncMock(),
-        begin_command_teardown=MagicMock(),
-        reopen_metadata_admission=MagicMock(),
+        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
+        control=SimpleNamespace(
+            async_cancel_and_wait=AsyncMock(),
+            async_close_command_admission_and_wait=AsyncMock(),
+            begin_command_teardown=MagicMock(),
+            reopen_metadata_admission=MagicMock(),
+        ),
+        ledger=SimpleNamespace(),
+        recovery=SimpleNamespace(async_retire_recovery=AsyncMock()),
     )
     entry = SimpleNamespace(
         entry_id="entry",
@@ -1820,6 +1882,9 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     pose_view = SimpleNamespace(clear_entry=MagicMock())
     floor_layers_view = SimpleNamespace(clear_entry=MagicMock())
     run_thumbnail_view = SimpleNamespace(clear_entry=MagicMock())
+    photo_source = SimpleNamespace(
+        activate_entry=MagicMock(), async_release_entry=AsyncMock()
+    )
     from custom_components.matic_robot.frontend import (
         DATA_FLOOR_LAYERS_VIEW,
         DATA_RUN_THUMBNAIL_VIEW,
@@ -1833,6 +1898,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
             async_unload_platforms=AsyncMock(return_value=unload_ok)
         ),
         data={
+            DOMAIN: {DATA_PHOTO_ATTACHMENT_SOURCE: photo_source},
             DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
             DATA_FLOOR_LAYERS_VIEW: floor_layers_view,
@@ -1841,28 +1907,32 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     )
 
     assert await async_unload_entry(hass, entry) is unload_ok
-    plans.async_cancel_and_wait.assert_awaited_once_with(
+    plans.control.async_cancel_and_wait.assert_awaited_once_with(
         "synthetic-serial", preserve_run=not disabled
     )
-    plans.begin_command_teardown.assert_called_once_with("synthetic-serial")
-    plans.async_close_command_admission_and_wait.assert_awaited_once_with(
+    plans.control.begin_command_teardown.assert_called_once_with("synthetic-serial")
+    plans.control.async_close_command_admission_and_wait.assert_awaited_once_with(
         "synthetic-serial"
     )
-    plans.async_close_metadata_admission_and_wait.assert_awaited_once_with(
+    plans.repository.async_close_metadata_admission_and_wait.assert_awaited_once_with(
         "synthetic-serial"
     )
-    assert plans.reopen_metadata_admission.called is not unload_ok
+    assert plans.control.reopen_metadata_admission.called is not unload_ok
     if disabled:
-        plans.async_retire_recovery.assert_awaited_once_with(
+        plans.recovery.async_retire_recovery.assert_awaited_once_with(
             "synthetic-serial", "config_entry_unload"
         )
     else:
-        plans.async_retire_recovery.assert_not_awaited()
+        plans.recovery.async_retire_recovery.assert_not_awaited()
     assert client.async_shutdown.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
     assert floor_layers_view.clear_entry.called is unload_ok
     assert run_thumbnail_view.clear_entry.called is unload_ok
+    if unload_ok:
+        photo_source.async_release_entry.assert_awaited_once_with("entry")
+    else:
+        photo_source.async_release_entry.assert_not_awaited()
     assert slam_map.async_shutdown.await_count == int(unload_ok)
     assert slam_history.async_shutdown.await_count == int(unload_ok)
     assert run_trails.async_shutdown.await_count == int(unload_ok)
@@ -1879,18 +1949,20 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
 
     manager = CleaningPlanManager(hass)
     serial = "synthetic-serial"
-    token = manager.begin_managed_motion(serial)
+    token = manager.control.begin_managed_motion(serial)
     cleanup_started = asyncio.Event()
     release_cleanup = asyncio.Event()
     dispatched: list[str] = []
 
     async def hold_existing_cleanup(_serial: str, *, preserve_run: bool) -> None:
         assert preserve_run
-        async with manager.managed_command(serial, token, teardown_cleanup=True):
+        async with manager.control.managed_command(
+            serial, token, teardown_cleanup=True
+        ):
             cleanup_started.set()
             await release_cleanup.wait()
 
-    manager.async_cancel_and_wait = hold_existing_cleanup
+    manager.control.async_cancel_and_wait = hold_existing_cleanup
     client = SimpleNamespace(async_shutdown=AsyncMock())
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
@@ -1922,10 +1994,10 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
     external: asyncio.Task[None] | None = None
     try:
         await asyncio.wait_for(cleanup_started.wait(), timeout=3)
-        assert manager.command_admission_open(serial) is False
+        assert manager.control.command_admission_open(serial) is False
 
         async def external_dispatch() -> None:
-            async with manager.external_command(serial):
+            async with manager.control.external_command(serial):
                 dispatched.append("sent")
 
         external = asyncio.create_task(external_dispatch())
@@ -1943,7 +2015,7 @@ async def test_unload_fences_external_command_before_managed_cleanup_wait(
             await asyncio.gather(external, return_exceptions=True)
 
     client.async_shutdown.assert_awaited_once()
-    assert not manager.command_admission_open(serial)
+    assert not manager.control.command_admission_open(serial)
 
 
 async def test_teardown_allows_only_existing_managed_token_cleanup(
@@ -1952,7 +2024,7 @@ async def test_teardown_allows_only_existing_managed_token_cleanup(
     """The staged fence preserves cleanup for the current managed owner only."""
     manager = CleaningPlanManager(hass)
     serial = "synthetic-serial"
-    token = manager.begin_managed_motion(serial)
+    token = manager.control.begin_managed_motion(serial)
     persistence_started = asyncio.Event()
     release_persistence = asyncio.Event()
     dispatched: list[str] = []
@@ -1962,24 +2034,28 @@ async def test_teardown_allows_only_existing_managed_token_cleanup(
         await release_persistence.wait()
 
     monkeypatch.setattr(
-        manager, "_async_persist_reconciliation_removal", delay_reconciliation_removal
+        manager.control,
+        "async_persist_reconciliation_removal",
+        delay_reconciliation_removal,
     )
 
     async def managed_cleanup() -> None:
-        async with manager.managed_command(serial, token, teardown_cleanup=True):
+        async with manager.control.managed_command(
+            serial, token, teardown_cleanup=True
+        ):
             dispatched.append("managed")
 
     command = asyncio.create_task(managed_cleanup())
     try:
         await asyncio.wait_for(persistence_started.wait(), timeout=3)
-        manager.begin_command_teardown(serial)
+        manager.control.begin_command_teardown(serial)
         with pytest.raises(HomeAssistantError, match="unavailable during unload"):
-            manager.begin_managed_motion(serial)
+            manager.control.begin_managed_motion(serial)
         release_persistence.set()
         await command
         assert dispatched == ["managed"]
         with pytest.raises(HomeAssistantError, match="unavailable during unload"):
-            async with manager.managed_command(serial, token):
+            async with manager.control.managed_command(serial, token):
                 dispatched.append("clean")
         assert dispatched == ["managed"]
     finally:
@@ -1992,13 +2068,18 @@ async def test_teardown_allows_only_existing_managed_token_cleanup(
 async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
     """A failed platform unload must not strand a preserved managed run."""
     plans = SimpleNamespace(
-        async_cancel_and_wait=AsyncMock(),
-        async_retire_recovery=AsyncMock(),
-        async_close_metadata_admission_and_wait=AsyncMock(),
-        async_close_command_admission_and_wait=AsyncMock(),
-        begin_command_teardown=MagicMock(),
-        reopen_metadata_admission=MagicMock(),
-        recovery_run=MagicMock(return_value={"run_id": "run"}),
+        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
+        control=SimpleNamespace(
+            async_cancel_and_wait=AsyncMock(),
+            async_close_command_admission_and_wait=AsyncMock(),
+            begin_command_teardown=MagicMock(),
+            reopen_metadata_admission=MagicMock(),
+        ),
+        ledger=SimpleNamespace(),
+        recovery=SimpleNamespace(
+            recovery_run=MagicMock(return_value={"run_id": "run"}),
+            async_retire_recovery=AsyncMock(),
+        ),
     )
     target_tasks = []
 
@@ -2015,21 +2096,25 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
     )
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
     await async_unload_entry(hass, entry)
-    plans.reopen_metadata_admission.assert_called_once_with("serial")
+    plans.control.reopen_metadata_admission.assert_called_once_with("serial")
     entry.async_create_background_task.assert_called_once()
     assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
 
 
 async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
     plans = SimpleNamespace(
-        async_cancel_and_wait=AsyncMock(),
-        async_retire_recovery=AsyncMock(),
-        async_close_metadata_admission_and_wait=AsyncMock(),
-        async_close_command_admission_and_wait=AsyncMock(),
-        begin_command_teardown=MagicMock(),
-        reopen_metadata_admission=MagicMock(),
-        recovery_run=MagicMock(return_value=None),
-        pending_stop_run_id=MagicMock(return_value="run"),
+        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
+        control=SimpleNamespace(
+            async_cancel_and_wait=AsyncMock(),
+            async_close_command_admission_and_wait=AsyncMock(),
+            begin_command_teardown=MagicMock(),
+            reopen_metadata_admission=MagicMock(),
+            pending_stop_run_id=MagicMock(return_value="run"),
+        ),
+        ledger=SimpleNamespace(),
+        recovery=SimpleNamespace(
+            recovery_run=MagicMock(return_value=None), async_retire_recovery=AsyncMock()
+        ),
     )
     target_tasks = []
 
@@ -2046,21 +2131,26 @@ async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
     )
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
     await async_unload_entry(hass, entry)
-    plans.reopen_metadata_admission.assert_called_once_with("serial")
+    plans.control.reopen_metadata_admission.assert_called_once_with("serial")
     entry.async_create_background_task.assert_called_once()
     assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
 
 
 async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
     plans = SimpleNamespace(
-        async_cancel_and_wait=AsyncMock(),
-        async_retire_recovery=AsyncMock(),
-        async_close_metadata_admission_and_wait=AsyncMock(),
-        async_close_command_admission_and_wait=AsyncMock(),
-        begin_command_teardown=MagicMock(),
-        reopen_metadata_admission=MagicMock(),
-        recovery_run=MagicMock(return_value={"run_id": "run"}),
-        pending_stop_run_id=MagicMock(return_value="run"),
+        repository=SimpleNamespace(async_close_metadata_admission_and_wait=AsyncMock()),
+        control=SimpleNamespace(
+            async_cancel_and_wait=AsyncMock(),
+            async_close_command_admission_and_wait=AsyncMock(),
+            begin_command_teardown=MagicMock(),
+            reopen_metadata_admission=MagicMock(),
+            pending_stop_run_id=MagicMock(return_value="run"),
+        ),
+        ledger=SimpleNamespace(),
+        recovery=SimpleNamespace(
+            recovery_run=MagicMock(return_value={"run_id": "run"}),
+            async_retire_recovery=AsyncMock(),
+        ),
     )
     entry = SimpleNamespace(
         disabled_by=None,
@@ -2072,7 +2162,7 @@ async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
     hass.is_stopping = True
     hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
     await async_unload_entry(hass, entry)
-    plans.reopen_metadata_admission.assert_called_once_with("serial")
+    plans.control.reopen_metadata_admission.assert_called_once_with("serial")
     entry.async_create_background_task.assert_not_called()
 
 
@@ -2240,66 +2330,115 @@ async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
 
 
 async def test_finished_session_records_where_the_robot_worked(hass) -> None:
-    """Any finished clean updates rotation fairness, claiming no completion."""
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    """A native history revision imports activity and separate room statistics."""
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
     unloads: list = []
     entry.async_on_unload = unloads.append
     client = SimpleNamespace(
-        async_get_cleaning_session_records=AsyncMock(return_value=("record",))
+        async_get_cleaning_session_snapshot=AsyncMock(
+            return_value=(("record",), "revision-1")
+        )
     )
-    plans = SimpleNamespace(async_import_native_history=AsyncMock(return_value=True))
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+    plans = SimpleNamespace(
+        control=SimpleNamespace(),
+        ledger=SimpleNamespace(
+            async_process_native_history=AsyncMock(return_value=True)
+        ),
+    )
+    floor_plan = FloorPlan(7, "floor-plan", b"floor-plan", ())
+    acknowledged: set[str] = set()
+
+    def acknowledge(revision):
+        acknowledged.add(revision)
+
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=floor_plan,
+            telemetry=SimpleNamespace(native_history_revision="revision-1"),
+        ),
+        native_history_revision_acknowledged=lambda revision: revision in acknowledged,
+        native_history_revision_is_current=lambda revision: revision == "revision-1",
+        async_ack_native_history_revision=MagicMock(side_effect=acknowledge),
+    )
 
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
     assert unloads
 
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "other"})
+    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "other"})
     await hass.async_block_till_done()
-    plans.async_import_native_history.assert_not_awaited()
+    plans.ledger.async_process_native_history.assert_not_awaited()
 
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(EVENT_NATIVE_HISTORY_UPDATED, {"entry_id": "entry-1"})
     await hass.async_block_till_done()
-    plans.async_import_native_history.assert_awaited_once_with(
+    plans.ledger.async_process_native_history.assert_not_awaited()
+
+    hass.bus.async_fire(
+        EVENT_NATIVE_HISTORY_UPDATED,
+        {"entry_id": "entry-1", "revision": "revision-1"},
+    )
+    await hass.async_block_till_done()
+    plans.ledger.async_process_native_history.assert_awaited_once_with(
         "serial",
-        "floor-plan",
+        floor_plan,
         ("record",),
         coverage_verifier=None,
         current_floor_plan=ANY,
     )
-    floor_reader = plans.async_import_native_history.await_args.kwargs[
+    floor_reader = plans.ledger.async_process_native_history.await_args.kwargs[
         "current_floor_plan"
     ]
-    assert floor_reader() == "floor-plan"
-    coordinator.data.floor_plan = "replacement-floor"
-    assert floor_reader() == "replacement-floor"
+    assert floor_reader() == floor_plan
+    replacement_floor = FloorPlan(8, "replacement-floor", b"replacement", ())
+    coordinator.data.floor_plan = replacement_floor
+    assert floor_reader() == replacement_floor
+    hass.bus.async_fire(
+        EVENT_NATIVE_HISTORY_UPDATED,
+        {"entry_id": "entry-1", "revision": "revision-1"},
+    )
+    await hass.async_block_till_done()
+    plans.ledger.async_process_native_history.assert_awaited_once()
 
 
 async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
     from custom_components.matic_robot.client.exceptions import MaticError
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
     entry.async_on_unload = MagicMock()
     client = SimpleNamespace(
-        async_get_cleaning_session_records=AsyncMock(side_effect=MaticError("down"))
+        async_get_cleaning_session_snapshot=AsyncMock(side_effect=MaticError("down"))
     )
-    plans = SimpleNamespace(async_import_native_history=AsyncMock())
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+    plans = SimpleNamespace(
+        control=SimpleNamespace(),
+        ledger=SimpleNamespace(async_process_native_history=AsyncMock()),
+    )
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(7, "floor-plan", b"floor-plan", ()),
+            telemetry=SimpleNamespace(native_history_revision="revision-1"),
+        ),
+        native_history_revision_acknowledged=lambda _revision: False,
+        native_history_revision_is_current=lambda revision: revision == "revision-1",
+        async_ack_native_history_revision=MagicMock(),
+    )
 
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(
+        EVENT_NATIVE_HISTORY_UPDATED,
+        {"entry_id": "entry-1", "revision": "revision-1"},
+    )
     await hass.async_block_till_done()
 
-    plans.async_import_native_history.assert_not_awaited()
+    plans.ledger.async_process_native_history.assert_not_awaited()
 
 
 async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> None:
     """An old event callback keeps its generation across a robot re-add."""
-    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    from custom_components.matic_robot.const import EVENT_NATIVE_HISTORY_UPDATED
 
     entry = MagicMock()
     entry.entry_id = "entry-1"
@@ -2310,29 +2449,38 @@ async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> Non
     async def get_records():
         records_ready.set()
         await release_records.wait()
-        return ("record",)
+        return (("record",), "revision-1")
 
-    client = SimpleNamespace(async_get_cleaning_session_records=get_records)
+    client = SimpleNamespace(async_get_cleaning_session_snapshot=get_records)
     generation = 1
     plans = SimpleNamespace(
-        robot_generation=MagicMock(side_effect=lambda _serial: generation),
-        async_import_native_history=AsyncMock(return_value=True),
+        control=SimpleNamespace(
+            robot_generation=MagicMock(side_effect=lambda _serial: generation)
+        ),
+        ledger=SimpleNamespace(
+            async_process_native_history=AsyncMock(return_value=True)
+        ),
     )
-    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(7, "floor-plan", b"floor-plan", ()),
+            telemetry=SimpleNamespace(native_history_revision="revision-1"),
+        ),
+        native_history_revision_acknowledged=lambda _revision: False,
+        native_history_revision_is_current=lambda revision: revision == "revision-1",
+        async_ack_native_history_revision=MagicMock(),
+    )
 
     _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
-    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    hass.bus.async_fire(
+        EVENT_NATIVE_HISTORY_UPDATED,
+        {"entry_id": "entry-1", "revision": "revision-1"},
+    )
     await records_ready.wait()
 
     generation = 2
     release_records.set()
     await hass.async_block_till_done()
 
-    plans.async_import_native_history.assert_awaited_once_with(
-        "serial",
-        "floor-plan",
-        ("record",),
-        generation=1,
-        coverage_verifier=None,
-        current_floor_plan=ANY,
-    )
+    plans.ledger.async_process_native_history.assert_not_awaited()
+    coordinator.async_ack_native_history_revision.assert_not_called()

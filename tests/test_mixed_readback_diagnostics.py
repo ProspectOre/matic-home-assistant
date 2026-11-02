@@ -10,7 +10,6 @@ import pytest
 
 from custom_components.matic_robot.client.api import (
     MaticHermesClient,
-    _log_mixed_readback_timeout,
 )
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
@@ -22,9 +21,12 @@ from custom_components.matic_robot.client.coverage_goals import (
     coverage_plan_goal_signatures,
 )
 from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.client.hermes_commands import (
+    _log_mixed_readback_timeout,
+)
 from tests.test_mixed_coverage import coverage_plan_from_command
 
-LOGGER = "custom_components.matic_robot.client.api"
+LOGGER = "custom_components.matic_robot.client.hermes_commands"
 
 
 async def test_poll_sleep_timeout_keeps_specific_error_and_private_goal_deltas(
@@ -45,8 +47,8 @@ async def test_poll_sleep_timeout_keeps_specific_error_and_private_goal_deltas(
     actual = Counter(coverage_plan_goal_signatures(payload))
     missing = next(iter(expected - actual))
     client = MaticHermesClient("robot.invalid", 16320)
-    client.async_get_property = AsyncMock(return_value=payload)
-    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"owned")
+    client._collections.async_get_property = AsyncMock(return_value=payload)
+    client._reads.async_get_cleaning_session_identity = AsyncMock(return_value=b"owned")
     monkeypatch.setattr(f"{LOGGER}._MIXED_COVERAGE_READBACK_TIMEOUT", 0.01)
     monkeypatch.setattr(f"{LOGGER}._MIXED_COVERAGE_READBACK_INTERVAL", 60.0)
     caplog.set_level(logging.DEBUG, logger=LOGGER)
@@ -54,12 +56,12 @@ async def test_poll_sleep_timeout_keeps_specific_error_and_private_goal_deltas(
     with pytest.raises(
         MaticError, match="Mixed coverage readback verification timed out"
     ) as caught:
-        await client._async_wait_for_mixed_coverage_readback(
+        await client._commands._async_wait_for_mixed_coverage_readback(
             expected, require_current=Mock(), expected_identity=b"owned"
         )
 
     assert isinstance(caught.value.__cause__, TimeoutError)
-    client.async_get_property.assert_awaited_once_with("coverage_plan")
+    client._collections.async_get_property.assert_awaited_once_with("coverage_plan")
     assert "stage=poll_interval" in caplog.text
     assert f"missing=[{(5, *missing[1:], 1)}]" in caplog.text
     assert "unexpected=[]" in caplog.text
@@ -78,15 +80,15 @@ async def test_stalled_read_is_bounded_and_reports_last_sample(
     async def stalled(*_args):
         await asyncio.Event().wait()
 
-    client.async_get_property = AsyncMock(
+    client._collections.async_get_property = AsyncMock(
         side_effect=stalled if stage == "coverage_plan" else None,
         return_value=b"",
     )
-    client.async_get_cleaning_session_identity = AsyncMock(side_effect=stalled)
+    client._reads.async_get_cleaning_session_identity = AsyncMock(side_effect=stalled)
     monkeypatch.setattr(f"{LOGGER}._MIXED_COVERAGE_READBACK_TIMEOUT", 0.01)
     caplog.set_level(logging.DEBUG, logger=LOGGER)
     with pytest.raises(MaticError, match="readback verification timed out"):
-        await client._async_wait_for_mixed_coverage_readback(
+        await client._commands._async_wait_for_mixed_coverage_readback(
             Counter({("private-room", 0, 0, 0, 0): 1}),
             require_current=Mock(),
             expected_identity=b"private-session",
@@ -106,11 +108,11 @@ async def test_transport_timeout_is_preserved_without_readback_diagnostics(
 ):
     client = MaticHermesClient("robot.invalid", 16320)
     failure = TimeoutError("transport")
-    client.async_get_property = AsyncMock(side_effect=failure)
+    client._collections.async_get_property = AsyncMock(side_effect=failure)
     monkeypatch.setattr(f"{LOGGER}._MIXED_COVERAGE_READBACK_TIMEOUT", 60.0)
     caplog.set_level(logging.DEBUG, logger=LOGGER)
     with pytest.raises(TimeoutError) as caught:
-        await client._async_wait_for_mixed_coverage_readback(
+        await client._commands._async_wait_for_mixed_coverage_readback(
             Counter(), require_current=Mock(), expected_identity=b"owned"
         )
     assert caught.value is failure
@@ -127,11 +129,11 @@ async def test_external_cancellation_is_preserved_without_timeout_diagnostics(
         entered.set()
         await asyncio.Event().wait()
 
-    client.async_get_property = AsyncMock(side_effect=stalled)
+    client._collections.async_get_property = AsyncMock(side_effect=stalled)
     monkeypatch.setattr(f"{LOGGER}._MIXED_COVERAGE_READBACK_TIMEOUT", 60.0)
     caplog.set_level(logging.DEBUG, logger=LOGGER)
     task = asyncio.create_task(
-        client._async_wait_for_mixed_coverage_readback(
+        client._commands._async_wait_for_mixed_coverage_readback(
             Counter(), require_current=Mock(), expected_identity=b"owned"
         )
     )

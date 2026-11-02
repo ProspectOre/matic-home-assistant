@@ -1,6 +1,7 @@
+import { mdiContentCopy as iconCopy } from "@mdi/js";
 import { LitElement, css, html } from "lit";
 import { controls } from "./controls";
-import { icon, iconCopy } from "./icons";
+import { icon } from "./icons";
 import { base, tokens } from "./tokens";
 import type { Localize, WorkspaceState } from "./contracts";
 import { translate } from "./localize";

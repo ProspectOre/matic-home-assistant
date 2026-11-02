@@ -220,7 +220,7 @@ test.describe("plan Edit with custom areas", () => {
 
   test("while a save is pending every area control is held and says why", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "plan-edit-ordered" });
-    await gallery.evaluate((element) => {
+    await gallery.evaluate(async (element) => {
       const state = element.getWorkspaceSnapshot();
       element.replaceWorkspaceState({ ...state, command: "pending", pendingAction: "save-plan",
         planDraft: { ...state.planDraft, areas: [{ areaId: "entryway", name: "Entryway", cleaningMode: "vacuum", coverageSetting: "standard", slot: 1 }] } });
@@ -293,6 +293,24 @@ test.describe("Run and home with custom areas", () => {
     await expect(gallery.getByText("The robot cleans in 4 parts and may stop at the dock between parts.", { exact: true })).toBeVisible();
   });
 
+  test("Run explains rooms held by the daily limit", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "plan-run-areas" });
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const plansValue = {
+        ...plans,
+        plans: plans.plans.map((plan) => plan.id === state.selection.planId
+          ? { ...plan, nextRunPreview: { ...plan.nextRunPreview, dailyLimitHeldRooms: [
+            { roomId: "room-a", name: "Kitchen", limit: 2, completedToday: 2, reached: true },
+          ] } }
+          : plan),
+      };
+      element.replaceWorkspaceState({ ...state, resources: { ...state.resources, plans: { ...state.resources.plans, value: plansValue } } });
+    });
+    await expect(gallery.locator("[data-daily-limit-held]")).toHaveText("Held by daily clean limits: Kitchen: 2 of 2 completed today. Change a room limit or refresh room details. Home Assistant keeps each room on hold until it can match the room on the map and confirm today's clean count.");
+  });
+
   test("Intelligent Run shows the mixed server order even when areas cross rooms", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "plan-edit-areas-rotation" });
     await gallery.evaluate((element) => element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), planView: "run" }));
@@ -361,7 +379,7 @@ test.describe("custom area plan saves", () => {
   async function loadPlanEffects(page) {
     const bundle = await build({
       stdin: {
-        contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, draftForPlan, selectPrimaryAction } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
         resolveDir: process.cwd(),
       },
       bundle: true, format: "esm", write: false,

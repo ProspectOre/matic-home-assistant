@@ -4,6 +4,7 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { STAMP_FILE, hashSources } from "./source_stamp.mjs";
 import { compactHtmlTemplates } from "./compact_html_templates.mjs";
+import { materialIconImports, materialIconModules, isMaterialIconInput, writeMaterialIconLicense, MATERIAL_ICON_INPUTS } from "./material_icon_modules.mjs";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 const production = resolve(root, "custom_components/matic_robot/map_studio_v4");
@@ -21,7 +22,7 @@ const styleComments = {
   name: "style-comments",
   setup(compiler) {
     compiler.onLoad({ filter: /frontend[\\/]map-studio-v4[\\/][^\\/]+\.ts$/ }, async ({ path }) => {
-      const source = await readFile(path, "utf8");
+      const source = materialIconImports(await readFile(path, "utf8"));
       const contents = source.replace(/\bcss`[^`]*`/gu, (template) => template.replace(
         /\n[ \t]*\/\*(?:(?!\$\{)[\s\S])*?\*\/[ \t]*(?=\n)/gu, "",
       ).split(/("[^"\n]*"|'[^'\n]*'|url\([^)]*\)|\$\{[^}]*\})/u).map((part, index) => index % 2 ? part : part
@@ -36,7 +37,7 @@ const styleComments = {
 // One compilation gives the review harness the exact same component chunks
 // as the installed panel. Only the production entry's reachable graph ships.
 const result = await build({
-  plugins: [styleComments],
+  plugins: [materialIconModules, styleComments],
   absWorkingDir: root,
   entryPoints: {
     index: "frontend/map-studio-v4/index.ts",
@@ -90,11 +91,14 @@ for (const output of result.outputFiles) {
   await mkdir(dirname(destination), { recursive: true });
   await writeFile(destination, contents);
 }
+// Keep the complete canonical icon license beside the shipped modules.
+await writeMaterialIconLicense(production);
 // Records which sources this review bundle was compiled from, so the audit
 // harness can refuse a bundle that no longer matches the working tree.
-const inputs = [...new Set([...Object.keys(result.metafile.inputs),
+const inputs = [...new Set([...Object.keys(result.metafile.inputs).filter((path) => !isMaterialIconInput(path)),
   "scripts/build_map_studio_bundle.mjs", "scripts/compact_html_templates.mjs",
-  "scripts/compact_javascript.mjs",
+  "scripts/compact_javascript.mjs", "scripts/material_icon_modules.mjs",
+  ...MATERIAL_ICON_INPUTS.map((path) => relative(root, path)),
   "scripts/normalize_map_studio_bundle.mjs", "scripts/source_stamp.mjs",
   "package.json", "package-lock.json",
   "custom_components/matic_robot/map_studio_v4/assets/robot-atlas.json",

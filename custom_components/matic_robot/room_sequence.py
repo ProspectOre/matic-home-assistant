@@ -7,10 +7,11 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from homeassistant.util import dt as dt_util
+
 from .client.models import FloorPlan
 from .const import MAX_ROOM_SEQUENCE_SIZE
-from .plans import (
-    CleaningPlanManager,
+from .plan_model import (
     CleaningRoom,
     DuplicateRoomError,
     RoomSequenceLimitError,
@@ -18,6 +19,7 @@ from .plans import (
     resolve_room_reference,
     room_cadence_identity,
 )
+from .plans import CleaningPlanManager
 
 
 def resolve_room_sequence(
@@ -65,7 +67,23 @@ def resolve_room_sequence(
     room_identities = {
         room.id: room_cadence_identity(floor_plan, room.id) for room in floor_plan.rooms
     }
-    effective_rooms, cadence_by_room = manager.resolve_cadence(
+    now = dt_util.utcnow()
+    daily_by_room = {
+        room.room_id: manager.cadence.daily_limit_state(
+            serial_number, room.room_id, room_identities.get(room.room_id), now=now
+        )
+        for room in rooms
+    }
+    daily_held = [
+        {"room_id": room.room_id, "name": room.name, **daily_by_room[room.room_id]}
+        for room in rooms
+        if daily_by_room[room.room_id]["reached"]
+    ]
+    eligible_requested = [
+        item for item in requested if not daily_by_room[item["room_id"]]["reached"]
+    ]
+    rooms = [room for room in rooms if not daily_by_room[room.room_id]["reached"]]
+    effective_rooms, cadence_by_room = manager.cadence.resolve_cadence(
         serial_number,
         None,
         rooms,
@@ -77,7 +95,9 @@ def resolve_room_sequence(
     for room_id, snapshot in cadence_by_room.items():
         snapshot["identity"] = room_identities.get(room_id)
     preview_rooms = []
-    for requested_item, effective in zip(requested, effective_rooms, strict=True):
+    for requested_item, effective in zip(
+        eligible_requested, effective_rooms, strict=True
+    ):
         room_id = requested_item["room_id"]
         snapshot = cadence_by_room[room_id]
         reasons = []
@@ -93,6 +113,11 @@ def resolve_room_sequence(
                 "coverage_setting": effective.coverage_setting,
                 "cadence_reasons": reasons,
                 "cadence_progress": snapshot,
+                **(
+                    {"daily_limit": daily_by_room[room_id]}
+                    if daily_by_room[room_id]["limit"] is not None
+                    else {}
+                ),
             }
         )
     token = _preview_token(
@@ -111,9 +136,12 @@ def resolve_room_sequence(
         "preview_token": token,
         "rooms": preview_rooms,
         "mission_boundaries": [],
-        "blocker": None,
+        "blocker": "daily_limit_reached"
+        if daily_held and not effective_rooms
+        else None,
         "effective_rooms": effective_rooms,
         "cadence_by_room": cadence_by_room,
+        **({"daily_limit_held_rooms": daily_held} if daily_held else {}),
     }
 
 

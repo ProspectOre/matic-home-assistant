@@ -1,10 +1,10 @@
+import { mdiCircleOutline as iconBrush, mdiDeleteSweepOutline as iconClear, mdiEraser as iconErase, mdiCursorMove as iconMoveMap, mdiBrush as iconPaint, mdiRedo as iconRedo, mdiUndo as iconUndo } from "@mdi/js";
 import { html, nothing, type TemplateResult } from "lit";
 
 import type { WorkspaceIntent, WorkspaceState } from "./contracts";
-import { icon, iconBrush, iconClear, iconErase, iconMoveMap, iconPaint, iconNewArea, iconRedo, iconUndo } from "./icons";
+import { icon, iconNewArea } from "./icons";
 import { heldReasonKey } from "./state";
 
-export { heldReasonKey };
 
 // The drawing tools, rendered by whichever surface owns them: the map's
 // dock at desktop width, the sheet's rows on a phone. One template so the

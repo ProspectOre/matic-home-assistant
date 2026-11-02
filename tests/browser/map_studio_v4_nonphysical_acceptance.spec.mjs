@@ -132,11 +132,10 @@ test("forced colors and reduced motion preserve visible dialog and keyboard beha
 
 test("keyboard dismissal keeps an edited plan draft and restores its launcher focus @safety", async ({ page }) => {
   const { panel } = await mountPanel(page);
+  await panel.getByRole("button", { name: "Your plans", exact: true }).click();
   await expect.poll(() => page.evaluate(() =>
     window.__panelFixture.planReads > 0
       && window.__acceptancePanel.getWorkspaceSnapshot().resources.plans.status)).toBe("ready");
-
-  await panel.getByRole("button", { name: "Your plans", exact: true }).click();
   await panel.getByRole("button", { name: "Create a plan", exact: true }).click();
   const name = panel.getByRole("textbox", { name: "Plan name" });
   await name.fill("Evening kitchen");

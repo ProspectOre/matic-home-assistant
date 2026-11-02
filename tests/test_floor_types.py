@@ -22,7 +22,7 @@ from custom_components.matic_robot.client.floor_types import (
     mission_token,
 )
 from custom_components.matic_robot.client.models import HermesCollectionEntry
-from custom_components.matic_robot.client.slam_map import (
+from custom_components.matic_robot.client.slam_tiles import (
     SlamSemanticTile,
     decode_slam_semantic_tile,
 )

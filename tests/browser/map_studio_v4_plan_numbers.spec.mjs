@@ -35,7 +35,7 @@ test("plan map labels number rooms only in Saved order, and taps edit only in Ed
       },
     });
     const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-    const initial = createGalleryState("ready");
+    const initial = { ...createGalleryState("ready"), optionalUiReady: true };
     const rooms = initial.resources.scene.value.metadata.rooms;
     const first = rooms[0];
     const stateFor = (workflow, planView, runBehavior) => ({
@@ -55,10 +55,16 @@ test("plan map labels number rooms only in Saved order, and taps edit only in Ed
         document.body.append(canvas);
       }
       const store = new WorkspaceStore(stateFor(workflow, planView, runBehavior));
-      const renderer = new RendererController(scene, overlay);
+      let layersStatus = "idle";
+      const renderer = new RendererController(scene, overlay, {
+        onModuleStatus: (module, status) => { if (module === "renderer-layers") layersStatus = status; },
+      });
       activeOverlay = overlay;
       drawnText.length = 0;
       renderer.setState(store.value);
+      await frame();
+      for (let attempt = 0; attempt < 120 && layersStatus !== "ready" && layersStatus !== "failed"; attempt += 1) await frame();
+      if (layersStatus !== "ready") throw new Error(`Room labels did not load: ${layersStatus}`);
       await frame();
       const formattersBefore = formatters;
       for (let index = 0; index < redraws; index += 1) {
@@ -82,6 +88,7 @@ test("plan map labels number rooms only in Saved order, and taps edit only in Ed
       }
       const gestures = new GestureController(scene, renderer, {
         state: () => store.value,
+        drawReady: () => true,
         onRoom: (roomId) => store.dispatch({ type: "toggle-room", roomId }),
         onCircles: () => {}, onCirclePreview: () => {},
       });

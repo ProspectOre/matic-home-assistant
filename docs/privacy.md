@@ -45,6 +45,11 @@ if that is not wanted. Photo patrol links serve the 16 newest photos to any
 signed-in user, and are never cached by the browser. Home Assistant backups may
 include credentials, plans, and maps—protect backups and screenshots accordingly.
 
+[Photo patrol](photo-patrol.md) needs explicit opt-in and defaults to pixelated
+notification previews. Configured no-photo rooms block patrols and manual
+snapshots requested through Home Assistant. They do not control the Matic app
+or remove existing photos from the robot.
+
 ## Assistant tools
 
 The [assistant and MCP tools](assistant-tools.md) are offered only to

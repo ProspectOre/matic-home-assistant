@@ -15,7 +15,7 @@ export interface MapPreferences {
 
 const defaults = (): MapPreferences => ({
   version: 4,
-  view: "top",
+  view: "three",
   appearance: "photo",
   labels: true,
   quality: "auto",

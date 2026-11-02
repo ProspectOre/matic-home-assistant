@@ -53,7 +53,7 @@ async def async_get_config_entry_diagnostics(
     floor_plan = getattr(state, "floor_plan", None)
     endpoint_health = runtime.client.endpoint_health
     command_health = runtime.client.command_health
-    bag_observation = getattr(runtime.coordinator, "bag_observation", None)
+    bag_observation = runtime.coordinator.robot_health.bag_observation(operational)
     return {
         "runtime_code": code,
         "activity_observations": runtime.client.activity_journal.snapshot,
@@ -85,9 +85,7 @@ async def async_get_config_entry_diagnostics(
             "robot_profile": operational.robot_profile,
             "bag_full": operational.bag_full,
             "bag_missing": operational.bag_missing,
-            "bag_observation": (
-                bag_observation if isinstance(bag_observation, dict) else None
-            ),
+            "bag_observation": bag_observation,
         },
         "telemetry": {
             "software_version": telemetry.software_version,

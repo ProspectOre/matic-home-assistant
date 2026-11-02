@@ -10,14 +10,19 @@ import pytest
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.matic_robot import area_binding as binding
+from custom_components.matic_robot import area_binding_formats as binding_formats
+from custom_components.matic_robot import area_binding_geometry as binding_geometry
+from custom_components.matic_robot import area_binding_records as binding_records
 from custom_components.matic_robot.area_geometry import RoomGeometryIndex
 from custom_components.matic_robot.client.models import FloorPlan, Room
-from custom_components.matic_robot.plans import (
+from custom_components.matic_robot.plan_model import (
     AreaBindingUpgradeResult,
-    CleaningPlanManager,
     PlanAreaMapChangedError,
 )
-from custom_components.matic_robot.services import _validated_area_command
+from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.service_plans import (
+    _validated_area_command,
+)
 
 
 def _floor(boundary=((0, 0), (10, 0), (10, 10), (0, 10))):
@@ -32,7 +37,7 @@ def _floor(boundary=((0, 0), (10, 0), (10, 10), (0, 10))):
 def _area(floor):
     circles = [{"x": 5.0, "y": 5.0, "radius": 0.2}]
     return {
-        "schema_version": binding.AREA_SCHEMA_VERSION,
+        "schema_version": binding_formats.AREA_SCHEMA_VERSION,
         "name": "Area",
         "circles": circles,
         "cleaning_mode": "vacuum",
@@ -141,7 +146,7 @@ def test_small_single_room_translation_does_not_keep_stale_area_frame(offset):
         ),
     )
     assert (
-        binding.translation_invariant_geometry_fingerprint(moved)
+        binding_geometry.translation_invariant_geometry_fingerprint(moved)
         != area["map_binding"]["translation_invariant_geometry_sha256"]
     )
     assert (
@@ -228,9 +233,9 @@ async def test_moved_room_blocks_saved_plan_preview(hass):
         ),
     )
     manager = CleaningPlanManager(hass)
-    manager._robot("serial")["areas"]["area"] = area
+    manager.repository.robot("serial")["areas"]["area"] = area
     with pytest.raises(PlanAreaMapChangedError):
-        manager._preview_area(
+        manager.planning.preview_area(
             "serial",
             {
                 "area_id": "area",
@@ -288,7 +293,10 @@ def test_overflowing_frame_snapshot_and_malformed_legacy_bounds_stay_blocked():
 def test_frame_snapshot_and_matching_are_bounded():
     floor = _floor()
     area = _area(floor)
-    with patch.object(binding, "_MAX_ROOM_FRAME_POINTS", 3):
+    with (
+        patch.object(binding_geometry, "_MAX_ROOM_FRAME_POINTS", 3),
+        patch.object(binding_records, "_MAX_ROOM_FRAME_POINTS", 3),
+    ):
         assert (
             binding.area_binding_status(area, floor)
             is binding.AreaBindingStatus.INVALID
@@ -297,7 +305,7 @@ def test_frame_snapshot_and_matching_are_bounded():
             binding.binding_for_area(floor, area["circles"])
     changed = _floor(((0.002, 0), (10, 0), (10, 10), (0.002, 10)))
     with patch.object(
-        binding,
+        binding_geometry,
         "_room_frame_matches",
         side_effect=binding.GeometryTooComplex("bounded"),
     ):
@@ -310,8 +318,10 @@ def test_frame_snapshot_and_matching_are_bounded():
 def test_degenerate_landmarks_do_not_establish_a_frame():
     saved = {"fingerprint": "a" * 64, "boundary_mm": [[0, 0], [1, 0], [2, 0]]}
     current = {"fingerprint": "b" * 64, "boundary_mm": [[0, 0], [1, 1], [2, 0]]}
-    assert not binding._room_frame_matches(saved, current, RoomGeometryIndex([]))
-    assert not binding._room_frame_matches(
+    assert not binding_geometry._room_frame_matches(
+        saved, current, RoomGeometryIndex([])
+    )
+    assert not binding_geometry._room_frame_matches(
         saved, {"fingerprint": "a" * 64, "boundary_mm": []}, RoomGeometryIndex([])
     )
 
@@ -328,7 +338,7 @@ def test_room_frame_landmark_work_is_charged_before_scan():
     room_geometry = RoomGeometryIndex([])
     room_geometry._query_work_remaining = 1
     with pytest.raises(binding.GeometryTooComplex):
-        binding._room_frame_matches(saved, current, room_geometry)
+        binding_geometry._room_frame_matches(saved, current, room_geometry)
 
 
 def test_room_frame_area_scan_exhausts_budget_before_integer_geometry():
@@ -345,10 +355,13 @@ def test_room_frame_area_scan_exhausts_budget_before_integer_geometry():
     # There must be no integer polygon-area traversal after that budget ends.
     room_geometry._query_work_remaining = 76
     with patch.object(
-        binding, "sum", side_effect=AssertionError("uncharged area scan"), create=True
+        binding_geometry,
+        "sum",
+        side_effect=AssertionError("uncharged area scan"),
+        create=True,
     ):
         with pytest.raises(binding.GeometryTooComplex):
-            binding._room_frame_matches(saved, current, room_geometry)
+            binding_geometry._room_frame_matches(saved, current, room_geometry)
 
 
 async def test_legacy_frame_shift_does_not_enrich_but_snapshot_survives_reload(hass):
@@ -356,30 +369,30 @@ async def test_legacy_frame_shift_does_not_enrich_but_snapshot_survives_reload(h
     area = _area(floor)
     area["map_binding"]["translation_room_anchors"][0].pop("boundary_mm")
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"]["area"] = deepcopy(area)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
     changed = _floor(((0.015, 0), (10, 0), (10, 10), (0.015, 10)))
-    assert await manager.async_upgrade_area_bindings(
+    assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(0, True)
-    manager._store.async_save.assert_not_awaited()
-    assert await manager.async_upgrade_area_bindings(
+    manager.repository.store.async_save.assert_not_awaited()
+    assert await manager.catalog.async_upgrade_area_bindings(
         "serial", floor
     ) == AreaBindingUpgradeResult(1, False)
-    saved = deepcopy(manager._data)
-    manager._store.async_save.assert_awaited_once()
+    saved = deepcopy(manager.repository.data)
+    manager.repository.store.async_save.assert_awaited_once()
     reloaded = CleaningPlanManager(hass)
-    reloaded._data = saved
-    reloaded._store = SimpleNamespace(async_save=AsyncMock())
+    reloaded.repository.data = saved
+    reloaded.repository.store = SimpleNamespace(async_save=AsyncMock())
     assert (
-        binding.area_binding_status(reloaded.area("serial", "area"), changed)
+        binding.area_binding_status(reloaded.catalog.area("serial", "area"), changed)
         is binding.AreaBindingStatus.CURRENT
     )
-    assert await reloaded.async_upgrade_area_bindings(
+    assert await reloaded.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(0, False)
-    reloaded._store.async_save.assert_not_awaited()
-    assert reloaded._data == saved
+    reloaded.repository.store.async_save.assert_not_awaited()
+    assert reloaded.repository.data == saved
 
 
 def test_legacy_anchor_without_boundary_rejects_small_whole_room_translation():
@@ -413,23 +426,23 @@ async def test_legacy_upgrade_grafts_exact_room_snapshot_across_remote_map_chang
         binding.area_binding_status(area, changed) is binding.AreaBindingStatus.CURRENT
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"]["area"] = deepcopy(area)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
     binding_before = deepcopy(area["map_binding"])
     with patch(
-        "custom_components.matic_robot.plans.binding_for_area",
+        "custom_components.matic_robot.plan_catalog.binding_for_area",
         side_effect=AssertionError("anchor graft must preserve old local evidence"),
     ):
-        assert await manager.async_upgrade_area_bindings(
+        assert await manager.catalog.async_upgrade_area_bindings(
             "serial", changed
         ) == AreaBindingUpgradeResult(1, False)
-    manager._store.async_save.assert_awaited_once()
-    saved = manager.area("serial", "area")
+    manager.repository.store.async_save.assert_awaited_once()
+    saved = manager.catalog.area("serial", "area")
     saved_binding = saved["map_binding"]
     assert saved_binding["geometry_sha256"] == binding_before["geometry_sha256"]
-    assert saved_binding["geometry_sha256"] != binding.floor_plan_geometry_fingerprint(
-        changed
-    )
+    assert saved_binding[
+        "geometry_sha256"
+    ] != binding_geometry.floor_plan_geometry_fingerprint(changed)
     assert {
         key: value
         for key, value in saved_binding.items()
@@ -443,16 +456,16 @@ async def test_legacy_upgrade_grafts_exact_room_snapshot_across_remote_map_chang
     saved_anchor = saved_binding["translation_room_anchors"][0]
     assert saved_anchor == {
         **old_anchor,
-        "boundary_mm": binding._translation_room_anchors(changed, saved["circles"])[0][
-            "boundary_mm"
-        ],
+        "boundary_mm": binding_geometry._translation_room_anchors(
+            changed, saved["circles"]
+        )[0]["boundary_mm"],
     }
 
     reloaded = CleaningPlanManager(hass)
-    reloaded._data = deepcopy(manager._data)
-    reloaded._store = SimpleNamespace(async_save=AsyncMock())
+    reloaded.repository.data = deepcopy(manager.repository.data)
+    reloaded.repository.store = SimpleNamespace(async_save=AsyncMock())
     assert (
-        binding.area_binding_status(reloaded.area("serial", "area"), changed)
+        binding.area_binding_status(reloaded.catalog.area("serial", "area"), changed)
         is binding.AreaBindingStatus.CURRENT
     )
     refined = replace(
@@ -466,7 +479,7 @@ async def test_legacy_upgrade_grafts_exact_room_snapshot_across_remote_map_chang
         ),
     )
     assert (
-        binding.area_binding_status(reloaded.area("serial", "area"), refined)
+        binding.area_binding_status(reloaded.catalog.area("serial", "area"), refined)
         is binding.AreaBindingStatus.CURRENT
     )
 
@@ -495,14 +508,14 @@ async def test_legacy_graft_normalizes_exact_last_vertex_bounds_bug(hass):
     )
 
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"]["area"] = deepcopy(area)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
     before = deepcopy(area["map_binding"])
-    assert await manager.async_upgrade_area_bindings(
+    assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(1, False)
-    manager._store.async_save.assert_awaited_once()
-    saved = manager.area("serial", "area")["map_binding"]
+    manager.repository.store.async_save.assert_awaited_once()
+    saved = manager.catalog.area("serial", "area")["map_binding"]
     saved_anchor = saved["translation_room_anchors"][0]
     assert saved_anchor["bounds"] == correct_bounds
     assert saved_anchor["boundary_mm"] == boundary
@@ -512,7 +525,7 @@ async def test_legacy_graft_normalizes_exact_last_vertex_bounds_bug(hass):
         key: value for key, value in before.items() if key != "translation_room_anchors"
     }
     assert (
-        binding.area_binding_status(manager.area("serial", "area"), changed)
+        binding.area_binding_status(manager.catalog.area("serial", "area"), changed)
         is binding.AreaBindingStatus.CURRENT
     )
 
@@ -564,14 +577,14 @@ async def test_legacy_graft_fails_closed_without_exact_room_frame(hass, change):
         is binding.AreaBindingStatus.GEOMETRY_CHANGED
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"]["area"] = deepcopy(area)
-    before = manager.areas("serial")
-    assert await manager.async_upgrade_area_bindings(
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    before = manager.catalog.areas("serial")
+    assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(0, True)
-    manager._store.async_save.assert_not_awaited()
-    assert manager.areas("serial") == before
+    manager.repository.store.async_save.assert_not_awaited()
+    assert manager.catalog.areas("serial") == before
 
 
 def _admit_malformed_binding_for_graft(
@@ -579,7 +592,7 @@ def _admit_malformed_binding_for_graft(
 ):
     """Isolate migration guards from the stricter normal status validator."""
     _current_room_anchors.extend(
-        binding._translation_room_anchors(
+        binding_geometry._translation_room_anchors(
             floor_plan, area["circles"], room_geometry=room_geometry
         )
     )
@@ -609,7 +622,7 @@ async def test_legacy_graft_rejects_changed_target_circle_association(hass):
         {"x": 6.0, "y": 5.0, "radius": 0.2},
     ]
     area = {
-        "schema_version": binding.AREA_SCHEMA_VERSION,
+        "schema_version": binding_formats.AREA_SCHEMA_VERSION,
         "name": "Area",
         "circles": circles,
         "cleaning_mode": "vacuum",
@@ -634,26 +647,26 @@ async def test_legacy_graft_rejects_changed_target_circle_association(hass):
         is binding.AreaBindingStatus.GEOMETRY_CHANGED
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"]["area"] = deepcopy(area)
-    before = manager.areas("serial")
-    assert await manager.async_upgrade_area_bindings(
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    before = manager.catalog.areas("serial")
+    assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(0, True)
-    manager._store.async_save.assert_not_awaited()
-    assert manager.areas("serial") == before
+    manager.repository.store.async_save.assert_not_awaited()
+    assert manager.catalog.areas("serial") == before
 
     # Exercise the migration's independent defensive checks even if its caller
     # were to admit this malformed association. Real status rejects it above.
     with patch(
-        "custom_components.matic_robot.plans.area_binding_status",
+        "custom_components.matic_robot.plan_catalog.area_binding_status",
         side_effect=_admit_malformed_binding_for_graft,
     ):
-        assert await manager.async_upgrade_area_bindings(
+        assert await manager.catalog.async_upgrade_area_bindings(
             "serial", changed
         ) == AreaBindingUpgradeResult(0, True)
-    manager._store.async_save.assert_not_awaited()
-    assert manager.areas("serial") == before
+    manager.repository.store.async_save.assert_not_awaited()
+    assert manager.catalog.areas("serial") == before
 
 
 async def test_legacy_graft_rejects_duplicate_saved_room_key(hass):
@@ -673,7 +686,7 @@ async def test_legacy_graft_rejects_duplicate_saved_room_key(hass):
     )
     circles = [{"x": 4.0, "y": 5.0, "radius": 0.2}, {"x": 6.0, "y": 5.0, "radius": 0.2}]
     area = {
-        "schema_version": binding.AREA_SCHEMA_VERSION,
+        "schema_version": binding_formats.AREA_SCHEMA_VERSION,
         "name": "Area",
         "circles": circles,
         "cleaning_mode": "vacuum",
@@ -697,26 +710,26 @@ async def test_legacy_graft_rejects_duplicate_saved_room_key(hass):
         is binding.AreaBindingStatus.GEOMETRY_CHANGED
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"]["area"] = deepcopy(area)
-    before = manager.areas("serial")
-    assert await manager.async_upgrade_area_bindings(
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    before = manager.catalog.areas("serial")
+    assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(0, True)
-    manager._store.async_save.assert_not_awaited()
-    assert manager.areas("serial") == before
+    manager.repository.store.async_save.assert_not_awaited()
+    assert manager.catalog.areas("serial") == before
 
     # Exercise the migration's independent defensive checks even if its caller
     # were to admit this malformed association. Real status rejects it above.
     with patch(
-        "custom_components.matic_robot.plans.area_binding_status",
+        "custom_components.matic_robot.plan_catalog.area_binding_status",
         side_effect=_admit_malformed_binding_for_graft,
     ):
-        assert await manager.async_upgrade_area_bindings(
+        assert await manager.catalog.async_upgrade_area_bindings(
             "serial", changed
         ) == AreaBindingUpgradeResult(0, True)
-    manager._store.async_save.assert_not_awaited()
-    assert manager.areas("serial") == before
+    manager.repository.store.async_save.assert_not_awaited()
+    assert manager.catalog.areas("serial") == before
 
 
 async def test_legacy_graft_preserves_existing_snapshot_in_mixed_anchors(hass):
@@ -736,7 +749,7 @@ async def test_legacy_graft_preserves_existing_snapshot_in_mixed_anchors(hass):
     )
     circles = [{"x": 5.0, "y": 5.0, "radius": 0.2}]
     area = {
-        "schema_version": binding.AREA_SCHEMA_VERSION,
+        "schema_version": binding_formats.AREA_SCHEMA_VERSION,
         "name": "Area",
         "circles": circles,
         "cleaning_mode": "vacuum",
@@ -755,16 +768,18 @@ async def test_legacy_graft_preserves_existing_snapshot_in_mixed_anchors(hass):
         ),
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"]["area"] = deepcopy(area)
-    assert await manager.async_upgrade_area_bindings(
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    assert await manager.catalog.async_upgrade_area_bindings(
         "serial", changed
     ) == AreaBindingUpgradeResult(1, False)
-    manager._store.async_save.assert_awaited_once()
-    saved = manager.area("serial", "area")["map_binding"]["translation_room_anchors"]
+    manager.repository.store.async_save.assert_awaited_once()
+    saved = manager.catalog.area("serial", "area")["map_binding"][
+        "translation_room_anchors"
+    ]
     assert all("boundary_mm" in anchor for anchor in saved)
     assert (
-        binding.area_binding_status(manager.area("serial", "area"), changed)
+        binding.area_binding_status(manager.catalog.area("serial", "area"), changed)
         is binding.AreaBindingStatus.CURRENT
     )
 
@@ -785,15 +800,15 @@ async def test_legacy_graft_fails_closed_when_shared_query_budget_exhausts(hass)
         ),
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"]["area"] = deepcopy(area)
-    before = manager.areas("serial")
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"]["area"] = deepcopy(area)
+    before = manager.catalog.areas("serial")
     with patch.object(RoomGeometryIndex, "_MAX_QUERY_WORK", 300):
-        assert await manager.async_upgrade_area_bindings(
+        assert await manager.catalog.async_upgrade_area_bindings(
             "serial", changed
         ) == AreaBindingUpgradeResult(0, True)
-    manager._store.async_save.assert_not_awaited()
-    assert manager.areas("serial") == before
+    manager.repository.store.async_save.assert_not_awaited()
+    assert manager.catalog.areas("serial") == before
 
 
 async def test_legacy_enrichment_respects_aggregate_frame_point_limit(hass):
@@ -812,20 +827,20 @@ async def test_legacy_enrichment_respects_aggregate_frame_point_limit(hass):
         ),
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager._robot("serial")["areas"] = {
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.repository.robot("serial")["areas"] = {
         "legacy": deepcopy(legacy),
         "existing": _area(changed),
     }
-    before = deepcopy(manager.areas("serial"))
+    before = deepcopy(manager.catalog.areas("serial"))
     with patch(
-        "custom_components.matic_robot.plans._MAX_PERSISTED_ROOM_FRAME_POINTS_PER_ROBOT",
+        "custom_components.matic_robot.plan_catalog._MAX_PERSISTED_ROOM_FRAME_POINTS_PER_ROBOT",
         7,
     ):
-        result = await manager.async_upgrade_area_bindings("serial", changed)
+        result = await manager.catalog.async_upgrade_area_bindings("serial", changed)
     assert result == AreaBindingUpgradeResult(0, True)
-    manager._store.async_save.assert_not_awaited()
-    assert manager.areas("serial") == before
+    manager.repository.store.async_save.assert_not_awaited()
+    assert manager.catalog.areas("serial") == before
 
 
 async def test_legacy_enrichment_rolls_back_when_store_write_fails(hass):
@@ -844,9 +859,11 @@ async def test_legacy_enrichment_rolls_back_when_store_write_fails(hass):
         ),
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock(side_effect=OSError("disk")))
-    manager._robot("serial")["areas"]["legacy"] = deepcopy(legacy)
-    before = manager.areas("serial")
+    manager.repository.store = SimpleNamespace(
+        async_save=AsyncMock(side_effect=OSError("disk"))
+    )
+    manager.repository.robot("serial")["areas"]["legacy"] = deepcopy(legacy)
+    before = manager.catalog.areas("serial")
     with pytest.raises(OSError, match="disk"):
-        await manager.async_upgrade_area_bindings("serial", changed)
-    assert manager.areas("serial") == before
+        await manager.catalog.async_upgrade_area_bindings("serial", changed)
+    assert manager.catalog.areas("serial") == before

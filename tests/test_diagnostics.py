@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -14,9 +15,10 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+from custom_components.matic_robot.robot_health import RobotHealth
 
 
-def diagnostic_entry() -> SimpleNamespace:
+def diagnostic_entry(hass) -> SimpleNamespace:
     info = RobotInfo(
         serial_number="private-serial",
         name="Private robot name",
@@ -29,6 +31,26 @@ def diagnostic_entry() -> SimpleNamespace:
         network_auth=True,
         hardware_revision="synthetic-hardware",
     )
+    operational = RobotOperationalState(
+        100,
+        (),
+        (),
+        True,
+        False,
+        False,
+        False,
+        False,
+        False,
+        current_area="Private bedroom",
+        previous_area="Private bathroom",
+    )
+    operational = replace(operational, bag_full=True, bag_missing=False)
+    robot_health = RobotHealth(hass, "synthetic-entry")
+    robot_health.track_bag_state(replace(operational, bag_full=False))
+    robot_health.track_bag_state(operational)
+    robot_health.track_bag_state(replace(operational, bag_full=False))
+    operational = replace(operational, bag_full=False)
+    robot_health.track_bag_state(operational)
     entry = SimpleNamespace(
         data={
             "host": "192.0.2.25",
@@ -53,21 +75,10 @@ def diagnostic_entry() -> SimpleNamespace:
             coordinator=SimpleNamespace(
                 data=SimpleNamespace(
                     info=info,
-                    operational=RobotOperationalState(
-                        100,
-                        (),
-                        (),
-                        True,
-                        False,
-                        False,
-                        False,
-                        False,
-                        False,
-                        current_area="Private bedroom",
-                        previous_area="Private bathroom",
-                    ),
+                    operational=operational,
                     telemetry=RobotTelemetry(software_version="test-version"),
                 ),
+                robot_health=robot_health,
                 last_update_success=True,
             ),
         ),
@@ -77,7 +88,7 @@ def diagnostic_entry() -> SimpleNamespace:
 
 
 async def test_diagnostics_redact_access_material_but_keep_local_context(hass) -> None:
-    entry = diagnostic_entry()
+    entry = diagnostic_entry(hass)
     diagnostics = await async_get_config_entry_diagnostics(hass, entry)
     rendered = repr(diagnostics)
 
@@ -92,6 +103,13 @@ async def test_diagnostics_redact_access_material_but_keep_local_context(hass) -
         assert private_value not in rendered
     assert diagnostics["robot"]["hardware_revision"] == "synthetic-hardware"
     assert diagnostics["telemetry"]["software_version"] == "test-version"
+    bag_observation = diagnostics["operational"]["bag_observation"]
+    assert bag_observation["full"] is False
+    assert bag_observation["missing"] is False
+    assert bag_observation["full_events_observed"] == 1
+    assert bag_observation["replacement_events_observed"] == 1
+    assert bag_observation["last_full_at"]
+    assert bag_observation["last_replaced_at"]
     assert diagnostics["endpoint_health"] == {
         "observed": 2,
         "healthy": 1,
@@ -118,7 +136,7 @@ async def test_diagnostics_redact_access_material_but_keep_local_context(hass) -
 async def test_diagnostics_name_the_pairing_method_never_the_pairing(
     hass, data, expected
 ) -> None:
-    entry = diagnostic_entry()
+    entry = diagnostic_entry(hass)
     entry.data.update(data)
     if data.get("hermes_credential", "") is None:
         del entry.data["hermes_credential"]
@@ -133,7 +151,7 @@ async def test_diagnostics_name_the_pairing_method_never_the_pairing(
 async def test_runtime_change_during_executor_capture_cannot_report_a_match(
     hass, monkeypatch, replace_runtime
 ):
-    entry = diagnostic_entry()
+    entry = diagnostic_entry(hass)
 
     def replacing(_root, _package, _classes):
         if replace_runtime:
@@ -160,7 +178,7 @@ async def test_runtime_change_during_executor_capture_cannot_report_a_match(
 async def test_runtime_code_bindings_changed_after_executor_fail_closed(
     hass, monkeypatch
 ):
-    entry = diagnostic_entry()
+    entry = diagnostic_entry(hass)
 
     def changed(_root, _package, _classes):
         return SimpleNamespace(

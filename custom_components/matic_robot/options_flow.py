@@ -8,7 +8,14 @@ import probatio
 from homeassistant import config_entries
 from homeassistant.helpers import selector
 
-from .plans import CleaningPlanManager, MetadataAdmissionClosedError
+from .const import (
+    CONF_INCLUDE_NATIVE_CLEANINGS,
+    CONF_PHOTO_PATROL_ALLOW_UNATTENDED,
+    CONF_PHOTO_PATROL_COOLDOWN_SECONDS,
+    CONF_PHOTO_PATROL_NO_PHOTO_ROOMS,
+)
+from .plan_repository import MetadataAdmissionClosedError
+from .plans import CleaningPlanManager
 
 
 class MaticRobotOptionsFlow(config_entries.OptionsFlow):
@@ -52,17 +59,47 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         """Direct plan and Area editing to the sole map workspace."""
         if not self._is_loaded():
             return self._entry_unavailable()
-        options: list[str] = []
-        plans = self._manager.plans(self._serial_number)
+        options: list[str] = ["native_cleanings"]
+        plans = self._manager.catalog.plans(self._serial_number)
         if plans:
             options.extend(
                 ("default_plan", "reset_history", "confirm_reset_all_history")
             )
-        options.append("finish")
+        options.extend(("photo_patrol_settings", "finish"))
         return self.async_show_menu(
             step_id="init",
             menu_options=options,
             description_placeholders={"plan_count": str(len(plans))},
+        )
+
+    async def async_step_native_cleanings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Choose whether external cleanings advance shared room schedules."""
+        if not self._is_loaded():
+            return self._entry_unavailable()
+        if user_input is not None:
+            return self.async_create_entry(
+                title="",
+                data={
+                    **self.config_entry.options,
+                    CONF_INCLUDE_NATIVE_CLEANINGS: user_input[
+                        CONF_INCLUDE_NATIVE_CLEANINGS
+                    ],
+                },
+            )
+        return self.async_show_form(
+            step_id="native_cleanings",
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_INCLUDE_NATIVE_CLEANINGS,
+                        default=self.config_entry.options.get(
+                            CONF_INCLUDE_NATIVE_CLEANINGS, True
+                        ),
+                    ): selector.BooleanSelector(),
+                }
+            ),
         )
 
     async def async_step_finish(
@@ -73,13 +110,89 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             return self._entry_unavailable()
         return self.async_create_entry(title="", data=dict(self.config_entry.options))
 
+    async def async_step_photo_patrol_settings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Set photo-patrol permission, blocked rooms and cooldown."""
+        if not self._is_loaded():
+            return self._entry_unavailable()
+        options = dict(self.config_entry.options)
+        floor_plan = self.config_entry.runtime_data.coordinator.data.floor_plan
+        current_rooms = (
+            {room.id: room.name for room in floor_plan.rooms}
+            if floor_plan is not None
+            else {}
+        )
+        if user_input is not None:
+            blocked = user_input.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, [])
+            if not isinstance(blocked, list) or not set(blocked) <= set(current_rooms):
+                return self.async_abort(reason="photo_patrol_rooms_unavailable")
+            options[CONF_PHOTO_PATROL_ALLOW_UNATTENDED] = bool(
+                user_input.get(CONF_PHOTO_PATROL_ALLOW_UNATTENDED, False)
+            )
+            options[CONF_PHOTO_PATROL_NO_PHOTO_ROOMS] = blocked
+            options[CONF_PHOTO_PATROL_COOLDOWN_SECONDS] = int(
+                user_input.get(CONF_PHOTO_PATROL_COOLDOWN_SECONDS, 900)
+            )
+            if not self._is_loaded():
+                return self._entry_unavailable()
+            return self.async_create_entry(title="", data=options)
+
+        default_rooms = list(options.get(CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, ()))
+        room_options = [
+            selector.SelectOptionDict(value=room_id, label=name)
+            for room_id, name in sorted(current_rooms.items())
+        ]
+        room_options.extend(
+            selector.SelectOptionDict(
+                value=room_id, label=f"Unavailable on current map: {room_id}"
+            )
+            for room_id in sorted(set(default_rooms) - set(current_rooms))
+        )
+        return self.async_show_form(
+            step_id="photo_patrol_settings",
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_PHOTO_PATROL_ALLOW_UNATTENDED,
+                        default=bool(
+                            options.get(CONF_PHOTO_PATROL_ALLOW_UNATTENDED, False)
+                        ),
+                    ): selector.BooleanSelector(),
+                    probatio.Required(
+                        CONF_PHOTO_PATROL_NO_PHOTO_ROOMS, default=default_rooms
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=room_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                            multiple=True,
+                        )
+                    ),
+                    probatio.Required(
+                        CONF_PHOTO_PATROL_COOLDOWN_SECONDS,
+                        default=int(
+                            options.get(CONF_PHOTO_PATROL_COOLDOWN_SECONDS, 900)
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=86400,
+                            step=60,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                            unit_of_measurement="s",
+                        )
+                    ),
+                }
+            ),
+        )
+
     async def async_step_default_plan(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Select an existing saved plan as the durable default."""
         if not self._is_loaded():
             return self._entry_unavailable()
-        plans = self._manager.plans(self._serial_number)
+        plans = self._manager.catalog.plans(self._serial_number)
         if not plans:
             return await self.async_step_init()
         errors: dict[str, str] = {}
@@ -89,7 +202,9 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 errors["base"] = "plan_unavailable"
             else:
                 try:
-                    await self._manager.async_select_plan(self._serial_number, plan_id)
+                    await self._manager.catalog.async_select_plan(
+                        self._serial_number, plan_id
+                    )
                 except MetadataAdmissionClosedError:
                     return self._entry_unavailable()
                 except KeyError:
@@ -105,10 +220,12 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                         "default_plan_set",
                         plan_name=str(plans[plan_id].get("name", plan_id)),
                     )
-        plans = self._manager.plans(self._serial_number)
+        plans = self._manager.catalog.plans(self._serial_number)
         if not plans:
             return await self.async_step_init()
-        selected = self._manager.snapshot(self._serial_number).get("selected_plan")
+        selected = self._manager.history.snapshot(self._serial_number).get(
+            "selected_plan"
+        )
         return self.async_show_form(
             step_id="default_plan",
             data_schema=self._plan_selection_schema(plans, selected),
@@ -121,7 +238,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         """Choose the named plan whose cleaning history will be reset."""
         if not self._is_loaded():
             return self._entry_unavailable()
-        plans = self._manager.plans(self._serial_number)
+        plans = self._manager.catalog.plans(self._serial_number)
         if not plans:
             return await self.async_step_init()
         errors: dict[str, str] = {}
@@ -167,7 +284,9 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] | None = None,
     ) -> config_entries.ConfigFlowResult:
         """Return to the reset chooser using fresh manager options."""
-        selected = self._manager.snapshot(self._serial_number).get("selected_plan")
+        selected = self._manager.history.snapshot(self._serial_number).get(
+            "selected_plan"
+        )
         return self.async_show_form(
             step_id="reset_history",
             data_schema=self._plan_selection_schema(plans, selected),
@@ -180,7 +299,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         """Ask by name before resetting one plan's room cleaning history."""
         if not self._is_loaded():
             return self._entry_unavailable()
-        plans = self._manager.plans(self._serial_number)
+        plans = self._manager.catalog.plans(self._serial_number)
         if self._reset_plan_id not in plans:
             self._reset_plan_id = None
             return await self.async_step_init()
@@ -192,14 +311,14 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 description_placeholders={"plan_name": plan_name},
             )
         try:
-            await self._manager.async_reset_history(self._serial_number, plan_id)
+            await self._manager.ledger.async_reset_history(self._serial_number, plan_id)
         except MetadataAdmissionClosedError:
             return self._entry_unavailable()
         except KeyError:
             if not self._is_loaded():
                 return self._entry_unavailable()
             self._reset_plan_id = None
-            current_plans = self._manager.plans(self._serial_number)
+            current_plans = self._manager.catalog.plans(self._serial_number)
             if not current_plans:
                 return await self.async_step_init()
             return self._show_reset_plan_form(
@@ -216,12 +335,12 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         """Ask once before resetting room cleaning history for every plan."""
         if not self._is_loaded():
             return self._entry_unavailable()
-        if not self._manager.plans(self._serial_number):
+        if not self._manager.catalog.plans(self._serial_number):
             return await self.async_step_init()
         if user_input is None:
             return self.async_show_form(step_id="confirm_reset_all_history")
         try:
-            await self._manager.async_reset_history(self._serial_number)
+            await self._manager.ledger.async_reset_history(self._serial_number)
         except MetadataAdmissionClosedError:
             return self._entry_unavailable()
         if not self._is_loaded():

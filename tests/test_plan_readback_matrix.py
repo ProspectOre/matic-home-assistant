@@ -199,9 +199,11 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
         assert name == "coverage_plan"
         return _readback(update, drop_required=drop_required)
 
-    client._async_send_user_payload = AsyncMock(side_effect=send)
-    client.async_get_cleaning_session_identity = AsyncMock(side_effect=lambda: identity)
-    client.async_get_state = AsyncMock(
+    client._connection._async_send_user_payload = AsyncMock(side_effect=send)
+    client._reads.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=lambda: identity
+    )
+    client._reads.async_get_state = AsyncMock(
         side_effect=lambda: RobotOperationalState(
             battery_percentage=None,
             state_codes=(119,) if identity else (),
@@ -215,8 +217,8 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
             current_area="First" if identity else None,
         )
     )
-    client.async_get_floor_plan = AsyncMock(return_value=floor)
-    client.async_get_property = AsyncMock(side_effect=get_property)
+    client._reads.async_get_floor_plan = AsyncMock(return_value=floor)
+    client._collections.async_get_property = AsyncMock(side_effect=get_property)
     stopped_sessions = []
 
     async def send_stop(command, *, on_transmitted=None):
@@ -224,12 +226,12 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
         assert on_transmitted is not None
         on_transmitted()
 
-    client.async_send_user_command = AsyncMock(side_effect=send_stop)
+    client._commands.async_send_user_command = AsyncMock(side_effect=send_stop)
     prepare_stop, rollback_stop = AsyncMock(), AsyncMock()
     require_owned = Mock()
     recovery_stop_transmitted = Mock()
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._MIXED_COVERAGE_READBACK_TIMEOUT",
+        "custom_components.matic_robot.client.hermes_commands._MIXED_COVERAGE_READBACK_TIMEOUT",
         0.01,
     )
 
@@ -251,7 +253,7 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
         with pytest.raises(MaticError, match="readback verification timed out"):
             await dispatch()
         prepare_stop.assert_awaited_once()
-        stop = client.async_send_user_command.await_args
+        stop = client._commands.async_send_user_command.await_args
         assert stop.args == (UserCommand.STOP,)
         assert set(stop.kwargs) == {"on_transmitted"}
         assert callable(stop.kwargs["on_transmitted"])
@@ -261,7 +263,7 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
     else:
         await dispatch()
         prepare_stop.assert_not_awaited()
-        client.async_send_user_command.assert_not_awaited()
+        client._commands.async_send_user_command.assert_not_awaited()
         recovery_stop_transmitted.assert_not_called()
-    assert client._async_send_user_payload.await_count == 2
+    assert client._connection._async_send_user_payload.await_count == 2
     rollback_stop.assert_not_awaited()

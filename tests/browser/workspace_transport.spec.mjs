@@ -416,6 +416,10 @@ test("an authorization probe waits for an obsolete read, then recovers from a fr
     h.resolveRecoverySnapshot(obsoleteSnapshot);
   }, [snapshot(2), snapshot(1)]);
   await page.clock.fastForward(0);
+  // The obsolete wire already exceeded its deadline. Its late completion is
+  // ignored; the next bounded authorization probe establishes fresh authority.
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([0]);
+  await page.clock.fastForward(30_000);
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([0, 2]);
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "invalidation").map(event => event.invalidation.sequence))).toEqual([3]);
   expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);

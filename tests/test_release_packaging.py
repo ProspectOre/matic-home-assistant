@@ -314,7 +314,8 @@ def test_recording_boundary_has_no_runtime_surface() -> None:
     }
 
     assert manifest["dependencies"] == ["bluetooth_adapters", "http", "zeroconf"]
-    assert not (INTEGRATION / "media_source.py").exists()
+    # The private short-lived AI photo attachment source is not a recording API.
+    assert (INTEGRATION / "media_source.py").exists()
     assert "review_recording" not in services
     assert "review_recording" not in strings["services"]
     assert entity_keys.isdisjoint(recording_entity_keys)

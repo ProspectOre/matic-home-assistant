@@ -35,9 +35,9 @@ once the history fields above are mapped.
 Motion commands go out only when the robot is free or Home Assistant holds the
 task, under the existing command leases. The robot sends no acknowledgement for
 user commands (the app's acknowledged-command call is unused), so Home Assistant
-confirms a command by the state it reads back. Skip and prioritize, when they
-are added, act on the robot's own queue as the app does, so both see the same
-queue.
+confirms a command by the state it reads back. [Queue changes](queue-changes.md)
+act on the robot's own queue. The guide describes their confirmation and
+physical-test limits.
 
 ## Writes are explicit, checked and reversible
 

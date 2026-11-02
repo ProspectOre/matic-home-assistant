@@ -92,6 +92,18 @@ def test_candidate_reads_the_tag_from_git(tmp_path: Path) -> None:
     assert candidate.version == "0.6.0b1"
     assert set(candidate.files) == set(_blobs())
     assert candidate.services == {"clean", "go_to_room"}
+    commit = candidate.commit
+    git("tag", "-d", "v0.6.0b1")
+    (tmp_path / INTEGRATION / "manifest.json").write_text('{"version":"dirty"}')
+    unpublished = Candidate.from_commit(tmp_path, commit)
+    assert unpublished.tag is None
+    assert unpublished.commit == commit
+    assert unpublished.files == candidate.files
+    receipt = Receipt(unpublished).write(tmp_path / "receipts")
+    assert receipt.name.startswith(commit + "-")
+    assert json.loads(receipt.read_text())["candidate"]["tag"] is None
+    with pytest.raises(ValueError, match="full lowercase commit ID"):
+        Candidate.from_commit(tmp_path, "HEAD")
 
 
 def test_installed_files_must_match_exactly() -> None:
@@ -584,13 +596,14 @@ async def test_backup_event_wait_uses_backup_deadline_not_request_timeout(
         await runner.cleanup()
 
 
+@pytest.mark.parametrize("by_commit", [False, True])
 async def test_connect_failure_is_written_as_a_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, by_commit: bool
 ) -> None:
     candidate = _candidate()
     monkeypatch.setattr(
         Candidate,
-        "from_git",
+        "from_commit" if by_commit else "from_git",
         classmethod(lambda cls, repo, tag: candidate),
     )
 
@@ -602,6 +615,7 @@ async def test_connect_failure_is_written_as_a_receipt(
     args = argparse.Namespace(
         repo=ROOT,
         tag=candidate.tag,
+        commit=candidate.commit if by_commit else None,
         token_file=None,
         skip_install=True,
         ssh=None,
@@ -636,6 +650,32 @@ async def test_connect_failure_is_written_as_a_receipt(
 def test_physical_needs_a_room() -> None:
     with pytest.raises(SystemExit):
         main(["v0.6.0b1", "--url", "http://ha", "--receipts", "r", "--physical"])
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        [],
+        ["--commit", "c" * 40],
+        ["--commit", "HEAD", "--skip-install"],
+        ["v0.6.0b1", "--commit", "c" * 40, "--skip-install"],
+    ],
+)
+def test_unpublished_selector_refuses_ambiguous_or_installing_runs(
+    selection: list[str],
+) -> None:
+    with pytest.raises(SystemExit) as error:
+        main([*selection, "--url", "http://ha", "--receipts", "r"])
+    assert error.value.code == 2
+
+
+async def test_unpublished_candidate_cannot_reach_hacs_install() -> None:
+    candidate = Candidate.from_blobs(None, "c" * 40, _blobs())
+    ha = FakeHomeAssistant(candidate)
+    check = InstalledCheck(ha, candidate, Options())  # type: ignore[arg-type]
+    with pytest.raises(CheckFailed, match="cannot be installed through HACS"):
+        await check.install()
+    assert ha.calls == []
 
 
 async def test_a_failed_clean_action_fails_the_physical_step() -> None:

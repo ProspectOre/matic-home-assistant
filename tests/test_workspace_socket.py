@@ -277,7 +277,7 @@ def test_snapshot_omits_invalid_projected_scene_revision() -> None:
     }
 
     with patch(
-        "custom_components.matic_robot.slam_scene.catalog_entry_projection",
+        "custom_components.matic_robot.slam_view_data.catalog_entry_projection",
         return_value=projection,
     ):
         snapshot = WorkspaceSocket(_Hass([entry])).snapshot("entry-a")
@@ -304,7 +304,7 @@ def test_snapshot_scene_fence_uses_current_revision_while_payload_is_cached() ->
     manager = WorkspaceSocket(hass)
 
     with patch(
-        "custom_components.matic_robot.slam_scene.catalog_entry_projection",
+        "custom_components.matic_robot.slam_view_data.catalog_entry_projection",
         return_value=projection,
     ):
         first = manager.snapshot("entry-a")
@@ -487,7 +487,7 @@ def test_plan_and_area_changes_publish_only_observed_resource_revisions() -> Non
     )
     entry.runtime_data.coordinator = coordinator
     plans = _PlanPublisher()
-    entry.runtime_data.cleaning_plans = plans
+    entry.runtime_data.cleaning_plans = SimpleNamespace(catalog=plans, repository=plans)
     manager = WorkspaceSocket(_Hass([entry]))
     connection = _connection()
     manager.track_entry(entry)
@@ -772,6 +772,96 @@ def test_coordinator_publishes_status_and_operational_changes_only() -> None:
     }
 
 
+def test_coordinator_push_reconnect_replays_gap_and_recovers_after_overflow() -> None:
+    """A reconnect gets missed robot changes or a fresh snapshot after overflow."""
+    entry = _LifecycleEntry("entry-a")
+    coordinator = _CoordinatorPublisher(
+        SimpleNamespace(
+            info=SimpleNamespace(serial_number="private-serial"),
+            operational=SimpleNamespace(cleaning=False),
+        )
+    )
+    entry.runtime_data.coordinator = coordinator
+    manager = WorkspaceSocket(_Hass([entry]))
+    manager.track_entry(entry)
+
+    def publish_cleaning(cleaning: bool) -> None:
+        coordinator.data = SimpleNamespace(
+            info=SimpleNamespace(serial_number="private-serial"),
+            operational=SimpleNamespace(cleaning=cleaning),
+        )
+        coordinator.publish()
+
+    first = _connection()
+    websocket_snapshot(
+        SimpleNamespace(data={DOMAIN: {"workspace_socket": manager}}),
+        first,
+        {"id": 1, "entry_id": "entry-a", "version": 1},
+    )
+    websocket_subscribe(
+        SimpleNamespace(data={DOMAIN: {"workspace_socket": manager}}),
+        first,
+        {"id": 2, "entry_id": "entry-a", "version": 1},
+    )
+
+    publish_cleaning(True)
+    live_event = first.send_event.call_args.args[1]["invalidation"]
+    assert live_event["resources"] == ["robot_state"]
+    assert live_event["sequence"] == 1
+
+    # The old socket is gone. Changes during the gap are recorded for replay.
+    first.subscriptions[2]()
+    publish_cleaning(False)
+
+    reconnected = _connection()
+    hass = SimpleNamespace(data={DOMAIN: {"workspace_socket": manager}})
+    snapshot = manager.snapshot("entry-a", (reconnected, 3))
+    assert snapshot["sequence"] == 2
+    publish_cleaning(True)
+    websocket_subscribe(
+        hass,
+        reconnected,
+        {"id": 4, "entry_id": "entry-a", "version": 1},
+    )
+    replayed = reconnected.send_event.call_args.args[1]
+    assert replayed["type"] == "invalidate"
+    assert replayed["invalidation"]["sequence"] == 3
+    assert replayed["invalidation"]["resources"] == ["robot_state"]
+
+    # A longer disconnect than the bounded history yields a typed resync.
+    reconnected.subscriptions[4]()
+    overflow_connection = _connection()
+    fresh_before_gap = manager.snapshot("entry-a", (overflow_connection, 5))
+    assert fresh_before_gap["sequence"] == 3
+    for index in range(QUEUE_LIMIT + 1):
+        publish_cleaning(bool(index % 2))
+    websocket_subscribe(
+        hass,
+        overflow_connection,
+        {"id": 6, "entry_id": "entry-a", "version": 1},
+    )
+    assert overflow_connection.send_event.call_args.args == (
+        6,
+        {"type": "resync", "reason": "overflow"},
+    )
+
+    overflow_connection.send_event.reset_mock()
+    fresh_snapshot = manager.snapshot("entry-a", (overflow_connection, 7))
+    assert fresh_snapshot["sequence"] == 3 + QUEUE_LIMIT + 1
+    assert fresh_snapshot["revisions"]["robot_state"] == 3 + QUEUE_LIMIT + 1
+    websocket_subscribe(
+        hass,
+        overflow_connection,
+        {"id": 8, "entry_id": "entry-a", "version": 1},
+    )
+    assert overflow_connection.send_event.call_count == 0
+
+    publish_cleaning(not coordinator.data.operational.cleaning)
+    continuation = overflow_connection.send_event.call_args.args[1]["invalidation"]
+    assert continuation["sequence"] == fresh_snapshot["sequence"] + 1
+    assert continuation["resources"] == ["robot_state"]
+
+
 def test_coordinator_invalidates_areas_when_zones_change() -> None:
     entry = _LifecycleEntry("entry-a")
 
@@ -820,7 +910,7 @@ async def test_unavailable_sources_and_idempotent_cleanup_are_safe() -> None:
     )
     entry.runtime_data.coordinator = coordinator
     plans = _PlanPublisher()
-    entry.runtime_data.cleaning_plans = plans
+    entry.runtime_data.cleaning_plans = SimpleNamespace(catalog=plans, repository=plans)
     no_catalog = _Publisher()
     entry.runtime_data.slam_history = no_catalog
     manager.track_entry(entry)

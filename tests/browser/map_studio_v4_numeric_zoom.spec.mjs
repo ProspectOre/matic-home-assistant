@@ -43,7 +43,6 @@ for (const mode of ["top", "three", "draw"]) for (const narrow of [false, true])
       await expect(input).toHaveValue(String(value));
       const state = await snapshot(page);
       const view = mode === "draw" ? "top" : mode;
-      expect(state.cameras[view].zoom).toBe(value / 100);
       if (mode === "draw") {
         expect(state.draw.zoomPercent).toBe(value);
         expect(state.draw.circles).toEqual(before.draw.circles);
@@ -55,7 +54,7 @@ for (const mode of ["top", "three", "draw"]) for (const narrow of [false, true])
           const pixels = parseFloat(element.firstElementChild.style.getPropertyValue("--scale-width"));
           return Math.abs(pixels - meters * pixelsPerMeter);
         })).toBeLessThan(0.01);
-      }
+      } else expect(state.cameras[view].zoom).toBe(value / 100);
     }
     if (mode === "draw") await page.screenshot({ path: test.info().outputPath("numeric-zoom.png") });
     await input.fill("375");

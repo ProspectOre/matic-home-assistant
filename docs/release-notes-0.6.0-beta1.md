@@ -1,10 +1,6 @@
 # Matic 0.6 beta 1
 
-Matic 0.6 adds sink and room navigation, cleaning history, robot trails and
-occupied-room skipping to Home Assistant while keeping the Matic app usable.
-
-This is an unpublished beta candidate from `release/0.6`. Publication waits
-for the owner's local testing and approval.
+Unpublished candidate from `release/0.6`; publication needs owner testing and approval.
 
 ## Highlights
 
@@ -26,7 +22,7 @@ for the owner's local testing and approval.
 - **Cleaning history.** Open **Cleaning history** to see recent cleans, newest
   first, with each room and custom area marked done, partly done, stopped or not
   started. Cleans started in the Matic app or by a robot schedule are listed
-  too.
+  too. Open history refreshes as delayed results arrive.
 - **Map of each clean.** A clean in Cleaning history shows the robot's own map
   picture of it, for the recent cleans the robot still keeps.
 - **How a clean ended.** A run says whether it finished, was stopped, ended
@@ -93,10 +89,11 @@ for the owner's local testing and approval.
 
 - **Robot schedules.** `calendar.matic_native_schedules` shows each enabled
   weekly schedule from the Matic app, with its rooms and cleaning mode. Schedule
-  details stay out of Recorder.
+  details stay out of Recorder. The 0.5.1 fixes preserve every acknowledged
+  schedule, Monday-first weekdays, enabled state and ordered/unordered room lists.
 - **Robot alert.** The alert sensor names a full or missing bag, and either one
-  raises a Repair with the fix until the robot stops reporting it. Other alerts
-  show as Unknown alert.
+  raises a Repair with the fix until the robot stops reporting it. Confirmed
+  faults stay visible when other codes change; 207/220 use reporter-observed labels.
 - **Maintenance suggested.** On while the robot's newest monthly recap suggests
   maintenance, with a Repair naming the month. The recap doesn't say which part
   yet, so check the brush roll, side brush, mop roll, caster and wedge.
@@ -104,12 +101,17 @@ for the owner's local testing and approval.
 - **Robot camera photos.** **Take photo** asks the robot to take a picture,
   and **Latest photo** shows the newest one, including photos taken in the
   Matic app. Use it on a dashboard or attach it to a phone notification.
-- **Photo patrol.** Send the robot to one or more rooms and get back a photo
-  of each, ready to attach to a phone notification. The new **Matic:
-  Photograph room on alert** blueprint does this when a motion, leak or other
-  sensor turns on, so you can see what set it off.
+- **Photo patrol.** Opt in and set no-photo rooms, then request photos from
+  one or more rooms. Notifications use pixelated previews by default. The
+  **Matic: Photograph room on alert** blueprint uses the same privacy, battery,
+  schedule and cooldown checks. See [Photo patrol](photo-patrol.md).
 
 ## Working with the Matic app
+
+- **Room statistics.** Completed room results reported by the robot can update sensors
+  for app-started and scheduled cleans. Late corrections retract only the affected
+  mode; plan schedules and daily completion counts keep their separate rules.
+  Contributor credits are in the [0.5.1 notes](release-notes-0.5.1.md).
 
 - **Plans give way.** When the app, the robot's button, voice or a robot
   schedule takes over, a running plan ends as taken over and never sends a
@@ -134,16 +136,15 @@ for the owner's local testing and approval.
 - Matic 0.6 needs the same robot firmware as 0.5 and keeps your plans, room
   schedules and map history.
 - Keep a matching 0.5.0 backup before installing. The isolated
-  [upgrade and rollback drill](upgrade-drill.md) checks saved plans, schedules
-  and room history; custom areas and a restore on the owner's host remain
+  [upgrade and rollback drill](upgrade-drill.md) checks synthetic plans, areas,
+  schedules and history; the owner's snapshot and host restore remain
   unqualified. The [installed check](installed-check.md) needs the owner's go.
 
 ## Checks still needed
 
-The interior phase label is inferred from one capture. Follow and run-map pictures
-need hardware checks. The photo trial used equivalent manual commands; Photo patrol
-itself has not run on the installed integration.
+Interior phase labels are inferred from one capture; follow/run-map pictures need hardware checks.
+The photo trial used equivalent manual commands; Photo patrol has not run installed.
+Beta 1 is blocked pending live-stream/map-update reconnect, loss/order, authorization, polling, host and device qualification.
+Push starts automatically when supported (no user toggle); older backends use polling, and Matic keeps checking status on a schedule. This may add network traffic and Home Assistant load; the hoped-for 70% reduction in requests has not been shown.
 
-See [Matic Map and features](features.md), [Actions](actions.md), [Entities](entities.md),
-[Cleaning](cleaning.md), [Changing a running clean](queue-changes.md) and
-[Assistant tools](assistant-tools.md).
+See [Matic Map and features](features.md), [Actions](actions.md) and [Entities](entities.md).

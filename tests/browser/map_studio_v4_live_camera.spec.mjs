@@ -4,7 +4,7 @@ import { build } from "esbuild";
 async function loadCamera(page) {
   const bundle = await build({
     stdin: {
-      contents: 'export { RendererController, topView } from "./frontend/map-studio-v4/renderer-controller"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { liveCameraKey, cameraPreferences } from "./frontend/map-studio-v4/camera-preferences"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { PreferenceStore, parsePreferences } from "./frontend/map-studio-v4/preferences";',
+      contents: 'export { RendererController, topView } from "./frontend/map-studio-v4/renderer-controller"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { liveCameraKey, cameraPreferences } from "./frontend/map-studio-v4/camera-preferences"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math"; export { PreferenceStore, parsePreferences } from "./frontend/map-studio-v4/preferences";',
       resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -46,6 +46,7 @@ for (const [view, boundary, mobile] of [
       const capture = () => ({ camera: renderer.camera, zoom: renderer.diagnostics().fitDistance / renderer.diagnostics().cameraDistance });
       try {
         await sync();
+        const initialFit = renderer.camera;
         renderer.zoomAt(2);
         renderer.panBy(35, -24);
         await sync();
@@ -79,7 +80,7 @@ for (const [view, boundary, mobile] of [
           selection: { ...store.value.selection, entryId: nextEntry.entryId },
           resources: { ...store.value.resources, entry: nextEntry,
             scene: { status: "ready", value: { ...liveScene, revision: liveScene.revision + 2 }, problem: null } } });
-        return { before, livePreferences, afterHistoryPreferences, history, historyAfterToggle, loading, restored: capture() };
+        return { initialFit, before, livePreferences, afterHistoryPreferences, history, historyAfterToggle, loading, restored: capture() };
       } finally {
         renderer.dispose();
         canvases.forEach((canvas) => canvas.remove());
@@ -97,8 +98,8 @@ for (const [view, boundary, mobile] of [
       expect(result.restored.camera.yaw).toBeCloseTo(result.before.camera.yaw, 4);
     } else {
       expect(result.restored.zoom, "a different live identity starts fitted").toBeCloseTo(1, 4);
-      expect(result.restored.camera.targetX).toBeCloseTo(0, 4);
-      expect(result.restored.camera.targetZ).toBeCloseTo(0, 4);
+      expect(result.restored.camera.targetX).toBeCloseTo(result.initialFit.targetX, 4);
+      expect(result.restored.camera.targetZ).toBeCloseTo(result.initialFit.targetZ, 4);
     }
   });
 }
@@ -169,6 +170,7 @@ test("history camera resets on a new selection and owner while live preferences 
     try {
       effects.sync(projection("selection-user"));
       await effects.refreshCatalog(true);
+      await effects.refreshHistory();
       saveCamera();
       const live = store.value.cameras;
       await effects.selectFloor("saved-1");
@@ -244,4 +246,210 @@ test("@safety a held saved scene honors explicit view changes and keeps automati
   expect(result.topAutomatic).toEqual(result.top);
   expect(result.three.orthographic).toBe(false);
   expect(result.threeAutomatic).toEqual(result.three);
+});
+
+test("ground-plane pan follows the pointer across pitch, zoom, and aspect", async ({ page }) => {
+  await loadCamera(page);
+  const result = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = await import("/live-camera.js");
+    const state = createGalleryState("ready");
+    const canvases = [document.createElement("canvas"), document.createElement("canvas")];
+    canvases.forEach((canvas) => { Object.assign(canvas.style, { width: "800px", height: "600px" }); document.body.append(canvas); });
+    const renderer = new RendererController(...canvases);
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    try {
+      renderer.setState({ ...state, view: "three" });
+      await frame();
+      const cases = [
+        { width: 800, height: 600, pitch: 1.12, distance: 12 },
+        { width: 800, height: 600, pitch: 0.18, distance: 12 },
+        { width: 1200, height: 500, pitch: 0.55, distance: 7 },
+      ];
+      const results = [];
+      for (const { width, height, pitch, distance } of cases) {
+        canvases.forEach((canvas) => { canvas.style.width = `${width}px`; canvas.style.height = `${height}px`; });
+        await frame();
+        const rect = canvases[0].getBoundingClientRect();
+        const anchor = { x: rect.left + width * 0.5, y: rect.top + height * 0.58 };
+        const delta = { x: 24, y: 50 };
+        const camera = { ...renderer.camera, pitch, distance, targetX: 0, targetZ: 0, orthographic: false };
+        renderer.setCamera(camera, false);
+        const before = renderer.screenToMap(anchor.x, anchor.y);
+        const moved = renderer.cameraAfterPan(camera, delta.x, delta.y, anchor.x, anchor.y);
+        renderer.setCamera(moved, false);
+        const projected = before && renderer.mapToScreen(before);
+        results.push({ projected, expected: { x: width * 0.5 + delta.x, y: height * 0.58 + delta.y } });
+      }
+      const rect = canvases[0].getBoundingClientRect();
+      const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      const centerPoint = renderer.screenToMap(center.x, center.y);
+      renderer.panBy(0, 25);
+      results.push({ projected: centerPoint && renderer.mapToScreen(centerPoint),
+        expected: { x: rect.width / 2, y: rect.height / 2 + 25 } });
+      return results;
+    } finally { renderer.dispose(); canvases.forEach((canvas) => canvas.remove()); }
+  });
+  for (const item of result) {
+    expect(item.projected).not.toBeNull();
+    expect(item.projected.x).toBeCloseTo(item.expected.x, 1);
+    expect(item.projected.y).toBeCloseTo(item.expected.y, 1);
+  }
+});
+
+test("pan that starts above the floor horizon resumes with finite movement below it", async ({ page }) => {
+  await loadCamera(page);
+  const result = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = await import("/live-camera.js");
+    const canvases = [document.createElement("canvas"), document.createElement("canvas")];
+    canvases.forEach((canvas) => { Object.assign(canvas.style, { width: "800px", height: "600px" }); document.body.append(canvas); });
+    const renderer = new RendererController(...canvases);
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    try {
+      renderer.setState({ ...createGalleryState("ready"), view: "three" });
+      await frame();
+      const rect = canvases[0].getBoundingClientRect();
+      const x = rect.left + rect.width / 2;
+      for (const pitch of [0.18, 0.3, 0.45, 0.6]) {
+        const camera = { ...renderer.camera, pitch, distance: 12, targetX: 0, targetZ: 0, orthographic: false };
+        renderer.setCamera(camera, false);
+        let firstGroundY = null;
+        for (let y = 0; y <= rect.height; y += 1) {
+          if (renderer.screenToMap(x, rect.top + y)) { firstGroundY = y; break; }
+        }
+        if (firstGroundY === null || firstGroundY < 20) continue;
+        const startY = rect.top + firstGroundY - 12;
+        const endY = rect.top + Math.min(rect.height, firstGroundY + 180);
+        if (renderer.screenToMap(x, startY) || !renderer.screenToMap(x, endY)) continue;
+        const moved = renderer.cameraAfterPan(camera, 0, endY - startY, x, startY);
+        return { pitch, firstGroundY, moved, crossedIntoGround: true,
+          changed: Math.hypot(moved.targetX - camera.targetX, moved.targetZ - camera.targetZ) > 0.001 };
+      }
+      return null;
+    } finally { renderer.dispose(); canvases.forEach((canvas) => canvas.remove()); }
+  });
+  expect(result, "the test camera should expose a floor horizon in the viewport").not.toBeNull();
+  expect(result.crossedIntoGround).toBe(true);
+  expect(result.changed).toBe(true);
+  expect(Number.isFinite(result.moved.targetX)).toBe(true);
+  expect(Number.isFinite(result.moved.targetZ)).toBe(true);
+  expect(Math.hypot(result.moved.targetX, result.moved.targetZ)).toBeLessThan(100);
+});
+
+test("source camera fit frames admitted floor geometry across desktop and tablet aspects", async ({ page }) => {
+  await loadCamera(page);
+  const result = await page.evaluate(async () => {
+    const { RendererController, createGalleryState, sceneGeometryBounds } = await import("/live-camera.js");
+    const base = createGalleryState("ready");
+    const scene = base.resources.scene.value;
+    const geometry = sceneGeometryBounds(scene.buffer, scene.pointOffset, scene.floorCount,
+      scene.total, scene.metadata.span).floor;
+    const outputs = [];
+    for (const { width, height } of [{ width: 1080, height: 680 }, { width: 480, height: 680 }]) {
+      const canvases = [document.createElement("canvas"), document.createElement("canvas")];
+      canvases.forEach((canvas) => {
+        Object.assign(canvas.style, { width: `${width}px`, height: `${height}px` });
+        document.body.append(canvas);
+      });
+      const renderer = new RendererController(...canvases);
+      const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      try {
+        renderer.setState({ ...base, view: "three" });
+        await frame();
+        const meters = scene.metadata.metersPerCell;
+        const origin = scene.metadata.origin;
+        const cells = [
+          [geometry.minX, geometry.minY], [geometry.minX, geometry.maxY],
+          [geometry.maxX, geometry.minY], [geometry.maxX, geometry.maxY],
+        ];
+        const projected = cells.map(([x, y]) => renderer.mapToScreen({
+          x: (x + origin[0]) * meters, y: (y + origin[1]) * meters,
+        }));
+        outputs.push({ width, height, camera: renderer.camera,
+          fitDistance: renderer.diagnostics().fitDistance, projected });
+      } finally {
+        renderer.dispose();
+        canvases.forEach((canvas) => canvas.remove());
+      }
+    }
+    return outputs;
+  });
+  for (const item of result) {
+    expect(item.camera.pitch).toBeCloseTo(1.12, 4);
+    expect(item.projected.every(Boolean)).toBe(true);
+    const xs = item.projected.map(({ x }) => x);
+    const ys = item.projected.map(({ y }) => y);
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(item.width * 0.045);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(item.width * 0.955);
+    expect(Math.min(...ys)).toBeGreaterThanOrEqual(item.height * 0.045);
+    expect(Math.max(...ys)).toBeLessThanOrEqual(item.height * 0.955);
+  }
+});
+
+test("3D home fit includes tall surface points outside the floor footprint", async ({ page }) => {
+  await loadCamera(page);
+  const result = await page.evaluate(async () => {
+    const { RendererController, createGalleryState, sceneGeometryBounds, perspectiveBoundsFitDistance } = await import("/live-camera.js");
+    const base = createGalleryState("ready");
+    const meters = 0.05;
+    const buffer = new ArrayBuffer(5 * 8);
+    const view = new DataView(buffer);
+    const points = [[2, 2, 0], [8, 2, 0], [2, 8, 0], [8, 8, 0], [13, 5, 255]];
+    points.forEach(([x, y, height], index) => {
+      const offset = index * 8;
+      view.setUint16(offset, x, true);
+      view.setUint16(offset + 2, y, true);
+      view.setUint8(offset + 4, height);
+      view.setUint8(offset + 5, 180);
+      view.setUint8(offset + 6, 190);
+      view.setUint8(offset + 7, 200);
+    });
+    const scene = { ...base.resources.scene.value, buffer, pointOffset: 0, floorCount: 4,
+      surfaceCount: 1, total: 5,
+      metadata: { ...base.resources.scene.value.metadata, span: [16, 12], origin: [0, 0], metersPerCell: meters } };
+    const state = { ...base, view: "three", resources: { ...base.resources,
+      scene: { ...base.resources.scene, status: "ready", value: scene } } };
+    const canvases = [document.createElement("canvas"), document.createElement("canvas")];
+    canvases.forEach((canvas) => { Object.assign(canvas.style, { width: "480px", height: "680px" }); document.body.append(canvas); });
+    const renderer = new RendererController(...canvases);
+    const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    try {
+      renderer.setState(state);
+      await frame();
+      const geometry = sceneGeometryBounds(buffer, 0, 4, 5, scene.metadata.span);
+      const centerX = (geometry.floor.minX + geometry.floor.maxX) / 2;
+      const centerZ = (geometry.floor.minY + geometry.floor.maxY) / 2;
+      const toFitBounds = (bounds) => ({
+        minX: -(bounds.maxX - centerX) * meters,
+        maxX: -(bounds.minX - centerX) * meters,
+        minZ: (bounds.minY - centerZ) * meters,
+        maxZ: (bounds.maxY - centerZ) * meters,
+        minHeight: bounds.minHeight * meters,
+        maxHeight: bounds.maxHeight * meters,
+      });
+      const aspect = 480 / 680;
+      const floorOnlyFit = perspectiveBoundsFitDistance(toFitBounds(geometry.floor), aspect, 1.12, -Math.PI / 4, 0.05);
+      const allPointsFit = perspectiveBoundsFitDistance(toFitBounds(geometry.all), aspect, 1.12, -Math.PI / 4, 0.05);
+      const camera = renderer.camera;
+      const focal = 1 / Math.tan(Math.PI / 3.15 / 2);
+      const projected = points.map(([x, y, height]) => {
+        const worldX = -(x - centerX) * meters;
+        const worldZ = (y - centerZ) * meters;
+        const worldHeight = height * meters;
+        const sinPitch = Math.sin(camera.pitch), cosPitch = Math.cos(camera.pitch);
+        const sinYaw = Math.sin(camera.yaw), cosYaw = Math.cos(camera.yaw);
+        const right = worldX * cosYaw - worldZ * sinYaw;
+        const up = -worldX * sinYaw * sinPitch + worldHeight * cosPitch - worldZ * cosYaw * sinPitch;
+        const towardCamera = worldX * sinYaw * cosPitch + worldHeight * sinPitch + worldZ * cosYaw * cosPitch;
+        const depth = camera.distance - towardCamera;
+        return { x: focal * right / aspect / depth, y: focal * up / depth };
+      });
+      return { geometry, floorOnlyFit, allPointsFit, camera, projected };
+    } finally { renderer.dispose(); canvases.forEach((canvas) => canvas.remove()); }
+  });
+  expect(result.geometry.all.maxHeight).toBe(255);
+  expect(result.geometry.all.maxX).toBe(13);
+  expect(result.geometry.floor.maxX).toBe(8);
+  expect(result.allPointsFit).toBeGreaterThan(result.floorOnlyFit);
+  expect(result.camera.distance).toBeCloseTo(result.allPointsFit, 4);
+  expect(result.projected.every(({ x, y }) => Math.abs(x) <= 0.9 && Math.abs(y) <= 0.9)).toBe(true);
 });

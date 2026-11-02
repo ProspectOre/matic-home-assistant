@@ -3,7 +3,7 @@ import { build } from "esbuild";
 
 const bundle = await build({
   stdin: {
-    contents: 'export { parseCatalog, parseHistoryCatalog, parsePlansCatalog, parsePose } from "./frontend/map-studio-v4/backend-contracts"; import { areaCatalogHelpers } from "./frontend/map-studio-v4/backend-contracts"; import { parseAreasCatalog as parseAreas } from "./frontend/map-studio-v4/area-catalog"; import * as geometry from "./frontend/map-studio-v4/area-outline"; export const parseAreasCatalog = value => parseAreas(value, areaCatalogHelpers, geometry);',
+    contents: 'export { parseCatalog, parsePose } from "./frontend/map-studio-v4/backend-contracts"; export { parseHistoryCatalog } from "./frontend/map-studio-v4/history-catalog"; export { parsePlansCatalog } from "./frontend/map-studio-v4/plan-catalog"; import { areaCatalogHelpers } from "./frontend/map-studio-v4/plan-catalog"; import { parseAreasCatalog as parseAreas } from "./frontend/map-studio-v4/area-catalog"; import * as geometry from "./frontend/map-studio-v4/area-outline"; export const parseAreasCatalog = value => parseAreas(value, areaCatalogHelpers, geometry);',
     resolveDir: process.cwd(),
   },
   bundle: true,

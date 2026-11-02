@@ -60,6 +60,16 @@ export class LayerHistoryController {
     window.addEventListener("popstate", this.#popState);
   }
 
+  #pushMarker(depth: number): void {
+    const current = history.state && typeof history.state === "object" ? history.state : {};
+    history.pushState({ ...current, maticMapLayer: { owner: this.#owner, depth } }, "", window.location.href);
+    this.#position = depth;
+  }
+
+  #pushThrough(depth: number): void {
+    for (let next = this.#position + 1; next <= depth; next += 1) this.#pushMarker(next);
+  }
+
   #stateChanged(state: WorkspaceState): void {
     const next = layerDepth(state);
     if (this.#handlingPop) {
@@ -95,14 +105,7 @@ export class LayerHistoryController {
       }
     }
     if (next > this.#position) {
-      for (let depth = this.#position + 1; depth <= next; depth += 1) {
-        const current = history.state && typeof history.state === "object" ? history.state : {};
-        history.pushState({
-          ...current,
-          maticMapLayer: { owner: this.#owner, depth },
-        }, "", window.location.href);
-        this.#position = depth;
-      }
+      this.#pushThrough(next);
     }
     this.#depth = next;
   }
@@ -133,23 +136,14 @@ export class LayerHistoryController {
       // A workflow opened while the close traversal was in flight. This pop
       // belongs to the earlier, already-applied close; restore the markers for
       // the still-open UI instead of treating that stale pop as a new Back.
-      for (let depth = this.#position + 1; depth <= openDepth; depth += 1) {
-        const current = history.state && typeof history.state === "object" ? history.state : {};
-        history.pushState({
-          ...current,
-          maticMapLayer: { owner: this.#owner, depth },
-        }, "", window.location.href);
-        this.#position = depth;
-      }
+      this.#pushThrough(openDepth);
       this.#depth = openDepth;
       return;
     }
     if (this.#store.value.dialog === "discardDraft" && this.#store.value.command === "pending") {
       // A pending save owns the dialog and its destination. Restore the entry
       // consumed by Back so the save can settle before another navigation.
-      const current = history.state && typeof history.state === "object" ? history.state : {};
-      history.pushState({ ...current, maticMapLayer: { owner: this.#owner, depth: this.#depth } }, "", window.location.href);
-      this.#position = this.#depth;
+      this.#pushMarker(this.#depth);
       return;
     }
     if (openDepth <= this.#position) return;
@@ -157,9 +151,7 @@ export class LayerHistoryController {
       // Back already consumed the workflow marker. Restore it before opening
       // the confirmation, so a second Back closes only that dialog and never
       // navigates away with a dirty draft.
-      const current = history.state && typeof history.state === "object" ? history.state : {};
-      history.pushState({ ...current, maticMapLayer: { owner: this.#owner, depth: this.#depth } }, "", window.location.href);
-      this.#position = this.#depth;
+      this.#pushMarker(this.#depth);
       this.#store.dispatch({ type: "open-dialog", dialog: "discardDraft" });
       return;
     }

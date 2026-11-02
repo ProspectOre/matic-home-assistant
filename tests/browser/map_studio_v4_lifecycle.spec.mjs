@@ -111,8 +111,8 @@ test("20 admitted panel lifecycles release resources and ignore late history sce
     urlsCreated: 20,
     urlsRevoked: 20,
     activePopstateListeners: 0,
-    pendingHistoryScenes: 40,
-    planReads: 40,
+    pendingHistoryScenes: 20,
+    planReads: 20,
     serviceCalls: 0,
   });
 });

@@ -1,106 +1,38 @@
-"""Async client for the robot's local Hermes API."""
+"""Public facade for the robot local Hermes API."""
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import logging
-import math
-import socket
-import ssl
-import struct
-from collections import Counter
 from collections.abc import (
     AsyncGenerator,
     AsyncIterator,
     Awaitable,
     Callable,
-    Sequence,
 )
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import replace
-from datetime import UTC, datetime
-from time import monotonic
+from contextlib import AbstractAsyncContextManager, aclosing
 from types import TracebackType
-from typing import Any, cast
-from uuid import UUID, uuid4
-
-from google.protobuf.message import DecodeError
-from grpclib.client import Channel, Stream
-from grpclib.const import Status
-from grpclib.exceptions import GRPCError, ProtocolError, StreamTerminatedError
-from grpclib.protocol import H2Protocol
-from h2.exceptions import H2Error
+from uuid import UUID
 
 from .auth import HermesCredential
 from .commands import (
     CleaningMode,
     CoverageSetting,
-    CoverageUpdateGoal,
-    HermesConnectionKind,
     QueueAction,
-    QueueChangeError,
     UserCommand,
-    encode_coverage_command,
-    encode_coverage_goal_update,
-    encode_custom_coverage_command,
-    encode_go_to_room_command,
-    encode_mission_id,
-    encode_mixed_coverage_commands,
-    encode_redo_coverage_command,
-    encode_sink_summon_command,
-    encode_user_command,
-    encode_user_data,
-    queue_start_visit,
-    requeue_coverage_goals,
-)
-from .consumables import decode_bag_pass_expiry
-from .coverage_goals import (
-    CoveragePlanGoal,
-    coverage_command_goal_signatures,
-    coverage_plan_goal_signatures,
-    coverage_plan_goals,
-    coverage_plan_lacks_active_goals,
-    coverage_readback_matches,
 )
 from .coverage_receipts import (
     CoverageReceipt,
-    coverage_floor_hash,
-    make_coverage_receipt,
-    native_session_hash,
-    receipt_matches_history,
-    receipt_matches_plan,
 )
-from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
-from .exceptions import (
-    AuthenticationRequiredError,
-    CannotConnectError,
-    CoverageGuardError,
-    CoverageGuardReason,
-    EndpointUnsupportedError,
-    InvalidRobotCertificateError,
-    MaticError,
-    PairingModeRequiredError,
-    SinkLocationUnavailableError,
-)
-from .floor_plan import decode_floor_plans, decode_pose, room_name_key
-from .flythrough import Flythrough, decode_flythrough
+from .flythrough import Flythrough
+from .hermes_collections import HermesCollections
+from .hermes_commands import HermesCommands
+from .hermes_connection import HermesConnection
+from .hermes_reads import HermesReads
 from .history import (
     CleaningSessionImage,
     MonthlyCleaningRecap,
-    decode_cleaning_session_image,
-    decode_monthly_cleaning_recap,
-    decode_monthly_recap_key,
 )
-from .mission import MissionClientState, decode_mission_client_state
 from .models import (
-    CleaningModeResult,
-    CleaningSchedule,
-    CleaningSession,
     CleaningSessionRecord,
-    CuesGestureStatus,
-    CuesIntent,
-    CuesVoiceStatus,
     FloorPlan,
     HermesCollectionEntry,
     RobotInfo,
@@ -110,449 +42,8 @@ from .models import (
     RobotTrajectory,
     Room,
     RunProgress,
-    WifiNetwork,
 )
 from .observations import ActivityJournal, ObservationCallback
-from .proto.hermes_auth_grpc import HermesAuthStub
-from .proto.hermes_auth_pb2 import TokenRequest
-from .proto.hermes_bot_info_grpc import HermesDiscoveryRPCStub
-from .proto.hermes_bot_info_pb2 import Unit as DiscoveryUnit
-from .proto.hermes_grpc import HermesStub
-from .proto.hermes_pb2 import (
-    ChannelRequest,
-    CollectionRequest,
-    CollectionResponse,
-    InitialRequest,
-    KabukiOutputWire,
-    SubscriptionServiceConfig,
-    Unit,
-)
-from .tls import (
-    async_robot_client_context,
-    validate_certificate,
-)
-from .trajectory import decode_approximate_trajectory
-from .wire import (
-    WireField,
-    WireFieldBudget,
-    WireFieldBudgetExceeded,
-    WireFieldLimitExceeded,
-    decode_fields,
-    uuid_string,
-)
-from .zones import MAX_ZONES, decode_zones
-
-_LOGGER = logging.getLogger(__name__)
-
-HERMES_TARGET_KEY = "hermes-target"
-_RPC_TIMEOUT = 10.0
-# Streamed collection reads have per-message timeouts; this caps the whole
-# read so a slow-dripping stream cannot hold a poll cycle open for minutes.
-_COLLECTION_TIMEOUT = 30.0
-MAX_HERMES_MESSAGE_BYTES = 16 * 1024 * 1024
-_COLLECTION_MAX_BYTES = 64 * 1024 * 1024
-_LATEST_POSE_ENTRY_LIMIT = 64
-_LATEST_POSE_VALUE_MAX_BYTES = 16 * 1024
-_LATEST_POSE_READ_TIMEOUT = 3.0
-_DISPLAYED_MISSION_LIMIT = 256
-_SESSION_COMPLETED_STATUS = 0
-_ROOM_MODE_COMPLETED_STATUS = 2
-
-
-def _decode_pose_observation_time(payload: bytes) -> float:
-    """Decode the native Timestamp at pose field 5 -> field 1."""
-    fields = decode_fields(payload, max_fields=64)
-    timestamp_values = [
-        field.value
-        for field in fields
-        if field.number == 5 and field.wire_type == 2 and isinstance(field.value, bytes)
-    ]
-    if len(timestamp_values) != 1:
-        raise DecodeError("latest pose has no unique observation timestamp")
-    timestamp = decode_fields(timestamp_values[0], max_fields=4)
-    nested = [
-        field.value
-        for field in timestamp
-        if field.number == 1 and field.wire_type == 2 and isinstance(field.value, bytes)
-    ]
-    if len(nested) != 1:
-        raise DecodeError("latest pose timestamp has no unique value")
-    values = decode_fields(nested[0], max_fields=4)
-    seconds = [int(f.value) for f in values if f.number == 1 and f.wire_type == 0]
-    nanos = [int(f.value) for f in values if f.number == 2 and f.wire_type == 0]
-    if (
-        len(seconds) != 1
-        or len(nanos) != 1
-        or not 0 <= nanos[0] < 1_000_000_000
-        or seconds[0] < 0
-    ):
-        raise DecodeError("latest pose timestamp is malformed")
-    return seconds[0] + nanos[0] / 1_000_000_000
-
-
-# Verified from the native KabukiDisplayedError mapping in the Matic client:
-# 205 = BAG_MISSING and 206 = BAG_FULL.  These are error-list values, not
-# state-list values (206 is also a low-charge state code when present in the
-# separate states field).
-_BAG_MISSING_ERROR = 205
-_BAG_FULL_ERROR = 206
-_OPERATIONAL_STATE_MAX_BYTES = 256 * 1024
-_OPERATIONAL_STATE_MAX_FIELDS = 1024
-_OPERATIONAL_STATE_MAX_CODES = 256
-_TELEMETRY_TEXT_MAX_BYTES = 512
-_TELEMETRY_NESTED_MAX_BYTES = 64 * 1024
-_TELEMETRY_NESTED_MAX_FIELDS = 256
-_WIFI_STATUS_MAX_BYTES = 256 * 1024
-_WIFI_NETWORK_MAX_COUNT = 256
-_WIFI_SCAN_RESULT_TIMEOUT_SECONDS = 8.0
-_WIFI_SCAN_RESULT_INTERVAL_SECONDS = 1.0
-# The scan reply arrives once the scan is done and wifi_status follows within
-# about a quarter second, so an unchanged block after two reads is a repeat.
-_WIFI_SCAN_SETTLE_READS = 2
-_SCHEDULE_MAX_BYTES = 64 * 1024
-_SCHEDULE_MAX_FIELDS = 1024
-_SCHEDULE_MAX_UUIDS = 256
-_SCHEDULE_MAX_DEPTH = 4
-_CLEANING_SESSION_MAX_BYTES = 256 * 1024
-_CLEANING_SESSION_MAX_FIELDS = 1024
-_CLEANING_SESSION_MAX_ROOMS = 256
-# START readback includes undocking; mixed UPDATE readback begins once cleaning.
-_COVERAGE_START_READBACK_TIMEOUT = 30.0
-_MIXED_COVERAGE_READBACK_TIMEOUT = 8.0
-_MIXED_COVERAGE_READBACK_INTERVAL = 0.5
-_MIXED_READBACK_DELTA_LIMIT = 32
-# The app's queue changes showed in the plan within about 10 to 20 seconds.
-_QUEUE_READBACK_TIMEOUT = 45.0
-_QUEUE_READBACK_INTERVAL = 2.0
-_TRANSPORT_ERRORS = (OSError, StreamTerminatedError, ProtocolError, H2Error)
-_BINARY_SETTING_STATE_PROPERTIES = {
-    "child_lock": "child_lock_enabled_state",
-    "pet_waste": "petwaste_enabled_state",
-    "voice": "voice_enabled_state",
-}
-_SETTING_READBACK_TIMEOUT_SECONDS = 8.0
-_SETTING_READBACK_INTERVAL_SECONDS = 0.25
-
-
-def _queue_start_index(plan: Sequence[CoveragePlanGoal], current_region: str) -> int:
-    """Return the plan index where the current room's last visit begins."""
-    visits: list[tuple[str, list[int]]] = []
-    for index, goal in enumerate(plan):
-        if visits and visits[-1][0] == goal.region_id:
-            visits[-1][1].append(index)
-        else:
-            visits.append((goal.region_id, [index]))
-    return visits[queue_start_visit(visits, current_region)][1][0]
-
-
-def _region_order(goals: Sequence[CoverageUpdateGoal | CoveragePlanGoal]) -> list[str]:
-    order: list[str] = []
-    for goal in goals:
-        if not order or order[-1] != goal.region_id:
-            order.append(goal.region_id)
-    return order
-
-
-def _queue_readback_matches(
-    sent: Sequence[CoverageUpdateGoal],
-    held: Sequence[CoveragePlanGoal],
-    *,
-    dropped: set[str],
-    expected_order: list[str],
-) -> bool:
-    """Match the plan after a queue change by round IDs, specs and room order.
-
-    The robot lists a room's behaviors in its own order and may leave out the
-    last floor mop behavior, so the check compares rooms, not goal positions.
-    """
-    held_rounds = {goal.round_id: goal.signature for goal in held}
-    if dropped & held_rounds.keys():
-        return False
-    for goal in sent:
-        signature = held_rounds.get(goal.round_id)
-        if signature is None:
-            if (goal.floor, goal.mode, goal.behavior) != (0, 1, 3):
-                return False
-            continue
-        # Heavy Duty vacuum and double-pass mop read back as setting 3.
-        region, setting, floor, mode, behavior = signature
-        if (region, floor, mode, behavior) != (
-            goal.region_id,
-            goal.floor,
-            goal.mode,
-            goal.behavior,
-        ) or (
-            setting != goal.setting
-            and (setting, goal.setting, mode)
-            not in {
-                (3, 0, 0),
-                (3, 1, 1),
-            }
-        ):
-            return False
-    sent_rounds = {goal.round_id for goal in sent}
-    return (
-        _region_order([goal for goal in held if goal.round_id in sent_rounds])
-        == expected_order
-    )
-
-
-def _log_mixed_readback_timeout(
-    expected: Counter[tuple[str, int, int, int, int]],
-    actual: Counter[tuple[str, int, int, int, int]] | None,
-    *,
-    stage: str,
-    malformed: bool,
-) -> None:
-    """Describe bounded goal differences using attempt-local room ordinals."""
-    if not _LOGGER.isEnabledFor(logging.DEBUG):
-        return
-    observed = actual if actual is not None else Counter()
-    rooms: dict[str, int] = {}
-    for region, *_ in (*expected, *observed):
-        if region not in rooms:
-            rooms[region] = len(rooms) + 1
-
-    def delta(
-        goals: Counter[tuple[str, int, int, int, int]],
-    ) -> list[tuple[int, int, int, int, int, int]]:
-        return [
-            (rooms[region], setting, floor, mode, behavior, count)
-            for (region, setting, floor, mode, behavior), count in list(goals.items())[
-                :_MIXED_READBACK_DELTA_LIMIT
-            ]
-        ]
-
-    missing = expected - observed
-    unexpected = observed - expected
-    _LOGGER.debug(
-        "Mixed coverage readback timed out: stage=%s sample=%s "
-        "expected_count=%s actual_count=%s "
-        "missing=%s missing_omitted=%s unexpected=%s unexpected_omitted=%s; "
-        "goal tuples=(room_ordinal, setting, floor, mode, behavior, count)",
-        stage,
-        "malformed" if malformed else "unobserved" if actual is None else "observed",
-        expected.total(),
-        actual.total() if actual is not None else None,
-        delta(missing),
-        max(0, len(missing) - _MIXED_READBACK_DELTA_LIMIT),
-        delta(unexpected),
-        max(0, len(unexpected) - _MIXED_READBACK_DELTA_LIMIT),
-    )
-
-
-def _floor_command_identity(floor: FloorPlan) -> tuple[object, ...]:
-    """Identify the native floor/partition/room set bound to one command."""
-    return (
-        floor.mission_id,
-        floor.partition_protocol_id,
-        floor.partition_id_wire,
-        frozenset((room.id, room.protocol_id, room.id_wire) for room in floor.rooms),
-    )
-
-
-_TELEMETRY_PROPERTIES = (
-    "current_version",
-    "petwaste_enabled_state",
-    "child_lock_enabled_state",
-    "update_config",
-    "update_state",
-    "voice_enabled_state",
-    "matter_pairing_state",
-    "deep_mop_override_setting_state",
-    "water_flow_override_state",
-    "time_zone",
-    "wifi_status",
-    "user_tunnel_ssh_permission",
-    "uploader_config_state",
-    "coverage_time",
-)
-
-_BINARY_SETTING_CHANNELS = {
-    "child_lock": "child_lock_enabled_command",
-    "pet_waste": "petwaste_enabled_command",
-    "voice": "voice_enabled_command",
-}
-
-_WEEKDAYS = (
-    "sunday",
-    "monday",
-    "tuesday",
-    "wednesday",
-    "thursday",
-    "friday",
-    "saturday",
-)
-
-
-async def _async_cancel_stream(stream: object) -> None:
-    """Cancel a bounded read without failing on an already-closed stream.
-
-    Live robots reset collection streams on their side once the reader stops
-    consuming; cancellation is cleanup, and the collected data stays valid.
-    """
-    try:
-        await stream.cancel()  # type: ignore[attr-defined]
-    except _TRANSPORT_ERRORS:
-        pass
-
-
-def _response_value_bytes(response: CollectionResponse) -> bytes:
-    """Return bytes from every Hermes value transport supported by the robot."""
-    value = response.value
-    payload = value.value_bytes
-    if not payload:
-        payload = value.value_bytes_deprecated
-    if not payload and value.HasField("fast_bytes"):
-        payload = value.fast_bytes.bytes
-    return bytes(payload)
-
-
-async def _async_recv_bounded_message(
-    stream: Any,
-    codec: Any,
-    message_type: type[Any],
-    *,
-    max_bytes: int | None = None,
-) -> Any | None:
-    """Decode one gRPC frame after validating its declared byte length."""
-    metadata = await stream.recv_data(5)
-    if not metadata:
-        return None
-    if len(metadata) != 5:
-        raise ProtocolError("truncated gRPC message header")
-    if struct.unpack("?", metadata[:1])[0]:
-        raise NotImplementedError("Compression not implemented")
-    message_length = struct.unpack(">I", metadata[1:])[0]
-    message_limit = (
-        MAX_HERMES_MESSAGE_BYTES
-        if max_bytes is None
-        else min(max_bytes, MAX_HERMES_MESSAGE_BYTES)
-    )
-    if message_length > message_limit:
-        raise CannotConnectError("Hermes response exceeds the message byte limit")
-    message_bytes = await stream.recv_data(message_length)
-    if len(message_bytes) != message_length:
-        raise ProtocolError("truncated gRPC message body")
-    return codec.decode(message_bytes, message_type)
-
-
-class _BoundedStream(Stream[Any, Any]):
-    """grpclib client stream with a preallocation message-size guard."""
-
-    message_byte_limit: int | None = None
-
-    async def recv_message(self) -> Any | None:
-        if not self._recv_initial_metadata_done:
-            await self.recv_initial_metadata()
-
-        with self._wrapper:
-            message = await _async_recv_bounded_message(
-                self._stream,
-                self._codec,
-                self._recv_type,
-                max_bytes=self.message_byte_limit,
-            )
-            if message is None:
-                return None
-            (message,) = await self._dispatch.recv_message(message)
-            self._messages_received += 1
-            self._stream.connection.messages_received += 1
-            self._stream.connection.last_message_received = monotonic()
-            return message
-
-
-async def _async_connection_candidates(
-    host: str, hostname: str | None, port: int
-) -> list[str]:
-    """Return resolved robot addresses with IPv4 preferred over IPv6."""
-    candidates: list[tuple[int, str]] = []
-    if hostname:
-        try:
-            addresses = await asyncio.get_running_loop().getaddrinfo(
-                hostname.rstrip("."),
-                port,
-                type=socket.SOCK_STREAM,
-            )
-        except OSError:
-            addresses = []
-        for family, _type, _protocol, _canonical_name, sockaddr in addresses:
-            if family in (socket.AF_INET, socket.AF_INET6):
-                candidates.append(
-                    (0 if family == socket.AF_INET else 1, str(sockaddr[0]))
-                )
-
-    candidates.append((2, host))
-    return list(dict.fromkeys(address for _rank, address in sorted(candidates)))
-
-
-class _PinnedChannel(Channel):
-    """gRPC channel that re-pins the robot identity on every TLS handshake.
-
-    ``grpclib`` transparently re-dials the transport whenever the connection is
-    lost, so pinning has to run inside the channel's own connection path rather
-    than on a one-off probe socket. ``_create_connection`` is the single choke
-    point reached by both the initial dial and every transparent reconnect.
-    """
-
-    def __init__(
-        self,
-        host: str,
-        port: int,
-        *,
-        ssl: ssl.SSLContext,
-        expected_hostname: str | None,
-        expected_serial: str | None,
-        expected_fingerprint: str | None,
-        is_retired: Callable[[], bool] | None = None,
-    ) -> None:
-        super().__init__(host, port, ssl=ssl)
-        self._expected_hostname = expected_hostname
-        self._expected_serial = expected_serial
-        self._expected_fingerprint = expected_fingerprint
-        self._is_retired = is_retired
-
-    def _require_active(self) -> None:
-        if self._is_retired is not None and self._is_retired():
-            raise CannotConnectError("Hermes client has been retired")
-
-    def request(self, *args: Any, **kwargs: Any) -> Stream[Any, Any]:
-        """Create the bounded stream used by every generated Hermes stub."""
-        self._require_active()
-        stream = super().request(*args, **kwargs)
-        # grpclib has no public stream-factory hook. Its Stream has no slots, so
-        # switching to this behavior-only subclass preserves initialized state.
-        cast(Any, stream).__class__ = _BoundedStream
-        return stream
-
-    async def _create_connection(self) -> H2Protocol:
-        self._require_active()
-        protocol = await super()._create_connection()
-        try:
-            self._require_active()
-            ssl_object = cast(
-                "ssl.SSLObject | None",
-                protocol.connection._transport.get_extra_info("ssl_object"),
-            )
-            self._validate_peer(ssl_object)
-        except BaseException:
-            protocol.processor.close()
-            raise
-        return protocol
-
-    def _validate_peer(self, ssl_object: ssl.SSLObject | None) -> None:
-        """Enforce the pinned identity against the live TLS session."""
-        certificate = (
-            ssl_object.getpeercert(binary_form=True) if ssl_object is not None else None
-        )
-        if not certificate:
-            raise InvalidRobotCertificateError("peer did not present a certificate")
-        validate_certificate(
-            certificate,
-            expected_hostname=self._expected_hostname,
-            expected_serial=self._expected_serial,
-            expected_fingerprint=self._expected_fingerprint,
-        )
 
 
 class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
@@ -571,20 +62,22 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         seconds_from_gmt: int = 0,
         observation_callback: ObservationCallback | None = None,
     ) -> None:
-        self._host = host
-        self._port = port
-        self._hostname = hostname
-        self._serial_number = serial_number
-        self._certificate_fingerprint = certificate_fingerprint
-        self._credential = credential
-        self._timezone_identifier = timezone_identifier
-        self._seconds_from_gmt = seconds_from_gmt
-        self._channel: Channel | None = None
-        self._retired = False
-        self._connect_lock = asyncio.Lock()
-        self._endpoint_health: dict[str, str] = {}
-        self._command_health: dict[str, str] = {}
-        self.activity_journal = ActivityJournal(observation_callback)
+        self._connection = HermesConnection(
+            host,
+            port,
+            hostname=hostname,
+            serial_number=serial_number,
+            certificate_fingerprint=certificate_fingerprint,
+            credential=credential,
+            timezone_identifier=timezone_identifier,
+            seconds_from_gmt=seconds_from_gmt,
+            observation_callback=observation_callback,
+        )
+        self._collections = HermesCollections(self._connection)
+        self._reads = HermesReads(self._connection, self._collections)
+        self._commands = HermesCommands(
+            self._connection, self._collections, self._reads
+        )
 
     async def __aenter__(self) -> MaticHermesClient:
         await self.async_connect()
@@ -598,414 +91,87 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     ) -> None:
         self.close()
 
+    @property
+    def activity_journal(self) -> ActivityJournal:
+        """Return the session's bounded activity journal."""
+        return self._connection.activity_journal
+
     async def async_connect(self) -> None:
         """Verify the pinned certificate, then open an HTTP/2 channel."""
-        async with self._connect_lock:
-            self._require_active()
-            if self._channel is not None:
-                return
-            await self._async_connect_locked()
-
-    async def _async_connect_locked(self) -> None:
-        """Open and initialize one channel while holding the connection lock."""
-        self._require_active()
-        context = await async_robot_client_context()
-        self._require_active()
-        last_error: CannotConnectError | None = None
-        for host in await _async_connection_candidates(
-            self._host, self._hostname, self._port
-        ):
-            self._require_active()
-            channel = _PinnedChannel(
-                host,
-                self._port,
-                ssl=context,
-                expected_hostname=self._hostname,
-                expected_serial=self._serial_number,
-                expected_fingerprint=self._certificate_fingerprint,
-                is_retired=lambda: self._retired,
-            )
-            # Force the TLS handshake now so the pinned identity is enforced and
-            # an unreachable candidate falls back to the next resolved address.
-            # A pinning failure is a hard security error and is not caught here.
-            try:
-                async with asyncio.timeout(_RPC_TIMEOUT):
-                    await channel.__connect__()
-                self._require_active()
-                self._host = host
-                self._channel = channel
-                break
-            except TimeoutError:
-                last_error = CannotConnectError("Hermes connection timed out")
-                continue
-            except _TRANSPORT_ERRORS as err:
-                last_error = CannotConnectError(str(err) or "connection failed")
-                continue
-            finally:
-                # Ownership transfers only after a successful connect.
-                if self._channel is not channel:
-                    channel.close()
-        else:
-            raise last_error or CannotConnectError("No reachable robot address")
-        try:
-            await self._async_handshake()
-            await self._async_send_user_data()
-            self._require_active()
-        except BaseException:
-            # Never leave a half-initialized channel behind: closing it lets a
-            # later async_connect() re-dial instead of silently no-opping.
-            self.close()
-            raise
-
-    def _require_active(self) -> None:
-        if self._retired:
-            raise CannotConnectError("Hermes client has been retired")
+        return await self._connection.async_connect()
 
     @property
     def retired(self) -> bool:
         """Whether this runtime has permanently revoked transport access."""
-        return self._retired
+        return self._connection.retired
 
     def retire(self) -> None:
         """Permanently revoke this runtime, including captured channel references."""
-        self._retired = True
-        self.close()
+        return self._connection.retire()
 
     async def async_shutdown(self) -> None:
         """Revoke this runtime and wait for any in-flight dial to settle."""
-        self.retire()
-        async with self._connect_lock:
-            self.close()
+        return await self._connection.async_shutdown()
 
     def close(self) -> None:
         """Close the active channel while allowing a later reconnect."""
-        if self._channel is not None:
-            self._channel.close()
-            self._channel = None
-
-    async def _async_reconnect_after_read_failure(
-        self, failed_channel: Channel | None
-    ) -> None:
-        """Replace one failed read channel without racing concurrent readers."""
-        async with self._connect_lock:
-            self._require_active()
-            # Another concurrent read may already have replaced the failed
-            # channel. Reuse that fresh pinned session instead of closing it.
-            if self._channel is not failed_channel and self._channel is not None:
-                return
-            self.close()
-            await self._async_connect_locked()
-
-    @asynccontextmanager
-    async def _map_stream_errors(self, description: str) -> AsyncIterator[None]:
-        """Map every transport failure onto the Matic error hierarchy.
-
-        Besides ``TimeoutError`` and ``GRPCError`` this also catches the plain
-        ``OSError``/``ConnectionResetError``, grpclib ``StreamTerminatedError``
-        /``ProtocolError``, and raw ``h2`` protocol errors (live robots reset
-        streams mid-conversation, observed as ``StreamClosedError``) so no raw
-        transport exception escapes an RPC. Messages stay non-sensitive.
-        """
-        try:
-            yield
-        except TimeoutError as err:
-            raise CannotConnectError(f"Hermes {description} timed out") from err
-        except _TRANSPORT_ERRORS as err:
-            raise CannotConnectError(f"Hermes {description} connection failed") from err
-        except GRPCError as err:
-            if err.status is Status.UNAUTHENTICATED:
-                raise AuthenticationRequiredError(err.message) from err
-            if err.status in (Status.UNIMPLEMENTED, Status.NOT_FOUND):
-                raise EndpointUnsupportedError(
-                    f"Hermes {description} is not implemented by this firmware"
-                ) from err
-            raise CannotConnectError(err.message or err.status.name) from err
+        return self._connection.close()
 
     async def async_get_info(self) -> RobotInfo:
         """Read identity and connection metadata from the robot."""
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-        async with self._map_stream_errors("info"), asyncio.timeout(_RPC_TIMEOUT):
-            response = await HermesDiscoveryRPCStub(channel).GetBotInfo(
-                DiscoveryUnit(), metadata=self._metadata
-            )
-        return RobotInfo(
-            serial_number=response.serial_number,
-            name=response.name,
-            hostname=response.hostname,
-            port=response.port,
-            ip4_address=response.ip4_address,
-            ip6_address=response.ip6_address,
-            encrypted=response.encrypted,
-            requires_auth=response.requires_auth,
-            network_auth=response.network_auth,
-            hardware_revision=response.hardware_revision,
-        )
+        return await self._reads.async_get_info()
 
     async def async_request_credential(self, user_id: str) -> HermesCredential:
         """Request a scoped credential during the robot's pairing window."""
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-        try:
-            async with asyncio.timeout(_RPC_TIMEOUT):
-                response = await HermesAuthStub(channel).AuthToken(
-                    TokenRequest(user_id=user_id)
-                )
-            credential = HermesCredential.from_message(response)
-        except ValueError as err:
-            raise CannotConnectError("Robot returned an incomplete credential") from err
-        except TimeoutError as err:
-            raise CannotConnectError("Hermes credential request timed out") from err
-        except _TRANSPORT_ERRORS as err:
-            raise CannotConnectError(
-                "Hermes credential request connection failed"
-            ) from err
-        except GRPCError as err:
-            if err.status in {
-                Status.UNAVAILABLE,
-                Status.PERMISSION_DENIED,
-                Status.UNAUTHENTICATED,
-            }:
-                raise PairingModeRequiredError(
-                    "Enable pairing mode in the Matic app"
-                ) from err
-            raise CannotConnectError(err.message or err.status.name) from err
-        self._credential = credential
-        await self._async_handshake()
-        await self._async_send_user_data()
-        return credential
-
-    async def _async_handshake(self) -> None:
-        """Bind authenticated Hermes context to the active HTTP/2 channel."""
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-        if self._credential is None:
-            return
-        async with self._map_stream_errors("handshake"), asyncio.timeout(_RPC_TIMEOUT):
-            await HermesStub(channel).Handshake(Unit(), metadata=self._metadata)
-
-    async def _async_send_user_data(self) -> None:
-        """Identify this local app session."""
-        if self._credential is None:
-            return
-        await self._async_send_channel_payload(
-            "user_data",
-            encode_user_data(
-                # The token and application identity use the same persisted UUID.
-                app_id=self._credential.app_id,
-                timezone_identifier=self._timezone_identifier,
-                seconds_from_gmt=self._seconds_from_gmt,
-                connection_kind=HermesConnectionKind.IP,
-            ),
-        )
+        return await self._connection.async_request_credential(user_id)
 
     async def async_get_state(self) -> RobotOperationalState:
         """Read one authenticated snapshot from the ``kabuki_state`` property."""
-        # The robot closes an otherwise healthy long-lived HTTP/2 session about
-        # once an hour. grpclib reports that closure on the next stream read;
-        # replace the pinned channel and retry this idempotent snapshot once so
-        # a routine transport rollover does not mark every HA entity unavailable.
-        await self.async_connect()
-        failed_channel = self._channel
-        try:
-            payload = await self.async_get_property("kabuki_state")
-        except CannotConnectError:
-            _LOGGER.debug("Retrying Hermes state read on a fresh pinned channel")
-            await self._async_reconnect_after_read_failure(failed_channel)
-            payload = await self.async_get_property("kabuki_state")
-
-        try:
-            state = _decode_operational_state(payload)
-            self.activity_journal.observe_state(state, "poll")
-            return state
-        except DecodeError as err:
-            raise CannotConnectError("Hermes returned malformed robot state") from err
+        return await self._reads.async_get_state()
 
     async def async_get_run_progress(self) -> RunProgress | None:
         """Read elapsed and remaining time for the clean under way, if any."""
-        return _decode_run_progress(await self.async_get_property("coverage_time"))
+        return await self._reads.async_get_run_progress()
 
     async def async_subscribe_state(self) -> AsyncIterator[RobotOperationalState]:
         """Yield live snapshots from the local ``kabuki_state`` property."""
-        self.activity_journal.record("state_stream_started", source="push")
-        try:
-            async for entry in self.async_subscribe_collection_entries("kabuki_state"):
-                try:
-                    state = _decode_operational_state(entry.value)
-                    self.activity_journal.observe_state(state, "push")
-                    yield state
-                except DecodeError as err:
-                    raise CannotConnectError(
-                        "Hermes returned malformed subscribed robot state"
-                    ) from err
-        finally:
-            self.activity_journal.record("state_stream_ended", source="push")
+        async with aclosing(self._reads.async_subscribe_state()) as values:
+            async for value in values:
+                yield value
 
     async def async_get_floor_plan(
         self, *, expected_mission_id: int | None = None
     ) -> FloorPlan:
         """Read and decode the active local coverage plan."""
-        try:
-            payload = await self.async_get_property("coverage_plan")
-            floor_plans = decode_floor_plans(payload)
-            if len(floor_plans) == 1:
-                return floor_plans[0]
-
-            mission_entries = await self.async_get_tracked_collection_entries(
-                "displayed_mission", limit=_DISPLAYED_MISSION_LIMIT
-            )
-            if len(mission_entries) >= _DISPLAYED_MISSION_LIMIT:
-                raise DecodeError(
-                    "displayed mission collection exceeds its snapshot bound"
-                )
-            mission_states: list[MissionClientState] = []
-            for entry in mission_entries:
-                try:
-                    mission_states.append(decode_mission_client_state(entry.value))
-                except DecodeError:
-                    # ``displayed_mission`` is a heterogeneous collection. Only
-                    # the exact verified MissionClientState shape is relevant.
-                    continue
-            if not mission_states:
-                raise DecodeError(
-                    "multi-floor coverage plan has no mission client state"
-                )
-            # Tracked collection delivery is the robot's authoritative order:
-            # Hermes does not send the next cached or live record until the
-            # prior sequence is acknowledged. The last decodable client state
-            # therefore represents the currently displayed mission.
-            mission_state = mission_states[-1]
-            # An unfinished inactive map may have no coverage partition. Only
-            # the verified selected floor must have exactly one usable plan.
-            if expected_mission_id is None:
-                active_floor = mission_state.active_floor
-                if active_floor is None:
-                    raise DecodeError(
-                        "multi-floor coverage plan has no verified active floor"
-                    )
-            else:
-                verified_floors = tuple(
-                    floor
-                    for floor in mission_state.mapped_floors
-                    if floor.mission_id == expected_mission_id
-                )
-                if len(verified_floors) != 1:
-                    raise DecodeError(
-                        "verified map mission does not identify one canonical floor"
-                    )
-                active_floor = verified_floors[0]
-            matching = tuple(
-                plan
-                for plan in floor_plans
-                if plan.mission_id == active_floor.mission_id
-            )
-            if len(matching) != 1:
-                raise DecodeError("active mission does not identify one coverage floor")
-            return replace(
-                matching[0],
-                floor_label=active_floor.label,
-                mapped_floors=mission_state.mapped_floors,
-            )
-        except DecodeError as err:
-            raise CannotConnectError("Hermes returned a malformed floor plan") from err
+        return await self._reads.async_get_floor_plan(
+            expected_mission_id=expected_mission_id
+        )
 
     async def async_get_slam_tile_entry(self) -> HermesCollectionEntry:
         """Read the current local photorealistic SLAM tile."""
-        entries = await self.async_get_collection_entries("map_compressed_rgb", limit=1)
-        if not entries or not entries[0].key or not entries[0].value:
-            raise CannotConnectError("Hermes returned no photorealistic SLAM tile")
-        return entries[0]
+        return await self._reads.async_get_slam_tile_entry()
 
     async def async_get_pose(
         self, *, expected_mission_id: int | None = None
     ) -> RobotPose:
         """Read the uniquely keyed latest local pose for the active mission."""
-        if (
-            isinstance(expected_mission_id, bool)
-            or not isinstance(expected_mission_id, int)
-            or not 0 <= expected_mission_id <= 0xFFFFFFFF
-        ):
-            raise CannotConnectError("active mission identity is unavailable for pose")
-        iterator = self.async_subscribe_collection_entries("latest_pose")
-        try:
-            deadline = monotonic() + _LATEST_POSE_READ_TIMEOUT
-            for _ in range(_LATEST_POSE_ENTRY_LIMIT + 1):
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    raise CannotConnectError("latest pose read exceeded its time bound")
-                try:
-                    async with asyncio.timeout(remaining):
-                        entry = await anext(iterator)
-                except StopAsyncIteration as err:
-                    raise CannotConnectError(
-                        "latest pose stream ended without active pose"
-                    ) from err
-                except TimeoutError as err:
-                    raise CannotConnectError(
-                        "latest pose read exceeded its time bound"
-                    ) from err
-                if len(entry.key) != 5:
-                    raise DecodeError("latest pose has a malformed mission key")
-                if len(entry.value) > _LATEST_POSE_VALUE_MAX_BYTES:
-                    raise DecodeError("latest pose exceeds its value size bound")
-                key_fields = decode_fields(entry.key, max_fields=2)
-                if (
-                    len(key_fields) != 1
-                    or key_fields[0].number != 2
-                    or key_fields[0].wire_type != 5
-                    or not isinstance(key_fields[0].value, bytes)
-                    or len(key_fields[0].value) != 4
-                ):
-                    raise DecodeError("latest pose has a malformed mission key")
-                mission_id = struct.unpack("<I", key_fields[0].value)[0]
-                if mission_id == expected_mission_id:
-                    observed_at = _decode_pose_observation_time(entry.value)
-                    return decode_pose(
-                        entry.value,
-                        mission_id=expected_mission_id,
-                        observed_at=observed_at,
-                    )
-            raise CannotConnectError("latest pose stream exceeded its entry bound")
-        except DecodeError as err:
-            raise CannotConnectError("Hermes returned a malformed robot pose") from err
-        finally:
-            await iterator.aclose()
+        return await self._reads.async_get_pose(expected_mission_id=expected_mission_id)
 
     async def async_get_flythrough(self, *, expected_mission_token: str) -> Flythrough:
         """Read the native map tour correlated to the active SLAM mission."""
-        try:
-            return decode_flythrough(
-                await self.async_get_property("flythrough"),
-                expected_mission_token=expected_mission_token,
-            )
-        except DecodeError as err:
-            raise CannotConnectError(
-                "Hermes returned a malformed map flythrough"
-            ) from err
+        return await self._reads.async_get_flythrough(
+            expected_mission_token=expected_mission_token
+        )
 
     async def async_subscribe_approximate_trajectory(
         self, floor_plan: FloorPlan
     ) -> AsyncIterator[RobotTrajectory]:
         """Yield bounded route updates for the active floor-plan mission."""
-        async for entry in self.async_subscribe_collection_entries(
-            "approximate_trajectory"
-        ):
-            try:
-                yield decode_approximate_trajectory(
-                    entry.value,
-                    expected_mission_id=floor_plan.mission_id,
-                )
-            except DecodeError as err:
-                raise CannotConnectError(
-                    "Hermes returned a malformed approximate trajectory"
-                ) from err
+        async with aclosing(
+            self._reads.async_subscribe_approximate_trajectory(floor_plan)
+        ) as values:
+            async for value in values:
+                yield value
 
     async def async_get_cleaning_session_identity(self) -> bytes | None:
         """Keep the vetted session property opaque and in memory for ownership.
@@ -1013,11 +179,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         Empty bytes mean the native task ended; ``None`` means unknown. Never
         expose this private identifier through entities, logs, or storage.
         """
-        payload = await self.async_get_property("active_session_key")
-        present = _decode_presence_state(payload)
-        if present is None:
-            return None
-        return payload if present else b""
+        return await self._reads.async_get_cleaning_session_identity()
 
     async def async_get_active_cleaning_session_state(self) -> bool | None:
         """Derive task activity from the vetted robot operational snapshot.
@@ -1030,23 +192,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         cleared identity before and after it. Integer state and error codes
         are never assigned guessed meanings here.
         """
-        state = await self.async_get_state()
-        active = state.native_session_activity()
-        if active is not None or state.returning:
-            return active
-        if await self.async_get_cleaning_session_identity() != b"":
-            return None
-        confirmed = await self.async_get_state()
-        if confirmed.native_session_activity() is True:
-            return True
-        if (
-            confirmed.state_codes != state.state_codes
-            or confirmed.error_codes != state.error_codes
-        ):
-            return None
-        if await self.async_get_cleaning_session_identity() != b"":
-            return None
-        return confirmed.native_session_activity(identity_cleared=True)
+        return await self._reads.async_get_active_cleaning_session_state()
 
     async def async_get_cleaning_session_records(
         self,
@@ -1054,300 +200,43 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         strict: bool = False,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
-        entries = await self.async_get_tracked_collection_entries(
-            "coverage_session_history", limit=64
-        )
-        records = tuple(
-            CleaningSessionRecord(entry.key, session)
-            for entry in entries
-            if entry.key
-            and (session := _decode_cleaning_session(entry.value)) is not None
-        )
-        if strict and len(records) != len(entries):
-            raise MaticError("Native history is incomplete or undecodable")
-        return records
+        return await self._reads.async_get_cleaning_session_records(strict=strict)
+
+    async def async_get_cleaning_session_snapshot(
+        self,
+        *,
+        strict: bool = False,
+    ) -> tuple[tuple[CleaningSessionRecord, ...], str]:
+        """Read native history and its stable revision from one snapshot."""
+        return await self._reads.async_get_cleaning_session_snapshot(strict=strict)
 
     async def async_get_cleaning_session_images(
         self,
     ) -> tuple[CleaningSessionImage, ...]:
         """Read valid private session maps from the retained history window."""
-        entries = await self.async_get_tracked_collection_entries(
-            "coverage_session_thumbnails", limit=64
-        )
-        images: list[CleaningSessionImage] = []
-        for entry in entries:
-            try:
-                images.append(decode_cleaning_session_image(entry))
-            except DecodeError:
-                continue
-        return tuple(images)
+        return await self._reads.async_get_cleaning_session_images()
 
     async def async_get_monthly_cleaning_recaps(
         self,
     ) -> tuple[MonthlyCleaningRecap, ...]:
         """Read valid private monthly cleaning totals in protocol-native units."""
-        entries = await self.async_get_tracked_collection_entries(
-            "recap_history", limit=120
-        )
-        recaps: list[MonthlyCleaningRecap] = []
-        for entry in entries:
-            try:
-                recaps.append(decode_monthly_cleaning_recap(entry))
-            except DecodeError:
-                continue
-        return tuple(recaps)
+        return await self._reads.async_get_monthly_cleaning_recaps()
 
     async def async_get_telemetry(self) -> RobotTelemetry:
         """Read the complete decoded local telemetry surface."""
-        results = await asyncio.gather(
-            *(self._async_optional_property(name) for name in _TELEMETRY_PROPERTIES),
-            self._async_optional_collection("schedule_events", limit=64),
-            self._async_optional_collection("coverage_session_history", limit=64),
-            self._async_optional_collection_count("dock_detections"),
-            self._async_optional_collection_count("sink_summon_locations"),
-            self._async_optional_collection("recap_history", limit=120),
-            self._async_optional_collection("bag_pass_status", limit=4),
-            self._async_optional_collection("zones", limit=MAX_ZONES),
-        )
-        property_count = len(_TELEMETRY_PROPERTIES)
-        values = dict(zip(_TELEMETRY_PROPERTIES, results[:property_count], strict=True))
-        schedule_entries = results[property_count]
-        session_entries = results[property_count + 1]
-        dock_detections = results[property_count + 2]
-        sink_summon_locations = results[property_count + 3]
-        recap_entries = results[property_count + 4]
-        bag_pass_entries = results[property_count + 5]
-        zone_entries = results[property_count + 6]
-        maintenance = _decode_latest_maintenance(
-            recap_entries if isinstance(recap_entries, tuple) else ()
-        )
-
-        schedules = (
-            tuple(
-                schedule
-                for entry in schedule_entries
-                if (schedule := _decode_schedule(entry.value)) is not None
-            )
-            if isinstance(schedule_entries, tuple)
-            else ()
-        )
-        sessions = (
-            tuple(
-                session
-                for entry in session_entries
-                if (session := _decode_cleaning_session(entry.value)) is not None
-            )
-            if isinstance(session_entries, tuple)
-            else ()
-        )
-        wifi_state, wifi_ssid, wifi_signal, wifi_networks = _decode_wifi_status(
-            values["wifi_status"]
-        )
-        version = _decode_current_version(values["current_version"])
-        return RobotTelemetry(
-            software_version=version[0],
-            software_profile=version[1],
-            protocol_version=version[2],
-            supports_easter_event=version[3],
-            update_channel=_decode_text_field(values["update_config"], 1),
-            update_state=_decode_update_state(values["update_state"]),
-            wifi_state=wifi_state,
-            wifi_ssid=wifi_ssid,
-            wifi_signal_dbm=wifi_signal,
-            wifi_networks=wifi_networks,
-            timezone=_decode_timezone(values["time_zone"]),
-            scheduled_cleanings=(
-                len(schedule_entries) if isinstance(schedule_entries, tuple) else None
-            ),
-            schedules=schedules,
-            local_cleaning_sessions=(
-                len(session_entries) if isinstance(session_entries, tuple) else None
-            ),
-            latest_session=max(
-                sessions,
-                key=lambda item: item.started_at or "",
-                default=None,
-            ),
-            child_lock_enabled=_decode_binary_state(values["child_lock_enabled_state"]),
-            pet_waste_enabled=_decode_binary_state(values["petwaste_enabled_state"]),
-            voice_enabled=_decode_binary_state(values["voice_enabled_state"]),
-            matter_pairing_enabled=_decode_presence_state(
-                values["matter_pairing_state"]
-            ),
-            deep_mop_enabled=_decode_deep_mop_state(
-                values["deep_mop_override_setting_state"]
-            ),
-            water_flow_factor=_decode_water_flow_factor(
-                values["water_flow_override_state"]
-            ),
-            ssh_tunnel_permission=_decode_binary_state(
-                values["user_tunnel_ssh_permission"]
-            ),
-            uploader_opt_in=_decode_uploader_state(values["uploader_config_state"]),
-            dock_detections=(
-                dock_detections if isinstance(dock_detections, int) else None
-            ),
-            sink_summon_locations=(
-                sink_summon_locations
-                if isinstance(sink_summon_locations, int)
-                else None
-            ),
-            coverage_time_seconds=_decode_coverage_time(values["coverage_time"]),
-            maintenance_recap_month=maintenance[0] if maintenance else None,
-            maintenance_suggestions=maintenance[1] if maintenance else None,
-            bag_pass_expires_at=_decode_bag_pass(
-                bag_pass_entries if isinstance(bag_pass_entries, tuple) else ()
-            ),
-            zones=(
-                decode_zones(zone_entries) if isinstance(zone_entries, tuple) else ()
-            ),
-        )
-
-    async def _async_optional_property(self, name: str) -> bytes | None:
-        """Return one optional property without hiding core robot state."""
-        try:
-            max_bytes = (
-                _WIFI_STATUS_MAX_BYTES
-                if name == "wifi_status"
-                else _TELEMETRY_NESTED_MAX_BYTES
-            )
-            value = await self.async_get_property(name)
-            if len(value) > max_bytes:
-                raise CannotConnectError("Hermes property exceeds its value byte limit")
-            self._endpoint_health[name] = "ok"
-            return value
-        except (
-            AuthenticationRequiredError,
-            CannotConnectError,
-            EndpointUnsupportedError,
-        ) as err:
-            self._endpoint_health[name] = type(err).__name__
-            return None
-
-    async def _async_optional_collection_count(self, name: str) -> int | None:
-        """Return one optional collection count."""
-        try:
-            value = await self.async_get_collection_count(name)
-            self._endpoint_health[name] = "ok"
-            return value
-        except (
-            AuthenticationRequiredError,
-            CannotConnectError,
-            EndpointUnsupportedError,
-        ) as err:
-            self._endpoint_health[name] = type(err).__name__
-            return None
-
-    async def _async_optional_collection(
-        self, name: str, *, limit: int
-    ) -> tuple[HermesCollectionEntry, ...] | None:
-        """Return an optional local collection without hiding core state."""
-        try:
-            endpoint = HERMES_ENDPOINT_MAP.get(name)
-            if endpoint is not None and endpoint.tracked:
-                value = await self.async_get_tracked_collection_entries(
-                    name, limit=limit
-                )
-            else:
-                value = await self.async_get_collection_entries(name, limit=limit)
-            self._endpoint_health[name] = "ok"
-            return value
-        except (
-            AuthenticationRequiredError,
-            CannotConnectError,
-            EndpointUnsupportedError,
-        ) as err:
-            self._endpoint_health[name] = type(err).__name__
-            return None
+        return await self._reads.async_get_telemetry()
 
     async def async_get_property(
         self, collection_name: str, *, max_bytes: int | None = None
     ) -> bytes:
         """Read one authenticated Hermes property snapshot."""
-        if max_bytes is None and collection_name in _TELEMETRY_PROPERTIES:
-            max_bytes = (
-                _WIFI_STATUS_MAX_BYTES
-                if collection_name == "wifi_status"
-                else _TELEMETRY_NESTED_MAX_BYTES
-            )
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-        request = CollectionRequest(
-            initial_request=InitialRequest(
-                collection_name=collection_name,
-                config=SubscriptionServiceConfig(),
-            )
+        return await self._collections.async_get_property(
+            collection_name, max_bytes=max_bytes
         )
-        async with (
-            self._map_stream_errors(f"{collection_name} stream"),
-            asyncio.timeout(_RPC_TIMEOUT),
-        ):
-            async with HermesStub(channel).FetchCollection.open(
-                metadata=self._metadata
-            ) as stream:
-                if max_bytes is not None:
-                    # Bound the frame before reading its body, allowing a small
-                    # protobuf envelope around the separately bounded value.
-                    cast(_BoundedStream, stream).message_byte_limit = max_bytes + 4096
-                await stream.send_message(request, end=True)
-                response = await stream.recv_message()
-
-        if response is None or not response.HasField("value"):
-            raise CannotConnectError(
-                f"Hermes {collection_name} stream returned no value"
-            )
-        payload = _response_value_bytes(response)
-        if max_bytes is not None and len(payload) > max_bytes:
-            raise CannotConnectError("Hermes property exceeds its value byte limit")
-        if not payload:
-            raise CannotConnectError(
-                f"Hermes {collection_name} stream returned an empty value"
-            )
-        return payload
 
     async def async_get_collection_count(self, collection_name: str) -> int:
         """Count the current entries in a verified Hermes collection."""
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-        request = CollectionRequest(
-            initial_request=InitialRequest(
-                collection_name=collection_name,
-                config=SubscriptionServiceConfig(),
-            )
-        )
-        count = 0
-        async with self._map_stream_errors(f"{collection_name} collection"):
-            async with HermesStub(channel).FetchCollection.open(
-                metadata=self._metadata
-            ) as stream:
-                await stream.send_message(request, end=True)
-                cancel_stream = False
-                deadline = monotonic() + _COLLECTION_TIMEOUT
-                while count < 4096:
-                    if monotonic() >= deadline:
-                        cancel_stream = True
-                        break
-                    try:
-                        async with asyncio.timeout(3 if count == 0 else 0.15):
-                            response = await stream.recv_message()
-                    except TimeoutError:
-                        cancel_stream = True
-                        break
-                    if response is None:
-                        break
-                    if response.HasField("value"):
-                        count += 1
-                if count >= 4096:
-                    cancel_stream = True
-                if cancel_stream:
-                    await _async_cancel_stream(stream)
-        return count
+        return await self._collections.async_get_collection_count(collection_name)
 
     async def async_get_collection_entries(
         self,
@@ -1358,72 +247,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         idle_timeout: float = 0.15,
     ) -> tuple[HermesCollectionEntry, ...]:
         """Return a bounded snapshot of one authenticated Hermes collection."""
-        if not 1 <= limit <= 4096:
-            raise ValueError("Hermes collection limit must be between 1 and 4096")
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-        request = CollectionRequest(
-            initial_request=InitialRequest(
-                collection_name=collection_name,
-                config=SubscriptionServiceConfig(),
-            )
+        return await self._collections.async_get_collection_entries(
+            collection_name,
+            limit=limit,
+            first_timeout=first_timeout,
+            idle_timeout=idle_timeout,
         )
-        entries: list[HermesCollectionEntry] = []
-        collected_bytes = 0
-        async with self._map_stream_errors(f"{collection_name} collection"):
-            async with HermesStub(channel).FetchCollection.open(
-                metadata=self._metadata
-            ) as stream:
-                await stream.send_message(request, end=True)
-                cancel_stream = False
-                deadline = monotonic() + _COLLECTION_TIMEOUT
-                while len(entries) < limit:
-                    if monotonic() >= deadline:
-                        cancel_stream = True
-                        break
-                    try:
-                        timeout = first_timeout if not entries else idle_timeout
-                        async with asyncio.timeout(timeout):
-                            response = await stream.recv_message()
-                    except TimeoutError:
-                        cancel_stream = True
-                        break
-                    if response is None:
-                        break
-                    if not response.HasField("value"):
-                        continue
-                    payload = _response_value_bytes(response)
-                    entry_size = len(response.key_bytes) + len(payload)
-                    if collected_bytes + entry_size > _COLLECTION_MAX_BYTES:
-                        await _async_cancel_stream(stream)
-                        raise CannotConnectError(
-                            f"Hermes {collection_name} collection exceeds "
-                            "the byte limit"
-                        )
-                    collected_bytes += entry_size
-                    sequence = (
-                        response.sequence_id
-                        if response.HasField("sequence_id")
-                        else None
-                    )
-                    entries.append(
-                        HermesCollectionEntry(
-                            bytes(response.key_bytes),
-                            payload,
-                            int(sequence.start_ts_nanos)
-                            if sequence is not None
-                            else None,
-                            int(sequence.sequence_no) if sequence is not None else None,
-                        )
-                    )
-                if len(entries) >= limit:
-                    cancel_stream = True
-                if cancel_stream:
-                    await _async_cancel_stream(stream)
-        return tuple(entries)
 
     async def async_subscribe_collection_entries(
         self, collection_name: str
@@ -1434,75 +263,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         open. Map collections publish new pages on that stream rather than
         returning their complete history to every fresh snapshot reader.
         """
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-        failed_channel = channel
-        request = CollectionRequest(
-            initial_request=InitialRequest(
-                collection_name=collection_name,
-                config=SubscriptionServiceConfig(),
-            )
-        )
-        try:
-            async with self._map_stream_errors(f"{collection_name} subscription"):
-                async with HermesStub(channel).FetchCollection.open(
-                    metadata=self._metadata
-                ) as stream:
-                    # FetchCollection is a tracked bidirectional subscription.  The
-                    # server sends one update, then waits for its sequence id to be
-                    # acknowledged before advancing to the next cached or live item.
-                    cancel_stream = True
-                    try:
-                        await stream.send_message(request, end=False)
-                        while (response := await stream.recv_message()) is not None:
-                            entry = None
-                            if response.HasField("value"):
-                                sequence = (
-                                    response.sequence_id
-                                    if response.HasField("sequence_id")
-                                    else None
-                                )
-                                entry = HermesCollectionEntry(
-                                    bytes(response.key_bytes),
-                                    _response_value_bytes(response),
-                                    int(sequence.start_ts_nanos)
-                                    if sequence is not None
-                                    else None,
-                                    int(sequence.sequence_no)
-                                    if sequence is not None
-                                    else None,
-                                )
-                            if response.HasField("sequence_id"):
-                                await stream.send_message(
-                                    CollectionRequest(sequence_id=response.sequence_id),
-                                    end=False,
-                                )
-                            if entry is not None:
-                                yield entry
-                    except asyncio.CancelledError:
-                        # grpclib's context manager handles exceptional exits with
-                        # an immediate local reset. Do not await its network reset
-                        # while HA is already cancelling this subscription: a
-                        # stalled transport would hold config-entry unload open.
-                        cancel_stream = False
-                        raise
-                    finally:
-                        # Long-lived bidirectional streams otherwise attempt a
-                        # graceful close during config-entry teardown. A robot that
-                        # is still holding the subscription open can leave Home
-                        # Assistant waiting for that handshake until its task-leak
-                        # timeout. Explicit cancellation is local, bounded cleanup.
-                        if cancel_stream:
-                            await _async_cancel_stream(stream)
-        except CannotConnectError:
-            _LOGGER.debug(
-                "Replacing failed Hermes %s subscription channel", collection_name
-            )
-            await self._async_reconnect_after_read_failure(failed_channel)
-            raise
+        async with aclosing(
+            self._collections.async_subscribe_collection_entries(collection_name)
+        ) as values:
+            async for value in values:
+                yield value
 
     async def async_get_tracked_collection_entries(
         self,
@@ -1513,66 +278,23 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         idle_timeout: float = 0.25,
     ) -> tuple[HermesCollectionEntry, ...]:
         """Return a bounded snapshot while acknowledging tracked updates."""
-        if not 1 <= limit <= 4096:
-            raise ValueError("Hermes collection limit must be between 1 and 4096")
-        entries: list[HermesCollectionEntry] = []
-        iterator = self.async_subscribe_collection_entries(collection_name)
-        received = False
-        collected_bytes = 0
-        deadline = monotonic() + _COLLECTION_TIMEOUT
-        try:
-            while len(entries) < limit:
-                remaining = deadline - monotonic()
-                if remaining <= 0:
-                    break
-                timeout = min(idle_timeout if received else first_timeout, remaining)
-                try:
-                    async with asyncio.timeout(timeout):
-                        entry = await anext(iterator)
-                except StopAsyncIteration, TimeoutError:
-                    break
-                received = True
-                collected_bytes += len(entry.key) + len(entry.value)
-                if collected_bytes > _COLLECTION_MAX_BYTES:
-                    raise CannotConnectError(
-                        f"Hermes {collection_name} collection exceeds the byte limit"
-                    )
-                entries.append(entry)
-        finally:
-            await iterator.aclose()
-        return tuple(entries)
+        return await self._collections.async_get_tracked_collection_entries(
+            collection_name,
+            limit=limit,
+            first_timeout=first_timeout,
+            idle_timeout=idle_timeout,
+        )
 
     async def async_inspect_endpoint(
         self, endpoint_name: str, *, limit: int = 1
     ) -> tuple[HermesCollectionEntry, ...]:
         """Read a known endpoint through its evidence-backed transport shape."""
-        try:
-            endpoint = HERMES_ENDPOINT_MAP[endpoint_name]
-        except KeyError:
-            raise ValueError(f"Unknown Hermes endpoint: {endpoint_name}") from None
-        result: tuple[HermesCollectionEntry, ...]
-        try:
-            if endpoint.kind is HermesEndpointKind.PROPERTY:
-                value = await self.async_get_property(endpoint_name)
-                result = (HermesCollectionEntry(b"", value),)
-            elif endpoint.tracked:
-                result = await self.async_get_tracked_collection_entries(
-                    endpoint_name, limit=limit
-                )
-            else:
-                result = await self.async_get_collection_entries(
-                    endpoint_name, limit=limit
-                )
-        except (AuthenticationRequiredError, CannotConnectError) as err:
-            self._endpoint_health[endpoint_name] = type(err).__name__
-            raise
-        self._endpoint_health[endpoint_name] = "ok"
-        return result
+        return await self._reads.async_inspect_endpoint(endpoint_name, limit=limit)
 
     @property
     def endpoint_health(self) -> dict[str, str]:
         """Return non-sensitive read health for observed endpoints."""
-        return dict(self._endpoint_health)
+        return self._reads.endpoint_health
 
     async def async_send_user_command(
         self,
@@ -1581,68 +303,25 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         on_transmitted: Callable[[], None] | None = None,
     ) -> None:
         """Send one live-verified command through the authenticated user channel."""
-        payload = encode_user_command(command)
-        _LOGGER.debug("Requesting Matic user command %s", command.name)
-        await self._async_send_user_payload(
-            payload, command_name=command.name, on_transmitted=on_transmitted
+        return await self._commands.async_send_user_command(
+            command, on_transmitted=on_transmitted
         )
-
-    async def _async_require_idle_native_session(self) -> bytes:
-        """Require stable, observable idle native state before managed coverage."""
-        baseline_identity = await self.async_get_cleaning_session_identity()
-        if baseline_identity is None:
-            raise CoverageGuardError(CoverageGuardReason.IDENTITY_UNAVAILABLE)
-        active = await self.async_get_active_cleaning_session_state()
-        if active is None:
-            raise CoverageGuardError(CoverageGuardReason.ACTIVITY_UNAVAILABLE)
-        if active:
-            raise CoverageGuardError(CoverageGuardReason.NATIVE_SESSION_ACTIVE)
-        if await self.async_get_cleaning_session_identity() != baseline_identity:
-            raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
-        return baseline_identity
 
     async def async_get_sink_posture(self, floor_plan: FloorPlan) -> bytes:
         """Return this floor's saved sink posture, as the app stored it."""
-        mission_key = encode_mission_id(floor_plan.mission_id)
-        postures = [
-            entry.value
-            for entry in await self.async_get_collection_entries(
-                "sink_summon_locations"
-            )
-            if entry.key == mission_key and entry.value
-        ]
-        if not postures:
-            raise SinkLocationUnavailableError(
-                "No sink location is saved for the current floor"
-            )
-        return postures[-1]
+        return await self._commands.async_get_sink_posture(floor_plan)
 
     async def async_sink_summon(self, floor_plan: FloorPlan, posture: bytes) -> None:
         """Send the robot to a sink posture on this floor to await a refill."""
-        await self._async_send_user_payload(
-            encode_sink_summon_command(
-                mission_id=floor_plan.mission_id, posture=posture
-            ),
-            command_name="SINK_SUMMON",
-        )
+        return await self._commands.async_sink_summon(floor_plan, posture)
 
     async def async_go_to_room(self, floor_plan: FloorPlan, room: Room) -> None:
         """Send the robot to a room on this floor without cleaning it."""
-        await self._async_send_user_payload(
-            encode_go_to_room_command(
-                mission_id=floor_plan.mission_id,
-                partition_id=floor_plan.partition_protocol_id,
-                region_id=room.protocol_id,
-            ),
-            command_name="GO_TO_ROOM",
-        )
+        return await self._commands.async_go_to_room(floor_plan, room)
 
     async def async_redo_clean(self, session_key: bytes) -> None:
         """Clean a finished session again, keyed by its native history key."""
-        await self._async_send_user_payload(
-            encode_redo_coverage_command(session_key),
-            command_name="REDO_COVERAGE",
-        )
+        return await self._commands.async_redo_clean(session_key)
 
     async def async_change_queue(
         self,
@@ -1659,68 +338,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         room onward under the task's own session ID, then waits until the
         robot's plan holds every goal sent and none of the goals left out.
         """
-        identity = await self.async_get_cleaning_session_identity()
-        active = await self.async_get_active_cleaning_session_state()
-        if not identity or active is not True:
-            raise QueueChangeError("no_clean_running")
-        try:
-            session_id = uuid_string(identity)
-        except DecodeError as err:
-            raise MaticError("Native task identity cannot be read") from err
-        state = await self.async_get_state()
-        area = room_name_key(state.current_area)
-        current = [
-            candidate.protocol_id
-            for candidate in floor_plan.rooms
-            if area is not None and room_name_key(candidate.name) == area
-        ]
-        if len(current) != 1:
-            raise QueueChangeError("current_room_unknown")
-        try:
-            plan = coverage_plan_goals(await self.async_get_property("coverage_plan"))
-        except DecodeError as err:
-            raise QueueChangeError("plan_unreadable") from err
-        goals = requeue_coverage_goals(
-            [CoverageUpdateGoal(goal.round_id, *goal.signature) for goal in plan],
-            action=action,
-            current_region=current[0],
-            target_region=room.protocol_id,
+        return await self._commands.async_change_queue(
+            floor_plan,
+            action,
+            room,
             cleaning_mode=cleaning_mode,
             coverage_setting=coverage_setting,
         )
-        payload = encode_coverage_goal_update(
-            mission_id=floor_plan.mission_id,
-            partition_id=floor_plan.partition_protocol_id,
-            session_id=session_id,
-            goals=goals,
-        )
-        start = _queue_start_index(plan, current[0])
-        sent = {goal.round_id for goal in goals}
-        dropped = {goal.round_id for goal in plan[start:]} - sent
-        expected_order = _region_order(goals)
-        if await self.async_get_cleaning_session_identity() != identity:
-            raise MaticError("Native mission changed before the queue change")
-        await self._async_send_user_payload(payload, command_name="UPDATE_QUEUE")
-        try:
-            async with asyncio.timeout(_QUEUE_READBACK_TIMEOUT):
-                while True:
-                    await asyncio.sleep(_QUEUE_READBACK_INTERVAL)
-                    if await self.async_get_cleaning_session_identity() != identity:
-                        raise MaticError(
-                            "Native mission changed during the queue change"
-                        )
-                    try:
-                        held = coverage_plan_goals(
-                            await self.async_get_property("coverage_plan")
-                        )
-                    except DecodeError:
-                        continue
-                    if _queue_readback_matches(
-                        goals, held, dropped=dropped, expected_order=expected_order
-                    ):
-                        return
-        except TimeoutError as err:
-            raise MaticError("Robot did not confirm the queue change") from err
 
     async def async_start_coverage(
         self,
@@ -1735,37 +359,16 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_current: Callable[[], None] | None = None,
     ) -> CoverageReceipt | None:
         """Start an exact normal-coverage command for local room IDs."""
-        if not require_settings_readback and session_id is not None:
-            raise MaticError("An untracked coverage command cannot own a session ID")
-        if require_settings_readback and session_id is None:
-            session_id = uuid4()
-        payload = encode_coverage_command(
-            mission_id=floor_plan.mission_id,
-            partition_id=floor_plan.partition_protocol_id,
-            region_ids=region_ids,
+        return await self._commands.async_start_coverage(
+            floor_plan,
+            region_ids,
             cleaning_mode=cleaning_mode,
             coverage_setting=coverage_setting,
             ordered=ordered,
+            require_settings_readback=require_settings_readback,
             session_id=session_id,
+            require_current=require_current,
         )
-        if require_settings_readback:
-            baseline_identity = await self._async_require_idle_native_session()
-        else:
-            baseline_identity = None
-        if require_current is not None:
-            require_current()
-        await self._async_send_user_payload(payload, command_name="START_COVERAGE")
-        if require_settings_readback:
-            assert baseline_identity is not None
-            assert session_id is not None
-            return await self._async_wait_for_coverage_readback(
-                Counter(coverage_command_goal_signatures(payload)),
-                floor_plan,
-                pre_dispatch_identity=baseline_identity,
-                expected_session_id=str(session_id),
-                command_payload=payload,
-            )
-        return None
 
     async def async_start_mixed_coverage(
         self,
@@ -1790,387 +393,20 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         Managed callers durably checkpoint the generated identity before the
         initial write, so restart can fence this exact partial transaction.
         """
-        commands = encode_mixed_coverage_commands(
-            mission_id=floor_plan.mission_id,
-            partition_id=floor_plan.partition_protocol_id,
-            region_ids=region_ids,
-            settings=settings,
-            modes=modes,
+        return await self._commands.async_start_mixed_coverage(
+            floor_plan,
+            region_ids,
+            settings,
+            modes,
+            first_room_name=first_room_name,
+            require_current=require_current,
+            require_owned=require_owned,
+            prepare_stop=prepare_stop,
+            rollback_stop=rollback_stop,
+            on_recovery_stop_transmitted=on_recovery_stop_transmitted,
+            checkpoint_initial_session=checkpoint_initial_session,
             session_id=session_id,
         )
-        expected_goals = Counter(coverage_command_goal_signatures(commands.update))
-        require_current()
-        baseline_identity = await self._async_require_idle_native_session()
-        require_current()
-        if checkpoint_initial_session is not None:
-            await checkpoint_initial_session(
-                hashlib.sha256(commands.session_id.encode("ascii")).hexdigest()
-            )
-            # Durable persistence can yield to an external native start. Revoke
-            # this transaction before sending any bytes if ownership changed.
-            if await self._async_require_idle_native_session() != baseline_identity:
-                raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
-        require_current()
-        try:
-            await self._async_send_user_payload(
-                commands.initial, command_name="START_COVERAGE"
-            )
-            async with asyncio.timeout(180):
-                while True:
-                    require_current()
-                    identity = await self.async_get_cleaning_session_identity()
-                    state = await self.async_get_state()
-                    if identity and identity != baseline_identity:
-                        if uuid_string(identity) != commands.session_id:
-                            raise MaticError(
-                                "Native mission changed before coverage update"
-                            )
-                    elif identity and identity == baseline_identity and state.cleaning:
-                        # A retained completed identity is allowed at dispatch,
-                        # but it cannot establish ownership of a newly active
-                        # task. Fail closed if cleaning resumes under that key.
-                        raise MaticError(
-                            "Native mission changed before coverage update"
-                        )
-                    if (
-                        identity
-                        and identity != baseline_identity
-                        and state.activity.value == "cleaning"
-                        and room_name_key(state.current_area)
-                        == room_name_key(first_room_name)
-                    ):
-                        break
-                    await asyncio.sleep(2)
-                latest = await self.async_get_floor_plan()
-
-                if _floor_command_identity(latest) != _floor_command_identity(
-                    floor_plan
-                ):
-                    raise MaticError("Room map changed before coverage update")
-                if await self.async_get_cleaning_session_identity() != identity:
-                    raise MaticError("Native mission changed before coverage update")
-                state = await self.async_get_state()
-                if await self.async_get_cleaning_session_identity() != identity:
-                    raise MaticError("Native mission changed before coverage update")
-                if state.activity.value != "cleaning" or room_name_key(
-                    state.current_area
-                ) != room_name_key(first_room_name):
-                    raise MaticError("First room changed before coverage update")
-                require_current()
-                await self._async_send_user_payload(
-                    commands.update, command_name="UPDATE_COVERAGE"
-                )
-                if await self.async_get_cleaning_session_identity() != identity:
-                    raise MaticError("Native mission changed after coverage update")
-                return await self._async_wait_for_mixed_coverage_readback(
-                    expected_goals,
-                    require_current=require_current,
-                    expected_identity=identity,
-                    command_payload=commands.update,
-                    floor_plan=floor_plan,
-                    expected_session_id=commands.session_id,
-                )
-        except Exception, asyncio.CancelledError:
-            # Reconnection/read failure must not turn into an unowned STOP.
-            try:
-                require_owned()
-                current = await self.async_get_cleaning_session_identity()
-                require_owned()
-                if current and uuid_string(current) == commands.session_id:
-                    stop_fence_prepared = False
-                    stop_may_have_been_sent = False
-                    try:
-                        # A callback can install an in-memory fence before its
-                        # persistence await fails, so arrange rollback first.
-                        stop_fence_prepared = True
-                        await prepare_stop()
-                        require_owned()
-                        if await self.async_get_cleaning_session_identity() != current:
-                            raise MaticError(
-                                "Native mission changed before recovery STOP"
-                            )
-
-                        def note_stop_transmitted() -> None:
-                            nonlocal stop_may_have_been_sent
-                            if stop_may_have_been_sent:
-                                return
-                            stop_may_have_been_sent = True
-                            if on_recovery_stop_transmitted is not None:
-                                on_recovery_stop_transmitted()
-
-                        await self.async_send_user_command(
-                            UserCommand.STOP, on_transmitted=note_stop_transmitted
-                        )
-                        stop_fence_prepared = False
-                    except Exception, asyncio.CancelledError:
-                        if stop_fence_prepared and not stop_may_have_been_sent:
-                            try:
-                                await rollback_stop()
-                            except Exception, asyncio.CancelledError:
-                                _LOGGER.warning(
-                                    "Mixed coverage STOP fence rollback failed"
-                                )
-                        raise
-            except Exception:
-                _LOGGER.warning(
-                    "Mixed coverage recovery could not confirm safe ownership"
-                )
-            raise
-
-    async def _async_wait_for_mixed_coverage_readback(
-        self,
-        expected_goals: Counter[tuple[str, int, int, int, int]],
-        *,
-        require_current: Callable[[], None],
-        expected_identity: bytes,
-        command_payload: bytes | None = None,
-        floor_plan: FloorPlan | None = None,
-        expected_session_id: str | None = None,
-    ) -> CoverageReceipt | None:
-        """Require the acknowledged update to appear intact in the live plan."""
-        timeout = asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT)
-        actual_goals: Counter[tuple[str, int, int, int, int]] | None = None
-        malformed = False
-        stage = "coverage_plan"
-        receipt: CoverageReceipt | None = None
-
-        def note_stage(value: str) -> None:
-            nonlocal stage
-            stage = value
-
-        def capture_plan(plan: bytes, deep: bool) -> None:
-            nonlocal receipt
-            if (
-                command_payload is not None
-                and floor_plan is not None
-                and expected_session_id is not None
-            ):
-                receipt = make_coverage_receipt(
-                    command_payload,
-                    plan,
-                    floor_plan,
-                    expected_session_id,
-                    deep_mop_enabled=deep,
-                )
-
-        try:
-            async with timeout:
-                while True:
-                    require_current()
-                    stage = "coverage_plan"
-                    try:
-                        (
-                            actual_goals,
-                            matched,
-                        ) = await self._async_read_coverage_readback(
-                            expected_goals,
-                            capture_plan=capture_plan,
-                            note_stage=note_stage,
-                        )
-                        malformed = False
-                    except DecodeError:
-                        actual_goals = Counter()
-                        malformed = True
-                        matched = False
-                    stage = "session_identity"
-                    if (
-                        await self.async_get_cleaning_session_identity()
-                        != expected_identity
-                    ):
-                        raise MaticError(
-                            "Native mission changed during coverage readback"
-                        )
-                    if matched:
-                        return (
-                            receipt
-                            if receipt is not None
-                            and native_session_hash(expected_identity, active=True)
-                            == receipt.session_hash
-                            else None
-                        )
-                    stage = "poll_interval"
-                    await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
-        except TimeoutError as err:
-            if not timeout.expired():
-                raise
-            _log_mixed_readback_timeout(
-                expected_goals, actual_goals, stage=stage, malformed=malformed
-            )
-            raise MaticError("Mixed coverage readback verification timed out") from err
-
-    async def _async_read_coverage_readback(
-        self,
-        expected_goals: Counter[tuple[str, int, int, int, int]],
-        *,
-        capture_plan: Callable[[bytes, bool], None] | None = None,
-        note_stage: Callable[[str], None] | None = None,
-    ) -> tuple[Counter[tuple[str, int, int, int, int]], bool]:
-        """Qualify an override with current native state around a fresh plan.
-
-        This is observed current-state consistency, not proof that the global
-        override was enabled at dispatch or an atomic property snapshot.
-        The caller must still verify native session and ownership guards.
-        """
-
-        async def read(name: str, stage: str) -> bytes:
-            if note_stage is not None:
-                note_stage(stage)
-            return await self.async_get_property(name)
-
-        plan = await read("coverage_plan", "coverage_plan")
-        actual_goals = Counter(coverage_plan_goal_signatures(plan))
-        if coverage_readback_matches(expected_goals, actual_goals):
-            if capture_plan is not None:
-                capture_plan(plan, False)
-            return actual_goals, True
-        if not coverage_readback_matches(
-            expected_goals, actual_goals, deep_mop_enabled=True
-        ):
-            return actual_goals, False
-        if (
-            _decode_deep_mop_state(
-                await read("deep_mop_override_setting_state", "deep_mop_state_before")
-            )
-            is not True
-        ):
-            return actual_goals, False
-        plan = await read("coverage_plan", "coverage_plan_confirm")
-        actual_goals = Counter(coverage_plan_goal_signatures(plan))
-        if coverage_readback_matches(expected_goals, actual_goals):
-            if capture_plan is not None:
-                capture_plan(plan, False)
-            return actual_goals, True
-        if not coverage_readback_matches(
-            expected_goals, actual_goals, deep_mop_enabled=True
-        ):
-            return actual_goals, False
-        deep_mop_enabled = (
-            _decode_deep_mop_state(
-                await read("deep_mop_override_setting_state", "deep_mop_state_after")
-            )
-            is True
-        )
-        matched = deep_mop_enabled and coverage_readback_matches(
-            expected_goals, actual_goals, deep_mop_enabled=True
-        )
-        if matched and capture_plan is not None:
-            capture_plan(plan, True)
-        return actual_goals, matched
-
-    async def _async_wait_for_coverage_readback(
-        self,
-        expected_goals: Counter[tuple[str, int, int, int, int]],
-        floor_plan: FloorPlan,
-        *,
-        pre_dispatch_identity: bytes,
-        expected_session_id: str,
-        command_payload: bytes | None = None,
-    ) -> CoverageReceipt | None:
-        """Require the generated session and observe matching active-goal values.
-
-        Exact goal UUID echoes additionally produce a dispatch receipt. This
-        receipt alone cannot grant cadence credit: completion must match this
-        session and the same retained vacuum goals must be observed again.
-        """
-        deadline = monotonic() + _COVERAGE_START_READBACK_TIMEOUT
-        observed_identity: bytes | None = None
-        receipt: CoverageReceipt | None = None
-
-        def capture_plan(plan: bytes, deep: bool) -> None:
-            nonlocal receipt
-            if command_payload is not None:
-                receipt = make_coverage_receipt(
-                    command_payload,
-                    plan,
-                    floor_plan,
-                    expected_session_id,
-                    deep_mop_enabled=deep,
-                )
-
-        async with asyncio.timeout(_COVERAGE_START_READBACK_TIMEOUT):
-            while True:
-                identity = await self.async_get_cleaning_session_identity()
-                if identity is None:
-                    raise MaticError("Native task identity became unavailable")
-                if identity and identity != pre_dispatch_identity:
-                    try:
-                        observed_session_id = uuid_string(identity)
-                    except DecodeError as err:
-                        raise MaticError(
-                            "Native task identity cannot be correlated to coverage"
-                        ) from err
-                    if observed_session_id != expected_session_id:
-                        raise MaticError(
-                            "Native mission does not match dispatched coverage"
-                        )
-                    if observed_identity is None:
-                        observed_identity = identity
-                    elif identity != observed_identity:
-                        raise MaticError(
-                            "Native mission changed during coverage readback"
-                        )
-                    active = await self.async_get_active_cleaning_session_state()
-                    if active is True:
-                        try:
-                            _, matched = await self._async_read_coverage_readback(
-                                expected_goals, capture_plan=capture_plan
-                            )
-                        except DecodeError:
-                            matched = False
-                        if matched:
-                            if (
-                                await self.async_get_cleaning_session_identity()
-                                != identity
-                            ):
-                                raise MaticError(
-                                    "Native mission changed during coverage readback"
-                                )
-                            if (
-                                await self.async_get_active_cleaning_session_state()
-                                is not True
-                            ):
-                                raise MaticError(
-                                    "Native mission became inactive during "
-                                    "coverage readback"
-                                )
-                            latest_floor = await self.async_get_floor_plan()
-                            if _floor_command_identity(
-                                latest_floor
-                            ) != _floor_command_identity(floor_plan):
-                                raise MaticError(
-                                    "Room map changed during coverage readback"
-                                )
-                            # Recheck both live guards after the floor await;
-                            # leave identity last so ownership is freshest at
-                            # the point we accept readback.
-                            if (
-                                await self.async_get_active_cleaning_session_state()
-                                is not True
-                            ):
-                                raise MaticError(
-                                    "Native mission became inactive during "
-                                    "coverage readback"
-                                )
-                            if (
-                                await self.async_get_cleaning_session_identity()
-                                != identity
-                            ):
-                                raise MaticError(
-                                    "Native mission changed during coverage readback"
-                                )
-                            return (
-                                receipt
-                                if receipt is not None
-                                and native_session_hash(identity, active=True)
-                                == receipt.session_hash
-                                else None
-                            )
-                if monotonic() >= deadline:
-                    raise MaticError(
-                        "Robot did not report requested settings with the "
-                        "dispatched active session"
-                    )
-                await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
 
     async def async_confirm_coverage_receipt(
         self, receipt: CoverageReceipt, completion_session_hash: str
@@ -2182,72 +418,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         Unavailable or changed evidence withholds cadence credit; it does not
         invalidate otherwise verified native cleaning completion.
         """
-        if receipt.session_hash != completion_session_hash:
-            return False
-        try:
-            async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
-                identity = await self.async_get_cleaning_session_identity()
-                if identity is None or (
-                    identity
-                    and native_session_hash(identity, active=True)
-                    != receipt.session_hash
-                ):
-                    return False
-                if await self.async_get_active_cleaning_session_state() is not False:
-                    return False
-                if (
-                    coverage_floor_hash(await self.async_get_floor_plan())
-                    != receipt.floor_hash
-                ):
-                    return False
-                plan = await self.async_get_property("coverage_plan")
-                history_fingerprint = None
-                if not receipt_matches_plan(receipt, plan):
-                    if not coverage_plan_lacks_active_goals(plan):
-                        return False
-                    history_fingerprint = (
-                        await self._async_coverage_history_fingerprint(receipt)
-                    )
-                    if history_fingerprint is None:
-                        return False
-                if (
-                    coverage_floor_hash(await self.async_get_floor_plan())
-                    != receipt.floor_hash
-                ):
-                    return False
-                if await self.async_get_active_cleaning_session_state() is not False:
-                    return False
-                if await self.async_get_cleaning_session_identity() != identity:
-                    return False
-                # A second fresh sample catches same-session edits during the
-                # floor/activity checks. The protocol has no atomic generation
-                # marker, so this establishes observed consistency only.
-                final_plan = await self.async_get_property("coverage_plan")
-                if history_fingerprint is None:
-                    return receipt_matches_plan(receipt, final_plan)
-                if not coverage_plan_lacks_active_goals(final_plan):
-                    return False
-                return history_fingerprint == (
-                    await self._async_coverage_history_fingerprint(receipt)
-                )
-        except MaticError, DecodeError, TimeoutError:
-            return False
-
-    async def _async_coverage_history_fingerprint(
-        self, receipt: CoverageReceipt
-    ) -> str | None:
-        """Bind one complete retained goal set to its unique native history key."""
-        entries = await self.async_get_tracked_collection_entries(
-            "coverage_session_history", limit=64
+        return await self._commands.async_confirm_coverage_receipt(
+            receipt, completion_session_hash
         )
-        matches = [
-            entry
-            for entry in entries
-            if native_session_hash(entry.key) == receipt.session_hash
-        ]
-        if len(matches) != 1 or not receipt_matches_history(receipt, matches[0].value):
-            return None
-        return hashlib.sha256(matches[0].value).hexdigest()
 
     async def async_start_custom_coverage(
         self,
@@ -2265,60 +438,26 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         mission; that start also requires an idle native session first, as a
         tracked room start does.
         """
-        payload = encode_custom_coverage_command(
-            mission_id=floor_plan.mission_id,
-            circles=circles,
+        return await self._commands.async_start_custom_coverage(
+            floor_plan,
+            circles,
             cleaning_mode=cleaning_mode,
             coverage_setting=coverage_setting,
             session_id=session_id,
-        )
-        if session_id is not None:
-            await self._async_require_idle_native_session()
-        if require_current is not None:
-            require_current()
-        await self._async_send_user_payload(
-            payload, command_name="START_CUSTOM_COVERAGE"
+            require_current=require_current,
         )
 
     async def async_set_binary_setting(self, setting: str, enabled: bool) -> None:
         """Set a live-verified reversible binary preference."""
-        try:
-            channel = _BINARY_SETTING_CHANNELS[setting]
-            state_property = _BINARY_SETTING_STATE_PROPERTIES[setting]
-        except KeyError as err:
-            raise ValueError(f"Unsupported binary setting: {setting}") from err
-        await self._async_send_channel_payload(
-            channel,
-            bytes((0x08, int(enabled))),
-        )
-        await self._async_confirm_setting_readback(
-            state_property, _decode_binary_state, enabled
-        )
+        return await self._commands.async_set_binary_setting(setting, enabled)
 
     async def async_set_deep_mop(self, enabled: bool) -> None:
         """Set the verified double-pass mopping override."""
-        await self._async_send_channel_payload(
-            "deep_mop_override_setting_command",
-            b"\x12\x00" if enabled else b"\x0a\x00",
-        )
-        await self._async_confirm_setting_readback(
-            "deep_mop_override_setting_state", _decode_deep_mop_state, enabled
-        )
+        return await self._commands.async_set_deep_mop(enabled)
 
     async def async_set_water_flow(self, factor: float) -> None:
         """Set the verified 0.5x to 2.0x water-flow factor."""
-        if not math.isfinite(factor) or not 0.5 <= factor <= 2.0:
-            raise ValueError("Water flow must be between 0.5 and 2.0")
-        rounded = round(factor, 1)
-        if not math.isclose(factor, rounded, abs_tol=1e-6):
-            raise ValueError("Water flow must use 0.1 increments")
-        await self._async_send_channel_payload(
-            "water_flow_override_command",
-            b"\x0a\x05\x0d" + struct.pack("<f", rounded),
-        )
-        await self._async_confirm_setting_readback(
-            "water_flow_override_state", _decode_water_flow_factor, rounded
-        )
+        return await self._commands.async_set_water_flow(factor)
 
     async def async_scan_wifi_signal(self) -> int | None:
         """Ask the robot for one Wi-Fi scan and return its link signal in dBm.
@@ -2329,1160 +468,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         identical scan left it unchanged. ``None`` means no scan block
         appeared in time or the connected network was not listed.
         """
-        baseline = _wifi_scan_block(await self.async_get_property("wifi_status"))
-        await self._async_send_channel_payload("wifi_scan_command", b"")
-        reads = 0
-        try:
-            async with asyncio.timeout(_WIFI_SCAN_RESULT_TIMEOUT_SECONDS):
-                while True:
-                    await asyncio.sleep(_WIFI_SCAN_RESULT_INTERVAL_SECONDS)
-                    payload = await self.async_get_property("wifi_status")
-                    scan = _wifi_scan_block(payload)
-                    reads += 1
-                    if scan is not None and (
-                        scan != baseline or reads >= _WIFI_SCAN_SETTLE_READS
-                    ):
-                        return _decode_wifi_status(payload)[2]
-        except TimeoutError:
-            return None
-
-    async def _async_confirm_setting_readback(
-        self,
-        property_name: str,
-        decode: Callable[[object], bool | float | None],
-        expected: bool | float,
-    ) -> None:
-        """Wait for one acknowledged setting write to appear in fresh state."""
-        reconnect_attempted = False
-        try:
-            async with asyncio.timeout(_SETTING_READBACK_TIMEOUT_SECONDS):
-                while True:
-                    await self.async_connect()
-                    failed_channel = self._channel
-                    try:
-                        observed = decode(await self.async_get_property(property_name))
-                    except CannotConnectError:
-                        if reconnect_attempted:
-                            raise
-                        _LOGGER.debug(
-                            "Retrying Hermes %s setting read on a fresh pinned channel",
-                            property_name,
-                        )
-                        await self._async_reconnect_after_read_failure(failed_channel)
-                        reconnect_attempted = True
-                        observed = None
-                    if observed is not None and observed == expected:
-                        return
-                    await asyncio.sleep(_SETTING_READBACK_INTERVAL_SECONDS)
-        except TimeoutError as err:
-            raise CannotConnectError(
-                "The robot did not confirm the requested setting"
-            ) from err
-
-    async def _async_send_user_payload(
-        self,
-        payload: bytes,
-        *,
-        command_name: str,
-        on_transmitted: Callable[[], None] | None = None,
-    ) -> None:
-        """Send an encoded command through the authenticated user channel."""
-        await self._async_send_channel_payload(
-            "user_command",
-            payload,
-            command_name=command_name,
-            on_transmitted=on_transmitted,
-        )
-
-    async def _async_send_channel_payload(
-        self,
-        channel_name: str,
-        payload: bytes,
-        *,
-        command_name: str | None = None,
-        on_transmitted: Callable[[], None] | None = None,
-    ) -> None:
-        """Observe every outgoing channel write, including internal cleanup."""
-        fields = {"channel": channel_name, "command": command_name or channel_name}
-        command_id = self.activity_journal.record("command_requested", **fields)
-        try:
-            outcome = await self._async_transmit_channel_payload(
-                channel_name, payload, command_id, on_transmitted=on_transmitted
-            )
-        except asyncio.CancelledError:
-            self.activity_journal.record(
-                "command_result", command_id=command_id, outcome="cancelled", **fields
-            )
-            raise
-        except Exception as err:
-            self.activity_journal.record(
-                "command_result",
-                command_id=command_id,
-                outcome="failed",
-                error_type=type(err).__name__,
-                **fields,
-            )
-            raise
-        self.activity_journal.record(
-            "command_result", command_id=command_id, outcome=outcome, **fields
-        )
-
-    async def _async_transmit_channel_payload(
-        self,
-        channel_name: str,
-        payload: bytes,
-        command_id: int,
-        *,
-        on_transmitted: Callable[[], None] | None = None,
-    ) -> str:
-        """Send unchanged bytes; record when transport transmission begins."""
-        if self._channel is None:
-            await self.async_connect()
-        channel = self._channel
-        if channel is None:
-            raise CannotConnectError("Hermes channel did not open")
-
-        request = ChannelRequest(
-            channel_name=channel_name,
-            value=payload,
-        )
-        metadata = dict(self._metadata or {})
-        metadata[HERMES_TARGET_KEY] = channel_name
-        try:
-            async with (
-                self._map_stream_errors("command"),
-                asyncio.timeout(_RPC_TIMEOUT),
-            ):
-                async with HermesStub(channel).SendToChannel.open(
-                    metadata=metadata
-                ) as stream:
-                    self.activity_journal.record(
-                        "command_sending", command_id=command_id, channel=channel_name
-                    )
-                    await stream.send_message(request, end=True)
-                    # A failed send_message can be a local rejection before
-                    # any request bytes reach the transport. Mark the point
-                    # only after its DATA write returns successfully; errors
-                    # while awaiting the response are then known ambiguous.
-                    if on_transmitted is not None:
-                        on_transmitted()
-                    response = await stream.recv_message()
-        except MaticError as err:
-            self._command_health[channel_name] = type(err).__name__
-            raise
-        # The response schema is private, so its fields stay unread until
-        # fixture evidence exists; whether the robot acknowledged at all is
-        # transport-level and safe to observe.
-        if response is None:
-            self._command_health[channel_name] = "unacknowledged"
-            _LOGGER.debug(
-                "Hermes %s command stream closed without a response", channel_name
-            )
-        else:
-            self._command_health[channel_name] = "acknowledged"
-            _LOGGER.debug(
-                "Hermes %s command acknowledged with a %d-byte response",
-                channel_name,
-                response.ByteSize(),
-            )
-
-        return self._command_health[channel_name]
+        return await self._commands.async_scan_wifi_signal()
 
     @property
     def command_health(self) -> dict[str, str]:
         """Return non-sensitive acknowledgment health for sent commands."""
-        return dict(self._command_health)
-
-    @property
-    def _metadata(self) -> dict[str, str] | None:
-        """Return authentication metadata only after pairing."""
-        if self._credential is None:
-            return None
-        return self._credential.metadata()
-
-
-def _bounded_fields(
-    payload: bytes,
-    *,
-    max_bytes: int,
-    max_fields: int,
-) -> tuple[WireField, ...]:
-    """Decode a protobuf message only within semantic byte and field budgets."""
-    if len(payload) > max_bytes:
-        raise DecodeError("telemetry payload exceeds the byte limit")
-    try:
-        return decode_fields(payload, max_fields=max_fields)
-    except WireFieldLimitExceeded as err:
-        raise DecodeError(
-            "telemetry payload has too many fields (field limit)"
-        ) from err
-
-
-def _telemetry_fields(payload: bytes) -> tuple[WireField, ...]:
-    """Bound scalar property allocation before interpreting its fields."""
-    return _bounded_fields(
-        payload,
-        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-    )
-
-
-def _telemetry_bytes(
-    payload: bytes,
-    number: int,
-    *,
-    max_bytes: int = _TELEMETRY_NESTED_MAX_BYTES,
-    max_fields: int = _TELEMETRY_NESTED_MAX_FIELDS,
-) -> bytes:
-    """Read a required bytes field after enforcing its message budgets."""
-    for field in _bounded_fields(payload, max_bytes=max_bytes, max_fields=max_fields):
-        if field.number == number and field.wire_type == 2:
-            assert isinstance(field.value, bytes)
-            return field.value
-    raise DecodeError(f"missing protobuf field {number}")
-
-
-def _telemetry_varint(
-    payload: bytes,
-    number: int,
-    *,
-    max_bytes: int = _TELEMETRY_NESTED_MAX_BYTES,
-    max_fields: int = _TELEMETRY_NESTED_MAX_FIELDS,
-) -> int:
-    """Read a required varint after enforcing its message budgets."""
-    for field in _bounded_fields(payload, max_bytes=max_bytes, max_fields=max_fields):
-        if field.number == number and field.wire_type == 0:
-            assert isinstance(field.value, int)
-            return field.value
-    raise DecodeError(f"missing protobuf varint field {number}")
-
-
-def _decode_text_from_fields(fields: tuple[WireField, ...], number: int) -> str | None:
-    """Decode one bounded UTF-8 string from already parsed fields."""
-    value = next(
-        (
-            field.value
-            for field in fields
-            if field.number == number
-            and field.wire_type == 2
-            and isinstance(field.value, bytes)
-        ),
-        None,
-    )
-    if value is None or len(value) > _TELEMETRY_TEXT_MAX_BYTES:
-        return None
-    try:
-        return value.decode("utf-8").strip() or None
-    except UnicodeDecodeError:
-        return None
-
-
-def _decode_operational_state(payload: bytes) -> RobotOperationalState:
-    """Decode the verified subset of Matic's internal Kabuki output."""
-    fields = _bounded_fields(
-        payload,
-        max_bytes=_OPERATIONAL_STATE_MAX_BYTES,
-        max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
-    )
-    wire = KabukiOutputWire.FromString(payload)
-    if (
-        len(wire.states) > _OPERATIONAL_STATE_MAX_CODES
-        or len(wire.errors) > _OPERATIONAL_STATE_MAX_CODES
-    ):
-        raise DecodeError("operational state has too many status codes")
-    errors_reported = any(field.name == "errors" for field, _ in wire.ListFields())
-    voice_status, voice_intent, gesture_status, following_person = _decode_cues_state(
-        fields
-    )
-    percentage = None
-    if wire.HasField("battery_fraction") and math.isfinite(wire.battery_fraction):
-        percentage = max(0, min(100, round(wire.battery_fraction * 100)))
-    states = tuple(wire.states)
-    return RobotOperationalState(
-        battery_percentage=percentage,
-        state_codes=states,
-        error_codes=tuple(wire.errors),
-        charging_idle=106 in states,
-        charging=107 in states,
-        low_charge=206 in states,
-        paused=any(code in states for code in (120, 200, 302)),
-        cleaning=119 in states,
-        returning=104 in states,
-        software_version=_decode_text_from_fields(fields, 4),
-        release_channel=_decode_text_from_fields(fields, 5),
-        current_area=_decode_text_from_fields(fields, 16),
-        previous_area=_decode_text_from_fields(fields, 14),
-        robot_profile=_decode_text_from_fields(fields, 17),
-        cues_voice_status=voice_status,
-        cues_voice_intent=voice_intent,
-        cues_gesture_status=gesture_status,
-        following_person=following_person,
-        bag_full=(_BAG_FULL_ERROR in wire.errors) if errors_reported else None,
-        bag_missing=(_BAG_MISSING_ERROR in wire.errors) if errors_reported else None,
-    )
-
-
-_CUES_INTENTS_BY_FIELD = {
-    1: CuesIntent.CLEAN,
-    2: CuesIntent.DOCK,
-    3: CuesIntent.PAUSE,
-    4: CuesIntent.RESUME,
-    5: CuesIntent.STOP,
-    6: CuesIntent.FOLLOW_PERSON,
-    7: CuesIntent.SINK_SUMMON,
-    8: CuesIntent.NAVIGATE,
-    # Fields 9, 10, and 17 are recording-only intents. Deliberately collapse
-    # those classifications to UNKNOWN: this client does not expose Matic's
-    # recording features or create an automation signal around them.
-    9: CuesIntent.UNKNOWN,
-    10: CuesIntent.UNKNOWN,
-    11: CuesIntent.REDO_LAST_CLEAN,
-    12: CuesIntent.CLEAN_ALL,
-    13: CuesIntent.POINT_TO_CLEAN,
-    14: CuesIntent.POINT_TO_CLEAN,
-    15: CuesIntent.GO_AWAY,
-    16: CuesIntent.UNKNOWN,
-    17: CuesIntent.UNKNOWN,
-    # Firmware retains both legacy and current CleaningIntent tags.
-    18: CuesIntent.CLEAN,
-}
-
-_CUES_GESTURES_BY_FIELD = {
-    1: CuesGestureStatus.AWAITING_POINTED_TARGET,
-    2: CuesGestureStatus.POINTED_TARGET_ACCEPTED,
-    3: CuesGestureStatus.NO_TARGET_FOUND,
-    4: CuesGestureStatus.FACING_USER,
-    5: CuesGestureStatus.PERSON_NOT_FOUND,
-    6: CuesGestureStatus.FOLLOWING,
-}
-
-
-def _decode_cues_state(
-    output_fields: tuple[WireField, ...],
-) -> tuple[
-    CuesVoiceStatus | None,
-    CuesIntent | None,
-    CuesGestureStatus | None,
-    bool | None,
-]:
-    """Decode the non-media Cues subset of Kabuki's repeated payloads."""
-    voice_status: CuesVoiceStatus | None = None
-    voice_intent: CuesIntent | None = None
-    gesture_status: CuesGestureStatus | None = None
-    following_person: bool | None = None
-    for output_field in output_fields:
-        if (
-            output_field.number != 18
-            or output_field.wire_type != 2
-            or not isinstance(output_field.value, bytes)
-        ):
-            continue
-        for cues_field in _bounded_fields(
-            output_field.value,
-            max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-            max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-        ):
-            if cues_field.number == 17 and cues_field.wire_type == 2:
-                assert isinstance(cues_field.value, bytes)
-                voice_status, voice_intent = _decode_cues_voice_status(cues_field.value)
-                if following_person is None:
-                    following_person = False
-            elif cues_field.number == 20 and cues_field.wire_type == 2:
-                # Following is represented by presence of a unit payload.
-                following_person = True
-            elif cues_field.number == 21 and cues_field.wire_type == 2:
-                assert isinstance(cues_field.value, bytes)
-                gesture_status = _decode_cues_gesture_status(cues_field.value)
-                if following_person is None:
-                    following_person = False
-    return voice_status, voice_intent, gesture_status, following_person
-
-
-def _decode_cues_voice_status(
-    payload: bytes,
-) -> tuple[CuesVoiceStatus | None, CuesIntent | None]:
-    """Decode Matic's VoiceStatus oneof without retaining voice content."""
-    status: CuesVoiceStatus | None = None
-    intent: CuesIntent | None = None
-    for field in _bounded_fields(
-        payload,
-        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-    ):
-        if field.wire_type != 2 or not isinstance(field.value, bytes):
-            continue
-        if field.number == 1:
-            status = CuesVoiceStatus.DISABLED
-            intent = None
-        elif field.number == 2:
-            status = CuesVoiceStatus.LISTENING_FOR_WAKE_WORD
-            intent = None
-        elif field.number == 3:
-            status = CuesVoiceStatus.CLASSIFIED
-            intent = _decode_cues_intent(field.value)
-        elif field.number == 4:
-            # Rejection details can contain user-derived context. Only expose
-            # the lifecycle result needed for an automation trigger.
-            status = CuesVoiceStatus.REJECTED
-            intent = None
-        elif field.number == 5:
-            status = CuesVoiceStatus.LISTENING_FOR_INTENT
-            intent = None
-        elif field.number == 6:
-            status = CuesVoiceStatus.THINKING_FOR_INTENT
-            intent = None
-    return status, intent
-
-
-def _decode_cues_intent(payload: bytes) -> CuesIntent:
-    """Decode the classified intent kind, excluding recording-only variants."""
-    intent = CuesIntent.UNKNOWN
-    for field in _bounded_fields(
-        payload,
-        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-    ):
-        if field.wire_type == 2 and isinstance(field.value, bytes):
-            intent = _CUES_INTENTS_BY_FIELD.get(field.number, CuesIntent.UNKNOWN)
-    return intent
-
-
-def _decode_cues_gesture_status(payload: bytes) -> CuesGestureStatus | None:
-    """Decode Matic's gesture lifecycle oneof without coordinates or imagery."""
-    status = None
-    for field in _bounded_fields(
-        payload,
-        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-    ):
-        if field.wire_type == 2 and isinstance(field.value, bytes):
-            status = _CUES_GESTURES_BY_FIELD.get(field.number, status)
-    return status
-
-
-def _decode_current_version(
-    payload: object,
-) -> tuple[str | None, str | None, int | None, bool | None]:
-    """Decode Matic's verified current-version property."""
-    if not isinstance(payload, bytes):
-        return None, None, None, None
-    try:
-        fields = _telemetry_fields(payload)
-    except DecodeError:
-        return None, None, None, None
-    protocol = next(
-        (field.value for field in fields if field.number == 3 and field.wire_type == 0),
-        None,
-    )
-    supports = next(
-        (
-            bool(field.value)
-            for field in fields
-            if field.number == 4 and field.wire_type == 0
-        ),
-        False,
-    )
-    return (
-        _decode_text_from_fields(fields, 1),
-        _decode_text_from_fields(fields, 2),
-        protocol if isinstance(protocol, int) else None,
-        supports,
-    )
-
-
-def _decode_text_field(payload: object, number: int) -> str | None:
-    """Decode one safe UTF-8 protobuf string field."""
-    if not isinstance(payload, bytes):
-        return None
-    try:
-        return _decode_text_from_fields(_telemetry_fields(payload), number)
-    except DecodeError:
-        return None
-
-
-def _decode_binary_state(payload: object) -> bool | None:
-    """Decode BinaryState, including Hermes' verified disabled tombstone."""
-    if not isinstance(payload, bytes):
-        return None
-    if len(payload) == 16:
-        return False
-    try:
-        return bool(_telemetry_varint(payload, 1))
-    except DecodeError:
-        return None
-
-
-def _decode_deep_mop_state(payload: object) -> bool | None:
-    """Decode the native app's observed disabled/enabled empty-message arms.
-
-    Field 1 is disabled; field 2 enables double-pass mopping. Accept only the
-    complete observed encodings so ambiguous or malformed state cannot qualify
-    a firmware coverage-setting override.
-    """
-    if not isinstance(payload, bytes):
-        return None
-    if payload == b"\x12\x00":
-        return True
-    if payload == b"\x0a\x00":
-        return False
-    return None
-
-
-def _decode_presence_state(payload: object) -> bool | None:
-    """Decode an optional-state property without exposing its nested data."""
-    if not isinstance(payload, bytes):
-        return None
-    if len(payload) == 16:
-        return False
-    try:
-        return bool(_telemetry_fields(payload))
-    except DecodeError:
-        return None
-
-
-def _decode_water_flow_factor(payload: object) -> float | None:
-    """Decode WaterFlowOverrideFactor without exposing unrelated payloads."""
-    if not isinstance(payload, bytes):
-        return None
-    if len(payload) == 16:
-        return 1.0
-    try:
-        nested = _telemetry_bytes(payload, 1)
-        raw_factor = next(
-            item.value
-            for item in _telemetry_fields(nested)
-            if item.number == 1
-            and item.wire_type == 5
-            and isinstance(item.value, bytes)
-        )
-        factor = struct.unpack("<f", raw_factor)[0]
-    except DecodeError, StopIteration, struct.error:
-        return None
-    return round(factor, 1) if math.isfinite(factor) else None
-
-
-def _decode_update_state(payload: object) -> str | None:
-    """Decode the verified updater oneof without triggering an update."""
-    if not isinstance(payload, bytes):
-        return None
-    names = {
-        1: "idle",
-        2: "busy",
-        3: "progress",
-        4: "error",
-        5: "complete",
-        6: "available",
-    }
-    try:
-        return names.get(_telemetry_fields(payload)[0].number)
-    except DecodeError, IndexError:
-        return None
-
-
-def _decode_timezone(payload: object) -> str | None:
-    """Decode only the non-sensitive timezone identifier."""
-    if not isinstance(payload, bytes) or len(payload) == 16:
-        return None
-    try:
-        return _decode_text_field(_telemetry_bytes(payload, 1), 2)
-    except DecodeError:
-        return None
-
-
-def _wifi_scan_block(payload: bytes) -> bytes | None:
-    """Return the raw scan-result block of a ``wifi_status`` value."""
-    try:
-        return _telemetry_bytes(
-            payload,
-            7,
-            max_bytes=_WIFI_STATUS_MAX_BYTES,
-            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
-        )
-    except DecodeError:
-        return None
-
-
-def _decode_wifi_status(
-    payload: object,
-) -> tuple[str | None, str | None, int | None, tuple[WifiNetwork, ...]]:
-    """Decode the current Wi-Fi link and full locally visible network scan."""
-    if not isinstance(payload, bytes) or len(payload) > _WIFI_STATUS_MAX_BYTES:
-        return None, None, None, ()
-    names = {
-        0: "unknown",
-        1: "unknown",
-        2: "connecting",
-        3: "connected",
-        4: "disconnected",
-        5: "disconnecting",
-        6: "roaming",
-    }
-    try:
-        fields = _bounded_fields(
-            payload,
-            max_bytes=_WIFI_STATUS_MAX_BYTES,
-            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
-        )
-        state = names.get(
-            _telemetry_varint(
-                payload,
-                1,
-                max_bytes=_WIFI_STATUS_MAX_BYTES,
-                max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
-            ),
-            "unknown",
-        )
-    except DecodeError:
-        return None, None, None, ()
-
-    ssid = _decode_text_from_fields(fields, 4) or _decode_text_from_fields(fields, 10)
-    networks: list[WifiNetwork] = []
-    try:
-        scan = _telemetry_bytes(
-            payload,
-            7,
-            max_bytes=_WIFI_STATUS_MAX_BYTES,
-            max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
-        )
-        scan_fields = _bounded_fields(
-            scan,
-            max_bytes=_WIFI_STATUS_MAX_BYTES,
-            max_fields=_WIFI_NETWORK_MAX_COUNT * 2,
-        )
-        network_count = sum(
-            field.number == 1 and isinstance(field.value, bytes)
-            for field in scan_fields
-        )
-        if network_count > _WIFI_NETWORK_MAX_COUNT:
-            return state, ssid, None, ()
-        for field in scan_fields:
-            if field.number != 1 or not isinstance(field.value, bytes):
-                continue
-            item = field.value
-            _bounded_fields(
-                item,
-                max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-                max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-            )
-            network_ssid = _decode_text_field(item, 1) or _decode_text_field(item, 7)
-            if network_ssid is None:
-                continue
-            try:
-                encoded_signal = _telemetry_varint(item, 6)
-                signal = (encoded_signal >> 1) ^ -(encoded_signal & 1)
-            except DecodeError:
-                signal = None
-            try:
-                connected = bool(_telemetry_varint(item, 3))
-            except DecodeError:
-                connected = network_ssid == ssid
-            try:
-                known = bool(_telemetry_varint(item, 8))
-            except DecodeError:
-                known = connected
-            networks.append(WifiNetwork(network_ssid, signal, connected, known))
-    except DecodeError:
-        pass
-
-    networks.sort(
-        key=lambda item: (
-            not item.connected,
-            -(item.signal_dbm if item.signal_dbm is not None else -999),
-            item.ssid.casefold(),
-        )
-    )
-    current = next((item for item in networks if item.connected), None)
-    return (
-        state,
-        ssid,
-        current.signal_dbm if current is not None else None,
-        tuple(networks),
-    )
-
-
-def _decode_uploader_state(payload: object) -> bool | None:
-    """Decode whether optional vendor diagnostic upload is enabled."""
-    if not isinstance(payload, bytes):
-        return None
-    if len(payload) == 16:
-        return False
-    try:
-        fields = _telemetry_fields(payload)
-    except DecodeError:
-        return None
-    for field in fields:
-        if field.number == 1 and isinstance(field.value, bytes):
-            return False
-        if field.number == 2:
-            if isinstance(field.value, int):
-                return bool(field.value)
-            if isinstance(field.value, bytes):
-                try:
-                    return bool(_telemetry_varint(field.value, 1))
-                except DecodeError:
-                    return False
-    return None
-
-
-def _decode_latest_maintenance(
-    entries: tuple[HermesCollectionEntry, ...],
-) -> tuple[str, tuple[int, ...]] | None:
-    """Return the newest recap month and its maintenance suggestions.
-
-    An unreadable newest recap yields None rather than an older month, so
-    stale suggestions never replace current ones.
-    """
-    keyed: list[tuple[tuple[int, int], HermesCollectionEntry]] = []
-    for entry in entries:
-        try:
-            month, year = decode_monthly_recap_key(entry)
-        except DecodeError:
-            continue
-        keyed.append(((year, month), entry))
-    if not keyed:
-        return None
-    (year, month), newest = max(keyed, key=lambda item: item[0])
-    try:
-        recap = decode_monthly_cleaning_recap(newest)
-    except DecodeError:
-        return None
-    return f"{year:04d}-{month:02d}", recap.maintenance_suggestions
-
-
-def _decode_bag_pass(
-    entries: tuple[HermesCollectionEntry, ...],
-) -> datetime | None:
-    """Return the expiry of the first decodable active bag pass."""
-    for entry in entries:
-        try:
-            expires_at = decode_bag_pass_expiry(entry)
-        except DecodeError:
-            continue
-        if expires_at is not None:
-            return expires_at
-    return None
-
-
-def _decode_coverage_time(payload: object) -> int | None:
-    """Decode the total active cleaning duration when the property is present."""
-    if not isinstance(payload, bytes) or len(payload) == 16:
-        return None
-    try:
-        for field in _telemetry_fields(payload):
-            if field.number != 3 or not isinstance(field.value, bytes):
-                continue
-            return _telemetry_varint(field.value, 1)
-    except DecodeError:
-        pass
-    return None
-
-
-def _decode_run_progress(payload: bytes) -> RunProgress | None:
-    """Decode a running clean's time from ``coverage_time`` field 4.
-
-    Live runs report ``4{1: session, 2{1: elapsed s}, 3{1{1{1: remaining s}}}}``.
-    Without field 4 no clean is under way.
-    """
-    try:
-        if not any(field.number == 4 for field in _telemetry_fields(payload)):
-            return None
-        run = _telemetry_bytes(payload, 4)
-        elapsed = _telemetry_varint(_telemetry_bytes(run, 2), 1)
-        remaining = _telemetry_bytes(run, 3)
-        for _ in range(2):
-            remaining = _telemetry_bytes(remaining, 1)
-        return RunProgress(elapsed, _telemetry_varint(remaining, 1))
-    except DecodeError:
-        return None
-
-
-def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
-    """Decode a robot-native weekly cleaning schedule."""
-    if len(payload) > _SCHEDULE_MAX_BYTES:
-        return None
-    try:
-        weekly = _telemetry_bytes(
-            payload, 1, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
-        )
-        days = _telemetry_bytes(weekly, 1)
-        schedule_time = _telemetry_bytes(weekly, 3)
-        minute_of_day = _telemetry_varint(schedule_time, 1)
-    except DecodeError:
-        return None
-
-    weekdays: list[str] = []
-    for number, name in enumerate(_WEEKDAYS, start=1):
-        try:
-            if _telemetry_varint(days, number):
-                weekdays.append(name)
-        except DecodeError:
-            continue
-    try:
-        timezone_payload = _telemetry_bytes(schedule_time, 4)
-        timezone = _decode_text_field(timezone_payload, 2)
-    except DecodeError:
-        timezone = None
-    try:
-        ordered = bool(
-            _telemetry_varint(
-                payload,
-                3,
-                max_bytes=_SCHEDULE_MAX_BYTES,
-                max_fields=_SCHEDULE_MAX_FIELDS,
-            )
-        )
-    except DecodeError:
-        ordered = False
-
-    enabled: bool | None = None
-    try:
-        enabled_payload = _telemetry_bytes(
-            payload, 9, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
-        )
-        if not enabled_payload:
-            enabled = True
-        else:
-            enabled_fields = _telemetry_fields(enabled_payload)
-            if enabled_fields:
-                enabled = enabled_fields[0].number == 1
-    except DecodeError:
-        pass
-
-    try:
-        room_ids = _uuid_candidates(payload)
-        name_fields = _bounded_fields(
-            payload, max_bytes=_SCHEDULE_MAX_BYTES, max_fields=_SCHEDULE_MAX_FIELDS
-        )
-    except DecodeError:
-        return None
-    return CleaningSchedule(
-        name=_decode_text_from_fields(name_fields, 2),
-        weekdays=tuple(weekdays),
-        minute_of_day=minute_of_day if 0 <= minute_of_day < 1440 else None,
-        timezone=timezone,
-        ordered=ordered,
-        enabled=enabled,
-        room_ids=room_ids,
-        cleaning_mode=_schedule_cleaning_mode(name_fields),
-    )
-
-
-def _schedule_cleaning_mode(fields: tuple[WireField, ...]) -> str | None:
-    """Summarize the modes of a schedule's cleaning goals.
-
-    Goals sit at 7.1 and carry the same 6.3 coverage spec as a start command;
-    spec field 4 is the mode, 0 for vacuum and 1 for mop, omitted when 0.
-    The room walk in ``_uuid_candidates`` already rejects a schedule over the
-    shared field budget, so this budget only guards against a second walk.
-    """
-    field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
-    modes: set[int] = set()
-
-    def children(payload: bytes) -> tuple[WireField, ...] | None:
-        try:
-            return decode_fields(payload, field_budget=field_budget)
-        except DecodeError:
-            return None
-
-    def nested(payload: bytes, number: int) -> list[bytes]:
-        return [
-            field.value
-            for field in children(payload) or ()
-            if field.number == number
-            and field.wire_type == 2
-            and isinstance(field.value, bytes)
-        ]
-
-    specs = [
-        spec
-        for field in fields
-        if field.number == 7 and isinstance(field.value, bytes)
-        for goal in nested(field.value, 1)
-        for wrapper in nested(goal, 6)
-        for spec in nested(wrapper, 3)
-    ]
-    for spec in specs:
-        # Proto3 omits zero values, so an empty spec is a vacuum goal.
-        spec_fields = children(spec)
-        if spec_fields is None:
-            continue
-        modes.add(
-            next(
-                (
-                    spec_field.value
-                    for spec_field in spec_fields
-                    if spec_field.number == 4 and isinstance(spec_field.value, int)
-                ),
-                0,
-            )
-        )
-    if modes == {0}:
-        return "vacuum"
-    if modes == {1}:
-        return "mop"
-    if modes == {0, 1}:
-        return "vacuum_and_mop"
-    return None
-
-
-def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
-    """Return stable UUID values nested in a protocol payload."""
-    found: list[str] = []
-    seen: set[str] = set()
-    field_budget = WireFieldBudget(_SCHEDULE_MAX_FIELDS)
-
-    def walk(data: bytes, depth: int) -> None:
-        if depth > _SCHEDULE_MAX_DEPTH:
-            return
-        try:
-            fields = decode_fields(data, field_budget=field_budget)
-        except WireFieldBudgetExceeded, WireFieldLimitExceeded:
-            raise
-        except DecodeError:
-            return
-        fixed = {
-            field.number: field.value
-            for field in fields
-            if field.wire_type == 1 and isinstance(field.value, bytes)
-        }
-        if set(fixed) >= {1, 2} and len(fixed[1]) == len(fixed[2]) == 8:
-            low, high = struct.unpack("<QQ", fixed[1] + fixed[2])
-            candidate = str(UUID(int=(low << 64) | high))
-            if candidate not in seen:
-                if len(found) >= _SCHEDULE_MAX_UUIDS:
-                    raise DecodeError("schedule has too many room identifiers")
-                seen.add(candidate)
-                found.append(candidate)
-        for field in fields:
-            if field.wire_type == 2 and isinstance(field.value, bytes):
-                walk(field.value, depth + 1)
-
-    walk(payload, 0)
-    return tuple(found)
-
-
-def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
-    """Decode native history without treating its global default as room proof."""
-    if len(payload) > _CLEANING_SESSION_MAX_BYTES:
-        return None
-    try:
-        summary = _telemetry_bytes(
-            payload,
-            5,
-            max_bytes=_CLEANING_SESSION_MAX_BYTES,
-            max_fields=_CLEANING_SESSION_MAX_FIELDS,
-        )
-    except DecodeError:
-        return None
-    started_at = _decode_nested_timestamp(summary, 3)
-    ended_at = _decode_nested_timestamp(summary, 4)
-    rooms: list[str] = []
-    seen_rooms: set[str] = set()
-    statuses: dict[tuple[int, str], int | None] = {}
-    durations: dict[tuple[int, str], int | None] = {}
-    modes: set[int] = set()
-    try:
-        fields = _bounded_fields(
-            summary,
-            max_bytes=_CLEANING_SESSION_MAX_BYTES,
-            max_fields=_CLEANING_SESSION_MAX_FIELDS,
-        )
-    except DecodeError:
-        return None
-    for group in fields:
-        if group.number not in (6, 7) or not isinstance(group.value, bytes):
-            continue
-        modes.add(group.number)
-        try:
-            room_fields = _bounded_fields(
-                group.value,
-                max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-                max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-            )
-        except DecodeError:
-            continue
-        for room_field in room_fields:
-            if room_field.number != 1 or not isinstance(room_field.value, bytes):
-                continue
-            try:
-                details = _telemetry_bytes(room_field.value, 2)
-                detail_fields = _bounded_fields(
-                    details,
-                    max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-                    max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-                )
-            except DecodeError:
-                continue
-            name = _decode_text_field(details, 3)
-            if name is None:
-                continue
-            if name not in seen_rooms:
-                if len(rooms) >= _CLEANING_SESSION_MAX_ROOMS:
-                    return None
-                seen_rooms.add(name)
-                rooms.append(name)
-            key = (group.number, name)
-            if key in statuses:
-                # Duplicate map entries cannot supply unambiguous room proof.
-                statuses[key] = None
-                durations[key] = None
-                continue
-            status_fields = [field for field in detail_fields if field.number == 5]
-            status = 0 if not status_fields else None
-            if (
-                len(status_fields) == 1
-                and status_fields[0].wire_type == 0
-                and isinstance(status_fields[0].value, int)
-                and status_fields[0].value in (0, 1, 2)
-            ):
-                status = status_fields[0].value
-            statuses[key] = status
-            durations[key] = None
-            try:
-                duration = _telemetry_bytes(details, 4)
-                seconds_fields = [
-                    field
-                    for field in _bounded_fields(
-                        duration,
-                        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-                        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-                    )
-                    if field.number == 1
-                ]
-                if not seconds_fields:
-                    durations[key] = 0
-                elif (
-                    len(seconds_fields) == 1
-                    and seconds_fields[0].wire_type == 0
-                    and isinstance(seconds_fields[0].value, int)
-                ):
-                    durations[key] = seconds_fields[0].value
-            except DecodeError:
-                pass
-
-    duration_seconds = None
-    if started_at is not None and ended_at is not None:
-        duration_seconds = max(
-            0,
-            round(
-                (
-                    datetime.fromisoformat(ended_at)
-                    - datetime.fromisoformat(started_at)
-                ).total_seconds()
-            ),
-        )
-    status_fields = [field for field in fields if field.number == 5]
-    completion_status = 0 if not status_fields else None
-    if (
-        len(status_fields) == 1
-        and status_fields[0].wire_type == 0
-        and isinstance(status_fields[0].value, int)
-    ):
-        completion_status = status_fields[0].value
-    # SessionSummary groups 6/7 contain vacuum/mop AreaModeSummary maps.
-    # Within each map value field 5 is status (0/1/2); field 6 is a setting,
-    # not another mode. Omitted status is protobuf's unattempted default.
-    room_completion: dict[str, bool | None] = {}
-    for name in rooms:
-        results = [statuses.get((mode, name)) for mode in modes]
-        if all(status == _ROOM_MODE_COMPLETED_STATUS for status in results):
-            room_completion[name] = True
-        elif any(status in (0, 1) for status in results):
-            room_completion[name] = False
-        else:
-            room_completion[name] = None
-    completed_rooms = tuple(name for name in rooms if room_completion.get(name) is True)
-    vacuum_completed_rooms = tuple(
-        name
-        for name in rooms
-        if completion_status == _SESSION_COMPLETED_STATUS
-        and statuses.get((6, name)) == _ROOM_MODE_COMPLETED_STATUS
-    )
-    mop_completed_rooms = tuple(
-        name
-        for name in rooms
-        if completion_status == _SESSION_COMPLETED_STATUS
-        and statuses.get((7, name)) == _ROOM_MODE_COMPLETED_STATUS
-    )
-    combined_completed_rooms = tuple(
-        name for name in vacuum_completed_rooms if name in mop_completed_rooms
-    )
-    mode_results = tuple(
-        CleaningModeResult(
-            room=name,
-            cleaning_mode="vacuum" if mode == 6 else "mop",
-            status={0: "unattempted", 1: "partial", 2: "completed", None: None}[status],
-            duration_seconds=durations[(mode, name)],
-        )
-        for (mode, name), status in statuses.items()
-    )
-    room_durations: dict[str, int] = {}
-    for result in mode_results:
-        if result.duration_seconds is not None:
-            room_durations[result.room] = (
-                room_durations.get(result.room, 0) + result.duration_seconds
-            )
-    completed: bool | None
-    if completion_status not in (None, _SESSION_COMPLETED_STATUS):
-        completed = False
-    elif completion_status is None or not room_completion:
-        completed = None
-    elif any(value is False for value in room_completion.values()):
-        completed = False
-    elif any(value is None for value in room_completion.values()):
-        completed = None
-    else:
-        completed = True
-    return CleaningSession(
-        started_at=started_at,
-        ended_at=ended_at,
-        duration_seconds=duration_seconds,
-        rooms=tuple(rooms),
-        room_durations=tuple(room_durations.items()),
-        completed=completed,
-        completed_rooms=completed_rooms,
-        vacuum_completed_rooms=vacuum_completed_rooms,
-        mop_completed_rooms=mop_completed_rooms,
-        combined_completed_rooms=combined_completed_rooms,
-        mode_results=mode_results,
-        stop_reason_code=_decode_stop_reason_code(fields),
-    )
-
-
-def _decode_stop_reason_code(summary_fields: tuple[WireField, ...]) -> int | None:
-    """Return the oneof tag of the session's stop reason, if it has one."""
-    reasons = [field for field in summary_fields if field.number == 10]
-    if len(reasons) != 1 or not isinstance(reasons[0].value, bytes):
-        return None
-    try:
-        variants = _bounded_fields(
-            reasons[0].value,
-            max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
-            max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
-        )
-    except DecodeError:
-        return None
-    if len(variants) != 1 or variants[0].wire_type != 2:
-        return None
-    return variants[0].number
-
-
-def _decode_nested_timestamp(payload: bytes, number: int) -> str | None:
-    """Decode Matic's nested SystemTime/Timestamp wrapper as an ISO value."""
-    try:
-        wrapper = _telemetry_bytes(
-            payload,
-            number,
-            max_bytes=_CLEANING_SESSION_MAX_BYTES,
-            max_fields=_CLEANING_SESSION_MAX_FIELDS,
-        )
-        timestamp = _telemetry_bytes(wrapper, 1)
-        seconds = _telemetry_varint(timestamp, 1)
-        try:
-            nanos = _telemetry_varint(timestamp, 2)
-        except DecodeError:
-            nanos = 0
-        value = datetime.fromtimestamp(seconds + nanos / 1_000_000_000, UTC)
-    except DecodeError, OSError, OverflowError, ValueError:
-        return None
-    return value.isoformat()
+        return self._connection.command_health

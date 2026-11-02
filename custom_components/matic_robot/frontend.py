@@ -14,20 +14,23 @@ from homeassistant.components.http import (  # type: ignore[attr-defined,unused-
 )
 from homeassistant.core import HomeAssistant
 
+from .area_views import MaticAreasView
+from .daily_limit_view import MaticDailyLimitView
 from .floor_layers import MaticFloorLayersView
-from .photos import MaticRobotPhotoView
+from .photos import MaticRobotPhotoPreviewView, MaticRobotPhotoView
+from .plan_views import MaticPlansView
 from .run_thumbnails import MaticRunThumbnailView
-from .slam_scene import (
-    MaticAreasView,
-    MaticPlansView,
-    MaticRunHistoryView,
-    MaticSlamCatalogView,
-    MaticSlamDeltaView,
+from .slam_catalog_view import MaticSlamCatalogView
+from .slam_history_view import (
+    MaticSlamHistoryExportView,
+    MaticSlamHistoryImportView,
+    MaticSlamHistoryManageView,
     MaticSlamHistorySceneView,
     MaticSlamHistoryView,
-    MaticSlamPoseView,
-    MaticSlamSceneView,
 )
+from .slam_pose_view import MaticSlamPoseView
+from .slam_run_history_view import MaticRunHistoryView
+from .slam_scene import MaticSlamDeltaView, MaticSlamSceneView
 from .wifi_survey import MaticWifiHeatmapView
 from .workspace_socket import async_register as async_register_workspace_socket
 
@@ -92,6 +95,7 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
         await async_register_workspace_socket(hass)
     # Photo patrol links work in notifications without the frontend.
     hass.http.register_view(MaticRobotPhotoView)
+    hass.http.register_view(MaticRobotPhotoPreviewView)
     if frontend.DATA_EXTRA_MODULE_URL not in hass.data:
         return
     await hass.http.async_register_static_paths(
@@ -121,9 +125,13 @@ async def async_register_frontend(hass: HomeAssistant) -> None:
     hass.http.register_view(pose_view)
     hass.http.register_view(MaticSlamHistoryView)
     hass.http.register_view(MaticSlamHistorySceneView)
+    hass.http.register_view(MaticSlamHistoryManageView)
+    hass.http.register_view(MaticSlamHistoryExportView)
+    hass.http.register_view(MaticSlamHistoryImportView)
     hass.http.register_view(MaticSlamCatalogView(scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
+    hass.http.register_view(MaticDailyLimitView)
     hass.http.register_view(MaticRunHistoryView)
     hass.http.register_view(MaticWifiHeatmapView)
     hass.http.register_view(floor_layers_view)

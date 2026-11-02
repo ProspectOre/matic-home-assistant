@@ -14,7 +14,7 @@ from homeassistant.helpers import entity_registry as er
 from .client.models import FloorPlan
 from .const import DOMAIN
 from .native_completion import native_room_key
-from .plans import CleaningRoom, room_cadence_identity
+from .plan_model import CleaningRoom, room_cadence_identity
 
 
 def room_completion_names_are_current(
@@ -44,10 +44,8 @@ def current_floor_plan(entry: ConfigEntry[Any]) -> FloorPlan:
     return floor_plan
 
 
-def current_room_cadence_identity(
-    hass: HomeAssistant, entity_id: str, room_id: str
-) -> str | None:
-    """Resolve cadence identity only from the selected entity's current map."""
+def current_entity_floor_plan(hass: HomeAssistant, entity_id: str) -> FloorPlan:
+    """Resolve a selected entity's current, coherent room map."""
     registry_entry = er.async_get(hass).async_get(entity_id)
     if registry_entry is None or registry_entry.config_entry_id is None:
         raise ServiceValidationError(
@@ -64,7 +62,14 @@ def current_room_cadence_identity(
             translation_domain=DOMAIN,
             translation_key="robot_unavailable",
         )
-    floor_plan = current_floor_plan(entry)
+    return current_floor_plan(entry)
+
+
+def current_room_cadence_identity(
+    hass: HomeAssistant, entity_id: str, room_id: str
+) -> str | None:
+    """Resolve cadence identity only from the selected entity's current map."""
+    floor_plan = current_entity_floor_plan(hass, entity_id)
     return (
         room_cadence_identity(floor_plan, room_id)
         if any(room.id == room_id for room in floor_plan.rooms)

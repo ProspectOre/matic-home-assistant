@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 from google.protobuf.message import DecodeError
 
-from .client.slam_map import parse_slam_scene_header
+from .client.slam_scene import parse_slam_scene_header
 
 DELTA_MAGIC = b"MATICDLT"
 DELTA_VERSION = 1

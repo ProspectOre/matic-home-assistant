@@ -31,7 +31,6 @@ from .client.exceptions import (
 )
 from .client.mission import decode_mission_client_state
 from .client.models import (
-    ROBOT_ALERTS,
     CleaningSession,
     CuesVoiceStatus,
     FloorPlan,
@@ -48,6 +47,7 @@ from .const import (
     DOMAIN,
     EVENT_CLEANING_FINISHED,
     EVENT_CUES,
+    EVENT_NATIVE_HISTORY_UPDATED,
     MAP_UPDATE_INTERVAL_SECONDS,
     SLOW_UPDATE_INTERVAL_SECONDS,
     UPDATE_INTERVAL_SECONDS,
@@ -55,6 +55,7 @@ from .const import (
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
 from .maintenance import MaintenanceIssues
 from .repairs import repair_placeholders
+from .robot_health import RobotHealth
 from .session_tracking import (
     CleaningSessionTracker,
     _parse_timestamp,
@@ -67,21 +68,6 @@ _LOGGER = logging.getLogger(__name__)
 # Unexpected snapshot failures retain a RAM cooldown in addition to the
 # tracker's persisted normal discovery/recovery cadence.
 SNAPSHOT_RETRY_SECONDS = 900
-ERROR_CONFIRMATION_POLLS = 2
-# Alerts the user has to act on, each with a Repair that names the fix.
-ACTIONABLE_ALERTS = frozenset({"bag_full", "bag_missing"})
-
-
-def _robot_alert_issue_id(name: str, entry_id: str) -> str:
-    return f"robot_alert_{name}_{entry_id}"
-
-
-def async_delete_robot_alert_issues(hass: HomeAssistant, entry_id: str) -> None:
-    """Remove every bag Repair raised for a robot that is going away."""
-    for name in ACTIONABLE_ALERTS:
-        ir.async_delete_issue(hass, DOMAIN, _robot_alert_issue_id(name, entry_id))
-
-
 # Limit robot-driven Cues fan-out while retaining the newest state received during
 # each interval. This bounds coordinator, event-bus, automation, and Recorder work.
 CUES_UPDATE_INTERVAL_SECONDS = 1.0
@@ -104,6 +90,60 @@ def _floor_plan_matches_displayed(
     # coverage plan. That payload has no mapped-floor signature to compare, so
     # its exact mission ID is the strongest available identity evidence.
     return not floor_plan.mapped_floors or floor_plan.mapped_floors == signature
+
+
+def _merge_stream_operational(
+    previous: RobotOperationalState | None,
+    pushed: RobotOperationalState,
+    *,
+    include_cues: bool = True,
+) -> RobotOperationalState:
+    """Overlay streamed values while keeping poll-confirmed health fields.
+
+    Error and bag confirmation intentionally counts coordinator polls. A push
+    subscription can deliver repeated snapshots in a burst and must not turn
+    that into multiple independent confirmations.
+    """
+    if previous is None:
+        return replace(pushed, error_codes=(), bag_full=None, bag_missing=None)
+    optional_fields = (
+        "battery_percentage",
+        "software_version",
+        "release_channel",
+        "current_area",
+        "previous_area",
+        "robot_profile",
+        "cues_voice_status",
+        "cues_voice_intent",
+        "cues_gesture_status",
+        "following_person",
+    )
+    updates = {
+        name: value
+        for name in optional_fields
+        if (
+            include_cues
+            or name
+            not in {
+                "cues_voice_status",
+                "cues_voice_intent",
+                "cues_gesture_status",
+                "following_person",
+            }
+        )
+        if (value := getattr(pushed, name)) is not None
+    }
+    return replace(
+        previous,
+        **updates,
+        state_codes=pushed.state_codes,
+        charging_idle=pushed.charging_idle,
+        charging=pushed.charging,
+        low_charge=pushed.low_charge,
+        paused=pushed.paused,
+        cleaning=pushed.cleaning,
+        returning=pushed.returning,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,23 +201,12 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._snapshot_retry_after: dict[tuple[str, int | None], float] = {}
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
+        self._latest_native_history_revision: str | None = None
+        self._acknowledged_native_history_revision: str | None = None
         self._finished_observation_started_at = dt_util.utcnow()
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
-        self._pending_error_codes: tuple[int, ...] = ()
-        self._pending_error_polls = 0
-        self._bag_previous_full: bool | None = None
-        self._bag_errors_observed = False
-        self._unknown_alert_codes: dict[int, dict[str, str]] = {}
-        self._confirmed_error_codes: frozenset[int] = frozenset()
-        # None until the first confirmed state, so Repairs left by a coordinator
-        # this reload replaced are reconciled too.
-        self._alert_issues: set[str] | None = None
-        self._bag_pending_clear = False
-        self._bag_full_events = 0
-        self._bag_replacement_events = 0
-        self._bag_last_full_at: str | None = None
-        self._bag_last_replaced_at: str | None = None
+        self.robot_health = RobotHealth(hass, config_entry.entry_id)
         self._identity_issue_active = False
         self._maintenance_issues = MaintenanceIssues(hass, config_entry.entry_id)
         self._time_zone_checked = False
@@ -187,20 +216,28 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._latest_cues_state: RobotOperationalState | None = None
         self._cues_push_sequence = 0
         self._cues_states_received = 0
+        self._state_states_received = 0
+        self._state_push_sequence = 0
+        self._latest_state_operational: RobotOperationalState | None = None
+        self._latest_received_state: RobotOperationalState | None = None
+        self._latest_processed_push_sequence = 0
+        self._latest_state_push_generation = 0
+        self._latest_state_poll_generation = 0
+        self._state_poll_generation = 0
 
-    async def async_watch_cues(self) -> None:
-        """Keep Cues lifecycle state current between coordinator polls."""
+    async def async_watch_state(self) -> None:
+        """Keep robot operational state current between coordinator polls."""
         retry_delay = 1
         while True:
             try:
-                states_received = await self._async_consume_cues_subscription()
+                states_received = await self._async_consume_state_subscription()
                 if states_received > 1:
                     retry_delay = 1
             except asyncio.CancelledError:
                 raise
             except MaticError as err:
-                _LOGGER.debug("Matic Cues subscription interrupted: %s", err)
-                if self._cues_states_received > 1:
+                _LOGGER.debug("Matic state subscription interrupted: %s", err)
+                if self._state_states_received > 1:
                     retry_delay = 1
             # Closing grpclib can replace task cancellation with a transport
             # error. A retired runtime must finish instead of retrying that
@@ -210,18 +247,35 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
 
-    async def _async_consume_cues_subscription(self) -> int:
+    async def _async_consume_state_subscription(self) -> int:
         """Consume one subscription, coalescing snapshots to a bounded rate."""
         pending: RobotOperationalState | None = None
+        pending_poll_generation = 0
         pending_available = asyncio.Event()
         states_received = 0
 
         async def _collect() -> None:
-            nonlocal pending, states_received
+            nonlocal pending, pending_poll_generation, states_received
+            # The first frame is the subscription baseline. Bind it to the
+            # poll generation that existed before opening the stream, even if
+            # the server or transport delays delivering it until a newer poll
+            # has already completed. Frames after that baseline are stamped
+            # when received so fresh pushes retain authority over later work.
+            subscription_poll_generation = self._state_poll_generation
+            first_snapshot = True
             try:
                 async for state in self.client.async_subscribe_state():
                     states_received += 1
+                    self._state_push_sequence += 1
                     pending = state
+                    pending_poll_generation = (
+                        subscription_poll_generation
+                        if first_snapshot
+                        else self._state_poll_generation
+                    )
+                    first_snapshot = False
+                    self._latest_state_push_generation = pending_poll_generation
+                    self._latest_received_state = state
                     pending_available.set()
             finally:
                 # Wake the consumer so it can observe completion or an exception.
@@ -242,8 +296,11 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     await asyncio.sleep(delay)
 
                 state = pending
+                state_poll_generation = pending_poll_generation
                 pending = None
-                self.async_process_cues_state(state)
+                self.async_process_operational_state(
+                    state, poll_generation=state_poll_generation
+                )
                 # A collector may have signalled while the rate-limit sleep
                 # was in progress. Preserve that signal only when it also
                 # delivered a newer pending snapshot; otherwise a stale set
@@ -257,6 +314,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     await collector
                     return states_received
         finally:
+            self._state_states_received = states_received
             self._cues_states_received = states_received
             if not collector.done():
                 collector.cancel()
@@ -355,8 +413,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             self.async_set_updated_data(replace(self.data, floor_plan=None))
 
     @callback
-    def async_process_cues_state(self, state: RobotOperationalState) -> None:
-        """Merge a live Cues snapshot and emit meaningful transitions."""
+    def _async_process_cues_fields(self, state: RobotOperationalState) -> None:
+        """Merge Cues fields and emit meaningful transitions."""
         self._latest_cues_state = state
         self._cues_push_sequence += 1
         if self.data is None:
@@ -374,6 +432,59 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self.async_set_updated_data(replace(self.data, operational=current))
         for event in _cues_events(previous, current):
             self._async_fire_cues_event(event)
+
+    @callback
+    def async_process_operational_state(
+        self,
+        state: RobotOperationalState,
+        *,
+        poll_generation: int | None = None,
+    ) -> None:
+        """Apply one push without advancing poll-confirmed health evidence."""
+        if poll_generation is None:
+            poll_generation = self._state_poll_generation
+            self._latest_state_push_generation = poll_generation
+            self._latest_received_state = state
+        # The subscriber may have buffered a value while it was rate limiting.
+        # A poll started after that value was received has fresher snapshot
+        # authority, so the delayed push must not overwrite it.
+        if poll_generation < self._state_poll_generation:
+            return
+        previous = self.data.operational if self.data is not None else None
+        state = _merge_stream_operational(previous, state)
+        self._latest_state_operational = state
+        self._latest_state_poll_generation = poll_generation
+        self._latest_processed_push_sequence = self._state_push_sequence
+        self._async_process_cues_fields(state)
+        if self.data is None:
+            return
+        if state == self.data.operational:
+            return
+        active = state.native_session_activity()
+        telemetry = replace(
+            self.data.telemetry,
+            active_cleaning_session=active,
+            run_progress=(
+                self.data.telemetry.run_progress
+                if active is True
+                and self.data.telemetry.active_cleaning_session is True
+                else None
+            ),
+        )
+        self.async_set_updated_data(
+            replace(self.data, operational=state, telemetry=telemetry)
+        )
+
+    @callback
+    def _process_confirmed_operational_state(
+        self, state: RobotOperationalState
+    ) -> RobotOperationalState:
+        """Apply the same error, bag, and Repair rules to polls and pushes."""
+        operational = self.robot_health.resolve_bag_capability(state)
+        operational = self.robot_health.confirm_errors(operational)
+        self.robot_health.track_bag_state(operational)
+        self.robot_health.track_alerts(operational)
+        return operational
 
     @callback
     def async_add_cues_listener(
@@ -405,6 +516,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
 
     async def _async_update_data(self) -> RobotState:
         cues_push_sequence = self._cues_push_sequence
+        state_push_sequence = self._state_push_sequence
+        self._state_poll_generation += 1
+        state_poll_generation = self._state_poll_generation
         full_refresh_generation = self._full_refresh_generation
         floor_read_generation = self._floor_read_generation
         try:
@@ -415,8 +529,20 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._async_optional_telemetry(),
             )
             floor_plan, pose = map_state
-            # Task evidence belongs to this raw snapshot, before presentation
-            # confirms/suppresses transient problem codes.
+            if (
+                self._state_push_sequence != state_push_sequence
+                and self._latest_state_push_generation == state_poll_generation
+            ):
+                pushed = self._latest_received_state
+                if pushed is not None:
+                    operational = _merge_stream_operational(
+                        operational, pushed, include_cues=False
+                    )
+            # Task evidence belongs to the latest raw snapshot, including a
+            # same-generation state push that won over the overlapping poll.
+            # Compute it before presentation confirms/suppresses transient
+            # problem codes, then keep it aligned with the operational state
+            # returned below.
             active = operational.native_session_activity()
             telemetry = replace(
                 telemetry,
@@ -425,10 +551,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 if active
                 else None,
             )
-            operational = self._async_resolve_bag_capability(operational)
-            operational = self._async_confirm_robot_errors(operational)
-            self._async_track_bag_state(operational)
-            self._async_track_alerts(operational)
+            operational = self._process_confirmed_operational_state(operational)
             state = RobotState(
                 info=info,
                 operational=operational,
@@ -443,6 +566,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             self._maintenance_issues.async_sync(telemetry)
             self._async_check_time_zone(telemetry)
             # Events require native evidence; local estimates are display-only.
+            self._async_fire_native_history_updated(state)
             self._async_fire_session_finished(state, version)
             state = await self._async_track_cleaning_session(state)
             if self.firmware_tracker is not None:
@@ -497,6 +621,25 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                         following_person=latest_cues_state.following_person,
                     ),
                 )
+            if (
+                self._state_push_sequence != state_push_sequence
+                and self._latest_state_push_generation == state_poll_generation
+            ):
+                latest_operational: RobotOperationalState | None = None
+                if (
+                    self._latest_state_poll_generation == state_poll_generation
+                    and self._latest_processed_push_sequence
+                    == self._state_push_sequence
+                ):
+                    latest_operational = self._latest_state_operational
+                elif self._latest_received_state is not None:
+                    latest_operational = _merge_stream_operational(
+                        state.operational,
+                        self._latest_received_state,
+                        include_cues=False,
+                    )
+                if latest_operational is not None:
+                    state = replace(state, operational=latest_operational)
             # A cached floor may have completed before another gathered read
             # or later enrichment. Revalidate at publication, including a
             # revoke/recover cycle that has already cleared the unknown flag.
@@ -521,162 +664,10 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             if self._full_refresh_generation == full_refresh_generation:
                 self._force_full_refresh = False
 
-    @callback
-    def _async_resolve_bag_capability(
-        self, state: RobotOperationalState
-    ) -> RobotOperationalState:
-        """Read an empty error list as "no errors" once errors have appeared.
-
-        ``errors`` is a repeated field, so a firmware that omits it and one
-        reporting no active errors are wire-identical and the decoder can only
-        report the bag flags as unknown. A robot that has already reported an
-        error has proven it populates the field, and from then on an empty list
-        is evidence that nothing is wrong -- including that the bag which was
-        full no longer is, which is the only signal a replacement produces.
-        """
-        if state.error_codes:
-            self._bag_errors_observed = True
-            return state
-        if not self._bag_errors_observed or state.bag_full is not None:
-            return state
-        return replace(state, bag_full=False, bag_missing=False)
-
-    @callback
-    def _async_track_bag_state(self, state: RobotOperationalState) -> None:
-        """Observe bag transitions without registering public HA entities yet."""
-        current = state.bag_full
-        if current is None:
-            return
-        if current is True:
-            if self._bag_previous_full is False:
-                now = dt_util.utcnow().isoformat()
-                self._bag_full_events += 1
-                self._bag_last_full_at = now
-                _LOGGER.info("Observed Matic dust-bag full transition")
-            self._bag_previous_full = True
-            self._bag_pending_clear = False
-            return
-        if state.bag_missing is True:
-            # A clear full flag while the bag is still reported missing is not
-            # a replacement; wait for a present-bag clear sequence instead.
-            self._bag_pending_clear = False
-            return
-        if self._bag_previous_full is True:
-            if self._bag_pending_clear:
-                now = dt_util.utcnow().isoformat()
-                self._bag_replacement_events += 1
-                self._bag_last_replaced_at = now
-                _LOGGER.info("Observed Matic dust-bag replacement transition")
-                self._bag_previous_full = False
-                self._bag_pending_clear = False
-            else:
-                self._bag_pending_clear = True
-            return
-        self._bag_previous_full = False
-
-    @callback
-    def _async_track_alerts(self, state: RobotOperationalState) -> None:
-        """Record unmapped codes and keep one Repair per actionable alert.
-
-        Runs on confirmed codes only, so a one-poll firmware pulse neither
-        records a code nor raises a Repair. While new codes wait for that
-        confirmation, existing Repairs stay as they are.
-        """
-        if (
-            self._pending_error_codes
-            and self._pending_error_polls < ERROR_CONFIRMATION_POLLS
-        ):
-            return
-        now = dt_util.utcnow().isoformat()
-        previous, self._confirmed_error_codes = (
-            self._confirmed_error_codes,
-            frozenset(state.error_codes),
-        )
-        # Sightings change only when a code starts, which also changes the
-        # error codes in RobotState, so the sensor is notified without a
-        # separate refresh.
-        for code in self._confirmed_error_codes - previous:
-            if code in ROBOT_ALERTS:
-                continue
-            seen = self._unknown_alert_codes.get(code)
-            if seen is None:
-                _LOGGER.info("Matic reported an unmapped alert code %s", code)
-                self._unknown_alert_codes[code] = {"first_seen": now, "last_seen": now}
-            else:
-                seen["last_seen"] = now
-        active = {name for name in state.alerts if name in ACTIONABLE_ALERTS}
-        entry_id = self.config_entry.entry_id
-        raised = self._alert_issues or set()
-        for name in active - raised:
-            ir.async_create_issue(
-                self.hass,
-                DOMAIN,
-                _robot_alert_issue_id(name, entry_id),
-                is_fixable=False,
-                is_persistent=False,
-                severity=ir.IssueSeverity.WARNING,
-                translation_key=f"robot_alert_{name}",
-                translation_placeholders=repair_placeholders(self.hass, entry_id),
-            )
-        for name in (
-            ACTIONABLE_ALERTS if self._alert_issues is None else raised
-        ) - active:
-            ir.async_delete_issue(
-                self.hass, DOMAIN, _robot_alert_issue_id(name, entry_id)
-            )
-        self._alert_issues = active
-
-    @property
-    def unknown_alert_codes(self) -> dict[str, dict[str, str]]:
-        """Return when each unmapped alert code first and most recently started."""
-        return {
-            str(code): dict(seen)
-            for code, seen in sorted(self._unknown_alert_codes.items())
-        }
-
     @property
     def floor_read_generation(self) -> int:
         """Return the admission epoch for asynchronous floor-scoped reads."""
         return self._floor_read_generation
-
-    @property
-    def bag_observation(self) -> dict[str, object]:
-        """Return read-only bag observations for verification tooling."""
-        operational = self.data.operational if self.data is not None else None
-        return {
-            "full": operational.bag_full if operational is not None else None,
-            "missing": operational.bag_missing if operational is not None else None,
-            "full_events_observed": self._bag_full_events,
-            "replacement_events_observed": self._bag_replacement_events,
-            "last_full_at": self._bag_last_full_at,
-            "last_replaced_at": self._bag_last_replaced_at,
-        }
-
-    @callback
-    def _async_confirm_robot_errors(
-        self, state: RobotOperationalState
-    ) -> RobotOperationalState:
-        """Suppress one-poll firmware error pulses while preserving real faults."""
-        codes = state.error_codes
-        if not codes:
-            self._pending_error_codes = ()
-            self._pending_error_polls = 0
-            return state
-        if codes != self._pending_error_codes:
-            self._pending_error_codes = codes
-            self._pending_error_polls = 1
-        else:
-            self._pending_error_polls += 1
-        if self._pending_error_polls < ERROR_CONFIRMATION_POLLS:
-            _LOGGER.debug(
-                "Waiting for a second poll before exposing robot error codes %s",
-                codes,
-            )
-            # Bag flags are derived from the same error list and must obey the
-            # same confirmation window; otherwise a one-poll firmware pulse
-            # could create a false full-bag statistic.
-            return replace(state, error_codes=(), bag_full=None, bag_missing=None)
-        return state
 
     async def _async_track_cleaning_session(self, state: RobotState) -> RobotState:
         """Merge fresh HA-side run tracking with robot-native session history."""
@@ -968,6 +959,41 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._snapshot_retry_after.pop(snapshot_identity, None)
         finally:
             self._snapshot_versions_in_progress.discard(snapshot_identity)
+
+    @callback
+    def _async_fire_native_history_updated(self, state: RobotState) -> None:
+        """Request a refresh until the full native history revision is imported."""
+        revision = state.telemetry.native_history_revision
+        if not isinstance(revision, str):
+            return
+        self._latest_native_history_revision = revision
+        if revision == self._acknowledged_native_history_revision:
+            return
+        # This internal refresh has no completion semantics. The public
+        # cleaning-finished event below still announces a session only once.
+        self.hass.bus.async_fire(
+            EVENT_NATIVE_HISTORY_UPDATED,
+            {"entry_id": self.config_entry.entry_id, "revision": revision},
+        )
+
+    @callback
+    def async_ack_native_history_revision(self, revision: str | None) -> None:
+        """Acknowledge one successfully imported native history snapshot."""
+        if (
+            isinstance(revision, str)
+            and revision == self._latest_native_history_revision
+        ):
+            self._acknowledged_native_history_revision = revision
+
+    @callback
+    def native_history_revision_acknowledged(self, revision: str) -> bool:
+        """Return whether a full native history snapshot was already imported."""
+        return revision == self._acknowledged_native_history_revision
+
+    @callback
+    def native_history_revision_is_current(self, revision: str) -> bool:
+        """Return whether a refresh request still matches the latest poll."""
+        return revision == self._latest_native_history_revision
 
     @callback
     def _async_fire_session_finished(

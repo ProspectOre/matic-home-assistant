@@ -7,6 +7,14 @@ import { css } from "lit";
 // own styles when the chunk loads, so startup does not carry them.
 export const shellWorkflowStyles = css`
 
+    .workspace.comparison { grid-template-columns: minmax(0, 1fr); }
+    .workspace.comparison > .canvas { display: none; }
+    .workspace.comparison > .inspector,
+    .narrow .workspace.comparison > .mobile-sheet[data-detent] {
+      grid-column: 1; position: relative; inset: auto; transform: none;
+      block-size: 100%; max-block-size: 100%; border-inline-start: 0;
+    }
+
     .panel-back { flex: none; }
 
     /* One-tap shortcuts share a quiet surface; navigation keeps separate cards.
@@ -58,6 +66,30 @@ export const shellWorkflowStyles = css`
       clip-path: inset(50%);
       white-space: nowrap;
     }
+
+    /* Draw controls arrive with the workflow and draw-tool chunks. */
+    .narrow .draw-tools--grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: var(--ms-space-1); padding: 0; }
+    .narrow .draw-tools--grid[data-zone="true"] { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+    .narrow .draw-tools--grid .ms-btn {
+      flex-direction: column;
+      gap: var(--ms-space-1);
+      min-inline-size: var(--ms-control);
+      min-block-size: var(--ms-control);
+      padding: var(--ms-space-1);
+      border-color: var(--ms-line);
+      font-size: var(--ms-t-xs);
+    }
+    .narrow .draw-tools--grid[data-zone="true"] .ms-btn { grid-column: span 4; }
+    .narrow .draw-tools--grid[data-zone="true"] .ms-btn[data-tool] { grid-column: span 3; }
+    @media (max-width: 359px), (max-height: 479px) {
+      .narrow .draw-tools--grid .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; clip-path: inset(50%); }
+    }
+    @media (max-height: 479px) {
+      .narrow .draw-tools--grid, .narrow .draw-tools--grid[data-zone="true"] { display: flex; overflow-x: auto; }
+      .narrow .draw-tools--grid .ms-btn { flex: none; inline-size: var(--ms-control); padding-inline: 0; }
+    }
+    .compact [data-workflow="draw"] .sheet-grip:has(.paired) .sheet-back { display: none; }
+    .compact [data-detent="peek"] .sheet-hint { display: none; }
 
     .narrow .sheet-grip:has(.sheet-back) { grid-template-columns: auto minmax(0, 1fr) auto auto; }
     .narrow .sheet-precision { display: block; margin-block-end: var(--ms-space-2); }

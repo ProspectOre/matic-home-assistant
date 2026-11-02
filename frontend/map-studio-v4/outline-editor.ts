@@ -56,9 +56,21 @@ export const outlineCircles = (
  * history and persistence remain in the existing controllers. The shell builds
  * the editor; the canvas showing it attaches before it renders or forwards a
  * point. */
-// The handles, their actions, the guidance and the feedback line render in
-// the map canvas, which adopts these rules when the editor arrives.
-export const zoneStyles = css`
+// The map canvas adopts drawing styles when the editor arrives.
+const drawCanvasStyles = css`
+    .map-root[data-workflow="draw"][data-draw-tool="paint"],
+    .map-root[data-workflow="draw"][data-draw-tool="erase"] { cursor: crosshair; }
+    .map-root[data-workflow="draw"][data-draw-tool="pan"] { cursor: grab; }
+    .map-root[data-workflow="draw"][data-draw-tool="pan"].navigating { cursor: grabbing; }
+    .map-dock .draw-tools button { padding-inline: var(--ms-space-2); }
+    .map-root[data-draw-tool="outline"] .map-scale { inset-block-end: auto; inset-block-start: 76px; }
+    .keyboard-aim { display: none; position: absolute; z-index: 3; inset: 50% auto auto 50%; inline-size: 20px; block-size: 20px; translate: -50% -50%; border: 2px solid #fff; outline: 2px solid #111; border-radius: 50%; pointer-events: none; }
+    .keyboard-aim::after { content: "+"; position: absolute; inset: 50% auto auto 50%; translate: -50% -50%; color: #111; font: 700 20px/1 sans-serif; text-shadow: 0 0 2px white; }
+    .map-root:focus-visible .keyboard-aim { display: block; }
+    @container (max-width: 49rem) {
+      .map-dock .draw-tools button { padding-inline: 0; inline-size: var(--ms-control); }
+      .map-dock .draw-tools .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
+    }
     .zone-overlay { position: absolute; inset: 0; z-index: 3; pointer-events: none; overflow: hidden; }
     .zone-overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
     .zone-overlay path { stroke: var(--ms-resolved-indicator, var(--ms-accent)); stroke-width: 2; fill-opacity: .08; }
@@ -76,6 +88,10 @@ export const zoneStyles = css`
     .zone-selection { padding-inline: 8px; color: var(--ms-text-quiet); white-space: nowrap; font-weight: 650; }
     .zone-point-actions .ms-btn { white-space: nowrap; padding-inline: 10px; border-radius: 10px; font-size: 12px; }
     .zone-point-actions .ms-btn + .ms-btn { border-inline-start: 1px solid var(--ms-line); }
+    .zone-coordinates { display: grid; grid-template-columns: repeat(2, minmax(7rem, 1fr)); gap: 8px; max-width: min(100%, 24rem); padding: 8px; border-radius: 12px; pointer-events: auto; }
+    .zone-coordinates label { display: grid; gap: 4px; min-width: 0; font-size: 12px; }
+    .zone-coordinates input { min-width: 0; min-height: 44px; padding: 6px 8px; border: 1px solid var(--ms-line); border-radius: 8px; color: var(--ms-text); background: var(--ms-surface-card); font: inherit; }
+    .zone-coordinates input:focus-visible { outline: 2px solid var(--ms-resolved-indicator, var(--ms-accent)); outline-offset: 1px; }
     .zone-feedback { max-width: 100%; padding: 8px 12px; border-radius: 12px; color: var(--ms-resolved-danger-text, var(--ms-danger)); pointer-events: auto; }
     .zone-feedback[hidden] { display: none; }
     /* A phone's rail keeps "?" in its bottom row; the point actions sit above it. */
@@ -83,7 +99,7 @@ export const zoneStyles = css`
 `;
 
 export class OutlineEditor {
-  readonly styles = zoneStyles;
+  readonly styles = drawCanvasStyles;
   readonly #geometry: OutlineGeometry;
   #canvas!: MaticMapCanvasV4;
   #renderer!: () => RendererController | null;
@@ -125,12 +141,12 @@ export class OutlineEditor {
   }
 
   #enabled(s = this.#canvas.state): boolean {
-    return captureCoordinateEdit(s, "outline") !== null;
+    return this.#canvas.drawingReady && captureCoordinateEdit(s, "outline") !== null;
   }
 
   #commit(outline: AreaOutline, capture?: CoordinateEditCapture): void {
     const admitted = capture ?? captureCoordinateEdit(this.#canvas.state, "outline");
-    if (!hasCoordinateEditAdmission(this.#canvas.state, admitted)) return;
+    if (!this.#canvas.drawingReady || !hasCoordinateEditAdmission(this.#canvas.state, admitted)) return;
     if (!this.#geometry.validOutline(outline)) {
       this.#message = this.#t("v4_zone_invalid", "Keep the outline from crossing itself.");
       this.#canvas.requestUpdate();
@@ -146,7 +162,7 @@ export class OutlineEditor {
 
   addPoint(point: AreaPoint, capture?: CoordinateEditCapture): void {
     const admitted = capture ?? captureCoordinateEdit(this.#canvas.state, "outline");
-    if (!hasCoordinateEditAdmission(this.#canvas.state, admitted)
+    if (!this.#canvas.drawingReady || !hasCoordinateEditAdmission(this.#canvas.state, admitted)
       || admitted.tool !== "outline" || !this.#renderer()?.containsMapPoint(point)) return;
     const outline = this.#canvas.state.draw.outline ?? { points: [], closed: false };
     if (outline.points.length >= 64) return;
@@ -173,8 +189,27 @@ export class OutlineEditor {
     this.#focusPoint(index + 1);
   }
 
+  #setCoordinate(index: number, axis: "x" | "y", value: number): void {
+    const outline = this.#canvas.state.draw.outline;
+    const admitted = captureCoordinateEdit(this.#canvas.state, "outline");
+    const point = outline?.points[index];
+    if (!this.#canvas.drawingReady || !outline || !point || !hasCoordinateEditAdmission(this.#canvas.state, admitted)) return;
+    if (!Number.isFinite(value)) {
+      this.#message = this.#t("v4_zone_coordinate_invalid", "Enter a map coordinate in meters.");
+      this.#canvas.requestUpdate();
+      return;
+    }
+    const next = { ...point, [axis]: value };
+    if (!this.#renderer()?.containsMapPoint(next)) {
+      this.#message = this.#t("v4_zone_coordinate_outside", "Keep the point on the mapped floor.");
+      this.#canvas.requestUpdate();
+      return;
+    }
+    this.#commit({ ...outline, points: outline.points.map((candidate, i) => i === index ? next : candidate) }, admitted);
+  }
+
   #down(event: PointerEvent, index: number): void {
-    if (event.button !== 0 || this.#drag || (event.pointerType === "touch" && !event.isPrimary)) return;
+    if (!this.#canvas.drawingReady || event.button !== 0 || this.#drag || (event.pointerType === "touch" && !event.isPrimary)) return;
     const capture = captureCoordinateEdit(this.#canvas.state, "outline");
     if (!capture) return;
     this.#selected = index;
@@ -196,7 +231,7 @@ export class OutlineEditor {
     const drag = this.#drag;
     if (!drag || drag.pointer !== event.pointerId) return;
     event.stopPropagation(); event.preventDefault();
-    if (!hasCoordinateEditAdmission(this.#canvas.state, drag.capture)) { this.cancel(); return; }
+    if (!this.#canvas.drawingReady || !hasCoordinateEditAdmission(this.#canvas.state, drag.capture)) { this.cancel(); return; }
     const point = this.#renderer()?.screenToMap(event.clientX, event.clientY);
     if (!point || !this.#renderer()?.containsMapPoint(point)) return;
     drag.preview = { ...drag.baseline, points: drag.baseline.points.map((p, i) => i === drag.index ? point : p) };
@@ -209,7 +244,7 @@ export class OutlineEditor {
     event.stopPropagation(); event.preventDefault();
     this.#drag = null;
     drag.target.releasePointerCapture(event.pointerId);
-    if (drag.preview !== drag.baseline) this.#commit(drag.preview, drag.capture);
+    if (this.#canvas.drawingReady && drag.preview !== drag.baseline) this.#commit(drag.preview, drag.capture);
     this.#canvas.requestUpdate();
   }
 
@@ -253,7 +288,7 @@ export class OutlineEditor {
         ${projected.map((p, i) => p ? html`
           <button class="zone-point" type="button" data-zone-index=${i} data-selected=${String(this.#selected === i)} data-map-control style=${`left:${p.x}px;top:${p.y}px`}
             aria-label=${this.#t("v4_zone_point_number", "Point {number}", { number: i + 1 })} aria-describedby="zone-handle-help"
-            title=${this.#t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}
+            title=${this.#t("v4_zone_point_help", "Drag or edit the X and Y fields to move. Arrow keys adjust; Delete removes.")}
             @pointerdown=${(e: PointerEvent) => this.#down(e, i)} @pointermove=${(e: PointerEvent) => this.#move(e)}
             @pointerup=${(e: PointerEvent) => this.#up(e)} @pointercancel=${() => this.cancel()}
             @lostpointercapture=${() => { if (this.#drag) this.cancel(); }}
@@ -272,12 +307,25 @@ export class OutlineEditor {
             @click=${() => this.#insert(i)}>+</button>` : nothing;
         })}
         <div class="zone-help" data-map-control>
-          <span id="zone-handle-help" class="sr-only">${this.#t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}</span>
+          <span id="zone-handle-help" class="sr-only">${this.#t("v4_zone_point_help", "Drag or edit the X and Y fields to move. Arrow keys adjust; Delete removes.")}</span>
           ${selected !== null ? html`
             <div class="zone-point-actions ms-surface" role="group" aria-label=${this.#t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}>
               <span class="zone-selection">${this.#t("v4_zone_point_number", "Point {number}", { number: selected + 1 })}</span>
               <button class="ms-btn" type="button" ?disabled=${points.length >= 64 || (!outline?.closed && selected === points.length - 1)} @click=${() => this.#insert(selected)}>${this.#t("v4_zone_insert_point", "Insert point")}</button>
               <button class="ms-btn" type="button" aria-label=${this.#t("v4_zone_delete_point_number", "Delete point {number}", { number: selected + 1 })} @click=${() => this.#remove(selected)}>${this.#t("v4_zone_delete_point", "Delete point")}</button>
+            </div>` : nothing}
+          ${selected !== null && points[selected] ? html`
+            <div class="zone-coordinates ms-surface" role="group" aria-label=${this.#t("v4_zone_coordinates_group", "Point coordinates in meters")}>
+              <label>${this.#t("v4_zone_coordinate_x", "X coordinate (m)")}
+                <input type="number" inputmode="decimal" step="0.01" .value=${String(points[selected]!.x)}
+                  aria-label=${this.#t("v4_zone_coordinate_x_named", "X coordinate for point {number} in meters", { number: selected + 1 })}
+                  @change=${(event: Event) => this.#setCoordinate(selected, "x", (event.currentTarget as HTMLInputElement).valueAsNumber)}>
+              </label>
+              <label>${this.#t("v4_zone_coordinate_y", "Y coordinate (m)")}
+                <input type="number" inputmode="decimal" step="0.01" .value=${String(points[selected]!.y)}
+                  aria-label=${this.#t("v4_zone_coordinate_y_named", "Y coordinate for point {number} in meters", { number: selected + 1 })}
+                  @change=${(event: Event) => this.#setCoordinate(selected, "y", (event.currentTarget as HTMLInputElement).valueAsNumber)}>
+              </label>
             </div>` : nothing}
           <span class="zone-feedback ms-surface" role="status" ?hidden=${!this.#message}>${this.#message}</span>
         </div>

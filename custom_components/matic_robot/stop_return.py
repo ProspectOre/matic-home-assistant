@@ -26,7 +26,8 @@ from homeassistant.core import HomeAssistant
 from .client.commands import UserCommand
 from .client.exceptions import MaticError
 from .const import DOMAIN
-from .plans import OEM_STOP_FENCE_SECONDS, CleaningPlanManager
+from .native_history import OEM_STOP_FENCE_SECONDS
+from .plans import CleaningPlanManager
 
 DOCK_SETTLE_POLL_SECONDS = 3
 DOCK_SETTLE_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
@@ -126,7 +127,7 @@ async def async_clear_ownerless_stop_if_settled(
     entity_id: str,
 ) -> bool:
     """Clear only the captured ownerless fence after native dock settlement."""
-    stop_fence_token = manager.stop_fence_token(serial_number)
+    stop_fence_token = manager.control.stop_fence_token(serial_number)
     if stop_fence_token is None or fresh_state is None:
         return False
     if not await async_native_stop_is_settled(
@@ -137,7 +138,7 @@ async def async_clear_ownerless_stop_if_settled(
         allowed_states=DOCKED_STATES,
     ):
         return False
-    return await manager.async_clear_stop_pending_if_token(
+    return await manager.control.async_clear_stop_pending_if_token(
         serial_number, stop_fence_token, run_id=None
     )
 
@@ -164,12 +165,14 @@ async def async_dock_when_stop_settles(
     )
     settled_state_observed = False
     settlement_callback = on_docked
-    clear_stop_fence = getattr(manager, "async_clear_stop_pending_if_token", None)
+    clear_stop_fence = getattr(
+        manager.control, "async_clear_stop_pending_if_token", None
+    )
 
     def owns_stop_fence() -> bool:
-        if not manager.stop_pending(serial_number):
+        if not manager.control.stop_pending(serial_number):
             return False
-        current_token = getattr(manager, "stop_fence_token", None)
+        current_token = getattr(manager.control, "stop_fence_token", None)
         return (
             stop_fence_token is None
             or not callable(current_token)
@@ -221,7 +224,7 @@ async def async_dock_when_stop_settles(
                     settled_state_observed = True
                     dock_sent = False
                     already_docked = False
-                    async with manager.external_command(serial_number):
+                    async with manager.control.external_command(serial_number):
                         # Replacements invalidate the fence before waiting for
                         # this lock. Recheck it both before and after the native
                         # session read so a late false result cannot trigger a
@@ -351,7 +354,7 @@ def schedule_dock_after_stop(
     create_background_task = getattr(hass, "async_create_background_task", None)
     if not callable(create_background_task):
         return
-    stop_fence_token_reader = getattr(manager, "stop_fence_token", None)
+    stop_fence_token_reader = getattr(manager.control, "stop_fence_token", None)
     stop_fence_token = (
         stop_fence_token_reader(serial_number)
         if callable(stop_fence_token_reader)
@@ -373,7 +376,7 @@ def schedule_dock_after_stop(
         ),
         f"{DOMAIN} dock after stop",
     )
-    register_task = getattr(manager, "register_reconciliation_task", None)
+    register_task = getattr(manager.control, "register_reconciliation_task", None)
     if isinstance(task, asyncio.Task) and callable(register_task):
         register_task(serial_number, task, dock=True, run_id=run_id)
 
@@ -460,7 +463,7 @@ def schedule_dock_confirmation(
         ),
         f"{DOMAIN} confirm managed dock {run_id}",
     )
-    register_task = getattr(manager, "register_reconciliation_task", None)
+    register_task = getattr(manager.control, "register_reconciliation_task", None)
     if isinstance(task, asyncio.Task) and callable(register_task):
         register_task(serial_number, task, dock=True, run_id=run_id)
     return isinstance(task, asyncio.Task)

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.matic_robot import managed_dispatch
 from custom_components.matic_robot.const import DOMAIN
 
 from .hermes_sim import RESUME_PAYLOAD, Phase, SimulatedRobot
@@ -97,12 +100,34 @@ async def test_sink_trip_without_a_saved_sink_is_refused(
     assert robot.received() == []
 
 
+@pytest.mark.parametrize("delay_owned_start", [False, True])
 async def test_occupied_room_is_held_out_of_a_saved_plan(
     hass: HomeAssistant,
     plan: PlanRun,
     robot: SimulatedRobot,
     floor: SimFloor,
+    monkeypatch: pytest.MonkeyPatch,
+    delay_owned_start: bool,
 ) -> None:
+    release_dispatch = asyncio.Event()
+    waiting_for_start = asyncio.Event()
+    dispatch = managed_dispatch._async_dispatch_leg_command
+    wait_for_room_start = plan.wait_for_room_start
+
+    async def delayed_dispatch(*args, **kwargs):
+        prepared = await dispatch(*args, **kwargs)
+        await release_dispatch.wait()
+        return prepared
+
+    async def observed_start_wait():
+        waiting_for_start.set()
+        await wait_for_room_start()
+
+    if delay_owned_start:
+        monkeypatch.setattr(plan, "wait_for_room_start", observed_start_wait)
+        monkeypatch.setattr(
+            managed_dispatch, "_async_dispatch_leg_command", delayed_dispatch
+        )
     hass.states.async_set(STUDY_OCCUPANCY, "on", {"device_class": "occupancy"})
     await plan.call(
         DOMAIN,
@@ -114,7 +139,25 @@ async def test_occupied_room_is_held_out_of_a_saved_plan(
         occupancy_aware=True,
         occupancy_sensors={_room_id(plan.entry, "Study"): STUDY_OCCUPANCY},
     )
-    await plan.start_service("run_selected_plan", plan="evening")
+    starting = hass.async_create_task(
+        plan.start_service("run_selected_plan", plan="evening")
+    )
+    try:
+        if delay_owned_start:
+            async with asyncio.timeout(10):
+                while not waiting_for_start.is_set() and not starting.done():
+                    await plan.poll()
+            assert waiting_for_start.is_set()
+            assert not starting.done()
+            history = plan.entry.runtime_data.cleaning_plans.history
+            active = history.snapshot(robot.serial_number)["active_plan"]
+            assert active["run_id"] == plan.run_id
+            assert active["status"] == "starting"
+            assert active["cleaning_started"] is None
+            assert history.current_room_timing(robot.serial_number) is None
+    finally:
+        release_dispatch.set()
+    await starting
     assert robot.session is not None
     assert robot.session.rooms == [floor.rooms[0].id]
     robot.finish_room()

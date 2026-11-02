@@ -310,6 +310,11 @@ test("@safety pose and delta failures share one bounded recovery retry", async (
     const state = element.getWorkspaceSnapshot();
     return state.resources.scene.status === "ready" && state.map.exactPose && state.coherence === "current";
   })).toBe(true);
+  await panel.evaluate((element) => {
+    element.shadowRoot.querySelector("matic-map-shell-v4").dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: { type: "open-workflow", workflow: "history" }, bubbles: true, composed: true,
+    }));
+  });
   await expect.poll(() => panel.evaluate((element) =>
     element.getWorkspaceSnapshot().resources.history.status)).toBe("ready");
   expect(await page.evaluate(() => window.__panelFixture.serviceCalls)).toEqual([]);

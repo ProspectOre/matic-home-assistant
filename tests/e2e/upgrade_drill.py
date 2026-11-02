@@ -9,11 +9,18 @@ from a checkout of the older release.
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import os
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
+from aiohttp.test_utils import TestClient
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import UnsupportedStorageVersionError
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.matic_robot.const import DOMAIN
@@ -25,6 +32,88 @@ from .sim_mission import SimFloor, two_room_floor
 
 ENTRY_ID = "matic-upgrade-drill"
 PLAN = "evening"
+AREA_ID = "entry_rug"
+AREA_PLAN = "entry-area"
+
+
+def _scene(page_x: int = 0) -> bytes:
+    """Build a deterministic, valid synthetic scene across both code versions."""
+    from tests.test_slam_history import _scene as make_scene
+
+    return make_scene(page_x=page_x)
+
+
+def _legacy_snapshot_id() -> str:
+    return hashlib.sha256(_scene()).hexdigest()[:24]
+
+
+async def _write_retention_examples(history: Any) -> None:
+    """Persist automatic, kept, and trashed records in the v2 store."""
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+    records = []
+    for index in range(1, 4):
+        scene = _scene(index)
+        assert await history.async_add(
+            scene,
+            index,
+            created_at=start + timedelta(minutes=index * 10),
+        )
+        record = next(
+            snapshot
+            for snapshot in history.catalog()
+            if snapshot.snapshot_id == hashlib.sha256(scene).hexdigest()[:24]
+        )
+        records.append(record)
+
+    kept = records[1]
+    await history.async_mutate(
+        "keep",
+        [kept.record_id],
+        expected_generation=history.generation,
+        request_id="upgrade-drill-keep",
+        name="Synthetic kept map",
+    )
+    trashed = records[2]
+    await history.async_mutate(
+        "keep",
+        [trashed.record_id],
+        expected_generation=history.generation,
+        request_id="upgrade-drill-keep-before-trash",
+        name="Synthetic deleted map",
+    )
+    await history.async_mutate(
+        "delete",
+        [trashed.record_id],
+        expected_generation=history.generation,
+        request_id="upgrade-drill-trash",
+        allow_kept=True,
+    )
+    assert {item.retention for item in history.catalog()} >= {
+        "automatic",
+        "kept",
+        "trash",
+    }
+
+
+@pytest.fixture(autouse=True)
+async def frontend(hass: HomeAssistant) -> None:
+    """Register the same area API that an installed frontend uses."""
+    assert await async_setup_component(hass, "frontend", {})
+
+
+async def _save_custom_area(plan: PlanRun, client: TestClient) -> None:
+    """Seed the area through the HTTP contract shared by both releases."""
+    response = await client.post(
+        f"/api/matic_robot/areas/{plan.entry.entry_id}",
+        json={
+            "name": "Entry rug",
+            "circles": [{"x": 1.0, "y": 0.75, "radius": 0.25}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    assert response.status == 200, await response.text()
+    assert await response.json() == {"id": AREA_ID}
 
 
 @pytest.fixture
@@ -58,7 +147,7 @@ def config_entry(simulator: RunningSimulator, credential: Any) -> MockConfigEntr
 
 
 async def _run_plan(plan: PlanRun, robot: SimulatedRobot) -> None:
-    """Run the saved plan to a verified finish."""
+    """Run the saved two-room plan to its verified finish."""
     await plan.start_service("run_selected_plan", plan=PLAN)
     robot.finish_room()
     await plan.poll()
@@ -71,15 +160,53 @@ async def _run_plan(plan: PlanRun, robot: SimulatedRobot) -> None:
     )
 
 
+async def _run_area_plan(plan: PlanRun, robot: SimulatedRobot) -> None:
+    """Run the single-area managed plan and retain owned-session history."""
+    plan.finished.clear()
+    plan.docked.clear()
+    await plan.start_service("run_selected_plan", plan=AREA_PLAN)
+    assert robot.session is not None
+    assert robot.session.current_visit is not None
+    assert robot.session.current_visit.custom_area
+    robot.finish_room()
+    robot.finish_session()
+    await plan.poll()
+    robot.arrive_at_dock()
+    assert plan.task is not None
+    async with asyncio.timeout(30):
+        while not plan.task.done() or not plan.finished:
+            await plan.poll()
+    plan.error = plan.task.exception()
+    finished = plan.finished[-1]
+    expect_finished(
+        finished,
+        "completed",
+        "all_rooms_verified",
+        0,
+        "docked",
+        rooms=0,
+    )
+
+
 async def _settle(plan: PlanRun) -> None:
     """Poll a few times so recovery can settle a run left by an earlier phase."""
     for _ in range(3):
         await plan.poll()
 
 
-async def test_seed(hass: HomeAssistant, plan: PlanRun, robot: SimulatedRobot) -> None:
+async def test_seed(
+    hass: HomeAssistant, plan: PlanRun, robot: SimulatedRobot, hass_client
+) -> None:
     """Older release: save a plan with a room schedule, finish one run and
     leave a second one cleaning when Home Assistant stops."""
+    history = plan.entry.runtime_data.slam_history
+    assert await history.async_add(
+        _scene(),
+        1,
+        created_at=datetime(2026, 10, 1, tzinfo=UTC),
+    )
+    await history.async_shutdown()
+    await _save_custom_area(plan, await hass_client())
     await plan.call(
         DOMAIN,
         "save_plan",
@@ -95,7 +222,16 @@ async def test_seed(hass: HomeAssistant, plan: PlanRun, robot: SimulatedRobot) -
             {"room": "Study", "cleaning_mode": "vacuum"},
         ],
     )
+    await plan.call(
+        DOMAIN,
+        "save_plan",
+        plan_id=AREA_PLAN,
+        name="Entry area",
+        run_behavior="ordered",
+        rooms=[{"area": "Entry rug"}],
+    )
     await _run_plan(plan, robot)
+    await _run_area_plan(plan, robot)
     plan.finished.clear()
     await plan.start_service("run_selected_plan", plan=PLAN)
     robot.finish_room()
@@ -109,15 +245,33 @@ async def test_upgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
     run the saved plan again."""
     await _settle(plan)
     await _run_plan(plan, robot)
+    await _run_area_plan(plan, robot)
+    history = plan.entry.runtime_data.slam_history
+    assert any(item.snapshot_id == _legacy_snapshot_id() for item in history.catalog())
+    await _write_retention_examples(history)
+    await history.async_shutdown()
 
 
-async def test_downgrade(plan: PlanRun, robot: SimulatedRobot) -> None:
-    """Older release on stores the newer one wrote, without a restore."""
-    await _settle(plan)
-    await _run_plan(plan, robot)
+async def test_downgrade(hass: HomeAssistant) -> None:
+    """The older history reader must refuse v2 without rewriting its file."""
+    from custom_components.matic_robot.slam_history import SlamHistoryStore
+
+    path = (
+        Path(os.environ["MATIC_DRILL_CONFIG"])
+        / ".storage"
+        / f"matic_robot.slam_history.{ENTRY_ID}"
+    )
+    before = path.read_bytes()
+    history = SlamHistoryStore(hass, ENTRY_ID)
+    with pytest.raises(UnsupportedStorageVersionError):
+        await history.async_load()
+    assert path.read_bytes() == before
 
 
 async def test_restore(plan: PlanRun, robot: SimulatedRobot) -> None:
-    """Older release on the restored pre-upgrade stores."""
+    """The older release operates normally on the matching v1 backup."""
+    history = plan.entry.runtime_data.slam_history
+    assert any(item.snapshot_id == _legacy_snapshot_id() for item in history.catalog())
     await _settle(plan)
     await _run_plan(plan, robot)
+    await _run_area_plan(plan, robot)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
@@ -252,9 +253,9 @@ class WorkspaceSocket:
         serial_number = self._serial_number(coordinator)
         plans = getattr(runtime, "cleaning_plans", None)
         if plans is not None and isinstance(serial_number, str):
-            tracked.source_state["plans"] = plans.plans(serial_number)
-            tracked.source_state["areas"] = plans.areas(serial_number)
-            add_listener = getattr(plans, "async_add_listener", None)
+            tracked.source_state["plans"] = plans.catalog.plans(serial_number)
+            tracked.source_state["areas"] = plans.catalog.areas(serial_number)
+            add_listener = getattr(plans.repository, "async_add_listener", None)
             if callable(add_listener):
                 tracked.source_unsubscribers.append(
                     add_listener(
@@ -319,8 +320,8 @@ class WorkspaceSocket:
         plans = getattr(runtime, "cleaning_plans", None)
         if plans is None or not isinstance(serial_number, str):
             return
-        current_plans = plans.plans(serial_number)
-        current_areas = plans.areas(serial_number)
+        current_plans = plans.catalog.plans(serial_number)
+        current_areas = plans.catalog.areas(serial_number)
         resources = ["plan_state"]
         revisions = self._resource_revisions.setdefault(entry_id, {})
         if current_plans != tracked.source_state.get("plans"):
@@ -514,18 +515,49 @@ class WorkspaceSocket:
         return min(MAX_RESOURCE_REVISION, max(0, raw_revision))
 
     @staticmethod
-    def _history_state(history: Any) -> tuple[tuple[str, int], ...]:
+    def _history_state(history: Any) -> tuple[object, ...]:
         """Return bounded catalog identity without retaining scene payloads."""
         catalog = getattr(history, "catalog", None)
         if not callable(catalog):
             return ()
         snapshots = catalog()
-        return tuple(
-            (snapshot.snapshot_id, snapshot.revision)
+        records = tuple(
+            (
+                snapshot.snapshot_id,
+                snapshot.revision,
+                getattr(snapshot, "mission_token", None),
+                (
+                    created_at.isoformat()
+                    if (created_at := getattr(snapshot, "created_at", None)) is not None
+                    else None
+                ),
+                getattr(snapshot, "point_count", None),
+                getattr(snapshot, "record_id", None),
+                getattr(snapshot, "name", None),
+                getattr(snapshot, "retention", "automatic"),
+                (
+                    snapshot.deleted_until.isoformat()
+                    if getattr(snapshot, "deleted_until", None) is not None
+                    else None
+                ),
+                getattr(snapshot, "imported", False),
+                getattr(snapshot, "comparison_group", None),
+                json.dumps(
+                    getattr(snapshot, "frame", None),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            )
             for snapshot in snapshots
             if isinstance(getattr(snapshot, "snapshot_id", None), str)
             and isinstance(getattr(snapshot, "revision", None), int)
             and not isinstance(getattr(snapshot, "revision", None), bool)
+        )
+        return (
+            getattr(history, "generation", None),
+            getattr(history, "capture_paused", None),
+            getattr(history, "capacity_blocked", None),
+            records,
         )
 
     def _entry(self, entry_id: str) -> Any:
@@ -563,7 +595,7 @@ class WorkspaceSocket:
             # Use the exact field owner and serializer shared with the REST
             # catalog; WebSocket projection cannot invent map or run state.
             from .frontend import DATA_SLAM_SCENE_VIEW
-            from .slam_scene import catalog_entry_projection
+            from .slam_view_data import catalog_entry_projection
 
             scene_view = self.hass.data.get(DATA_SLAM_SCENE_VIEW)
             entry_projection = catalog_entry_projection(

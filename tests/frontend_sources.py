@@ -8,6 +8,7 @@ and recognize the few forms in which a localization key reaches the UI:
 ``pair``      ``label: "Fallback", labelKey: "key"`` in one object literal
 ``disabled``  ``disabledAction("id", "Label", "Reason", "labelKey", "reasonKey")``
 ``notice``    ``notice("tone", "key", "Fallback", { name })``
+``notice``    ``{ key: "key", fallback: "Fallback", placeholders: { name } }``
 ``catalog``   ``reason: ["key", "Fallback"]`` in a notice copy catalog
 
 Only real code counts: a match inside a comment, a regex literal, a string or the
@@ -357,7 +358,7 @@ _DISABLED = re.compile(
     + r")?\s*,?\s*\)"
 )
 _NOTICE = re.compile(
-    r'(?<![\w$])notice\(\s*"[^"]*"\s*,\s*'
+    r'(?<![\w$])(?:notice|makeNotice)\(\s*"[^"]*"\s*,\s*'
     + _KEY
     + r"\s*,\s*"
     + _FALLBACK
@@ -365,6 +366,9 @@ _NOTICE = re.compile(
 )
 _NOTICE_CATALOG_ENTRY = re.compile(
     r'(?m)^\s*[\w$]+:\s*\[\s*"([A-Za-z0-9_]+)"\s*,\s*' + _FALLBACK + r"\s*\]"
+)
+_NOTICE_OBJECT = re.compile(
+    r"(?<![\w$])key:\s*" + _KEY + r",\s*fallback:\s*" + _FALLBACK + r"(?=\s*[,}])"
 )
 
 
@@ -403,6 +407,13 @@ def _sites_in(module: str, text: str) -> list[tuple[KeySite, int]]:
     # Count its key/fallback pairs as localization sites too.
     for match in live_matches(_NOTICE_CATALOG_ENTRY, text):
         add("notice", match.start(1) - 1, match[1], match[2], frozenset())
+    for match in live_matches(_NOTICE_OBJECT, text):
+        enclosing = min(
+            (r for r in ranges if r[0] < match.start() < r[1]),
+            key=lambda r: r[1] - r[0],
+        )
+        supplied = _placeholder_keys(text, enclosing[0], "placeholders")
+        add("notice", match.start(1) - 1, match[1], match[2], supplied)
     for match in live_matches(_DISABLED, text):
         add("disabled", match.start(3) - 1, match[3], match[1], frozenset())
         if match[4]:

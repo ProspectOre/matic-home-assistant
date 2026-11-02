@@ -39,9 +39,11 @@ Recent events keep room and final-state evidence separate from the
 [command and raw-state observation trail](activity-diagnostics.md).
 `MaticGetRunHistory` lists up to 20 recent runs, newest first, the same runs
 as Matic Map's history. Runs Home Assistant started say why they ended (finished,
-stopped, low battery, a robot problem, taken over by the Matic app and so on);
+stopped, low battery, a robot problem or taken over by another task);
 runs started in the Matic app or by a robot schedule come from the robot's
-history, which reports only whether they finished. If the robot's history can't
+history. Captured stop reasons distinguish finished, stopped and unknown without
+identifying who started or stopped the run. The ending is separate from the outcome
+and per-room completion results. If the robot's history can't
 be read, `robot_history` is false and only Home Assistant's runs are listed.
 `MaticGetSchedules` lists the weekly schedules set in the Matic app and the
 scheduled runs in the next 7 days (up to 14), the same runs as the

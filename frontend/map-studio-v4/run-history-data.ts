@@ -154,7 +154,9 @@ export const readRuns = async (
   entry: MapEntry,
   trail: string | null,
   signal: AbortSignal,
-  unavailable: WorkspaceNotice,
+  unavailable: WorkspaceNotice = {
+    tone: "info", key: "v4_notice_trail_unavailable", fallback: "That trail isn't available on this map.",
+  },
 ): Promise<void> => {
   const show = (runs: ReturnType<typeof resource<RunHistory>>): void => {
     store.patch({ resources: { ...store.value.resources, runs } });
@@ -210,20 +212,70 @@ export const extendLiveTrail = (store: WorkspaceStore, pose: PoseModel): void =>
 };
 
 /**
- * Rereads an open Cleaning history when the run it reports starts, ends or is
- * credited late, and outside a managed run when a robot-started task starts
- * or ends, since those come from the robot's own history. Returns the
- * unsubscribe for the controller that owns `reload`.
+ * Rereads an open Cleaning history when its state changes. A still-running
+ * record is also polled every two seconds because late native history credit
+ * can finish it without changing the Home Assistant robot state. Outside a
+ * managed run, robot-started tasks are reread when they start or end because
+ * those come from the robot's own history. Returns the unsubscribe for the
+ * controller that owns `reload`.
  */
-export const watchRuns = (store: WorkspaceStore, reload: () => void): (() => void) => {
+export const watchRuns = (store: WorkspaceStore, reload: () => void | Promise<void>): (() => void) => {
   let shown: string | undefined;
-  return store.subscribe((state) => {
+  let timer: number | null = null;
+  let polling = false;
+  let refreshQueued = false;
+  let disposed = false;
+  const pollInterval = 2_000;
+  const refresh = (): void => {
+    if (disposed) return;
+    if (polling) {
+      refreshQueued = true;
+      return;
+    }
+    polling = true;
+    void Promise.resolve(reload()).catch(() => undefined).finally(() => {
+      polling = false;
+      if (disposed) return;
+      if (refreshQueued && store.value.workflow === "runs") {
+        refreshQueued = false;
+        refresh();
+      } else {
+        refreshQueued = false;
+        schedule();
+      }
+    });
+  };
+  const schedule = (): void => {
+    const state = store.value;
+    const pendingRun = !disposed && !polling && state.workflow === "runs"
+      && state.resources.runs.value?.runs.some((run) => run.outcome === "running");
+    if (!pendingRun) {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = null;
+      return;
+    }
+    if (timer !== null) return;
+    timer = window.setTimeout(() => {
+      timer = null;
+      if (store.value.workflow !== "runs"
+        || !store.value.resources.runs.value?.runs.some((run) => run.outcome === "running")) return;
+      refresh();
+    }, pollInterval);
+  };
+  const unsubscribe = store.subscribe((state) => {
     const run = state.lastRun;
     const managed = run ? `${run.runId}:${run.outcome}:${run.completedRoomCount}` : "";
     const key = run?.outcome === "running" ? managed : `${managed}:${WORKING.includes(state.activity)}`;
-    if (shown !== undefined && key !== shown && state.workflow === "runs") reload();
+    const changed = shown !== undefined && key !== shown && state.workflow === "runs";
     shown = key;
+    if (changed) refresh();
+    schedule();
   });
+  return () => {
+    disposed = true;
+    unsubscribe();
+    if (timer !== null) window.clearTimeout(timer);
+  };
 };
 
 const RUN_THUMBNAILS_KEPT = 12;
@@ -239,25 +291,31 @@ export const readRunThumbnail = async (
   backend: MaticBackend,
   entryId: string,
   id: string,
-  pending: { reads: Set<string>; retry: Map<string, number> },
-  disposed: () => boolean,
+  pending: { reads: Set<string>; retry: Map<string, number>; timers?: Set<number> },
+  retired: () => boolean,
+  signal?: AbortSignal,
 ): Promise<void> => {
-  if (id in store.value.runThumbnails || pending.reads.has(id) || (pending.retry.get(id) ?? 0) > Date.now()) return;
+  if (retired() || id in store.value.runThumbnails || pending.reads.has(id) || (pending.retry.get(id) ?? 0) > Date.now()) return;
   pending.reads.add(id);
   let url: string;
   try {
-    url = URL.createObjectURL(await backend.runThumbnail(entryId, id));
+    const picture = await backend.runThumbnail(entryId, id, signal);
+    if (retired()) return;
+    url = URL.createObjectURL(picture);
   } catch {
+    if (retired()) return;
     pending.retry.set(id, Date.now() + 60_000);
     // Re-render then, so a Cleaning history still showing the run asks again.
-    window.setTimeout(() => {
-      if (!disposed()) store.patch({ runThumbnails: { ...store.value.runThumbnails } });
+    const timer = window.setTimeout(() => {
+      pending.timers?.delete(timer);
+      if (!retired()) store.patch({ runThumbnails: { ...store.value.runThumbnails } });
     }, 60_000);
+    pending.timers?.add(timer);
     return;
   } finally {
     pending.reads.delete(id);
   }
-  if (disposed()) {
+  if (retired()) {
     URL.revokeObjectURL(url);
     return;
   }

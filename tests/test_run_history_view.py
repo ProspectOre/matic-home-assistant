@@ -16,16 +16,12 @@ from custom_components.matic_robot.client.models import (
     CleaningSession,
     CleaningSessionRecord,
 )
-from custom_components.matic_robot.plans import (
-    MANUAL_ROOM_SEQUENCE_PLAN_ID,
-    CleaningPlanManager,
-)
+from custom_components.matic_robot.plan_model import MANUAL_ROOM_SEQUENCE_PLAN_ID
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.run_history import LIVE_TRAIL_ID, RunTrails
-from custom_components.matic_robot.slam_scene import (
-    MaticRunHistoryView,
-    MaticSlamPoseView,
-    observe_coordinator_trail,
-)
+from custom_components.matic_robot.slam_pose_view import MaticSlamPoseView
+from custom_components.matic_robot.slam_run_history_view import MaticRunHistoryView
+from custom_components.matic_robot.slam_view_data import observe_coordinator_trail
 from tests.test_slam_scene import (
     _browser_session_key,
     _entry,
@@ -79,7 +75,7 @@ async def test_history_view_lists_runs_with_trails_on_this_map(
         return_value=(robot_run,)
     )
     stored = trails._data()["trails"][0]
-    runtime.cleaning_plans.run_history = MagicMock(
+    runtime.cleaning_plans.history.run_history = MagicMock(
         return_value=[
             {"id": "run-2", "source": "home_assistant"},
             {
@@ -111,7 +107,7 @@ async def test_history_view_lists_runs_with_trails_on_this_map(
         None,
         None,
     ]
-    runtime.cleaning_plans.run_history.assert_called_once_with(
+    runtime.cleaning_plans.history.run_history.assert_called_once_with(
         "synthetic-serial", (robot_run,)
     )
 
@@ -134,7 +130,7 @@ async def test_history_view_still_lists_runs_when_robot_history_fails(
 ) -> None:
     runtime = _runtime()
     runtime.run_trails = RunTrails(hass, "entry")
-    runtime.cleaning_plans.run_history = MagicMock(return_value=[])
+    runtime.cleaning_plans.history.run_history = MagicMock(return_value=[])
     for failure in (CannotConnectError("offline"), TimeoutError()):
         runtime.client.async_get_cleaning_session_records = AsyncMock(
             side_effect=failure
@@ -145,16 +141,18 @@ async def test_history_view_still_lists_runs_when_robot_history_fails(
         payload = json.loads(response.body)
         assert payload["robot_history"] is False
         assert payload["runs"] == []
-        runtime.cleaning_plans.run_history.assert_called_with("synthetic-serial", ())
+        runtime.cleaning_plans.history.run_history.assert_called_with(
+            "synthetic-serial", ()
+        )
 
 
 async def test_live_pose_reads_feed_the_trail_recorder() -> None:
     runtime = _runtime()
     runtime.run_trails = MagicMock()
-    runtime.cleaning_plans.active_run_id = MagicMock(return_value="run-1")
+    runtime.cleaning_plans.ledger.active_run_id = MagicMock(return_value="run-1")
     hass = _hass(_entry(runtime))
     with patch(
-        "custom_components.matic_robot.slam_scene.time",
+        "custom_components.matic_robot.slam_pose_view.time",
         return_value=runtime.coordinator.data.pose.observed_at,
     ):
         await MaticSlamPoseView().get(_request(hass), "entry")
@@ -175,7 +173,7 @@ async def test_live_pose_reads_feed_the_trail_recorder() -> None:
 def test_coordinator_updates_record_exact_poses_and_close_runs() -> None:
     runtime = _runtime()
     runtime.run_trails = MagicMock()
-    runtime.cleaning_plans.active_run_id = MagicMock(return_value=None)
+    runtime.cleaning_plans.ledger.active_run_id = MagicMock(return_value=None)
     observe_coordinator_trail(runtime)
     assert runtime.run_trails.observe.call_args.kwargs["point"] == (0.1, 0.2)
 
@@ -194,8 +192,8 @@ async def test_manager_history_freezes_runs_and_follows_a_late_dock(
     hass: HomeAssistant,
 ) -> None:
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    await manager.async_begin_run(
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    await manager.ledger.async_begin_run(
         "serial",
         f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_x",
         "run-1",
@@ -204,16 +202,19 @@ async def test_manager_history_freezes_runs_and_follows_a_late_dock(
         service="clean_room_sequence",
         provenance="user",
     )
-    (running,) = manager.run_history("serial")
+    (running,) = manager.history.run_history("serial")
     assert (running["id"], running["outcome"]) == ("run-1", "running")
     assert running["plan_name"] is None
 
-    await manager.async_finish_run(
+    await manager.ledger.async_finish_run(
         "serial", "run-1", "cancelled", "managed_stop", 0, terminal_activity="idle"
     )
-    (stopped,) = manager.run_history("serial")
+    (stopped,) = manager.history.run_history("serial")
     assert (stopped["outcome"], stopped["ending"]) == ("not_finished", "stopped")
-    assert await manager.async_mark_run_docked("serial", "run-1")
-    (docked,) = manager.run_history("serial")
+    assert await manager.ledger.async_mark_run_docked("serial", "run-1")
+    (docked,) = manager.history.run_history("serial")
     assert docked["ending"] == "stopped"
-    assert manager._robot("serial")["run_history"][0]["outcome"] == "stopped_docked"
+    assert (
+        manager.repository.robot("serial")["run_history"][0]["outcome"]
+        == "stopped_docked"
+    )

@@ -19,15 +19,12 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.managed_executor import (
+from custom_components.matic_robot.managed_reconciliation import (
     _async_reconcile_native_stop,
-    _NativeReconciliation,
 )
-from custom_components.matic_robot.plans import (
-    CleaningPlanManager,
-    CleaningRoom,
-    room_cadence_identity,
-)
+from custom_components.matic_robot.managed_run import _NativeReconciliation
+from custom_components.matic_robot.plan_model import CleaningRoom, room_cadence_identity
+from custom_components.matic_robot.plans import CleaningPlanManager
 from custom_components.matic_robot.room_coherence import (
     current_floor_plan,
     current_room_cadence_identity,
@@ -143,12 +140,12 @@ async def test_late_reconciliation_credits_identity_from_registered_current_floo
         ),
     )
     manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    manager.async_mark_native_completed = AsyncMock(return_value=True)
+    manager.repository.store = SimpleNamespace(async_save=AsyncMock())
+    manager.ledger.async_mark_native_completed = AsyncMock(return_value=True)
     hass.states.async_set(entity_id, "docked")
 
     with patch(
-        "custom_components.matic_robot.managed_executor.OEM_STOP_RECONCILIATION_POLL_SECONDS",
+        "custom_components.matic_robot.managed_reconciliation.OEM_STOP_RECONCILIATION_POLL_SECONDS",
         0,
     ):
         await _async_reconcile_native_stop(
@@ -165,6 +162,6 @@ async def test_late_reconciliation_credits_identity_from_registered_current_floo
             None,
         )
 
-    assert manager.async_mark_native_completed.await_args.kwargs["room_identity"] == (
-        room_cadence_identity(floor_plan, room.room_id)
-    )
+    assert manager.ledger.async_mark_native_completed.await_args.kwargs[
+        "room_identity"
+    ] == (room_cadence_identity(floor_plan, room.room_id))

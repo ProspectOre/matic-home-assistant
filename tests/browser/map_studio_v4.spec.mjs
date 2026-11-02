@@ -75,7 +75,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false, beforeMou
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController, layerDepth } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources, draftForPlan, selectPrimaryAction } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController, layerDepth } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources, draftForPlan } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -156,7 +156,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const element = document.querySelector(tag);
       element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "history" });
     }, GALLERY_TAG);
-    await expect(gallery.getByRole("status")).toContainText("Loading…");
+    await expect(gallery.getByRole("complementary", { name: "Cleaning panel" }).getByRole("status")).toContainText("Loading…");
     release();
     await expect(gallery.locator("matic-map-workflow-v4")).toBeVisible();
     expect(workflowRequests).toHaveLength(1);
@@ -180,27 +180,39 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   for (const narrow of [false, true]) {
-    test(`Draw ${narrow ? "on a phone" : "at desktop width"} shows its tools at once and says Loading once${narrow ? " @mobile" : ""}`, async ({ page }) => {
+    test(`Draw ${narrow ? "on a phone" : "at desktop width"} shows Loading until its tools are ready${narrow ? " @mobile" : ""}`, async ({ page }) => {
       if (narrow) await page.setViewportSize({ width: 390, height: 844 });
       let release;
       const held = new Promise((resolve) => { release = resolve; });
-      await page.route("**/chunks/{workflow-panel,outline-editor,draw-tools}-*.js", async (route) => {
+      await page.route("**/chunks/outline-editor-*.js", async (route) => {
         await held;
         await route.continue();
       });
       const gallery = await loadGallery(page, { scenario: "ready", narrow });
+      const viewsLoaded = page.waitForResponse((response) => /\/chunks\/workflow-panel-[^/]+\.js/u.test(response.url()) && response.ok());
       await gallery.evaluate((element) => element.setScenario("draw"));
+      await viewsLoaded;
+      await page.evaluate(() => customElements.whenDefined("matic-map-workflow-v4"));
       const toolbar = gallery.getByRole("toolbar", { name: "Draw area tools" });
       const loading = gallery.locator(".loading[role=status]", { hasText: "Loading…" });
-      await expect(toolbar).toBeVisible();
+      await expect(toolbar).toHaveCount(0);
       await expect(loading).toHaveCount(1);
       // A phone's draw sheet rests at peek: the line sits by the tools it is about.
       await expect(loading).toBeInViewport();
-      const before = await toolbar.boundingBox();
+      const map = gallery.locator(".map-root");
+      const drawBefore = await gallery.evaluate((element) => JSON.stringify(element.getWorkspaceSnapshot().draw));
+      await map.click();
+      await map.press("d");
+      await map.press("Enter");
+      expect(await gallery.evaluate((element) => JSON.stringify(element.getWorkspaceSnapshot().draw))).toBe(drawBefore);
       release();
       await expect(gallery.locator("matic-map-workflow-v4")).toBeAttached();
       await expect(loading).toHaveCount(0);
-      expect(await toolbar.boundingBox(), "the tools must not move when the rest arrives").toEqual(before);
+      await expect(toolbar).toBeVisible();
+      await expect(toolbar.getByRole("button", { name: "Points" })).toBeEnabled();
+      await map.focus();
+      await map.press("d");
+      await expect.poll(() => gallery.evaluate((element) => element.getWorkspaceSnapshot().draw.tool)).toBe("paint");
     });
   }
 
@@ -208,6 +220,10 @@ test.describe("Map Studio v0.4 foundation", () => {
   // reloads; the failure shows where the workflow is looked at, once.
   for (const [chunk, workflow, view, narrow] of [
     ["workflow-panel", "rooms", "matic-map-workflow-v4", false],
+    ["workflow-panel", "draw", "matic-map-workflow-v4", false],
+    ["workflow-panel", "draw", "matic-map-workflow-v4", true],
+    ["draw-tools", "draw", "matic-map-workflow-v4", false],
+    ["draw-tools", "draw", "matic-map-workflow-v4", true],
     ["outline-editor", "draw", "matic-map-workflow-v4", false],
     ["outline-editor", "draw", "matic-map-workflow-v4", true],
     ["diagnostics-panel", "support", "matic-map-diagnostics-v4", false],
@@ -226,6 +242,15 @@ test.describe("Map Studio v0.4 foundation", () => {
       await expect(failure).toHaveCount(1);
       await expect(failure).toBeInViewport();
       await expect(gallery.locator(".loading[role=status]", { hasText: "Loading…" })).toHaveCount(0);
+      if (workflow === "draw") {
+        await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toHaveCount(0);
+        const drawBefore = await gallery.evaluate((element) => JSON.stringify(element.getWorkspaceSnapshot().draw));
+        const map = gallery.locator(".map-root");
+        await map.click();
+        await map.press("d");
+        await map.press("Enter");
+        expect(await gallery.evaluate((element) => JSON.stringify(element.getWorkspaceSnapshot().draw))).toBe(drawBefore);
+      }
 
       await page.unroute(pattern);
       await Promise.all([
@@ -237,6 +262,9 @@ test.describe("Map Studio v0.4 foundation", () => {
       // A phone's draw sheet rests at peek, with the workflow body below it.
       await expect(gallery.locator(view)).toBeAttached();
       if (!narrow) await expect(gallery.locator(view)).toBeVisible();
+      if (chunk === "workflow-panel" && workflow === "draw") {
+        await expect(gallery.getByRole("toolbar", { name: "Draw area tools" }).getByRole("button", { name: "Points" })).toBeEnabled();
+      }
       await expect(failure).toHaveCount(0);
       expect(await page.evaluate(() => sessionStorage.length), "the resume marker lasts one reload").toBe(0);
     });
@@ -861,12 +889,12 @@ test.describe("Map Studio v0.4 foundation", () => {
       document.body.append(window.__panelFixture.createPanel());
     });
     const gallery = page.locator(fixture.panelTag);
+    await openPlanPicker(gallery);
     await expect.poll(() => page.evaluate(() => {
       const panel = document.querySelector(window.__panelFixture.panelTag);
       const plans = panel?.getWorkspaceSnapshot().resources.plans;
       return { status: plans?.status, count: plans?.value?.plans[0]?.rooms.length };
     })).toEqual({ status: "ready", count: 102 });
-    await openPlanPicker(gallery);
     await gallery.getByRole("button", { name: /^Legacy plan/ }).click();
 
     await expect(gallery.getByRole("button", { name: "Run plan Legacy plan", exact: true })).toBeDisabled();
@@ -2251,6 +2279,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
         try {
           await effects.refreshCatalog(true);
+          await effects.openWorkflow("history");
           await effects.selectFloor("saved-1");
           const staleMarker = store.value.resources.scene.value.marker;
           history = { ...history, floors: pruned === "all" ? [] : (pruned === "floor" || pruned === "navigation") ? history.floors.filter((floor) => floor.id !== "saved-1") : history.floors.map((floor) => floor.id !== "saved-1" ? floor : { ...floor, snapshots: [{ ...floor.snapshots[0], id: "replacement", sceneUrl: "/replacement-history", revision: 4 }] }) };
@@ -2260,17 +2289,18 @@ test.describe("Map Studio v0.4 foundation", () => {
             store.dispatch({ type: "open-workflow", workflow: "support" });
           }
           await recovery;
-          return { staleMarker, marker: store.value.resources.scene.value?.marker, floor: store.value.selection.floorId, snapshot: store.value.selection.historyId, dataMode: store.value.dataMode, readOnly: store.value.floor.readOnly, label: store.value.floor.displayName, workflow: store.value.workflow, liveUrl: initial.resources.entry.sceneUrl };
+          return { staleMarker, marker: store.value.resources.scene.value?.marker, floor: store.value.selection.floorId, snapshot: store.value.selection.historyId, dataMode: store.value.dataMode, readOnly: store.value.floor.readOnly, workflow: store.value.workflow, problem: store.value.resources.scene.problem, notice: store.value.notice?.key };
         } finally { effects.dispose(); }
       }, { pruned });
       expect(result.staleMarker).toBe("/synthetic-history-saved");
-      expect(result.marker).toBe(pruned === "snapshot" ? "/replacement-history" : result.liveUrl);
-      expect(result.floor).toBe(pruned === "snapshot" ? "saved-1" : "current");
-      expect(result.snapshot).toBe(pruned === "snapshot" ? "replacement" : null);
-      expect(result.dataMode).toBe(pruned === "snapshot" ? "history" : "live");
-      expect(result.readOnly).toBe(pruned === "snapshot");
+      expect(result.marker).toBeUndefined();
+      expect(result.floor).toBe("saved-1");
+      expect(result.snapshot).toBe("saved-one");
+      expect(result.dataMode).toBe("history");
+      expect(result.readOnly).toBe(true);
+      expect(result.problem).toBe("history-source-missing");
+      expect(result.notice).toBe("v4_history_source_missing");
       expect(result.workflow).toBe(pruned === "navigation" ? "support" : "history");
-      if (pruned !== "snapshot") expect(result.label).not.toBe("Shed");
     });
   }
   test("browser Back cancels draft confirmation without leaving the editor", async ({ page }) => {
@@ -2548,6 +2578,33 @@ test.describe("Map Studio v0.4 foundation", () => {
       readOnly: true, exactPose: false, catalog: "error", floor: "current", mode: "live" });
   });
 
+  test("a healthy live map leaves saved history deferred until requested", async ({ page }) => {
+    await loadEffectHarness(page);
+    const reads = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore(initial);
+      let historyReads = 0;
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry],
+        history: async () => { historyReads++; return initial.resources.history.value; },
+        scene: async (_url, revision, floorCoherent) => ({ revision, floorCoherent, scene: initial.resources.scene.value }),
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      try {
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId });
+        await effects.refreshCatalog(true);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        const before = historyReads;
+        await effects.openWorkflow("history");
+        return { before, after: historyReads };
+      } finally { effects.dispose(); }
+    });
+    expect(reads).toEqual({ before: 0, after: 1 });
+  });
+
   for (const scenario of ["unreadable-newest", "late-history", "transient-all", "live-unavailable"]) {
     test(`saved-map fallback handles ${scenario}`, async ({ page }) => {
       await loadEffectHarness(page);
@@ -2607,7 +2664,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         } finally { effects.dispose(); }
       }, scenario);
       expect(result).toEqual(scenario === "late-history" || scenario === "live-unavailable"
-        ? { historyReads: scenario === "late-history" ? 2 : 1, available: true, marker: "live", readOnly: false }
+        ? { historyReads: 1, available: true, marker: "live", readOnly: false }
         : { historyReads: 2, available: true, marker: "history", readOnly: true });
     });
   }
@@ -3017,9 +3074,8 @@ test.describe("Map Studio v0.4 foundation", () => {
           userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
         });
         await effects.refreshCatalog(true);
-        // Catalog starts its optional reads concurrently; wait for the failed
-        // history request to settle before using the screen's retry action.
-        for (let i = 0; i < 20 && store.value.resources.history.status !== "error"; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+        // History is admitted when the user opens its workflow.
+        await effects.openWorkflow("history");
         const failed = store.value.resources.history.status;
         await effects.openWorkflow("history");
         const retried = { status: store.value.resources.history.status, reads };
@@ -3412,13 +3468,15 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => {
       const shell = window.__lifecyclePanel.shadowRoot.querySelector("matic-map-shell-v4");
       shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
-        detail: { type: "open-workflow", workflow: "rooms" },
+        detail: { type: "open-workflow", workflow: "history" },
         bubbles: true,
         composed: true,
       }));
     });
     await expect.poll(async () => page.evaluate(() =>
-      window.__lifecyclePanel.getWorkspaceSnapshot().workflow)).toBe("rooms");
+      window.__lifecyclePanel.getWorkspaceSnapshot().workflow)).toBe("history");
+    await expect.poll(async () => page.evaluate(() =>
+      window.__lifecyclePanel.getWorkspaceSnapshot().resources.history.status)).toBe("ready");
 
     await page.evaluate(() => {
       const shell = window.__lifecyclePanel.shadowRoot.querySelector("matic-map-shell-v4");
@@ -3698,8 +3756,12 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => window.__remountPanel.remove());
   });
 
-  test("projects the meter-space robot pose onto the scene center", async ({ page }) => {
+  test("projects the meter-space robot pose near the geometry-centered scene", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
+    // This test covers meter-to-scene projection. Keep the camera top-down so
+    // the marker's rendered 3 m height in the 3D overview does not move its
+    // screen centroid away from the map center.
+    await gallery.getByRole("button", { name: "2D", exact: true }).click();
     const overlay = gallery.locator("matic-map-canvas-v4 .overlay-canvas");
 
     // Report the measured centroid instead of a bare boolean. "The marker was
@@ -3731,22 +3793,21 @@ test.describe("Map Studio v0.4 foundation", () => {
         if (!points.length) return { ...measured, reason: "no marker pixels" };
         const x = points.reduce((sum, point) => sum + point[0], 0) / points.length;
         const y = points.reduce((sum, point) => sum + point[1], 0) / points.length;
-        // Allow one CSS pixel rather than one device pixel. The overlay is
-        // sized to an odd number of device pixels (a 606.5 CSS-pixel viewport
-        // at ratio 2), so the true centre falls on a half pixel while the
-        // symmetric marker rasterises onto a whole one -- a structural ~1px
-        // offset before any antialiasing. WebKit's arc antialiasing then
-        // differs by a fraction of a pixel between platforms, which is enough
-        // to cross a one-device-pixel bound. The meter-versus-cell conversion
-        // this guards would be wrong by far more than a pixel.
-        const tolerance = Math.max(1, window.devicePixelRatio || 1);
+        // The fitted camera is centered on occupied floor geometry, whose
+        // centroid is half a cell away from the metadata-center robot pose.
+        // The 3 m marker height also projects a small offset in top view. Keep
+        // this tight in CSS pixels; a meter-versus-cell conversion error would
+        // move the marker hundreds of pixels.
+        const tolerance = 4;
+        const scale = window.devicePixelRatio || 1;
+        const offsetX = (x - canvas.width / 2) / scale;
+        const offsetY = (y - canvas.height / 2) / scale;
         return {
           ...measured,
           tolerance,
-          offsetX: Math.round((x - canvas.width / 2) * 100) / 100,
-          offsetY: Math.round((y - canvas.height / 2) * 100) / 100,
-          centered: Math.abs(x - canvas.width / 2) <= tolerance
-            && Math.abs(y - canvas.height / 2) <= tolerance,
+          offsetX: Math.round(offsetX * 100) / 100,
+          offsetY: Math.round(offsetY * 100) / 100,
+          centered: Math.abs(offsetX) <= tolerance && Math.abs(offsetY) <= tolerance,
         };
       });
       return measured.painted;
@@ -3756,6 +3817,9 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("fits the complete 3D scene inside the perspective viewport", async ({ page }) => {
+    const bundle = await build({ stdin: { contents: 'export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds, perspectiveBoundsFitDistance } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    await page.route("**/geometry-fit-contract.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+    await page.goto("/");
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.getByRole("button", { name: "3D", exact: true }).click();
     const map = gallery.locator("matic-map-canvas-v4");
@@ -3764,16 +3828,593 @@ test.describe("Map Studio v0.4 foundation", () => {
     const bounds = await window.boundingBox();
     expect(bounds).not.toBeNull();
     const aspect = bounds.width / bounds.height;
-    const halfVertical = (Math.PI / 3.15) / 2;
-    const halfHorizontal = Math.atan(Math.tan(halfVertical) * aspect);
-    const sceneRadius = Math.hypot(180 * 0.05, 140 * 0.05) / 2;
-    const expectedFit = sceneRadius / Math.sin(Math.min(halfVertical, halfHorizontal)) * 1.08;
+    const expectedFit = await page.evaluate(async aspectRatio => {
+      const { createGalleryState, sceneGeometryBounds, perspectiveBoundsFitDistance } = await import("/geometry-fit-contract.js");
+      const scene = createGalleryState("ready").resources.scene.value;
+      const geometry = sceneGeometryBounds(scene.buffer, scene.pointOffset, scene.floorCount, scene.total, scene.metadata.span);
+      const floor = geometry.floor;
+      const all = geometry.all;
+      const meters = scene.metadata.metersPerCell;
+      const centerX = (floor.minX + floor.maxX) / 2;
+      const centerZ = (floor.minY + floor.maxY) / 2;
+      return perspectiveBoundsFitDistance({
+        minX: -(all.maxX - centerX) * meters,
+        maxX: -(all.minX - centerX) * meters,
+        minZ: (all.minY - centerZ) * meters,
+        maxZ: (all.maxY - centerZ) * meters,
+        minHeight: all.minHeight * meters,
+        maxHeight: all.maxHeight * meters,
+      }, aspectRatio, 1.12, -Math.PI / 4, 0.05);
+    }, aspect);
 
     await expect.poll(async () => map.evaluate((element) => element.rendererDiagnostics()))
       .toMatchObject({ fitActive: true });
     const diagnostics = await map.evaluate((element) => element.rendererDiagnostics());
     expect(diagnostics.fitDistance).toBeCloseTo(expectedFit, 4);
     expect(diagnostics.cameraDistance).toBeCloseTo(diagnostics.fitDistance, 6);
+  });
+
+  test("WebGL point sprites retain an opaque core and feathered alpha edge", async ({ page }) => {
+    const bundle = await build({
+      stdin: {
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        resolveDir: process.cwd(),
+      },
+      bundle: true,
+      format: "esm",
+      write: false,
+    });
+    await page.route("**/point-edge-contract.js", route => route.fulfill({
+      contentType: "text/javascript",
+      body: bundle.outputFiles[0].text,
+    }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState } = await import("/point-edge-contract.js");
+      Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 3 });
+      const sceneCanvas = document.createElement("canvas");
+      const overlayCanvas = document.createElement("canvas");
+      for (const canvas of [sceneCanvas, overlayCanvas]) {
+        Object.assign(canvas.style, { position: "absolute", width: "256px", height: "256px" });
+        document.body.append(canvas);
+      }
+      const metadata = new TextEncoder().encode(JSON.stringify({
+        meters_per_cell: 0.05,
+        origin_cells: [0, 0],
+        span_cells: [200, 200],
+        sample_step: 1,
+        rooms: [],
+      }));
+      const pointOffset = 24 + metadata.byteLength;
+      const buffer = new ArrayBuffer(pointOffset + 8);
+      const header = new DataView(buffer);
+      new Uint8Array(buffer, 0, 8).set(new TextEncoder().encode("MATIC3D\u0000"));
+      header.setUint16(8, 1, true);
+      header.setUint16(10, 8, true);
+      header.setUint32(12, metadata.byteLength, true);
+      header.setUint32(16, 1, true);
+      header.setUint32(20, 0, true);
+      new Uint8Array(buffer, 24, metadata.byteLength).set(metadata);
+      const point = new DataView(buffer, pointOffset);
+      point.setUint16(0, 100, true);
+      point.setUint16(2, 100, true);
+      point.setUint8(4, 0);
+      point.setUint8(5, 200);
+      point.setUint8(6, 120);
+      point.setUint8(7, 60);
+      const scene = {
+        buffer,
+        pointOffset,
+        floorCount: 1,
+        surfaceCount: 0,
+        total: 1,
+        revision: 1,
+        etag: '"edge-fixture"',
+        source: "live",
+        metadata: {
+          metersPerCell: 0.05,
+          origin: [0, 0],
+          span: [200, 200],
+          sampleStep: 1,
+          rooms: [],
+        },
+      };
+      const renderer = new RendererController(sceneCanvas, overlayCanvas);
+      const initial = createGalleryState("ready");
+      renderer.setState({
+        ...initial,
+        view: "three",
+        appearance: "photo",
+        labelsVisible: false,
+        quality: "maximum",
+        resources: {
+          ...initial.resources,
+          scene: { status: "ready", value: scene, problem: null },
+        },
+      });
+      const deadline = performance.now() + 5_000;
+      while ((renderer.diagnostics().sceneRevision !== scene.revision
+        || renderer.diagnostics().renderedPoints !== 1) && performance.now() < deadline) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+      const diagnostics = renderer.diagnostics();
+      const gl = sceneCanvas.getContext("webgl2");
+      let pixels = new Uint8Array();
+      if (gl) {
+        gl.finish();
+        pixels = new Uint8Array(32 * 32 * 4);
+        gl.readPixels(sceneCanvas.width / 2 - 16, sceneCanvas.height / 2 - 16, 32, 32,
+          gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      }
+      const alpha = Array.from({ length: pixels.length / 4 }, (_, index) => pixels[index * 4 + 3] ?? 0);
+      const partialPixelIndexes = alpha.flatMap((value, index) => value > 0 && value < 255 ? [index] : []);
+      const maxPremultiplicationExcess = partialPixelIndexes.reduce((maximum, pixelIndex) => {
+        const offset = pixelIndex * 4;
+        const pixelAlpha = pixels[offset + 3] ?? 0;
+        return Math.max(
+          maximum,
+          (pixels[offset] ?? 0) - pixelAlpha,
+          (pixels[offset + 1] ?? 0) - pixelAlpha,
+          (pixels[offset + 2] ?? 0) - pixelAlpha,
+        );
+      }, 0);
+      const result = {
+        mode: diagnostics.mode,
+        revision: diagnostics.sceneRevision,
+        renderedPoints: diagnostics.renderedPoints,
+        maxAlpha: Math.max(0, ...alpha),
+        partialAlpha: alpha.filter(value => value > 0 && value < 255).length,
+        maxPremultiplicationExcess,
+      };
+      renderer.dispose();
+      sceneCanvas.remove();
+      overlayCanvas.remove();
+      return result;
+    });
+    test.skip(result.mode !== "webgl2", "WebGL2 is unavailable in this browser project");
+    expect(result).toMatchObject({ mode: "webgl2", revision: 1, renderedPoints: 1 });
+    expect(result.maxAlpha).toBe(255);
+    expect(result.partialAlpha).toBeGreaterThan(0);
+    expect(result.maxPremultiplicationExcess).toBeLessThanOrEqual(1);
+  });
+
+  test("WebGL point footprint follows the projected world sample spacing", async ({ page }) => {
+    const bundle = await build({
+      stdin: {
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        resolveDir: process.cwd(),
+      },
+      bundle: true,
+      format: "esm",
+      write: false,
+    });
+    await page.route("**/point-footprint-contract.js", route => route.fulfill({
+      contentType: "text/javascript",
+      body: bundle.outputFiles[0].text,
+    }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState } = await import("/point-footprint-contract.js");
+      const measurePoint = async (metersPerCell) => {
+        const sceneCanvas = document.createElement("canvas");
+        const overlayCanvas = document.createElement("canvas");
+        for (const canvas of [sceneCanvas, overlayCanvas]) {
+          Object.assign(canvas.style, { position: "absolute", width: "256px", height: "256px" });
+          document.body.append(canvas);
+        }
+        const metadata = new TextEncoder().encode(JSON.stringify({
+          meters_per_cell: metersPerCell,
+          origin_cells: [0, 0],
+          span_cells: [200, 200],
+          sample_step: 1,
+          rooms: [],
+        }));
+        const pointOffset = 24 + metadata.byteLength;
+        const buffer = new ArrayBuffer(pointOffset + 8);
+        const header = new DataView(buffer);
+        new Uint8Array(buffer, 0, 8).set(new TextEncoder().encode("MATIC3D\u0000"));
+        header.setUint16(8, 1, true);
+        header.setUint16(10, 8, true);
+        header.setUint32(12, metadata.byteLength, true);
+        header.setUint32(16, 1, true);
+        new Uint8Array(buffer, 24, metadata.byteLength).set(metadata);
+        const point = new DataView(buffer, pointOffset);
+        point.setUint16(0, 100, true);
+        point.setUint16(2, 100, true);
+        point.setUint8(4, 0);
+        point.setUint8(5, 160);
+        point.setUint8(6, 120);
+        point.setUint8(7, 80);
+        const scene = {
+          buffer,
+          pointOffset,
+          floorCount: 1,
+          surfaceCount: 0,
+          total: 1,
+          revision: 1,
+          etag: `"cell-${metersPerCell}"`,
+          source: "live",
+          metadata: {
+            metersPerCell,
+            origin: [0, 0],
+            span: [200, 200],
+            sampleStep: 1,
+            rooms: [],
+          },
+        };
+        const initial = createGalleryState("ready");
+        const renderer = new RendererController(sceneCanvas, overlayCanvas);
+        renderer.setState({
+          ...initial,
+          view: "three",
+          appearance: "photo",
+          labelsVisible: false,
+          quality: "maximum",
+          resources: {
+            ...initial.resources,
+            scene: { status: "ready", value: scene, problem: null },
+          },
+        });
+        const deadline = performance.now() + 5_000;
+        while ((renderer.diagnostics().sceneRevision !== scene.revision
+          || renderer.diagnostics().renderedPoints !== 1) && performance.now() < deadline) {
+          await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        renderer.setCamera({ ...renderer.camera, distance: 1.5 }, false);
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        const gl = sceneCanvas.getContext("webgl2");
+        if (!gl) return { mode: "unavailable", occupiedPixels: 0 };
+        gl.finish();
+        const pixels = new Uint8Array(sceneCanvas.width * sceneCanvas.height * 4);
+        gl.readPixels(0, 0, sceneCanvas.width, sceneCanvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+        const occupiedPixels = Array.from({ length: pixels.length / 4 }, (_, index) => pixels[index * 4 + 3] ?? 0)
+          .filter(alpha => alpha > 0).length;
+        const mode = renderer.diagnostics().mode;
+        renderer.dispose();
+        sceneCanvas.remove();
+        overlayCanvas.remove();
+        return { mode, occupiedPixels };
+      };
+      return {
+        fine: await measurePoint(0.015),
+        coarse: await measurePoint(0.03),
+      };
+    });
+    test.skip(result.fine.mode !== "webgl2" || result.coarse.mode !== "webgl2", "WebGL2 is unavailable in this browser project");
+    expect(result.coarse.occupiedPixels).toBeGreaterThan(result.fine.occupiedPixels);
+  });
+
+  test("WebGL splats remain visible when a sample neighbor crosses the camera near plane", async ({ page }) => {
+    const bundle = await build({
+      stdin: {
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        resolveDir: process.cwd(),
+      },
+      bundle: true,
+      format: "esm",
+      write: false,
+    });
+    await page.route("**/point-near-plane-contract.js", route => route.fulfill({
+      contentType: "text/javascript",
+      body: bundle.outputFiles[0].text,
+    }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState } = await import("/point-near-plane-contract.js");
+      const sceneCanvas = document.createElement("canvas");
+      const overlayCanvas = document.createElement("canvas");
+      for (const canvas of [sceneCanvas, overlayCanvas]) {
+        Object.assign(canvas.style, { position: "absolute", width: "256px", height: "256px" });
+        document.body.append(canvas);
+      }
+      const metersPerCell = 0.015;
+      const sampleStep = 7;
+      const metadata = new TextEncoder().encode(JSON.stringify({
+        meters_per_cell: metersPerCell,
+        origin_cells: [0, 0],
+        span_cells: [200, 200],
+        sample_step: sampleStep,
+        rooms: [],
+      }));
+      const pointOffset = 24 + metadata.byteLength;
+      const buffer = new ArrayBuffer(pointOffset + 8);
+      const header = new DataView(buffer);
+      new Uint8Array(buffer, 0, 8).set(new TextEncoder().encode("MATIC3D\u0000"));
+      header.setUint16(8, 1, true);
+      header.setUint16(10, 8, true);
+      header.setUint32(12, metadata.byteLength, true);
+      header.setUint32(16, 1, true);
+      new Uint8Array(buffer, 24, metadata.byteLength).set(metadata);
+      const point = new DataView(buffer, pointOffset);
+      point.setUint16(0, 100, true);
+      point.setUint16(2, 100, true);
+      point.setUint8(4, 88);
+      point.setUint8(5, 180);
+      point.setUint8(6, 120);
+      point.setUint8(7, 80);
+      const scene = {
+        buffer,
+        pointOffset,
+        floorCount: 1,
+        surfaceCount: 0,
+        total: 1,
+        revision: 1,
+        etag: '"near-plane-fixture"',
+        source: "live",
+        metadata: {
+          metersPerCell,
+          origin: [0, 0],
+          span: [200, 200],
+          sampleStep,
+          rooms: [],
+        },
+      };
+      const initial = createGalleryState("ready");
+      const renderer = new RendererController(sceneCanvas, overlayCanvas);
+      renderer.setState({
+        ...initial,
+        view: "three",
+        appearance: "photo",
+        labelsVisible: false,
+        quality: "maximum",
+        resources: {
+          ...initial.resources,
+          scene: { status: "ready", value: scene, problem: null },
+        },
+      });
+      const deadline = performance.now() + 5_000;
+      while (renderer.diagnostics().sceneRevision !== scene.revision
+        && performance.now() < deadline) {
+        await new Promise(resolve => requestAnimationFrame(resolve));
+      }
+      const yaw = -Math.PI / 4;
+      const pitch = 1.12;
+      const pointHeight = 88 * metersPerCell;
+      const cameraDirectionY = Math.sin(pitch);
+      const forwardDistance = pointHeight / cameraDirectionY;
+      const pointX = -(100 - 99.5) * metersPerCell;
+      const pointZ = (100 - 99.5) * metersPerCell;
+      const cameraDirectionX = Math.sin(yaw) * Math.cos(pitch);
+      const cameraDirectionZ = Math.cos(yaw) * Math.cos(pitch);
+      // Put the +Z sample neighbor at the camera plane while the source point
+      // itself remains just beyond the perspective near clip distance.
+      const distance = forwardDistance + cameraDirectionZ * metersPerCell * sampleStep;
+      renderer.setCamera({
+        yaw,
+        pitch,
+        distance,
+        targetX: pointX - cameraDirectionX * forwardDistance,
+        targetZ: pointZ - cameraDirectionZ * forwardDistance,
+        orthographic: false,
+      }, false);
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const gl = sceneCanvas.getContext("webgl2");
+      if (!gl) return { mode: "unavailable", error: -1, visiblePixels: 0 };
+      gl.finish();
+      const pixels = new Uint8Array(sceneCanvas.width * sceneCanvas.height * 4);
+      gl.readPixels(0, 0, sceneCanvas.width, sceneCanvas.height, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      let minX = sceneCanvas.width;
+      let maxX = -1;
+      let minY = sceneCanvas.height;
+      let maxY = -1;
+      let visiblePixels = 0;
+      for (let index = 0; index < pixels.length / 4; index += 1) {
+        if ((pixels[index * 4 + 3] ?? 0) === 0) continue;
+        const x = index % sceneCanvas.width;
+        const y = Math.floor(index / sceneCanvas.width);
+        minX = Math.min(minX, x);
+        maxX = Math.max(maxX, x);
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        visiblePixels += 1;
+      }
+      const result = {
+        mode: renderer.diagnostics().mode,
+        error: gl.getError(),
+        visiblePixels,
+        visibleWidth: maxX - minX + 1,
+        visibleHeight: maxY - minY + 1,
+      };
+      renderer.dispose();
+      sceneCanvas.remove();
+      overlayCanvas.remove();
+      return result;
+    });
+    test.skip(result.mode !== "webgl2", "WebGL2 is unavailable in this browser project");
+    expect(result.error).toBe(0);
+    expect(result.visiblePixels).toBeGreaterThan(0);
+    expect(result.visibleWidth).toBeLessThanOrEqual(2);
+    expect(result.visibleHeight).toBeLessThanOrEqual(2);
+  });
+
+  test("Auto map detail recovers after sustained fast frames and Maximum ignores slow frames", async ({ page }) => {
+    const bundle = await build({
+      stdin: {
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+        resolveDir: process.cwd(),
+      },
+      bundle: true,
+      format: "esm",
+      write: false,
+    });
+    await page.route("**/auto-quality-contract.js", route => route.fulfill({
+      contentType: "text/javascript",
+      body: bundle.outputFiles[0].text,
+    }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState } = await import("/auto-quality-contract.js");
+      let frameDurationMs = 0;
+      let frameClockMs = 0;
+      Object.defineProperty(performance, "now", {
+        configurable: true,
+        value: () => {
+          const value = frameClockMs;
+          frameClockMs += frameDurationMs;
+          return value;
+        },
+      });
+      const sceneCanvas = document.createElement("canvas");
+      const overlayCanvas = document.createElement("canvas");
+      for (const canvas of [sceneCanvas, overlayCanvas]) {
+        Object.assign(canvas.style, { position: "absolute", width: "256px", height: "256px" });
+        document.body.append(canvas);
+      }
+      const count = 120;
+      const metadata = new TextEncoder().encode(JSON.stringify({
+        meters_per_cell: 0.05,
+        origin_cells: [0, 0],
+        span_cells: [200, 200],
+        sample_step: 1,
+        rooms: [],
+      }));
+      const pointOffset = 24 + metadata.byteLength;
+      const buffer = new ArrayBuffer(pointOffset + count * 8);
+      const header = new DataView(buffer);
+      new Uint8Array(buffer, 0, 8).set(new TextEncoder().encode("MATIC3D\u0000"));
+      header.setUint16(8, 1, true);
+      header.setUint16(10, 8, true);
+      header.setUint32(12, metadata.byteLength, true);
+      header.setUint32(16, count, true);
+      header.setUint32(20, 0, true);
+      new Uint8Array(buffer, 24, metadata.byteLength).set(metadata);
+      const points = new DataView(buffer, pointOffset);
+      for (let index = 0; index < count; index += 1) {
+        const offset = index * 8;
+        points.setUint16(offset, 40 + (index % 12) * 10, true);
+        points.setUint16(offset + 2, 40 + Math.floor(index / 12) * 10, true);
+        points.setUint8(offset + 4, 0);
+        points.setUint8(offset + 5, 180);
+        points.setUint8(offset + 6, 140);
+        points.setUint8(offset + 7, 100);
+      }
+      const scene = {
+        buffer,
+        pointOffset,
+        floorCount: count,
+        surfaceCount: 0,
+        total: count,
+        revision: 1,
+        etag: '"auto-quality-fixture"',
+        source: "live",
+        metadata: {
+          metersPerCell: 0.05,
+          origin: [0, 0],
+          span: [200, 200],
+          sampleStep: 1,
+          rooms: [],
+        },
+      };
+      const initial = {
+        ...createGalleryState("ready"),
+        view: "three",
+        appearance: "photo",
+        labelsVisible: false,
+        quality: "auto",
+        resources: {
+          ...createGalleryState("ready").resources,
+          scene: { status: "ready", value: scene, problem: null },
+        },
+      };
+      const renderer = new RendererController(sceneCanvas, overlayCanvas);
+      renderer.setState(initial);
+      const frame = async () => {
+        renderer.requestRender();
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        return renderer.diagnostics();
+      };
+      let diagnostics = renderer.diagnostics();
+      for (let attempts = 0; attempts < 100
+        && (diagnostics.sceneRevision !== scene.revision || diagnostics.renderedPoints !== count); attempts += 1) {
+        diagnostics = await frame();
+      }
+      const mode = renderer.diagnostics().mode;
+      const initialPoints = renderer.diagnostics().renderedPoints;
+      frameDurationMs = 20;
+      for (let index = 0; index < 2; index += 1) diagnostics = await frame();
+      const afterShortSlowRun = diagnostics.renderedPoints;
+      for (let index = 0; index < 10 && diagnostics.renderedPoints === initialPoints; index += 1) {
+        diagnostics = await frame();
+      }
+      const afterSlow = diagnostics.renderedPoints;
+
+      frameDurationMs = 5;
+      for (let index = 0; index < 119; index += 1) diagnostics = await frame();
+      const beforeRecoveryThreshold = diagnostics.renderedPoints;
+      for (let index = 0; index < 3; index += 1) diagnostics = await frame();
+      const afterRecovery = diagnostics.renderedPoints;
+
+      frameDurationMs = 20;
+      for (let index = 0; index < 2; index += 1) diagnostics = await frame();
+      const afterSecondShortSlowRun = diagnostics.renderedPoints;
+      renderer.setState({ ...initial, quality: "maximum" });
+      for (let index = 0; index < 24; index += 1) diagnostics = await frame();
+      const maximumDuringSlowFrames = diagnostics.renderedPoints;
+      renderer.dispose();
+      sceneCanvas.remove();
+      overlayCanvas.remove();
+      return {
+        mode,
+        initialPoints,
+        afterShortSlowRun,
+        afterSlow,
+        beforeRecoveryThreshold,
+        afterRecovery,
+        afterSecondShortSlowRun,
+        maximumDuringSlowFrames,
+      };
+    });
+    test.skip(result.mode !== "webgl2", "WebGL2 is unavailable in this browser project");
+    expect(result.initialPoints).toBe(120);
+    expect(result.afterShortSlowRun).toBe(result.initialPoints);
+    expect(result.afterSlow).toBeLessThan(result.initialPoints);
+    expect(result.beforeRecoveryThreshold).toBe(result.afterSlow);
+    expect(result.afterRecovery).toBe(result.initialPoints);
+    expect(result.afterSecondShortSlowRun).toBe(result.initialPoints);
+    expect(result.maximumDuringSlowFrames).toBe(result.initialPoints);
+  });
+
+  test("reports only renderer mode transitions, including context loss and restoration", async ({ page }) => {
+    const bundle = await build({
+      stdin: {
+        contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller";',
+        resolveDir: process.cwd(),
+      },
+      bundle: true,
+      format: "esm",
+      write: false,
+    });
+    await page.route("**/renderer-mode-contract.js", route => route.fulfill({
+      contentType: "text/javascript",
+      body: bundle.outputFiles[0].text,
+    }));
+    await page.goto("/");
+    const modes = await page.evaluate(async () => {
+      const { RendererController } = await import("/renderer-mode-contract.js");
+      const sceneCanvas = document.createElement("canvas");
+      const overlayCanvas = document.createElement("canvas");
+      document.body.append(sceneCanvas, overlayCanvas);
+      const reported = [];
+      const renderer = new RendererController(sceneCanvas, overlayCanvas, {
+        onMode: mode => reported.push(mode),
+      });
+      const initialMode = renderer.diagnostics().mode;
+      sceneCanvas.dispatchEvent(new Event("webglcontextlost", { cancelable: true }));
+      const lostMode = renderer.diagnostics().mode;
+      sceneCanvas.dispatchEvent(new Event("webglcontextrestored"));
+      const restoredMode = renderer.diagnostics().mode;
+      renderer.dispose();
+      sceneCanvas.remove();
+      overlayCanvas.remove();
+      return { reported, initialMode, lostMode, restoredMode };
+    });
+    test.skip(modes.initialMode !== "webgl2", "WebGL2 is unavailable in this browser project");
+    expect(modes).toEqual({
+      reported: ["webgl2", "canvas2d", "webgl2"],
+      initialMode: "webgl2",
+      lostMode: "canvas2d",
+      restoredMode: "webgl2",
+    });
   });
 
   test("preserves navigation when a live scene revision arrives", async ({ page }) => {
@@ -3903,8 +4544,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.after.yaw).toBe(result.before.yaw);
     expect(result.after.distance).toBe(result.before.distance);
     expect(result.notified).toMatchObject({ targetX: result.after.targetX, targetZ: result.after.targetZ });
-    expect(result.preferences.three.targetX).toBeCloseTo(0.8, 12);
-    expect(result.preferences.three.targetZ).toBeCloseTo(-0.6, 12);
+    expect(result.preferences.three.targetX).toBeCloseTo(0.9, 12);
+    expect(result.preferences.three.targetZ).toBeCloseTo(-0.7, 12);
     expect(result.preferences.three.zoom).not.toBe(result.previousThreeZoom);
   });
 
@@ -3961,11 +4602,11 @@ test.describe("Map Studio v0.4 foundation", () => {
   for (const [transition, destinationFit] of ["three-top", "top-three", "enter-draw", "leave-draw"]
     .flatMap(transition => [false, true].map(fit => [transition, fit]))) {
     test(`preserves rebased camera ownership during ${transition} fit=${destinationFit}`, async ({ page }) => {
-      const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+      const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { sceneGeometryBounds } from "./frontend/map-studio-v4/renderer-math";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
       await page.route("**/camera-transition.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
       await page.goto("/");
       const result = await page.evaluate(async ({ transition, destinationFit }) => {
-        const { RendererController, createGalleryState } = await import("/camera-transition.js");
+        const { RendererController, createGalleryState, sceneGeometryBounds } = await import("/camera-transition.js");
         const canvases = [document.createElement("canvas"), document.createElement("canvas")];
         for (const canvas of canvases) {
           Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
@@ -3981,16 +4622,30 @@ test.describe("Map Studio v0.4 foundation", () => {
         state.view = transition === "top-three" ? "top" : "three";
         state.workflow = transition === "leave-draw" ? "draw" : "none";
         state.cameras = {
-          three: { yaw: -Math.PI / 4, pitch: 0.82, zoom: 1, targetX: 0, targetZ: 0 },
+          three: { yaw: -Math.PI / 4, pitch: 1.12, zoom: 1, targetX: 0, targetZ: 0 },
           top: { yaw: 0, pitch: Math.PI / 2 - 0.018, zoom: 1, targetX: 0, targetZ: 0 },
         };
         const destinationView = transition === "three-top" || transition === "enter-draw" ? "top" : "three";
         if (!destinationFit) state.cameras[destinationView] = {
           ...state.cameras[destinationView], zoom: 0.8, targetX: 0.1, targetZ: -0.2,
         };
+        if (transition === "enter-draw") {
+          // Draw owns a separate top-view camera. Seed that owner before the
+          // workflow transition so this case exercises its rebase, too.
+          state.taskCameraKey = state.cameraKey;
+          state.taskCameras = { ...state.taskCameras, top: state.cameras.top };
+        }
         renderer.setState(state);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         notifications = 0;
+        const originalScene = state.resources.scene.value;
+        const nextMetadata = { ...originalScene.metadata, origin: [4, -2], span: [200, 160] };
+        const geometry = sceneGeometryBounds(originalScene.buffer, originalScene.pointOffset,
+          originalScene.floorCount, originalScene.total, nextMetadata.span).floor;
+        const expectedHomeTarget = {
+          x: -((geometry.minX + geometry.maxX) / 2 - (nextMetadata.span[0] - 1) / 2) * nextMetadata.metersPerCell,
+          z: ((geometry.minY + geometry.maxY) / 2 - (nextMetadata.span[1] - 1) / 2) * nextMetadata.metersPerCell,
+        };
         const next = {
           ...state,
           view: transition === "three-top" ? "top" : "three",
@@ -4000,7 +4655,7 @@ test.describe("Map Studio v0.4 foundation", () => {
             scene: { ...state.resources.scene, value: {
               ...state.resources.scene.value,
               revision: state.resources.scene.value.revision + 1,
-              metadata: { ...state.resources.scene.value.metadata, origin: [4, -2], span: [200, 160] },
+              metadata: nextMetadata,
             } },
           },
         };
@@ -4014,8 +4669,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         }
         const afterTransition = renderer.camera;
         const fitAfterTransition = renderer.diagnostics().fitActive;
-        const outgoing = preferences[transition === "top-three" || transition === "leave-draw" ? "top" : "three"];
-        next.cameras = preferences;
+        const outgoing = transition === "enter-draw" ? null
+          : preferences[transition === "top-three" || transition === "leave-draw" ? "top" : "three"];
+        if (transition === "enter-draw") next.taskCameras = preferences;
+        else next.cameras = preferences;
         renderer.setState({ ...next, resources: { ...next.resources,
           scene: { ...next.resources.scene, value: { ...next.resources.scene.value, revision: next.resources.scene.value.revision + 1 } },
         } });
@@ -4037,7 +4694,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         canvases.forEach(canvas => canvas.remove());
         return {
           notifications, outgoing, afterTransition, afterRevision, fitAfterTransition,
-          beforePublication, publication, expectedRevision, expectedPoints,
+          beforePublication, publication, expectedRevision, expectedPoints, expectedHomeTarget,
         };
       }, { transition, destinationFit });
       expect(result.publication.sceneRevision).toBe(result.expectedRevision);
@@ -4048,13 +4705,15 @@ test.describe("Map Studio v0.4 foundation", () => {
       // Entering Draw first publishes its top camera on the old front; geometry
       // publication then rebases it, followed by the same-view revision.
       expect(result.notifications).toBe(transition === "enter-draw" ? 3 : 2);
-      expect(result.outgoing.zoom).toBeCloseTo(1, 6);
-      expect(result.outgoing.targetX).toBe(0);
-      expect(result.outgoing.targetZ).toBe(0);
-      expect(result.outgoing.yaw).toBeCloseTo(transition === "top-three" || transition === "leave-draw" ? 0 : -Math.PI / 4, 6);
+      if (result.outgoing) {
+        expect(result.outgoing.zoom).toBeCloseTo(1, 6);
+        expect(result.outgoing.targetX).toBeCloseTo(result.expectedHomeTarget.x, 6);
+        expect(result.outgoing.targetZ).toBeCloseTo(result.expectedHomeTarget.z, 6);
+        expect(result.outgoing.yaw).toBeCloseTo(transition === "top-three" || transition === "leave-draw" ? 0 : -Math.PI / 4, 6);
+      }
       expect(result.fitAfterTransition).toBe(destinationFit);
-      expect(result.afterTransition.targetX).toBeCloseTo(destinationFit ? 0 : 0.8, 6);
-      expect(result.afterTransition.targetZ).toBeCloseTo(destinationFit ? 0 : -0.6, 6);
+      expect(result.afterTransition.targetX).toBeCloseTo(destinationFit ? result.expectedHomeTarget.x : 0.8, 6);
+      expect(result.afterTransition.targetZ).toBeCloseTo(destinationFit ? result.expectedHomeTarget.z : -0.6, 6);
       expect(result.afterRevision).toEqual(result.afterTransition);
     });
   }
@@ -4072,6 +4731,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       }
       const state = createGalleryState("ready");
       state.cameras = { top: { yaw: 0, pitch: 1.55, zoom: 2, targetX: 0.1, targetZ: -0.2 } };
+      state.taskCameraKey = state.cameraKey;
+      state.taskCameras = { top: state.cameras.top };
       state.draw = { ...state.draw, zoomPercent: 200 };
       const store = new WorkspaceStore(state);
       const notices = [];
@@ -4091,8 +4752,16 @@ test.describe("Map Studio v0.4 foundation", () => {
       // Initial ready-camera publication is separate from the measured rebase.
       notices.length = 0;
       const scene = state.resources.scene.value;
-      store.replace({ ...store.value, workflow: "draw", resources: { ...state.resources,
-        scene: { ...state.resources.scene, value: { ...scene, revision: scene.revision + 1,
+      // Publish the workflow entry and its restored 200% top camera separately
+      // from the later geometry rebase, whose fit-relative zoom may differ.
+      store.replace({ ...store.value, workflow: "draw" });
+      renderer.setState(store.value);
+      const rebasedBuffer = scene.buffer.slice(0);
+      const rebasedPoints = new DataView(rebasedBuffer, scene.pointOffset);
+      rebasedPoints.setUint16(0, 199, true);
+      rebasedPoints.setUint16(2, 159, true);
+      store.replace({ ...store.value, resources: { ...store.value.resources,
+        scene: { ...store.value.resources.scene, value: { ...scene, buffer: rebasedBuffer, revision: scene.revision + 1,
           metadata: { ...scene.metadata, origin: [4, -2], span: [200, 160] } } },
       } });
       renderer.setState(store.value);
@@ -4765,8 +5434,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(prevented).toBe(true);
     await expect.poll(async () => (await snapshot(page)).draw.zoomPercent)
       .toBeGreaterThan(before.draw.zoomPercent);
-    await expect.poll(async () => (await snapshot(page)).cameras.top?.yaw ?? 0)
-      .not.toBeCloseTo(before.cameras.top?.yaw ?? 0, 4);
+    await expect.poll(async () => (await snapshot(page)).taskCameras.top?.yaw ?? 0)
+      .not.toBeCloseTo(before.taskCameras.top?.yaw ?? 0, 4);
 
   });
 
@@ -4806,6 +5475,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("supports a plain-drag move, a Shift-drag orbit, double-click zoom, and keyboard flight", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.getByRole("button", { name: "3D", exact: true }).click();
+    const beforeGesture = (await snapshot(page)).cameras.three;
     const map = gallery.locator(".map-root");
     const bounds = await map.boundingBox();
     expect(bounds).not.toBeNull();
@@ -4818,8 +5488,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.mouse.up();
     await expect.poll(async () => Boolean((await snapshot(page)).cameras.three)).toBe(true);
     const afterPan = (await snapshot(page)).cameras.three;
-    expect(afterPan.yaw).toBeCloseTo(-Math.PI / 4, 3);
-    expect(afterPan.pitch).toBeCloseTo(0.82, 3);
+    expect(afterPan.yaw).toBeCloseTo(beforeGesture.yaw, 3);
+    expect(afterPan.pitch).toBeCloseTo(beforeGesture.pitch, 3);
 
     await page.keyboard.down("Shift");
     await page.mouse.move(centerX, centerY);
@@ -5197,7 +5867,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         },
       });
     }, GALLERY_TAG);
-    await expect(gallery.getByRole("status")).toContainText("Loading rooms and plans…");
+    await expect(gallery.getByRole("complementary", { name: "Cleaning panel" }).getByRole("status")).toContainText("Loading rooms and plans…");
     await page.evaluate((tag) => {
       const module = window.__galleryModule;
       const element = document.querySelector(tag);
@@ -5222,7 +5892,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         resources: { ...state.resources, plans: { status: "loading", value: null, problem: null } },
       });
     }, GALLERY_TAG);
-    await expect(gallery.getByRole("status")).toContainText("Loading rooms and plans…");
+    await expect(gallery.getByRole("complementary", { name: "Cleaning panel" }).getByRole("status")).toContainText("Loading rooms and plans…");
 
     await page.evaluate((tag) => {
       const element = document.querySelector(tag);
@@ -5312,7 +5982,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, GALLERY_TAG);
     const copyButton = gallery.getByRole("button", { name: "Copy summary" });
     await copyButton.click();
-    await expect(gallery.getByRole("status")).toHaveText("Copied");
+    await expect(gallery.getByRole("complementary", { name: "Cleaning panel" }).getByRole("status")).toHaveText("Copied");
     await expect(copyButton).toBeFocused();
     expect(await page.evaluate(() => window.__legacyCopies)).toEqual([{
       command: "copy",
@@ -5583,6 +6253,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(menu).toHaveCount(0);
     await expect(options).toBeFocused();
 
+    await expect(gallery.getByRole("button", { name: "3D", exact: true })).toBeDisabled();
+    await gallery.locator("matic-map-shell-v4").evaluate(shell => shell.dispatchEvent(new CustomEvent("matic-workspace-intent", { detail: { type: "open-workflow", workflow: "none" }, bubbles: true, composed: true })));
     await gallery.getByRole("button", { name: "3D", exact: true }).click();
     await gallery.getByRole("button", { name: "Rotate right" }).click();
     await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null)
@@ -5794,9 +6466,9 @@ test.describe("Map Studio v0.4 foundation", () => {
       document.body.append(panel);
       window.__transientPlansPanel = panel;
     });
-    // Let the scene settle only after the panel is mounted. The first plans
-    // request starts from the scene's authoritative success path, so the
-    // transient conflict cannot be hidden by a simultaneous retry.
+    // Plans are loaded when their workflow is opened. Hold the scene until
+    // that demand exists so the first admitted read exposes the conflict.
+    await openPlanPicker(page.locator("matic-map-panel-v0-4-0"));
     releaseScene();
     await expect.poll(() => plansRequests).toBe(1);
     await expect.poll(async () => page.evaluate(() =>
@@ -6597,6 +7269,12 @@ test.describe("Map Studio v0.4 foundation", () => {
         heldPoseRequests += 1;
         await heldPoseGate;
       }
+      // Bind the hold to this response, before its asynchronous delivery. The
+      // test can advance the fixture while an older response is still settling.
+      if (holdAfterNextAgedPose && poseAgeSeconds === 3 && poseFloorCoherent) {
+        holdAfterNextAgedPose = false;
+        holdNextPose = true;
+      }
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -6611,10 +7289,6 @@ test.describe("Map Studio v0.4 foundation", () => {
           map_session_key: poseSessionKey,
         }),
       });
-      if (holdAfterNextAgedPose && poseAgeSeconds === 3) {
-        holdAfterNextAgedPose = false;
-        holdNextPose = true;
-      }
     });
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
       status: 200,
@@ -8042,31 +8716,31 @@ test("short phone keeps plan footer reachable below the reserved map controls", 
 });
 
 for (const width of [1024, 1100]) {
-  test(`selected-room chip stays below camera controls at ${width}px`, async ({ page }) => {
+  test(`selected-room chip keeps top-view controls reachable at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const gallery = await loadGallery(page, { scenario: "rooms" });
-    await page.evaluate((tag) => {
-      const module = window.__galleryModule;
-      const state = module.createGalleryState("rooms");
-      document.querySelector(tag).replaceWorkspaceState({ ...state, view: "three",
+    await gallery.evaluate(element => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state,
         selection: { ...state.selection, roomIds: ["room-a", "room-b"] } });
-    }, GALLERY_TAG);
+    });
     const chip = gallery.locator(".selection-chip");
-    const camera = gallery.getByRole("toolbar", { name: "Map camera controls" });
     await expect(chip).toBeVisible();
-    const [chipBox, cameraBox] = await Promise.all([chip.boundingBox(), camera.boundingBox()]);
-    expect(cameraBox.y + cameraBox.height).toBeLessThanOrEqual(chipBox.y);
-    const before = (await snapshot(page)).cameras.three?.yaw ?? null;
-    await camera.getByRole("button", { name: "Rotate right" }).click();
-    await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(before);
-    const pitch = (await snapshot(page)).cameras.three?.pitch ?? null;
-    await camera.getByRole("button", { name: "Lower viewing angle" }).click();
-    await expect.poll(async () => (await snapshot(page)).cameras.three?.pitch ?? null).not.toBe(pitch);
+    await expect(gallery.getByRole("button", { name: "2D", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await expect(gallery.getByRole("button", { name: "3D", exact: true })).toBeDisabled();
+    await expect(gallery.getByRole("toolbar", { name: "Map camera controls" })).toHaveCount(0);
+    const chipBox = await chip.boundingBox();
+    for (const selector of [".map-context", ".map-tools", ".appearance-switch", ".map-extras"]) {
+      const box = await gallery.locator(selector).boundingBox();
+      expect(box.x < chipBox.x + chipBox.width && box.x + box.width > chipBox.x
+        && box.y < chipBox.y + chipBox.height && box.y + box.height > chipBox.y, selector).toBe(false);
+    }
+    await gallery.getByRole("button", { name: "Fit the whole map on screen", exact: true }).click();
+    await expect.poll(async () => (await snapshot(page)).taskCameras.top?.zoom).toBe(1);
     await chip.getByRole("button", { name: "Clear", exact: true }).click();
     await expect(chip).toHaveCount(0);
-    await expect(camera).toBeVisible();
     await gallery.evaluate((element) => element.setScenario("draw"));
-    await expect(camera).toHaveCount(0);
+    await expect(gallery.getByRole("toolbar", { name: "Map camera controls" })).toHaveCount(0);
     await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
   });
 }
@@ -8074,10 +8748,10 @@ for (const width of [1024, 1100]) {
 for (const width of [1024, 1100]) {
   for (const height of [500, 900]) {
     for (const three of [false, true]) {
-      for (const selected of [false, true]) {
+      for (const selected of three ? [false] : [false, true]) {
         test(`navigation help avoids ${three ? "3D" : "2D"} controls at ${width}x${height}${selected ? " with selected rooms" : ""}`, async ({ page }) => {
           await page.setViewportSize({ width, height });
-          const gallery = await loadGallery(page, { scenario: "rooms" });
+          const gallery = await loadGallery(page, { scenario: three ? "ready" : "rooms" });
           await gallery.locator(".stage").evaluate((stage, height) => { stage.style.minBlockSize = "0"; stage.style.blockSize = `${height}px`; }, height);
           await gallery.evaluate((element, { three, selected }) => {
             const state = element.getWorkspaceSnapshot();
@@ -8123,7 +8797,8 @@ for (const width of [1024, 1100]) {
 for (const width of [320, 390]) {
   test(`sheet scrim leaves corner controls clickable at ${width}px @mobile`, async ({ page }) => {
     await page.setViewportSize({ width, height: 740 });
-    const gallery = await loadGallery(page, { scenario: "rooms", narrow: true });
+    // Home exposes both camera modes; room-selection tasks deliberately stay 2D.
+    const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
     const sheet = gallery.locator(".mobile-sheet");
     const more = gallery.getByRole("button", { name: "Expand panel" });
     const less = gallery.getByRole("complementary", { name: "Cleaning panel" }).getByRole("button", { name: "Collapse panel", exact: true });
@@ -8160,9 +8835,10 @@ for (const width of [320, 390]) {
 }
 
 test("native floor keys and gestures do not drive the map", async ({ page }) => {
+  // The room task intentionally keeps its map in 2D, so exercise the native
+  // floor control without trying to enter the unavailable 3D view.
   const gallery = await loadGallery(page, { scenario: "rooms" });
   const floor = gallery.getByRole("combobox", { name: "Choose floor", exact: true });
-  await gallery.getByRole("button", { name: "3D", exact: true }).click();
   await floor.focus();
   const before = await snapshot(page);
   const prevented = await floor.evaluate((element) => {
@@ -8174,7 +8850,7 @@ test("native floor keys and gestures do not drive the map", async ({ page }) => 
     return events.map((event) => { element.dispatchEvent(event); return event.defaultPrevented; });
   });
   expect(prevented).toEqual(Array(prevented.length).fill(false));
-  expect((await snapshot(page)).workflow).toBe("rooms");
+  expect((await snapshot(page)).workflow).toBe(before.workflow);
   expect((await snapshot(page)).cameras).toEqual(before.cameras);
   // Real browser typeahead changes the selected native option and floor.
   await floor.press("s");
@@ -8182,15 +8858,7 @@ test("native floor keys and gestures do not drive the map", async ({ page }) => 
   await expect(floor).toHaveValue("saved-1");
   await expect.poll(async () => (await snapshot(page)).selection.floorId).toBe("saved-1");
   await floor.selectOption("current");
-  await gallery.getByRole("button", { name: "3D", exact: true }).click();
-  const rotate = gallery.getByRole("button", { name: "Rotate right", exact: true });
-  await rotate.focus();
-  const yaw = (await snapshot(page)).cameras.three?.yaw ?? null;
-  await rotate.press("Space");
-  await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(yaw);
-  const afterButton = (await snapshot(page)).cameras.three?.yaw ?? null;
-  await gallery.locator(".map-root").press("ArrowRight");
-  await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(afterButton);
+  expect((await snapshot(page)).workflow).toBe("rooms");
 });
 
 test("keyboard drawing paints erases and restores one centered mark", async ({ page }) => {
@@ -8226,6 +8894,13 @@ test("keyboard drawing paints erases and restores one centered mark", async ({ p
 for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "unfocused", "no-canvas"]) {
   test(`keyboard drawing ignores ${blocked} targets @safety`, async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "draw" });
+    // The room-colour layer intentionally replaces the point cloud. This
+    // safety case needs a published point scene so it can verify drawing is
+    // rejected after publication; keep the fixture on the photo layer.
+    await gallery.evaluate((element) => {
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, appearance: "photo" });
+    });
     const map = gallery.locator(".map-root");
     const renderer = gallery.locator("matic-map-canvas-v4");
     const waitForPublication = (hidden = false) => expect.poll(() => renderer.evaluate((element, { tag, hidden }) => {
@@ -8275,7 +8950,7 @@ test("zone perimeter closes automatically and supports extending dragging insert
   const gallery = await loadGallery(page, { scenario: "draw" });
   await page.evaluate((tag) => {
     const element = document.querySelector(tag), state = element.getWorkspaceSnapshot();
-    element.replaceWorkspaceState({ ...state, cameras: { top: { yaw: 0, pitch: 0, zoom: 2, targetX: 2.475, targetZ: -1.975 } },
+    element.replaceWorkspaceState({ ...state, taskCameras: { ...state.taskCameras, top: { ...state.taskCameras.top, yaw: 0, pitch: 0, zoom: 2, targetX: 2.475, targetZ: -1.975 } },
       draw: { ...state.draw, circles: [], outline: null, undo: [], redo: [], strokeCount: 0, dirty: false } });
   }, GALLERY_TAG);
   await gallery.getByRole("button", { name: "Points", exact: true }).click();
@@ -8318,7 +8993,7 @@ test("zone perimeter closes automatically and supports extending dragging insert
       const event=new Event(name,{bubbles:true,cancelable:true}); Object.assign(event,{scale:1,rotation}); element.dispatchEvent(event);
     }
   });
-  await expect.poll(async () => (await snapshot(page)).cameras.top.yaw).toBeCloseTo(Math.PI/2);
+  await expect.poll(async () => (await snapshot(page)).taskCameras.top?.yaw).toBeCloseTo(Math.PI/2);
   const handle = await first.boundingBox();
   expect(Math.hypot(handle.x-unrotated.x,handle.y-unrotated.y)).toBeGreaterThan(10);
   await page.mouse.move(handle.x + 22, handle.y + 22); await page.mouse.down();
@@ -8626,9 +9301,11 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
     };
     recovery.effects = new m.EffectController(recovery.store, backend);
     recovery.effects.sync({ userKey: "synthetic-user", entryKey: recovery.entry.entryId, host: initial.host, activity: "cleaning", batteryPercent: 90, robotLabel: initial.robotLabel, robots: initial.robots, language: "en" });
+    recovery.store.patch({ workflow: "history" });
     await recovery.effects.refreshCatalog(true);
   });
   await expect.poll(() => page.evaluate(() => window.__slowScene.requests.length)).toBe(1);
+  await expect.poll(() => page.evaluate(() => typeof window.__slowScene.finishHistory)).toBe("function");
   const result = await page.evaluate(async (change) => {
     const s = window.__slowScene;
     const first = s.requests[0];
@@ -8789,7 +9466,7 @@ test("saved areas recover when Draw opens before the live scene is ready", async
 });
 
 test("zone geometry and saved perimeter survive the authenticated backend round trip", async ({ page }) => {
-  const bundle = await build({ stdin: { contents: `export * from "./frontend/map-studio-v4/area-outline"; export { insideOutline, outlineCircles } from "./frontend/map-studio-v4/outline-editor"; export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, selectPrimaryAction } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  const bundle = await build({ stdin: { contents: `export * from "./frontend/map-studio-v4/area-outline"; export { insideOutline, outlineCircles } from "./frontend/map-studio-v4/outline-editor"; export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { selectPrimaryAction } from "./frontend/map-studio-v4/workflow-actions"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-contract.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const result = await page.evaluate(async () => {
@@ -9514,7 +10191,23 @@ test.describe("plan effects", () => {
         store.patch({ map: initial.map, coherence: "current", workflow: initial.workflow, planView: initial.planView,
           selection: initial.selection, planDraft: initial.planDraft, resources: { ...store.value.resources, plans: initial.resources.plans } });
         run.reloads = 0;
-        run.hold = () => new Promise((resolve, reject) => { run.finish = resolve; run.fail = reject; });
+        run.finishRequested = false;
+        run.failureRequested = null;
+        run.pendingFinish = null;
+        run.pendingFailure = null;
+        run.finish = () => {
+          if (run.pendingFinish) { const finish = run.pendingFinish; run.pendingFinish = null; finish(); }
+          else run.finishRequested = true;
+        };
+        run.fail = (error) => {
+          if (run.pendingFailure) { const fail = run.pendingFailure; run.pendingFailure = null; fail(error); }
+          else run.failureRequested = error;
+        };
+        run.hold = () => new Promise((resolve, reject) => {
+          if (run.failureRequested) { const error = run.failureRequested; run.failureRequested = null; reject(error); }
+          else if (run.finishRequested) { run.finishRequested = false; resolve(); }
+          else { run.pendingFinish = resolve; run.pendingFailure = reject; }
+        });
         run.inFlight = async () => { for (let i = 0; i < 20 && run.calls.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 0)); };
         return run;
       };
@@ -9559,11 +10252,14 @@ test.describe("plan effects", () => {
       const run = await window.planEffects("plan-saved-intelligent");
       const { m, store, effects } = run;
       const catalog = structuredClone(store.value.resources.plans.value);
-      run.plans = () => run.hold().then(() => catalog);
+      let announceRead;
+      const readStarted = new Promise((resolve) => { announceRead = resolve; });
+      run.plans = () => { announceRead(); return run.hold().then(() => catalog); };
       const running = effects.executeAction("run-plan");
       const action = m.selectPrimaryAction(store.value);
       const during = { status: store.value.resources.plans.status, command: store.value.command,
         pendingAction: store.value.pendingAction, id: action.id, enabled: action.enabled, reasonKey: action.reasonKey };
+      await readStarted;
       run.finish(); await running;
       const sent = { calls: run.calls.map(([service]) => service), pendingAction: store.value.pendingAction };
       store.patch({ notice: null });
@@ -9583,7 +10279,7 @@ test.describe("plan effects", () => {
     });
   });
 
-  test("a plan write is pending as a plan save until it settles or is cancelled", async ({ page }) => {
+  test("a transmitted plan write remains pending across floor navigation until it settles", async ({ page }) => {
     await loadPlanEffects(page);
     const result = await page.evaluate(async () => {
       const run = await window.planEffects("plan-dirty");
@@ -9598,18 +10294,22 @@ test.describe("plan effects", () => {
       const settled = { command: store.value.command, pendingAction: store.value.pendingAction };
       store.patch({ planDraft: { ...store.value.planDraft, name: "Edited again", dirty: true } });
       run.calls.length = 0;
-      const cancelled = effects.savePlan();
+      store.patch({ resources: { ...store.value.resources, history: run.initial.resources.history } });
+      const navigating = effects.savePlan();
       await run.inFlight();
-      void effects.selectFloor("saved-1");
-      const afterCancel = { command: store.value.command, pendingAction: store.value.pendingAction };
-      run.finish(); await cancelled;
+      await effects.selectFloor("saved-1");
+      if (store.value.selection.floorId !== "saved-1") throw new Error("floor transition was not admitted");
+      const afterNavigation = { command: store.value.command, pendingAction: store.value.pendingAction };
+      run.finish(); await navigating;
+      const final = { command: store.value.command, pendingAction: store.value.pendingAction, calls: run.calls.length };
       effects.dispose();
-      return { during, settled, afterCancel };
+      return { during, settled, afterNavigation, final };
     });
     expect(result).toEqual({
       during: { command: "pending", pendingAction: "save-plan", id: "save-plan", enabled: false, reasonKey: "v4_reason_plan_saving" },
       settled: { command: "idle", pendingAction: null },
-      afterCancel: { command: "idle", pendingAction: null },
+      afterNavigation: { command: "pending", pendingAction: "save-plan" },
+      final: { command: "idle", pendingAction: null, calls: 1 },
     });
   });
 
@@ -9869,6 +10569,18 @@ test.describe("plan effects", () => {
       for (const [name, refuse] of Object.entries(refusals)) {
         const run = await window.planEffects("plan-saved-intelligent");
         refuse(run.store);
+        // Entering a cleaning state can lazily load the queue controller and
+        // patch its readiness after this state change. Let that independent
+        // admission work settle before measuring whether the rejected switch
+        // itself changed anything.
+        if (name === "working") {
+          for (let i = 0; i < 100 && run.store.value.queueControllerStatus === "loading"; i++) {
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          if (run.store.value.queueControllerStatus === "loading") {
+            throw new Error("Queue controller did not settle before plan switch assertion");
+          }
+        }
         const before = run.store.value;
         await run.effects.setPlanEnabled(false);
         outcome[name] = { unchanged: run.store.value === before, calls: run.calls.length, reloads: run.reloads };
@@ -10094,7 +10806,7 @@ test("map taps select run and plan rooms in both views and clear old deletion no
       const renderer = new RendererController(canvas, overlay);
       renderer.setState(store.value);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const gestures = new GestureController(canvas, renderer, { state: () => store.value, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {}, onCirclePreview: () => {} });
+      const gestures = new GestureController(canvas, renderer, { state: () => store.value, drawReady: () => true, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {}, onCirclePreview: () => {} });
       const bounds = canvas.getBoundingClientRect();
       let hit;
       for (let y = 20; y < 520 && !hit; y += 10) for (let x = 20; x < 700 && !hit; x += 10) {

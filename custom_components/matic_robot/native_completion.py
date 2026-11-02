@@ -9,6 +9,7 @@ from typing import Literal
 
 from homeassistant.util import dt as dt_util
 
+from .client.coverage_receipts import native_session_hash
 from .client.models import CleaningSession, CleaningSessionRecord
 
 LegacyCompletionPolicy = Literal["aggregate", "room_list"]
@@ -26,6 +27,23 @@ class NativeRoomCompletion:
 def native_room_key(value: str) -> str:
     """Normalize native and mapped room names for exact comparisons."""
     return " ".join(value.strip().casefold().split()).removeprefix("the ")
+
+
+def session_overlaps_dispatch(
+    session: CleaningSession, dispatched_at: datetime, now: datetime
+) -> bool:
+    """Admit only ordered, timezone-aware native timestamps inside this dispatch."""
+    started = dt_util.parse_datetime(session.started_at or "")
+    ended = dt_util.parse_datetime(session.ended_at or "")
+    return (
+        started is not None
+        and ended is not None
+        and all(
+            value.tzinfo is not None for value in (started, ended, dispatched_at, now)
+        )
+        and started <= ended
+        and dispatched_at <= ended <= now
+    )
 
 
 def room_completion_duration(
@@ -94,11 +112,7 @@ def match_single_room_completions(
         if baseline is not None and record.key in baseline:
             continue
         session = record.session
-        started = dt_util.parse_datetime(session.started_at or "")
-        ended = dt_util.parse_datetime(session.ended_at or "")
-        if started is None or ended is None or started > ended:
-            continue
-        if ended < dispatched_at or ended > now:
+        if not session_overlaps_dispatch(session, dispatched_at, now):
             continue
         # The ordering checks rule out future starts because ended <= now.
         if tuple(native_room_key(name) for name in session.rooms) != (target,):
@@ -108,6 +122,41 @@ def match_single_room_completions(
             room_name,
             cleaning_mode,
             legacy_policy=legacy_policy,
+        )
+        if duration is None:
+            continue
+        matches.append(NativeRoomCompletion(record, session.ended_at or "", duration))
+        if len(matches) == 2:
+            break
+    return tuple(matches)
+
+
+def match_session_room_completions(
+    records: Iterable[CleaningSessionRecord],
+    *,
+    room_name: str,
+    cleaning_mode: str,
+    dispatched_at: datetime,
+    now: datetime,
+    session_hash: str,
+) -> tuple[NativeRoomCompletion, ...]:
+    """Match one room in a multi-room record to its exact native session."""
+    target = native_room_key(room_name)
+    matches: list[NativeRoomCompletion] = []
+    for record in records:
+        if native_session_hash(record.key) != session_hash:
+            continue
+        session = record.session
+        if not session_overlaps_dispatch(session, dispatched_at, now):
+            continue
+        room_keys = tuple(native_room_key(name) for name in session.rooms)
+        if len(room_keys) != len(set(room_keys)) or target not in room_keys:
+            continue
+        duration = room_completion_duration(
+            session,
+            room_name,
+            cleaning_mode,
+            legacy_policy="room_list",
         )
         if duration is None:
             continue

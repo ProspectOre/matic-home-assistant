@@ -48,13 +48,15 @@ async def test_request_credential_uses_user_id_and_enables_metadata(
             self.SendToChannel = FakeSendToChannel(channels, channel_metadata)
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.HermesAuthStub", FakeStub
+        "custom_components.matic_robot.client.hermes_connection.HermesAuthStub",
+        FakeStub,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.HermesStub", FakeHermesStub
+        "custom_components.matic_robot.client.hermes_connection.HermesStub",
+        FakeHermesStub,
     )
     client = MaticHermesClient("robot.invalid", 16320)
-    client._channel = object()
+    client._connection._channel = object()
 
     credential = await client.async_request_credential(
         "40dd38c5-0492-49de-b333-41f16f67471e"
@@ -67,7 +69,7 @@ async def test_request_credential_uses_user_id_and_enables_metadata(
             user_id="40dd38c5-0492-49de-b333-41f16f67471e"
         ).SerializeToString(),
     )
-    assert client._metadata == credential.metadata()
+    assert client._connection._metadata == credential.metadata()
     assert len(handshakes) == 1
     assert handshakes[0][0].SerializeToString() == b""
     assert handshakes[0][1] == credential.metadata()
@@ -92,13 +94,14 @@ async def test_request_credential_maps_h2_transport_error() -> None:
             raise H2Error("synthetic auth transport failure")
 
     client = MaticHermesClient("192.0.2.1", 16320)
-    client._channel = object()
+    client._connection._channel = object()
 
     from unittest.mock import patch
 
     with (
         patch(
-            "custom_components.matic_robot.client.api.HermesAuthStub", FailingAuthStub
+            "custom_components.matic_robot.client.hermes_connection.HermesAuthStub",
+            FailingAuthStub,
         ),
         pytest.raises(CannotConnectError, match="credential request connection failed"),
     ):
@@ -141,21 +144,23 @@ async def test_authenticated_connect_handshakes_on_the_created_channel(
         ).SerializeToString(),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.async_robot_client_context",
+        "custom_components.matic_robot.client.hermes_connection.async_robot_client_context",
         lambda: _async_value(object()),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", FakeChannel
+        "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
+        FakeChannel,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.HermesStub", FakeHermesStub
+        "custom_components.matic_robot.client.hermes_connection.HermesStub",
+        FakeHermesStub,
     )
 
     client = MaticHermesClient("192.0.2.1", 16320, credential=credential)
     await client.async_connect()
 
     assert len(calls) == 1
-    assert calls[0][0] is client._channel
+    assert calls[0][0] is client._connection._channel
     assert calls[0][1].SerializeToString() == b""
     assert calls[0][2] == credential.metadata()
     assert channels[0].channel_name == "user_data"
@@ -187,12 +192,13 @@ async def test_user_command_routes_with_hermes_target_metadata(
         ).SerializeToString(),
     )
     client = MaticHermesClient("robot.invalid", 16320, credential=credential)
-    client._channel = object()
+    client._connection._channel = object()
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.HermesStub", FakeHermesStub
+        "custom_components.matic_robot.client.hermes_connection.HermesStub",
+        FakeHermesStub,
     )
-    await client._async_send_channel_payload("user_command", b"command")
+    await client._connection._async_send_channel_payload("user_command", b"command")
 
     assert requests[0].channel_name == "user_command"
     assert metadata[0] == {
@@ -235,11 +241,12 @@ async def test_connect_prefers_resolved_ipv4_and_falls_back_from_ipv6(
     context = object()
     monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", fake_getaddrinfo)
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.async_robot_client_context",
+        "custom_components.matic_robot.client.hermes_connection.async_robot_client_context",
         lambda: _async_value(context),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", FakeChannel
+        "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
+        FakeChannel,
     )
 
     client = MaticHermesClient(
@@ -256,8 +263,8 @@ async def test_connect_prefers_resolved_ipv4_and_falls_back_from_ipv6(
         ("192.0.2.2", 16320, context),
         ("2001:db8::2", 16320, context),
     ]
-    assert client._channel is not None
-    assert client._channel.host == "2001:db8::2"
+    assert client._connection._channel is not None
+    assert client._connection._channel.host == "2001:db8::2"
 
 
 async def test_failed_handshake_resets_channel_for_later_reconnect(
@@ -291,14 +298,16 @@ async def test_failed_handshake_resets_channel_for_later_reconnect(
             self.SendToChannel = FakeSendToChannel([], [])
 
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.async_robot_client_context",
+        "custom_components.matic_robot.client.hermes_connection.async_robot_client_context",
         lambda: _async_value(context),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._PinnedChannel", FakeChannel
+        "custom_components.matic_robot.client.hermes_connection.PinnedChannel",
+        FakeChannel,
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.HermesStub", FakeHermesStub
+        "custom_components.matic_robot.client.hermes_connection.HermesStub",
+        FakeHermesStub,
     )
 
     credential = HermesCredential(
@@ -311,12 +320,12 @@ async def test_failed_handshake_resets_channel_for_later_reconnect(
 
     with pytest.raises(CannotConnectError):
         await client.async_connect()
-    assert client._channel is None
+    assert client._connection._channel is None
     assert channels[0].closed is True
 
     fails["value"] = False
     await client.async_connect()
-    assert client._channel is channels[1]
+    assert client._connection._channel is channels[1]
 
 
 async def _async_value(value):

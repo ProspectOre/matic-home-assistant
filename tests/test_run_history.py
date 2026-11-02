@@ -321,6 +321,24 @@ def _session(**changes) -> CleaningSession:
     return CleaningSession(**{**values, **changes})
 
 
+@pytest.mark.parametrize("completed", [True, False, None])
+@pytest.mark.parametrize(
+    ("stop_reason_code", "ending"),
+    [(5, "finished"), (8, "stopped"), (999, "unknown")],
+)
+def test_native_ending_preserves_stop_reason_without_changing_completion(
+    completed, stop_reason_code, ending
+) -> None:
+    session = _session(completed=completed, stop_reason_code=stop_reason_code)
+    entry = native_entry(CleaningSessionRecord(b"key", session))
+    legacy = native_entry(CleaningSessionRecord(b"key", _session(completed=completed)))
+
+    assert entry["ending"] == ending
+    assert entry["outcome"] == legacy["outcome"]
+    assert entry["rooms"] == legacy["rooms"]
+    assert entry["source"] == "robot"
+
+
 def test_native_entry_reports_robot_results_without_reasons() -> None:
     entry = native_entry(CleaningSessionRecord(b"key", _session()))
     assert entry["id"].startswith("robot-")

@@ -4,9 +4,8 @@
 
 Requires Python 3.14 and Node.js for frontend work.
 
-The test extra pins `pytest-homeassistant-custom-component==0.13.372`, which
-requires stable Home Assistant `2026.10.1`. The integration supports Home
-Assistant 2026.10 and later (`hacs.json`).
+The [test extra](pyproject.toml) pins the Home Assistant test dependencies.
+The integration supports Home Assistant 2026.10 and later ([HACS metadata](hacs.json)).
 
 ```sh
 python -m venv .venv
@@ -18,10 +17,25 @@ python -m venv .venv
 .venv/bin/python scripts/check_public_tree.py
 ```
 
-For Map Studio changes, use Node.js 24, matching CI. Run `npm ci` in the
-checkout, then `npm run build:map-studio-v4` and `npm run test:browser`.
-Do not share a symlinked `node_modules` directory across worktrees; module
-resolution can change the generated chunks. Commit the rebuilt bundle with its source.
+For Map Studio changes, use Node.js 24, matching CI. Install dependencies and
+Playwright browsers in the checkout, then build and run the frontend checks:
+
+```sh
+npm ci
+npx playwright install chromium firefox webkit
+npm run test:build
+npm run build:map-studio-v4
+npm run test:browser
+```
+
+On Linux, `npx playwright install --with-deps chromium firefox webkit` also
+installs required system packages and may require administrator privileges.
+The browser suite includes desktop engines and emulated mobile viewports;
+physical-device qualification is separate. Do not share a symlinked
+`node_modules` directory across worktrees: module resolution can change the
+generated chunks. Commit the rebuilt bundle with its source. For bounded
+synthetic capacity and retention measurements, see the
+[lab procedure](docs/performance-map-lab.md).
 
 Python 3.14's unparenthesized multiple exception types are intentional project
 style. Keep runtime traffic local and use Home Assistant's asynchronous APIs.
@@ -45,7 +59,6 @@ checklist, see [Review and manual merge](docs/maintenance-reviews.md).
 
 - Explain the user-visible change briefly; update relevant docs and tests.
 - Write commits and PR text plainly and specifically; avoid filler and boilerplate.
-  Tool attribution lines are fine.
 - Use synthetic fixtures. Keep credentials, identifiers, room names, maps,
   captures, backups, raw timings, and Home Assistant storage out of public files and discussion.
 - Preserve TLS validation, certificate pinning, diagnostic privacy, entity availability, and unload cleanup.
@@ -66,10 +79,14 @@ user-visible changes. Keep test logs and development diaries out of user docs.
 
 ## Releasing
 
-1. Merge, then publish `vX.Y.Z-rcN` as a GitHub pre-release.
-2. Install it through HACS beta versions and restart Home Assistant.
-3. Verify the loaded version, changed behavior, and guarded failure on the robot.
-4. Publish `vX.Y.Z` from the same commit after validation succeeds.
+1. Complete the [review and manual-merge checklist](docs/maintenance-reviews.md).
+2. With release authorization, merge into `release/X.Y` and publish its candidate
+   as a GitHub pre-release.
+3. Install it through HACS beta versions and restart Home Assistant.
+4. Verify the loaded version, changed behavior, and guarded failure on the robot.
+5. With stable-release approval, merge `release/X.Y` into `main`, publish `vX.Y.Z`
+   from the qualified merge commit and delete `release/X.Y`. Stable hotfixes
+   go to `main` by PR.
 
 If a candidate fails, fix it and publish the next candidate. Group related fixes
 into one release.

@@ -15,8 +15,9 @@ export const requestRoomPreview = async (
   rooms: readonly Room[],
   overrideRoomSchedule: boolean,
   signal: AbortSignal | undefined,
-  { BackendError, ContractError, objectValue, boundedString, parseNextRunPreview, parseCadenceProgress }: typeof import("./backend-contracts").roomPreviewHelpers & {
+  { BackendError, requestFailed, ContractError, objectValue, boundedString, parseNextRunPreview, parseCadenceProgress }: typeof import("./plan-catalog").roomPreviewHelpers & {
     BackendError: typeof import("./backend").BackendError;
+    requestFailed: (error: unknown) => void;
   },
 ): Promise<ManualRoomSequencePreview> => {
   const parseManualRoomSequencePreview = (value: unknown): ManualRoomSequencePreview => {
@@ -31,6 +32,7 @@ export const requestRoomPreview = async (
       rooms: response.rooms,
       mission_boundaries: response.mission_boundaries,
       blocker: response.blocker,
+      daily_limit_held_rooms: response.daily_limit_held_rooms,
     });
     if (!preview) throw new ContractError("invalid-room-sequence-preview");
     const rawRooms = response.rooms;
@@ -47,6 +49,7 @@ export const requestRoomPreview = async (
       rooms,
       missionBoundaries: preview.missionBoundaries,
       blocker: preview.blocker,
+      ...(preview.dailyLimitHeldRooms ? { dailyLimitHeldRooms: preview.dailyLimitHeldRooms } : {}),
     };
   };
   let timeout: number | null = null;
@@ -111,7 +114,10 @@ export const requestRoomPreview = async (
           override_room_schedule: overrideRoomSchedule,
         },
         return_response: true,
-      });
+    });
+    // A local preview deadline cannot cancel HA's RPC. Its late access denial
+    // still matters to the current owner, while cancelled previews stay inert.
+    void wire.catch((error) => { if (!signal?.aborted) requestFailed(error); });
     roomPreviewWireCountByConnection.set(connection, outstandingWires + 1);
     wireStarted = true;
     let wireCountReleased = false;

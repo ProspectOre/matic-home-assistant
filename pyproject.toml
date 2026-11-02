@@ -25,12 +25,16 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "build>=1",
+  "dbus-fast>=1.83.0",
+  "gazetteer-matcher==1.1.0",
+  "hassil==3.12.1",
+  "home-assistant-intents==2026.10.6",
   "mypy>=1.16",
   "PyTurboJPEG==1.8.3",
   "pytest>=8",
   "pytest-asyncio>=0.25",
   "pytest-cov>=6",
-  "pytest-homeassistant-custom-component==0.13.373",
+  "pytest-homeassistant-custom-component==0.13.375",
   "ruff>=0.12",
   "types-protobuf>=6",
 ]
@@ -60,6 +64,7 @@ include = ["custom_components*"]
   "map_studio_v4/**/*.js",
   "map_studio_v4/*.js.LEGAL.txt",
   "map_studio_v4/**/*.js.LEGAL.txt",
+  "map_studio_v4/material-icons.LICENSE.txt",
   "map_studio_v4/assets/*.json",
   "map_studio_v4/assets/*.webp",
   "client/matic_intermediate_ca.pem",

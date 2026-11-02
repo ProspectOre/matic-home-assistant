@@ -2,7 +2,7 @@
 
 Status: proposed, not started. Tracking: [PRO-71](https://linear.app/prospectore/issue/PRO-71)
 (follows PRO-70). Target: 0.5.x hotfix or the 0.6 map updates, decided by the gate below.
-Roadmap: [roadmap.md](roadmap.md). Code references are to `release/0.5-stable` after #331.
+Roadmap: [roadmap.md](roadmap.md). Code references are to 0.5.0 on `main` (after #331).
 
 ## Root cause
 

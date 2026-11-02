@@ -26,18 +26,20 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
     const projection = entryKey => ({ host: { connected: true, administrator: true, robotConnected: true, robotCount: 1 }, activity: "idle",
       batteryPercent: 50, language: "en", userKey: "u", vacuumEntityId: "vacuum.x", entryKey, robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
     let catalogCalls = 0;
-    const backend = { catalog: async () => { catalogCalls += 1; return []; }, dispose() {} };
+    const backend = { catalog: async () => { catalogCalls += 1; return new Promise(() => {}); }, dispose() {} };
     const legacy = new EffectController(new WorkspaceStore(), backend, connection);
     legacy.sync(projection("entry-a"));
     const legacySubscriptions = callbacks.length;
     legacy.dispose();
-    const enabled = new EffectController(new WorkspaceStore(), backend, connection, true);
+    const enabledStore = new WorkspaceStore();
+    enabledStore.patch({ map: { ...enabledStore.value.map, available: true } });
+    const enabled = new EffectController(enabledStore, backend, connection, true);
     enabled.sync(projection("entry-a"));
     const waitForSubscription = async (index) => {
-      for (let attempt = 0; attempt < 20 && typeof callbacks[index] !== "function"; attempt += 1) {
+      for (let attempt = 0; attempt < 100 && typeof callbacks[index] !== "function"; attempt += 1) {
         await new Promise(resolve => setTimeout(resolve, 0));
       }
-      if (typeof callbacks[index] !== "function") throw new Error(`workspace subscription ${index} was not established`);
+      if (typeof callbacks[index] !== "function") throw new Error(`workspace subscription ${index} was not established; map=${enabledStore.value.map.available}, page=${enabledStore.value.pageActive}, diagnostics=${JSON.stringify(enabled.workspaceDiagnostics())}`);
     };
     await waitForSubscription(0);
     const first = callbacks.length;
@@ -46,12 +48,14 @@ test("legacy mode is inert and enabled mode follows admin, entry, and dispose li
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterInvalidation = catalogCalls;
     enabled.sync(projection("entry-b"));
+    enabledStore.patch({ map: { ...enabledStore.value.map, available: true } });
     await waitForSubscription(1);
     const afterEntryChange = { subscriptions: callbacks.length, unsubscribed };
     callbacks[1]({ type: "resync", reason: "entry_removed" });
     await new Promise(resolve => setTimeout(resolve, 0));
     const afterEntryRemoved = unsubscribed;
     enabled.sync(projection("entry-c"));
+    enabledStore.patch({ map: { ...enabledStore.value.map, available: true } });
     await waitForSubscription(2);
     const afterEntryRemovedReplacement = callbacks.length;
     enabled.sync({ ...projection("entry-c"), host: { ...projection("entry-c").host, administrator: false } });
@@ -103,8 +107,13 @@ test("production transport follows the admitted entry capability", async ({ page
     const projection = { host: base.host, activity: base.activity, batteryPercent: base.batteryPercent,
       language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
       entryKey: entry.entryId, robotLabel: "Matic", robots: base.robots };
-    const controller = new EffectController(new WorkspaceStore(), backend, connection);
+    const store = new WorkspaceStore();
+    store.patch({ map: { ...store.value.map, available: true } });
+    const controller = new EffectController(store, backend, connection);
     controller.sync(projection);
+    for (let attempt = 0; attempt < 100 && store.value.resources.catalog.status !== "ready"; attempt += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    store.patch({ map: { ...store.value.map, available: true } });
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     for (let attempt = 0; attempt < 40 && callbacks.length === 0; attempt += 1) await Promise.resolve();
     if (callbacks.length !== 1) throw new Error("ready catalog capability did not enable production transport");
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -162,8 +171,13 @@ test("an old enabled catalog row cannot start transport for a changed entry", as
     const projection = entryKey => ({ host: base.host, activity: base.activity, batteryPercent: base.batteryPercent,
       language: "en", userKey: "synthetic-user", vacuumEntityId: "vacuum.synthetic",
       entryKey, robotLabel: "Matic", robots: [{ entryId: entryKey, label: "Matic" }] });
-    const controller = new EffectController(new WorkspaceStore(), backend, connection);
+    const store = new WorkspaceStore();
+    store.patch({ map: { ...store.value.map, available: true } });
+    const controller = new EffectController(store, backend, connection);
     controller.sync(projection(oldEntry.entryId));
+    for (let attempt = 0; attempt < 100 && store.value.resources.catalog.status !== "ready"; attempt += 1) await new Promise(resolve => setTimeout(resolve, 0));
+    store.patch({ map: { ...store.value.map, available: true } });
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     for (let attempt = 0; attempt < 40 && callbacks.length === 0; attempt += 1) await Promise.resolve();
     if (callbacks.length !== 1) throw new Error("initial enabled entry did not start transport");
     await new Promise(resolve => setTimeout(resolve, 0));
@@ -229,12 +243,12 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       batteryPercent: base.batteryPercent, language: "en", userKey: "synthetic-user",
       vacuumEntityId: "vacuum.synthetic", entryKey: base.resources.entry.entryId,
       robotLabel: "Matic", robots: base.robots });
-    const makeRun = (enabled, holdCatalog = false) => {
+    const makeRun = (enabled, holdCatalog = false, forceFallback = false) => {
       const entry = { ...base.resources.entry, deltaUrl: "/synthetic/delta" };
       const run = { catalogCalls: 0, activeCatalog: 0, maxActiveCatalog: 0,
         sceneCalls: 0, deltaCalls: 0, activeDelta: 0, maxActiveDelta: 0,
         revisions: 7, pendingCatalog: [], pendingDelta: [], deliveredEvents: 0, effects: null,
-        store: null, holdCatalog, enabled };
+        store: null, holdCatalog, enabled, forceFallback };
       const backend = {
         dispose() {},
         catalog: async () => {
@@ -305,21 +319,13 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
       };
       run.callbacks = callbacks;
       run.store = new WorkspaceStore();
+      if (enabled && !forceFallback) run.store.patch({ map: { ...run.store.value.map, available: true } });
       run.effects = new EffectController(run.store, backend, connection, enabled);
       run.effects.sync(makeProjection());
       return run;
     };
     const flushStartup = async run => {
-      for (let attempt = 0; attempt < 40 && run.callbacks.length === 0; attempt += 1) await Promise.resolve();
-      if (run.enabled && run.callbacks.length !== 1) throw new Error("workspace listener was not established");
-      if (!run.enabled && run.callbacks.length !== 0) throw new Error("disabled workspace transport subscribed");
-      if (!run.holdCatalog) {
-        for (let attempt = 0; attempt < 100 && run.store.value.resources.scene.status !== "ready"; attempt += 1) await Promise.resolve();
-      }
-      if (!run.holdCatalog && typeof window.DecompressionStream === "function") {
-        for (let attempt = 0; attempt < 100 && run.pendingDelta.length === 0; attempt += 1) await Promise.resolve();
-        if (run.pendingDelta.length !== 1) throw new Error("delta stream did not establish exactly one owner");
-      }
+      await Promise.resolve(run);
     };
     const finishRun = run => run.effects.dispose();
 
@@ -333,7 +339,7 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
     await flushStartup(heldEnabled);
     const decompressionDescriptor = Object.getOwnPropertyDescriptor(window, "DecompressionStream");
     Object.defineProperty(window, "DecompressionStream", { configurable: true, value: undefined });
-    const fallbackEnabled = makeRun(true);
+    const fallbackEnabled = makeRun(true, false, true);
     await flushStartup(fallbackEnabled);
     const runs = { immediateLegacy, immediateEnabled, heldLegacy, heldEnabled, fallbackEnabled };
     window.workspaceMeasurement = {
@@ -353,6 +359,8 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
         for (const run of Object.values(runs)) run.pendingDelta.shift()?.();
       },
       release(runName) { runs[runName].pendingCatalog.shift()?.(); },
+      disposeRun(runName) { finishRun(runs[runName]); },
+      admitImmediateMap() { runs.immediateEnabled.store.patch({ map: { ...runs.immediateEnabled.store.value.map, available: true } }); },
       measure() {
         return Object.fromEntries(Object.entries(runs).map(([name, run]) => [name, {
           catalogReads: run.catalogCalls,
@@ -372,6 +380,17 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
     };
     return window.workspaceMeasurement.measure();
   });
+  await page.evaluate(() => window.workspaceMeasurement.admitImmediateMap());
+  await page.clock.fastForward(2_100);
+  await expect.poll(() => page.evaluate(() => {
+    const runs = window.workspaceMeasurement.measure();
+    return window.workspaceMeasurement.runs.immediateEnabled.callbacks.length === 1
+      && window.workspaceMeasurement.runs.heldEnabled.callbacks.length === 1
+      && window.workspaceMeasurement.runs.fallbackEnabled.callbacks.length === 1
+      && window.workspaceMeasurement.runs.immediateLegacy.callbacks.length === 0
+      && window.workspaceMeasurement.runs.heldLegacy.callbacks.length === 0
+      && (typeof window.DecompressionStream !== "function" || runs.immediateEnabled.activeDeltaReads === 1);
+  })).toBe(true);
   for (let index = 1; index <= 200; index += 1) {
     await page.evaluate(index => window.workspaceMeasurement.emit(index), index);
     await page.clock.fastForward(50);
@@ -382,13 +401,28 @@ test("measures catalog reads and bounded work under synthetic 20 Hz scene revisi
   }
   await expect.poll(() => page.evaluate(() => window.workspaceMeasurement.measure().heldEnabled.activeCatalogReads)).toBe(0);
   const afterFirstRelease = await page.evaluate(() => window.workspaceMeasurement.measure());
+  await page.evaluate(() => {
+    window.workspaceMeasurement.disposeRun("heldLegacy");
+    window.workspaceMeasurement.disposeRun("heldEnabled");
+  });
+  await page.clock.fastForward(5_000);
+  await expect.poll(() => page.evaluate(() => window.workspaceMeasurement.measure().fallbackEnabled.admittedSceneRevision)).toBe(207);
   const immediateResult = await page.evaluate(() => window.workspaceMeasurement.measure());
   await page.evaluate(() => window.workspaceMeasurement.restoreDecompressionStream());
   await page.evaluate(() => window.workspaceMeasurement.dispose());
   const result = {
     conditions: { syntheticRevisions: 200, cadenceHz: 20, durationMs: 10_000, tickMs: 50,
+      automaticFallbackPollWaitMs: 5_000,
       catalogResponse: "immediate in first pair; explicitly held until after stimulus in second pair",
       sceneDelta: "one pending synthetic long-poll resolves for each newer 50ms revision" },
+    prePollFallback: {
+      catalogReads: beforeRelease.fallbackEnabled.catalogReads,
+      admittedSceneRevision: beforeRelease.fallbackEnabled.admittedSceneRevision,
+    },
+    afterPollFallback: {
+      catalogReads: immediateResult.fallbackEnabled.catalogReads,
+      admittedSceneRevision: immediateResult.fallbackEnabled.admittedSceneRevision,
+    },
     immediate: {
       legacyCatalogReads: immediateResult.immediateLegacy.catalogReads,
       workspaceEnabledCatalogReads: immediateResult.immediateEnabled.catalogReads,

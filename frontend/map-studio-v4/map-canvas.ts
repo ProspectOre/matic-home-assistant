@@ -1,6 +1,6 @@
 import { LitElement, adoptStyles, css, html, nothing } from "lit";
 import { controls } from "./controls";
-import { renderDrawTools } from "./draw-tools";
+import type { renderDrawTools } from "./draw-tools";
 import { icon, iconFit, iconHelp, iconOrbitLeft, iconOrbitRight, iconRoomNames, iconTiltDown, iconTiltUp } from "./icons";
 import { RovingFocusController } from "./roving-focus";
 import { readCanvasPalette, watchTheme } from "./theme-probe";
@@ -11,16 +11,18 @@ import type { ColorScheme, DateFormat, Localize, NoticePlaceholders, WorkspaceIn
 import type { OutlineEditor } from "./outline-editor";
 import { MAP_CANVAS_TAG } from "./element-tags";
 import { GestureController, isNativeSelectControl } from "./gesture-controller";
-import { RendererController, topView, type RendererDiagnostics } from "./renderer-controller";
+import { RendererController, topView, type CameraState, type RendererDiagnostics, type RendererModuleName, type RendererModuleStatus, type RendererSurfaceDetail } from "./renderer-controller";
 import {
   canSelectRooms,
   canShowExactPose,
   canShowLiveMap,
+  forcesTop,
   initialWorkspaceState,
   mapScale,
   savedMapPosition,
 } from "./state";
 import { translate } from "./localize";
+import { chunkStatus } from "./lazy-chunk";
 
 export const WORKSPACE_INTENT_EVENT = "matic-workspace-intent";
 export const WORKSPACE_ACTION_EVENT = "matic-workspace-action";
@@ -62,6 +64,10 @@ export class MaticMapCanvasV4 extends LitElement {
     dates: { attribute: false },
     // Draw's point editor, loaded and built by the shell (shell.ts #outline).
     outlineEditor: { attribute: false },
+    renderDrawTools: { attribute: false },
+    drawReady: { type: Boolean },
+    onDrawOverlayStatus: { attribute: false },
+    retry: { attribute: false },
     // Reflected so the stylesheet can anchor the rail with :host([narrow]).
     // On a phone the sheet owns the drawing tools, appearance switch and
     // room names; the map keeps view, fit and help.
@@ -103,10 +109,6 @@ export class MaticMapCanvasV4 extends LitElement {
     }
 
     .map-root.navigating { cursor: grabbing; }
-    .map-root[data-workflow="draw"][data-draw-tool="paint"],
-    .map-root[data-workflow="draw"][data-draw-tool="erase"] { cursor: crosshair; }
-    .map-root[data-workflow="draw"][data-draw-tool="pan"] { cursor: grab; }
-    .map-root[data-workflow="draw"][data-draw-tool="pan"].navigating { cursor: grabbing; }
 
     /* An outline on .map-root repaints the whole page layer on every canvas
        frame; a positioned overlay keeps the ring out of the frame path. */
@@ -165,7 +167,6 @@ export class MaticMapCanvasV4 extends LitElement {
       inline-size: fit-content;
       max-inline-size: calc(100% - 1rem);
     }
-    .map-dock .draw-tools button { padding-inline: var(--ms-space-2); }
     @media (any-pointer: coarse) { .selection-chip .ms-btn--sm { min-inline-size: var(--ms-control); min-block-size: var(--ms-control); } }
     .selection-chip {
       display: flex;
@@ -178,9 +179,6 @@ export class MaticMapCanvasV4 extends LitElement {
     }
 
 
-    .keyboard-aim { display: none; position: absolute; z-index: 3; inset: 50% auto auto 50%; inline-size: 20px; block-size: 20px; translate: -50% -50%; border: 2px solid #fff; outline: 2px solid #111; border-radius: 50%; pointer-events: none; }
-    .keyboard-aim::after { content: "+"; position: absolute; inset: 50% auto auto 50%; translate: -50% -50%; color: #111; font: 700 20px/1 sans-serif; text-shadow: 0 0 2px white; }
-    .map-root:focus-visible .keyboard-aim { display: block; }
     .scene-window {
       position: absolute;
       inset: 0;
@@ -215,8 +213,6 @@ export class MaticMapCanvasV4 extends LitElement {
       font-weight: 650;
     }
 
-    .map-root[data-draw-tool="outline"] .map-scale { inset-block-end: auto; inset-block-start: 76px; }
-
     .scale-line {
       inline-size: var(--scale-width);
       block-size: 0.42rem;
@@ -231,6 +227,12 @@ export class MaticMapCanvasV4 extends LitElement {
       padding: 1rem 1.1rem;
       text-align: center;
     }
+
+    .renderer-status { position: absolute; z-index: 5; inset-inline: 0.75rem; inset-block-start: calc(0.75rem + 44px + var(--ms-space-2) + var(--ms-space-2)); display: grid; gap: var(--ms-space-2); max-inline-size: min(25rem, calc(100% - 1.5rem)); margin-inline: auto; }
+    .renderer-status :is(.loading, .problem, .detail-notice) { margin: 0; padding: var(--ms-space-3); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); background: var(--ms-surface-card); box-shadow: 0 4px 16px rgb(0 0 0 / 16%); color: var(--ms-text); }
+    .renderer-status .problem { display: grid; gap: var(--ms-space-2); }
+    .renderer-status .problem p, .renderer-status .loading, .renderer-status .detail-notice { font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
+    .renderer-status .problem .ms-btn { justify-self: start; text-decoration: none; }
 
 
     .sr-only {
@@ -248,14 +250,6 @@ export class MaticMapCanvasV4 extends LitElement {
 @container (max-width: 29rem) {
 .map-tools button { padding-inline: 0; inline-size: var(--ms-control); }
 }
-/* Eight labelled tools need 49rem. Collapse the label to assistive text, never display:none. Hiding it would
-   delete the accessible name and break every getByRole({ name }) query at
-   narrow widths -- which is what the previous font-size:0 plus ::first-letter
-   trick did, while also rendering the toolbar as "P E M U R D". */
-@container (max-width: 49rem) {
-.map-dock .draw-tools button { padding-inline: 0; inline-size: var(--ms-control); }
-.map-dock .draw-tools .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
-}
 @media (forced-colors: active) {
 /* The map is painted to canvas, so the UA would otherwise invert it. The
    previous block here targeted the mock-map layer that the renderer replaced,
@@ -270,13 +264,25 @@ export class MaticMapCanvasV4 extends LitElement {
   localize?: Localize;
   dates?: DateFormat;
   outlineEditor?: OutlineEditor;
+  renderDrawTools?: typeof renderDrawTools;
+  drawReady = false;
+  onDrawOverlayStatus?: (status: RendererModuleStatus) => void;
+  retry?: (event: Event) => void;
   #zoneStyled = false;
   narrow = false;
+  comparisonMode = false;
+  cameraChanged?: (camera: CameraState, zoom: number) => void;
   help: TemplateResult | typeof nothing | null = null;
   recipes: TemplateResult | null = null;
   scheme: ColorScheme = "";
   #renderer: RendererController | null = null;
+  #rendererMode: RendererDiagnostics["mode"] | null = null;
   #gestures: GestureController | null = null;
+  #rendererLayersStatus: RendererModuleStatus = "idle";
+  #drawOverlaysStatus: RendererModuleStatus = "idle";
+  #cameraFollowStatus: RendererModuleStatus = "idle";
+  #surfaceGeometryStatus: RendererModuleStatus = "idle";
+  #surfaceDetail: RendererSurfaceDetail = null;
   #unwatchTheme: (() => void) | null = null;
   #paletteFrame: number | null = null;
   #paletteTimer: number | null = null;
@@ -320,6 +326,8 @@ export class MaticMapCanvasV4 extends LitElement {
     this.#renderer = new RendererController(scene, overlay, {
       onViewport: () => { this.outlineEditor?.cancel(); this.requestUpdate(); },
       onCamera: (camera, zoomPercent, origin) => {
+        this.cameraChanged?.(camera, zoomPercent / 100);
+        if (this.comparisonMode) return;
         this.#intent({
           type: "set-camera",
           view: topView(this.state),
@@ -345,11 +353,21 @@ export class MaticMapCanvasV4 extends LitElement {
           if (camera) this.#intent({ type: "set-camera", view, camera });
         }
       },
-      onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
       onProblem: () => this.#action("renderer-problem"),
+      onMode: (mode: RendererDiagnostics["mode"]) => {
+        if (this.#rendererMode === mode) return;
+        this.#rendererMode = mode;
+        this.requestUpdate();
+      },
+      onModuleStatus: (module, status) => this.#moduleStatus(module, status),
+      onSurfaceDetail: (detail) => {
+        this.#surfaceDetail = detail;
+        this.requestUpdate();
+      },
     });
     this.#gestures = new GestureController(root, this.#renderer, {
       state: () => this.state,
+      drawReady: () => this.#drawToolsReady(),
       onOutlinePoint: (point, coordinateEdit) => {
         this.outlineEditor?.addPoint(point, coordinateEdit);
       },
@@ -360,6 +378,7 @@ export class MaticMapCanvasV4 extends LitElement {
       }),
       onCirclePreview: (circles, coordinateEdit) => this.#renderer?.setCirclePreview(circles, coordinateEdit),
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
+      onRoomCandidates: (roomIds) => this.#intent({ type: "show-room-candidates", roomIds }),
       onCameraGesture: () => this.#unfollow(),
     });
     this.#renderer.setState(this.state);
@@ -375,8 +394,17 @@ export class MaticMapCanvasV4 extends LitElement {
     this.#gestures = null;
     this.#renderer?.dispose();
     this.#renderer = null;
+    this.#rendererMode = null;
+    this.#rendererLayersStatus = "idle";
+    this.#drawOverlaysStatus = "idle";
+    this.#cameraFollowStatus = "idle";
+    this.#surfaceGeometryStatus = "idle";
+    this.#surfaceDetail = null;
+    this.onDrawOverlayStatus?.("idle");
     super.disconnectedCallback();
   }
+
+  get drawingReady(): boolean { return this.#drawToolsReady(); }
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (changed.has("outlineEditor")) this.outlineEditor?.attach(this, () => this.#renderer, (intent) => this.#intent(intent));
@@ -397,10 +425,13 @@ export class MaticMapCanvasV4 extends LitElement {
     this.#follow();
   }
 
-  // Keep the robot centred while following; an unchanged pose re-centres in place.
+  // Camera motion is transient; the renderer validates pose/frame admission.
   #follow(): void {
-    const position = this.state.followRobot && canShowExactPose(this.state) && this.state.resources.pose.value?.position;
-    if (position) this.#renderer?.centerOnMeters(position[0], position[1]);
+    this.#renderer?.updateFollow(
+      this.state.resources.pose.value,
+      this.state.followMode,
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    );
   }
 
   // Canvas 2D cannot read CSS custom properties, so the renderer is handed a
@@ -434,11 +465,76 @@ export class MaticMapCanvasV4 extends LitElement {
   }
 
   #intent(intent: WorkspaceIntent): void {
+    if (!this.#drawToolsReady() && this.state.workflow === "draw" && this.#requiresDrawOverlay(intent)) return;
     this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
       detail: intent,
       bubbles: true,
       composed: true,
     }));
+  }
+
+  #drawToolsReady(): boolean {
+    return this.drawReady && (!this.state.map.available || this.#drawOverlaysStatus === "ready");
+  }
+
+  #requiresDrawOverlay(intent: WorkspaceIntent): boolean {
+    return intent.type === "set-draft-circles" || intent.type === "mark-draft"
+      || intent.type === "undo-draft" || intent.type === "redo-draft" || intent.type === "clear-draft"
+      || intent.type === "set-brush"
+      || (intent.type === "set-draw-tool" && intent.tool !== "pan");
+  }
+
+  #moduleStatus(module: RendererModuleName, status: RendererModuleStatus): void {
+    if (module === "renderer-layers") this.#rendererLayersStatus = status;
+    else if (module === "draw-overlays") {
+      if (this.#drawOverlaysStatus === status) return;
+      this.#drawOverlaysStatus = status;
+      this.onDrawOverlayStatus?.(status);
+      if (status !== "ready") {
+        this.#gestures?.cancelCoordinateEdit();
+        this.outlineEditor?.cancel();
+      }
+    } else if (module === "camera-follow") this.#cameraFollowStatus = status;
+    else this.#surfaceGeometryStatus = status;
+    this.requestUpdate();
+  }
+
+  #rendererStatus(showScene: boolean) {
+    const state = this.state;
+    const currentFloor = state.dataMode === "live" && !state.floor.readOnly
+      && state.selection.floorId === "current";
+    const trail = state.trail;
+    const trailVisible = Boolean(trail && state.dataMode === "live"
+      && (trail.id === "live" || state.workflow === "runs")
+      && trail.mapSessionKey === state.resources.entry?.mapSessionKey);
+    const roomNamesNeeded = Boolean(showScene && state.optionalUiReady && state.labelsVisible
+      && (state.resources.scene.value?.metadata.rooms.length ?? 0) > 0);
+    const layersNeeded = Boolean(roomNamesNeeded || (currentFloor && (state.wifiSignal || state.floorTypes)) || trailVisible);
+    const retry = (event: Event) => this.retry ? this.retry(event) : window.location.reload();
+    const layers = layersNeeded && this.#rendererLayersStatus !== "idle"
+      ? chunkStatus(this.#rendererLayersStatus, this.localize, retry, {
+        loading: { key: "v4_renderer_layers_loading", fallback: "Loading map details and room names…" },
+        failed: { key: "v4_renderer_layers_failed", fallback: "Some map details or room names aren't available, so they aren't shown. Reload the page to try again." },
+      }) : nothing;
+    const following = state.followMode !== "off" && this.#cameraFollowStatus !== "idle"
+      ? chunkStatus(this.#cameraFollowStatus, this.localize, retry, {
+        loading: { key: "v4_camera_follow_loading", fallback: "Starting robot tracking…" },
+        failed: { key: "v4_camera_follow_failed", fallback: "Robot tracking didn't start, so the camera isn't following. Reload the page, then turn tracking on again." },
+      }) : nothing;
+    const surface = showScene && this.#surfaceGeometryStatus !== "idle"
+      ? chunkStatus(this.#surfaceGeometryStatus, this.localize, retry, {
+        loading: { key: "v4_surface_loading", fallback: "Loading detailed map…" },
+        failed: { key: "v4_surface_failed", fallback: "Detailed map isn't available, so you're seeing a simplified map. Reload the page to try again." },
+      }) : nothing;
+    const simplified = showScene && this.#rendererMode === "canvas2d"
+      && (topView(state) !== "top" || state.appearance === "photo")
+      ? html`<p class="detail-notice" role="status">${this.#t("v4_map_simplified_detail", "Showing a simplified map because full graphics support is unavailable.")}</p>` : nothing;
+    const limited = showScene && this.#surfaceDetail
+      ? html`<p class="detail-notice" role="status">${this.#surfaceDetail === "sampled"
+        ? this.#t("v4_surface_sampled", "This map is missing some detail.")
+        : this.#t("v4_surface_limited", "Showing less detail for smoother movement.")}</p>` : nothing;
+    if (layers === nothing && following === nothing && simplified === nothing && surface === nothing && limited === nothing) return nothing;
+    return html`<div class="renderer-status">${simplified}${surface}${limited}${layers}${following}</div>`;
   }
 
   #action(id: string): void {
@@ -455,7 +551,9 @@ export class MaticMapCanvasV4 extends LitElement {
 
   // Moving the map by hand, from a gesture or a map control, ends Follow the robot.
   #unfollow(): void {
-    if (this.state.followRobot) this.#intent({ type: "set-follow-robot", value: false });
+    if (this.state.followMode === "off") return;
+    this.#renderer?.cancelFollow(false);
+    this.#intent({ type: "set-follow-mode", mode: "off" });
   }
 
   #orbit(horizontal: number, vertical: number): void {
@@ -493,6 +591,8 @@ export class MaticMapCanvasV4 extends LitElement {
     };
   }
 
+  get rendererController(): RendererController | null { return this.#renderer; }
+
   // The status strip and sheet explain recovery. Keep a retained scene
   // unobstructed; a centered message is for an absent map or a blocking problem.
   #message(showScene: boolean): string | null {
@@ -520,6 +620,8 @@ export class MaticMapCanvasV4 extends LitElement {
     const state = this.state;
     const narrow = this.narrow;
     const draw = state.workflow === "draw";
+    const taskView = forcesTop(state);
+    const view = topView(state);
     const saved = savedMapPosition(state);
     const helpTitle = this.#t("v4_how_to_move", "How to move the map");
     // Draw and the area review force the top view, so the view, appearance
@@ -528,9 +630,9 @@ export class MaticMapCanvasV4 extends LitElement {
     // bar. Without a scene there is nothing to fit, switch or explain
     // (home-rooms.md §11 MS-HOME-04), so the rail keeps nothing. A phone's
     // Room names row is in Map options; its rail keeps the help "?".
-    const showView = !draw && state.workflow !== "areaReview";
-    const showAppearance = showView && !narrow && state.view === "top";
-    const showCamera = showView && state.view === "three";
+    const showView = !this.comparisonMode && !draw && state.workflow !== "areaReview";
+    const showAppearance = showView && !narrow && view === "top";
+    const showCamera = showView && view === "three";
     const showLabels = !narrow && !draw;
 
     return html`
@@ -548,13 +650,15 @@ export class MaticMapCanvasV4 extends LitElement {
             <button
               class="ms-btn"
               type="button"
-              aria-pressed=${String(state.view === "three")}
+              aria-pressed=${String(view === "three")}
+              ?disabled=${taskView}
+              title=${taskView ? this.#t("v4_task_view_2d", "This task uses 2D. Return to Home to view the map in 3D.") : nothing}
               @click=${() => this.#intent({ type: "set-view", view: "three" })}
             >${this.#t("map_view_3d", "3D")}</button>
             <button
               class="ms-btn"
               type="button"
-              aria-pressed=${String(state.view === "top")}
+              aria-pressed=${String(view === "top")}
               @click=${() => this.#intent({ type: "set-view", view: "top" })}
             >${this.#t("map_view_top", "2D")}</button>
           </div>
@@ -586,7 +690,7 @@ export class MaticMapCanvasV4 extends LitElement {
           </div>
         ` : nothing}
 
-        <div class="map-tools ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_tools", "Map tools")}>
+        <div ?hidden=${this.comparisonMode} class="map-tools ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_tools", "Map tools")}>
               <button
                 class="fit ms-btn"
                 type="button"
@@ -599,7 +703,7 @@ export class MaticMapCanvasV4 extends LitElement {
                 title=${this.#t("v4_fit_map", "Fit map")}
               >${icon(iconFit)}<span class="ms-btn__label">${this.#t("v4_fit_map", "Fit map")}</span></button>
           </div>
-        <div class="map-extras ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_display", "Map display")}>
+        <div ?hidden=${this.comparisonMode} class="map-extras ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_display", "Map display")}>
               ${showLabels ? html`
               <button
                 class="labels ms-btn"
@@ -628,10 +732,10 @@ export class MaticMapCanvasV4 extends LitElement {
   #renderDock(showScene: boolean) {
     const state = this.state;
     if (!showScene) return nothing;
-    if (state.workflow === "draw" && !this.narrow) {
+    if (state.workflow === "draw" && !this.narrow && this.#drawToolsReady() && this.renderDrawTools) {
       return html`
         <div class="map-dock ms-surface ms-surface--floating" data-map-control>
-          ${renderDrawTools(state, {
+          ${this.renderDrawTools(state, {
             intent: (intent) => this.#intent(intent),
             openBrush: () => this.#intent({ type: "set-precision-open", value: !state.precisionOpen }),
             t: (key, fallback, placeholders) => this.#t(key, fallback, placeholders),
@@ -690,7 +794,7 @@ export class MaticMapCanvasV4 extends LitElement {
           ${showDraw ? html`<span class="keyboard-aim" aria-hidden="true"></span>` : nothing}
           <canvas class="scene-canvas"></canvas>
           <canvas class="overlay-canvas"></canvas>
-          ${showDraw ? this.outlineEditor?.render() ?? nothing : nothing}
+          ${showDraw && this.#drawToolsReady() ? this.outlineEditor?.render() ?? nothing : nothing}
         </div>
 
         ${showDraw ? html`
@@ -706,6 +810,7 @@ export class MaticMapCanvasV4 extends LitElement {
         ${message ? html`
           <div class="map-message ms-surface ms-surface--floating"><strong>${message}</strong></div>
         ` : nothing}
+        ${this.#rendererStatus(showScene)}
         <div class="sr-only" aria-live="polite" aria-atomic="true">
           ${describeMap(state, this.localize)}
         </div>

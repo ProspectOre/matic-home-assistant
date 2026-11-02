@@ -6,6 +6,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+# Labels backed by physical observations and the OEM 1.182.1 decoder replay.
+# Keep raw Hermes codes alongside names; this is not a firmware-wide guarantee.
+# https://github.com/ProspectOre/matic-home-assistant/issues/382
+_OBSERVED_ERROR_NAMES = {
+    207: "Lid open (observed with code 207)",
+    220: "Mopping water unavailable",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class RobotInfo:
@@ -190,13 +198,18 @@ class RobotOperationalState:
 
     @property
     def error_names(self) -> tuple[str, ...]:
-        """Return truthful automation-safe labels for raw robot error codes.
+        """Return readable labels for observed codes and raw labels otherwise.
 
         The app's public enum ordering is not the numeric Hermes wire mapping;
-        live firmware uses values such as 207 and 304. Preserve those values
-        without guessing a human meaning until a numeric mapping is verified.
+        live firmware uses values such as 207 and 304. The meaning for 207
+        is physically confirmed; 220 maps to SolventUnavailable in the exact
+        OEM 1.182.1 decoder replay. Unknown codes retain their numeric labels;
+        the activity sensor always exposes raw codes too.
         """
-        return tuple(f"error_code_{code}" for code in self.error_codes)
+        return tuple(
+            _OBSERVED_ERROR_NAMES.get(code, f"error_code_{code}")
+            for code in self.error_codes
+        )
 
     @property
     def alerts(self) -> tuple[str, ...]:
@@ -274,6 +287,7 @@ class RobotTelemetry:
     schedules: tuple[CleaningSchedule, ...] = ()
     local_cleaning_sessions: int | None = None
     latest_session: CleaningSession | None = None
+    native_history_revision: str | None = None
     child_lock_enabled: bool | None = None
     pet_waste_enabled: bool | None = None
     voice_enabled: bool | None = None
@@ -313,7 +327,7 @@ class CleaningSchedule:
     weekdays: tuple[str, ...]
     minute_of_day: int | None
     timezone: str | None
-    ordered: bool
+    ordered: bool | None
     enabled: bool | None
     room_ids: tuple[str, ...]
     # "vacuum", "mop" or "vacuum_and_mop" from the schedule's cleaning goals.
@@ -336,6 +350,7 @@ class CleaningModeResult:
     cleaning_mode: str
     status: str | None
     duration_seconds: int | None
+    room_id: str | None = None
 
 
 # Only values matched to a known run are named (2026-10-30, v181.10): a Stop
@@ -362,13 +377,20 @@ class CleaningSession:
     mode_results: tuple[CleaningModeResult, ...] = ()
     # Oneof tag of the robot's SessionStopReason (summary field 10).
     stop_reason_code: int | None = None
+    mission_id: int | None = None
+    partition_id: str | None = None
+    initiator: str | None = None
+    stop_reason: str | None = None
+    completion_kind: str | None = None
 
-    @property
-    def stop_reason(self) -> str | None:
-        """Name a captured stop reason; other robot values read ``unknown``."""
-        if self.stop_reason_code is None:
-            return None
-        return SESSION_STOP_REASONS.get(self.stop_reason_code, "unknown")
+    def __post_init__(self) -> None:
+        """Keep legacy stop-code construction compatible with named reasons."""
+        if self.stop_reason is None and self.stop_reason_code is not None:
+            object.__setattr__(
+                self,
+                "stop_reason",
+                SESSION_STOP_REASONS.get(self.stop_reason_code, "unknown"),
+            )
 
     @property
     def visited_rooms(self) -> tuple[str, ...]:
@@ -475,6 +497,7 @@ class FloorPlan:
     rooms: tuple[Room, ...]
     floor_label: str | None = None
     mapped_floors: tuple[MappedFloor, ...] = ()
+    history_floor_plans: tuple[FloorPlan, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

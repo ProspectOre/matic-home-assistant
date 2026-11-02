@@ -17,13 +17,13 @@ from enum import IntEnum
 import numpy as np
 from google.protobuf.message import DecodeError
 
-from .slam_map import (
-    MAX_SCENE_RASTER_CELLS,
+from .slam_geometry import mask_contours
+from .slam_scene import MAX_SCENE_RASTER_CELLS
+from .slam_tiles import (
     MAX_SLAM_TILES,
     TILE_SIDE,
     VOXEL_SCALE_METERS,
     SlamSemanticTile,
-    _mask_contours,
 )
 
 # Two by two cells (3 cm) keep rug and vent edges while cutting the staircase
@@ -153,7 +153,7 @@ def _outlines(
         return (), budget, True
     contours = [
         contour
-        for contour in _mask_contours(grouped)
+        for contour in mask_contours(grouped)
         if abs(_area(contour)) >= 2 * _MIN_GROUPED_CELLS
     ]
     contours.sort(key=lambda contour: abs(_area(contour)), reverse=True)

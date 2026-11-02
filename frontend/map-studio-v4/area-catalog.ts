@@ -2,7 +2,7 @@
 // Runtime helpers arrive from the backend so this module adds no startup edge.
 import type { AreaOutline } from "./area-outline";
 import type { AreaCircle, AreaBindingStatus, AreasCatalog, MapZoneOverlay, SavedArea } from "./backend-contracts";
-type AreaCatalogHelpers = typeof import("./backend-contracts").areaCatalogHelpers;
+type AreaCatalogHelpers = typeof import("./plan-catalog").areaCatalogHelpers;
 type AreaCatalogGeometry = Pick<typeof import("./area-outline"), "validOutline">;
 
 export const parseAreasCatalog = (value: unknown, helpers: AreaCatalogHelpers, geometry: AreaCatalogGeometry): AreasCatalog => {
