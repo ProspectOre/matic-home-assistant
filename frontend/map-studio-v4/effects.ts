@@ -406,6 +406,7 @@ export class EffectController {
     this.#workspace.sync(projection);
     await this.refreshCatalog(true, true);
     await this.#spatialResources.resumeHistory(suspended);
+    void this.#runResources();
   }
 
   // Room preview and start preflight are needed only after Rooms opens.

@@ -4,6 +4,7 @@ import type { SceneRoom } from "./backend-contracts";
 import type { CanvasPalette } from "./theme-probe";
 import { rgba } from "./theme-probe";
 import { clamp } from "./shared-primitives";
+import { canShowExactPose } from "./state";
 
 export interface MapPoint {
   readonly x: number;
@@ -219,6 +220,52 @@ export function drawRunTrail(
   }
   context.restore();
 }
+
+export function drawLastSeenDuringRun(
+  context: CanvasRenderingContext2D,
+  state: WorkspaceState,
+  palette: CanvasPalette,
+  project: ProjectMeters,
+): void {
+  if (!canShowLastSeenDuringRun(state) || !state.seen) return;
+  const marker = project(state.seen.position[0], state.seen.position[1], 3, false);
+  if (!marker) return;
+  context.save();
+  context.beginPath();
+  context.moveTo(marker.x, marker.y - 10);
+  context.lineTo(marker.x + 10, marker.y);
+  context.lineTo(marker.x, marker.y + 10);
+  context.lineTo(marker.x - 10, marker.y);
+  context.closePath();
+  context.setLineDash([3, 2]);
+  context.strokeStyle = rgba(palette.text, .95);
+  context.lineWidth = 2;
+  context.stroke();
+  context.setLineDash([]);
+  context.font = "600 12px sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.lineJoin = "round";
+  context.lineWidth = 4;
+  context.strokeStyle = rgba(palette.onAccent, .95);
+  context.strokeText("Last seen during last clean", marker.x + 14, marker.y);
+  context.fillStyle = rgba(palette.text, 1);
+  context.fillText("Last seen during last clean", marker.x + 14, marker.y);
+  context.restore();
+}
+
+/** Historical marker eligibility is kept with its lazy drawing code. */
+export const canShowLastSeenDuringRun = (state: WorkspaceState): boolean => {
+  const marker = state.seen;
+  const entry = state.resources.entry;
+  return !!marker && state.pageActive && state.dataMode === "live" && state.map.available
+    && state.selection.floorId === "current" && !state.floor.readOnly
+    && !state.managedLock && state.activity === "docked" && !canShowExactPose(state)
+    && marker.entryId === state.selection.entryId && marker.entryId === entry?.entryId
+    && !!entry?.mapFloorCoherent && !!entry.mapSessionVerified
+    && marker.mapSessionKey === entry.mapSessionKey
+    && marker.mapSessionKey === state.resources.pose.value?.mapSessionKey;
+};
 
 function drawWifiSignal(
   context: CanvasRenderingContext2D,

@@ -189,6 +189,13 @@ export interface WorkspaceResources {
   readonly runs: ResourceState<RunHistory>;
 }
 
+/** A historical trail endpoint only; never a live pose or movement authority. */
+export interface LastSeenDuringRun {
+  readonly entryId: string;
+  readonly mapSessionKey: string;
+  readonly position: readonly [number, number];
+}
+
 export interface AdmittedManualRoomPreview {
   readonly key: string;
   readonly generation: number;
@@ -368,6 +375,7 @@ export interface WorkspaceState {
   readonly smartStop: SmartStopStatus | null;
   /** The robot trail drawn on the map: the run in progress (`live`) or one from Cleaning history. */
   readonly trail: RunTrail | null;
+  readonly seen?: LastSeenDuringRun | undefined;
   /** Object URLs of robot map pictures by history id. */
   readonly runThumbnails: Readonly<Record<string, string>>;
   readonly pageActive: boolean;
