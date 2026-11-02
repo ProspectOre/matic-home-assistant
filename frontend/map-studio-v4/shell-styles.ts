@@ -87,8 +87,7 @@ export const shellStyles = [tokens, base, controls, css`
     .spacer { flex: 1; }
 
     .overflow-wrap { position: relative; }
-    .overflow { gap: var(--ms-space-1); }
-    .narrow .overflow-label { display: none; }
+    .narrow .overflow { padding-inline: 4px; font-size: .75rem; }
 
     .workspace {
       position: relative;

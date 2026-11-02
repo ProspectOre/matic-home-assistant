@@ -21,7 +21,6 @@ import {
   mdiHelpCircleOutline,
   mdiHistory,
   mdiInformationOutline,
-  mdiLayersOutline,
   mdiMapMarkerOff,
   mdiMenu,
   mdiMinus,
@@ -43,7 +42,6 @@ import {
 // dependency is dev-only; the bundle inlines just the paths named above.
 export const iconBack = mdiArrowLeft;
 export const iconOverflow = mdiDotsVertical;
-export const iconLayers = mdiLayersOutline;
 export const iconMenu = mdiMenu;
 export const iconFullMap = mdiFullscreen;
 export const iconExitFullMap = mdiFullscreenExit;

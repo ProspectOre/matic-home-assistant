@@ -47,7 +47,6 @@ import {
   iconClose,
   iconDiagnostics,
   iconHistory,
-  iconLayers,
   iconMenu,
   iconPlan,
   iconNewArea,
@@ -1531,7 +1530,7 @@ export class MaticMapShellV4 extends LitElement {
                 aria-expanded=${String(options?.menu.open ?? false)}
                 aria-controls="map-options"
                 @click=${this.#toggleOptions}
-              >${icon(iconLayers)}<span class="overflow-label">${this.#t("v4_map_layers_button", "Layers")}</span></button>
+              >${this.#t("v4_map_layers_button", "Layers")}</button>
               ${options?.menu.open ? options.render({
                 state,
                 narrow,
