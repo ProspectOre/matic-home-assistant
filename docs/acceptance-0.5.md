@@ -1,14 +1,15 @@
 # Matic 0.5 evidence matrix
 
-For the RC43-based stable candidate, start with the [current qualification
-summary](verification-0.5-stable.md). The candidate-specific rows below retain
-their historical scope; their open labels are not a fresh RC43 assessment.
-The summary records current evidence, remaining limits, and the owner release hold.
+This is the historical 0.5.0 candidate matrix. The [qualification summary](verification-0.5-stable.md)
+records the RC43/RC44 evidence and its limits. Candidate-specific rows and open
+labels below retain their original scope; they are not a current release hold or
+an assessment of later hotfixes. See [releases](https://github.com/ProspectOre/matic-home-assistant/releases)
+for the published version and current release notes.
 
 Use the public repository's free standard hosted CI route described in
 [Contributing](../CONTRIBUTING.md#ci-routing); a local Linux runner is not a gate.
 
-Current stable: `v0.4.8`; desktop comparison control: `v0.4.5`; authority `architecture-0.5.md`.
+At the time of this matrix, stable was `v0.4.8`; desktop comparison control: `v0.4.5`; authority `architecture-0.5.md`.
 Historical RC5 receipt: `v0.5.0-rc5` at `699a1bb` was installed through HACS. Its exact 91-file digest matched before and after restart; the prior RC4 rollback copy, config entry, saved plans, and automations are preserved. Fresh startup recovered a coherent ready map and live verified pose; operations are docked/idle with the runner unlocked. Native Safari shows the live Map Studio, verified position, `Docked/Ready`, and the plan, custom-area, and history entry points. A separate owner-authorized bounded one-room Map Studio attempt returned `coverage_activity_unavailable` before the managed client sent `START_COVERAGE`; 0/1 rooms were verified and no cadence credit was applied. Activity state was stale during the attempt. A later administrator operations read at 18:43:07–18:43:09 UTC reported docked, native-inactive, and runner-unlocked; it cannot establish state or movement during the attempt. The saved plan was unchanged, and schedules were not edited. A private receipt records the attempt and evidence limits.
 “Preserved and verified” covers verified prior stable regressions; it is not blanket 0.5 acceptance. Implementation gaps, runtime/device/owner gates, and explicitly out-of-scope items remain distinct.
 
@@ -127,7 +128,7 @@ The owner authorized bounded physical acceptance on October 8; each run still re
 
 Binding sources: Matic Map Studio Roadmap, Matic Map Studio Independent Review, the full 2026-08-29 review, and [managed-run contract](e2e-contract.md).
 
-The roadmap’s v0.4.4 metadata and former 22-open-security-PR inventory are historical. The historical RC5 receipt predates stable v0.4.7; the current stable release is v0.4.8. The paired desktop comparison uses `v0.4.5` at `f15dfa2` as its performance control. Earlier statements about the pre-implementation open-item inventory are historical. The wiki card links to this contract and matrix and identifies the active branch; it is not release proof.
+The roadmap’s v0.4.4 metadata and former 22-open-security-PR inventory are historical. The historical RC5 receipt predates stable v0.4.7; stable was v0.4.8 when this matrix was written. The paired desktop comparison uses `v0.4.5` at `f15dfa2` as its performance control. Earlier statements about the pre-implementation open-item inventory are historical. The wiki card links to this contract and matrix and identifies the active branch; it is not release proof.
 
 ## Performance and privacy rules
 

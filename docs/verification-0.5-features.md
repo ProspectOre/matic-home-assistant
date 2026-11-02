@@ -2,11 +2,11 @@
 
 This matrix maps every feature, upgrade change, and explicit deferral in
 [the 0.5 release notes](release-notes-0.5.0.md). It distinguishes source tests,
-current installed checks, robot runs and owner acceptance. A passing layer does
+installed checks on named revisions, robot runs and owner acceptance. A passing layer does
 not imply another one passed. The full synthetic walkthrough used source head
-`1e9e11aaae25603bce6ba802ff63df8405cbcc22`; the installed runtime remains
-`5a1a93a2bee71af04cd5aaef941cef172de7d2f7`. Later gesture changes are in a
-working candidate and are not yet installed or owner-tested on the iPhone.
+`1e9e11aaae25603bce6ba802ff63df8405cbcc22`; the installed runtime at that
+checkpoint was `5a1a93a2bee71af04cd5aaef941cef172de7d2f7`. Gesture changes
+were then pending installation and iPhone retest; see [later qualification](verification-0.5-stable.md).
 
 ## Common completed evidence
 
@@ -83,15 +83,16 @@ iPhone acceptance and refreshed full-walkthrough evidence remain pending.
 | upgrade.english-localization | English strings; pseudo-language/RTL layout support | String parity and synthetic RTL/expanded-text tests | Refresh affected layouts after the gesture-help change; English is the shipped catalog. |
 | deferred.contextual-history | Dedicated Cleaning History deferred to 0.6 | Current run outcomes and saved-map history tested | No 0.5 completion check; keep this deferral clear in product claims. |
 
-## Acceptance still open
+## Acceptance open at this checkpoint
 
 The live checks above do not certify every physical setting combination,
 including one-time due-work application and recovery runs, all robot fault cases, real
 pairing/import hardware, complete device and assistive-technology coverage,
 endurance, or a full backup restore. The 117-cell walkthrough is autonomous
-inspection, not a set of owner cell approvals. Final owner acceptance remains
-separate; stable merge and publication stay held until the owner gives fresh
-explicit approval.
+inspection, not a set of owner cell approvals. At this checkpoint, final owner
+acceptance remained separate and publication required explicit approval. The
+[later qualification](verification-0.5-stable.md) records the release decision
+and its accepted limits.
 
 The owner has no spare robot or Windows/NVDA target. Those hardware checks stay
 open. The owner approved a restore drill, which was attempted only in an
