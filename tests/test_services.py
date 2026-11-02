@@ -5521,6 +5521,7 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -5550,6 +5551,7 @@ async def test_room_cancellation_preserves_low_charge_reason() -> None:
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -5633,6 +5635,7 @@ async def test_room_handoff_after_returning_does_not_credit_completion(hass) -> 
     hass.services.async_register("vacuum", "send_command", send_command)
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -5679,6 +5682,7 @@ async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> No
     hass.services.async_register("vacuum", "send_command", send_command)
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -5732,6 +5736,7 @@ async def test_room_failures_translate_client_errors_at_boundary(
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
+        async_claim_native_session=AsyncMock(),
         async_mark_completed=AsyncMock(),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),

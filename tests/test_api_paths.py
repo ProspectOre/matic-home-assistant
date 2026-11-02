@@ -46,7 +46,6 @@ from custom_components.matic_robot.client.exceptions import (
     CoverageGuardError,
     CoverageGuardReason,
     EndpointUnsupportedError,
-    MaticError,
     PairingModeRequiredError,
 )
 from custom_components.matic_robot.client.mission import MissionClientState
@@ -2606,24 +2605,22 @@ async def test_native_vacuum_keeps_robot_warning_checks():
     client.async_get_cleaning_session_identity.assert_not_awaited()
 
 
-async def test_untracked_coverage_rejects_a_managed_session_id():
+async def test_direct_coverage_accepts_claimed_id_without_setting_proof():
     client = MaticHermesClient("robot.invalid", 16320)
     client._async_send_user_payload = AsyncMock()
-    with pytest.raises(MaticError, match="cannot own a session ID"):
-        await client.async_start_coverage(
-            FloorPlan(
-                1,
-                "00000000-0000-0000-0000-000000000001",
-                b"partition",
-                (),
-            ),
-            ["00000000-0000-0000-0000-000000000002"],
-            cleaning_mode=CleaningMode.VACUUM,
-            coverage_setting=CoverageSetting.QUICK,
-            session_id=UUID("11111111-1111-4111-8111-111111111111"),
-        )
-
-    client._async_send_user_payload.assert_not_awaited()
+    client._async_require_idle_native_session = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+    result = await client.async_start_coverage(
+        FloorPlan(1, "00000000-0000-0000-0000-000000000001", b"partition", ()),
+        ["00000000-0000-0000-0000-000000000002"],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+        session_id=UUID("11111111-1111-4111-8111-111111111111"),
+    )
+    assert result is None
+    client._async_send_user_payload.assert_awaited_once()
+    client._async_require_idle_native_session.assert_not_awaited()
+    client._async_wait_for_coverage_readback.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

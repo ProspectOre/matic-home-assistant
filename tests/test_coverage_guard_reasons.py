@@ -82,6 +82,7 @@ async def test_managed_room_projects_guard_to_event_and_localized_service_error(
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
+        async_claim_native_session=AsyncMock(),
         async_mark_started=AsyncMock(return_value=True),
         async_mark_failed=AsyncMock(),
         replace_managed_motion=MagicMock(),
@@ -134,6 +135,7 @@ async def test_mixed_managed_leg_keeps_guard_reason_without_stop_or_credit(
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(services=services, bus=bus)
     manager = SimpleNamespace(
+        async_claim_native_session=AsyncMock(),
         async_mark_started=AsyncMock(return_value=True),
         async_mark_failed=AsyncMock(),
         replace_managed_motion=MagicMock(),

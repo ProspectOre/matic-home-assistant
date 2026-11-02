@@ -124,7 +124,7 @@ def _minor_11_data() -> dict[str, Any]:
 async def test_minor_11_file_migrates_and_survives_cold_manager_reload(
     hass,
 ) -> None:
-    """A real minor-11 file is migrated, saved as 12, and reloaded intact."""
+    """A real minor-11 file is migrated, saved as 13, and reloaded intact."""
     legacy = Store(
         hass,
         STORAGE_VERSION,
@@ -143,7 +143,7 @@ async def test_minor_11_file_migrates_and_survives_cold_manager_reload(
     await manager.async_load()
 
     migrated = manager._robot(SERIAL)
-    assert manager._store.minor_version == STORAGE_MINOR_VERSION == 12
+    assert manager._store.minor_version == STORAGE_MINOR_VERSION == 13
     assert migrated["selected_plan"] == PLAN
     assert migrated["selected_area"] == "reading-nook"
     assert migrated["plans"][PLAN]["rooms"][0]["room_id"] == ROOM

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -1127,15 +1128,21 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
             native_value,
             managed_session=managed_session,
             restored=self.native_value is not None,
+            native_source=(
+                snapshot.get("robot_reported_completed_by_room", {})
+                .get(self._room_id, {})
+                .get("source")
+            ),
         )
         attributes = {"statistics_source": source} if source is not None else {}
-        if state.floor_plan is not None and native_statistics_have_ambiguous_floor(
-            state.floor_plan
+        if (
+            state.floor_plan is not None
+            and native_statistics_have_ambiguous_floor(state.floor_plan)
+            and native_value is None
         ):
             attributes["native_statistics_blocked_reason"] = (
-                "App-started room statistics are unavailable because multiple floors "
-                "are saved and the integration cannot yet verify which floor "
-                "each clean belongs to."
+                "App-started room statistics are unavailable because native "
+                "history lacks verified floor identity."
             )
         return attributes
 
@@ -1225,14 +1232,22 @@ def _robot_reported_room_history_value(
     """Return explicit per-mode completion reported by native robot history."""
     if floor_plan is None:
         return None
-    if native_statistics_have_ambiguous_floor(floor_plan):
-        return None
     record = snapshot.get("robot_reported_completed_by_room", {}).get(room_id)
     if not isinstance(record, dict):
         return None
     if record.get("floor_mission_id") != floor_plan.mission_id:
         return None
-    if record.get("source") != "robot_native_mode_result_room_name_match":
+    source = record.get("source")
+    if source == "robot_native_mode_result_identity_match":
+        partition_hash = hashlib.sha256(
+            floor_plan.partition_protocol_id.encode()
+        ).hexdigest()
+        if record.get("floor_partition_hash") != partition_hash:
+            return None
+    elif source == "robot_native_mode_result_room_name_match":
+        if native_statistics_have_ambiguous_floor(floor_plan):
+            return None
+    else:
         return None
     completed = record.get("at")
     duration = record.get("duration_seconds")
@@ -1262,13 +1277,12 @@ def _native_room_history_is_ineligible(
     source = record.get("source")
     if not isinstance(source, str) or not source.startswith("robot_native_mode_result"):
         return False
-    if source != "robot_native_mode_result_room_name_match":
+    if source not in {
+        "robot_native_mode_result_room_name_match",
+        "robot_native_mode_result_identity_match",
+    }:
         return True
-    return (
-        native_statistics_have_ambiguous_floor(floor_plan)
-        or record.get("floor_mission_id") != floor_plan.mission_id
-        or _robot_reported_room_history_value(snapshot, room_id, floor_plan) is None
-    )
+    return _robot_reported_room_history_value(snapshot, room_id, floor_plan) is None
 
 
 def _native_room_result_overlaps_session(
@@ -1357,6 +1371,7 @@ def _room_statistics_source(
     *,
     managed_session: bool,
     restored: bool,
+    native_source: str | None = None,
 ) -> str | None:
     """Label the evidence selected for one room sensor value."""
     if value is None:
@@ -1364,7 +1379,7 @@ def _room_statistics_source(
     if value == managed or (managed_session and native != value):
         return "verified_managed_result"
     if value == native:
-        return "robot_native_mode_result_room_name_match"
+        return native_source or "robot_native_mode_result_room_name_match"
     return "restored_sensor_state"
 
 

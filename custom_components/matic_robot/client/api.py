@@ -71,6 +71,7 @@ from .history import (
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
 )
+from .history_semantics import SemanticHistory, decode_history_semantics
 from .mission import MissionClientState, decode_mission_client_state
 from .models import (
     CleaningModeResult,
@@ -822,6 +823,15 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 matching[0],
                 floor_label=active_floor.label,
                 mapped_floors=mission_state.mapped_floors,
+                history_floor_plans=tuple(
+                    plan
+                    for plan in floor_plans
+                    if sum(
+                        mapped.mission_id == plan.mission_id
+                        for mapped in mission_state.mapped_floors
+                    )
+                    == 1
+                ),
             )
         except DecodeError as err:
             raise CannotConnectError("Hermes returned a malformed floor plan") from err
@@ -978,14 +988,22 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
-        records = tuple(
-            CleaningSessionRecord(entry.key, session)
-            for entry in entries
-            if entry.key
-            and (session := _decode_cleaning_session(entry.value)) is not None
-        )
-        if strict and len(records) != len(entries):
+        records_list: list[CleaningSessionRecord] = []
+        invalid = False
+        for entry in entries:
+            session = _decode_cleaning_session(entry.value)
+            if not entry.key or session is None:
+                invalid = True
+                if not entry.key or native_session_hash(entry.key) is None:
+                    continue
+                # Keep a rejected record's exact identity as a tombstone. Its
+                # disappearance from retention is different from a correction
+                # that no longer supports an earlier completion credit.
+                session = CleaningSession(None, None, None, (), (), None)
+            records_list.append(CleaningSessionRecord(entry.key, session))
+        if strict and invalid:
             raise MaticError("Native history is incomplete or undecodable")
+        records = tuple(records_list)
         return records, _native_history_collection_revision(entries)
 
     async def async_get_cleaning_session_images(
@@ -1522,9 +1540,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
     ) -> CoverageReceipt | None:
-        """Start an exact normal-coverage command for local room IDs."""
-        if not require_settings_readback and session_id is not None:
-            raise MaticError("An untracked coverage command cannot own a session ID")
+        """Start normal coverage; a supplied ID does not imply setting proof.
+
+        HA callers may reserve a session ID solely to exclude their commands
+        from external-history credit. Managed setting proof still requires
+        the separate readback path and its native ownership guards.
+        """
         if require_settings_readback and session_id is None:
             session_id = uuid4()
         payload = encode_coverage_command(
@@ -2955,13 +2976,89 @@ def _native_history_collection_revision(
     digest = hashlib.sha256(b"matic-native-history-v1\0")
     for entry in sorted(entries, key=lambda item: item.key):
         session = _decode_cleaning_session(entry.value)
-        if session is None or session.ended_at is None:
+        if session is not None and session.ended_at is None:
             continue
         digest.update(len(entry.key).to_bytes(4, "big"))
         digest.update(entry.key)
         digest.update(len(entry.value).to_bytes(8, "big"))
         digest.update(entry.value)
     return digest.hexdigest()
+
+
+def _canonical_cleaning_session(
+    semantics: SemanticHistory, started_at: str | None, ended_at: str | None
+) -> CleaningSession:
+    """Project one verified modern summary without conflating stop and completion."""
+    results = semantics.mode_results
+    rooms = tuple(dict.fromkeys(result.room for result in results))
+    by_room: dict[str, list[CleaningModeResult]] = {}
+    identities_by_name: dict[str, set[str | None]] = {}
+    for result in results:
+        identities_by_name.setdefault(result.room, set()).add(result.room_id)
+    unambiguous = tuple(
+        result for result in results if len(identities_by_name[result.room]) == 1
+    )
+    durations: dict[str, int] = {}
+    for result in unambiguous:
+        by_room.setdefault(result.room, []).append(result)
+        if result.duration_seconds is not None:
+            durations[result.room] = (
+                durations.get(result.room, 0) + result.duration_seconds
+            )
+    successful_stop = semantics.stop_reason == "finished"
+    vacuum = tuple(
+        result.room
+        for result in unambiguous
+        if successful_stop
+        and result.cleaning_mode == "vacuum"
+        and result.status == "completed"
+    )
+    mop = tuple(
+        result.room
+        for result in unambiguous
+        if successful_stop
+        and result.cleaning_mode == "mop"
+        and result.status == "completed"
+    )
+    completed_rooms = tuple(
+        name
+        for name, values in by_room.items()
+        if successful_stop and all(item.status == "completed" for item in values)
+    )
+    duration = None
+    if started_at is not None and ended_at is not None:
+        duration = max(
+            0,
+            round(
+                (
+                    datetime.fromisoformat(ended_at)
+                    - datetime.fromisoformat(started_at)
+                ).total_seconds()
+            ),
+        )
+    completed = (
+        successful_stop and semantics.completion_kind == "completed"
+        if semantics.completion_kind is not None
+        else None
+    )
+    return CleaningSession(
+        started_at=started_at,
+        ended_at=ended_at,
+        duration_seconds=duration,
+        rooms=rooms,
+        room_durations=tuple(durations.items()),
+        completed=completed,
+        completed_rooms=completed_rooms,
+        vacuum_completed_rooms=vacuum,
+        mop_completed_rooms=mop,
+        combined_completed_rooms=tuple(name for name in vacuum if name in mop),
+        mode_results=results,
+        mission_id=semantics.mission_id,
+        partition_id=semantics.partition_id,
+        initiator=semantics.initiator,
+        stop_reason=semantics.stop_reason,
+        completion_kind=semantics.completion_kind,
+    )
 
 
 def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
@@ -2979,11 +3076,12 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         return None
     started_at = _decode_nested_timestamp(summary, 3)
     ended_at = _decode_nested_timestamp(summary, 4)
-    rooms: list[str] = []
-    seen_rooms: set[str] = set()
-    statuses: dict[tuple[int, str], int | None] = {}
-    durations: dict[tuple[int, str], int | None] = {}
-    modes: set[int] = set()
+    semantics = decode_history_semantics(payload)
+    if semantics is not None:
+        return _canonical_cleaning_session(semantics, started_at, ended_at)
+    # A malformed modern record cannot fall back to legacy fields ignored by
+    # the OEM decoder. Parse the summary once for both format admission and the
+    # legacy projection below.
     try:
         fields = _bounded_fields(
             summary,
@@ -2992,6 +3090,20 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         )
     except DecodeError:
         return None
+    modern = tuple(field for field in fields if field.number == 11)
+    if modern:
+        if len(modern) != 1 or modern[0].wire_type != 2:
+            return None
+        # Session identity and page completeness are independent of room proof.
+        # Non-room cleans and unsupported modern summaries must remain visible
+        # to managed dispatch baselines. Omit all positive room evidence; this
+        # also retracts earlier canonical statistics/cadence on a bad revision.
+        return CleaningSession(started_at, ended_at, None, (), (), None)
+    rooms: list[str] = []
+    seen_rooms: set[str] = set()
+    statuses: dict[tuple[int, str], int | None] = {}
+    durations: dict[tuple[int, str], int | None] = {}
+    modes: set[int] = set()
     for group in fields:
         if group.number not in (6, 7) or not isinstance(group.value, bytes):
             continue

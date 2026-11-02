@@ -221,7 +221,7 @@ def test_reported_and_future_error_codes_keep_their_raw_identity() -> None:
 
     assert state.error_names == (
         "Lid open (observed with code 207)",
-        "Waiting for mopping water (observed with code 220)",
+        "Mopping water unavailable",
         "error_code_304",
         "error_code_999",
     )
