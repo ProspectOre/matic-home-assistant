@@ -51,7 +51,7 @@ padding: var(--ms-space-1);
 .wifi-scale-labels { display: flex; justify-content: space-between; gap: var(--ms-space-2); }
 
 </style>
-${this.#e.open?this.#e.render(i):c`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" data-wifi-scale=${w?"":d} role="menu" aria-label=${i("v4_map_options","Map options")}>
+${this.#e.open?this.#e.render(i):c`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" data-wifi-scale=${w?"":d} role="menu" tabindex="0" aria-label=${i("v4_map_options","Map options")}>
 ${s?c`
 <div role="group" aria-labelledby="menu-display">
 <p class="menu-heading" id="menu-display" role="presentation">${i("v4_map_display","Map display")}</p>
@@ -143,4 +143,4 @@ ${this.#e.available()?c`<button class="ms-row ms-row--menu" type="button" role="
 <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${()=>{this.menu.close(!1),l()}}>${i("v4_map_diagnostics","Map diagnostics")}</button>
 </div>`}
 `}};export{$ as MapOptions};
-/*! Licenses: map-options-JMOIFNMR.js.LEGAL.txt */
+/*! Licenses: map-options-JVZ2L2NC.js.LEGAL.txt */

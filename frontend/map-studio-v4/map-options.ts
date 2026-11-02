@@ -107,7 +107,7 @@ export class MapOptions {
     .wifi-scale-labels { display: flex; justify-content: space-between; gap: var(--ms-space-2); }
 
       </style>
-      ${this.#zoom.open ? this.#zoom.render(t) : html`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" data-wifi-scale=${wifiBounds ? "" : nothing} role="menu" aria-label=${t("v4_map_options", "Map options")}>
+      ${this.#zoom.open ? this.#zoom.render(t) : html`<div id="map-options" class="overflow-menu ms-surface ms-surface--overlay" data-wifi-scale=${wifiBounds ? "" : nothing} role="menu" tabindex="0" aria-label=${t("v4_map_options", "Map options")}>
         ${narrow ? html`
           <div role="group" aria-labelledby="menu-display">
             <p class="menu-heading" id="menu-display" role="presentation">${t("v4_map_display", "Map display")}</p>

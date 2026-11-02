@@ -11202,6 +11202,7 @@ test.describe("Map Studio accessibility baselines", () => {
     await settleWorkspace(gallery);
     await gallery.getByRole("button", { name: "Map options" }).click();
     await expect(gallery.getByRole("menu", { name: "Map options" })).toBeVisible();
+    await expect(gallery.getByRole("menu", { name: "Map options" })).toHaveAttribute("tabindex", "0");
     const { violations, incomplete } = await new AxeBuilder({ page }).analyze();
     expect(axeFindings(violations.filter(({ impact }) => impact === "serious" || impact === "critical"))).toEqual([]);
     expect(axeFindings(incomplete.filter(({ id }) => id === "aria-prohibited-attr"))).toEqual([]);
