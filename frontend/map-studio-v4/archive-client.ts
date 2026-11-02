@@ -12,7 +12,12 @@ export class ArchiveClient {
   constructor(private readonly backend: Pick<MaticBackend, "archiveRequest">) {}
 
   async catalog(entryId: string, signal?: AbortSignal): Promise<ArchiveCatalog> {
-    return parseArchiveCatalog(await this.backend.archiveRequest(entryId, "manage", undefined, signal));
+    try {
+      return parseArchiveCatalog(await this.backend.archiveRequest(entryId, "manage", undefined, signal));
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid-map-archive") throw new Error("invalid-archive-catalog");
+      throw error;
+    }
   }
 
   async mutate(entryId: string, request: ArchiveMutation, signal?: AbortSignal): Promise<ArchiveAcknowledgement> {
@@ -63,6 +68,7 @@ export const archiveErrorMessage = (error: unknown, localize?: Localize): string
   if (status === 413) return translate(localize, "v4_archive_size_error", "This archive exceeds the map storage or import size limit. Choose a smaller archive or remove saved maps you no longer need.");
   if (status === 507) return translate(localize, "v4_archive_storage_error", "Storage is full or unavailable. Free space, then refresh before retrying.");
   if (code === "archive-file-too-large") return translate(localize, "v4_archive_file_error", "The archive is too large to import. Choose a file no larger than 68 MiB.");
+  if (code === "invalid-archive-catalog") return translate(localize, "v4_archive_catalog_error", "Saved-map information could not be read. Refresh to try again.");
   if (code === "invalid-map-archive") return translate(localize, "v4_archive_format_error", "Home Assistant can’t read this archive. Export it again from a supported version.");
   return translate(localize, "v4_archive_unconfirmed_error", "The operation could not be confirmed. Refresh saved maps before retrying; no additional action has been sent.");
 };

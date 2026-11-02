@@ -11,8 +11,9 @@ const { outputFiles } = await build({
 const { ArchiveClient, parseArchiveCatalog, parseArchiveEnvelope, archiveMutationBody, prepareArchiveConfirmation,
   confirmArchiveAction, archiveErrorMessage, ARCHIVE_MAX_FILE_BYTES } = await import(`data:text/javascript;base64,${Buffer.from(outputFiles[0].text).toString("base64")}`);
 const id = (index) => index.toString(16).padStart(32, "0");
+const contentId = "a".repeat(24);
 const wireRow = (index, retention = "automatic") => ({
-  id: id(index), content_id: "a".repeat(64), created_at: "2026-10-31T10:00:00Z", revision: 1, point_count: 100,
+  id: id(index), content_id: contentId, created_at: "2026-10-31T10:00:00Z", revision: 1, point_count: 100,
   scene_url: retention === "trash" ? null : `/api/matic_robot/slam_history/entry/${id(index)}`,
   name: `Map ${index}`, retention, deleted_until: retention === "trash" ? "2026-11-01T10:00:00Z" : null,
   imported: false, comparison_group: "b".repeat(64), frame: null, compressed_bytes: 50,
@@ -28,13 +29,15 @@ test("catalog parsing separates record identity, content, retention and entry-wi
   assert.equal(catalog.generation, 7);
   assert.equal(catalog.capacityBlocked, false);
   assert.equal(catalog.records[0].id, id(1));
-  assert.equal(catalog.records[0].contentId, "a".repeat(64));
+  assert.equal(catalog.records[0].contentId, contentId);
   assert.equal(catalog.records[2].sceneUrl, null);
   assert.equal(catalog.usage.trashCompressedBytes, 50);
   for (const mutate of [
     (v) => { v.records.push(v.records[0]); },
     (v) => { v.records[0].scene_url = "https://other.invalid/map"; },
     (v) => { v.records[0].id = "saved-1"; },
+    (v) => { v.records[0].content_id = "a".repeat(23); },
+    (v) => { v.records[0].comparison_group = "b".repeat(24); },
     (v) => { v.capacity_blocked = "yes"; },
     (v) => { v.usage.record_count = 13; },
     (v) => { v.records[2].scene_url = "/api/matic_robot/map"; },
@@ -80,6 +83,14 @@ test("client preserves exact generation, IDs and request identity; mismatched ac
   assert.deepEqual(calls[1][2], { action: "delete", record_ids: [id(1)], expected_generation: 7, request_id: "delete-1", allow_kept: false });
   const wrong = new ArchiveClient({ archiveRequest: async () => ({ generation: 9, request_id: "another-operation" }) });
   await assert.rejects(wrong.mutate("entry", request), /invalid-map-archive/);
+});
+
+test("backend-shaped 24-character content IDs make archive storage management available", async () => {
+  const client = new ArchiveClient({ archiveRequest: async () => wireCatalog() });
+  const catalog = await client.catalog("entry");
+  assert.equal(catalog.records.length, 3);
+  assert.equal(catalog.records[0].contentId, contentId);
+  assert.equal(catalog.records[0].comparisonGroup, "b".repeat(64));
 });
 
 test("import rejects oversized, canceled and invalid archives before posting; valid import retains no caller IDs as local IDs", async () => {

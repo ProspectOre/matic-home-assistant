@@ -841,6 +841,7 @@
     "v4_archive_size_error": "This archive exceeds the map storage or import size limit. Choose a smaller archive or remove saved maps you no longer need.",
     "v4_archive_storage_error": "Storage is full or unavailable. Free space, then refresh before retrying.",
     "v4_archive_file_error": "The archive is too large to import. Choose a file no larger than 68 MiB.",
+    "v4_archive_catalog_error": "Saved-map information could not be read. Refresh to try again.",
     "v4_archive_format_error": "Home Assistant can’t read this archive. Export it again from a supported version.",
     "v4_archive_unconfirmed_error": "The operation could not be confirmed. Refresh saved maps before retrying; no additional action has been sent.",
     "v4_archive_refreshed": "Saved maps refreshed",
