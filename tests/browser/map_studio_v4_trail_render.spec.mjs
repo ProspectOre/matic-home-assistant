@@ -26,9 +26,9 @@ test("travel path stays legible and does not bridge large unobserved gaps", asyn
     return { path, strokes, dots };
   });
   expect(result.path.slice(0, 5)).toEqual([["move", 0, 0], ["line", 0.4, 0.1], ["move", 3, 0], ["line", 3.4, 0.2], ["move", 6, 0]]);
-  expect(result.dots).toEqual([[6, 0, 3.5], [6, 0, 1.5]]);
+  expect(result.dots).toEqual([[6, 0, 2], [6, 0, 1]]);
   expect(result.strokes).toEqual([
-    { width: 7, colour: "rgba(255,255,255,1)" },
-    { width: 3, colour: "rgba(6,120,206,1)" },
+    { width: 4, colour: "rgba(255,255,255,1)" },
+    { width: 2, colour: "rgba(6,120,206,1)" },
   ]);
 });

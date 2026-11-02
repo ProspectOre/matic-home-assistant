@@ -47,13 +47,13 @@ import {
   iconClose,
   iconDiagnostics,
   iconHistory,
+  iconLayers,
   iconMenu,
   iconPlan,
   iconNewArea,
   iconNoticeError,
   iconNoticeSuccess,
   iconNoticeWarning,
-  iconOverflow,
   iconRobot,
   iconExitFullMap,
   iconFullMap,
@@ -1524,14 +1524,14 @@ export class MaticMapShellV4 extends LitElement {
             ` : nothing}
             <div class="overflow-wrap" @keydown=${options?.menu.keydown} @focusout=${options?.menu.focusout}>
               <button
-                class="overflow ms-btn ms-btn--icon"
+                class="overflow ms-btn"
                 type="button"
                 aria-label=${this.#t("v4_map_options", "Map options")}
                 aria-haspopup=${options?.popupRole ?? "menu"}
                 aria-expanded=${String(options?.menu.open ?? false)}
                 aria-controls="map-options"
                 @click=${this.#toggleOptions}
-              >${icon(iconOverflow)}</button>
+              >${icon(iconLayers)}<span class="overflow-label">${this.#t("v4_map_layers_button", "Layers")}</span></button>
               ${options?.menu.open ? options.render({
                 state,
                 narrow,

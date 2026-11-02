@@ -166,7 +166,7 @@ export function drawMapLayers(
       drawFloorType(context, state.floorTypes.vent, "hsl(205 80% 50%)", project);
     }
     if (state.wifiSignal?.status === "ready") {
-      drawWifiSignal(context, state.wifiSignal.cells, state.wifiSignal.cellSize, state.wifiScale, project);
+      drawWifiSignal(context, state.wifiSignal.cells, state.wifiScale, project);
     }
   }
 }
@@ -202,13 +202,13 @@ export function drawRunTrail(
   context.save();
   context.lineJoin = context.lineCap = "round";
   context.strokeStyle = rgba(palette.onAccent, 1);
-  context.lineWidth = 7;
+  context.lineWidth = 4;
   context.stroke();
   context.strokeStyle = rgba(palette.accent, 1);
-  context.lineWidth = 3;
+  context.lineWidth = 2;
   context.stroke();
   // A lone observation would otherwise have no stroked line at all.
-  for (const [radius, colour] of [[3.5, palette.onAccent], [1.5, palette.accent]] as const) {
+  for (const [radius, colour] of [[2, palette.onAccent], [1, palette.accent]] as const) {
     context.beginPath();
     for (const point of isolated) {
       context.moveTo(point.x + radius, point.y);
@@ -223,35 +223,33 @@ export function drawRunTrail(
 function drawWifiSignal(
   context: CanvasRenderingContext2D,
   cells: readonly WifiSignalCell[],
-  cellSize: number,
   scale: WorkspaceState["wifiScale"],
   project: ProjectMeters,
 ): void {
   context.save();
   const bounds = wifiScaleBounds(cells, scale);
   for (const cell of cells) {
-    // Dots mark approximate sample locations, not a measured square. Older,
-    // coarser readings use a ring to retain their provenance.
-    const radius = Math.min(cell.size / 2, 0.18);
-    const points = Array.from({ length: 12 }, (_, index) => {
-      const angle = index * Math.PI / 6;
-      return project(cell.x + radius * Math.cos(angle), cell.y + radius * Math.sin(angle), 0.1, false);
-    });
-    if (points.some((point) => !point)) continue;
-    const colour = `hsl(${wifiSignalHue(cell.dbm, bounds)} 75% 45% / .8)`;
-    context.beginPath();
-    points.forEach((point, index) => index
-      ? context.lineTo(point!.x, point!.y)
-      : context.moveTo(point!.x, point!.y));
-    context.closePath();
-    if (cell.size > cellSize) {
-      context.strokeStyle = colour;
-      context.lineWidth = 2;
-      context.stroke();
-    } else {
-      context.fillStyle = colour;
-      context.fill();
-    }
+    // Bound smoothing to at most 0.6 m from a sample. Older, coarse readings
+    // retain a wider footprint; space beyond the estimate stays transparent.
+    const radius = Math.max(0.45, Math.min(0.6, cell.size / 2 + 0.1));
+    const centre = project(cell.x, cell.y, 0.1, false);
+    // Derive the local projection near the sample. Projecting the full
+    // footprint can cross behind the camera at close zoom and hide it.
+    const step = 0.01;
+    const east = project(cell.x + step, cell.y, 0.1, false);
+    const north = project(cell.x, cell.y + step, 0.1, false);
+    if (!centre || !east || !north) continue;
+    const hue = wifiSignalHue(cell.dbm, bounds);
+    context.save();
+    context.transform((east.x - centre.x) * radius / step, (east.y - centre.y) * radius / step,
+      (north.x - centre.x) * radius / step, (north.y - centre.y) * radius / step, centre.x, centre.y);
+    const gradient = context.createRadialGradient(0, 0, 0, 0, 0, 1);
+    gradient.addColorStop(0, `hsl(${hue} 75% 45% / .65)`);
+    gradient.addColorStop(0.65, `hsl(${hue} 75% 45% / .4)`);
+    gradient.addColorStop(1, `hsl(${hue} 75% 45% / 0)`);
+    context.fillStyle = gradient;
+    context.fillRect(-1, -1, 2, 2);
+    context.restore();
   }
   context.restore();
 }

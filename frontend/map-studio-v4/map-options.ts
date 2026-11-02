@@ -13,7 +13,7 @@ const wifiNote = (layer: WorkspaceState["wifiSignal"], t: MapOptionsContext["t"]
   const note = layer.status === "failed"
     ? t("v4_wifi_signal_failed", "Couldn't load the survey")
     : layer.cells.length
-      ? t("v4_wifi_samples_note", "Approximate averages. Rings are coarser; blank areas are unmeasured.")
+      ? t("v4_wifi_samples_note", "Smoothed estimates within 2 feet of samples. Older readings are coarser; blank areas are unmeasured.")
       : layer.surveying
         ? t("v4_wifi_signal_waiting", "No samples yet · they arrive during cleaning")
         : t("v4_wifi_signal_off", "Turn on Wi-Fi survey in the robot's settings");
@@ -125,6 +125,16 @@ export class MapOptions {
             ><span>${t("v4_room_names", "Room names")}</span><span class="ms-switch" aria-checked=${String(state.labelsVisible)} aria-hidden="true"></span></button>
           </div>
         ` : nothing}
+        <p class="menu-heading" role="presentation">${t("v4_map_layers_button", "Layers")}</p>
+        ${state.dataMode === "live" ? html`<button
+          class="ms-row ms-row--menu"
+          type="button"
+          role="menuitemcheckbox"
+          aria-checked=${String(state.trail?.id === "live")}
+          data-robot-trail
+          tabindex="-1"
+          @click=${() => intent({ type: "show-trail", trail: state.trail?.id === "live" ? null : "live" })}
+        ><span>${t("v4_robot_trail", "Robot trail")}${state.trail?.id === "live" ? html`<small class="menu-note">${t("v4_robot_trail_hint", "The sampled path can have gaps.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.trail?.id === "live")} aria-hidden="true"></span></button>` : nothing}
         ${state.resources.entry?.wifiHeatmapUrl ? html`
           <button
             class="ms-row ms-row--menu"
@@ -187,15 +197,6 @@ export class MapOptions {
           ${detail("balanced", t("map_quality_balanced", "Balanced"))}
           ${detail("maximum", t("map_quality_maximum", "Maximum"))}
         </div>
-        ${state.dataMode === "live" ? html`<button
-          class="ms-row ms-row--menu"
-          type="button"
-          role="menuitemcheckbox"
-          aria-checked=${String(state.trail?.id === "live")}
-          data-robot-trail
-          tabindex="-1"
-          @click=${() => intent({ type: "show-trail", trail: state.trail?.id === "live" ? null : "live" })}
-        ><span>${t("v4_robot_trail", "Robot trail")}${state.trail?.id === "live" ? html`<small class="menu-note">${t("v4_robot_trail_hint", "The sampled path can have gaps.")}</small>` : nothing}</span><span class="ms-switch" aria-checked=${String(state.trail?.id === "live")} aria-hidden="true"></span></button>` : nothing}
         ${this.#zoom.available() ? html`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${() => this.#zoom.show()}>${t("v4_map_zoom", "Map zoom")}</button>` : nothing}
         <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${() => { this.menu.close(false); diagnostics(); }}>${t("v4_map_diagnostics", "Map diagnostics")}</button>
       </div>`}

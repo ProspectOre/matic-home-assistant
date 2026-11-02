@@ -57,6 +57,7 @@ const mountPanel = async (page, wifiSignal, moduleSource = "typescript", options
 
 test("Map options turns on the Wi-Fi signal layer and reads the survey", async ({ page }) => {
   const panel = await mountPanel(page, SURVEY);
+  await expect(panel.getByRole("button", { name: "Map options" })).toHaveText("Layers");
   await clickInShadow(panel, "[aria-controls=map-options]");
   await expect.poll(() => wifiRow(panel)).toEqual({ checked: "false", text: "Wi-Fi signal" });
 
@@ -67,24 +68,21 @@ test("Map options turns on the Wi-Fi signal layer and reads the survey", async (
     cellSize: 0.3048,
     cells: [{ x: 0.152, y: 0.152, dbm: -48, size: 0.3048 }, { x: 0.457, y: 0.152, dbm: -88, size: 0.3048 }],
   });
-  await expect.poll(() => wifiRow(panel)).toEqual({ checked: "true", text: "Wi-Fi signal Approximate averages. Rings are coarser; blank areas are unmeasured." });
+  await expect.poll(() => wifiRow(panel)).toEqual({ checked: "true", text: "Wi-Fi signal Smoothed estimates within 2 feet of samples. Older readings are coarser; blank areas are unmeasured." });
 
   await clickInShadow(panel, "[data-wifi-signal]");
   await expect.poll(() => panel.evaluate((element) => element.getWorkspaceSnapshot().wifiSignal)).toBeNull();
 });
 
 test("Wi-Fi colors can compare strong sampled spots without labeling them as poor signal", async ({ page }) => {
-  await page.clock.install();
+  test.setTimeout(60_000);
   await page.addInitScript(() => {
     window.__wifiPaint = [];
-    const original = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, "fillStyle");
-    Object.defineProperty(CanvasRenderingContext2D.prototype, "fillStyle", {
-      ...original,
-      set(value) {
-        if (typeof value === "string" && value.startsWith("hsl(")) window.__wifiPaint.push(value);
-        original.set.call(this, value);
-      },
-    });
+    const original = CanvasGradient.prototype.addColorStop;
+    CanvasGradient.prototype.addColorStop = function(offset, colour) {
+      if (offset === 0 && colour.startsWith("hsl(")) window.__wifiPaint.push(colour);
+      return original.call(this, offset, colour);
+    };
   });
   const panel = await mountPanel(page, { enabled: true, cell_size: 0.3048, cells: [
     { x: 0.152, y: 0.152, dbm: -59 }, { x: 0.457, y: 0.152, dbm: -41.3 },
@@ -96,8 +94,8 @@ test("Wi-Fi colors can compare strong sampled spots without labeling them as poo
   const menu = panel.getByRole("menu", { name: "Map options" });
   await expect(menu.getByRole("menuitemradio", { name: "Signal strength" })).toHaveAttribute("aria-checked", "true");
   await expect(menu.getByRole("img", { name: "Color scale: -90 dBm – -35 dBm" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__wifiPaint)).toEqual(expect.arrayContaining([
-    "hsl(68 75% 45% / .8)",
+  await expect.poll(() => page.evaluate(() => window.__wifiPaint), { timeout: 15_000 }).toEqual(expect.arrayContaining([
+    "hsl(68 75% 45% / .65)",
   ]));
   await page.evaluate(() => { window.__wifiPaint = []; });
   await menu.getByRole("menuitemradio", { name: "Compare sampled spots" }).click();
@@ -108,15 +106,14 @@ test("Wi-Fi colors can compare strong sampled spots without labeling them as poo
   await expect(menu.getByRole("img", { name: "Color scale: -59 dBm – -41.3 dBm" })).toBeVisible();
   await expect(menu.getByText("Colors compare sampled spots, not absolute quality.")).toBeVisible();
   await expect(menu.getByText("Sampled range: -59 dBm – -41.3 dBm")).toBeVisible();
-  await expect.poll(() => page.evaluate(() => window.__wifiPaint)).toEqual(expect.arrayContaining([
-    "hsl(0 75% 45% / .8)",
+  await expect.poll(() => page.evaluate(() => window.__wifiPaint), { timeout: 15_000 }).toEqual(expect.arrayContaining([
+    "hsl(0 75% 45% / .65)",
   ]));
   await page.screenshot({ path: test.info().outputPath("wifi-relative-scale.png") });
   await page.evaluate(() => { window.__wifiSignalReply = { enabled: true, cell_size: 0.3048, cells: [
     { x: 0.152, y: 0.152, dbm: -58 }, { x: 0.457, y: 0.152, dbm: -42 },
   ] }; });
-  await page.clock.fastForward(30_000);
-  await expect(menu.getByRole("img", { name: "Color scale: -58 dBm – -42 dBm" })).toBeVisible();
+  await expect(menu.getByRole("img", { name: "Color scale: -58 dBm – -42 dBm" })).toBeVisible({ timeout: 40_000 });
   await expect(menu.getByRole("menuitemradio", { name: "Compare sampled spots" })).toHaveAttribute("aria-checked", "true");
 });
 
@@ -239,11 +236,12 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     }
     const context = overlay.getContext("2d");
     const fills = [];
-    const style = Object.getOwnPropertyDescriptor(CanvasRenderingContext2D.prototype, "fillStyle");
-    Object.defineProperty(context, "fillStyle", {
-      get() { return style.get.call(this); },
-      set(value) { if (String(value).startsWith("hsl(")) fills.push(value); style.set.call(this, value); },
-    });
+    const wifiGradients = new WeakSet();
+    const addColorStop = CanvasGradient.prototype.addColorStop;
+    CanvasGradient.prototype.addColorStop = function(offset, colour) {
+      if (offset === 0 && colour.startsWith("hsl(")) { fills.push(colour); wifiGradients.add(this); }
+      return addColorStop.call(this, offset, colour);
+    };
     const renderer = new RendererController(scene, overlay);
     const initial = createGalleryState("ready");
     const frame = () => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -275,12 +273,13 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     const painted = [];
     const fill = context.fill.bind(context);
     context.fill = (...args) => { painted.push(String(context.fillStyle)); return fill(...args); };
+    const fillRect = context.fillRect.bind(context);
+    context.fillRect = (...args) => { if (wifiGradients.has(context.fillStyle)) painted.push("wifi-gradient"); return fillRect(...args); };
     renderer.setState({ ...initial, wifiSignal, view: "top", appearance: "rooms" });
     await frame();
     renderer.dispose();
     const lastRoomFill = painted.findLastIndex((value) => / 0\.94\)$/u.test(value));
-    // The canvas reports the cells' hsl(... / .8) as rgba with alpha 0.8.
-    const firstCell = painted.findIndex((value) => / 0\.8\)$/u.test(value));
+    const firstCell = painted.indexOf("wifi-gradient");
     const roomColours = { roomFills: lastRoomFill >= 0, cellsAbove: firstCell > lastRoomFill };
     const rejected = [
       { enabled: "yes", cell_size: 0.5, cells: [] },
@@ -293,10 +292,10 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
     return { live, absoluteStrong, relativeStrong, relativeUniform, history, retained, rejected, roomColours };
   }, SURVEY);
   // The fixed scale distinguishes strong readings without saturating at -50 dBm.
-  expect(result.live).toEqual(["hsl(92 75% 45% / .8)", "hsl(4 75% 45% / .8)"]);
-  expect(result.absoluteStrong).toEqual(["hsl(68 75% 45% / .8)", "hsl(106 75% 45% / .8)"]);
-  expect(result.relativeStrong).toEqual(["hsl(0 75% 45% / .8)", "hsl(120 75% 45% / .8)"]);
-  expect(result.relativeUniform).toEqual(["hsl(58 75% 45% / .8)", "hsl(62 75% 45% / .8)"]);
+  expect(result.live).toEqual(["hsl(92 75% 45% / .65)", "hsl(4 75% 45% / .65)"]);
+  expect(result.absoluteStrong).toEqual(["hsl(68 75% 45% / .65)", "hsl(106 75% 45% / .65)"]);
+  expect(result.relativeStrong).toEqual(["hsl(0 75% 45% / .65)", "hsl(120 75% 45% / .65)"]);
+  expect(result.relativeUniform).toEqual(["hsl(58 75% 45% / .65)", "hsl(62 75% 45% / .65)"]);
   expect(result.history).toEqual([]);
   // A retained read-only scene waits for the live one before cells draw.
   expect(result.retained).toEqual([]);
@@ -305,19 +304,18 @@ test("renderer colours each surveyed cell by signal on the live floor only", asy
   expect(result.rejected).toEqual([true, true, true, true, true, true]);
 });
 
-test("Wi-Fi samples render as small marks and retain the older coarse-reading distinction", async ({ page }) => {
+test("Wi-Fi heat fades near each sample without rings", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { drawMapLayers } from "./frontend/map-studio-v4/renderer-layers";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/wifi-marks.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
   const result = await page.evaluate(async () => {
     const { drawMapLayers } = await import("/wifi-marks.js");
-    const marks = [];
-    let points = [];
+    const transforms = [], gradients = [], fills = [];
     const context = {
-      save() {}, restore() {}, beginPath() { points = []; }, closePath() {},
-      moveTo(x, y) { points.push([x, y]); }, lineTo(x, y) { points.push([x, y]); },
-      fill() { marks.push({ kind: "sample", width: Math.max(...points.map(p => p[0])) - Math.min(...points.map(p => p[0])) }); },
-      stroke() { marks.push({ kind: "older", width: Math.max(...points.map(p => p[0])) - Math.min(...points.map(p => p[0])) }); },
+      save() {}, restore() {},
+      transform(...args) { transforms.push(args); },
+      createRadialGradient() { const stops = []; gradients.push(stops); return { addColorStop(offset, colour) { stops.push([offset, colour]); } }; },
+      fillRect(...args) { fills.push(args); },
     };
     const state = { dataMode: "live", floor: { readOnly: false }, selection: { floorId: "current" }, wifiScale: "absolute",
       wifiSignal: { status: "ready", cellSize: 0.3048, cells: [
@@ -325,8 +323,9 @@ test("Wi-Fi samples render as small marks and retain the older coarse-reading di
         { x: 4, y: 0, dbm: -75, size: 1 },
       ] } };
     drawMapLayers(context, state, (x, y) => ({ x: x * 100, y: y * 100 }));
-    return marks;
+    return { transforms, gradients, fills };
   });
-  expect(result.map(mark => mark.kind)).toEqual(["sample", "older", "older"]);
-  expect(result.every(mark => mark.width > 0 && mark.width <= 40)).toBe(true);
+  expect(result.transforms.map(t => Math.round(t[0]))).toEqual([45, 45, 60]);
+  expect(result.fills).toEqual([[-1, -1, 2, 2], [-1, -1, 2, 2], [-1, -1, 2, 2]]);
+  expect(result.gradients.every(stops => stops[0][0] === 0 && stops.at(-1)[0] === 1 && stops.at(-1)[1].endsWith("/ 0)"))).toBe(true);
 });

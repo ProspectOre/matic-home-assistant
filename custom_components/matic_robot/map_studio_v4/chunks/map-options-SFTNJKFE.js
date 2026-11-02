@@ -1,4 +1,4 @@
-import{a as e,b as a}from"./chunk-EF2SFLEJ.js";import{a as t}from"./chunk-CEDW6BZF.js";import{a as s,b as i,c as o,d as l,g as n}from"./chunk-MOXJVYLN.js";import{a as r}from"./chunk-JAHDUSSE.js";import{I as m,q as p}from"./chunk-XV4TIR54.js";import{c,f as u,g as d}from"./chunk-6UI3L3W5.js";import{A as h,D as b,g as v}from"./chunk-3ABEONHI.js";import"./chunk-KELXOEJL.js";import{a as f,b as g}from"./chunk-KPP5CGNI.js";import"./chunk-HJEIFO5G.js";var w=i(class extends o{constructor(e){if(super(e),e.type!==s.PROPERTY&&e.type!==s.ATTRIBUTE&&e.type!==s.BOOLEAN_ATTRIBUTE)throw Error("The `live` directive is not allowed on child or event bindings");if(!l(e))throw Error("`live` bindings can only contain a single expression")}render(e){return e}update(e,[a]){if(a===u||a===d)return a;let t=e.element,i=e.name;if(e.type===s.PROPERTY){if(a===t[i])return u}else if(e.type===s.BOOLEAN_ATTRIBUTE){if(!!a===t.hasAttribute(i))return u}else if(e.type===s.ATTRIBUTE&&t.getAttribute(i)===a+"")return u;return n(e),a}}),_=class{constructor(e,a){this.host=e,this.menu=a,this.open=!1,this.#e="100",this.#a=!1,this.#t=null,this.#s=0,this.#i=new ResizeObserver(()=>{cancelAnimationFrame(this.#s),this.#s=requestAnimationFrame(()=>{this.#s=0,this.host.requestUpdate()})}),e.addController(this)}#e;#a;#t;#s;#i;hostConnected(){this.#o()}hostUpdated(){this.#o()}hostDisconnected(){this.#l()}#l(){this.#i.disconnect(),cancelAnimationFrame(this.#s),this.#s=0,this.#t=null}#o(){let e=this.open&&this.menu.open?this.#n()?.renderRoot.querySelector(".scene-canvas")??null:null;e!==this.#t&&(this.#l(),this.#t=e,e&&this.#i.observe(e))}#n(){return this.host.renderRoot.querySelector(".map-canvas")}available(){let e=this.#n();return!!e&&e.state.map.available&&(h(e.state)||"history"===e.state.dataMode)&&null!=e.rendererDiagnostics()?.sceneRevision}#r(){let e=this.#n()?.rendererDiagnostics();return e?Math.round(e.fitDistance/e.cameraDistance*100):100}show(){this.available()&&(this.open=!0,this.#a=!1,this.host.requestUpdate(),this.host.updateComplete.then(()=>this.host.renderRoot.querySelector("#map-zoom-value")?.focus()))}#m(e){if(!this.available()||!Number.isInteger(e)||e<100||e>1e3)return;let a=this.#n(),t=a?.rendererDiagnostics();!t||!a||(a.zoomBy(e*t.cameraDistance/(100*t.fitDistance)),this.#a=!1,this.host.requestUpdate())}render(e){let a=this.#r();return this.#a||(this.#e=a>=100&&a<=1e3?String(a):""),c`
+import{a as e,b as a}from"./chunk-EF2SFLEJ.js";import{a as t}from"./chunk-CEDW6BZF.js";import{a as s,b as i,c as o,d as l,g as n}from"./chunk-MOXJVYLN.js";import{a as r}from"./chunk-JAHDUSSE.js";import{J as m,r as p}from"./chunk-FAL3MD2E.js";import{c,f as u,g as d}from"./chunk-6UI3L3W5.js";import{A as h,D as b,g as v}from"./chunk-3ABEONHI.js";import"./chunk-KELXOEJL.js";import{a as f,b as g}from"./chunk-KPP5CGNI.js";import"./chunk-HJEIFO5G.js";var w=i(class extends o{constructor(e){if(super(e),e.type!==s.PROPERTY&&e.type!==s.ATTRIBUTE&&e.type!==s.BOOLEAN_ATTRIBUTE)throw Error("The `live` directive is not allowed on child or event bindings");if(!l(e))throw Error("`live` bindings can only contain a single expression")}render(e){return e}update(e,[a]){if(a===u||a===d)return a;let t=e.element,i=e.name;if(e.type===s.PROPERTY){if(a===t[i])return u}else if(e.type===s.BOOLEAN_ATTRIBUTE){if(!!a===t.hasAttribute(i))return u}else if(e.type===s.ATTRIBUTE&&t.getAttribute(i)===a+"")return u;return n(e),a}}),_=class{constructor(e,a){this.host=e,this.menu=a,this.open=!1,this.#e="100",this.#a=!1,this.#t=null,this.#s=0,this.#i=new ResizeObserver(()=>{cancelAnimationFrame(this.#s),this.#s=requestAnimationFrame(()=>{this.#s=0,this.host.requestUpdate()})}),e.addController(this)}#e;#a;#t;#s;#i;hostConnected(){this.#o()}hostUpdated(){this.#o()}hostDisconnected(){this.#l()}#l(){this.#i.disconnect(),cancelAnimationFrame(this.#s),this.#s=0,this.#t=null}#o(){let e=this.open&&this.menu.open?this.#n()?.renderRoot.querySelector(".scene-canvas")??null:null;e!==this.#t&&(this.#l(),this.#t=e,e&&this.#i.observe(e))}#n(){return this.host.renderRoot.querySelector(".map-canvas")}available(){let e=this.#n();return!!e&&e.state.map.available&&(h(e.state)||"history"===e.state.dataMode)&&null!=e.rendererDiagnostics()?.sceneRevision}#r(){let e=this.#n()?.rendererDiagnostics();return e?Math.round(e.fitDistance/e.cameraDistance*100):100}show(){this.available()&&(this.open=!0,this.#a=!1,this.host.requestUpdate(),this.host.updateComplete.then(()=>this.host.renderRoot.querySelector("#map-zoom-value")?.focus()))}#m(e){if(!this.available()||!Number.isInteger(e)||e<100||e>1e3)return;let a=this.#n(),t=a?.rendererDiagnostics();!t||!a||(a.zoomBy(e*t.cameraDistance/(100*t.fitDistance)),this.#a=!1,this.host.requestUpdate())}render(e){let a=this.#r();return this.#a||(this.#e=a>=100&&a<=1e3?String(a):""),c`
 <style>
 .map-zoom { display: grid; gap: var(--ms-space-3); padding: var(--ms-space-3); inline-size: min(20rem, calc(100vw - 2rem)); min-inline-size: 0; box-sizing: border-box; }
 .map-zoom p { margin: 0; white-space: normal; }
@@ -69,6 +69,16 @@ tabindex="-1"
 ><span>${i("v4_room_names","Room names")}</span><span class="ms-switch" aria-checked=${String(t.labelsVisible)} aria-hidden="true"></span></button>
 </div>
 `:d}
+<p class="menu-heading" role="presentation">${i("v4_map_layers_button","Layers")}</p>
+${"live"===t.dataMode?c`<button
+class="ms-row ms-row--menu"
+type="button"
+role="menuitemcheckbox"
+aria-checked=${String("live"===t.trail?.id)}
+data-robot-trail
+tabindex="-1"
+@click=${()=>o({type:"show-trail",trail:"live"===t.trail?.id?null:"live"})}
+><span>${i("v4_robot_trail","Robot trail")}${"live"===t.trail?.id?c`<small class="menu-note">${i("v4_robot_trail_hint","The sampled path can have gaps.")}</small>`:d}</span><span class="ms-switch" aria-checked=${String("live"===t.trail?.id)} aria-hidden="true"></span></button>`:d}
 ${t.resources.entry?.wifiHeatmapUrl?c`
 <button
 class="ms-row ms-row--menu"
@@ -78,7 +88,7 @@ aria-checked=${String(!!t.wifiSignal)}
 tabindex="-1"
 data-wifi-signal
 @click=${()=>o({type:"toggle-wifi-signal"})}
-><span>${i("v4_wifi_signal","Wi-Fi signal")}${((e,a)=>{if(!e||"loading"===e.status)return d;let t="failed"===e.status?a("v4_wifi_signal_failed","Couldn't load the survey"):e.cells.length?a("v4_wifi_samples_note","Approximate averages. Rings are coarser; blank areas are unmeasured."):e.surveying?a("v4_wifi_signal_waiting","No samples yet \xb7 they arrive during cleaning"):a("v4_wifi_signal_off","Turn on Wi-Fi survey in the robot's settings");return c`<small class="menu-note">${t}</small>`})(t.wifiSignal,i)}</span><span class="ms-switch" aria-checked=${String(!!t.wifiSignal)} aria-hidden="true"></span></button>
+><span>${i("v4_wifi_signal","Wi-Fi signal")}${((e,a)=>{if(!e||"loading"===e.status)return d;let t="failed"===e.status?a("v4_wifi_signal_failed","Couldn't load the survey"):e.cells.length?a("v4_wifi_samples_note","Smoothed estimates within 2 feet of samples. Older readings are coarser; blank areas are unmeasured."):e.surveying?a("v4_wifi_signal_waiting","No samples yet \xb7 they arrive during cleaning"):a("v4_wifi_signal_off","Turn on Wi-Fi survey in the robot's settings");return c`<small class="menu-note">${t}</small>`})(t.wifiSignal,i)}</span><span class="ms-switch" aria-checked=${String(!!t.wifiSignal)} aria-hidden="true"></span></button>
 `:d}
 ${w?c`
 <div role="group" aria-labelledby="menu-wifi-scale">
@@ -129,17 +139,8 @@ ${f("efficient",i("map_quality_efficient","Efficient"))}
 ${f("balanced",i("map_quality_balanced","Balanced"))}
 ${f("maximum",i("map_quality_maximum","Maximum"))}
 </div>
-${"live"===t.dataMode?c`<button
-class="ms-row ms-row--menu"
-type="button"
-role="menuitemcheckbox"
-aria-checked=${String("live"===t.trail?.id)}
-data-robot-trail
-tabindex="-1"
-@click=${()=>o({type:"show-trail",trail:"live"===t.trail?.id?null:"live"})}
-><span>${i("v4_robot_trail","Robot trail")}${"live"===t.trail?.id?c`<small class="menu-note">${i("v4_robot_trail_hint","The sampled path can have gaps.")}</small>`:d}</span><span class="ms-switch" aria-checked=${String("live"===t.trail?.id)} aria-hidden="true"></span></button>`:d}
 ${this.#e.available()?c`<button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" aria-haspopup="dialog" @click=${()=>this.#e.show()}>${i("v4_map_zoom","Map zoom")}</button>`:d}
 <button class="ms-row ms-row--menu" type="button" role="menuitem" tabindex="-1" @click=${()=>{this.menu.close(!1),l()}}>${i("v4_map_diagnostics","Map diagnostics")}</button>
 </div>`}
 `}};export{$ as MapOptions};
-/*! Licenses: map-options-32FJFTG4.js.LEGAL.txt */
+/*! Licenses: map-options-SFTNJKFE.js.LEGAL.txt */
