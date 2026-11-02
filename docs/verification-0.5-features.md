@@ -83,15 +83,16 @@ iPhone acceptance and refreshed full-walkthrough evidence remain pending.
 | upgrade.english-localization | English strings; pseudo-language/RTL layout support | String parity and synthetic RTL/expanded-text tests | Refresh affected layouts after the gesture-help change; English is the shipped catalog. |
 | deferred.contextual-history | Dedicated Cleaning History deferred to 0.6 | Current run outcomes and saved-map history tested | No 0.5 completion check; keep this deferral clear in product claims. |
 
-## Acceptance still open
+## Acceptance open at this checkpoint
 
 The live checks above do not certify every physical setting combination,
 including one-time due-work application and recovery runs, all robot fault cases, real
 pairing/import hardware, complete device and assistive-technology coverage,
 endurance, or a full backup restore. The 117-cell walkthrough is autonomous
-inspection, not a set of owner cell approvals. Final owner acceptance remains
-separate; stable merge and publication stay held until the owner gives fresh
-explicit approval.
+inspection, not a set of owner cell approvals. At this checkpoint, final owner
+acceptance remained separate and publication required explicit approval. The
+[later qualification](verification-0.5-stable.md) records the release decision
+and its accepted limits.
 
 The owner has no spare robot or Windows/NVDA target. Those hardware checks stay
 open. The owner approved a restore drill, which was attempted only in an

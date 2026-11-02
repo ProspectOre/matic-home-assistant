@@ -1,6 +1,9 @@
 # 0.5 custom-area continuity qualification
 
-**Status: OPEN. Stable release certification is withheld.**
+At the RC35 checkpoint this qualification was open and 0.5.0 stable
+certification was withheld. This page retains that candidate's evidence and
+limits; see [0.5.0 qualification](verification-0.5-stable.md) for the later
+release decision. It does not certify later changes.
 
 ## Intended behavior
 
