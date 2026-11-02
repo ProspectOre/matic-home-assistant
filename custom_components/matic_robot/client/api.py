@@ -1540,9 +1540,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         session_id: UUID | None = None,
         require_current: Callable[[], None] | None = None,
     ) -> CoverageReceipt | None:
-        """Start an exact normal-coverage command for local room IDs."""
-        if not require_settings_readback and session_id is not None:
-            raise MaticError("An untracked coverage command cannot own a session ID")
+        """Start normal coverage; a supplied ID does not imply setting proof.
+
+        HA callers may reserve a session ID solely to exclude their commands
+        from external-history credit. Managed setting proof still requires
+        the separate readback path and its native ownership guards.
+        """
         if require_settings_readback and session_id is None:
             session_id = uuid4()
         payload = encode_coverage_command(
@@ -3087,8 +3090,15 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         )
     except DecodeError:
         return None
-    if any(field.number == 11 for field in fields):
-        return None
+    modern = tuple(field for field in fields if field.number == 11)
+    if modern:
+        if len(modern) != 1 or modern[0].wire_type != 2:
+            return None
+        # Session identity and page completeness are independent of room proof.
+        # Non-room cleans and unsupported modern summaries must remain visible
+        # to managed dispatch baselines. Omit all positive room evidence; this
+        # also retracts earlier canonical statistics/cadence on a bad revision.
+        return CleaningSession(started_at, ended_at, None, (), (), None)
     rooms: list[str] = []
     seen_rooms: set[str] = set()
     statuses: dict[tuple[int, str], int | None] = {}

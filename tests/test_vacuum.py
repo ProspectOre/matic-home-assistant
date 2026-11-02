@@ -1254,3 +1254,33 @@ async def test_direct_ha_start_claims_exact_session_before_transmission():
     with pytest.raises(OSError):
         await entity.async_start()
     client.async_start_coverage.assert_not_awaited()
+
+
+async def test_direct_start_reaches_real_client_with_the_reserved_wire_identity():
+    import hashlib
+
+    from custom_components.matic_robot.client.api import MaticHermesClient
+    from custom_components.matic_robot.client.coverage_receipts import (
+        native_session_hash,
+    )
+    from custom_components.matic_robot.client.wire import first_bytes
+    from tests.test_coverage_receipt_api import FLOOR
+
+    entry = _entry()
+    entry.runtime_data.coordinator.data = replace(
+        entry.runtime_data.coordinator.data, floor_plan=FLOOR
+    )
+    client = MaticHermesClient("192.0.2.1", 16320)
+    client._async_send_user_payload = AsyncMock()
+    entry.runtime_data.coordinator.client = client
+    entity = vacuum.MaticVacuum(entry)
+    await entity.async_start()
+    claimed = (
+        entry.runtime_data.cleaning_plans.async_claim_native_session.await_args.args[1]
+    )
+    payload = client._async_send_user_payload.await_args.args[0]
+    coverage = first_bytes(first_bytes(first_bytes(payload, 15), 1), 3)
+    assert (
+        native_session_hash(first_bytes(coverage, 6))
+        == hashlib.sha256(claimed.encode("ascii")).hexdigest()
+    )
