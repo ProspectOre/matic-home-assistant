@@ -6,7 +6,9 @@ Installed and physical evidence remains separate in that qualification record.
 The assembled PR #287 candidate passed **5,278 tests with 100.00% coverage**
 across 20,147 statements (`python -m pytest --cov=custom_components/matic_robot
 --cov-report=term-missing`). Exact-head PR CI and complete regular review must
-pass before merging. Installed RC35, RC36 and RC37 retesting, including a supervised RC37 custom-area run, is recorded below.
+pass before merging. Installed RC35, RC36 and RC37 retesting, including a supervised
+RC37 custom-area run, is recorded in the qualification record's
+[Installed and physical evidence](verification-0.5-area-continuity.md#installed-and-physical-evidence) section.
 
 - Binding regressions cover partition churn, unrelated room changes,
   containing-room contour reshaping, fractional wall refinements, new overlaps,
