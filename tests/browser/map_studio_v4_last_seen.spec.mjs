@@ -182,3 +182,53 @@ test("last-seen history read is revoked when map identity becomes unverified", a
   expect(result.seenAfterPoseSessionChange).toBeNull();
   expect(result.poseTrailReads).toBe(0);
 });
+
+for (const pose of [null, [9, 9]]) {
+test(`visible initial map loads the historical marker without a visibility transition (${pose ? "stale pose" : "no pose"})`, async ({ page }) => {
+  const bundle = await build({
+    stdin: {
+      contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { initialWorkspaceState, WorkspaceStore } from "./frontend/map-studio-v4/state";',
+      resolveDir: process.cwd(),
+    },
+    bundle: true, format: "esm", write: false,
+  });
+  await page.route("**/initial-seen.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async (pose) => {
+    const { EffectController, initialWorkspaceState, WorkspaceStore } = await import("/initial-seen.js");
+    const session = "d".repeat(64);
+    const base = initialWorkspaceState();
+    const state = {
+      ...base, pageActive: true, activity: "docked", dataMode: "live", coherence: "current",
+      selection: { ...base.selection, entryId: "entry", floorId: "current" },
+      map: { ...base.map, available: true, floorCoherent: true, sessionVerified: true, exactPose: false },
+      host: { ...base.host, connected: true, administrator: true, robotConnected: true, robotCount: 1 },
+      owner: { userKey: "user", entryKey: "entry" },
+      resources: { ...base.resources,
+        entry: { entryId: "entry", mapSessionKey: session, mapFloorCoherent: true, mapSessionVerified: true },
+        scene: { status: "ready", value: { source: "live" }, problem: null },
+        pose: { status: "ready", value: { position: pose, mapSessionKey: session, freshness: "stale" }, problem: null },
+      },
+    };
+    const history = { entry_id: "entry", map_session_key: session, robot_history: true,
+      runs: [{ id: "done", source: "robot", started_at: "2026-11-01T10:00:00Z", ended_at: "2026-11-01T10:30:00Z",
+        plan_name: null, outcome: "finished", ending: "finished", rooms: [], areas: [], trail: "trail-1", thumbnail: null }] };
+    const reads = [];
+    const backend = { dispose() {}, runs: async (_entry, trail) => {
+      reads.push(trail ?? "history");
+      return trail
+        ? { trail: "trail-1", map_session_key: session, segments: [[[1.25, 2.5]]] }
+        : history;
+    } };
+    const store = new WorkspaceStore(state);
+    const controller = new EffectController(store, backend);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    const result = { visible: document.visibilityState === "visible", reads, seen: store.value.seen ?? null };
+    controller.dispose();
+    return result;
+  });
+  expect(result.visible).toBe(true);
+  expect(result.reads).toEqual(["history", "trail-1"]);
+  expect(result.seen).toEqual({ entryId: "entry", mapSessionKey: "d".repeat(64), position: [1.25, 2.5] });
+});
+}

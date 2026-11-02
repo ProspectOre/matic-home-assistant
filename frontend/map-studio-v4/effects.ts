@@ -32,6 +32,7 @@ import {
   canEditCoordinates,
   canChangeRobotSetting,
   canStartMotion,
+  canShowExactPose,
   canReadFloorResources,
   CoherenceMachine,
   initialWorkspaceState,
@@ -255,6 +256,8 @@ export class EffectController {
     this.#optionalScope = this.#pinScope(store.value) + `:${store.value.selection.floorId}`;
     this.#storeUnsubscribe = store.subscribe((state) => {
       this.#observePreferences(state);
+      if (state.map.available && state.dataMode === "live" && state.activity === "docked"
+        && !canShowExactPose(state)) void this.#runResources();
       const optionalScope = this.#pinScope(state) + `:${state.selection.floorId}`;
       if (optionalScope !== this.#optionalScope) {
         this.#optionalScope = optionalScope;
@@ -406,7 +409,6 @@ export class EffectController {
     this.#workspace.sync(projection);
     await this.refreshCatalog(true, true);
     await this.#spatialResources.resumeHistory(suspended);
-    void this.#runResources();
   }
 
   // Room preview and start preflight are needed only after Rooms opens.
