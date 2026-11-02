@@ -47,6 +47,44 @@ const rows = async (dialog) => {
   return Object.fromEntries(terms.map((term, index) => [term, details[index]]));
 };
 
+test("screen-reader-only map text stays clipped and skip links reveal on focus", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "ready" });
+  const liveRegion = gallery.locator('.root > .sr-only[aria-live="polite"]');
+  await expect(liveRegion).toHaveAttribute("aria-atomic", "true");
+  const clipped = await liveRegion.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { position: style.position, width: style.inlineSize, height: style.blockSize,
+      clipPath: style.clipPath, whiteSpace: style.whiteSpace };
+  });
+  expect(clipped).toEqual({ position: "absolute", width: "1px", height: "1px",
+    clipPath: "inset(50%)", whiteSpace: "nowrap" });
+  const shellClipped = await gallery.evaluate((element) => {
+    const region = element.shadowRoot?.querySelector("matic-map-shell-v4")?.shadowRoot
+      ?.querySelector('.root > .sr-only[aria-live="polite"]');
+    if (!region) return null;
+    const style = getComputedStyle(region);
+    return { position: style.position, width: style.inlineSize, height: style.blockSize,
+      clipPath: style.clipPath, whiteSpace: style.whiteSpace };
+  });
+  expect(shellClipped).toEqual({ position: "absolute", width: "1px", height: "1px",
+    clipPath: "inset(50%)", whiteSpace: "nowrap" });
+
+  const skipLink = gallery.getByRole("button", { name: "Skip to the map", exact: true });
+  await skipLink.focus();
+  await expect(skipLink).toBeFocused();
+  const revealed = await skipLink.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { position: style.position, insetBlockStart: style.insetBlockStart,
+      insetInlineStart: style.insetInlineStart, clipPath: style.clipPath,
+      width: element.getBoundingClientRect().width };
+  });
+  expect(revealed.position).toBe("absolute");
+  expect(revealed.insetBlockStart).not.toBe("auto");
+  expect(revealed.insetInlineStart).not.toBe("auto");
+  expect(revealed.clipPath).toBe("none");
+  expect(revealed.width).toBeGreaterThan(1);
+});
+
 const drag = async (page, from, to, options = {}) => {
   await page.mouse.move(from.x, from.y);
   await page.mouse.down(options);

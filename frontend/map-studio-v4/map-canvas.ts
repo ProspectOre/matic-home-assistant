@@ -770,6 +770,7 @@ export class MaticMapCanvasV4 extends LitElement {
     const showScene = state.map.available && (canShowLiveMap(state) || state.dataMode === "history");
     const message = this.#message(showScene);
     const showDraw = state.workflow === "draw" && showScene;
+    const description = describeMap(state, this.localize);
     return html`
       <section
         class="map-root"
@@ -791,7 +792,7 @@ export class MaticMapCanvasV4 extends LitElement {
           data-renderer-key="persistent-canvas-v4"
           ?hidden=${!showScene}
           role=${showDraw ? "group" : "img"}
-          aria-label=${describeMap(state, this.localize)}
+          aria-label=${description}
         >
           ${showDraw ? html`<span class="keyboard-aim" aria-hidden="true"></span>` : nothing}
           <canvas class="scene-canvas"></canvas>
@@ -814,7 +815,7 @@ export class MaticMapCanvasV4 extends LitElement {
         ` : nothing}
         ${this.#rendererStatus(showScene)}
         <div class="sr-only" aria-live="polite" aria-atomic="true">
-          ${describeMap(state, this.localize)}
+          ${description}
         </div>
       </section>
     `;

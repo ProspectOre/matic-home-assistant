@@ -207,13 +207,8 @@ const rebaseCameraPreferences = (
 ) as Partial<Record<MapView, CameraPreference>>;
 
 const sceneContext = (state: WorkspaceState): string => {
-  return [
-    state.dataMode,
-    state.selection.entryId ?? "none",
-    state.selection.floorId,
-    state.selection.historyId ?? "none",
-    mapCameraIdentity(state),
-  ].join("|");
+  return `${state.dataMode}|${state.selection.entryId ?? "none"}|${state.selection.floorId}`
+    + `|${state.selection.historyId ?? "none"}|${mapCameraIdentity(state)}`;
 };
 
 const GPU_UPLOAD_CHUNK_BYTES = 512 * 1024;

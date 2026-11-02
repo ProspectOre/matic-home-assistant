@@ -278,7 +278,7 @@ test(`visible initial map loads the historical marker without a visibility trans
     const result = { visible: document.visibilityState === "visible", reads, seen: store.value.seen ?? null };
     controller.dispose();
     return result;
-  });
+  }, pose);
   expect(result.visible).toBe(true);
   expect(result.reads).toEqual(["history", "trail-1"]);
   expect(result.seen).toEqual({ entryId: "entry", mapSessionKey: "d".repeat(64), position: [1.25, 2.5] });
