@@ -7,10 +7,11 @@ This hotfix addresses reports [#381](https://github.com/ProspectOre/matic-home-a
 
 - **Problems stay visible.** A confirmed error remains visible while another
   error appears or clears. A new error still needs two consecutive polls.
-- **Readable error names.** Codes 207 and 220 identify the lid-open and
-  mopping-water conditions. The Matic 1.182.1 decoder confirms the mappings;
-  raw codes remain available and unknown codes remain unknown. This does not
-  establish that every firmware version uses the same meanings.
+- **Readable error names.** Physical lid tests and the Matic 1.182.1 decoder
+  agree that 207 means the lid is open. The same decoder maps 220 to mopping
+  water unavailable; a physical attempt did not reproduce 220. Raw codes remain
+  available and unknown codes remain unknown. The mappings are not qualified
+  across every firmware version.
 - **Room statistics from app-started cleans.** Last cleaned and Last clean
   duration can use completed per-room vacuum and mop results, including app
   schedules. When the robot provides enough floor and room information, the

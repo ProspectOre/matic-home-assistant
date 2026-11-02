@@ -71,10 +71,11 @@ reporter's beta2 confirmation used one saved floor.
 
 A separate offline `kabuki_state` replay supplied packed wire error `220`
 (`12 02 dc 01`). The same installed OEM binding returned `errors=[220]` and
-`KabukiDisplayedError.SolventUnavailable`. This proves the current app's mapping;
-the UniFFI enum ordinal alone was not that proof. The replay did not induce a
-physical fault; a later tank-removal attempt did not reproduce 220. This does
-not establish cross-firmware behavior.
+`KabukiDisplayedError.SolventUnavailable`. Control cases mapped 205 to
+`BagMissing`, 207 to `LidOpen`, and 999 to no displayed error. Physical lid
+tests also confirmed 207. The replay did not induce a physical fault; a later
+tank-removal attempt did not reproduce 220. These observations establish the
+current app's mappings, not behavior across every firmware version.
 
 Raw captures, map identities, household labels and vendor artifacts remain in
 the private evidence store. This offline replay did not clean, dock, induce a
