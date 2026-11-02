@@ -7189,7 +7189,15 @@ async def test_saved_plan_zero_capacity_rejects_creation(hass, monkeypatch) -> N
 
 
 async def test_room_execution_uses_its_individual_settings() -> None:
-    services = SimpleNamespace(async_call=AsyncMock())
+    events = []
+
+    async def send(*args, **_kwargs):
+        events.append(("send", args[2]["params"]["_matic_plan_session"]))
+
+    async def claim(_serial_number, session_id, *, run_id=None):
+        events.append(("claim", session_id, run_id))
+
+    services = SimpleNamespace(async_call=AsyncMock(side_effect=send))
     bus = SimpleNamespace(async_fire=MagicMock())
     hass = SimpleNamespace(
         services=services,
@@ -7216,6 +7224,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
         history=SimpleNamespace(snapshot=MagicMock(return_value={})),
     )
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    manager.ledger.async_claim_native_session = AsyncMock(side_effect=claim)
 
     with (
         patch(
@@ -7241,6 +7250,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
     dispatched = services.async_call.await_args.args[2]
     session_id = dispatched["params"].pop("_matic_plan_session")
     assert len(session_id) == 36
+    assert events == [("claim", session_id, None), ("send", session_id)]
     assert dispatched == {
         "entity_id": "vacuum.matic",
         "command": "clean_rooms",

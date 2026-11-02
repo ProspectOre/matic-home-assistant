@@ -141,6 +141,9 @@ async def _async_run_room(
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
+                on_claim=lambda session_id: manager.ledger.async_claim_native_session(
+                    serial_number, session_id, run_id=run_id
+                ),
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,

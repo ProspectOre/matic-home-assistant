@@ -116,7 +116,10 @@ def _import_daily_native_uncertainty(
                 )
                 continue
             assert isinstance(session.ended_at, str)
-            identity = room_cadence_identity(floor_plan, room.id)
+            try:
+                identity = room_cadence_identity(floor_plan, room.id)
+            except ValueError:
+                identity = None
             changed = (
                 daily_room_limit.record_completion(
                     robot,
@@ -657,8 +660,6 @@ def _import_native_room_activity(
                 if session.mode_results
                 else session.completed_rooms
             )
-            if worked_names is None:
-                continue
             mapped_rooms = [
                 room_lookup.get(_native_room_key(name)) for name in worked_names
             ]
