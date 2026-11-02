@@ -30,11 +30,16 @@ from .plan_ledger import (
     _close_unfinished_area_records,
     _close_unfinished_room_records,
 )
+from .plan_model import CleaningRoom as CleaningRoom
 from .plan_recovery import PlanRecovery
+from .plan_repository import (
+    MetadataAdmissionClosedError as MetadataAdmissionClosedError,
+)
 from .plan_repository import (
     PlanRepository,
     _MetadataLockLease,
 )
+from .room_identity import room_cadence_identity as room_cadence_identity
 from .run_control import (
     RunControl,
 )

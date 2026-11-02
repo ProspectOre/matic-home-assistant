@@ -143,7 +143,7 @@ async def test_minor_11_file_migrates_and_survives_cold_manager_reload(
     await manager.async_load()
 
     migrated = manager.repository.robot(SERIAL)
-    assert manager.repository.store.minor_version == STORAGE_MINOR_VERSION == 12
+    assert manager.repository.store.minor_version == STORAGE_MINOR_VERSION == 13
     assert migrated["selected_plan"] == PLAN
     assert migrated["selected_area"] == "reading-nook"
     assert migrated["plans"][PLAN]["rooms"][0]["room_id"] == ROOM

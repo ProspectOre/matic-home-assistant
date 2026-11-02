@@ -19,7 +19,7 @@ async function loadSurfaceRenderer(page, { slowDraws = 0 } = {}) {
     body: bundle.outputFiles[0].text,
   }));
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await page.evaluate(async (slowDrawCount) => {
+  return page.evaluate(async (slowDrawCount) => {
     const nativeGetContext = HTMLCanvasElement.prototype.getContext;
     const contexts = new WeakMap();
     window.__slowSurfaceDrawsRemaining = slowDrawCount;
@@ -48,6 +48,10 @@ async function loadSurfaceRenderer(page, { slowDraws = 0 } = {}) {
       return nativeGetContext.call(this, kind, options);
     };
     window.__surfaceGeometry = await import("/map-studio-v4-surface-geometry.js");
+    const probeCanvas = document.createElement("canvas");
+    const context = probeCanvas.getContext("webgl2");
+    context?.getExtension("WEBGL_lose_context")?.loseContext();
+    return Boolean(context);
   }, slowDraws);
 }
 
@@ -156,7 +160,8 @@ async function renderFixture(page, { floorCells, surfaceCells = [], quality = "m
 for (const quality of ["maximum", "auto"]) {
   test(`@safety close oblique floor cells fill their measured area across a tile seam at ${quality} quality`, async ({ page }) => {
     const slowDraws = quality === "auto" ? 8 : 0;
-    await loadSurfaceRenderer(page, { slowDraws });
+    const webgl2Available = await loadSurfaceRenderer(page, { slowDraws });
+    test.skip(!webgl2Available, "WebGL2 is unavailable in this browser project");
     const result = await renderFixture(page, { floorCells: baseFloor(), quality, slowDraws });
     expect(result.diagnostics.mode).toBe("webgl2");
     expect(result.surfaceStatus).toBe("ready");
@@ -244,7 +249,8 @@ for (const quality of ["maximum", "auto"]) {
 }
 
 test("@safety close oblique surface voxels form an occluding wall face instead of isolated samples", async ({ page }) => {
-  await loadSurfaceRenderer(page);
+  const webgl2Available = await loadSurfaceRenderer(page);
+  test.skip(!webgl2Available, "WebGL2 is unavailable in this browser project");
   const floor = baseFloor();
   const surface = [];
   // A contiguous wall crossing x=32 makes face coverage include a real

@@ -79,3 +79,5 @@ CUES_EVENT_TYPES: Final = (
     "following_started",
     "following_stopped",
 )
+
+CONF_INCLUDE_NATIVE_CLEANINGS = "include_native_cleanings"

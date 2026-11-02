@@ -237,7 +237,10 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             has_daily_limit=MagicMock(return_value=False),
             has_any_daily_limit=MagicMock(return_value=False),
         ),
-        ledger=SimpleNamespace(active_run_id=MagicMock(return_value=None)),
+        ledger=SimpleNamespace(
+            active_run_id=MagicMock(return_value=None),
+            async_claim_native_session=AsyncMock(),
+        ),
         catalog=SimpleNamespace(
             plans=MagicMock(
                 return_value={
@@ -360,9 +363,13 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
 
 def _assert_current_coverage_call(call, expected_kwargs: dict[str, object]) -> None:
     """Keep exact option assertions and exercise the post-preflight guard."""
-    assert set(call.kwargs) == {*expected_kwargs, "require_current"}
+    assert set(call.kwargs) == {*expected_kwargs, "require_current", "session_id"}
+    assert call.kwargs["session_id"] is not None
     assert {
-        name: value for name, value in call.kwargs.items() if name != "require_current"
+        name: value
+        for name, value in call.kwargs.items()
+        if name != "require_current"
+        and (name != "session_id" or name in expected_kwargs)
     } == expected_kwargs
     require_current = call.kwargs["require_current"]
     assert callable(require_current)

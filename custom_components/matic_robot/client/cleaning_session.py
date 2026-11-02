@@ -7,8 +7,11 @@ from datetime import UTC, datetime
 
 from google.protobuf.message import DecodeError
 
+from .coverage_receipts import native_session_hash
 from .exceptions import MaticError
+from .history_semantics import SemanticHistory, decode_history_semantics
 from .models import (
+    SESSION_STOP_REASONS,
     CleaningModeResult,
     CleaningSession,
     CleaningSessionRecord,
@@ -40,7 +43,7 @@ def _native_history_collection_revision(
     digest = hashlib.sha256(b"matic-native-history-v1\0")
     for entry in sorted(entries, key=lambda item: item.key):
         session = decode_cleaning_session(entry.value)
-        if session is None or session.ended_at is None:
+        if session is not None and session.ended_at is None:
             continue
         digest.update(len(entry.key).to_bytes(4, "big"))
         digest.update(entry.key)
@@ -53,14 +56,22 @@ def decode_cleaning_session_records(
     entries: tuple[HermesCollectionEntry, ...], *, strict: bool = False
 ) -> tuple[CleaningSessionRecord, ...]:
     """Decode opaque-keyed history entries, optionally requiring full coverage."""
-    records = tuple(
-        CleaningSessionRecord(entry.key, session)
-        for entry in entries
-        if entry.key and (session := decode_cleaning_session(entry.value)) is not None
-    )
-    if strict and len(records) != len(entries):
+    records: list[CleaningSessionRecord] = []
+    invalid = False
+    for entry in entries:
+        session = decode_cleaning_session(entry.value)
+        if not entry.key or session is None:
+            invalid = True
+            if not entry.key or native_session_hash(entry.key) is None:
+                continue
+            # Keep a rejected record's exact identity as a tombstone. Its
+            # disappearance from retention differs from a correction that no
+            # longer supports an earlier completion credit.
+            session = CleaningSession(None, None, None, (), (), None)
+        records.append(CleaningSessionRecord(entry.key, session))
+    if strict and invalid:
         raise MaticError("Native history is incomplete or undecodable")
-    return records
+    return tuple(records)
 
 
 def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
@@ -78,11 +89,6 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         return None
     started_at = decode_nested_timestamp(summary, 3)
     ended_at = decode_nested_timestamp(summary, 4)
-    rooms: list[str] = []
-    seen_rooms: set[str] = set()
-    statuses: dict[tuple[int, str], int | None] = {}
-    durations: dict[tuple[int, str], int | None] = {}
-    modes: set[int] = set()
     try:
         fields = bounded_fields(
             summary,
@@ -91,6 +97,22 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         )
     except DecodeError:
         return None
+    semantics = decode_history_semantics(payload)
+    if semantics is not None:
+        return _canonical_cleaning_session(semantics, started_at, ended_at, fields)
+    # Modern pages are governed by the strict OEM-replayed decoder. If the
+    # structure is recognized but its semantics are unknown, retain the keyed
+    # record without granting room or completion credit.
+    modern = tuple(field for field in fields if field.number == 11)
+    if modern:
+        if len(modern) != 1 or modern[0].wire_type != 2:
+            return None
+        return CleaningSession(started_at, ended_at, None, (), (), None)
+    rooms: list[str] = []
+    seen_rooms: set[str] = set()
+    statuses: dict[tuple[int, str], int | None] = {}
+    durations: dict[tuple[int, str], int | None] = {}
+    modes: set[int] = set()
     for group in fields:
         if group.number not in (6, 7) or not isinstance(group.value, bytes):
             continue
@@ -235,6 +257,7 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         completed = None
     else:
         completed = True
+    stop_reason_code = decode_stop_reason_code(fields)
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
@@ -247,7 +270,95 @@ def decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         mop_completed_rooms=mop_completed_rooms,
         combined_completed_rooms=combined_completed_rooms,
         mode_results=mode_results,
-        stop_reason_code=decode_stop_reason_code(fields),
+        stop_reason_code=stop_reason_code,
+        stop_reason=(
+            SESSION_STOP_REASONS.get(stop_reason_code, "unknown")
+            if stop_reason_code is not None
+            else None
+        ),
+    )
+
+
+def _canonical_cleaning_session(
+    semantics: SemanticHistory,
+    started_at: str | None,
+    ended_at: str | None,
+    summary_fields: tuple[WireField, ...] = (),
+) -> CleaningSession:
+    """Project verified modern history without conflating stop and completion."""
+    results = semantics.mode_results
+    rooms = tuple(dict.fromkeys(result.room for result in results))
+    by_room: dict[str, list[CleaningModeResult]] = {}
+    identities_by_name: dict[str, set[str | None]] = {}
+    for result in results:
+        identities_by_name.setdefault(result.room, set()).add(result.room_id)
+    unambiguous = tuple(
+        result for result in results if len(identities_by_name[result.room]) == 1
+    )
+    durations: dict[str, int] = {}
+    for result in unambiguous:
+        by_room.setdefault(result.room, []).append(result)
+        if result.duration_seconds is not None:
+            durations[result.room] = (
+                durations.get(result.room, 0) + result.duration_seconds
+            )
+    successful_stop = semantics.stop_reason == "finished"
+    vacuum = tuple(
+        result.room
+        for result in unambiguous
+        if successful_stop
+        and result.cleaning_mode == "vacuum"
+        and result.status == "completed"
+    )
+    mop = tuple(
+        result.room
+        for result in unambiguous
+        if successful_stop
+        and result.cleaning_mode == "mop"
+        and result.status == "completed"
+    )
+    completed_rooms = tuple(
+        name
+        for name, values in by_room.items()
+        if successful_stop and all(item.status == "completed" for item in values)
+    )
+    duration = None
+    if started_at is not None and ended_at is not None:
+        duration = max(
+            0,
+            round(
+                (
+                    datetime.fromisoformat(ended_at)
+                    - datetime.fromisoformat(started_at)
+                ).total_seconds()
+            ),
+        )
+    completed = (
+        successful_stop and semantics.completion_kind == "completed"
+        if semantics.completion_kind is not None
+        else None
+    )
+    stop_reason_code = decode_stop_reason_code(summary_fields)
+    return CleaningSession(
+        started_at=started_at,
+        ended_at=ended_at,
+        duration_seconds=duration,
+        rooms=rooms,
+        room_durations=tuple(durations.items()),
+        completed=completed,
+        completed_rooms=completed_rooms,
+        vacuum_completed_rooms=vacuum,
+        mop_completed_rooms=mop,
+        combined_completed_rooms=tuple(name for name in vacuum if name in mop),
+        mode_results=results,
+        stop_reason_code=(
+            stop_reason_code if semantics.stop_reason is not None else None
+        ),
+        mission_id=semantics.mission_id,
+        partition_id=semantics.partition_id,
+        initiator=semantics.initiator,
+        stop_reason=semantics.stop_reason,
+        completion_kind=semantics.completion_kind,
     )
 
 

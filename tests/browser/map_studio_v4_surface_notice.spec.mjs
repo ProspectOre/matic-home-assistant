@@ -23,6 +23,13 @@ test("sampled source detail is disclosed at close zoom and clears on replacement
     };
   });
   await page.goto("/", { waitUntil: "domcontentloaded" });
+  const webgl2Available = await page.evaluate(() => {
+    const canvas = document.createElement("canvas");
+    const context = canvas.getContext("webgl2");
+    context?.getExtension("WEBGL_lose_context")?.loseContext();
+    return Boolean(context);
+  });
+  test.skip(!webgl2Available, "WebGL2 is unavailable in this browser project");
   await page.evaluate(async () => {
     const { createGalleryState } = await import("/surface-notice-test.js");
     const base = createGalleryState("ready");

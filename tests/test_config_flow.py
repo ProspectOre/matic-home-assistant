@@ -1129,6 +1129,7 @@ async def test_options_flow_aborts_when_entry_is_not_loaded(hass) -> None:
     [
         ("init", None),
         ("finish", None),
+        ("native_cleanings", None),
         ("default_plan", {"plan": "whole_home"}),
         ("reset_history", {"plan": "whole_home"}),
         ("confirm_reset_history", {}),
@@ -1164,6 +1165,7 @@ async def test_options_flow_keeps_only_native_settings_and_maintenance(hass) -> 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
     assert result["menu_options"] == [
+        "native_cleanings",
         "default_plan",
         "reset_history",
         "confirm_reset_all_history",
@@ -1245,6 +1247,7 @@ async def test_legacy_transport_option_does_not_enable_workspace_push(hass) -> N
     result = await hass.config_entries.options.async_init(entry.entry_id)
 
     assert result["menu_options"] == [
+        "native_cleanings",
         "default_plan",
         "reset_history",
         "confirm_reset_all_history",
@@ -1357,7 +1360,11 @@ async def test_options_flow_returns_to_settings_when_no_plans_exist(hass, step) 
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["photo_patrol_settings", "finish"]
+    assert result["menu_options"] == [
+        "native_cleanings",
+        "photo_patrol_settings",
+        "finish",
+    ]
     assert result["description_placeholders"]["plan_count"] == "0"
     assert dict(entry.options) == {"keep": "value"}
 
@@ -1480,7 +1487,11 @@ async def test_options_flow_returns_to_settings_if_raced_plan_was_last(
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["photo_patrol_settings", "finish"]
+    assert result["menu_options"] == [
+        "native_cleanings",
+        "photo_patrol_settings",
+        "finish",
+    ]
     assert result["description_placeholders"]["plan_count"] == "0"
     assert flow._reset_plan_id is None
     assert dict(entry.options) == {"keep": "value"}
@@ -1498,7 +1509,11 @@ async def test_options_flow_returns_to_settings_when_reset_plan_disappears(
 
     assert result["type"] is FlowResultType.MENU
     assert result["step_id"] == "init"
-    assert result["menu_options"] == ["photo_patrol_settings", "finish"]
+    assert result["menu_options"] == [
+        "native_cleanings",
+        "photo_patrol_settings",
+        "finish",
+    ]
     assert flow._reset_plan_id is None
 
 
@@ -1685,3 +1700,12 @@ async def test_photo_patrol_settings_abort_if_entry_unloads_before_save(
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "entry_not_loaded"
+
+
+async def test_app_cleaning_option_defaults_on_and_preserves_other_settings(hass):
+    entry, _manager = await _options_entry(hass, options={"keep": "value"})
+    flow = _direct_options_flow(hass, entry)
+    form = await flow.async_step_native_cleanings()
+    assert form["data_schema"]({}) == {"include_native_cleanings": True}
+    saved = await flow.async_step_native_cleanings({"include_native_cleanings": False})
+    assert saved["data"] == {"keep": "value", "include_native_cleanings": False}

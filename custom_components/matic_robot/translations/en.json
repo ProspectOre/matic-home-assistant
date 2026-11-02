@@ -1065,7 +1065,8 @@
           "reset_history": "Reset room cleaning history for one plan",
           "confirm_reset_all_history": "Reset room cleaning history for all plans",
           "photo_patrol_settings": "Photo patrol privacy and safety",
-          "finish": "Done"
+          "finish": "Done",
+          "native_cleanings": "App-started cleanings"
         }
       },
       "default_plan": {
@@ -1110,6 +1111,16 @@
           "photo_patrol_allow_unattended": "Required before any photo patrol can move or take photos. Manual Take photo remains available separately.",
           "photo_patrol_no_photo_rooms": "Photos from Home Assistant snapshots and patrols are refused in these rooms. Names are saved as room IDs on the current map. An unavailable room stays selected and blocks photos until you review it.",
           "photo_patrol_cooldown_seconds": "Minimum delay between patrols, including sensor-triggered patrols."
+        }
+      },
+      "native_cleanings": {
+        "title": "App-started cleanings",
+        "description": "Count successful room cleanings started outside Home Assistant toward shared room schedules. Plan-only schedules and saved plan run history stay separate.",
+        "data": {
+          "include_native_cleanings": "Include app-started cleanings"
+        },
+        "data_description": {
+          "include_native_cleanings": "Counting starts when enabled. Turning this off keeps earlier counts. Vacuum-strength tasks stay due until their settings are confirmed."
         }
       }
     }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import (
     Callable,
@@ -14,6 +15,7 @@ from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime
 from typing import Any, cast
+from uuid import UUID
 
 from homeassistant.core import Context, callback
 from homeassistant.helpers import entity_registry as er
@@ -37,6 +39,7 @@ from .coverage_accounting import (
     coverage_evidence_from_storage,
     verified_room_coverage,
 )
+from .native_cadence import import_native_cadence
 from .plan_cadence import (
     PlanCadence,
 )
@@ -361,6 +364,7 @@ class PlanLedger:
         changed = native_history._import_native_room_activity(
             robot, floor_plan, records
         )
+        changed = import_native_cadence(robot, floor_plan, records) or changed
         changed = (
             native_history._reconcile_pending_native_history(
                 robot,
@@ -381,6 +385,68 @@ class PlanLedger:
             return False
         await self.async_save_native_history(serial_number, before)
         return True
+
+    async def async_set_native_cleanings_enabled(
+        self, serial_number: str, enabled: bool
+    ) -> None:
+        """Set the native cadence activation boundary without backfilling."""
+        if not isinstance(enabled, bool):
+            raise ValueError("native cleanings option must be boolean")
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self.repository.store_lock:
+                robot = self.repository.robot(serial_number)
+                state = robot.get("native_cleanings")
+                if isinstance(state, dict) and state.get("enabled") is enabled:
+                    return False
+                before = deepcopy(robot)
+                robot["native_cleanings"] = {
+                    "enabled": enabled,
+                    "since": dt_util.utcnow().isoformat(),
+                }
+                await self.repository.async_save_with_rollback(serial_number, before)
+                return True
+
+        await self.repository.async_run_owned_metadata(
+            serial_number, commit, notify=True
+        )
+
+    async def async_claim_native_session(
+        self, serial_number: str, session_id: str, *, run_id: str | None = None
+    ) -> None:
+        """Persist our command UUID before sending it to the robot."""
+        canonical_id = str(UUID(session_id))
+        claim = hashlib.sha256(canonical_id.encode("ascii")).hexdigest()
+
+        async def commit(_lease: _MetadataLockLease) -> bool:
+            async with self.repository.store_lock:
+                robot = self.repository.robot(serial_number)
+                last_run = robot.get("last_run")
+                if run_id is not None and (
+                    not isinstance(last_run, dict)
+                    or last_run.get("run_id") != run_id
+                    or last_run.get("outcome") != "running"
+                ):
+                    raise ValueError("managed run no longer owns this dispatch")
+                claims = robot.setdefault("managed_native_sessions", {})
+                if claim in claims:
+                    return False
+                before = deepcopy(robot)
+                claims[claim] = {"at": dt_util.utcnow().isoformat(), "run_id": run_id}
+                # This is only a deduplication window; old claims cannot affect
+                # any future session and must not make storage grow forever.
+                for old_claim in tuple(claims)[
+                    : -plan_storage.MAX_MANAGED_NATIVE_SESSION_CLAIMS
+                ]:
+                    claims.pop(old_claim, None)
+                await self.repository.async_save_with_rollback(serial_number, before)
+                return True
+
+        await self.repository.async_run_owned_metadata(
+            serial_number,
+            commit,
+            reject_on_admission_close=True,
+        )
 
     async def async_reset_history(
         self, serial_number: str, plan_id: str | None = None

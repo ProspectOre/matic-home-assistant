@@ -11,7 +11,13 @@ from datetime import datetime
 
 from homeassistant.util import dt as dt_util
 
-from .client.models import CleaningModeResult, CleaningSessionRecord, Room
+from .client.models import CleaningModeResult, CleaningSessionRecord, FloorPlan, Room
+
+
+def native_statistics_have_ambiguous_floor(floor_plan: FloorPlan) -> bool:
+    """Whether room-name-only history could belong to another known floor."""
+    known_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
+    return len(known_floor_ids | {floor_plan.mission_id}) > 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +35,7 @@ class NativeRoomStatistic:
     conflicting_modes: frozenset[str]
     invalidated_modes: frozenset[str]
     reported_completed_modes: frozenset[str]
+    partition_hash: str | None = None
 
 
 def completed_native_room_statistics(
@@ -39,6 +46,7 @@ def completed_native_room_statistics(
     future_tolerance_seconds: int,
     multiple_floors_known: bool = False,
     minimum_timestamp: float | None = None,
+    floor_plan: FloorPlan | None = None,
 ) -> dict[str, NativeRoomStatistic]:
     """Return the latest positive completion for each unambiguous room."""
     candidates = native_room_statistics_by_session(
@@ -48,6 +56,7 @@ def completed_native_room_statistics(
         future_tolerance_seconds=future_tolerance_seconds,
         multiple_floors_known=multiple_floors_known,
         minimum_timestamp=minimum_timestamp,
+        floor_plan=floor_plan,
     )
     return {
         room_id: statistic
@@ -69,17 +78,13 @@ def native_room_statistics_by_session(
     future_tolerance_seconds: int,
     multiple_floors_known: bool = False,
     minimum_timestamp: float | None = None,
+    floor_plan: FloorPlan | None = None,
 ) -> dict[str, tuple[NativeRoomStatistic, ...]]:
     """Map explicit completed mode results to unambiguous active room names.
 
-    The native history does not include a floor identity. This function only
-    uses names that uniquely identify a room on the supplied current floor.
-    It returns sensor history evidence; it does not confer managed-run credit.
-    If the active map reports multiple floors, room names cannot identify which
-    floor the native record belongs to, so no room statistic is returned.
+    Canonical records match floor mission and partition IDs and resolve by room
+    UUID. Legacy rows use unique names only when one floor is known.
     """
-    if multiple_floors_known:
-        return {}
     room_by_name: dict[str, tuple[str, str] | None] = {}
     for room in rooms:
         key = _room_key(room.name)
@@ -97,9 +102,21 @@ def native_room_statistics_by_session(
         if parsed is None or parsed.tzinfo is None:
             continue
         timestamp = parsed.timestamp()
-        if (
-            not math.isfinite(timestamp)
-            or timestamp > future_limit
+        if not math.isfinite(timestamp) or timestamp > future_limit:
+            continue
+
+        session_mission = getattr(session, "mission_id", None)
+        session_partition = getattr(session, "partition_id", None)
+        canonical = session_mission is not None or session_partition is not None
+        canonical_ok = bool(
+            floor_plan is not None
+            and session_mission == floor_plan.mission_id
+            and session_partition == floor_plan.partition_protocol_id
+        )
+        if canonical and not canonical_ok:
+            continue
+        if not canonical and (
+            multiple_floors_known
             or (minimum_timestamp is not None and timestamp < minimum_timestamp)
         ):
             continue
@@ -110,11 +127,23 @@ def native_room_statistics_by_session(
         for result in session.mode_results:
             if result.cleaning_mode not in {"vacuum", "mop"}:
                 continue
-            results_by_room[_room_key(result.room)][result.cleaning_mode].append(result)
+            result_key = (
+                f"id:{result.room_id}"
+                if canonical and result.room_id is not None
+                else f"name:{_room_key(result.room)}"
+            )
+            results_by_room[result_key][result.cleaning_mode].append(result)
 
         session_hash = hashlib.sha256(record.key).hexdigest()
-        for room_name, modes in results_by_room.items():
-            mapped = room_by_name.get(room_name)
+        rooms_by_id = {room.protocol_id: (room.id, room.name) for room in rooms}
+        for room_key, modes in results_by_room.items():
+            mapped = (
+                rooms_by_id.get(room_key[3:])
+                if canonical and room_key.startswith("id:")
+                else room_by_name.get(room_key[5:])
+                if not canonical
+                else None
+            )
             if mapped is None:
                 continue
             duplicate_modes = {
@@ -167,6 +196,11 @@ def native_room_statistics_by_session(
                 conflicting_modes=frozenset(tombstones),
                 invalidated_modes=frozenset(invalidated_modes),
                 reported_completed_modes=frozenset(reported_completed_modes),
+                partition_hash=(
+                    hashlib.sha256(session_partition.encode()).hexdigest()
+                    if canonical_ok and isinstance(session_partition, str)
+                    else None
+                ),
             )
             current = statistics_by_session.get(session_identity)
             if current is None:
@@ -223,6 +257,7 @@ def native_room_statistics_by_session(
                     conflicting_modes=frozenset(tombstones),
                     invalidated_modes=frozenset(invalidated_modes),
                     reported_completed_modes=frozenset(reported_completed_modes),
+                    partition_hash=candidate.partition_hash or current.partition_hash,
                 )
     by_room: dict[str, list[NativeRoomStatistic]] = defaultdict(list)
     for (room_id, _session_hash), statistic in statistics_by_session.items():

@@ -427,6 +427,11 @@ async def _async_execute_rooms_reserved(
                             floor_is_current=floor_is_current,
                             floor_token=floor_token,
                             session_identity=session_identity,
+                            on_claim=lambda session_id: (
+                                manager.ledger.async_claim_native_session(
+                                    serial_number, session_id, run_id=run_id
+                                )
+                            ),
                             on_dispatch=lambda: bind_native_identity(None),
                             on_identity=bind_native_identity,
                         )

@@ -1506,3 +1506,56 @@ async def test_plan_area_command_translates_start_failures(
     assert raised.value.translation_key == translation_key
     assert raised.value.__cause__ is error
     entry.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+
+
+async def test_direct_ha_start_claims_exact_session_before_transmission():
+    entry = _entry()
+    entity = vacuum.MaticVacuum(entry)
+    plans = entry.runtime_data.cleaning_plans
+    client = entry.runtime_data.coordinator.client
+    order = []
+
+    async def claim(_serial, session_id):
+        order.append(("claim", session_id))
+
+    async def send(*_args, **kwargs):
+        order.append(("send", str(kwargs["session_id"])))
+
+    plans.ledger.async_claim_native_session = AsyncMock(side_effect=claim)
+    client.async_start_coverage = AsyncMock(side_effect=send)
+    await entity.async_start()
+    assert order[0][0] == "claim" and order[1] == ("send", order[0][1])
+    plans.ledger.async_claim_native_session = AsyncMock(side_effect=OSError("disk"))
+    client.async_start_coverage.reset_mock()
+    with pytest.raises(OSError):
+        await entity.async_start()
+    client.async_start_coverage.assert_not_awaited()
+
+
+async def test_direct_start_reaches_real_client_with_the_reserved_wire_identity():
+    import hashlib
+
+    from custom_components.matic_robot.client.api import MaticHermesClient
+    from custom_components.matic_robot.client.coverage_receipts import (
+        native_session_hash,
+    )
+    from custom_components.matic_robot.client.wire import first_bytes
+    from tests.test_coverage_receipt_api import FLOOR
+
+    entry = _entry()
+    entry.runtime_data.coordinator.data = replace(
+        entry.runtime_data.coordinator.data, floor_plan=FLOOR
+    )
+    client = MaticHermesClient("192.0.2.1", 16320)
+    client._connection._async_send_user_payload = AsyncMock()
+    entry.runtime_data.coordinator.client = client
+    entity = vacuum.MaticVacuum(entry)
+    await entity.async_start()
+    claims = entry.runtime_data.cleaning_plans.ledger.async_claim_native_session
+    claimed = claims.await_args.args[1]
+    payload = client._connection._async_send_user_payload.await_args.args[0]
+    coverage = first_bytes(first_bytes(first_bytes(payload, 15), 1), 3)
+    assert (
+        native_session_hash(first_bytes(coverage, 6))
+        == hashlib.sha256(claimed.encode("ascii")).hexdigest()
+    )

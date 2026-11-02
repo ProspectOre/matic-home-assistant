@@ -40,21 +40,49 @@ Room **Last cleaned** and **Last clean duration** also accept app-started and
 app-scheduled cleans when the robot reports an explicit completed vacuum or
 mop result with a positive duration. Both completed modes contribute to that
 room's duration; incomplete or ambiguous modes do not. These statistics do not
-advance managed completion counts, room schedules or plan history. Results from
-a session overlapping any managed room dispatch stay excluded, including
-incidental visits to other rooms; they do not prove independent ownership.
+create managed plan runs or advance plan-only schedules.
 
-Robot history identifies rooms by name, without a floor identifier. A name
-must match exactly one room on the current floor after case and spacing are
-normalized. Statistics from that source are withheld when multiple floors are
-known, and cleared when the active floor changes. If the robot reports only one
-floor, a name match still cannot prove an older result belonged to that floor.
-The `statistics_source` attribute distinguishes robot room-name matching from
-managed results and restored values. Repeated reads do not double-count work;
-later results for the same session can add a newly completed mode. A correction
-from completed to partial or unattempted retracts that mode's native completion,
-while an independently completed mode remains usable. A newer partial run does
-not erase an older successful clean.
+Canonical history uses the robot's mission, partition and room UUIDs. Verified
+saved-floor bindings allow delayed records to update the correct shared schedule
+while another floor is active. It can
+resolve a room across multiple saved floors and room renames; an unknown UUID
+never falls back to a name. Legacy records without this identity remain limited
+to a unique room-name match on a single known floor. Both sensors explain
+withheld statistics through `native_statistics_blocked_reason`.
+
+The integration setting **App-started cleanings** is enabled by default. It
+lets successful external room cleanings advance shared room schedules. Counting
+starts when the option is first activated or re-enabled, without historical
+backfill. Turning it off preserves earlier credit; subsequent corrections to
+already counted records still retract or revise it. Creating or rebinding a
+shared schedule also starts a new counting boundary.
+
+Credit requires a known initiator, matching floor/room identities, a completed
+modern summary, a finished stop reason, and positive completed-mode durations.
+Cancelled, partial, ambiguous and malformed records cannot earn this credit.
+The integration reserves its own session IDs before sending managed commands,
+including plan-only runs, direct HA starts and custom areas, so their native
+history cannot be counted again as an app-started clean.
+Native cleans do not satisfy a requested vacuum strength without setting proof
+or clear an explicit next-clean request. Shared resets remain effective after
+replay. Saved plan run history and managed completion counts stay separate.
+
+`statistics_source` distinguishes canonical robot identity matching, legacy
+name matching, managed results and restored values. Repeated reads do not
+count work twice. Corrections to one session can add or retract a mode, while
+an unrelated newer partial run does not erase an older successful clean.
+The [OEM replay evidence](native-history-floor-evidence.md) establishes parser
+semantics. The installed Home Assistant runtime remains `v0.5.1-beta1`
+(`63c143c6`); source changes here are not deployment evidence.
+
+## Physical observations
+
+On November 1, 2026, two separately observed normal vacuum cleans completed on
+floor A and floor B, lasting 379 and 259 seconds respectively. The robot returned
+to its original dock with no reported errors. These physical observations are
+independent of the offline OEM decoder replay and do not qualify integration
+history parsing, runtime deployment, or managed-run completion. Household room
+names and raw device evidence remain private.
 
 For a managed result, **Last clean duration** uses native per-room work time
 when supplied by completion, otherwise tracked active room time. The room
@@ -73,7 +101,7 @@ It and **Current room estimated progress** stay unknown until three such
 durations exist. Estimated progress measures active time against that
 estimate, stops at 100%, and never marks a room finished.
 
-A native result does not identify why a mission ended. Firmware can report a
-stopped room as completed; managed plans also verify ownership and the terminal
-transition. A requested stop followed by docking can succeed while unfinished
+Modern native history separates why a mission stopped from mode completion.
+Firmware can report a stopped room as completed; managed plans also verify
+ownership and the terminal transition. A requested stop followed by docking can succeed while unfinished
 rooms remain due. See [activity diagnostics](activity-diagnostics.md).

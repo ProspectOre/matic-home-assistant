@@ -14,6 +14,7 @@ from copy import deepcopy
 from typing import Any, cast
 
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.util import dt as dt_util
 
 from . import area_binding_formats as binding_formats
 from . import area_binding_geometry as binding_geometry
@@ -746,6 +747,7 @@ class PlanCatalog:
                 schedule = {
                     "progress": {"mop": 0, "coverage": 0},
                     "identity": room_identity,
+                    "native_since": dt_util.utcnow().isoformat(),
                 }
                 schedules[room_id] = schedule
             elif (
@@ -755,10 +757,18 @@ class PlanCatalog:
                 # a new shared schedule and cannot inherit ambiguous progress.
                 schedule["progress"] = {"mop": 0, "coverage": 0}
                 schedule["identity"] = room_identity
+                schedule["native_since"] = dt_util.utcnow().isoformat()
+                schedule.pop("accounting", None)
+                schedule.pop("native_events", None)
+                schedule.pop("native_binding", None)
             elif floor_token is not None and schedule.get("floor_token") != floor_token:
                 # A verified floor rebind must not carry progress from an
                 # older map whose room identity happened to remain stable.
                 schedule["progress"] = {"mop": 0, "coverage": 0}
+                schedule["native_since"] = dt_util.utcnow().isoformat()
+                schedule.pop("accounting", None)
+                schedule.pop("native_events", None)
+                schedule.pop("native_binding", None)
             schedule["policy"] = {
                 key: value for key, value in policy.items() if key != "scope"
             }

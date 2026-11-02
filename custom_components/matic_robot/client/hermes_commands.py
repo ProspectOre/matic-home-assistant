@@ -400,8 +400,6 @@ class HermesCommands:
         require_current: Callable[[], None] | None = None,
     ) -> CoverageReceipt | None:
         """Start an exact normal-coverage command for local room IDs."""
-        if not require_settings_readback and session_id is not None:
-            raise MaticError("An untracked coverage command cannot own a session ID")
         if require_settings_readback and session_id is None:
             session_id = uuid4()
         payload = encode_coverage_command(

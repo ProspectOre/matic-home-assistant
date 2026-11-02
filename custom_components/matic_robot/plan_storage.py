@@ -38,11 +38,13 @@ from .plan_timing import (
 
 STORAGE_VERSION = 1
 
-STORAGE_MINOR_VERSION = 12
+STORAGE_MINOR_VERSION = 13
 
 STORAGE_KEY = f"{DOMAIN}.plans"
 
 _LEGACY_MANUAL_ROOM_SEQUENCE_PLAN_NAME = "Map Studio room clean"
+
+MAX_MANAGED_NATIVE_SESSION_CLAIMS = 1024
 
 STOP_FENCE_EXPIRES_AT = "stop_fence_expires_at"
 
@@ -455,6 +457,7 @@ def _normalize_robot(robot: dict[str, Any]) -> bool:
         "rotation_resets",
         "shared_room_cadence",
         "plan_room_cadence",
+        "managed_native_sessions",
     ):
         if not isinstance(robot.get(key), dict):
             robot[key] = {}
@@ -474,6 +477,25 @@ def _normalize_robot(robot: dict[str, Any]) -> bool:
         if normalized_dedup != dedup:
             robot["native_completion_dedup"] = normalized_dedup
             changed = True
+    claims = robot.get("managed_native_sessions")
+    normalized_claims = (
+        {
+            key: value
+            for key, value in claims.items()
+            if isinstance(key, str)
+            and len(key) == 64
+            and all(char in "0123456789abcdef" for char in key)
+            and isinstance(value, dict)
+        }
+        if isinstance(claims, dict)
+        else {}
+    )
+    normalized_claims = dict(
+        list(normalized_claims.items())[-MAX_MANAGED_NATIVE_SESSION_CLAIMS:]
+    )
+    if claims != normalized_claims:
+        robot["managed_native_sessions"] = normalized_claims
+        changed = True
     for key in ("rooms", "plans", "areas", "area_history"):
         records = robot[key]
         for record_id, record in tuple(records.items()):

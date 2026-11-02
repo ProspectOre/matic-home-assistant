@@ -211,7 +211,7 @@ for (const coverageCase of ["matching", "mismatched frame", "bad checksum"]) {
       await expect(page.locator(".counts .unchanged")).toHaveText("Unchanged 0");
       await expect(page.locator(".counts .unknown")).toHaveText("Unknown 0");
     } else {
-      await expect(page.getByRole("status")).toContainText(coverageCase === "bad checksum"
+      await expect(page.locator("matic-map-comparison-v4 p.status[role='status']")).toContainText(coverageCase === "bad checksum"
         ? "could not be loaded" : "don't show enough of the same floor");
       await expect(page.locator(".counts")).toHaveCount(0);
     }

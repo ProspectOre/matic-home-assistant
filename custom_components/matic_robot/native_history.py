@@ -36,7 +36,11 @@ from .plan_timing import (
     _record_duration_sample,
     _stored_count,
 )
-from .room_statistics import NativeRoomStatistic, native_room_statistics_by_session
+from .room_statistics import (
+    NativeRoomStatistic,
+    native_room_statistics_by_session,
+    native_statistics_have_ambiguous_floor,
+)
 from .run_history import repair_run_history
 
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = max(64, MAX_ROOM_SEQUENCE_SIZE)
@@ -60,57 +64,77 @@ def _import_daily_native_uncertainty(
     now = dt_util.utcnow()
     changed = False
     rooms_by_name: dict[str, list[Room]] = {}
+    rooms_by_protocol_id = {room.protocol_id: room for room in floor_plan.rooms}
     for room in floor_plan.rooms:
         rooms_by_name.setdefault(_native_room_key(room.name), []).append(room)
     for record in records:
         session = record.session
-        names = (
-            {
-                result.room
+        canonical = session.mission_id is not None or session.partition_id is not None
+        if canonical:
+            # UUID results are authoritative only on their exact floor and
+            # partition. Names are labels and can collide across saved floors.
+            if (
+                session.mission_id != floor_plan.mission_id
+                or session.partition_id != floor_plan.partition_protocol_id
+            ):
+                continue
+            reported_rooms = {
+                rooms_by_protocol_id[result.room_id]
                 for result in session.mode_results
                 if result.status == "completed"
+                and result.room_id in rooms_by_protocol_id
             }
-            if session.mode_results
-            else set(session.completed_rooms)
-        )
-        for name in names:
-            for room in rooms_by_name.get(_native_room_key(name), ()):
-                if daily_room_limit._time(session.ended_at) is None:
-                    changed = (
-                        daily_room_limit.record_unknown_completion_time(
-                            robot,
-                            room.id,
-                            now=now,
-                            session_hash=_daily_session_hash(record.key)
-                            if record.key
-                            else None,
-                        )
-                        or changed
-                    )
-                    continue
-                assert isinstance(session.ended_at, str)
-                try:
-                    identity = room_cadence_identity(floor_plan, room.id)
-                except ValueError:
-                    identity = None
+        else:
+            if native_statistics_have_ambiguous_floor(floor_plan):
+                continue
+            names = (
+                {
+                    result.room
+                    for result in session.mode_results
+                    if result.status == "completed"
+                }
+                if session.mode_results
+                else set(session.completed_rooms)
+            )
+            reported_rooms = {
+                room
+                for name in names
+                for room in rooms_by_name.get(_native_room_key(name), ())
+            }
+        for room in reported_rooms:
+            if daily_room_limit._time(session.ended_at) is None:
                 changed = (
-                    daily_room_limit.record_completion(
+                    daily_room_limit.record_unknown_completion_time(
                         robot,
                         room.id,
-                        identity,
-                        session.ended_at,
                         now=now,
-                        session_hash=(
-                            _daily_session_hash(record.key)
-                            if record.key
-                            else hashlib.sha256(
-                                f"matic-empty-native-key\0{session.ended_at}\0{room.id}".encode()
-                            ).hexdigest()
-                        ),
-                        unverified=True,
+                        session_hash=_daily_session_hash(record.key)
+                        if record.key
+                        else None,
                     )
                     or changed
                 )
+                continue
+            assert isinstance(session.ended_at, str)
+            identity = room_cadence_identity(floor_plan, room.id)
+            changed = (
+                daily_room_limit.record_completion(
+                    robot,
+                    room.id,
+                    identity,
+                    session.ended_at,
+                    now=now,
+                    session_hash=(
+                        _daily_session_hash(record.key)
+                        if record.key
+                        else hashlib.sha256(
+                            f"matic-empty-native-key\0{session.ended_at}\0{room.id}".encode()
+                        ).hexdigest()
+                    ),
+                    unverified=True,
+                )
+                or changed
+            )
     return changed
 
 
@@ -593,22 +617,52 @@ def _import_native_room_activity(
     this importer updates rotation opportunities without completion credit.
     Legacy summaries retain their conservative completed-room activity subset.
     """
+    records = tuple(records)
     room_lookup: dict[str, tuple[str, str] | None] = {}
     for room in floor_plan.rooms:
         key = _native_room_key(room.name)
         room_lookup[key] = None if key in room_lookup else (room.id, room.name)
 
     candidates: dict[str, tuple[float, str, str]] = {}
+    by_protocol_id = {room.protocol_id: room for room in floor_plan.rooms}
     for record in records:
         session = record.session
         timestamp = _latest_timestamp(session.ended_at)
         if timestamp is None or not isinstance(session.ended_at, str):
             continue
-        worked_rooms = (
-            session.visited_rooms if session.mode_results else session.completed_rooms
-        )
-        for worked_name in worked_rooms:
-            mapped_room = room_lookup.get(_native_room_key(worked_name))
+        canonical = session.mission_id is not None or session.partition_id is not None
+        mapped_rooms: list[tuple[str, str] | None]
+        if canonical:
+            if (
+                session.mission_id != floor_plan.mission_id
+                or session.partition_id != floor_plan.partition_protocol_id
+            ):
+                continue
+            worked_ids = {
+                result.room_id
+                for result in session.mode_results
+                if result.status in {"partial", "completed"}
+                and result.room_id is not None
+            }
+            mapped_rooms = [
+                (by_protocol_id[room_id].id, by_protocol_id[room_id].name)
+                for room_id in worked_ids
+                if room_id in by_protocol_id
+            ]
+        else:
+            if native_statistics_have_ambiguous_floor(floor_plan):
+                continue
+            worked_names = (
+                session.visited_rooms
+                if session.mode_results
+                else session.completed_rooms
+            )
+            if worked_names is None:
+                continue
+            mapped_rooms = [
+                room_lookup.get(_native_room_key(name)) for name in worked_names
+            ]
+        for mapped_room in mapped_rooms:
             if mapped_room is None:
                 continue
             room_id, room_name = mapped_room
@@ -653,16 +707,69 @@ def _import_native_room_statistics(
         robot["robot_room_statistics_floor_id"] = current_floor_id
         changed = True
     changed_at = _latest_timestamp(robot.get("robot_room_statistics_floor_changed_at"))
-    mapped_floor_ids = {floor.mission_id for floor in floor_plan.mapped_floors}
-    multiple_floors_known = len(mapped_floor_ids | {current_floor_id}) > 1
     statistics = native_room_statistics_by_session(
         records,
         floor_plan.rooms,
         now=now,
         future_tolerance_seconds=ROTATION_FUTURE_TOLERANCE_SECONDS,
-        multiple_floors_known=multiple_floors_known,
+        multiple_floors_known=native_statistics_have_ambiguous_floor(floor_plan),
         minimum_timestamp=changed_at,
+        floor_plan=floor_plan,
     )
+    # If a retained canonical session is revised so its old floor or
+    # partition proof no longer matches, retract its cached statistics. A
+    # missing session alone remains retention loss and is not a retraction.
+    records_by_hash = {
+        hashlib.sha256(record.key).hexdigest(): record for record in records
+    }
+    for room_id, stored in robot["rooms"].items():
+        if not isinstance(stored, dict) or not isinstance(
+            stored.get("robot_last_session_hash"), str
+        ):
+            continue
+        prior = records_by_hash.get(stored["robot_last_session_hash"])
+        ended = stored.get("robot_last_completed")
+        stored_floor = stored.get("robot_last_floor_id")
+        stored_partition_hash = stored.get("robot_last_partition_hash")
+        timestamp = _latest_timestamp(ended)
+        if (
+            prior is None
+            or not isinstance(ended, str)
+            or timestamp is None
+            or not isinstance(stored_floor, int)
+            or not isinstance(stored_partition_hash, str)
+        ):
+            continue
+        session = prior.session
+        current_partition_hash = (
+            hashlib.sha256(session.partition_id.encode()).hexdigest()
+            if isinstance(session.partition_id, str)
+            else None
+        )
+        if (
+            session.mission_id == stored_floor
+            and current_partition_hash == stored_partition_hash
+            and _latest_timestamp(session.ended_at) is not None
+        ):
+            continue
+        rejected = NativeRoomStatistic(
+            room_id,
+            str(stored.get("name", room_id)),
+            ended,
+            0,
+            timestamp,
+            stored.get("robot_last_session_started_at"),
+            stored["robot_last_session_hash"],
+            {},
+            frozenset(),
+            frozenset({"vacuum", "mop"}),
+            frozenset(),
+            stored_partition_hash,
+        )
+        changed = (
+            _apply_native_room_statistics(robot, stored_floor, {room_id: (rejected,)})
+            or changed
+        )
     return _apply_native_room_statistics(robot, current_floor_id, statistics) or changed
 
 
@@ -883,6 +990,7 @@ def _apply_native_room_statistics(
                 "robot_last_session_hash",
                 "robot_last_session_started_at",
                 "robot_last_floor_id",
+                "robot_last_partition_hash",
             ):
                 if key in room:
                     room.pop(key)
@@ -913,6 +1021,7 @@ def _apply_native_room_statistics(
                     "robot_last_session_hash",
                     "robot_last_session_started_at",
                     "robot_last_floor_id",
+                    "robot_last_partition_hash",
                     "robot_last_conflicted_modes",
                 ):
                     if key in room:
@@ -947,6 +1056,10 @@ def _apply_native_room_statistics(
             "robot_last_floor_id": floor_id,
             "robot_last_conflicted_modes": sorted(excluded),
         }
+        if statistic.partition_hash is not None:
+            updates["robot_last_partition_hash"] = statistic.partition_hash
+        else:
+            room.pop("robot_last_partition_hash", None)
         if any(room.get(key) != value for key, value in updates.items()):
             changed = True
             room.update(updates)

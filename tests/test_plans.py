@@ -2304,7 +2304,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
 ) -> None:
     manager = CleaningPlanManager(hass)
     assert manager.repository.store.version == 1
-    assert manager.repository.store.minor_version == 12
+    assert manager.repository.store.minor_version == 13
     assert manager.repository.store._private is True
     stored = {
         "robots": {
@@ -2375,7 +2375,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
     with pytest.raises(ValueError, match="storage version"):
         await manager.repository.store._async_migrate_func(2, 1, stored)
     with pytest.raises(ValueError, match="minor version"):
-        await manager.repository.store._async_migrate_func(1, 13, stored)
+        await manager.repository.store._async_migrate_func(1, 14, stored)
 
 
 async def test_plan_store_migrates_interrupted_manual_run_without_private_credit(
@@ -3402,6 +3402,7 @@ async def test_load_repairs_malformed_plan_storage_without_inventing_history(
         "rotation_resets": {},
         "shared_room_cadence": {},
         "plan_room_cadence": {},
+        "managed_native_sessions": {},
         "native_completion_dedup": [],
         "selected_plan": "valid",
         "selected_area": None,
@@ -7205,6 +7206,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -7277,6 +7279,7 @@ async def test_room_timeout_is_failure_safe() -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -7331,6 +7334,7 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -7384,6 +7388,7 @@ async def test_room_takeover_during_verification_is_failure_safe() -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -7438,6 +7443,7 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -7506,6 +7512,7 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -7575,6 +7582,7 @@ async def test_new_native_completed_record_credits_only_after_manager_commit(
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(
                 side_effect=lambda *_args, **_kwargs: (
                     order.append("manager_commit") or ownership_current
@@ -7894,6 +7902,7 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -7953,6 +7962,7 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -8054,6 +8064,7 @@ def _leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
     return SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9200,6 +9211,7 @@ async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9291,6 +9303,7 @@ async def test_room_unverified_handoff_does_not_start_the_next_room(
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9356,6 +9369,7 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9429,6 +9443,7 @@ async def test_unknown_active_session_interrupts_without_room_credit(
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9497,6 +9512,7 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9558,6 +9574,7 @@ async def test_room_pause_and_resume_outcome() -> None:
         ),
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),
@@ -9619,6 +9636,7 @@ async def test_room_interruption_and_replaced_dispatch_never_complete() -> None:
         manager = SimpleNamespace(
             ledger=SimpleNamespace(
                 async_mark_started=AsyncMock(),
+                async_claim_native_session=AsyncMock(),
                 async_mark_completed=AsyncMock(),
                 async_mark_ended_unverified=AsyncMock(),
                 async_mark_verifying=AsyncMock(),
@@ -9687,6 +9705,7 @@ async def test_unload_cancellation_stops_and_persists_interruption() -> None:
     manager = SimpleNamespace(
         ledger=SimpleNamespace(
             async_mark_started=AsyncMock(),
+            async_claim_native_session=AsyncMock(),
             async_mark_completed=AsyncMock(),
             async_mark_ended_unverified=AsyncMock(),
             async_mark_verifying=AsyncMock(),

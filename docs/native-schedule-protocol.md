@@ -1,8 +1,8 @@
 # Native schedule protocol evidence
 
 Scope: the read-only 0.5.1 fixes for [#384](https://github.com/ProspectOre/matic-home-assistant/issues/384).
-Analysis date: 2026-11-01. This is static protocol evidence and synthetic test
-coverage, not confirmation of the reporter's installed recovery.
+Analysis date: 2026-11-01. Static protocol evidence, synthetic test coverage and
+the subsequent affected-install check are distinguished below.
 
 ## Source identity
 
@@ -62,7 +62,13 @@ schedules. A synthetic stream withholds its second record until the first is
 acknowledged, checking both inspection and telemetry. A read-only check of the
 connected robot returned one sequence-bearing record with either reader; it
 had only one observed record, so this does not reproduce the reporter's
-missing second schedule. Keep affected-install validation open.
+missing second schedule.
+
+Later on November 1, the [reporter confirmed on v0.5.1-beta1](https://github.com/ProspectOre/matic-home-assistant/issues/384#issuecomment-6564164213)
+that both schedules appear with the app's weekdays, time, enabled state, room
+ordering and room selections, including the whole-floor schedule. This verifies
+the reported mismatch on that installation; it does not establish compatibility
+with every robot or firmware version.
 
 See [schedule diagnostics](native-schedule-diagnostics.md) for value-free
 inspection and [release notes](release-notes-0.5.1.md) for contributor credit.

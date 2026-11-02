@@ -143,6 +143,7 @@ async def _async_dispatch_leg_command(
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     on_dispatch: Callable[[], None] | None = None,
+    on_claim: Callable[[str], Awaitable[None]] | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_identity: Callable[[bytes | None], None] | None = None,
     expected_dispatch_identity: bytes | None = None,
@@ -226,6 +227,14 @@ async def _async_dispatch_leg_command(
         params[PLAN_SESSION_ID] = str(managed_session_id)
     if floor_token is not None:
         params[PLAN_FLOOR_TOKEN] = floor_token
+    if managed_session_id is not None and on_claim is not None:
+        # The claim is durable before the service can dispatch the session.
+        # Native history may arrive immediately after the command is accepted.
+        await on_claim(str(managed_session_id))
+        if floor_is_current is not None and not floor_is_current():
+            raise managed_run._validation_error(
+                "The robot's room map is unavailable", "room_plan_unavailable"
+            )
     if on_dispatch is not None:
         on_dispatch()
     try:

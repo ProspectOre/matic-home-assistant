@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import struct
 from contextlib import nullcontext
 from types import SimpleNamespace
@@ -35,6 +36,7 @@ from custom_components.matic_robot.client.commands import (
     encode_go_to_room_command,
     encode_redo_coverage_command,
 )
+from custom_components.matic_robot.client.coverage_receipts import native_session_hash
 from custom_components.matic_robot.client.endpoints import (
     HERMES_ENDPOINT_MAP,
     HermesEndpointKind,
@@ -46,7 +48,6 @@ from custom_components.matic_robot.client.exceptions import (
     CoverageGuardError,
     CoverageGuardReason,
     EndpointUnsupportedError,
-    MaticError,
     PairingModeRequiredError,
     SinkLocationUnavailableError,
 )
@@ -2681,24 +2682,34 @@ async def test_native_vacuum_keeps_robot_warning_checks():
     client._reads.async_get_cleaning_session_identity.assert_not_awaited()
 
 
-async def test_untracked_coverage_rejects_a_managed_session_id():
+async def test_direct_coverage_preserves_reserved_id_without_setting_proof():
     client = MaticHermesClient("robot.invalid", 16320)
     client._connection._async_send_user_payload = AsyncMock()
-    with pytest.raises(MaticError, match="cannot own a session ID"):
-        await client.async_start_coverage(
-            FloorPlan(
-                1,
-                "00000000-0000-0000-0000-000000000001",
-                b"partition",
-                (),
-            ),
-            ["00000000-0000-0000-0000-000000000002"],
-            cleaning_mode=CleaningMode.VACUUM,
-            coverage_setting=CoverageSetting.QUICK,
-            session_id=UUID("11111111-1111-4111-8111-111111111111"),
-        )
+    client._reads.async_get_state = AsyncMock()
+    client._reads.async_get_cleaning_session_identity = AsyncMock()
+    session_id = UUID("11111111-1111-4111-8111-111111111111")
+    await client.async_start_coverage(
+        FloorPlan(
+            1,
+            "00000000-0000-0000-0000-000000000001",
+            b"partition",
+            (),
+        ),
+        ["00000000-0000-0000-0000-000000000002"],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+        session_id=session_id,
+    )
 
-    client._connection._async_send_user_payload.assert_not_awaited()
+    client._connection._async_send_user_payload.assert_awaited_once()
+    payload = client._connection._async_send_user_payload.await_args.args[0]
+    coverage = first_bytes(first_bytes(first_bytes(payload, 15), 1), 3)
+    assert (
+        native_session_hash(first_bytes(coverage, 6))
+        == hashlib.sha256(str(session_id).encode("ascii")).hexdigest()
+    )
+    client._reads.async_get_state.assert_not_awaited()
+    client._reads.async_get_cleaning_session_identity.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

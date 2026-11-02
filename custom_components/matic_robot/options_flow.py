@@ -9,6 +9,7 @@ from homeassistant import config_entries
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_INCLUDE_NATIVE_CLEANINGS,
     CONF_PHOTO_PATROL_ALLOW_UNATTENDED,
     CONF_PHOTO_PATROL_COOLDOWN_SECONDS,
     CONF_PHOTO_PATROL_NO_PHOTO_ROOMS,
@@ -58,7 +59,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         """Direct plan and Area editing to the sole map workspace."""
         if not self._is_loaded():
             return self._entry_unavailable()
-        options: list[str] = []
+        options: list[str] = ["native_cleanings"]
         plans = self._manager.catalog.plans(self._serial_number)
         if plans:
             options.extend(
@@ -69,6 +70,36 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             step_id="init",
             menu_options=options,
             description_placeholders={"plan_count": str(len(plans))},
+        )
+
+    async def async_step_native_cleanings(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Choose whether external cleanings advance shared room schedules."""
+        if not self._is_loaded():
+            return self._entry_unavailable()
+        if user_input is not None:
+            return self.async_create_entry(
+                title="",
+                data={
+                    **self.config_entry.options,
+                    CONF_INCLUDE_NATIVE_CLEANINGS: user_input[
+                        CONF_INCLUDE_NATIVE_CLEANINGS
+                    ],
+                },
+            )
+        return self.async_show_form(
+            step_id="native_cleanings",
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(
+                        CONF_INCLUDE_NATIVE_CLEANINGS,
+                        default=self.config_entry.options.get(
+                            CONF_INCLUDE_NATIVE_CLEANINGS, True
+                        ),
+                    ): selector.BooleanSelector(),
+                }
+            ),
         )
 
     async def async_step_finish(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from homeassistant.components.vacuum import Segment, StateVacuumEntity
 from homeassistant.components.vacuum.const import VacuumActivity, VacuumEntityFeature
@@ -492,12 +492,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         require_current=require_current_dispatch,
                     )
                 else:
+                    # Direct HA starts have no managed cadence accounting. Own
+                    # their UUID before transmission so later history cannot
+                    # mistake them for an app-started cleaning.
+                    direct_session_id = uuid4()
+                    await self._plans.ledger.async_claim_native_session(
+                        serial_number, str(direct_session_id)
+                    )
+                    require_current_dispatch()
                     await self.coordinator.client.async_start_coverage(
                         floor_plan,
                         command_rooms,
                         cleaning_mode=mode,
                         coverage_setting=setting,
                         ordered=ordered,
+                        session_id=direct_session_id,
                         require_current=require_current_dispatch,
                     )
             if (
