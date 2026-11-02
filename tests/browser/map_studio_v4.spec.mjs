@@ -9145,7 +9145,9 @@ test("renderer draws the robot model turned with its heading and the camera", as
   }
   await page.evaluate(() => window.__robotTest.view(90, 0, 100));
   const small = (await draw(0)).sample;
-  expect(small.size * 0.406 / 0.66).toBeGreaterThanOrEqual(30);
+  // The visible robot length is 18 CSS pixels at the zoomed-out minimum;
+  // the atlas frame also includes transparent space around the robot.
+  expect(small.size * 0.406 / 0.66).toBeCloseTo(18, 5);
   await page.evaluate(() => window.__robotTest.view(90, 0, 0.5));
   expect((await draw(0)).sample.size).toBeGreaterThan(small.size);
   expect(requests.sort()).toEqual(["robot-atlas.json", "robot-atlas.webp"]);
