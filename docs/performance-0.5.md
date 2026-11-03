@@ -1,17 +1,18 @@
 # Matic 0.5 performance evidence
 
-Current lab evidence is in the [RC24 receipt](performance-0.5-rc24.md).
-The RC9 results below and [earlier refinements](performance-0.5-refinements.md) remain historical;
-they do not qualify RC24 or establish runtime, field, transport, or physical acceptance.
-The release ledger is [acceptance-0.5.md](acceptance-0.5.md).
+The [RC24 receipt](performance-0.5-rc24.md) records later lab evidence than the
+RC9 results below and [earlier refinements](performance-0.5-refinements.md).
+Each result is scoped to its named revision and does not by itself establish
+runtime, field, transport, or physical acceptance. The historical release
+ledger is [acceptance-0.5.md](acceptance-0.5.md).
 
-The authority baseline is stable v0.4.6; the paired control remains v0.4.5.
+The authority baseline for these measurements was stable v0.4.6; the paired control was v0.4.5.
 RC9 has separate untraced headed and headless receipts; the production bundle fingerprint below identifies both. [Controlled diagnostics](performance-0.5-diagnostics.md) retain their differing results and the unexplained input outlier. Earlier RC7 measurements remain historical.
 The audit corrected startup accounting: the earlier 80,712-byte estimate
 counted only v4 and omitted 61,269 bytes of globally registered editor,
 classic-panel, and icon modules. That 141,981-byte total exceeded 90 KiB.
 RC9 removed Classic and its switch; its Configure editor loaded on demand.
-Current 0.5 source removes that remaining editor and global loader; the RC9 measurements below remain historical. Clear selection commits once instead of once per room.
+The later 0.5 source removed that remaining editor and global loader; the RC9 measurements below remain historical. Clear selection commits once instead of once per room.
 Earlier RC4 input results do not qualify this disconnect-admission repair.
 
 ## Method
@@ -135,9 +136,9 @@ RC8 live observation delivered 1,142 contiguous invalidations in 56.376 s; a del
 | Enabled workspace, corrected | 3 | 2 | 201 |
 | No decompression support, before → corrected | 203 → 3 | 202 → 4 | 0 |
 
-The corrected stream retained one delta owner and admitted the final scene revision. A held startup catalog remained one request rather than forcing another after release. The correction separates content revision from coherence identity; snapshots cannot move the admitted scene revision ahead of its delta. These are synthetic request counts, not installed-runtime latency, bandwidth, or a 70% total-traffic claim. Production transport remains off.
+The corrected stream retained one delta owner and admitted the final scene revision. A held startup catalog remained one request rather than forcing another after release. The correction separates content revision from coherence identity; snapshots cannot move the admitted scene revision ahead of its delta. These are synthetic request counts, not installed-runtime latency, bandwidth, or a 70% total-traffic claim. Production transport was off at this checkpoint.
 
-## Current trace diagnosis
+## Trace diagnosis
 
 A separate six-sample trace captured compositor/readback waits in every renderer task over 50 ms. Main-thread CPU medians were 1.34–2.62 ms; nested JavaScript peaked at 0.57 ms and layout/paint at 0.40 ms. GPU work overlapped the longest candidate waits. This supports synchronization waiting rather than long application execution, but does not establish the cause of slow GPU completion. Traced counts and timings do not replace the untraced receipt or close the Long Tasks gate; no speculative execution-strategy change was made.
 

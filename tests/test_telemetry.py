@@ -225,7 +225,10 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     assert records[0].key == b"opaque-synthetic-key"
     assert records[0].session.completed is True
     assert records[0].session.completed_rooms == ("Kitchen",)
-    client.async_get_tracked_collection_entries.assert_awaited_once_with(
+    snapshot_records, revision = await client.async_get_cleaning_session_snapshot()
+    assert snapshot_records == records
+    assert len(revision) == 64
+    client.async_get_tracked_collection_entries.assert_awaited_with(
         "coverage_session_history", limit=64
     )
     with pytest.raises(api_module.MaticError, match="incomplete or undecodable"):
@@ -274,6 +277,7 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
     assert telemetry.scheduled_cleanings == 0
     assert telemetry.local_cleaning_sessions == 0
     assert telemetry.wifi_ssid == "private-ssid"
+    assert isinstance(telemetry.native_history_revision, str)
 
 
 async def test_verified_setting_payloads_and_bounds() -> None:
@@ -337,15 +341,15 @@ def test_decode_wifi_schedule_and_history() -> None:
         + _bfield(2, b"Morning")
         + _vfield(3, 1)
         + _bfield(7, room_id)
-        + _bfield(9, b"")
+        + _bfield(8, b"")
     )
     schedule = _decode_schedule(payload)
     assert schedule is not None
     assert schedule.time == "08:30"
-    assert schedule.weekdays == ("sunday", "tuesday")
+    assert schedule.weekdays == ("monday", "wednesday")
     assert schedule.timezone == "America/Los_Angeles"
     assert schedule.enabled is True
-    assert schedule.ordered is True
+    assert schedule.ordered is None
     assert len(schedule.room_ids) == 1
 
     def timestamp(value: int) -> bytes:
@@ -400,6 +404,16 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert malformed_status.completed is None
     assert malformed_status.completed_rooms == ("Kitchen",)
     assert datetime.fromisoformat(session.started_at or "").tzinfo is UTC
+
+
+def test_decode_schedule_weekdays_run_monday_to_sunday() -> None:
+    days = b"".join(_vfield(number, 1) for number in (2, 3, 5, 6, 7))
+    weekly = _bfield(1, days) + _bfield(3, _vfield(1, 525))
+
+    schedule = _decode_schedule(_bfield(1, weekly))
+
+    assert schedule is not None
+    assert schedule.weekdays == ("tuesday", "wednesday", "friday", "saturday", "sunday")
 
 
 def test_wifi_decoder_enforces_payload_network_and_nested_budgets(
@@ -559,7 +573,7 @@ def test_decoders_fail_closed_and_use_safe_defaults() -> None:
     schedule = _decode_schedule(minimal)
     assert schedule is not None
     assert schedule.timezone is None
-    assert schedule.ordered is False
+    assert schedule.ordered is None
     assert schedule.enabled is None
 
     empty_summary = _bfield(5, _vfield(1, 1) + _bfield(6, b"\x0a\xff"))

@@ -598,6 +598,7 @@ def test_options_flow_directs_editing_to_the_single_map_workspace() -> None:
         steps = translations["options"]["step"]
         assert set(steps) == {
             "init",
+            "native_cleanings",
             "default_plan",
             "reset_history",
             "confirm_reset_history",

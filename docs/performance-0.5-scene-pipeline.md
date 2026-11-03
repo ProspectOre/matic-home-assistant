@@ -1,4 +1,4 @@
-# Unreleased scene-pipeline measurements
+# Scene-pipeline measurements (September 2026)
 
 September 30, 2026, 10:41 PDT. Source head `dde52a9` with the frozen
 uncommitted context-loss/hidden-restore repair; production fingerprint
@@ -15,7 +15,7 @@ fresh contexts, no-store assets, no tracing. Three AB/BA/AB pairs use identical
 scene hashes and 100 interactions each; all interactions were reported.
 One-minute host load during samples was 5.8–7.5; other host work was uncontrolled.
 
-| Measure | Current candidate | Gate |
+| Measure | Tested candidate | Gate |
 |---|---:|---:|
 | Actual registered integration startup, gzip estimate | 89,760 bytes / 87.7 KiB | ≤90 KiB |
 | Added lazy workflow, gzip estimate | 11,858 bytes / 11.6 KiB | ≤30 KiB |
